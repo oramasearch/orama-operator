@@ -72,3 +72,18 @@ func embeddingsImage(oc *oramav1alpha1.OramaCloudV1) string {
 	}
 	return reg + "/embeddings-server-py:" + variant + "-latest"
 }
+
+// oramacoreImage resolves the OramaCore engine image. OramaCore is a REUSED published image, so it
+// defaults to :latest (its published tag) rather than the global spec.images.tag — that tag is for
+// the operator's OWN built images (which don't include oramacore). An explicit
+// spec.images.overrides["oramacore"] wins; pin a version there in production.
+func oramacoreImage(oc *oramav1alpha1.OramaCloudV1) string {
+	if o := oc.Spec.Images.Overrides["oramacore"]; o != "" {
+		return o
+	}
+	reg := oc.Spec.Images.Registry
+	if reg == "" {
+		reg = "oramasearch"
+	}
+	return reg + "/oramacore:latest"
+}

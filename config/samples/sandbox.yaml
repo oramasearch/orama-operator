@@ -1,0 +1,55 @@
+# Single-node sandbox — validated on AKS (2026-07-08). A light, CPU-only deployment that pulls
+# the private component images from Docker Hub via a pull secret. Exercises every private image
+# (engine + embeddings sidecar, dashboard, docs, disco, workers, ingestion) without the GPU or a
+# multi-node footprint.
+#
+# Prereqs:
+#   - Build + push the images:  REGISTRY=oramasearch TAG=v1-sandbox <bridge>/build/images/build.sh --push
+#   - Create the pull secret:
+#       kubectl create secret docker-registry oramasearch-dockerhub -n orama-system \
+#         --docker-server=https://index.docker.io/v1/ \
+#         --docker-username=<user> --docker-password=<read-only-token>
+apiVersion: orama.cloud/v1alpha1
+kind: OramaCloudV1
+metadata:
+  name: v1
+  namespace: orama-system
+spec:
+  region:
+    name: us-east
+    role: primary
+  profile: light
+  idp:
+    provider: none
+  images:
+    registry: oramasearch
+    tag: v1-sandbox                    # applies to the operator's OWN built images only
+    pullSecretName: oramasearch-dockerhub
+    # No per-image overrides needed:
+    #   - oramacore  -> oramasearch/oramacore:latest        (reused published image)
+    #   - embeddings -> oramasearch/embeddings-server-py:cpu-latest  (variant from writer.gpu)
+  llm:
+    default: groq
+    providers:
+      - { name: groq, models: [llama-3.3-70b-versatile] }
+  cloudflare:
+    enabled: false
+  demoSeed: false
+  components:
+    engine:
+      enabled: true
+      writer: { gpu: false }           # no GPU node on the sandbox -> CPU embeddings
+      reader: { replicas: 1 }
+      envoy: true
+    dashboard: { enabled: true, host: app.sandbox.local }
+    docs:      { enabled: true, host: docs.sandbox.local }
+    disco:     { enabled: true }
+    workers:   { enabled: true, replicas: 1 }
+    ingestion: { enabled: true, harvest: true }
+    # Data stores use PUBLIC images. Enabling them needs more than one small node; enable as
+    # capacity allows (they are what disco/ingestion/dashboard connect to at runtime).
+    controlDB: { enabled: false }
+    analytics: { enabled: false }
+    cache:     { enabled: false }
+    broker:    { enabled: false }
+    search:    { enabled: false }

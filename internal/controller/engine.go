@@ -326,7 +326,7 @@ func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 
 	return corev1.Container{
 		Name:  "oramacore",
-		Image: componentImage(oc, "oramacore", "oramacore"),
+		Image: oramacoreImage(oc),
 		Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: oramacorePort}},
 		Env: []corev1.EnvVar{
 			{Name: "RUST_LOG", Value: "oramacore=info,warn"},

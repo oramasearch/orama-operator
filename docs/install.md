@@ -75,8 +75,16 @@ kubectl get ocv1 -A -w
 kubectl -n orama-system get pods,statefulsets,deployments,svc
 ```
 
+To deploy from the **private component images** (built by `build/images`), use
+[`../config/samples/sandbox.yaml`](../config/samples/sandbox.yaml) — a light, CPU-only,
+single-node CR **validated on AKS**: it sets `images.{registry,tag,pullSecretName}` and needs no
+per-image overrides (`oramacore` resolves to its published `:latest`, `embeddings` to
+`:cpu-latest`/`:gpu-latest` from `writer.gpu` — the global `tag` applies only to the operator's
+own built images). First create the pull secret and build/push the images (§4).
+
 The full field reference is in [crd-reference.md](crd-reference.md); more samples in
-[`../config/samples/`](../config/samples/).
+[`../config/samples/`](../config/samples/) (`sandbox.yaml` = single-node, `primary-us-east.yaml`
+= prod-like, `read-eu.yaml` = read tier).
 
 ## 4. Override the dummy secrets / images (for real use)
 
