@@ -31,11 +31,11 @@ kubectl get ocv1 -A -w                              # operator reconciles the wh
 operators, the CR, multi-region, overriding dummy secrets/images, uninstall).
 
 - **`helmfile.yaml`** composes the upstream **platform operators** the stack builds on
-  (External Secrets, CloudNativePG, RabbitMQ operator, …) + this operator chart —
+  (CloudNativePG, RabbitMQ operator, …) + this operator chart —
   each toggleable so you skip whatever your cluster already has.
 - The **chart** installs only the **operator + CRDs + RBAC** (self-contained).
 - The **operator** reconciles one `OramaCloudV1` CR into every child workload
-  (Deployments / StatefulSets / ExternalSecrets / dependency CRs) **and** the
+  (Deployments / StatefulSets / Secrets / dependency CRs) **and** the
   Cloudflare DNS + Load Balancing (via the CF API).
 
 ## The `OramaCloudV1` CR (one per cluster)
@@ -48,7 +48,6 @@ Everything is configured on one resource. Highlights (full schema in
 | `spec.region.role` | `primary` (write path + stateful stores) or `read` (regional read tier) |
 | `spec.profile` | `light \| medium \| heavy` — presets replication + sizing |
 | `spec.idp.provider` | `none \| keycloak \| firebase \| clerk` |
-| `spec.secrets.backend` | External Secrets Operator backend (`aws \| gcp \| vault \| kubernetes`) |
 | `spec.llm.providers[]` / `spec.llm.default` | **multiple** LLM providers (users pick per query); defaults to groq+openai+anthropic |
 | `spec.cloudflare` | operator manages CF **DNS + Load Balancing** via the CF API (default on) |
 | `spec.components.*` | per-component enable + `in-cluster \| external`, `placement: local \| central`, `replicate` |

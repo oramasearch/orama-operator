@@ -18,7 +18,7 @@ The operator reconciles some components into upstream operators' CRs, so install
 first. Easiest is the repo's **helmfile** (toggle off anything you already have):
 
 ```sh
-helmfile apply        # External Secrets, CloudNativePG, RabbitMQ operator
+helmfile apply        # CloudNativePG, RabbitMQ operator
 ```
 
 Or install just what you need directly, e.g. CloudNativePG (required for `controlDB`):
@@ -82,8 +82,8 @@ The full field reference is in [crd-reference.md](crd-reference.md); more sample
 
 - **Secrets** — each component has its own `v1-<component>-secret` (e.g.
   `v1-engine-secret`, `v1-dashboard-secret`) seeded with dummy values. Edit them in
-  place (the operator won't overwrite an existing secret), or point
-  `spec.secrets.backend` at ExternalSecrets to source real values.
+  place (the operator won't overwrite an existing secret), the operator
+  won't overwrite them once created.
 - **Images** — most app images are placeholders (`oramasearch/<name>:latest`).
   Override per component:
   ```yaml

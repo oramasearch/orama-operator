@@ -9,9 +9,6 @@ spec:
   profile: medium          # light (dev) | medium (single-tenant prod) | heavy (multi-tenant)
   idp:
     provider: keycloak     # none | keycloak | firebase | clerk
-  secrets:
-    backend: aws
-    storeRef: orama-secretstore
   llm:                     # multiple providers; end users pick per query
     default: groq          # provider used when a request doesn't name one
     providers:

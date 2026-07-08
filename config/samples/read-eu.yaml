@@ -9,9 +9,6 @@ spec:
   profile: medium
   idp:
     provider: keycloak
-  secrets:
-    backend: aws
-    storeRef: orama-secretstore
   cloudflare:
     enabled: true
     zoneID: REPLACE_ME

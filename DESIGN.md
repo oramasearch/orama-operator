@@ -13,16 +13,16 @@ this repo is the **k8s-native re-packaging** of that system.
 
 - **Operator** (`orama-cloud-v1-operator`) — reconciles one umbrella CRD,
   `OramaCloudV1`, into every child workload (Deployments / StatefulSets / Knative
-  Services / ExternalSecrets / subchart releases).
+  Services / Secrets / subchart releases).
 - **Install chart** (`chart/`) — self-contained; its *only* job is to install the
   **operator + CRDs + RBAC**. It does **not** deploy the app; the operator does.
 - **`helmfile.yaml`** (repo root) — the **composition layer**: installs the upstream
-  **platform operators** (External Secrets, CloudNativePG, RabbitMQ operator, …) +
+  **platform operators** (CloudNativePG, RabbitMQ operator, …) +
   this operator chart, each toggleable (`installed:`) so a cluster that already has
   them skips them. This is the "reuse OSS charts / helmfile" decision.
 
 ```
-helmfile apply  ─▶  platform operators (Knative, ESO, CNPG, …) + the v1 operator chart
+helmfile apply  ─▶  platform operators (CNPG, RabbitMQ, …) + the v1 operator chart
                        │
 helm install ./chart ─▶  operator + CRDs + RBAC   (if you skip helmfile)
                        │
@@ -41,11 +41,11 @@ kubectl apply OramaCloudV1 (one per cluster)  ─▶  operator reconciles the wh
 | 6 | **Edge / geo-LB** | **Cloudflare is permanent** — **DNS + Load Balancing (geo-steering)** always live there, and the **operator reconciles them via the Cloudflare API** (`spec.cloudflare`, default on). Worker *logic* runs in-cluster. |
 | 7 | **Managed SaaS** | Brought **in-cluster** via upstream operators/charts: Postgres (CloudNativePG), ClickHouse (Altinity operator), Redis, RabbitMQ (cluster-operator), Typesense, Mongo (HARVEST). Each is toggleable to `external` (point at real SaaS). |
 | 8 | **Auth / IdP** | **Configurable**: `spec.idp: none \| keycloak \| firebase \| clerk`. |
-| 9 | **Secrets** | **External Secrets Operator** (`spec.secrets.backend`). No plaintext in the CR. |
+| 9 | **Secrets** | **In-cluster Kubernetes Secrets** — the operator generates per-component secrets (dummy values, create-if-absent); edit them for real values. **No External Secrets Operator.** No plaintext in the CR. |
 | 10 | **Images** | **Reuse** published `oramasearch/*` images (no build-from-source in this repo). |
 | 11 | **Cross-cluster net** | **No service mesh** for now — read tiers reach the primary via configured endpoints (`spec.peers`) over public ingress + mTLS. |
 | 12 | **"Working" bar** | Operator optionally **seeds a demo project+index** (`spec.demoSeed`) so a fresh install answers queries out of the box. |
-| 13 | **GPU / LLM** | The **writer** requests `nvidia.com/gpu` only for its **built-in embeddings** (ONNX+CUDA; set `writer.gpu: false` for CPU on a non-GPU node). The *other* GPU consumer is an optional in-cluster **vLLM** (`spec.llm.gpu`). LLM `spec.llm.provider: vllm \| groq \| openai \| anthropic`. |
+| 13 | **GPU / LLM** | The **writer** requests `nvidia.com/gpu` only for its **built-in embeddings** (ONNX+CUDA; set `writer.gpu: false` for CPU on a non-GPU node). The *other* GPU consumer is an optional in-cluster **vLLM** (`spec.llm.gpu`). LLM is a **list** — `spec.llm.providers[]` (multiple; users pick per query) + `spec.llm.default`; `vllm` runs in-cluster. |
 | 14 | **Profiles / replication** | `spec.profile: light \| medium \| heavy` presets replication + sizing (light=dev/no-repl, medium=single-tenant prod, heavy=multi-tenant). Per-store override: `placement: local \| central` (e.g. RabbitMQ **central** = one cluster hosts it) + `replicate` (e.g. Postgres read-replica on read tiers). |
 
 ## Region topology (mirror-prod default)
@@ -128,6 +128,6 @@ yet live-tested; LB pools a follow-up).
 
 Per-component detail + follow-ups: [`docs/components.md`](docs/components.md).
 **Remaining work is hardening, not new components:** real app images (most are
-placeholders), full config + ExternalSecrets wiring per component, readiness/HPA
+placeholders), full config + real in-cluster secret values per component, readiness/HPA
 across the board, the Cloudflare live validation + Load Balancing, and the HARVEST
 job-spawner + replica-DB credentials.

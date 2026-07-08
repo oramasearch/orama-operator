@@ -31,7 +31,7 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
   `TYPESENSE_API_KEY`; `cache-secret` = `REDIS_PASSWORD`; `engine-secret` = master
   key + JWT keys + LLM keys; `dashboard-secret` = DB/JWT/Stripe. **No shared blob** —
   a pod never sees a credential it doesn't use. **Create-if-absent** — the operator
-  never overwrites an existing secret, so real / rotated / ExternalSecrets values are
+  never overwrites an existing secret, so real / rotated values are
   preserved. Components with no secret needs (selenium, mongo) get none.
 
 Each component consumes `envFrom: [<cr>-config, <cr>-<component>-secret]` (its own
@@ -48,8 +48,9 @@ secret only). Everything is owner-referenced → GC'd with the CR.
 cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boot
 `1/1` off their scoped secrets.
 
-> **Follow-ups:** source the remaining dummy values from ExternalSecrets
-> (`spec.secrets.backend`) for production. (The JWT keypair is already real + generated.)
+> **Follow-ups:** edit the remaining dummy secret values in place for production
+> (they're plain in-cluster K8s Secrets; the operator won't overwrite them). (The JWT
+> keypair is already real + generated.)
 
 ## engine (`internal/controller/engine.go`)
 
@@ -84,7 +85,7 @@ Driven by `spec.region.role`:
 the ConfigMap; the CR reached `Phase=Provisioning`; deleting the CR GC'd everything.
 
 > **Follow-ups:** the `config.yaml` is minimal — full OramaCore config (cluster
-> registry, API keys via ExternalSecrets, reader→writer wiring) is next, as are HPA +
+> registry, API keys via the engine secret, reader→writer wiring) is next, as are HPA +
 > the reader→primary-writer endpoint on read tiers.
 
 ## controlDB (`internal/controller/controldb.go`)
@@ -133,7 +134,7 @@ removed the workloads.
 
 > **Follow-ups:** these are single-node for light/medium. **Heavy/production** should
 > swap in the dedicated operators (Altinity ClickHouse, RabbitMQ cluster-operator) and
-> a clustered Typesense; wire credentials via ExternalSecrets (the Typesense API key
+> a clustered Typesense; wire credentials via the component secret (the Typesense API key
 > is a dev placeholder today); add readiness probes per store.
 
 ## App compute — ingestion / workers / dashboard (`app.go`, `ingestion.go`)
@@ -156,7 +157,7 @@ the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd the
 > images — override via `spec.images.overrides`. HARVEST's Podman-per-job worker model
 > needs porting to k8s Jobs (the master + Mongo + Selenium are here; the job spawner
 > is a follow-up). Dashboard/index-builder need their env + secret wiring
-> (control-plane DB URL, API keys) via ExternalSecrets.
+> (control-plane DB URL, API keys) via the component secret.
 
 ## DISCO (`disco.go`)
 
@@ -168,7 +169,7 @@ sidecar (`:50051`), matching prod. Service on `:8080`. **Validated on AKS.**
 
 - **idp** — when `idp.provider=keycloak`, deploys **Keycloak** (`Deployment` + Service,
   `start-dev`). `none`/`firebase`/`clerk` are external (nothing deployed). Validated on
-  AKS (Keycloak booted `1/1`). Admin creds are dev placeholders → ExternalSecrets in prod.
+  AKS (Keycloak booted `1/1`). Admin creds are dev placeholders → edit the keycloak secret in prod.
 - **demoSeed** — when `demoSeed: true`, creates a one-shot **Job** (create-if-absent).
   Today it's a **placeholder** (echo); the real seed will create a demo
   project+index+docs via the API once the engine is Ready. Validated on AKS (Job ran

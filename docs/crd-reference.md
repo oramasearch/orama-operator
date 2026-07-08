@@ -12,7 +12,6 @@ truth: [`../api/v1alpha1/oramacloudv1_types.go`](../api/v1alpha1/oramacloudv1_ty
 | `region.role` | enum | `primary` | `primary` (write path + stateful stores) or `read` (regional read tier). |
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
-| `secrets.backend` | enum | `kubernetes` | External Secrets Operator backend: `aws \| gcp \| vault \| kubernetes`. |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
 | `llm.default` | enum | `groq` | Provider used when a request doesn't name one. |

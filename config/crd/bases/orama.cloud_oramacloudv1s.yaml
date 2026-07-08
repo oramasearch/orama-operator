@@ -804,26 +804,6 @@ spec:
                 - name
                 - role
                 type: object
-              secrets:
-                description: |-
-                  Secrets configures the External Secrets Operator backend. No secret
-                  values are ever set inline on this CR.
-                properties:
-                  backend:
-                    default: kubernetes
-                    description: 'Backend is the ESO provider: aws | gcp | vault |
-                      kubernetes.'
-                    enum:
-                    - aws
-                    - gcp
-                    - vault
-                    - kubernetes
-                    type: string
-                  storeRef:
-                    description: StoreRef names the (Cluster)SecretStore ESO should
-                      pull from.
-                    type: string
-                type: object
             required:
             - region
             type: object

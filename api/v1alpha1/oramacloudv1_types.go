@@ -29,10 +29,6 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:default={provider: none}
 	IDP IDPSpec `json:"idp,omitempty"`
 
-	// Secrets configures the External Secrets Operator backend. No secret
-	// values are ever set inline on this CR.
-	Secrets SecretsSpec `json:"secrets,omitempty"`
-
 	// Images sets the default registry/tag and per-component image overrides.
 	// Defaults reuse the published oramasearch/* images.
 	Images ImagesSpec `json:"images,omitempty"`
@@ -84,18 +80,6 @@ type IDPSpec struct {
 	// provider config (e.g. Firebase service account, Clerk keys). Ignored for "none".
 	// +optional
 	ConfigSecretRef *corev1.LocalObjectReference `json:"configSecretRef,omitempty"`
-}
-
-// SecretsSpec configures External Secrets Operator.
-type SecretsSpec struct {
-	// Backend is the ESO provider: aws | gcp | vault | kubernetes.
-	// +kubebuilder:validation:Enum=aws;gcp;vault;kubernetes
-	// +kubebuilder:default=kubernetes
-	Backend string `json:"backend,omitempty"`
-
-	// StoreRef names the (Cluster)SecretStore ESO should pull from.
-	// +optional
-	StoreRef string `json:"storeRef,omitempty"`
 }
 
 // ImagesSpec sets default and per-component images.
