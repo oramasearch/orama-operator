@@ -26,11 +26,12 @@ kubectl get ocv1 -A -w                              # operator reconciles the wh
 ```
 
 - **`helmfile.yaml`** composes the upstream **platform operators** the stack builds on
-  (Knative Serving, External Secrets, CloudNativePG, RabbitMQ, …) + this operator
-  chart — each toggleable so you skip whatever your cluster already has.
+  (External Secrets, CloudNativePG, RabbitMQ operator, …) + this operator chart —
+  each toggleable so you skip whatever your cluster already has.
 - The **chart** installs only the **operator + CRDs + RBAC** (self-contained).
 - The **operator** reconciles one `OramaCloudV1` CR into every child workload
-  (Deployments / StatefulSets / Knative Services / ExternalSecrets / dependency CRs).
+  (Deployments / StatefulSets / ExternalSecrets / dependency CRs) **and** the
+  Cloudflare DNS + Load Balancing (via the CF API).
 
 ## The `OramaCloudV1` CR (one per cluster)
 
@@ -40,12 +41,14 @@ Everything is configured on one resource. Highlights (full schema in
 | Field | Purpose |
 |---|---|
 | `spec.region.role` | `primary` (write path + stateful stores) or `read` (regional read tier) |
+| `spec.profile` | `light \| medium \| heavy` — presets replication + sizing |
 | `spec.idp.provider` | `none \| keycloak \| firebase \| clerk` |
 | `spec.secrets.backend` | External Secrets Operator backend (`aws \| gcp \| vault \| kubernetes`) |
 | `spec.llm.provider` | `vllm \| groq \| openai \| anthropic` |
-| `spec.components.*` | per-component enable + `in-cluster \| external` for each data store |
-| `spec.components.engine.writer.gpu` | request `nvidia.com/gpu` for the writer (prod: L40S) |
-| `spec.components.workers.runtime` | `workerd` (faithful) or `node` (ported) for the CF workers |
+| `spec.cloudflare` | operator manages CF **DNS + Load Balancing** via the CF API (default on) |
+| `spec.components.*` | per-component enable + `in-cluster \| external`, `placement: local \| central`, `replicate` |
+| `spec.components.engine.writer.gpu` | request `nvidia.com/gpu` for the writer's built-in embeddings (prod: L40S) |
+| `spec.components.workers` | all ported CF workers bundled into one image → one Deployment |
 | `spec.peers` | endpoints of the other regions (read tiers → primary); no mesh |
 | `spec.demoSeed` | seed a demo project+index so a fresh install answers queries |
 

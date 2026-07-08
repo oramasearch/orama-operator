@@ -17,7 +17,7 @@ this repo is the **k8s-native re-packaging** of that system.
 - **Install chart** (`chart/`) — self-contained; its *only* job is to install the
   **operator + CRDs + RBAC**. It does **not** deploy the app; the operator does.
 - **`helmfile.yaml`** (repo root) — the **composition layer**: installs the upstream
-  **platform operators** (Knative, External Secrets, CloudNativePG, RabbitMQ, …) +
+  **platform operators** (External Secrets, CloudNativePG, RabbitMQ operator, …) +
   this operator chart, each toggleable (`installed:`) so a cluster that already has
   them skips them. This is the "reuse OSS charts / helmfile" decision.
 
@@ -37,15 +37,16 @@ kubectl apply OramaCloudV1 (one per cluster)  ─▶  operator reconciles the wh
 | 2 | **Deliverable** | A **kubebuilder operator** (Go) + a thin **install Helm chart** that launches it. |
 | 3 | **CRD granularity** | **One umbrella CRD** `OramaCloudV1` (finer per-component CRDs may come later). |
 | 4 | **Region model** | **Configurable** per cluster via `spec.region.role: primary \| read`. Multiple releases across `us-east / eu / ap` that talk to each other. |
-| 5 | **Cloud functions** | **Knative Serving** — `index-builder` (was GCP Cloud Run) + the ported Cloudflare Workers run as Knative Services (scale-to-zero). |
-| 6 | **Edge / geo-LB** | **Cloudflare** stays as the **geo load-balancer** (DNS + steering) in front of each cluster's ingress. Worker *logic* moves in-cluster. |
+| 5 | **Cloud functions** | **Plain Deployments** (no Knative for now). The ported Cloudflare Workers are **bundled into ONE image** run as a single Deployment; `index-builder` (was GCP Cloud Run) is its own Deployment. |
+| 6 | **Edge / geo-LB** | **Cloudflare is permanent** — **DNS + Load Balancing (geo-steering)** always live there, and the **operator reconciles them via the Cloudflare API** (`spec.cloudflare`, default on). Worker *logic* runs in-cluster. |
 | 7 | **Managed SaaS** | Brought **in-cluster** via upstream operators/charts: Postgres (CloudNativePG), ClickHouse (Altinity operator), Redis, RabbitMQ (cluster-operator), Typesense, Mongo (HARVEST). Each is toggleable to `external` (point at real SaaS). |
 | 8 | **Auth / IdP** | **Configurable**: `spec.idp: none \| keycloak \| firebase \| clerk`. |
 | 9 | **Secrets** | **External Secrets Operator** (`spec.secrets.backend`). No plaintext in the CR. |
 | 10 | **Images** | **Reuse** published `oramasearch/*` images (no build-from-source in this repo). |
 | 11 | **Cross-cluster net** | **No service mesh** for now — read tiers reach the primary via configured endpoints (`spec.peers`) over public ingress + mTLS. |
 | 12 | **"Working" bar** | Operator optionally **seeds a demo project+index** (`spec.demoSeed`) so a fresh install answers queries out of the box. |
-| 13 | **GPU / LLM** | Writer requests `nvidia.com/gpu` (nodeSelector+toleration; CPU-embeddings toggle). LLM `spec.llm.provider: vllm \| groq \| openai \| anthropic` (in-cluster vLLM optional). |
+| 13 | **GPU / LLM** | The **writer** requests `nvidia.com/gpu` only for its **built-in embeddings** (ONNX+CUDA; set `writer.gpu: false` for CPU on a non-GPU node). The *other* GPU consumer is an optional in-cluster **vLLM** (`spec.llm.gpu`). LLM `spec.llm.provider: vllm \| groq \| openai \| anthropic`. |
+| 14 | **Profiles / replication** | `spec.profile: light \| medium \| heavy` presets replication + sizing (light=dev/no-repl, medium=single-tenant prod, heavy=multi-tenant). Per-store override: `placement: local \| central` (e.g. RabbitMQ **central** = one cluster hosts it) + `replicate` (e.g. Postgres read-replica on read tiers). |
 
 ## Region topology (mirror-prod default)
 
@@ -84,8 +85,9 @@ install uses `role=primary` with everything enabled.
 | RabbitMQ | RabbitMQ | **rabbitmq-cluster-operator** |
 | Typesense hosted-search | Typesense | community chart |
 | HARVEST (crawler + Mongo) | Deploy + Mongo + Selenium | our operator + bitnami/mongodb |
-| index-builder (Cloud Run) | **Knative Service** | our operator + Knative |
-| Cloudflare Workers | **Knative Services** (ported) | our operator + Knative |
+| index-builder (Cloud Run) | **Deployment** | our operator |
+| Cloudflare Workers | **one bundled image** → single `Deployment` | our operator |
+| Cloudflare DNS + Load Balancing | reconciled via the **CF API** (not in-cluster) | our operator |
 | HPES embeddings | `Deployment` (GPU optional) | our operator |
 | DISCO semantic cache | `StatefulSet` + gRPC embeddings | our operator |
 | Dashboard (Vercel/Next.js) | `Deployment` + Ingress | our operator |
@@ -101,16 +103,21 @@ install uses `role=primary` with everything enabled.
    which the boxes actually run.
 2. **Embeddings placement** — writer built-in GPU embeddings vs a separate HPES
    Deployment vs remote. Default: built-in on the writer; HPES optional.
-3. **Worker port strategy** — run the Cloudflare Workers on `workerd` containers
-   (faithful, needs KV/R2/DO shims) vs port each to a plain Node Knative Service
-   (portable). Default per-worker; DISCO/telemetry/segmenter port cleanly.
-4. **KV / R2 / Queues / Durable-Objects shims** — back CF bindings with in-cluster
-   equivalents (KV→Redis, R2→MinIO, Queues→RabbitMQ, DO→a stateful shim).
+3. **Worker bundle internals** — the decision is **one Node image, one Deployment**
+   for all ported workers. Open: how the bundle multiplexes the worker routes
+   (a single Node/Hono server with per-worker handlers) and which workers are
+   trivial ports vs need real logic.
+4. **KV / R2 / Queues / Durable-Objects shims** — back the CF bindings the ported
+   workers used with in-cluster equivalents (KV→Redis, R2→MinIO/S3, Queues→RabbitMQ,
+   Durable Objects→a stateful shim).
 5. **Cross-cluster replication transport** — Postgres streaming + OramaCore's
    RabbitMQ-stream replication over public ingress + mTLS (no mesh); confirm ports.
 
 ## Status
 
-🚧 **Scaffold** — API types + install chart + samples + this design. The controller
-reconcile logic and CRD codegen (`make manifests`) are built next (needs Go +
-kubebuilder + controller-gen on the build machine / CI).
+🚧 **Scaffold — compiles.** API types, generated **CRD** (`config/crd/bases/` +
+`chart/crds/`) + DeepCopy, the manager entrypoint, install chart, helmfile, and
+samples are in place; `go build ./...` and `go vet ./...` are green. **Next:** the
+per-component **reconcile logic** in `internal/controller/` (start with the engine:
+writer StatefulSet + readers + Envoy), then the Cloudflare API reconciler, then the
+data-store operators. Optionally dry-run/install on the AKS test cluster.

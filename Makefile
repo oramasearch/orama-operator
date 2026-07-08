@@ -3,7 +3,7 @@
 # installed on the doc-authoring machine; run these in CI or a Go dev env.
 
 IMG ?= oramasearch/orama-cloud-v1-operator:latest
-CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen
+CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@latest
 
 .PHONY: manifests generate fmt vet build docker-build helm-package test
 

@@ -6,27 +6,34 @@ spec:
   region:
     name: us-east
     role: primary          # write path + stateful stores live here
+  profile: medium          # light (dev) | medium (single-tenant prod) | heavy (multi-tenant)
   idp:
     provider: keycloak     # none | keycloak | firebase | clerk
   secrets:
-    backend: aws           # External Secrets Operator backend
+    backend: aws
     storeRef: orama-secretstore
   llm:
     provider: groq         # vllm | groq | openai | anthropic
     apiKeySecretRef: { name: groq-api-key }
+  cloudflare:              # DNS + geo load-balancing always live in Cloudflare
+    enabled: true
+    zoneID: REPLACE_ME
+    apiTokenSecretRef: { name: cloudflare-api-token }
+    manageDNS: true
+    manageLoadBalancers: true
   demoSeed: true
   components:
     engine:
       enabled: true
-      writer: { gpu: true }
+      writer: { gpu: true }   # built-in embeddings on GPU; set false for CPU on a non-GPU node
       reader: { replicas: 3, hpa: { minReplicas: 3, maxReplicas: 8, targetCPUUtilization: 70 } }
       envoy: true
     dashboard: { enabled: true, host: app.example.com }
-    ingestion: { enabled: true, harvest: true, indexBuilderKnative: true }
-    controlDB: { enabled: true, mode: in-cluster }   # CloudNativePG
-    analytics: { enabled: true, mode: in-cluster }   # ClickHouse
-    cache:     { enabled: true, mode: in-cluster }   # Redis
-    broker:    { enabled: true, mode: in-cluster }   # RabbitMQ
-    search:    { enabled: true, mode: in-cluster }   # Typesense
+    ingestion: { enabled: true, harvest: true }     # index-builder = plain Deployment
+    controlDB: { enabled: true, mode: in-cluster }  # CloudNativePG (primary)
+    analytics: { enabled: true, mode: in-cluster }  # ClickHouse
+    cache:     { enabled: true, mode: in-cluster }  # Redis
+    broker:    { enabled: true, mode: in-cluster, placement: central }  # RabbitMQ hosted here for all regions
+    search:    { enabled: true, mode: in-cluster }  # Typesense
     disco:     { enabled: true }
-    workers:   { enabled: true, runtime: node, knative: true }
+    workers:   { enabled: true, replicas: 2 }        # all workers bundled in one image

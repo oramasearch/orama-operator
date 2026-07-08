@@ -6,11 +6,18 @@ spec:
   region:
     name: eu
     role: read             # regional read tier; points at the primary
+  profile: medium
   idp:
     provider: keycloak
   secrets:
     backend: aws
     storeRef: orama-secretstore
+  cloudflare:
+    enabled: true
+    zoneID: REPLACE_ME
+    apiTokenSecretRef: { name: cloudflare-api-token }
+    manageDNS: true          # adds eu DNS + a Cloudflare LB pool member for geo-steering
+    manageLoadBalancers: true
   peers:
     - name: us-east
       region: us-east
@@ -22,12 +29,12 @@ spec:
       reader: { replicas: 3 }
       envoy: true
     dashboard: { enabled: true, host: eu.app.example.com }
-    controlDB: { enabled: true, mode: in-cluster }   # streams from the primary
+    controlDB: { enabled: true, mode: in-cluster, replicate: true }  # streams from the primary
     cache:     { enabled: true, mode: in-cluster }
+    broker:    { enabled: true, mode: external, placement: central, endpoint: rabbit.us-east.example.com:5672 }
     # write-path components disabled on a read tier:
     ingestion: { enabled: false }
     analytics: { enabled: false }
-    broker:    { enabled: false }
     search:    { enabled: false }
     disco:     { enabled: true }
-    workers:   { enabled: true, runtime: node, knative: true }
+    workers:   { enabled: true, replicas: 2 }

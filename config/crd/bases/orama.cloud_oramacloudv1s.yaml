@@ -1,0 +1,888 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: oramacloudv1s.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    categories:
+    - orama
+    kind: OramaCloudV1
+    listKind: OramaCloudV1List
+    plural: oramacloudv1s
+    shortNames:
+    - ocv1
+    singular: oramacloudv1
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.region.name
+      name: Region
+      type: string
+    - jsonPath: .spec.region.role
+      name: Role
+      type: string
+    - jsonPath: .spec.profile
+      name: Profile
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: OramaCloudV1 is one regional deployment of the entire Orama Cloud
+          v1 stack.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              OramaCloudV1Spec describes one regional deployment of the entire Orama Cloud v1
+              stack. One CR per cluster; region role selects the write path vs read tier.
+            properties:
+              cloudflare:
+                description: |-
+                  Cloudflare keeps Cloudflare as the edge / geo load-balancer; the operator
+                  reconciles CF resources (DNS records, worker routes) via the CF API based on
+                  this config — provisioning/deprovisioning as components change.
+                properties:
+                  accountID:
+                    type: string
+                  apiTokenSecretRef:
+                    description: APITokenSecretRef holds the Cloudflare API token
+                      (ESO-materialized).
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  enabled:
+                    default: true
+                    description: |-
+                      Enabled defaults true — the operator manages Cloudflare by default. Set false
+                      only to opt this cluster out of operator-managed CF (rare).
+                    type: boolean
+                  manageDNS:
+                    default: true
+                    description: 'ManageDNS: create/update DNS records pointing at
+                      this cluster''s ingress.'
+                    type: boolean
+                  manageLoadBalancers:
+                    default: true
+                    description: |-
+                      ManageLoadBalancers: reconcile Cloudflare Load Balancing — geo-steered pools
+                      across the regional clusters + health checks. This is the geo load-balancer.
+                    type: boolean
+                  manageWorkerRoutes:
+                    description: |-
+                      ManageWorkerRoutes: reconcile CF Worker routes for any workers kept on CF
+                      rather than the in-cluster bundle.
+                    type: boolean
+                  zoneID:
+                    description: ZoneID / AccountID the operator manages.
+                    type: string
+                type: object
+              components:
+                description: |-
+                  Components toggles + configures each part of the stack. Any component can be
+                  enabled/disabled independently.
+                properties:
+                  analytics:
+                    description: |-
+                      DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
+                      operator/chart), pointed at an external endpoint, or centrally located.
+                    properties:
+                      credentialsSecretRef:
+                        description: CredentialsSecretRef (ExternalSecret-materialized)
+                          when Mode=external.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      enabled:
+                        default: true
+                        type: boolean
+                      endpoint:
+                        description: Endpoint (host:port or URL) when Mode=external
+                          or Placement=central.
+                        type: string
+                      mode:
+                        default: in-cluster
+                        description: 'Mode: "in-cluster" (operator provisions it)
+                          or "external" (use Endpoint).'
+                        enum:
+                        - in-cluster
+                        - external
+                        type: string
+                      placement:
+                        default: local
+                        description: |-
+                          Placement: "local" (run in every cluster) or "central" (only the primary runs
+                          it; other clusters reference it via Endpoint). e.g. broker = central so one
+                          cluster hosts RabbitMQ. Set by spec.profile unless overridden.
+                        enum:
+                        - local
+                        - central
+                        type: string
+                      replicate:
+                        description: |-
+                          Replicate: for a read tier, stream/replicate this store from the primary
+                          (e.g. Postgres read replica). Ignored on the primary. Set by spec.profile.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  broker:
+                    description: |-
+                      DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
+                      operator/chart), pointed at an external endpoint, or centrally located.
+                    properties:
+                      credentialsSecretRef:
+                        description: CredentialsSecretRef (ExternalSecret-materialized)
+                          when Mode=external.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      enabled:
+                        default: true
+                        type: boolean
+                      endpoint:
+                        description: Endpoint (host:port or URL) when Mode=external
+                          or Placement=central.
+                        type: string
+                      mode:
+                        default: in-cluster
+                        description: 'Mode: "in-cluster" (operator provisions it)
+                          or "external" (use Endpoint).'
+                        enum:
+                        - in-cluster
+                        - external
+                        type: string
+                      placement:
+                        default: local
+                        description: |-
+                          Placement: "local" (run in every cluster) or "central" (only the primary runs
+                          it; other clusters reference it via Endpoint). e.g. broker = central so one
+                          cluster hosts RabbitMQ. Set by spec.profile unless overridden.
+                        enum:
+                        - local
+                        - central
+                        type: string
+                      replicate:
+                        description: |-
+                          Replicate: for a read tier, stream/replicate this store from the primary
+                          (e.g. Postgres read replica). Ignored on the primary. Set by spec.profile.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  cache:
+                    description: |-
+                      DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
+                      operator/chart), pointed at an external endpoint, or centrally located.
+                    properties:
+                      credentialsSecretRef:
+                        description: CredentialsSecretRef (ExternalSecret-materialized)
+                          when Mode=external.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      enabled:
+                        default: true
+                        type: boolean
+                      endpoint:
+                        description: Endpoint (host:port or URL) when Mode=external
+                          or Placement=central.
+                        type: string
+                      mode:
+                        default: in-cluster
+                        description: 'Mode: "in-cluster" (operator provisions it)
+                          or "external" (use Endpoint).'
+                        enum:
+                        - in-cluster
+                        - external
+                        type: string
+                      placement:
+                        default: local
+                        description: |-
+                          Placement: "local" (run in every cluster) or "central" (only the primary runs
+                          it; other clusters reference it via Endpoint). e.g. broker = central so one
+                          cluster hosts RabbitMQ. Set by spec.profile unless overridden.
+                        enum:
+                        - local
+                        - central
+                        type: string
+                      replicate:
+                        description: |-
+                          Replicate: for a read tier, stream/replicate this store from the primary
+                          (e.g. Postgres read replica). Ignored on the primary. Set by spec.profile.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  controlDB:
+                    description: |-
+                      DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
+                      operator/chart), pointed at an external endpoint, or centrally located.
+                    properties:
+                      credentialsSecretRef:
+                        description: CredentialsSecretRef (ExternalSecret-materialized)
+                          when Mode=external.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      enabled:
+                        default: true
+                        type: boolean
+                      endpoint:
+                        description: Endpoint (host:port or URL) when Mode=external
+                          or Placement=central.
+                        type: string
+                      mode:
+                        default: in-cluster
+                        description: 'Mode: "in-cluster" (operator provisions it)
+                          or "external" (use Endpoint).'
+                        enum:
+                        - in-cluster
+                        - external
+                        type: string
+                      placement:
+                        default: local
+                        description: |-
+                          Placement: "local" (run in every cluster) or "central" (only the primary runs
+                          it; other clusters reference it via Endpoint). e.g. broker = central so one
+                          cluster hosts RabbitMQ. Set by spec.profile unless overridden.
+                        enum:
+                        - local
+                        - central
+                        type: string
+                      replicate:
+                        description: |-
+                          Replicate: for a read tier, stream/replicate this store from the primary
+                          (e.g. Postgres read replica). Ignored on the primary. Set by spec.profile.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  dashboard:
+                    description: ToggleWithHost is a toggle plus an ingress host.
+                    properties:
+                      enabled:
+                        default: true
+                        type: boolean
+                      host:
+                        type: string
+                    required:
+                    - enabled
+                    type: object
+                  disco:
+                    description: Toggle is a simple on/off component.
+                    properties:
+                      enabled:
+                        default: true
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  engine:
+                    description: EngineSpec configures the OramaCore engine.
+                    properties:
+                      enabled:
+                        default: true
+                        type: boolean
+                      envoy:
+                        default: true
+                        description: Envoy enables the per-reader :80->:8080 reverse
+                          proxy (matches prod).
+                        type: boolean
+                      reader:
+                        properties:
+                          hpa:
+                            description: HPA autoscales readers on load when set.
+                            properties:
+                              maxReplicas:
+                                format: int32
+                                type: integer
+                              minReplicas:
+                                format: int32
+                                type: integer
+                              targetCPUUtilization:
+                                format: int32
+                                type: integer
+                            type: object
+                          replicas:
+                            default: 3
+                            format: int32
+                            type: integer
+                          resources:
+                            description: ResourceRequirements describes the compute
+                              resource requirements.
+                            properties:
+                              claims:
+                                description: |-
+                                  Claims lists the names of resources, defined in spec.resourceClaims,
+                                  that are used by this container.
+
+                                  This is an alpha field and requires enabling the
+                                  DynamicResourceAllocation feature gate.
+
+                                  This field is immutable. It can only be set for containers.
+                                items:
+                                  description: ResourceClaim references one entry
+                                    in PodSpec.ResourceClaims.
+                                  properties:
+                                    name:
+                                      description: |-
+                                        Name must match the name of one entry in pod.spec.resourceClaims of
+                                        the Pod where this field is used. It makes that resource available
+                                        inside a container.
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
+                              limits:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Limits describes the maximum amount of compute resources allowed.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                              requests:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Requests describes the minimum amount of compute resources required.
+                                  If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                  otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                            type: object
+                        type: object
+                      writer:
+                        properties:
+                          gpu:
+                            default: true
+                            description: |-
+                              GPU requests nvidia.com/gpu for the writer's BUILT-IN embeddings generation
+                              (ONNX Runtime + CUDA; prod: L40S). Set false to use CPU embeddings or a remote
+                              embeddings server. (This is the main reason a GPU node is needed at all; the
+                              other is an in-cluster vLLM — see spec.llm.gpu.)
+                            type: boolean
+                          nodeSelector:
+                            additionalProperties:
+                              type: string
+                            description: NodeSelector/Tolerations for GPU node placement.
+                            type: object
+                          resources:
+                            description: Resources overrides the writer pod resources.
+                            properties:
+                              claims:
+                                description: |-
+                                  Claims lists the names of resources, defined in spec.resourceClaims,
+                                  that are used by this container.
+
+                                  This is an alpha field and requires enabling the
+                                  DynamicResourceAllocation feature gate.
+
+                                  This field is immutable. It can only be set for containers.
+                                items:
+                                  description: ResourceClaim references one entry
+                                    in PodSpec.ResourceClaims.
+                                  properties:
+                                    name:
+                                      description: |-
+                                        Name must match the name of one entry in pod.spec.resourceClaims of
+                                        the Pod where this field is used. It makes that resource available
+                                        inside a container.
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
+                              limits:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Limits describes the maximum amount of compute resources allowed.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                              requests:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Requests describes the minimum amount of compute resources required.
+                                  If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                  otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                            type: object
+                          tolerations:
+                            items:
+                              description: |-
+                                The pod this Toleration is attached to tolerates any taint that matches
+                                the triple <key,value,effect> using the matching operator <operator>.
+                              properties:
+                                effect:
+                                  description: |-
+                                    Effect indicates the taint effect to match. Empty means match all taint effects.
+                                    When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                                  type: string
+                                key:
+                                  description: |-
+                                    Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                                    If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                                  type: string
+                                operator:
+                                  description: |-
+                                    Operator represents a key's relationship to the value.
+                                    Valid operators are Exists and Equal. Defaults to Equal.
+                                    Exists is equivalent to wildcard for value, so that a pod can
+                                    tolerate all taints of a particular category.
+                                  type: string
+                                tolerationSeconds:
+                                  description: |-
+                                    TolerationSeconds represents the period of time the toleration (which must be
+                                    of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                                    it is not set, which means tolerate the taint forever (do not evict). Zero and
+                                    negative values will be treated as 0 (evict immediately) by the system.
+                                  format: int64
+                                  type: integer
+                                value:
+                                  description: |-
+                                    Value is the taint value the toleration matches to.
+                                    If the operator is Exists, the value should be empty, otherwise just a regular string.
+                                  type: string
+                              type: object
+                            type: array
+                        type: object
+                    required:
+                    - enabled
+                    type: object
+                  ingestion:
+                    description: IngestionSpec configures the ingest path (index-builder
+                      as a plain Deployment + HARVEST).
+                    properties:
+                      enabled:
+                        default: true
+                        type: boolean
+                      harvest:
+                        default: true
+                        description: Harvest enables the crawler (Deployment + Mongo
+                          + Selenium grid).
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  search:
+                    description: |-
+                      DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
+                      operator/chart), pointed at an external endpoint, or centrally located.
+                    properties:
+                      credentialsSecretRef:
+                        description: CredentialsSecretRef (ExternalSecret-materialized)
+                          when Mode=external.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      enabled:
+                        default: true
+                        type: boolean
+                      endpoint:
+                        description: Endpoint (host:port or URL) when Mode=external
+                          or Placement=central.
+                        type: string
+                      mode:
+                        default: in-cluster
+                        description: 'Mode: "in-cluster" (operator provisions it)
+                          or "external" (use Endpoint).'
+                        enum:
+                        - in-cluster
+                        - external
+                        type: string
+                      placement:
+                        default: local
+                        description: |-
+                          Placement: "local" (run in every cluster) or "central" (only the primary runs
+                          it; other clusters reference it via Endpoint). e.g. broker = central so one
+                          cluster hosts RabbitMQ. Set by spec.profile unless overridden.
+                        enum:
+                        - local
+                        - central
+                        type: string
+                      replicate:
+                        description: |-
+                          Replicate: for a read tier, stream/replicate this store from the primary
+                          (e.g. Postgres read replica). Ignored on the primary. Set by spec.profile.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  workers:
+                    description: |-
+                      WorkersSpec configures the ported Cloudflare Workers, bundled into ONE image and
+                      run as a single Deployment (for now).
+                    properties:
+                      enabled:
+                        default: true
+                        type: boolean
+                      image:
+                        description: Image overrides the single image bundling all
+                          ported workers.
+                        type: string
+                      replicas:
+                        default: 2
+                        description: Replicas of the bundled workers Deployment.
+                        format: int32
+                        type: integer
+                    required:
+                    - enabled
+                    type: object
+                type: object
+              demoSeed:
+                description: |-
+                  DemoSeed, when true, has the operator seed a demo project + index so a
+                  fresh install answers queries out of the box.
+                type: boolean
+              idp:
+                default:
+                  provider: none
+                description: IDP selects the identity provider for the dashboard /
+                  customer auth.
+                properties:
+                  configSecretRef:
+                    description: |-
+                      ConfigSecretRef points at an ExternalSecret-materialized secret holding the
+                      provider config (e.g. Firebase service account, Clerk keys). Ignored for "none".
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  provider:
+                    default: none
+                    enum:
+                    - none
+                    - keycloak
+                    - firebase
+                    - clerk
+                    type: string
+                required:
+                - provider
+                type: object
+              images:
+                description: |-
+                  Images sets the default registry/tag and per-component image overrides.
+                  Defaults reuse the published oramasearch/* images.
+                properties:
+                  overrides:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Overrides maps a component key ("oramacore", "dashboard", "disco", ...) to a
+                      full image ref, bypassing registry/tag for that component.
+                    type: object
+                  registry:
+                    default: oramasearch
+                    type: string
+                  tag:
+                    default: latest
+                    type: string
+                type: object
+              llm:
+                default:
+                  provider: groq
+                description: LLM configures the answer/RAG language-model backend.
+                properties:
+                  apiKeySecretRef:
+                    description: APIKeySecretRef holds the provider API key (remote
+                      providers only).
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  gpu:
+                    description: GPU requests a GPU for the in-cluster vLLM (provider=vllm
+                      only).
+                    type: boolean
+                  model:
+                    description: Model name (provider-specific). For vllm this is
+                      the served HF model.
+                    type: string
+                  provider:
+                    default: groq
+                    enum:
+                    - vllm
+                    - groq
+                    - openai
+                    - anthropic
+                    type: string
+                required:
+                - provider
+                type: object
+              peers:
+                description: |-
+                  Peers lists the other regions (used by read tiers to reach the primary's
+                  writer + Postgres; and by the primary to know its replicas). No mesh.
+                items:
+                  description: PeerSpec identifies another region for cross-cluster
+                    wiring (no mesh).
+                  properties:
+                    name:
+                      type: string
+                    postgresEndpoint:
+                      description: PostgresEndpoint is the primary's control-plane
+                        DB (for replica streaming).
+                      type: string
+                    region:
+                      type: string
+                    writerEndpoint:
+                      description: WriterEndpoint is the primary's OramaCore writer
+                        (read tiers write via this).
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              profile:
+                default: light
+                description: |-
+                  Profile applies a preset group of replication + sizing defaults, overridable
+                  per component:
+                    light  = no replication, single-cluster / dev
+                    medium = single-tenant dedicated (prod) settings
+                    heavy  = multi-tenant prod
+                enum:
+                - light
+                - medium
+                - heavy
+                type: string
+              region:
+                description: Region selects this cluster's role in the multi-region
+                  topology.
+                properties:
+                  name:
+                    description: Name is a human label for this region (e.g. "us-east",
+                      "eu", "ap").
+                    type: string
+                  role:
+                    default: primary
+                    description: |-
+                      Role is "primary" (runs the write path + stateful stores) or "read"
+                      (regional read tier that points at the primary via .spec.peers).
+                    enum:
+                    - primary
+                    - read
+                    type: string
+                required:
+                - name
+                - role
+                type: object
+              secrets:
+                description: |-
+                  Secrets configures the External Secrets Operator backend. No secret
+                  values are ever set inline on this CR.
+                properties:
+                  backend:
+                    default: kubernetes
+                    description: 'Backend is the ESO provider: aws | gcp | vault |
+                      kubernetes.'
+                    enum:
+                    - aws
+                    - gcp
+                    - vault
+                    - kubernetes
+                    type: string
+                  storeRef:
+                    description: StoreRef names the (Cluster)SecretStore ESO should
+                      pull from.
+                    type: string
+                type: object
+            required:
+            - region
+            type: object
+          status:
+            description: OramaCloudV1Status is the observed state.
+            properties:
+              componentsReady:
+                description: ComponentsReady counts reconciled/ready child components.
+                type: string
+              conditions:
+                description: Conditions follows the standard k8s condition convention.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: 'Phase: Pending | Provisioning | Ready | Degraded.'
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

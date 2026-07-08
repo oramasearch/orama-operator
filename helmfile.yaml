@@ -3,10 +3,9 @@
 #        helmfile -l app=orama-cloud-v1-operator apply   (just our operator)
 #
 # Toggle any platform operator your cluster already provides to installed: false.
+# (No Knative — the cloud functions run as plain Deployments.)
 
 repositories:
-  - name: knative-operator
-    url: https://knative.github.io/operator
   - name: external-secrets
     url: https://charts.external-secrets.io
   - name: cnpg
@@ -18,18 +17,12 @@ environments:
   default:
     values:
       - platformDeps:
-          knative: true
           externalSecrets: true
           cloudnativePG: true
           rabbitmq: true
 
 releases:
   # ---- platform operators (building blocks the v1 operator reconciles against) ----
-  - name: knative-operator
-    namespace: knative-operator
-    chart: knative-operator/knative-operator
-    installed: {{ .Values.platformDeps.knative }}
-
   - name: external-secrets
     namespace: external-secrets
     chart: external-secrets/external-secrets
@@ -57,4 +50,3 @@ releases:
       app: orama-cloud-v1-operator
     needs:
       - external-secrets/external-secrets
-      - knative-operator/knative-operator

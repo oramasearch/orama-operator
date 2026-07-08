@@ -16,6 +16,15 @@ type OramaCloudV1Spec struct {
 	// Region selects this cluster's role in the multi-region topology.
 	Region RegionSpec `json:"region"`
 
+	// Profile applies a preset group of replication + sizing defaults, overridable
+	// per component:
+	//   light  = no replication, single-cluster / dev
+	//   medium = single-tenant dedicated (prod) settings
+	//   heavy  = multi-tenant prod
+	// +kubebuilder:validation:Enum=light;medium;heavy
+	// +kubebuilder:default=light
+	Profile string `json:"profile,omitempty"`
+
 	// IDP selects the identity provider for the dashboard / customer auth.
 	// +kubebuilder:default={provider: none}
 	IDP IDPSpec `json:"idp,omitempty"`
@@ -32,7 +41,14 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:default={provider: groq}
 	LLM LLMSpec `json:"llm,omitempty"`
 
-	// Components toggles + configures each part of the stack.
+	// Cloudflare keeps Cloudflare as the edge / geo load-balancer; the operator
+	// reconciles CF resources (DNS records, worker routes) via the CF API based on
+	// this config — provisioning/deprovisioning as components change.
+	// +optional
+	Cloudflare CloudflareSpec `json:"cloudflare,omitempty"`
+
+	// Components toggles + configures each part of the stack. Any component can be
+	// enabled/disabled independently.
 	Components ComponentsSpec `json:"components,omitempty"`
 
 	// Peers lists the other regions (used by read tiers to reach the primary's
@@ -110,24 +126,53 @@ type LLMSpec struct {
 	GPU bool `json:"gpu,omitempty"`
 }
 
+// CloudflareSpec configures the operator's Cloudflare API reconciler. DNS + load
+// balancing ALWAYS live in Cloudflare (the permanent edge / geo-LB); the operator
+// provisions/deprovisions those CF resources as this cluster's components change.
+type CloudflareSpec struct {
+	// Enabled defaults true — the operator manages Cloudflare by default. Set false
+	// only to opt this cluster out of operator-managed CF (rare).
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+	// APITokenSecretRef holds the Cloudflare API token (ESO-materialized).
+	// +optional
+	APITokenSecretRef *corev1.LocalObjectReference `json:"apiTokenSecretRef,omitempty"`
+	// ZoneID / AccountID the operator manages.
+	// +optional
+	ZoneID string `json:"zoneID,omitempty"`
+	// +optional
+	AccountID string `json:"accountID,omitempty"`
+	// ManageDNS: create/update DNS records pointing at this cluster's ingress.
+	// +kubebuilder:default=true
+	ManageDNS bool `json:"manageDNS,omitempty"`
+	// ManageLoadBalancers: reconcile Cloudflare Load Balancing — geo-steered pools
+	// across the regional clusters + health checks. This is the geo load-balancer.
+	// +kubebuilder:default=true
+	ManageLoadBalancers bool `json:"manageLoadBalancers,omitempty"`
+	// ManageWorkerRoutes: reconcile CF Worker routes for any workers kept on CF
+	// rather than the in-cluster bundle.
+	// +optional
+	ManageWorkerRoutes bool `json:"manageWorkerRoutes,omitempty"`
+}
+
 // ComponentsSpec toggles + configures each part of v1.
 type ComponentsSpec struct {
-	Engine     EngineSpec     `json:"engine,omitempty"`     // OramaCore writer + readers + Envoy
-	Dashboard  ToggleWithHost `json:"dashboard,omitempty"`  // app.orama.com (Next.js)
-	Ingestion  IngestionSpec  `json:"ingestion,omitempty"`  // index-builder (Knative) + HARVEST
-	Analytics  DataStoreSpec  `json:"analytics,omitempty"`  // ClickHouse
-	ControlDB  DataStoreSpec  `json:"controlDB,omitempty"`  // Postgres control plane
-	Cache      DataStoreSpec  `json:"cache,omitempty"`      // Redis (+ QStash shim)
-	Broker     DataStoreSpec  `json:"broker,omitempty"`     // RabbitMQ
-	Search     DataStoreSpec  `json:"search,omitempty"`     // Typesense hosted-search clusters
-	Disco      Toggle         `json:"disco,omitempty"`      // DISCO semantic cache
-	Workers    WorkersSpec    `json:"workers,omitempty"`    // Cloudflare Workers -> Knative
+	Engine    EngineSpec     `json:"engine,omitempty"`    // OramaCore writer + readers + Envoy
+	Dashboard ToggleWithHost `json:"dashboard,omitempty"` // app.orama.com (Next.js)
+	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
+	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
+	ControlDB DataStoreSpec  `json:"controlDB,omitempty"` // Postgres control plane
+	Cache     DataStoreSpec  `json:"cache,omitempty"`     // Redis (+ QStash shim)
+	Broker    DataStoreSpec  `json:"broker,omitempty"`    // RabbitMQ
+	Search    DataStoreSpec  `json:"search,omitempty"`    // Typesense hosted-search clusters
+	Disco     Toggle         `json:"disco,omitempty"`     // DISCO semantic cache
+	Workers   WorkersSpec    `json:"workers,omitempty"`   // the ported CF workers (one bundled image)
 }
 
 // EngineSpec configures the OramaCore engine.
 type EngineSpec struct {
 	// +kubebuilder:default=true
-	Enabled bool `json:"enabled"`
+	Enabled bool       `json:"enabled"`
 	Writer  WriterSpec `json:"writer,omitempty"`
 	Reader  ReaderSpec `json:"reader,omitempty"`
 	// Envoy enables the per-reader :80->:8080 reverse proxy (matches prod).
@@ -136,8 +181,10 @@ type EngineSpec struct {
 }
 
 type WriterSpec struct {
-	// GPU requests nvidia.com/gpu for on-box embeddings/inference (prod: L40S).
-	// Set false to use CPU embeddings or a remote embeddings server.
+	// GPU requests nvidia.com/gpu for the writer's BUILT-IN embeddings generation
+	// (ONNX Runtime + CUDA; prod: L40S). Set false to use CPU embeddings or a remote
+	// embeddings server. (This is the main reason a GPU node is needed at all; the
+	// other is an in-cluster vLLM — see spec.llm.gpu.)
 	// +kubebuilder:default=true
 	GPU bool `json:"gpu,omitempty"`
 	// Resources overrides the writer pod resources.
@@ -161,38 +208,35 @@ type ReaderSpec struct {
 }
 
 type HPASpec struct {
-	MinReplicas           int32 `json:"minReplicas,omitempty"`
-	MaxReplicas           int32 `json:"maxReplicas,omitempty"`
-	TargetCPUUtilization  int32 `json:"targetCPUUtilization,omitempty"`
+	MinReplicas          int32 `json:"minReplicas,omitempty"`
+	MaxReplicas          int32 `json:"maxReplicas,omitempty"`
+	TargetCPUUtilization int32 `json:"targetCPUUtilization,omitempty"`
 }
 
-// IngestionSpec configures the ingest path (index-builder as a Knative Service + HARVEST).
+// IngestionSpec configures the ingest path (index-builder as a plain Deployment + HARVEST).
 type IngestionSpec struct {
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 	// Harvest enables the crawler (Deployment + Mongo + Selenium grid).
 	// +kubebuilder:default=true
 	Harvest bool `json:"harvest,omitempty"`
-	// IndexBuilderKnative runs index-builder as a scale-to-zero Knative Service.
-	// +kubebuilder:default=true
-	IndexBuilderKnative bool `json:"indexBuilderKnative,omitempty"`
 }
 
-// WorkersSpec configures the ported Cloudflare Workers.
+// WorkersSpec configures the ported Cloudflare Workers, bundled into ONE image and
+// run as a single Deployment (for now).
 type WorkersSpec struct {
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
-	// Runtime: "workerd" (faithful, needs binding shims) or "node" (ported services).
-	// +kubebuilder:validation:Enum=workerd;node
-	// +kubebuilder:default=node
-	Runtime string `json:"runtime,omitempty"`
-	// Knative runs each worker as a scale-to-zero Knative Service.
-	// +kubebuilder:default=true
-	Knative bool `json:"knative,omitempty"`
+	// Image overrides the single image bundling all ported workers.
+	// +optional
+	Image string `json:"image,omitempty"`
+	// Replicas of the bundled workers Deployment.
+	// +kubebuilder:default=2
+	Replicas int32 `json:"replicas,omitempty"`
 }
 
 // DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
-// operator/chart) or pointed at an external endpoint.
+// operator/chart), pointed at an external endpoint, or centrally located.
 type DataStoreSpec struct {
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
@@ -200,7 +244,17 @@ type DataStoreSpec struct {
 	// +kubebuilder:validation:Enum=in-cluster;external
 	// +kubebuilder:default=in-cluster
 	Mode string `json:"mode,omitempty"`
-	// Endpoint (host:port or URL) when Mode=external.
+	// Placement: "local" (run in every cluster) or "central" (only the primary runs
+	// it; other clusters reference it via Endpoint). e.g. broker = central so one
+	// cluster hosts RabbitMQ. Set by spec.profile unless overridden.
+	// +kubebuilder:validation:Enum=local;central
+	// +kubebuilder:default=local
+	Placement string `json:"placement,omitempty"`
+	// Replicate: for a read tier, stream/replicate this store from the primary
+	// (e.g. Postgres read replica). Ignored on the primary. Set by spec.profile.
+	// +optional
+	Replicate bool `json:"replicate,omitempty"`
+	// Endpoint (host:port or URL) when Mode=external or Placement=central.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 	// CredentialsSecretRef (ExternalSecret-materialized) when Mode=external.
@@ -224,11 +278,11 @@ type ToggleWithHost struct {
 
 // PeerSpec identifies another region for cross-cluster wiring (no mesh).
 type PeerSpec struct {
-	Name             string `json:"name"`
-	Region           string `json:"region,omitempty"`
+	Name   string `json:"name"`
+	Region string `json:"region,omitempty"`
 	// WriterEndpoint is the primary's OramaCore writer (read tiers write via this).
 	// +optional
-	WriterEndpoint   string `json:"writerEndpoint,omitempty"`
+	WriterEndpoint string `json:"writerEndpoint,omitempty"`
 	// PostgresEndpoint is the primary's control-plane DB (for replica streaming).
 	// +optional
 	PostgresEndpoint string `json:"postgresEndpoint,omitempty"`
@@ -252,8 +306,8 @@ type OramaCloudV1Status struct {
 // +kubebuilder:resource:shortName=ocv1,categories=orama
 // +kubebuilder:printcolumn:name="Region",type=string,JSONPath=`.spec.region.name`
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.region.role`
+// +kubebuilder:printcolumn:name="Profile",type=string,JSONPath=`.spec.profile`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.componentsReady`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // OramaCloudV1 is one regional deployment of the entire Orama Cloud v1 stack.
