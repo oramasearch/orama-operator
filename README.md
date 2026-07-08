@@ -10,10 +10,12 @@ It is the **k8s-native re-packaging** of the production system documented in
 [`techops-docs/docs/orama-cloud-v1/`](https://github.com/oramasearch/techops-docs/tree/main/docs/orama-cloud-v1).
 Read [`DESIGN.md`](DESIGN.md) for the architecture + the full decision log.
 
-> **Status: 🚧 scaffold.** The CRD API (`api/v1alpha1/`), the install chart
-> (`chart/`), samples, and the design are in place. The controller reconcile logic
-> and CRD codegen (`make manifests`) are the next build step and need Go +
-> controller-gen (run in CI or a Go dev env).
+> **Status: 🟢 all component reconcilers implemented + validated on AKS.** Every
+> component (engine, control-plane Postgres, the four data stores, ingestion, workers,
+> dashboard, DISCO, IdP, demoSeed) reconciles into the right topology and owner-GCs on
+> delete; the Cloudflare DNS reconciler is implemented but not yet live-tested.
+> Remaining work is **hardening** (real images, full config/secrets, HPA, Cloudflare
+> LB) — see [`docs/components.md`](docs/components.md).
 
 ## How it works
 

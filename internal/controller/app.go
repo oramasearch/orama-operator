@@ -25,6 +25,7 @@ type appDef struct {
 	port        int32
 	replicas    int32
 	env         []corev1.EnvVar
+	args        []string
 	ingressHost string
 }
 
@@ -48,6 +49,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 				Containers: []corev1.Container{{
 					Name:  def.component,
 					Image: def.image,
+					Args:  def.args,
 					Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
 					Env:   def.env,
 				}},

@@ -13,9 +13,11 @@ reconciler lands.
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
 | **broker** | `internal/controller/datastore.go` | RabbitMQ `StatefulSet` + Service (5672/15672), central placement | ✅ **done** (validated on AKS) |
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
-| disco | — | `StatefulSet` + embeddings sidecar | ⬜ todo |
+| **disco** | `internal/controller/disco.go` | `Deployment` (DISCO + embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
-| cloudflare | — | CF DNS + Load Balancing via the CF API (external) | ⬜ todo |
+| **cloudflare** | `internal/controller/cloudflare.go` | CF DNS record via the CF API (safe no-op until configured) | 🟡 **implemented** (not live-tested; LB pools are a follow-up) |
+| **idp** (keycloak) | `internal/controller/idp.go` | Keycloak `Deployment` + Service (when `idp.provider=keycloak`) | ✅ **done** (validated on AKS) |
+| **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
 
 ## engine (`internal/controller/engine.go`)
 
@@ -123,3 +125,33 @@ the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd the
 > needs porting to k8s Jobs (the master + Mongo + Selenium are here; the job spawner
 > is a follow-up). Dashboard/index-builder need their env + secret wiring
 > (control-plane DB URL, API keys) via ExternalSecrets.
+
+## DISCO (`disco.go`)
+
+A `Deployment` (in-memory → no PVC; restart cold-starts the cache) with two
+containers: the Go **DISCO** service (`:8080`) + a co-located gRPC **embeddings**
+sidecar (`:50051`), matching prod. Service on `:8080`. **Validated on AKS.**
+
+## IdP + demoSeed (`idp.go`)
+
+- **idp** — when `idp.provider=keycloak`, deploys **Keycloak** (`Deployment` + Service,
+  `start-dev`). `none`/`firebase`/`clerk` are external (nothing deployed). Validated on
+  AKS (Keycloak booted `1/1`). Admin creds are dev placeholders → ExternalSecrets in prod.
+- **demoSeed** — when `demoSeed: true`, creates a one-shot **Job** (create-if-absent).
+  Today it's a **placeholder** (echo); the real seed will create a demo
+  project+index+docs via the API once the engine is Ready. Validated on AKS (Job ran
+  to `Complete`).
+
+## Cloudflare (`cloudflare.go`) — 🟡 implemented, not live-tested
+
+Cloudflare stays the permanent edge/geo-LB; the operator reconciles CF **DNS** via the
+CF API (raw HTTP): it upserts a proxied record pointing `dashboard.host` at this
+cluster's ingress address. **Safe no-op** unless fully configured — `enabled` +
+`apiTokenSecretRef` (key `token`) present + `zoneID` + `manageDNS` + a resolvable
+ingress target. The no-op path is validated on AKS (loop stays green with `enabled`
+but no token).
+
+> **Follow-ups:** validate against a live Cloudflare account; add **Load Balancing**
+> (geo-steered pools + health checks across the regional clusters — the actual
+> geo-LB); deprovision records on teardown; surface the managed hostnames beyond just
+> the dashboard.

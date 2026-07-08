@@ -115,14 +115,19 @@ install uses `role=primary` with everything enabled.
 
 ## Status
 
-🚧 **Building — engine reconciler done + validated on AKS.** API types, generated
-CRD + DeepCopy, manager, install chart, helmfile, samples all in place (`go build` /
-`go vet` green). The **engine reconciler** (writer StatefulSet + readers + Envoy
-sidecar + Services + ConfigMap) is implemented and **verified on the live cluster**
-(creates the topology, sets `Phase`, owner-GC cleans up). Per-component status is
-tracked in [`docs/components.md`](docs/components.md). The **control-plane Postgres**
-reconciler (CloudNativePG `Cluster`) and the four **data stores** (Redis / RabbitMQ /
-ClickHouse / Typesense as single-node StatefulSets), plus **ingestion**
-(index-builder + HARVEST + Mongo + Selenium), the bundled **workers**, and the
-**dashboard** (+ Ingress) are all done + validated. **Next:** DISCO, the Cloudflare
-API reconciler (DNS + LB), the IdP shim, and `demoSeed`.
+🟢 **All component reconcilers implemented + validated on AKS.** API types, generated
+CRD + DeepCopy, manager, install chart, helmfile, samples in place (`go build` /
+`go vet` green). Every component reconciles into the right topology, sets `Phase`, and
+owner-GC cleans up on CR delete — verified on the live cluster:
+
+✅ engine (writer/readers/Envoy) · ✅ controlDB (CloudNativePG) · ✅ cache/broker/
+analytics/search (Redis/RabbitMQ/ClickHouse/Typesense) · ✅ ingestion (index-builder +
+HARVEST + Mongo + Selenium) · ✅ workers · ✅ dashboard (+ Ingress) · ✅ disco ·
+✅ idp (Keycloak) · ✅ demoSeed · 🟡 cloudflare (DNS via the CF API — implemented, not
+yet live-tested; LB pools a follow-up).
+
+Per-component detail + follow-ups: [`docs/components.md`](docs/components.md).
+**Remaining work is hardening, not new components:** real app images (most are
+placeholders), full config + ExternalSecrets wiring per component, readiness/HPA
+across the board, the Cloudflare live validation + Load Balancing, and the HARVEST
+job-spawner + replica-DB credentials.
