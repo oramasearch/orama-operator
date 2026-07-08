@@ -84,14 +84,37 @@ The full field reference is in [crd-reference.md](crd-reference.md); more sample
   `v1-engine-secret`, `v1-dashboard-secret`) seeded with dummy values. Edit them in
   place (the operator won't overwrite an existing secret), the operator
   won't overwrite them once created.
-- **Images** — most app images are placeholders (`oramasearch/<name>:latest`).
-  Override per component:
+- **Images** — `oramacore` reuses its published image; the components with **no** published
+  image (`embeddings-server-py`, `dashboard`, `orama-workers`, `harvest`, `disco`,
+  `index-builder`) are built from source by the bridge's
+  [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
+  tooling and pushed to **private Docker Hub** (`oramasearch/<name>:<tag>`). Build + push them
+  first — full procedure in the
+  [RUNBOOK](https://github.com/oramasearch/orama-cloud-v1-bridge/blob/main/build/images/RUNBOOK.md):
+  ```sh
+  REGISTRY=oramasearch TAG=v1-sandbox build/images/build.sh --push
+  ```
+  The images match the `oramasearch/<name>` default, so point the CR at them by **tag**, and —
+  because the repos are private — give it a pull secret:
+  ```sh
+  # create the pull secret once (read-only Docker Hub token)
+  kubectl create secret docker-registry oramasearch-dockerhub -n orama-system \
+    --docker-server=https://index.docker.io/v1/ \
+    --docker-username=<user> --docker-password=<read-only-token>
+  ```
+  ```yaml
+  spec:
+    images:
+      registry: oramasearch
+      tag: v1-sandbox
+      pullSecretName: oramasearch-dockerhub   # attached to every pod so it can pull the private images
+  ```
+  A per-component `overrides` entry still wins over `registry`/`tag`:
   ```yaml
   spec:
     images:
       overrides:
         dashboard: myregistry/dashboard:v1.2.3
-        index-builder: myregistry/index-builder:v1.2.3
   ```
 
 ## 5. Multi-region

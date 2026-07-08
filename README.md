@@ -14,8 +14,12 @@ Read [`DESIGN.md`](DESIGN.md) for the architecture + the full decision log.
 > component (engine, control-plane Postgres, the four data stores, ingestion, workers,
 > dashboard, DISCO, IdP, demoSeed) reconciles into the right topology and owner-GCs on
 > delete; the Cloudflare DNS reconciler is implemented but not yet live-tested.
-> Remaining work is **hardening** (real images, full config/secrets, HPA, Cloudflare
-> LB) — see [`docs/components.md`](docs/components.md).
+> Component images are built from source by the bridge's
+> [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
+> tooling and pushed to **private Docker Hub** — set `spec.images.tag` +
+> `spec.images.pullSecretName` ([install §4](docs/install.md#4-override-the-dummy-secrets--images-for-real-use)).
+> Remaining work is **hardening** (full config/secrets, HPA, Cloudflare LB, the
+> workers-bundle in-cluster wiring) — see [`docs/components.md`](docs/components.md).
 
 ## How it works
 
