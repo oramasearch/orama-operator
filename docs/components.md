@@ -63,8 +63,18 @@ Driven by `spec.region.role`:
   `oramacore` container **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
   127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set.
   Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
-- **Config** — a `ConfigMap` with `envoy.yaml` + a minimal `config.yaml` (`provider:
-  cpu|local` from `writer.gpu`). All children set an owner reference to the CR, so
+- **Embeddings ai-server** — a co-located `embeddings` sidecar (gRPC on `:50051`) on
+  both writer and readers, so the config's `ai_server.host` points at `127.0.0.1`
+  (matches prod's engine↔embeddings co-location).
+- **Config** — a `ConfigMap` with `envoy.yaml` + a **full, valid** `config.yaml`
+  (`http` / `writer_side` / `reader_side` / `ai_server` / `log`, matching
+  `oramacore/config-docker.yaml`; `execution_providers: CUDA|CPU` from `writer.gpu`).
+  The `config.yaml` is a **template** — `master_api_key` is a `__MASTER_API_KEY__`
+  placeholder, so **no credential lives in the ConfigMap**. A `render-config` **init
+  container** substitutes the real value from `<cr>-engine-secret` (via `envFrom`) into
+  a shared `emptyDir`, and OramaCore reads it via `CONFIG_PATH=/etc/oramacore/config.yaml`
+  (env override can't reach the nested `writer_side.master_api_key` — `config`'s
+  `ORAMACORE_` provider splits on `_`). All children set an owner reference to the CR, so
   deleting the CR cascade-deletes them.
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
   BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
@@ -80,13 +90,18 @@ Driven by `spec.region.role`:
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**
   get `maxUnavailable: 1` (roll one at a time, keep the rest serving).
 
-**Validated on AKS (2026-07-07):** applying a `primary` CR created the writer STS
-(+ dynamically-provisioned PVC), the 2-replica reader Deployment, both Services, and
-the ConfigMap; the CR reached `Phase=Provisioning`; deleting the CR GC'd everything.
+**Validated on AKS (2026-07-08):** applying a `primary` CR created the writer STS
+(+ dynamically-provisioned PVC), the reader Deployment, both Services, and the
+ConfigMap; the CR reached `Phase=Provisioning`; deleting the CR GC'd everything. The
+`render-config` init container renders the config, and **OramaCore 1.2.28 parses it and
+boots** (`Configuration loaded successfully` → `Starting web server on
+http://0.0.0.0:8080`); the ConfigMap shows only `master_api_key: "__MASTER_API_KEY__"`
+while the rendered file in the pod holds the real value.
 
-> **Follow-ups:** the `config.yaml` is minimal — full OramaCore config (cluster
-> registry, API keys via the engine secret, reader→writer wiring) is next, as are HPA +
-> the reader→primary-writer endpoint on read tiers.
+> **Follow-ups:** the `embeddings` ai-server image is a placeholder (`ImagePullBackOff`
+> until built — see the Dockerfile work); RabbitMQ writer→reader replication (currently
+> in-memory transport, single-node); HPA + the reader→primary-writer endpoint on read
+> tiers.
 
 ## controlDB (`internal/controller/controldb.go`)
 

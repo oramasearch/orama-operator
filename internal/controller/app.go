@@ -18,6 +18,19 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
 
+// tcpReadiness is a universal readiness probe — the port accepting connections. Used
+// for components whose HTTP health path varies (data stores, ported apps); the engine
+// uses richer HTTP /health probes.
+func tcpReadiness(port int32) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler:        corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(port)}},
+		InitialDelaySeconds: 5,
+		PeriodSeconds:       10,
+		TimeoutSeconds:      3,
+		FailureThreshold:    6,
+	}
+}
+
 // appDef describes a stateless app run as a Deployment (+ Service, + optional Ingress).
 type appDef struct {
 	component   string
@@ -50,12 +63,13 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
-					Name:    def.component,
-					Image:   def.image,
-					Args:    def.args,
-					Ports:   []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
-					Env:     def.env,
-					EnvFrom: envFromFor(oc, def.component),
+					Name:           def.component,
+					Image:          def.image,
+					Args:           def.args,
+					Ports:          []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
+					Env:            def.env,
+					EnvFrom:        envFromFor(oc, def.component),
+					ReadinessProbe: tcpReadiness(def.port),
 				}},
 			},
 		}

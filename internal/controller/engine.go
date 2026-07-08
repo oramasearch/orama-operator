@@ -96,22 +96,118 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 func engineConfigName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-engine-config" }
 
 func (r *OramaCloudV1Reconciler) reconcileEngineConfig(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
-	provider := "cpu"
-	if oc.Spec.Components.Engine.Writer.GPU {
-		provider = "local" // built-in GPU embeddings
-	}
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: engineConfigName(oc), Namespace: oc.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		cm.Labels = labelsFor(oc, "engine")
 		cm.Data = map[string]string{
-			"envoy.yaml": envoyConfig,
-			// Minimal OramaCore config; real config (clusters, keys) comes with the
-			// control-plane wiring — see docs/components.md.
-			"config.yaml": fmt.Sprintf("ai_server:\n  embeddings:\n    default_model_group: small\n    provider: %s\n", provider),
+			"envoy.yaml":  envoyConfig,
+			"config.yaml": oramacoreConfigYAML(oc),
 		}
 		return controllerutil.SetControllerReference(oc, cm, r.Scheme)
 	})
 	return err
+}
+
+// oramacoreConfigYAML renders a VALID OramaCore config (http / writer_side /
+// reader_side / ai_server) matching oramacore/config-docker.yaml. The embeddings
+// ai-server is a co-located sidecar at 127.0.0.1:50051. writer/reader use in-memory
+// transport (single-node); RabbitMQ replication is a follow-up.
+//
+// master_api_key is a __MASTER_API_KEY__ placeholder here (this string lives in a
+// ConfigMap): the render-config init container substitutes the real value from the
+// engine Secret at pod start, so no credential ever sits in the ConfigMap. OramaCore
+// can't take it from env — config's ORAMACORE_ override splits on "_" and can't reach
+// the nested writer_side.master_api_key.
+func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
+	ep := "CPUExecutionProvider"
+	if oc.Spec.Components.Engine.Writer.GPU {
+		ep = "CUDAExecutionProvider"
+	}
+	return fmt.Sprintf(`http:
+  host: 0.0.0.0
+  port: 8080
+  allow_cors: true
+  with_prometheus: true
+log: {}
+writer_side:
+  output:
+    type: in-memory
+  hooks:
+    select_embeddings_properties:
+      check_interval: 60s
+      max_idle_time: 20s
+      instances_count_per_code: 3
+      queue_capacity: 100
+      max_execution_time: 1s
+      max_startup_time: 100ms
+  master_api_key: "__MASTER_API_KEY__"
+  config:
+    data_dir: /app/.data/writer
+    embedding_queue_limit: 50000
+    insert_batch_commit_size: 50000000
+    default_embedding_model: BGESmall
+    javascript_queue_limit: 500000
+    commit_interval: 1m
+reader_side:
+  input:
+    type: in-memory
+  config:
+    data_dir: /app/.data/reader
+    insert_batch_commit_size: 50000000
+    commit_interval: 1m
+ai_server:
+  scheme: http
+  host: 127.0.0.1
+  port: 50051
+  api_key: ""
+  max_connections: 15
+  total_threads: 12
+  embeddings:
+    default_model_group: small
+    dynamically_load_models: false
+    execution_providers:
+      - %s
+    total_threads: 8
+  llm:
+    port: 8000
+    host: 127.0.0.1
+    model: "Qwen/Qwen2.5-3B-Instruct"
+`, ep)
+}
+
+// embeddingsSidecar is the OramaCore ai-server (gRPC embeddings on :50051), co-located
+// so config points ai_server.host at 127.0.0.1.
+func embeddingsSidecar(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
+	return corev1.Container{
+		Name:  "embeddings",
+		Image: componentImage(oc, "embeddings", "embeddings-server-py"),
+		Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: 50051}},
+	}
+}
+
+// renderConfigInit substitutes the MASTER_API_KEY (from the engine Secret, via envFrom)
+// into the config.yaml template (from the ConfigMap) and writes the rendered file to the
+// shared rendered-config emptyDir that the OramaCore container reads via CONFIG_PATH.
+// This keeps the credential out of the ConfigMap while leaving the reviewable config in
+// one. (The key must be sed-safe — no '#', '&', '\' — which holds for base64url/hex API
+// keys; the operator's dev default and prod overrides both satisfy this.)
+func renderConfigInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
+	return corev1.Container{
+		Name:    "render-config",
+		Image:   "busybox:1.37",
+		Command: []string{"sh", "-c", `sed "s#__MASTER_API_KEY__#${MASTER_API_KEY}#g" /tmpl/config.yaml > /etc/oramacore/config.yaml`},
+		EnvFrom: envFromFor(oc, "engine"),
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "config", MountPath: "/tmpl"},
+			{Name: "rendered-config", MountPath: "/etc/oramacore"},
+		},
+	}
+}
+
+// renderedConfigVolume is the emptyDir the init container writes the rendered config.yaml
+// into and the OramaCore container reads from (CONFIG_PATH=/etc/oramacore/config.yaml).
+func renderedConfigVolume() corev1.Volume {
+	return corev1.Volume{Name: "rendered-config", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
 }
 
 func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
@@ -140,8 +236,9 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 			Spec: corev1.PodSpec{
 				NodeSelector:                  w.NodeSelector,
 				Tolerations:                   w.Tolerations,
-				Containers:                    []corev1.Container{c},
-				Volumes:                       []corev1.Volume{configVolume(oc)},
+				InitContainers:                []corev1.Container{renderConfigInit(oc)},
+				Containers:                    []corev1.Container{c, embeddingsSidecar(oc)},
+				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
 				TerminationGracePeriodSeconds: int64Ptr(writerGracePeriodSeconds),
 			},
 		}
@@ -179,15 +276,16 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		if rd.Resources != nil {
 			c.Resources = *rd.Resources
 		}
-		containers := []corev1.Container{c}
+		containers := []corev1.Container{c, embeddingsSidecar(oc)}
 		if useEnvoy {
 			containers = append(containers, envoySidecar())
 		}
 		dep.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
+				InitContainers:                []corev1.Container{renderConfigInit(oc)},
 				Containers:                    containers,
-				Volumes:                       []corev1.Volume{configVolume(oc), dataEmptyDir()},
+				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume(), dataEmptyDir()},
 				TerminationGracePeriodSeconds: int64Ptr(readerGracePeriodSeconds),
 			},
 		}
@@ -225,16 +323,21 @@ func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	liveness.PeriodSeconds, liveness.TimeoutSeconds, liveness.FailureThreshold = 15, 3, 3
 
 	return corev1.Container{
-		Name:           "oramacore",
-		Image:          componentImage(oc, "oramacore", "oramacore"),
-		Ports:          []corev1.ContainerPort{{Name: "http", ContainerPort: oramacorePort}},
-		Env:            []corev1.EnvVar{{Name: "RUST_LOG", Value: "oramacore=info,warn"}},
+		Name:  "oramacore",
+		Image: componentImage(oc, "oramacore", "oramacore"),
+		Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: oramacorePort}},
+		Env: []corev1.EnvVar{
+			{Name: "RUST_LOG", Value: "oramacore=info,warn"},
+			// Read the init-container-rendered config (with the real master_api_key)
+			// rather than the raw ConfigMap template.
+			{Name: "CONFIG_PATH", Value: "/etc/oramacore/config.yaml"},
+		},
 		EnvFrom:        envFromFor(oc, "engine"),
 		StartupProbe:   startup,
 		ReadinessProbe: readiness,
 		LivenessProbe:  liveness,
 		VolumeMounts: []corev1.VolumeMount{
-			{Name: "config", MountPath: "/app/config.yaml", SubPath: "config.yaml"},
+			{Name: "rendered-config", MountPath: "/etc/oramacore"},
 			{Name: "data", MountPath: "/app/.data"},
 		},
 	}

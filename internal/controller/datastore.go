@@ -50,6 +50,10 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 	}
 	name := oc.Name + "-" + def.component
 	lbls := labelsFor(oc, def.component)
+	var readiness *corev1.Probe
+	if len(def.ports) > 0 {
+		readiness = tcpReadiness(def.ports[0].ContainerPort)
+	}
 
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
@@ -61,13 +65,14 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
-					Name:         def.component,
-					Image:        storeImage(oc, def.component, def.image),
-					Ports:        def.ports,
-					Env:          def.env,
-					EnvFrom:      envFromFor(oc, def.component),
-					Args:         def.args,
-					VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: def.dataPath}},
+					Name:           def.component,
+					Image:          storeImage(oc, def.component, def.image),
+					Ports:          def.ports,
+					Env:            def.env,
+					EnvFrom:        envFromFor(oc, def.component),
+					Args:           def.args,
+					ReadinessProbe: readiness,
+					VolumeMounts:   []corev1.VolumeMount{{Name: "data", MountPath: def.dataPath}},
 				}},
 			},
 		}
