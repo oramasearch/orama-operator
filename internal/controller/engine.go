@@ -180,7 +180,7 @@ ai_server:
 func embeddingsSidecar(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	return corev1.Container{
 		Name:  "embeddings",
-		Image: componentImage(oc, "embeddings", "embeddings-server-py"),
+		Image: embeddingsImage(oc),
 		Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: 50051}},
 	}
 }

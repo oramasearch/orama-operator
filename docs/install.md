@@ -85,7 +85,7 @@ The full field reference is in [crd-reference.md](crd-reference.md); more sample
   place (the operator won't overwrite an existing secret), the operator
   won't overwrite them once created.
 - **Images** — `oramacore` reuses its published image; the components with **no** published
-  image (`embeddings-server-py`, `dashboard`, `orama-workers`, `harvest`, `disco`,
+  image (`embeddings-server-py`, `dashboard`, `docs`, `orama-workers`, `harvest`, `disco`,
   `index-builder`) are built from source by the bridge's
   [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
   tooling and pushed to **private Docker Hub** (`oramasearch/<name>:<tag>`). Build + push them

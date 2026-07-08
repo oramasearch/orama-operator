@@ -66,6 +66,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"ingestion", r.reconcileIngestion},
 		{"workers", r.reconcileWorkers},
 		{"dashboard", r.reconcileDashboard},
+		{"docs", r.reconcileDocs},
 		{"disco", r.reconcileDisco},
 		{"idp", r.reconcileIdP},
 		{"cloudflare", r.reconcileCloudflare},

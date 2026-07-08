@@ -142,3 +142,18 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		ingressHost: d.Host,
 	})
 }
+
+// reconcileDocs provisions docs.orama.com (Next.js + Fumadocs) as a Deployment + Service
+// (+ Ingress if a host is set). No component secret — the docs site has no env coupling.
+func (r *OramaCloudV1Reconciler) reconcileDocs(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	d := oc.Spec.Components.Docs
+	if !d.Enabled {
+		return nil
+	}
+	return r.reconcileApp(ctx, oc, appDef{
+		component:   "docs",
+		image:       componentImage(oc, "docs", "docs"),
+		port:        3000,
+		ingressHost: d.Host,
+	})
+}

@@ -40,6 +40,7 @@ func (in *ComponentsSpec) DeepCopyInto(out *ComponentsSpec) {
 	*out = *in
 	in.Engine.DeepCopyInto(&out.Engine)
 	out.Dashboard = in.Dashboard
+	out.Docs = in.Docs
 	out.Ingestion = in.Ingestion
 	in.Analytics.DeepCopyInto(&out.Analytics)
 	in.ControlDB.DeepCopyInto(&out.ControlDB)

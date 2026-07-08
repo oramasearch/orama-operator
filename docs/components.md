@@ -7,6 +7,7 @@ reconciler lands.
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (+GPU, PVC) on the primary; readers `Deployment` (+Envoy sidecar); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` | ✅ **done** (validated on AKS) |
+| **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
 | **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica) | ✅ **done** (validated on AKS) |
 | **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
@@ -65,7 +66,9 @@ Driven by `spec.region.role`:
   Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
 - **Embeddings ai-server** — a co-located `embeddings` sidecar (gRPC on `:50051`) on
   both writer and readers, so the config's `ai_server.host` points at `127.0.0.1`
-  (matches prod's engine↔embeddings co-location).
+  (matches prod's engine↔embeddings co-location). Its image has cpu/gpu variants;
+  `embeddingsImage()` picks `oramasearch/embeddings-server-py:cpu-latest` (or `gpu-latest`)
+  from `writer.gpu` — not the global `spec.images.tag`.
 - **Config** — a `ConfigMap` with `envoy.yaml` + a **full, valid** `config.yaml`
   (`http` / `writer_side` / `reader_side` / `ai_server` / `log`, matching
   `oramacore/config-docker.yaml`; `execution_providers: CUDA|CPU` from `writer.gpu`).
@@ -100,10 +103,10 @@ while the rendered file in the pod holds the real value.
 
 > **Follow-ups:** the `embeddings` ai-server image is built by the bridge's
 > [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
-> tooling (`oramasearch/embeddings-server-py`, private Docker Hub) — set `spec.images.tag`
-> + `spec.images.pullSecretName` to use it; RabbitMQ writer→reader replication (currently
-> in-memory transport, single-node); HPA + the reader→primary-writer endpoint on read
-> tiers.
+> tooling (`oramasearch/embeddings-server-py:{cpu,gpu}-latest`, private Docker Hub — the tag
+> is auto-picked from `writer.gpu`; just set `spec.images.pullSecretName`); RabbitMQ
+> writer→reader replication (currently in-memory transport, single-node); HPA + the
+> reader→primary-writer endpoint on read tiers.
 
 ## controlDB (`internal/controller/controldb.go`)
 
@@ -154,7 +157,7 @@ removed the workloads.
 > a clustered Typesense; wire credentials via the component secret (the Typesense API key
 > is a dev placeholder today); add readiness probes per store.
 
-## App compute — ingestion / workers / dashboard (`app.go`, `ingestion.go`)
+## App compute — ingestion / workers / dashboard / docs (`app.go`, `ingestion.go`)
 
 A generic `reconcileApp` provisions a stateless **Deployment + Service (+ Ingress if a
 host is set)**.

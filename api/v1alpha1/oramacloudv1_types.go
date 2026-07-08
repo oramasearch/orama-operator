@@ -161,6 +161,7 @@ type CloudflareSpec struct {
 type ComponentsSpec struct {
 	Engine    EngineSpec     `json:"engine,omitempty"`    // OramaCore writer + readers + Envoy
 	Dashboard ToggleWithHost `json:"dashboard,omitempty"` // app.orama.com (Next.js)
+	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
 	ControlDB DataStoreSpec  `json:"controlDB,omitempty"` // Postgres control plane

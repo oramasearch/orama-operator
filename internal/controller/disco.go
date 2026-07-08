@@ -58,7 +58,7 @@ func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1
 					},
 					{
 						Name:  "embeddings",
-						Image: componentImage(oc, "embeddings", "embeddings-server-py"),
+						Image: embeddingsImage(oc),
 						Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: discoEmbeddingsPort}},
 					},
 				},

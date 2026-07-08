@@ -348,6 +348,17 @@ spec:
                     required:
                     - enabled
                     type: object
+                  docs:
+                    description: ToggleWithHost is a toggle plus an ingress host.
+                    properties:
+                      enabled:
+                        default: true
+                        type: boolean
+                      host:
+                        type: string
+                    required:
+                    - enabled
+                    type: object
                   engine:
                     description: EngineSpec configures the OramaCore engine.
                     properties:

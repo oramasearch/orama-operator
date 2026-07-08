@@ -29,6 +29,7 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 |---|---|---|
 | `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations}`, `reader.{replicas,hpa,resources}`, `envoy` | OramaCore writer + readers + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
+| `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store | PlanetScale → CloudNativePG |
 | `analytics` | data-store | ClickHouse |

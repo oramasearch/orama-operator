@@ -53,3 +53,22 @@ func componentImage(oc *oramav1alpha1.OramaCloudV1, key, defaultRepo string) str
 	}
 	return reg + "/" + defaultRepo + ":" + tag
 }
+
+// embeddingsImage resolves the OramaCore ai-server (embeddings) image. That image has cpu/gpu
+// VARIANTS published as :cpu-latest / :gpu-latest, so the tag is picked to match the engine's
+// GPU setting (writer.gpu) rather than the global spec.images.tag — a CPU deployment gets the
+// CPU embeddings, a GPU one gets CUDA. An explicit spec.images.overrides["embeddings"] wins.
+func embeddingsImage(oc *oramav1alpha1.OramaCloudV1) string {
+	if o := oc.Spec.Images.Overrides["embeddings"]; o != "" {
+		return o
+	}
+	reg := oc.Spec.Images.Registry
+	if reg == "" {
+		reg = "oramasearch"
+	}
+	variant := "cpu"
+	if oc.Spec.Components.Engine.Writer.GPU {
+		variant = "gpu"
+	}
+	return reg + "/embeddings-server-py:" + variant + "-latest"
+}
