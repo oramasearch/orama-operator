@@ -23,6 +23,7 @@ func labelsFor(oc *oramav1alpha1.OramaCloudV1, component string) map[string]stri
 }
 
 func int32Ptr(i int32) *int32 { return &i }
+func int64Ptr(i int64) *int64 { return &i }
 
 // componentImage resolves the image for a component: an explicit override wins,
 // otherwise registry/tag defaults (published oramasearch/* images).

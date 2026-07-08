@@ -24,6 +24,13 @@ const (
 	envoyPort      = 80
 	envoyAdminPort = 9901
 	envoyImage     = "envoyproxy/envoy:v1.31.2"
+
+	// OramaCore handles SIGTERM gracefully (drains HTTP, then force-commits BOTH
+	// sides to disk — oramacore/src/lib.rs, web_server/mod.rs). The writer's commit
+	// flushes indexes (HNSW/FST/BM25), so it needs far more than the k8s default 30s
+	// grace period or SIGKILL corrupts the flush. Readers only re-commit read state.
+	writerGracePeriodSeconds int64 = 300
+	readerGracePeriodSeconds int64 = 60
 )
 
 // envoyConfig is the static Envoy bootstrap that matches prod: listen :80, proxy to
@@ -127,10 +134,11 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
-				NodeSelector: w.NodeSelector,
-				Tolerations:  w.Tolerations,
-				Containers:   []corev1.Container{c},
-				Volumes:      []corev1.Volume{configVolume(oc)},
+				NodeSelector:                  w.NodeSelector,
+				Tolerations:                   w.Tolerations,
+				Containers:                    []corev1.Container{c},
+				Volumes:                       []corev1.Volume{configVolume(oc)},
+				TerminationGracePeriodSeconds: int64Ptr(writerGracePeriodSeconds),
 			},
 		}
 		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC()}
@@ -168,8 +176,9 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		dep.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
-				Containers: containers,
-				Volumes:    []corev1.Volume{configVolume(oc), dataEmptyDir()},
+				Containers:                    containers,
+				Volumes:                       []corev1.Volume{configVolume(oc), dataEmptyDir()},
+				TerminationGracePeriodSeconds: int64Ptr(readerGracePeriodSeconds),
 			},
 		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)

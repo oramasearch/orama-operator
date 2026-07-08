@@ -31,6 +31,11 @@ Driven by `spec.region.role`:
 - **Config** — a `ConfigMap` with `envoy.yaml` + a minimal `config.yaml` (`provider:
   cpu|local` from `writer.gpu`). All children set an owner reference to the CR, so
   deleting the CR cascade-deletes them.
+- **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
+  BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
+  = PID 1). Because the writer's commit flushes indexes, the writer pod gets
+  `terminationGracePeriodSeconds: 300` (readers: 60) so k8s doesn't SIGKILL the flush
+  at the default 30s.
 
 **Validated on AKS (2026-07-07):** applying a `primary` CR created the writer STS
 (+ dynamically-provisioned PVC), the 2-replica reader Deployment, both Services, and
