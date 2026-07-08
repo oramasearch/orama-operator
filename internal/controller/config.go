@@ -58,27 +58,31 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		cm.Labels = labelsFor(oc, "config")
 		cm.Data = map[string]string{
-			"REGION":                      oc.Spec.Region.Name,
-			"ROLE":                        oc.Spec.Region.Role,
-			"LLM_PROVIDERS":               llmProviderNames(oc), // multiple; users pick per query
-			"LLM_DEFAULT":                 llmDefault(oc),
-			"POSTGRES_HOST":               n + "-controldb-rw",
-			"POSTGRES_PORT":               "5432",
-			"POSTGRES_DB":                 controlDBName,
-			"CLICKHOUSE_HOST":             n + "-analytics",
-			"CLICKHOUSE_PORT":             "8123",
-			"REDIS_HOST":                  n + "-cache",
-			"REDIS_PORT":                  "6379",
-			"RABBITMQ_HOST":               n + "-broker",
-			"RABBITMQ_PORT":               "5672",
-			"TYPESENSE_HOST":              n + "-search",
-			"TYPESENSE_PORT":              "8108",
-			"TYPESENSE_DATA_DIR":          "/data",
-			"TYPESENSE_ENABLE_CORS":       "true",
-			"DISCO_URL":                   "http://" + n + "-disco:8080",
-			"ORAMACORE_WRITER_URL":        "http://" + n + "-writer:8080",
-			"ORAMACORE_READER_URL":        "http://" + n + "-reader",
-			"EMBEDDINGS_URL":              "http://" + n + "-disco:50051",
+			"REGION":                oc.Spec.Region.Name,
+			"ROLE":                  oc.Spec.Region.Role,
+			"LLM_PROVIDERS":         llmProviderNames(oc), // multiple; users pick per query
+			"LLM_DEFAULT":           llmDefault(oc),
+			"POSTGRES_HOST":         n + "-controldb-rw",
+			"POSTGRES_PORT":         "5432",
+			"POSTGRES_DB":           controlDBName,
+			"CLICKHOUSE_HOST":       n + "-analytics",
+			"CLICKHOUSE_PORT":       "8123",
+			"REDIS_HOST":            n + "-cache",
+			"REDIS_PORT":            "6379",
+			"RABBITMQ_HOST":         n + "-broker",
+			"RABBITMQ_PORT":         "5672",
+			"TYPESENSE_HOST":        n + "-search",
+			"TYPESENSE_PORT":        "8108",
+			"TYPESENSE_DATA_DIR":    "/data",
+			"TYPESENSE_ENABLE_CORS": "true",
+			"DISCO_URL":             "http://" + n + "-disco:8080",
+			"ORAMACORE_WRITER_URL":  "http://" + n + "-writer:8080",
+			"ORAMACORE_READER_URL":  "http://" + n + "-reader",
+			"EMBEDDINGS_URL":        "http://" + n + "-disco:50051",
+			// #8 QStash-equivalent: the in-cluster RabbitMQ (a true QStash HTTP shim is a follow-up).
+			"QSTASH_URL": "http://" + n + "-broker:5672",
+			// #4 Airbyte: installed via its Helm chart (helmfile platformDeps); dashboard/index-builder use this.
+			"AIRBYTE_URL":                 "http://airbyte-airbyte-server-svc.airbyte:8001",
 			"KC_HTTP_ENABLED":             "true",
 			"KC_PROXY_HEADERS":            "xforwarded",
 			"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
@@ -168,6 +172,8 @@ func componentSecretData(component string) map[string]string {
 		return map[string]string{"RABBITMQ_DEFAULT_USER": "orama", "RABBITMQ_DEFAULT_PASS": "dev-rabbitmq-password"}
 	case "analytics":
 		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
+	case "analytics-processor": // pulls /v1/analytics -> ClickHouse
+		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password", "MASTER_API_KEY": "dev-master-api-key"}
 	case "disco":
 		return map[string]string{"DISCO_SECRET": "dev-disco-secret", "CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "keycloak":

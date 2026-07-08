@@ -170,6 +170,13 @@ type ComponentsSpec struct {
 	Search    DataStoreSpec  `json:"search,omitempty"`    // Typesense hosted-search clusters
 	Disco     Toggle         `json:"disco,omitempty"`     // DISCO semantic cache
 	Workers   WorkersSpec    `json:"workers,omitempty"`   // the ported CF workers (one bundled image)
+
+	// Additional v1 components (gap fill — techops-docs issues #5–#7):
+	AnalyticsProcessor Toggle         `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
+	OramasearchApp     ToggleWithHost `json:"oramasearchApp,omitempty"`     // api.askorama.ai (legacy "old dashboard")
+	SearchWorkers      Toggle         `json:"searchWorkers,omitempty"`      // index-manager hosted-search serving workers
+	// Airbyte (#4) is a heavy multi-service platform → installed via its Helm chart (helmfile
+	// platformDeps), not a CR component; the dashboard/index-builder reference its endpoint.
 }
 
 // EngineSpec configures the OramaCore engine.

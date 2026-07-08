@@ -169,6 +169,16 @@ spec:
                     required:
                     - enabled
                     type: object
+                  analyticsProcessor:
+                    description: 'Additional v1 components (gap fill — techops-docs
+                      issues #5–#7):'
+                    properties:
+                      enabled:
+                        default: true
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
                   broker:
                     description: |-
                       DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
@@ -571,6 +581,17 @@ spec:
                     required:
                     - enabled
                     type: object
+                  oramasearchApp:
+                    description: ToggleWithHost is a toggle plus an ingress host.
+                    properties:
+                      enabled:
+                        default: true
+                        type: boolean
+                      host:
+                        type: string
+                    required:
+                    - enabled
+                    type: object
                   search:
                     description: |-
                       DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
@@ -620,6 +641,15 @@ spec:
                         description: |-
                           Replicate: for a read tier, stream/replicate this store from the primary
                           (e.g. Postgres read replica). Ignored on the primary. Set by spec.profile.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  searchWorkers:
+                    description: Toggle is a simple on/off component.
+                    properties:
+                      enabled:
+                        default: true
                         type: boolean
                     required:
                     - enabled
