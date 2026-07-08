@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,6 +17,27 @@ import (
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
+
+// llmProviderNames returns the enabled LLM provider names (defaults to the prod set —
+// v1 offers all three and end users pick per query).
+func llmProviderNames(oc *oramav1alpha1.OramaCloudV1) string {
+	provs := oc.Spec.LLM.Providers
+	if len(provs) == 0 {
+		return "groq,openai,anthropic"
+	}
+	names := make([]string, 0, len(provs))
+	for _, p := range provs {
+		names = append(names, p.Name)
+	}
+	return strings.Join(names, ",")
+}
+
+func llmDefault(oc *oramav1alpha1.OramaCloudV1) string {
+	if oc.Spec.LLM.Default != "" {
+		return oc.Spec.LLM.Default
+	}
+	return "groq"
+}
 
 func configMapName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-config" }
 func componentSecretName(oc *oramav1alpha1.OramaCloudV1, component string) string {
@@ -34,6 +56,8 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 		cm.Data = map[string]string{
 			"REGION":                      oc.Spec.Region.Name,
 			"ROLE":                        oc.Spec.Region.Role,
+			"LLM_PROVIDERS":               llmProviderNames(oc), // multiple; users pick per query
+			"LLM_DEFAULT":                 llmDefault(oc),
 			"POSTGRES_HOST":               n + "-controldb-rw",
 			"POSTGRES_PORT":               "5432",
 			"POSTGRES_DB":                 controlDBName,
@@ -126,6 +150,7 @@ func componentSecretData(component string) map[string]string {
 			"MASTER_API_KEY":      "dev-master-api-key",
 			"OPENAI_API_KEY":      "dev-openai-api-key",
 			"GROQ_API_KEY":        "dev-groq-api-key",
+			"ANTHROPIC_API_KEY":   "dev-anthropic-api-key",
 			"CLICKHOUSE_PASSWORD": "dev-clickhouse-password",
 			"QSTASH_TOKEN":        "dev-qstash-token",
 			"DISCO_SECRET":        "dev-disco-secret",

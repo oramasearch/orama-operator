@@ -49,7 +49,7 @@ Everything is configured on one resource. Highlights (full schema in
 | `spec.profile` | `light \| medium \| heavy` — presets replication + sizing |
 | `spec.idp.provider` | `none \| keycloak \| firebase \| clerk` |
 | `spec.secrets.backend` | External Secrets Operator backend (`aws \| gcp \| vault \| kubernetes`) |
-| `spec.llm.provider` | `vllm \| groq \| openai \| anthropic` |
+| `spec.llm.providers[]` / `spec.llm.default` | **multiple** LLM providers (users pick per query); defaults to groq+openai+anthropic |
 | `spec.cloudflare` | operator manages CF **DNS + Load Balancing** via the CF API (default on) |
 | `spec.components.*` | per-component enable + `in-cluster \| external`, `placement: local \| central`, `replicate` |
 | `spec.components.engine.writer.gpu` | request `nvidia.com/gpu` for the writer's built-in embeddings (prod: L40S) |

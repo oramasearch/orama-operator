@@ -14,7 +14,8 @@ truth: [`../api/v1alpha1/oramacloudv1_types.go`](../api/v1alpha1/oramacloudv1_ty
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `secrets.backend` | enum | `kubernetes` | External Secrets Operator backend: `aws \| gcp \| vault \| kubernetes`. |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). |
-| `llm.provider` | enum | `groq` | `vllm \| groq \| openai \| anthropic` (+ `llm.gpu` for in-cluster vLLM). |
+| `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
+| `llm.default` | enum | `groq` | Provider used when a request doesn't name one. |
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing** via the CF API (`manageDNS`, `manageLoadBalancers`, `apiTokenSecretRef`, `zoneID`). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |

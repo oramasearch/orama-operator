@@ -37,8 +37,8 @@ type OramaCloudV1Spec struct {
 	// Defaults reuse the published oramasearch/* images.
 	Images ImagesSpec `json:"images,omitempty"`
 
-	// LLM configures the answer/RAG language-model backend.
-	// +kubebuilder:default={provider: groq}
+	// LLM configures the available answer/RAG language-model providers (multiple).
+	// +kubebuilder:default={default: groq}
 	LLM LLMSpec `json:"llm,omitempty"`
 
 	// Cloudflare keeps Cloudflare as the edge / geo load-balancer; the operator
@@ -110,18 +110,31 @@ type ImagesSpec struct {
 	Overrides map[string]string `json:"overrides,omitempty"`
 }
 
-// LLMSpec configures the answer/RAG model backend.
+// LLMSpec configures the answer/RAG language-model providers. v1 offers MULTIPLE
+// providers at once (Groq/OpenAI/Anthropic in prod) and end users/customers pick per
+// query — so this is a list, not a single choice. Keys come from the engine/workers/
+// dashboard scoped secrets (or a per-provider apiKeySecretRef).
 type LLMSpec struct {
-	// +kubebuilder:validation:Enum=vllm;groq;openai;anthropic
-	// +kubebuilder:default=groq
-	Provider string `json:"provider"`
-	// Model name (provider-specific). For vllm this is the served HF model.
+	// Providers available for selection. If empty, defaults to groq + openai + anthropic.
 	// +optional
-	Model string `json:"model,omitempty"`
-	// APIKeySecretRef holds the provider API key (remote providers only).
+	Providers []LLMProvider `json:"providers,omitempty"`
+	// Default provider used when a request doesn't name one.
+	// +kubebuilder:default=groq
+	Default string `json:"default,omitempty"`
+}
+
+// LLMProvider is one selectable LLM backend.
+type LLMProvider struct {
+	// Name of the provider.
+	// +kubebuilder:validation:Enum=groq;openai;anthropic;vllm
+	Name string `json:"name"`
+	// Models this provider offers (the catalog the end user can pick from).
+	// +optional
+	Models []string `json:"models,omitempty"`
+	// APIKeySecretRef overrides the default per-component key for this provider.
 	// +optional
 	APIKeySecretRef *corev1.LocalObjectReference `json:"apiKeySecretRef,omitempty"`
-	// GPU requests a GPU for the in-cluster vLLM (provider=vllm only).
+	// GPU requests a GPU for an in-cluster vLLM provider (name=vllm).
 	// +optional
 	GPU bool `json:"gpu,omitempty"`
 }

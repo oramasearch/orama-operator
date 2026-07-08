@@ -12,9 +12,12 @@ spec:
   secrets:
     backend: aws
     storeRef: orama-secretstore
-  llm:
-    provider: groq         # vllm | groq | openai | anthropic
-    apiKeySecretRef: { name: groq-api-key }
+  llm:                     # multiple providers; end users pick per query
+    default: groq          # provider used when a request doesn't name one
+    providers:
+      - { name: groq,      models: [llama-3.3-70b-versatile] }
+      - { name: openai,    models: [gpt-4o, gpt-4o-mini] }
+      - { name: anthropic, models: [claude-3-5-sonnet] }
   cloudflare:              # DNS + geo load-balancing always live in Cloudflare
     enabled: true
     zoneID: REPLACE_ME

@@ -693,42 +693,58 @@ spec:
                 type: object
               llm:
                 default:
-                  provider: groq
-                description: LLM configures the answer/RAG language-model backend.
+                  default: groq
+                description: LLM configures the available answer/RAG language-model
+                  providers (multiple).
                 properties:
-                  apiKeySecretRef:
-                    description: APIKeySecretRef holds the provider API key (remote
-                      providers only).
-                    properties:
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                    type: object
-                    x-kubernetes-map-type: atomic
-                  gpu:
-                    description: GPU requests a GPU for the in-cluster vLLM (provider=vllm
-                      only).
-                    type: boolean
-                  model:
-                    description: Model name (provider-specific). For vllm this is
-                      the served HF model.
-                    type: string
-                  provider:
+                  default:
                     default: groq
-                    enum:
-                    - vllm
-                    - groq
-                    - openai
-                    - anthropic
+                    description: Default provider used when a request doesn't name
+                      one.
                     type: string
-                required:
-                - provider
+                  providers:
+                    description: Providers available for selection. If empty, defaults
+                      to groq + openai + anthropic.
+                    items:
+                      description: LLMProvider is one selectable LLM backend.
+                      properties:
+                        apiKeySecretRef:
+                          description: APIKeySecretRef overrides the default per-component
+                            key for this provider.
+                          properties:
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        gpu:
+                          description: GPU requests a GPU for an in-cluster vLLM provider
+                            (name=vllm).
+                          type: boolean
+                        models:
+                          description: Models this provider offers (the catalog the
+                            end user can pick from).
+                          items:
+                            type: string
+                          type: array
+                        name:
+                          description: Name of the provider.
+                          enum:
+                          - groq
+                          - openai
+                          - anthropic
+                          - vllm
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
                 type: object
               peers:
                 description: |-
