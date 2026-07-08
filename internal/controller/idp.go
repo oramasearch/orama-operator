@@ -24,18 +24,13 @@ func (r *OramaCloudV1Reconciler) reconcileIdP(ctx context.Context, oc *oramav1al
 	if oc.Spec.IDP.Provider != "keycloak" {
 		return nil
 	}
+	// KC_BOOTSTRAP_ADMIN_USERNAME / KC_HTTP_ENABLED / KC_PROXY_HEADERS come from the
+	// shared ConfigMap and KC_BOOTSTRAP_ADMIN_PASSWORD from the shared Secret (envFrom).
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "keycloak",
 		image:     "quay.io/keycloak/keycloak:26.0",
 		port:      8080,
 		args:      []string{"start-dev"},
-		env: []corev1.EnvVar{
-			{Name: "KC_BOOTSTRAP_ADMIN_USERNAME", Value: "admin"},
-			// Dev default; production must override via ExternalSecrets.
-			{Name: "KC_BOOTSTRAP_ADMIN_PASSWORD", Value: "changeme-dev"},
-			{Name: "KC_HTTP_ENABLED", Value: "true"},
-			{Name: "KC_PROXY_HEADERS", Value: "xforwarded"},
-		},
 	})
 }
 

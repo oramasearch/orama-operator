@@ -47,11 +47,12 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
-					Name:  def.component,
-					Image: def.image,
-					Args:  def.args,
-					Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
-					Env:   def.env,
+					Name:    def.component,
+					Image:   def.image,
+					Args:    def.args,
+					Ports:   []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
+					Env:     def.env,
+					EnvFrom: envFromShared(oc),
 				}},
 			},
 		}

@@ -57,6 +57,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		name string
 		fn   func(context.Context, *oramav1alpha1.OramaCloudV1) error
 	}{
+		{"bootstrap", r.reconcileBootstrap}, // shared config + dummy secrets first
 		{"engine", r.reconcileEngine},
 		{"controlDB", r.reconcileControlDB},
 		{"cache", r.reconcileCache},
@@ -103,6 +104,7 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&batchv1.Job{}).

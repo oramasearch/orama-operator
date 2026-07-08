@@ -19,6 +19,31 @@ reconciler lands.
 | **idp** (keycloak) | `internal/controller/idp.go` | Keycloak `Deployment` + Service (when `idp.provider=keycloak`) | ✅ **done** (validated on AKS) |
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
 
+## Bootstrap — config + secrets (`internal/controller/config.go`)
+
+Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creation):
+
+- **`<cr>-config` ConfigMap** — non-sensitive endpoints/settings (service DNS for
+  Postgres/ClickHouse/Redis/RabbitMQ/Typesense/DISCO/OramaCore, ports, Typesense +
+  Keycloak non-secret config). Reconciled every pass.
+- **`<cr>-secrets` Secret** — **dummy** dev credential values (`MASTER_API_KEY`,
+  `TYPESENSE_API_KEY`, DB/Redis/RabbitMQ passwords, `KC_BOOTSTRAP_ADMIN_PASSWORD`,
+  JWT keys, LLM keys, Cloudflare token). **Create-if-absent** — the operator never
+  overwrites an existing Secret, so real / rotated / ExternalSecrets-managed values
+  are preserved.
+
+Every component consumes both via **`envFrom`**, so config/secret keys land as env
+vars in each pod. Owner-referenced → GC'd with the CR.
+
+**Validated on AKS (2026-07-08):** the ConfigMap + Secret are generated (e.g.
+`TYPESENSE_API_KEY=dev-typesense-api-key`), and **Typesense + Keycloak boot `1/1`**
+— both require their secret values to start, proving the wiring.
+
+> **Follow-ups:** the shared Secret is fed to every pod (broad); production should
+> scope per-component + source from ExternalSecrets (`spec.secrets.backend`). JWT
+> keys are placeholder strings, not a real RS256 keypair — generate a real pair for
+> the OramaCore writer JWT.
+
 ## engine (`internal/controller/engine.go`)
 
 Driven by `spec.region.role`:

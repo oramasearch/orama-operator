@@ -42,9 +42,10 @@ func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{
 					{
-						Name:  "disco",
-						Image: componentImage(oc, "disco", "disco"),
-						Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: discoPort}},
+						Name:    "disco",
+						Image:   componentImage(oc, "disco", "disco"),
+						Ports:   []corev1.ContainerPort{{Name: "http", ContainerPort: discoPort}},
+						EnvFrom: envFromShared(oc),
 						Env: []corev1.EnvVar{
 							{Name: "DISCO_PORT", Value: "8080"},
 							{Name: "EMBEDDINGS_ENDPOINT", Value: "127.0.0.1:50051"},

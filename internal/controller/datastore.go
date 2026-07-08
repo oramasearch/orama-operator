@@ -62,6 +62,7 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 					Image:        storeImage(oc, def.component, def.image),
 					Ports:        def.ports,
 					Env:          def.env,
+					EnvFrom:      envFromShared(oc),
 					Args:         def.args,
 					VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: def.dataPath}},
 				}},
@@ -125,16 +126,12 @@ func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *ora
 }
 
 func (r *OramaCloudV1Reconciler) reconcileSearch(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	// TYPESENSE_DATA_DIR / _ENABLE_CORS come from the shared ConfigMap and
+	// TYPESENSE_API_KEY from the shared Secret (via envFrom).
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Search, dataStoreDef{
 		component: "search",
 		image:     "typesense/typesense:0.25.2",
 		ports:     []corev1.ContainerPort{{Name: "http", ContainerPort: 8108}},
 		dataPath:  "/data",
-		env: []corev1.EnvVar{
-			{Name: "TYPESENSE_DATA_DIR", Value: "/data"},
-			{Name: "TYPESENSE_ENABLE_CORS", Value: "true"},
-			// Dev default; production must override via ExternalSecrets. Not a real key.
-			{Name: "TYPESENSE_API_KEY", Value: "changeme-dev"},
-		},
 	})
 }
