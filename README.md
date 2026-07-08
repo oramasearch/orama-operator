@@ -34,6 +34,11 @@ kubectl get ocv1 -A -w                              # operator reconciles the wh
 **Full install guide:** [`docs/install.md`](docs/install.md) (prereqs, platform
 operators, the CR, multi-region, overriding dummy secrets/images, uninstall).
 
+**Provisioning the external dependencies:** [`docs/provisioning-runbook.md`](docs/provisioning-runbook.md)
+walks through every external dependency — the Cloudflare token the operator uses to
+provision DNS/LB/KV, the real SaaS tokens you supply (LLMs, Apify, Ably, S3, Firebase,
+Stripe, …), and what's generated in-cluster — so the whole stack *works*, not just boots.
+
 - **`helmfile.yaml`** composes the upstream **platform operators** the stack builds on
   (CloudNativePG, RabbitMQ operator, …) + this operator chart —
   each toggleable so you skip whatever your cluster already has.
