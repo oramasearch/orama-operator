@@ -66,9 +66,10 @@ Driven by `spec.region.role`:
   Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
 - **Embeddings ai-server** — a co-located `embeddings` sidecar (gRPC on `:50051`) on
   both writer and readers, so the config's `ai_server.host` points at `127.0.0.1`
-  (matches prod's engine↔embeddings co-location). Its image has cpu/gpu variants;
-  `embeddingsImage()` picks `oramasearch/embeddings-server-py:cpu-latest` (or `gpu-latest`)
-  from `writer.gpu` — not the global `spec.images.tag`.
+  (matches prod's engine↔embeddings co-location). `embeddingsImage()` resolves the **published**
+  `oramasearch/oramacore-ai-server:latest` (or `-cuda` for `writer.gpu`) — OramaCore's own
+  ai-server, which auto-falls back to CPUExecutionProvider on a CPU node. **Not**
+  `embeddings-server-py` (that's the separate HPES / index-manager path). Validated 2/2 on AKS.
 - **Config** — a `ConfigMap` with `envoy.yaml` + a **full, valid** `config.yaml`
   (`http` / `writer_side` / `reader_side` / `ai_server` / `log`, matching
   `oramacore/config-docker.yaml`; `execution_providers: CUDA|CPU` from `writer.gpu`).

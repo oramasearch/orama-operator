@@ -25,9 +25,9 @@ spec:
     registry: oramasearch
     tag: v1-sandbox                    # applies to the operator's OWN built images only
     pullSecretName: oramasearch-dockerhub
-    # No per-image overrides needed:
-    #   - oramacore  -> oramasearch/oramacore:latest        (reused published image)
-    #   - embeddings -> oramasearch/embeddings-server-py:cpu-latest  (variant from writer.gpu)
+    # No per-image overrides needed (both are reused PUBLIC images, resolved off the sandbox tag):
+    #   - oramacore  -> oramasearch/oramacore:latest             (the engine)
+    #   - embeddings -> oramasearch/oramacore-ai-server:latest   (engine ai-server :50051; -cuda if writer.gpu)
   llm:
     default: groq
     providers:
