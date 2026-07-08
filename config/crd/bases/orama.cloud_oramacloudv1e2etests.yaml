@@ -1,0 +1,94 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: oramacloudv1e2etests.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: OramaCloudV1E2ETest
+    listKind: OramaCloudV1E2ETestList
+    plural: oramacloudv1e2etests
+    shortNames:
+    - ocv1e2e
+    singular: oramacloudv1e2etest
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef
+      name: Target
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.jobName
+      name: Job
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          OramaCloudV1E2ETest runs the oramacore-test-e2e suite as a Kubernetes Job against a deployed
+          OramaCloudV1 stack and reports pass/fail in status. A separate CRD so a test is a first-class,
+          repeatable resource — the operator never runs suites during normal reconcile.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: OramaCloudV1E2ETestSpec describes an e2e test run against
+              a deployed OramaCloudV1 stack.
+            properties:
+              args:
+                description: Args passed to the test container.
+                items:
+                  type: string
+                type: array
+              image:
+                default: oramasearch/oramacore-test-e2e:latest
+                description: Image is the e2e test image (the oramacore-test-e2e suite).
+                type: string
+              pullSecretName:
+                description: PullSecretName lets the Job pull a private test image.
+                type: string
+              targetRef:
+                description: |-
+                  TargetRef is the name of the OramaCloudV1 to test (same namespace) — the controller
+                  points the test at that CR's engine Services (<target>-writer / <target>-reader).
+                type: string
+            required:
+            - targetRef
+            type: object
+          status:
+            description: OramaCloudV1E2ETestStatus is the observed state of a test
+              run.
+            properties:
+              jobName:
+                type: string
+              message:
+                type: string
+              phase:
+                description: 'Phase: Pending | Running | Succeeded | Failed.'
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

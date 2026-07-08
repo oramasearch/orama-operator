@@ -38,3 +38,17 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 | `search` | data-store | Typesense hosted-search |
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
+
+## `OramaCloudV1E2ETest` (separate CRD)
+
+Runs the `oramacore-test-e2e` suite as a Job against a deployed stack — a test is a first-class,
+repeatable resource (the operator never runs suites during normal reconcile). Sample:
+[`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.targetRef` | Name of the `OramaCloudV1` to test (same namespace); the Job points at `<targetRef>-writer` / `-reader`. |
+| `spec.image` | e2e suite image (default `oramasearch/oramacore-test-e2e:latest`). |
+| `spec.args` | Args passed to the test container. |
+| `spec.pullSecretName` | Pull secret for a private test image. |
+| `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ocv1e2e`. |

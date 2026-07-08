@@ -73,6 +73,7 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - oramacloudv1e2etests
   - oramacloudv1s
   verbs:
   - create
@@ -85,6 +86,7 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - oramacloudv1e2etests/status
   - oramacloudv1s/status
   verbs:
   - get
