@@ -61,19 +61,23 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 }
 
 // componentSecretData returns the DUMMY dev credentials a component needs — scoped so
-// each component's secret holds only its own keys. Returns nil for components that
-// need no secret (they get the ConfigMap only). Real deployments override these
-// (edit in place, or source from ExternalSecrets).
+// each component's secret holds only its own keys (derived from the prod connection
+// maps in techops-docs). Returns nil for components that need no secret. Real
+// deployments override these (edit in place, or source from ExternalSecrets).
+//
+// NOTE: the Cloudflare API token is intentionally NOT here — it's needed only by the
+// operator (the CF DNS reconciler), read from spec.cloudflare.apiTokenSecretRef, and
+// a dummy value would be useless (the CF API would reject it).
 func componentSecretData(component string) map[string]string {
 	switch component {
-	case "engine":
+	case "engine": // OramaCore: master key, LLM providers, model downloads, JWT verify (public only)
 		return map[string]string{
 			"MASTER_API_KEY":    "dev-master-api-key",
-			"JWT_PRIVATE_KEY":   "dev-jwt-private-key-REPLACE-ME",
 			"JWT_PUBLIC_KEY":    "dev-jwt-public-key-REPLACE-ME",
 			"GROQ_API_KEY":      "dev-groq-api-key",
 			"OPENAI_API_KEY":    "dev-openai-api-key",
 			"ANTHROPIC_API_KEY": "dev-anthropic-api-key",
+			"HF_TOKEN":          "dev-huggingface-token",
 		}
 	case "search":
 		return map[string]string{"TYPESENSE_API_KEY": "dev-typesense-api-key"}
@@ -87,22 +91,45 @@ func componentSecretData(component string) map[string]string {
 		return map[string]string{"DISCO_SECRET": "dev-disco-secret", "CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "keycloak":
 		return map[string]string{"KC_BOOTSTRAP_ADMIN_PASSWORD": "dev-keycloak-password"}
-	case "index-builder":
-		return map[string]string{"TYPESENSE_API_KEY": "dev-typesense-api-key", "MASTER_API_KEY": "dev-master-api-key"}
-	case "harvest":
-		return map[string]string{"AWS_ACCESS_KEY_ID": "dev", "AWS_SECRET_ACCESS_KEY": "dev-secret"}
-	case "dashboard":
+	case "index-builder": // writes Typesense, embeds via HPES, live progress via Ably
 		return map[string]string{
-			"MASTER_API_KEY":    "dev-master-api-key",
-			"JWT_PRIVATE_KEY":   "dev-jwt-private-key-REPLACE-ME",
-			"POSTGRES_PASSWORD": "dev-postgres-password",
-			"STRIPE_SECRET_KEY": "dev-stripe-secret-key",
+			"TYPESENSE_API_KEY":       "dev-typesense-api-key",
+			"MASTER_API_KEY":          "dev-master-api-key",
+			"ORAMA_EMBEDDINGS_BEARER": "dev-hpes-bearer",
+			"ABLY_API_KEY":            "dev-ably-api-key",
 		}
-	case "workers":
+	case "harvest": // crawler: S3 exports, Ably, job-signing
 		return map[string]string{
-			"MASTER_API_KEY": "dev-master-api-key",
-			"OPENAI_API_KEY": "dev-openai-api-key",
-			"GROQ_API_KEY":   "dev-groq-api-key",
+			"AWS_ACCESS_KEY_ID":     "dev",
+			"AWS_SECRET_ACCESS_KEY": "dev-secret",
+			"ABLY_API_KEY":          "dev-ably-api-key",
+			"HARVEST_SIGN":          "dev-harvest-signature",
+		}
+	case "dashboard": // app.orama.com control plane — the widest secret surface
+		return map[string]string{
+			"MASTER_API_KEY":           "dev-master-api-key",
+			"JWT_PRIVATE_KEY":          "dev-jwt-private-key-REPLACE-ME", // signs the OramaCore writer JWT
+			"JWT_PUBLIC_KEY":           "dev-jwt-public-key-REPLACE-ME",
+			"JWT_ISSUER":               "orama-cloud",
+			"POSTGRES_PASSWORD":        "dev-postgres-password",
+			"CLICKHOUSE_PASSWORD":      "dev-clickhouse-password",
+			"REDIS_PASSWORD":           "dev-redis-password",
+			"FIREBASE_SERVICE_ACCOUNT": "dev-firebase-service-account-json",
+			"STRIPE_SECRET_KEY":        "dev-stripe-secret-key",
+			"STRIPE_WEBHOOK_SECRET":    "dev-stripe-webhook-secret",
+			"AIRBYTE_CLIENT_SECRET":    "dev-airbyte-client-secret",
+			"RESEND_API_KEY":           "dev-resend-api-key",
+			"SLACK_TOKEN":              "dev-slack-token",
+		}
+	case "workers": // the CF workers bundle — RAG answer path + telemetry
+		return map[string]string{
+			"MASTER_API_KEY":      "dev-master-api-key",
+			"OPENAI_API_KEY":      "dev-openai-api-key",
+			"GROQ_API_KEY":        "dev-groq-api-key",
+			"CLICKHOUSE_PASSWORD": "dev-clickhouse-password",
+			"QSTASH_TOKEN":        "dev-qstash-token",
+			"DISCO_SECRET":        "dev-disco-secret",
+			"SENTRY_DSN":          "dev-sentry-dsn",
 		}
 	default:
 		return nil // no secret (e.g. selenium, harvest-mongo)

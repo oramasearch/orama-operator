@@ -27,6 +27,9 @@ kubectl apply -f config/samples/primary-us-east.yaml   # one OramaCloudV1 per cl
 kubectl get ocv1 -A -w                              # operator reconciles the whole stack
 ```
 
+**Full install guide:** [`docs/install.md`](docs/install.md) (prereqs, platform
+operators, the CR, multi-region, overriding dummy secrets/images, uninstall).
+
 - **`helmfile.yaml`** composes the upstream **platform operators** the stack builds on
   (External Secrets, CloudNativePG, RabbitMQ operator, …) + this operator chart —
   each toggleable so you skip whatever your cluster already has.
