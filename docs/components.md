@@ -6,15 +6,15 @@ reconciler lands.
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (+GPU, PVC) on the primary; readers `Deployment` (+Envoy sidecar); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
-| dashboard | — | `Deployment` + `Ingress` | ⬜ todo |
-| ingestion | — | index-builder `Deployment` + HARVEST (+ Mongo, Selenium) | ⬜ todo |
+| **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` | ✅ **done** (validated on AKS) |
+| **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
 | **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica) | ✅ **done** (validated on AKS) |
 | **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
 | **broker** | `internal/controller/datastore.go` | RabbitMQ `StatefulSet` + Service (5672/15672), central placement | ✅ **done** (validated on AKS) |
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
 | disco | — | `StatefulSet` + embeddings sidecar | ⬜ todo |
-| workers | — | one bundled-image `Deployment` | ⬜ todo |
+| **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
 | cloudflare | — | CF DNS + Load Balancing via the CF API (external) | ⬜ todo |
 
 ## engine (`internal/controller/engine.go`)
@@ -101,3 +101,25 @@ removed the workloads.
 > swap in the dedicated operators (Altinity ClickHouse, RabbitMQ cluster-operator) and
 > a clustered Typesense; wire credentials via ExternalSecrets (the Typesense API key
 > is a dev placeholder today); add readiness probes per store.
+
+## App compute — ingestion / workers / dashboard (`app.go`, `ingestion.go`)
+
+A generic `reconcileApp` provisions a stateless **Deployment + Service (+ Ingress if a
+host is set)**.
+
+- **ingestion** — `index-builder` Deployment (was Cloud Run); when `harvest` is on,
+  also the HARVEST **master** Deployment, a **Mongo** StatefulSet (record store), and a
+  **Selenium** grid Deployment.
+- **workers** — the ported CF workers as **one bundled image** → a single Deployment
+  (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
+- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`.
+
+**Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
+the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.
+
+> **Follow-ups:** images for `index-builder` / `harvest` / `dashboard` / the `workers`
+> bundle are **placeholders** (`oramasearch/<name>:latest`) pending published/built
+> images — override via `spec.images.overrides`. HARVEST's Podman-per-job worker model
+> needs porting to k8s Jobs (the master + Mongo + Selenium are here; the job spawner
+> is a follow-up). Dashboard/index-builder need their env + secret wiring
+> (control-plane DB URL, API keys) via ExternalSecrets.

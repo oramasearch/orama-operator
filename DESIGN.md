@@ -122,6 +122,7 @@ sidecar + Services + ConfigMap) is implemented and **verified on the live cluste
 (creates the topology, sets `Phase`, owner-GC cleans up). Per-component status is
 tracked in [`docs/components.md`](docs/components.md). The **control-plane Postgres**
 reconciler (CloudNativePG `Cluster`) and the four **data stores** (Redis / RabbitMQ /
-ClickHouse / Typesense as single-node StatefulSets) are also done + validated.
-**Next:** ingestion (index-builder + HARVEST), the bundled workers, dashboard, DISCO,
-and the Cloudflare API reconciler.
+ClickHouse / Typesense as single-node StatefulSets), plus **ingestion**
+(index-builder + HARVEST + Mongo + Selenium), the bundled **workers**, and the
+**dashboard** (+ Ingress) are all done + validated. **Next:** DISCO, the Cloudflare
+API reconciler (DNS + LB), the IdP shim, and `demoSeed`.

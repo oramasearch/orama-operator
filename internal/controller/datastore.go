@@ -39,7 +39,12 @@ func (r *OramaCloudV1Reconciler) reconcileDataStore(ctx context.Context, oc *ora
 	if spec.Placement == "central" && oc.Spec.Region.Role == "read" {
 		return nil
 	}
+	return r.provisionStatefulSet(ctx, oc, def)
+}
 
+// provisionStatefulSet unconditionally provisions a single-node StatefulSet + PVC +
+// Service for a def (used by data stores and by ingestion's Mongo).
+func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, def dataStoreDef) error {
 	name := oc.Name + "-" + def.component
 	lbls := labelsFor(oc, def.component)
 

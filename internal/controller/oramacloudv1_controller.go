@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -60,6 +61,9 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"broker", r.reconcileBroker},
 		{"analytics", r.reconcileAnalytics},
 		{"search", r.reconcileSearch},
+		{"ingestion", r.reconcileIngestion},
+		{"workers", r.reconcileWorkers},
+		{"dashboard", r.reconcileDashboard},
 	}
 	for _, s := range steps {
 		if err := s.fn(ctx, &oc); err != nil {
@@ -94,5 +98,6 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
+		Owns(&networkingv1.Ingress{}).
 		Complete(r)
 }
