@@ -115,9 +115,11 @@ install uses `role=primary` with everything enabled.
 
 ## Status
 
-🚧 **Scaffold — compiles.** API types, generated **CRD** (`config/crd/bases/` +
-`chart/crds/`) + DeepCopy, the manager entrypoint, install chart, helmfile, and
-samples are in place; `go build ./...` and `go vet ./...` are green. **Next:** the
-per-component **reconcile logic** in `internal/controller/` (start with the engine:
-writer StatefulSet + readers + Envoy), then the Cloudflare API reconciler, then the
-data-store operators. Optionally dry-run/install on the AKS test cluster.
+🚧 **Building — engine reconciler done + validated on AKS.** API types, generated
+CRD + DeepCopy, manager, install chart, helmfile, samples all in place (`go build` /
+`go vet` green). The **engine reconciler** (writer StatefulSet + readers + Envoy
+sidecar + Services + ConfigMap) is implemented and **verified on the live cluster**
+(creates the topology, sets `Phase`, owner-GC cleans up). Per-component status is
+tracked in [`docs/components.md`](docs/components.md). **Next:** control-plane
+Postgres (CNPG), then the data stores, ingestion, workers, dashboard, and the
+Cloudflare API reconciler.

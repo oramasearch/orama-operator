@@ -8,6 +8,8 @@ package controller
 import (
 	"context"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,10 +32,10 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile is the control loop. TODO: build out the per-component reconcilers
-// (engine writer/readers/envoy, control-plane Postgres via CNPG, ClickHouse,
-// RabbitMQ, Redis, Typesense, HARVEST+Mongo, index-builder + workers as Knative
-// Services, DISCO, dashboard, IdP shim, demo seed) driven by .spec.region.role.
+// Reconcile is the control loop. It reconciles each enabled component in turn,
+// driven by .spec.region.role. Components still TODO: control-plane Postgres (CNPG),
+// ClickHouse, RabbitMQ, Redis, Typesense, HARVEST+Mongo, index-builder + workers,
+// DISCO, dashboard, IdP shim, Cloudflare (DNS+LB via API), demo seed. See docs/.
 func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 
@@ -42,16 +44,37 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	l.Info("reconciling OramaCloudV1", "region", oc.Spec.Region.Name, "role", oc.Spec.Region.Role)
+	l.Info("reconciling OramaCloudV1", "region", oc.Spec.Region.Name, "role", oc.Spec.Region.Role, "profile", oc.Spec.Profile)
 
-	// TODO(scaffold): reconcile child components here. See DESIGN.md.
+	if err := r.reconcileEngine(ctx, &oc); err != nil {
+		l.Error(err, "engine reconcile failed")
+		r.setPhase(ctx, &oc, "Degraded")
+		return ctrl.Result{}, err
+	}
 
+	r.setPhase(ctx, &oc, "Provisioning")
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager wires the controller.
+// setPhase best-effort updates the CR's status phase.
+func (r *OramaCloudV1Reconciler) setPhase(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, phase string) {
+	if oc.Status.Phase == phase {
+		return
+	}
+	oc.Status.Phase = phase
+	oc.Status.ObservedGeneration = oc.Generation
+	if err := r.Status().Update(ctx, oc); err != nil {
+		log.FromContext(ctx).Error(err, "status update failed", "phase", phase)
+	}
+}
+
+// SetupWithManager wires the controller and the child resources it owns.
 func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.OramaCloudV1{}).
+		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
 		Complete(r)
 }

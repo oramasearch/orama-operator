@@ -67,12 +67,19 @@ cluster's ingress. Read tiers reach the primary's writer + Postgres via `spec.pe
 
 ```
 api/v1alpha1/        # the OramaCloudV1 CRD Go types (the design artifact)
-internal/controller/ # the reconciler (scaffolded; logic TBD)
+internal/controller/ # the reconcilers (engine in progress; others todo)
+cmd/main.go          # the manager entrypoint
 config/crd|samples/  # generated CRDs + example CRs
-chart/               # the install Helm chart (operator + CRDs + platform deps)
+chart/               # the install Helm chart (operator + CRDs + RBAC)
+helmfile.yaml        # composition: platform operators + this chart
+docs/                # dev guide, CRD reference, component reconcilers
 DESIGN.md            # architecture + decision log + open questions
+CLAUDE.md            # working rules (incl. docs discipline)
 Makefile             # standard kubebuilder targets (manifests/build/docker/helm)
 ```
+
+Docs are kept in lockstep with the source — see [`CLAUDE.md`](CLAUDE.md) and
+[`docs/`](docs/).
 
 ## Build (needs Go + kubebuilder toolchain)
 
