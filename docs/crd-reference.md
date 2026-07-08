@@ -13,6 +13,7 @@ truth: [`../api/v1alpha1/oramacloudv1_types.go`](../api/v1alpha1/oramacloudv1_ty
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). |
+| `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
 | `llm.default` | enum | `groq` | Provider used when a request doesn't name one. |
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing** via the CF API (`manageDNS`, `manageLoadBalancers`, `apiTokenSecretRef`, `zoneID`). |

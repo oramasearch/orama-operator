@@ -54,7 +54,8 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyOnFailure,
+					ImagePullSecrets: imagePullSecrets(oc),
+					RestartPolicy:    corev1.RestartPolicyOnFailure,
 					Containers: []corev1.Container{{
 						Name:  "seed",
 						Image: "curlimages/curl:8.10.1",

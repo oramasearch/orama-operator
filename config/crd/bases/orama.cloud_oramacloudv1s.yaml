@@ -684,6 +684,12 @@ spec:
                       Overrides maps a component key ("oramacore", "dashboard", "disco", ...) to a
                       full image ref, bypassing registry/tag for that component.
                     type: object
+                  pullSecretName:
+                    description: |-
+                      PullSecretName is a docker-registry Secret (in the CR's namespace) used to pull
+                      images from a private registry — e.g. the private Docker Hub repos the bridge's
+                      build/images tooling pushes to. Attached to every pod the operator creates.
+                    type: string
                   registry:
                     default: oramasearch
                     type: string

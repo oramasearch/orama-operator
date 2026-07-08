@@ -64,6 +64,7 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
+				ImagePullSecrets: imagePullSecrets(oc),
 				Containers: []corev1.Container{{
 					Name:           def.component,
 					Image:          storeImage(oc, def.component, def.image),

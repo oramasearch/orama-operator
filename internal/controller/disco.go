@@ -43,6 +43,7 @@ func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1
 		dep.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
+				ImagePullSecrets: imagePullSecrets(oc),
 				Containers: []corev1.Container{
 					{
 						Name:           "disco",

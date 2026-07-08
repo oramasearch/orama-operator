@@ -234,6 +234,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
+				ImagePullSecrets:              imagePullSecrets(oc),
 				NodeSelector:                  w.NodeSelector,
 				Tolerations:                   w.Tolerations,
 				InitContainers:                []corev1.Container{renderConfigInit(oc)},
@@ -283,6 +284,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		dep.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
+				ImagePullSecrets:              imagePullSecrets(oc),
 				InitContainers:                []corev1.Container{renderConfigInit(oc)},
 				Containers:                    containers,
 				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume(), dataEmptyDir()},

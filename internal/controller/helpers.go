@@ -6,6 +6,8 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	corev1 "k8s.io/api/core/v1"
+
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
 
@@ -24,6 +26,16 @@ func labelsFor(oc *oramav1alpha1.OramaCloudV1, component string) map[string]stri
 
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
+
+// imagePullSecrets returns the pull secret (if any) for pods, so private-registry images
+// (e.g. the private Docker Hub repos built by the bridge's build/images tooling) can be
+// pulled. nil when spec.images.pullSecretName is unset (public images need nothing).
+func imagePullSecrets(oc *oramav1alpha1.OramaCloudV1) []corev1.LocalObjectReference {
+	if oc.Spec.Images.PullSecretName == "" {
+		return nil
+	}
+	return []corev1.LocalObjectReference{{Name: oc.Spec.Images.PullSecretName}}
+}
 
 // componentImage resolves the image for a component: an explicit override wins,
 // otherwise registry/tag defaults (published oramasearch/* images).

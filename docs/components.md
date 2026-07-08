@@ -98,8 +98,10 @@ boots** (`Configuration loaded successfully` → `Starting web server on
 http://0.0.0.0:8080`); the ConfigMap shows only `master_api_key: "__MASTER_API_KEY__"`
 while the rendered file in the pod holds the real value.
 
-> **Follow-ups:** the `embeddings` ai-server image is a placeholder (`ImagePullBackOff`
-> until built — see the Dockerfile work); RabbitMQ writer→reader replication (currently
+> **Follow-ups:** the `embeddings` ai-server image is built by the bridge's
+> [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
+> tooling (`oramasearch/embeddings-server-py`, private Docker Hub) — set `spec.images.tag`
+> + `spec.images.pullSecretName` to use it; RabbitMQ writer→reader replication (currently
 > in-memory transport, single-node); HPA + the reader→primary-writer endpoint on read
 > tiers.
 

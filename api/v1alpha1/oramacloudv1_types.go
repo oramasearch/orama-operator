@@ -92,6 +92,11 @@ type ImagesSpec struct {
 	// full image ref, bypassing registry/tag for that component.
 	// +optional
 	Overrides map[string]string `json:"overrides,omitempty"`
+	// PullSecretName is a docker-registry Secret (in the CR's namespace) used to pull
+	// images from a private registry — e.g. the private Docker Hub repos the bridge's
+	// build/images tooling pushes to. Attached to every pod the operator creates.
+	// +optional
+	PullSecretName string `json:"pullSecretName,omitempty"`
 }
 
 // LLMSpec configures the answer/RAG language-model providers. v1 offers MULTIPLE
@@ -294,8 +299,8 @@ type OramaCloudV1Status struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// ComponentsReady counts reconciled/ready child components.
 	// +optional
-	ComponentsReady string `json:"componentsReady,omitempty"`
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	ComponentsReady    string `json:"componentsReady,omitempty"`
+	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
