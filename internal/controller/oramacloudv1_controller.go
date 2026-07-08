@@ -56,6 +56,10 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}{
 		{"engine", r.reconcileEngine},
 		{"controlDB", r.reconcileControlDB},
+		{"cache", r.reconcileCache},
+		{"broker", r.reconcileBroker},
+		{"analytics", r.reconcileAnalytics},
+		{"search", r.reconcileSearch},
 	}
 	for _, s := range steps {
 		if err := s.fn(ctx, &oc); err != nil {

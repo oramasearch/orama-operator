@@ -121,6 +121,7 @@ CRD + DeepCopy, manager, install chart, helmfile, samples all in place (`go buil
 sidecar + Services + ConfigMap) is implemented and **verified on the live cluster**
 (creates the topology, sets `Phase`, owner-GC cleans up). Per-component status is
 tracked in [`docs/components.md`](docs/components.md). The **control-plane Postgres**
-reconciler (CloudNativePG `Cluster`) is also done + validated. **Next:** the remaining
-data stores (ClickHouse / Redis / RabbitMQ / Typesense), ingestion, workers,
-dashboard, and the Cloudflare API reconciler.
+reconciler (CloudNativePG `Cluster`) and the four **data stores** (Redis / RabbitMQ /
+ClickHouse / Typesense as single-node StatefulSets) are also done + validated.
+**Next:** ingestion (index-builder + HARVEST), the bundled workers, dashboard, DISCO,
+and the Cloudflare API reconciler.

@@ -9,10 +9,10 @@ reconciler lands.
 | dashboard | — | `Deployment` + `Ingress` | ⬜ todo |
 | ingestion | — | index-builder `Deployment` + HARVEST (+ Mongo, Selenium) | ⬜ todo |
 | **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica) | ✅ **done** (validated on AKS) |
-| analytics | — | ClickHouse installation | ⬜ todo |
-| cache | — | Redis | ⬜ todo |
-| broker | — | RabbitMQ (central placement) | ⬜ todo |
-| search | — | Typesense cluster | ⬜ todo |
+| **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
+| **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
+| **broker** | `internal/controller/datastore.go` | RabbitMQ `StatefulSet` + Service (5672/15672), central placement | ✅ **done** (validated on AKS) |
+| **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
 | disco | — | `StatefulSet` + embeddings sidecar | ⬜ todo |
 | workers | — | one bundled-image `Deployment` | ⬜ todo |
 | cloudflare | — | CF DNS + Load Balancing via the CF API (external) | ⬜ todo |
@@ -72,3 +72,32 @@ CNPG bootstrapped Postgres; deleting the CR GC'd the cluster + its pods.
 
 > **Follow-ups:** the replica cluster's `streaming_replica` credentials/secret wiring;
 > exposing storage size + the DB name as CR fields; a Service alias the app can use.
+
+## Data stores — cache / broker / analytics / search (`internal/controller/datastore.go`)
+
+A single generic `reconcileDataStore` provisions each as a **single-node
+`StatefulSet` + PVC + Service**, parameterized per store (image, ports, data path,
+env). Honors the `DataStoreSpec`: `enabled`, `mode: external` (skip — the app uses
+the endpoint), and `placement: central` (only the primary runs it; read tiers skip
+and reference the primary's endpoint). Images are overridable via
+`spec.images.overrides.<component>`.
+
+| Store | Component | Image | Ports |
+|---|---|---|---|
+| Redis | `cache` | `redis:7-alpine` | 6379 |
+| RabbitMQ | `broker` | `rabbitmq:3.13-management` | 5672, 15672 |
+| ClickHouse | `analytics` | `clickhouse/clickhouse-server:24.8` | 8123, 9000 |
+| Typesense | `search` | `typesense/typesense:0.25.2` | 8108 |
+
+**Validated on AKS (2026-07-07):** a CR with all four enabled produced four
+StatefulSets + Services + PVCs; **all four pods booted `1/1`**; deleting the CR
+removed the workloads.
+
+> **PVC retention:** StatefulSet PVCs are **retained** on delete (the k8s default —
+> data is left in place, not auto-deleted). Orphaned PVCs are cleaned up manually.
+> (A configurable `delete`-on-teardown option can be added later.)
+
+> **Follow-ups:** these are single-node for light/medium. **Heavy/production** should
+> swap in the dedicated operators (Altinity ClickHouse, RabbitMQ cluster-operator) and
+> a clustered Typesense; wire credentials via ExternalSecrets (the Typesense API key
+> is a dev placeholder today); add readiness probes per store.
