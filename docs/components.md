@@ -37,14 +37,19 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
 Each component consumes `envFrom: [<cr>-config, <cr>-<component>-secret]` (its own
 secret only). Everything is owner-referenced → GC'd with the CR.
 
+- **JWT keypair (real, generated)** — the operator generates a **real RSA-2048
+  keypair** once (create-if-absent) into `<cr>-jwt` (private + public, for the
+  **dashboard** to sign the OramaCore writer JWT) and `<cr>-jwt-pub` (public **only**,
+  for the **engine** to verify). Least-privilege: the engine never receives the
+  private key. `JWT_ISSUER` is non-secret (in the ConfigMap).
+
 **Validated on AKS (2026-07-08):** per-component secrets are generated (the
 `search-secret` holds only `TYPESENSE_API_KEY`, **not** the Cloudflare token); the
 cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boot
 `1/1` off their scoped secrets.
 
-> **Follow-ups:** source real values from ExternalSecrets (`spec.secrets.backend`);
-> the JWT keys are placeholder strings, not a real RS256 keypair — generate a real
-> pair for the OramaCore writer JWT.
+> **Follow-ups:** source the remaining dummy values from ExternalSecrets
+> (`spec.secrets.backend`) for production. (The JWT keypair is already real + generated.)
 
 ## engine (`internal/controller/engine.go`)
 
