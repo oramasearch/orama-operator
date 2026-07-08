@@ -18,84 +18,129 @@ import (
 )
 
 func configMapName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-config" }
-func secretName(oc *oramav1alpha1.OramaCloudV1) string    { return oc.Name + "-secrets" }
+func componentSecretName(oc *oramav1alpha1.OramaCloudV1, component string) string {
+	return oc.Name + "-" + component + "-secret"
+}
 
-// reconcileBootstrap creates the shared config ConfigMap + dummy-value Secret every
-// component consumes via envFrom, so a fresh install is self-bootstrapping (no manual
-// secret pre-creation). The ConfigMap (non-sensitive endpoints/settings) is
-// reconciled every pass; the Secret is **create-if-absent** so real / rotated /
-// ExternalSecrets-managed values are never clobbered.
+// reconcileBootstrap creates the shared **non-secret** config ConfigMap every
+// component consumes via envFrom. Secrets are NOT put here — each component gets its
+// own scoped secret (see componentSecretData / ensureComponentSecret), so no pod
+// sees credentials it doesn't need.
 func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	n := oc.Name
-
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName(oc), Namespace: oc.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		cm.Labels = labelsFor(oc, "config")
 		cm.Data = map[string]string{
-			"REGION":               oc.Spec.Region.Name,
-			"ROLE":                 oc.Spec.Region.Role,
-			"POSTGRES_HOST":        n + "-controldb-rw", // CNPG read/write Service
-			"POSTGRES_PORT":        "5432",
-			"POSTGRES_DB":          controlDBName,
-			"CLICKHOUSE_HOST":      n + "-analytics",
-			"CLICKHOUSE_PORT":      "8123",
-			"REDIS_HOST":           n + "-cache",
-			"REDIS_PORT":           "6379",
-			"RABBITMQ_HOST":        n + "-broker",
-			"RABBITMQ_PORT":        "5672",
-			"TYPESENSE_HOST":       n + "-search",
-			"TYPESENSE_PORT":       "8108",
-			"TYPESENSE_DATA_DIR":   "/data",
-			"TYPESENSE_ENABLE_CORS": "true",
-			"DISCO_URL":            "http://" + n + "-disco:8080",
-			"ORAMACORE_WRITER_URL": "http://" + n + "-writer:8080",
-			"ORAMACORE_READER_URL": "http://" + n + "-reader",
-			"EMBEDDINGS_URL":       "http://" + n + "-disco:50051",
-			"KC_HTTP_ENABLED":      "true",
-			"KC_PROXY_HEADERS":     "xforwarded",
+			"REGION":                      oc.Spec.Region.Name,
+			"ROLE":                        oc.Spec.Region.Role,
+			"POSTGRES_HOST":               n + "-controldb-rw",
+			"POSTGRES_PORT":               "5432",
+			"POSTGRES_DB":                 controlDBName,
+			"CLICKHOUSE_HOST":             n + "-analytics",
+			"CLICKHOUSE_PORT":             "8123",
+			"REDIS_HOST":                  n + "-cache",
+			"REDIS_PORT":                  "6379",
+			"RABBITMQ_HOST":               n + "-broker",
+			"RABBITMQ_PORT":               "5672",
+			"TYPESENSE_HOST":              n + "-search",
+			"TYPESENSE_PORT":              "8108",
+			"TYPESENSE_DATA_DIR":          "/data",
+			"TYPESENSE_ENABLE_CORS":       "true",
+			"DISCO_URL":                   "http://" + n + "-disco:8080",
+			"ORAMACORE_WRITER_URL":        "http://" + n + "-writer:8080",
+			"ORAMACORE_READER_URL":        "http://" + n + "-reader",
+			"EMBEDDINGS_URL":              "http://" + n + "-disco:50051",
+			"KC_HTTP_ENABLED":             "true",
+			"KC_PROXY_HEADERS":            "xforwarded",
 			"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
 		}
 		return controllerutil.SetControllerReference(oc, cm, r.Scheme)
-	}); err != nil {
-		return err
-	}
-
-	// Secret: create-if-absent with DUMMY dev values. Real deployments override these
-	// (edit in place, or point spec.secrets at ExternalSecrets) — the operator won't
-	// overwrite an existing secret.
-	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: secretName(oc)}, &corev1.Secret{}); err == nil {
-		return nil // exists — leave it
-	} else if !apierrors.IsNotFound(err) {
-		return err
-	}
-	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: secretName(oc), Namespace: oc.Namespace, Labels: labelsFor(oc, "secrets")},
-		StringData: map[string]string{
-			// ⚠ DUMMY placeholders for a self-contained dev install. Override in prod.
-			"MASTER_API_KEY":              "dev-master-api-key",
-			"TYPESENSE_API_KEY":           "dev-typesense-api-key",
-			"POSTGRES_PASSWORD":           "dev-postgres-password",
-			"REDIS_PASSWORD":              "dev-redis-password",
-			"RABBITMQ_PASSWORD":           "dev-rabbitmq-password",
-			"KC_BOOTSTRAP_ADMIN_PASSWORD": "dev-keycloak-password",
-			"JWT_PRIVATE_KEY":             "dev-jwt-private-key-REPLACE-ME",
-			"JWT_PUBLIC_KEY":              "dev-jwt-public-key-REPLACE-ME",
-			"GROQ_API_KEY":                "dev-groq-api-key",
-			"OPENAI_API_KEY":              "dev-openai-api-key",
-			"ANTHROPIC_API_KEY":           "dev-anthropic-api-key",
-			"CLOUDFLARE_API_TOKEN":        "dev-cloudflare-api-token",
-		},
-	}
-	if err := controllerutil.SetControllerReference(oc, sec, r.Scheme); err != nil {
-		return err
-	}
-	return r.Create(ctx, sec)
+	})
+	return err
 }
 
-// envFromShared feeds the shared ConfigMap + Secret to a component's containers.
-func envFromShared(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvFromSource {
-	return []corev1.EnvFromSource{
-		{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: configMapName(oc)}}},
-		{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: secretName(oc)}}},
+// componentSecretData returns the DUMMY dev credentials a component needs — scoped so
+// each component's secret holds only its own keys. Returns nil for components that
+// need no secret (they get the ConfigMap only). Real deployments override these
+// (edit in place, or source from ExternalSecrets).
+func componentSecretData(component string) map[string]string {
+	switch component {
+	case "engine":
+		return map[string]string{
+			"MASTER_API_KEY":    "dev-master-api-key",
+			"JWT_PRIVATE_KEY":   "dev-jwt-private-key-REPLACE-ME",
+			"JWT_PUBLIC_KEY":    "dev-jwt-public-key-REPLACE-ME",
+			"GROQ_API_KEY":      "dev-groq-api-key",
+			"OPENAI_API_KEY":    "dev-openai-api-key",
+			"ANTHROPIC_API_KEY": "dev-anthropic-api-key",
+		}
+	case "search":
+		return map[string]string{"TYPESENSE_API_KEY": "dev-typesense-api-key"}
+	case "cache":
+		return map[string]string{"REDIS_PASSWORD": "dev-redis-password"}
+	case "broker":
+		return map[string]string{"RABBITMQ_DEFAULT_USER": "orama", "RABBITMQ_DEFAULT_PASS": "dev-rabbitmq-password"}
+	case "analytics":
+		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
+	case "disco":
+		return map[string]string{"DISCO_SECRET": "dev-disco-secret", "CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
+	case "keycloak":
+		return map[string]string{"KC_BOOTSTRAP_ADMIN_PASSWORD": "dev-keycloak-password"}
+	case "index-builder":
+		return map[string]string{"TYPESENSE_API_KEY": "dev-typesense-api-key", "MASTER_API_KEY": "dev-master-api-key"}
+	case "harvest":
+		return map[string]string{"AWS_ACCESS_KEY_ID": "dev", "AWS_SECRET_ACCESS_KEY": "dev-secret"}
+	case "dashboard":
+		return map[string]string{
+			"MASTER_API_KEY":    "dev-master-api-key",
+			"JWT_PRIVATE_KEY":   "dev-jwt-private-key-REPLACE-ME",
+			"POSTGRES_PASSWORD": "dev-postgres-password",
+			"STRIPE_SECRET_KEY": "dev-stripe-secret-key",
+		}
+	case "workers":
+		return map[string]string{
+			"MASTER_API_KEY": "dev-master-api-key",
+			"OPENAI_API_KEY": "dev-openai-api-key",
+			"GROQ_API_KEY":   "dev-groq-api-key",
+		}
+	default:
+		return nil // no secret (e.g. selenium, harvest-mongo)
 	}
+}
+
+// ensureComponentSecret creates a component's scoped secret (create-if-absent, dummy
+// values) if the component needs one. Returns whether the component has a secret.
+func (r *OramaCloudV1Reconciler) ensureComponentSecret(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, component string) (bool, error) {
+	data := componentSecretData(component)
+	if data == nil {
+		return false, nil
+	}
+	name := componentSecretName(oc, component)
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, &corev1.Secret{}); err == nil {
+		return true, nil // exists — never overwrite
+	} else if !apierrors.IsNotFound(err) {
+		return false, err
+	}
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace, Labels: labelsFor(oc, component)},
+		StringData: data,
+	}
+	if err := controllerutil.SetControllerReference(oc, sec, r.Scheme); err != nil {
+		return false, err
+	}
+	return true, r.Create(ctx, sec)
+}
+
+// envFromFor feeds the shared ConfigMap and (if present) the component's own secret.
+func envFromFor(oc *oramav1alpha1.OramaCloudV1, component string) []corev1.EnvFromSource {
+	src := []corev1.EnvFromSource{
+		{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: configMapName(oc)}}},
+	}
+	if componentSecretData(component) != nil {
+		src = append(src, corev1.EnvFromSource{
+			SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: componentSecretName(oc, component)}},
+		})
+	}
+	return src
 }

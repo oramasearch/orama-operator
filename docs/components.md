@@ -19,30 +19,32 @@ reconciler lands.
 | **idp** (keycloak) | `internal/controller/idp.go` | Keycloak `Deployment` + Service (when `idp.provider=keycloak`) | ✅ **done** (validated on AKS) |
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
 
-## Bootstrap — config + secrets (`internal/controller/config.go`)
+## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 
 Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creation):
 
-- **`<cr>-config` ConfigMap** — non-sensitive endpoints/settings (service DNS for
+- **`<cr>-config` ConfigMap** (shared, non-sensitive) — service DNS for
   Postgres/ClickHouse/Redis/RabbitMQ/Typesense/DISCO/OramaCore, ports, Typesense +
-  Keycloak non-secret config). Reconciled every pass.
-- **`<cr>-secrets` Secret** — **dummy** dev credential values (`MASTER_API_KEY`,
-  `TYPESENSE_API_KEY`, DB/Redis/RabbitMQ passwords, `KC_BOOTSTRAP_ADMIN_PASSWORD`,
-  JWT keys, LLM keys, Cloudflare token). **Create-if-absent** — the operator never
-  overwrites an existing Secret, so real / rotated / ExternalSecrets-managed values
-  are preserved.
+  Keycloak non-secret config. Reconciled every pass.
+- **Per-component secrets** `<cr>-<component>-secret` — each holds **only the dummy
+  credentials that component needs** (`componentSecretData`). e.g. `search-secret` =
+  `TYPESENSE_API_KEY`; `cache-secret` = `REDIS_PASSWORD`; `engine-secret` = master
+  key + JWT keys + LLM keys; `dashboard-secret` = DB/JWT/Stripe. **No shared blob** —
+  a pod never sees a credential it doesn't use. **Create-if-absent** — the operator
+  never overwrites an existing secret, so real / rotated / ExternalSecrets values are
+  preserved. Components with no secret needs (selenium, mongo) get none.
 
-Every component consumes both via **`envFrom`**, so config/secret keys land as env
-vars in each pod. Owner-referenced → GC'd with the CR.
+Each component consumes `envFrom: [<cr>-config, <cr>-<component>-secret]` (its own
+secret only). Everything is owner-referenced → GC'd with the CR.
 
-**Validated on AKS (2026-07-08):** the ConfigMap + Secret are generated (e.g.
-`TYPESENSE_API_KEY=dev-typesense-api-key`), and **Typesense + Keycloak boot `1/1`**
-— both require their secret values to start, proving the wiring.
+**Validated on AKS (2026-07-08):** per-component secrets are generated (the
+`search-secret` holds only `TYPESENSE_API_KEY`, **not** the Cloudflare token); the
+cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boot
+`1/1` off their scoped secrets.
 
-> **Follow-ups:** the shared Secret is fed to every pod (broad); production should
-> scope per-component + source from ExternalSecrets (`spec.secrets.backend`). JWT
-> keys are placeholder strings, not a real RS256 keypair — generate a real pair for
-> the OramaCore writer JWT.
+> **Follow-ups:** source real values from ExternalSecrets (`spec.secrets.backend`);
+> the JWT keys are placeholder strings, not a real RS256 keypair — generate a real
+> pair for the OramaCore writer JWT.
 
 ## engine (`internal/controller/engine.go`)
 

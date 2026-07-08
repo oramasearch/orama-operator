@@ -76,6 +76,9 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	if !oc.Spec.Components.Engine.Enabled {
 		return nil
 	}
+	if _, err := r.ensureComponentSecret(ctx, oc, "engine"); err != nil {
+		return fmt.Errorf("engine secret: %w", err)
+	}
 	if err := r.reconcileEngineConfig(ctx, oc); err != nil {
 		return fmt.Errorf("engine config: %w", err)
 	}
@@ -226,7 +229,7 @@ func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 		Image:          componentImage(oc, "oramacore", "oramacore"),
 		Ports:          []corev1.ContainerPort{{Name: "http", ContainerPort: oramacorePort}},
 		Env:            []corev1.EnvVar{{Name: "RUST_LOG", Value: "oramacore=info,warn"}},
-		EnvFrom:        envFromShared(oc),
+		EnvFrom:        envFromFor(oc, "engine"),
 		StartupProbe:   startup,
 		ReadinessProbe: readiness,
 		LivenessProbe:  liveness,

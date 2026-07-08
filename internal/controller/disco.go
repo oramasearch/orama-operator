@@ -29,6 +29,9 @@ func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1
 	if !oc.Spec.Components.Disco.Enabled {
 		return nil
 	}
+	if _, err := r.ensureComponentSecret(ctx, oc, "disco"); err != nil {
+		return err
+	}
 	name := oc.Name + "-disco"
 	lbls := labelsFor(oc, "disco")
 
@@ -45,7 +48,7 @@ func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1
 						Name:    "disco",
 						Image:   componentImage(oc, "disco", "disco"),
 						Ports:   []corev1.ContainerPort{{Name: "http", ContainerPort: discoPort}},
-						EnvFrom: envFromShared(oc),
+						EnvFrom: envFromFor(oc, "disco"),
 						Env: []corev1.EnvVar{
 							{Name: "DISCO_PORT", Value: "8080"},
 							{Name: "EMBEDDINGS_ENDPOINT", Value: "127.0.0.1:50051"},

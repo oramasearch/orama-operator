@@ -31,6 +31,9 @@ type appDef struct {
 
 // reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
 func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, def appDef) error {
+	if _, err := r.ensureComponentSecret(ctx, oc, def.component); err != nil {
+		return err
+	}
 	name := oc.Name + "-" + def.component
 	lbls := labelsFor(oc, def.component)
 	replicas := def.replicas
@@ -52,7 +55,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 					Args:    def.args,
 					Ports:   []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
 					Env:     def.env,
-					EnvFrom: envFromShared(oc),
+					EnvFrom: envFromFor(oc, def.component),
 				}},
 			},
 		}

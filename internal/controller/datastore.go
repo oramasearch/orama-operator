@@ -45,6 +45,9 @@ func (r *OramaCloudV1Reconciler) reconcileDataStore(ctx context.Context, oc *ora
 // provisionStatefulSet unconditionally provisions a single-node StatefulSet + PVC +
 // Service for a def (used by data stores and by ingestion's Mongo).
 func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, def dataStoreDef) error {
+	if _, err := r.ensureComponentSecret(ctx, oc, def.component); err != nil {
+		return err
+	}
 	name := oc.Name + "-" + def.component
 	lbls := labelsFor(oc, def.component)
 
@@ -62,7 +65,7 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 					Image:        storeImage(oc, def.component, def.image),
 					Ports:        def.ports,
 					Env:          def.env,
-					EnvFrom:      envFromShared(oc),
+					EnvFrom:      envFromFor(oc, def.component),
 					Args:         def.args,
 					VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: def.dataPath}},
 				}},
