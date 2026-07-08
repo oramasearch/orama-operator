@@ -1,0 +1,33 @@
+apiVersion: orama.cloud/v1alpha1
+kind: OramaCloudV1
+metadata:
+  name: v1-eu
+spec:
+  region:
+    name: eu
+    role: read             # regional read tier; points at the primary
+  idp:
+    provider: keycloak
+  secrets:
+    backend: aws
+    storeRef: orama-secretstore
+  peers:
+    - name: us-east
+      region: us-east
+      writerEndpoint: writer.us-east.example.com:8080
+      postgresEndpoint: pg.us-east.example.com:5432
+  components:
+    engine:
+      enabled: true
+      reader: { replicas: 3 }
+      envoy: true
+    dashboard: { enabled: true, host: eu.app.example.com }
+    controlDB: { enabled: true, mode: in-cluster }   # streams from the primary
+    cache:     { enabled: true, mode: in-cluster }
+    # write-path components disabled on a read tier:
+    ingestion: { enabled: false }
+    analytics: { enabled: false }
+    broker:    { enabled: false }
+    search:    { enabled: false }
+    disco:     { enabled: true }
+    workers:   { enabled: true, runtime: node, knative: true }

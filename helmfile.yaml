@@ -1,0 +1,60 @@
+# Composition layer: platform operators (upstream OSS charts) + the v1 operator.
+# Usage: helmfile apply    (installs everything in order)
+#        helmfile -l app=orama-cloud-v1-operator apply   (just our operator)
+#
+# Toggle any platform operator your cluster already provides to installed: false.
+
+repositories:
+  - name: knative-operator
+    url: https://knative.github.io/operator
+  - name: external-secrets
+    url: https://charts.external-secrets.io
+  - name: cnpg
+    url: https://cloudnative-pg.github.io/charts
+  - name: bitnami
+    url: https://charts.bitnami.com/bitnami
+
+environments:
+  default:
+    values:
+      - platformDeps:
+          knative: true
+          externalSecrets: true
+          cloudnativePG: true
+          rabbitmq: true
+
+releases:
+  # ---- platform operators (building blocks the v1 operator reconciles against) ----
+  - name: knative-operator
+    namespace: knative-operator
+    chart: knative-operator/knative-operator
+    installed: {{ .Values.platformDeps.knative }}
+
+  - name: external-secrets
+    namespace: external-secrets
+    chart: external-secrets/external-secrets
+    installed: {{ .Values.platformDeps.externalSecrets }}
+
+  - name: cloudnative-pg
+    namespace: cnpg-system
+    chart: cnpg/cloudnative-pg
+    installed: {{ .Values.platformDeps.cloudnativePG }}
+
+  - name: rabbitmq-cluster-operator
+    namespace: rabbitmq-system
+    chart: bitnami/rabbitmq-cluster-operator
+    installed: {{ .Values.platformDeps.rabbitmq }}
+
+  # NOTE: the Altinity ClickHouse operator installs via its published manifest, not a
+  # Helm chart on a stable repo — add it here once the chart source is pinned.
+
+  # ---- the Orama Cloud v1 operator (this repo) ----
+  - name: orama-cloud-v1-operator
+    namespace: orama-system
+    createNamespace: true
+    chart: ./chart
+    labels:
+      app: orama-cloud-v1-operator
+    needs:
+      - external-secrets/external-secrets
+      - knative-operator/knative-operator

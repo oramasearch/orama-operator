@@ -1,0 +1,32 @@
+apiVersion: orama.cloud/v1alpha1
+kind: OramaCloudV1
+metadata:
+  name: v1-us-east
+spec:
+  region:
+    name: us-east
+    role: primary          # write path + stateful stores live here
+  idp:
+    provider: keycloak     # none | keycloak | firebase | clerk
+  secrets:
+    backend: aws           # External Secrets Operator backend
+    storeRef: orama-secretstore
+  llm:
+    provider: groq         # vllm | groq | openai | anthropic
+    apiKeySecretRef: { name: groq-api-key }
+  demoSeed: true
+  components:
+    engine:
+      enabled: true
+      writer: { gpu: true }
+      reader: { replicas: 3, hpa: { minReplicas: 3, maxReplicas: 8, targetCPUUtilization: 70 } }
+      envoy: true
+    dashboard: { enabled: true, host: app.example.com }
+    ingestion: { enabled: true, harvest: true, indexBuilderKnative: true }
+    controlDB: { enabled: true, mode: in-cluster }   # CloudNativePG
+    analytics: { enabled: true, mode: in-cluster }   # ClickHouse
+    cache:     { enabled: true, mode: in-cluster }   # Redis
+    broker:    { enabled: true, mode: in-cluster }   # RabbitMQ
+    search:    { enabled: true, mode: in-cluster }   # Typesense
+    disco:     { enabled: true }
+    workers:   { enabled: true, runtime: node, knative: true }

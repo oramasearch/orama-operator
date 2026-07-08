@@ -1,0 +1,8 @@
+orama-cloud-v1-operator installed into namespace {{ .Release.Namespace }}.
+
+Next: apply one OramaCloudV1 per cluster. Examples in the repo:
+  kubectl apply -f config/samples/primary-us-east.yaml   # the primary region
+  kubectl apply -f config/samples/read-eu.yaml           # a read tier
+
+Watch it reconcile:
+  kubectl get ocv1 -A -w

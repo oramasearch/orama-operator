@@ -1,0 +1,16 @@
+# The operator image (reused, not built here).
+operator:
+  image:
+    repository: oramasearch/orama-cloud-v1-operator
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
+serviceAccount:
+  name: orama-cloud-v1-operator
+
+# Helm applies CRDs from chart/crds before templates (generate them with make manifests).
+installCRDs: true
