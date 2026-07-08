@@ -120,6 +120,7 @@ CRD + DeepCopy, manager, install chart, helmfile, samples all in place (`go buil
 `go vet` green). The **engine reconciler** (writer StatefulSet + readers + Envoy
 sidecar + Services + ConfigMap) is implemented and **verified on the live cluster**
 (creates the topology, sets `Phase`, owner-GC cleans up). Per-component status is
-tracked in [`docs/components.md`](docs/components.md). **Next:** control-plane
-Postgres (CNPG), then the data stores, ingestion, workers, dashboard, and the
-Cloudflare API reconciler.
+tracked in [`docs/components.md`](docs/components.md). The **control-plane Postgres**
+reconciler (CloudNativePG `Cluster`) is also done + validated. **Next:** the remaining
+data stores (ClickHouse / Redis / RabbitMQ / Typesense), ingestion, workers,
+dashboard, and the Cloudflare API reconciler.

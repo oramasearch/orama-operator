@@ -8,7 +8,7 @@ reconciler lands.
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (+GPU, PVC) on the primary; readers `Deployment` (+Envoy sidecar); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
 | dashboard | — | `Deployment` + `Ingress` | ⬜ todo |
 | ingestion | — | index-builder `Deployment` + HARVEST (+ Mongo, Selenium) | ⬜ todo |
-| controlDB | — | CloudNativePG `Cluster` (primary / replica) | ⬜ todo |
+| **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica) | ✅ **done** (validated on AKS) |
 | analytics | — | ClickHouse installation | ⬜ todo |
 | cache | — | Redis | ⬜ todo |
 | broker | — | RabbitMQ (central placement) | ⬜ todo |
@@ -50,5 +50,25 @@ Driven by `spec.region.role`:
 the ConfigMap; the CR reached `Phase=Provisioning`; deleting the CR GC'd everything.
 
 > **Follow-ups:** the `config.yaml` is minimal — full OramaCore config (cluster
-> registry, API keys via ExternalSecrets, reader→writer wiring) is next, as are
-> readiness probes + HPA + the reader→primary-writer endpoint on read tiers.
+> registry, API keys via ExternalSecrets, reader→writer wiring) is next, as are HPA +
+> the reader→primary-writer endpoint on read tiers.
+
+## controlDB (`internal/controller/controldb.go`)
+
+The control-plane Postgres (PlanetScale in prod) as a **CloudNativePG `Cluster`**,
+provisioned as an **unstructured** object so the operator stays decoupled from CNPG's
+Go types/version. Requires the CNPG operator (installed via the helmfile).
+
+- **Primary** — a fresh cluster, `spec.instances` from the profile (light 1 / medium
+  2 / heavy 3), `10Gi` storage, `bootstrap.initdb` creating the `oramacore` database.
+- **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** streaming
+  from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
+- `mode: external` skips creation (the app uses the external endpoint). Owner ref on
+  the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs).
+
+**Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
+primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
+CNPG bootstrapped Postgres; deleting the CR GC'd the cluster + its pods.
+
+> **Follow-ups:** the replica cluster's `streaming_replica` credentials/secret wiring;
+> exposing storage size + the DB name as CR fields; a Service alias the app can use.

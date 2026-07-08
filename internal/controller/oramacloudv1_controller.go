@@ -33,6 +33,7 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is the control loop. It reconciles each enabled component in turn,
 // driven by .spec.region.role. Components still TODO: control-plane Postgres (CNPG),
@@ -48,10 +49,20 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	l.Info("reconciling OramaCloudV1", "region", oc.Spec.Region.Name, "role", oc.Spec.Region.Role, "profile", oc.Spec.Profile)
 
-	if err := r.reconcileEngine(ctx, &oc); err != nil {
-		l.Error(err, "engine reconcile failed")
-		r.setPhase(ctx, &oc, "Degraded")
-		return ctrl.Result{}, err
+	// Reconcile each component in order. Add new component reconcilers to this list.
+	steps := []struct {
+		name string
+		fn   func(context.Context, *oramav1alpha1.OramaCloudV1) error
+	}{
+		{"engine", r.reconcileEngine},
+		{"controlDB", r.reconcileControlDB},
+	}
+	for _, s := range steps {
+		if err := s.fn(ctx, &oc); err != nil {
+			l.Error(err, "component reconcile failed", "component", s.name)
+			r.setPhase(ctx, &oc, "Degraded")
+			return ctrl.Result{}, err
+		}
 	}
 
 	r.setPhase(ctx, &oc, "Provisioning")
