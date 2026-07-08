@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,6 +31,7 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets;persistentvolumeclaims;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is the control loop. It reconciles each enabled component in turn,
@@ -76,5 +78,6 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&policyv1.PodDisruptionBudget{}).
 		Complete(r)
 }

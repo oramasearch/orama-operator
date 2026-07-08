@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -146,8 +147,14 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 	}); err != nil {
 		return err
 	}
-	return r.upsertService(ctx, oc, name, "writer",
-		[]corev1.ServicePort{{Name: "http", Port: oramacorePort, TargetPort: intstr.FromInt32(oramacorePort)}})
+	if err := r.upsertService(ctx, oc, name, "writer",
+		[]corev1.ServicePort{{Name: "http", Port: oramacorePort, TargetPort: intstr.FromInt32(oramacorePort)}}); err != nil {
+		return err
+	}
+	// The writer is a singleton: block voluntary disruption (drains/autoscaler) so it
+	// isn't casually evicted. Node maintenance must consciously handle it (its
+	// graceful shutdown persists data, but availability drops during any move).
+	return r.upsertPDB(ctx, oc, name, "writer", 0)
 }
 
 func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
@@ -189,18 +196,39 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 	if useEnvoy {
 		target = envoyPort
 	}
-	return r.upsertService(ctx, oc, name, "reader",
-		[]corev1.ServicePort{{Name: "http", Port: envoyPort, TargetPort: intstr.FromInt32(target)}})
+	if err := r.upsertService(ctx, oc, name, "reader",
+		[]corev1.ServicePort{{Name: "http", Port: envoyPort, TargetPort: intstr.FromInt32(target)}}); err != nil {
+		return err
+	}
+	// Readers can lose one at a time during disruptions (keeps the rest serving).
+	return r.upsertPDB(ctx, oc, name, "reader", 1)
 }
 
 // ---- shared builders ----
 
 func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
+	// OramaCore serves GET /health at root (oramacore/src/web_server/api/mod.rs;
+	// also the prod ALB/Envoy health path).
+	health := func() *corev1.Probe {
+		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+			Path: "/health", Port: intstr.FromInt32(oramacorePort)}}}
+	}
+	// startup gates liveness/readiness so a slow index-load boot isn't killed.
+	startup := health()
+	startup.PeriodSeconds, startup.FailureThreshold = 10, 30 // ~5 min to become live
+	readiness := health()
+	readiness.PeriodSeconds, readiness.TimeoutSeconds, readiness.FailureThreshold = 10, 3, 3
+	liveness := health()
+	liveness.PeriodSeconds, liveness.TimeoutSeconds, liveness.FailureThreshold = 15, 3, 3
+
 	return corev1.Container{
-		Name:  "oramacore",
-		Image: componentImage(oc, "oramacore", "oramacore"),
-		Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: oramacorePort}},
-		Env:   []corev1.EnvVar{{Name: "RUST_LOG", Value: "oramacore=info,warn"}},
+		Name:           "oramacore",
+		Image:          componentImage(oc, "oramacore", "oramacore"),
+		Ports:          []corev1.ContainerPort{{Name: "http", ContainerPort: oramacorePort}},
+		Env:            []corev1.EnvVar{{Name: "RUST_LOG", Value: "oramacore=info,warn"}},
+		StartupProbe:   startup,
+		ReadinessProbe: readiness,
+		LivenessProbe:  liveness,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "config", MountPath: "/app/config.yaml", SubPath: "config.yaml"},
 			{Name: "data", MountPath: "/app/.data"},
@@ -257,6 +285,19 @@ func (r *OramaCloudV1Reconciler) upsertService(ctx context.Context, oc *oramav1a
 		svc.Spec.Selector = lbls
 		svc.Spec.Ports = ports
 		return controllerutil.SetControllerReference(oc, svc, r.Scheme)
+	})
+	return err
+}
+
+func (r *OramaCloudV1Reconciler) upsertPDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component string, maxUnavailable int) error {
+	lbls := labelsFor(oc, component)
+	mu := intstr.FromInt(maxUnavailable)
+	pdb := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, pdb, func() error {
+		pdb.Labels = lbls
+		pdb.Spec.MaxUnavailable = &mu
+		pdb.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
+		return controllerutil.SetControllerReference(oc, pdb, r.Scheme)
 	})
 	return err
 }

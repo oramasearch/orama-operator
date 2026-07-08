@@ -36,6 +36,14 @@ Driven by `spec.region.role`:
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets
   `terminationGracePeriodSeconds: 300` (readers: 60) so k8s doesn't SIGKILL the flush
   at the default 30s.
+- **Health probes** — startup / readiness / liveness all hit `GET /health` on `:8080`
+  (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path). The **startup probe**
+  (`failureThreshold: 30 × 10s` ≈ 5 min) gates the others so a slow index-load boot
+  isn't killed; readiness gates Service routing; liveness restarts a hung pod.
+- **Disruption budgets** — the **writer** gets a PDB with `maxUnavailable: 0` (it's a
+  singleton — voluntary disruptions like node drains/autoscaler are blocked so it
+  isn't casually evicted; **node maintenance must consciously handle it**). **Readers**
+  get `maxUnavailable: 1` (roll one at a time, keep the rest serving).
 
 **Validated on AKS (2026-07-07):** applying a `primary` CR created the writer STS
 (+ dynamically-provisioned PVC), the 2-replica reader Deployment, both Services, and
