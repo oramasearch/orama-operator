@@ -40,11 +40,23 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 		return nil
 	}
 
-	// HARVEST crawler master (Node/Express job API).
+	// HARVEST crawler MASTER (Node/Express job API on :8080). The worker is a per-crawl one-shot
+	// the master spawns — running the worker as a Deployment CrashLoops (operator#12), so we run
+	// the master. Its worker-spawning (Podman → WORKER_IMAGE) still needs a k8s-Jobs port to crawl.
+	n := oc.Name
 	if err := r.reconcileApp(ctx, oc, appDef{
-		component: "harvest",
-		image:     componentImage(oc, "harvest", "harvest"),
+		component: "harvest-master",
+		image:     componentImage(oc, "harvest-master", "harvest-master"),
 		port:      8080,
+		env: []corev1.EnvVar{
+			{Name: "APP_ENV", Value: "production"},
+			{Name: "EXPRESS_PORT", Value: "8080"},
+			{Name: "MONGODB_URL", Value: "mongodb://" + n + "-harvest-mongo:27017/harvest"},
+			{Name: "AMQP_HOST", Value: "amqp://orama:dev-rabbitmq-password@" + n + "-broker:5672"},
+			{Name: "REDIS_HOST", Value: "redis://:dev-redis-password@" + n + "-cache:6379"},
+			{Name: "MASTER_URI", Value: "http://" + n + "-harvest-master:8080"},
+			{Name: "WORKER_IMAGE", Value: componentImage(oc, "harvest", "harvest")},
+		},
 	}); err != nil {
 		return err
 	}

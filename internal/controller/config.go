@@ -198,12 +198,18 @@ func componentSecretData(component string) map[string]string {
 			"CLOUDFLARE_API_TOKEN":        "dev-cloudflare-token",
 			"CLOUDFLARE_ACCOUNT_ID":       "dev-cloudflare-account",
 		}
-	case "harvest": // crawler: S3 exports, Ably, job-signing
+	case "harvest": // crawler worker (one-shot): S3 exports, Ably, job-signing
 		return map[string]string{
 			"AWS_ACCESS_KEY_ID":     "dev",
 			"AWS_SECRET_ACCESS_KEY": "dev-secret",
 			"ABLY_API_KEY":          "dev-ably-api-key",
 			"HARVEST_SIGN":          "dev-harvest-signature",
+		}
+	case "harvest-master": // crawler master (job API): job-signing + worker-image pull creds
+		return map[string]string{
+			"HARVEST_SIGN": "dev-harvest-signature",
+			"GITHUB_PAT":   "dev-github-pat",
+			"GHCR_TOKEN":   "dev-ghcr-token",
 		}
 	case "dashboard": // app.orama.com control plane — the widest secret surface
 		return map[string]string{
