@@ -194,9 +194,14 @@ ai_server:
       - %s
     total_threads: 8
   llm:
+    local: false
     port: 8000
     host: 127.0.0.1
     model: "Qwen/Qwen2.5-3B-Instruct"
+  remote_llms:
+    - provider: groq
+      api_key: "__GROQ_API_KEY__"
+      default_model: llama-3.3-70b-versatile
 `, brokerHost, brokerHost, embHost, ep)
 }
 
@@ -278,7 +283,7 @@ func renderConfigInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	return corev1.Container{
 		Name:    "render-config",
 		Image:   "busybox:1.37",
-		Command: []string{"sh", "-c", `sed "s#__MASTER_API_KEY__#${MASTER_API_KEY}#g" /tmpl/config.yaml > /etc/oramacore/config.yaml`},
+		Command: []string{"sh", "-c", `sed -e "s#__MASTER_API_KEY__#${MASTER_API_KEY}#g" -e "s#__GROQ_API_KEY__#${GROQ_API_KEY}#g" /tmpl/config.yaml > /etc/oramacore/config.yaml`},
 		EnvFrom: envFromFor(oc, "engine"),
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "config", MountPath: "/tmpl"},
