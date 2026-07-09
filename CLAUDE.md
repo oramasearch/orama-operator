@@ -18,17 +18,25 @@ against production-readiness, not "does a pod start."
 2. **Codify all operational complexity in the operator** (first choice) or the **helmfile**
    (platform prereqs only, e.g. CNPG / an ingress controller). **No out-of-band `kubectl`, no
    undocumented manual steps.** If an operator can own it, the operator owns it.
-3. **Datastore schema & topology are declarative CRDs — one per datastore.** Each store's
-   schema/state is its own owned, reconciled CRD (e.g. a Postgres-schema CRD, a RabbitMQ-topology
-   CRD, a ClickHouse-schema CRD, …), applied deterministically and idempotently — **not**
-   imperative one-shot Jobs or app-boot side effects. This is how schema state stays reproducible
-   and auditable.
-4. **Determinism.** The same `OramaCloudV1` (+ its child CRs) must produce the same stack every
+3. **Model all infrastructure state as CRDs — and prefer the datastore's OWN operator's native
+   CRDs over hand-rolling.** Each store's schema/topology/roles is declarative, owned, reconciled
+   state — **not** imperative one-shot Jobs or app-boot side effects. **Don't reinvent** what a
+   mature operator already does: use **CNPG's** `managed.roles` / `Database` / `DatabaseRole`
+   CRDs, the **RabbitMQ Cluster + Messaging Topology Operators** (`RabbitmqCluster`, `Vhost`,
+   `User`, `Permission`, `Queue`), etc. Install those operators as platform prereqs (helmfile)
+   and drive them from our reconcilers. This holds for **off-cluster infra too** (Cloudflare
+   DNS/KV/R2 are already owned CRDs). Learn an operator's API (use perplexity) before modeling it.
+4. **Least-privilege, per-service access.** Every service that connects to a datastore gets its
+   **own role/user with only the grants it needs** — never a shared superuser/owner. Postgres:
+   one CNPG `managed.role` per service (`login`, `superuser: false`, `connectionLimit`, scoped
+   `GRANT`s); RabbitMQ: one `User` + scoped `Permission` per service; etc. The owner/admin role is
+   used only by migrations/admin, never by a running app.
+5. **Determinism.** The same `OramaCloudV1` (+ its child CRs) must produce the same stack every
    time. Idempotent reconcile, pinned versions, no hidden/implicit state, ordered dependencies.
-5. **Disaster recovery is first-class.** Backup / restore / config-snapshot are CRDs, scheduled,
+6. **Disaster recovery is first-class.** Backup / restore / config-snapshot are CRDs, scheduled,
    and tested (see [operator#33](https://github.com/oramasearch/orama-cloud-v1-operator/issues/33)).
    "Can we rebuild this from nothing, and recover data after a loss?" must always be **yes**.
-6. **e2e is the forcing function, not the target.** The e2e suite progresses **only** as the
+7. **e2e is the forcing function, not the target.** The e2e suite progresses **only** as the
    operator matures to encapsulate this complexity (real writer→reader replication, real schema,
    real creds, …). **Never hack the test green** — make the operator correct and e2e follows.
 
