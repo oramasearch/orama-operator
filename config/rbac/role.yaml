@@ -73,6 +73,7 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - cloudflarednsrecords
   - oramacloudv1e2etests
   - oramacloudv1s
   verbs:
@@ -86,6 +87,13 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - cloudflarednsrecords/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - orama.cloud
+  resources:
+  - cloudflarednsrecords/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
   verbs:

@@ -111,5 +111,6 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&batchv1.Job{}).
+		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Complete(r)
 }

@@ -11,63 +11,46 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
 
 const cfAPIBase = "https://api.cloudflare.com/client/v4"
 
-// reconcileCloudflare reconciles Cloudflare DNS for this cluster's ingress host via
-// the CF API — Cloudflare stays the permanent edge/geo-LB, and the operator points
-// the dashboard host at this cluster's ingress. It is a SAFE no-op unless fully
-// configured (enabled + token secret present + zoneID + manageDNS + a resolvable
-// ingress target).
-//
-// NOTE: Load Balancing (geo-steered pools across regions) is a follow-up, and this
-// reconciler has NOT yet been validated against a live Cloudflare account.
+// reconcileCloudflare models this cluster's dashboard DNS record as an OWNED
+// CloudflareDNSRecord CR (epic #31): the child controller makes the CF API call and holds a
+// finalizer for external cleanup, so the operator never mutates Cloudflare from the main loop.
+// SAFE no-op unless fully configured (enabled + manageDNS + a resolvable ingress target); the
+// child is itself a no-op until its Secret (token+zoneID) exists.
 func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
-	l := log.FromContext(ctx)
 	cf := oc.Spec.Cloudflare
-	if !cf.Enabled || cf.APITokenSecretRef == nil {
+	if !cf.Enabled || cf.APITokenSecretRef == nil || !cf.ManageDNS {
 		return nil
 	}
-
-	sec := &corev1.Secret{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: cf.APITokenSecretRef.Name}, sec); err != nil {
-		if apierrors.IsNotFound(err) {
-			l.Info("cloudflare enabled but token secret not found; skipping", "secret", cf.APITokenSecretRef.Name)
-			return nil
-		}
-		return err
-	}
-	// All Cloudflare credentials live in the one Secret: token + zoneID + accountID.
-	token := string(sec.Data["token"])
-	zoneID := string(sec.Data["zoneID"])
-	if token == "" || zoneID == "" || !cf.ManageDNS {
-		l.Info("cloudflare not fully configured (secret needs token+zoneID, and manageDNS on); skipping")
-		return nil
-	}
-
 	host := oc.Spec.Components.Dashboard.Host
 	if host == "" {
 		return nil
 	}
 	target := r.ingressTarget(ctx, oc)
 	if target == "" {
-		l.Info("cloudflare: no ingress address assigned yet; will retry", "host", host)
-		return nil
+		return nil // no ingress address assigned yet; retry on the next reconcile
 	}
-	l.Info("cloudflare: upserting DNS record", "host", host, "target", target)
-	return cfUpsertDNSRecord(ctx, token, zoneID, host, target)
+	rec := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-dashboard-dns", Namespace: oc.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, rec, func() error {
+		rec.Spec.SecretRef = cf.APITokenSecretRef.Name
+		rec.Spec.Name = host
+		rec.Spec.Content = target
+		rec.Spec.Proxied = true
+		return controllerutil.SetControllerReference(oc, rec, r.Scheme)
+	})
+	return err
 }
 
 // ingressTarget returns the external address of the dashboard Ingress, if assigned.
@@ -85,30 +68,6 @@ func (r *OramaCloudV1Reconciler) ingressTarget(ctx context.Context, oc *oramav1a
 		}
 	}
 	return ""
-}
-
-// cfUpsertDNSRecord creates or updates a proxied DNS record (name -> target).
-func cfUpsertDNSRecord(ctx context.Context, token, zoneID, name, target string) error {
-	recType := "A"
-	if net.ParseIP(target) == nil {
-		recType = "CNAME"
-	}
-	listURL := fmt.Sprintf("%s/zones/%s/dns_records?type=%s&name=%s", cfAPIBase, zoneID, recType, name)
-	var listResp struct {
-		Result []struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-	if err := cfDo(ctx, token, http.MethodGet, listURL, nil, &listResp); err != nil {
-		return err
-	}
-	body := map[string]interface{}{"type": recType, "name": name, "content": target, "ttl": 1, "proxied": true}
-	if len(listResp.Result) > 0 {
-		url := fmt.Sprintf("%s/zones/%s/dns_records/%s", cfAPIBase, zoneID, listResp.Result[0].ID)
-		return cfDo(ctx, token, http.MethodPut, url, body, nil)
-	}
-	url := fmt.Sprintf("%s/zones/%s/dns_records", cfAPIBase, zoneID)
-	return cfDo(ctx, token, http.MethodPost, url, body, nil)
 }
 
 func cfDo(ctx context.Context, token, method, url string, body, out interface{}) error {

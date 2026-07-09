@@ -1,0 +1,103 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: cloudflarednsrecords.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: CloudflareDNSRecord
+    listKind: CloudflareDNSRecordList
+    plural: cloudflarednsrecords
+    shortNames:
+    - cfdns
+    singular: cloudflarednsrecord
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.name
+      name: Name
+      type: string
+    - jsonPath: .spec.content
+      name: Content
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CloudflareDNSRecord is a Cloudflare DNS record the operator provisions via the CF API,
+          owned by an OramaCloudV1 CR. A finalizer deletes the record from Cloudflare on delete, so
+          tearing down the CR cascades to real external cleanup.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CloudflareDNSRecordSpec is the desired state of a Cloudflare DNS record. The zone + API
+              token come from the referenced Secret (keys `token` + `zoneID`), so no credential is in spec.
+            properties:
+              content:
+                description: Content is the record target (an IP for A, a hostname
+                  for CNAME).
+                type: string
+              name:
+                description: Name is the record FQDN (e.g. app.orama.com).
+                type: string
+              proxied:
+                default: true
+                description: Proxied routes the record through Cloudflare's proxy
+                  (orange-cloud).
+                type: boolean
+              secretRef:
+                description: |-
+                  SecretRef names the Secret holding the Cloudflare credentials (`token`, `zoneID`,
+                  `accountID`) — normally the CR's `spec.cloudflare.apiTokenSecretRef`.
+                type: string
+              type:
+                description: Type is A or CNAME; empty = inferred from Content (IP
+                  → A, hostname → CNAME).
+                type: string
+            required:
+            - content
+            - name
+            - secretRef
+            type: object
+          status:
+            description: CloudflareDNSRecordStatus is the observed state — the provisioned
+              Cloudflare record.
+            properties:
+              message:
+                type: string
+              ready:
+                description: Ready is true once the record is reconciled in Cloudflare.
+                type: boolean
+              recordID:
+                description: RecordID is the Cloudflare-assigned DNS record ID (set
+                  once created).
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
