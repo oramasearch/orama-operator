@@ -250,8 +250,27 @@ func (r *OramaCloudV1Reconciler) ensureComponentSecret(ctx context.Context, oc *
 		return false, nil
 	}
 	name := componentSecretName(oc, component)
-	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, &corev1.Secret{}); err == nil {
-		return true, nil // exists — never overwrite
+	existing := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, existing); err == nil {
+		// Exists — seed any MISSING keys (newly-required dummy defaults) WITHOUT overwriting
+		// existing values, so real/rotated secrets survive but new required keys get added
+		// (e.g. when a component gains env on an operator upgrade).
+		missing := map[string]string{}
+		for k, v := range data {
+			if _, ok := existing.Data[k]; !ok {
+				missing[k] = v
+			}
+		}
+		if len(missing) == 0 {
+			return true, nil
+		}
+		if existing.Data == nil {
+			existing.Data = map[string][]byte{}
+		}
+		for k, v := range missing {
+			existing.Data[k] = []byte(v)
+		}
+		return true, r.Update(ctx, existing)
 	} else if !apierrors.IsNotFound(err) {
 		return false, err
 	}
