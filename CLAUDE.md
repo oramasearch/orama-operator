@@ -46,7 +46,17 @@ against production-readiness, not "does a pod start."
    `conditions` (+ `printcolumn`s for at-a-glance `kubectl get`). **Write the status subresource
    ONLY on a real state transition** (deep-compare first): a steady stack must produce **zero**
    control-plane traffic. Middle ground — accurate enough to trust, coarse enough not to flap.
-8. **e2e is the forcing function, not the target.** The e2e suite progresses **only** as the
+8. **Right-size everything — cap the pod AND make its binary respect the cap.** Be deliberate
+   about resource use (mem/cpu/**storage**/**IOPS**). Two halves, both required: (a) per-component
+   k8s `requests`/`limits` + PVC size + an IOPS-provisioned storageClass; and (b) **translate that
+   intent into the binary's OWN config** — a binary that assumes it owns the node OOMs even under a
+   cgroup limit. E.g. ClickHouse needs a `config.d` overlay (`mark_cache_size` — default **5 GiB**!,
+   `max_server_memory_usage_to_ram_ratio`, `uncompressed_cache_size=0`); Redis `maxmemory`; RabbitMQ
+   `vm_memory_high_watermark`; JVM `-Xmx`/`MaxRAMPercentage`; Node `--max-old-space-size`; Mongo
+   wiredTiger cache. Derive the binary limits from the **same numbers** as the k8s limits. Mount
+   config overlays via **`subPath`** so you add to (not replace + hide) the image's config dir.
+   ([#42](https://github.com/oramasearch/orama-cloud-v1-operator/issues/42))
+9. **e2e is the forcing function, not the target.** The e2e suite progresses **only** as the
    operator matures to encapsulate this complexity (real writer→reader replication, real schema,
    real creds, …). **Never hack the test green** — make the operator correct and e2e follows.
 

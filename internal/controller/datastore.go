@@ -8,8 +8,11 @@ package controller
 import (
 	"context"
 
+	"sort"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -28,6 +31,14 @@ type dataStoreDef struct {
 	dataPath  string
 	env       []corev1.EnvVar
 	args      []string
+	// resources caps the container (requests/limits). Right-sizing (#42).
+	resources *corev1.ResourceRequirements
+	// configFiles are rendered into a `<name>-config` ConfigMap and mounted at configMount — the
+	// BINARY-AWARE half of right-sizing: we translate our resource intent into the binary's own
+	// config (e.g. a ClickHouse config.d overlay) so it actually adheres to the limit instead of
+	// assuming it owns the whole node.
+	configFiles map[string]string
+	configMount string
 }
 
 // reconcileDataStore provisions (or skips) one data store per its DataStoreSpec.
@@ -58,26 +69,60 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 		readiness = tcpReadiness(def.ports[0].ContainerPort)
 	}
 
+	volumes := []corev1.Volume{}
+	mounts := []corev1.VolumeMount{{Name: "data", MountPath: def.dataPath}}
+	// Binary-aware right-sizing (#42): render the def's config files into a ConfigMap + mount them
+	// so the binary is instructed to respect our resource intent.
+	if len(def.configFiles) > 0 {
+		cmName := name + "-config"
+		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: oc.Namespace}}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+			cm.Labels = lbls
+			cm.Data = def.configFiles
+			return controllerutil.SetControllerReference(oc, cm, r.Scheme)
+		}); err != nil {
+			return err
+		}
+		volumes = append(volumes, corev1.Volume{Name: "config", VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: cmName}}}})
+		// Mount each file via subPath so we ADD to (not replace) the image's config dir — mounting
+		// a whole ConfigMap at e.g. ClickHouse's config.d would hide its shipped
+		// docker_related_config.xml (which sets listen_host 0.0.0.0) and break external access.
+		fnames := make([]string, 0, len(def.configFiles))
+		for f := range def.configFiles {
+			fnames = append(fnames, f)
+		}
+		sort.Strings(fnames)
+		for _, f := range fnames {
+			mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: def.configMount + "/" + f, SubPath: f, ReadOnly: true})
+		}
+	}
+
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
 		sts.Labels = lbls
 		sts.Spec.Replicas = int32Ptr(1)
 		sts.Spec.ServiceName = name
 		sts.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
+		c := corev1.Container{
+			Name:           def.component,
+			Image:          storeImage(oc, def.component, def.image),
+			Ports:          def.ports,
+			Env:            def.env,
+			EnvFrom:        envFromFor(oc, def.component),
+			Args:           def.args,
+			ReadinessProbe: readiness,
+			VolumeMounts:   mounts,
+		}
+		if def.resources != nil {
+			c.Resources = *def.resources
+		}
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets: imagePullSecrets(oc),
-				Containers: []corev1.Container{{
-					Name:           def.component,
-					Image:          storeImage(oc, def.component, def.image),
-					Ports:          def.ports,
-					Env:            def.env,
-					EnvFrom:        envFromFor(oc, def.component),
-					Args:           def.args,
-					ReadinessProbe: readiness,
-					VolumeMounts:   []corev1.VolumeMount{{Name: "data", MountPath: def.dataPath}},
-				}},
+				Containers:       []corev1.Container{c},
+				Volumes:          volumes,
 			},
 		}
 		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC()}
@@ -125,6 +170,29 @@ func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav
 	})
 }
 
+// resourceCaps builds a container ResourceRequirements. The starting point for right-sizing
+// (#42): the container is capped AND each binary's own config is derived from the SAME numbers
+// (see clickhouseMemoryXML) so it actually adheres instead of assuming it owns the node.
+func resourceCaps(memLimit, cpuLimit, memReq, cpuReq string) *corev1.ResourceRequirements {
+	return &corev1.ResourceRequirements{
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(memLimit), corev1.ResourceCPU: resource.MustParse(cpuLimit)},
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(memReq), corev1.ResourceCPU: resource.MustParse(cpuReq)},
+	}
+}
+
+// clickhouseMemoryXML instructs ClickHouse to respect its container limit (#42). ClickHouse 24.x is
+// cgroup-aware for the ratio, BUT its default mark cache is 5 GiB and it targets 90% of RAM — fatal
+// in a small pod. Cap the server at 80% of the (cgroup) limit and shrink the caches.
+const clickhouseMemoryXML = `<clickhouse>
+    <!-- 24.x reads the cgroup memory limit; use 80% of it as the server cap (headroom for the OS). -->
+    <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+    <!-- Default mark cache is 5 GiB — far too large for a small pod. -->
+    <mark_cache_size>536870912</mark_cache_size>
+    <!-- Uncompressed cache is rarely useful for analytics; disable it. -->
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+</clickhouse>
+`
+
 func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Analytics, dataStoreDef{
 		component: "analytics",
@@ -134,6 +202,11 @@ func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *ora
 			{Name: "native", ContainerPort: 9000},
 		},
 		dataPath: "/var/lib/clickhouse",
+		// Right-size ClickHouse (#42): cap the pod AND derive its own config from that cap so it
+		// stops grabbing the whole node (default 5 GiB mark cache + 90% RAM target).
+		resources:   resourceCaps("2Gi", "1", "512Mi", "100m"),
+		configMount: "/etc/clickhouse-server/config.d",
+		configFiles: map[string]string{"orama-memory.xml": clickhouseMemoryXML},
 	})
 }
 
