@@ -87,3 +87,10 @@ func oramacoreImage(oc *oramav1alpha1.OramaCloudV1) string {
 	}
 	return reg + "/oramacore:latest"
 }
+
+func strPtr(s string) *string { return &s }
+
+// ingressClassName is the IngressClass the operator binds its Ingresses to — the
+// helmfile-installed ingress-nginx (which fronts the cluster LoadBalancer). TODO: make
+// configurable via a spec field if a cluster uses a different controller.
+func ingressClassName(_ *oramav1alpha1.OramaCloudV1) string { return "nginx" }

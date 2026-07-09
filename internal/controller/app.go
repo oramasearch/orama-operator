@@ -107,6 +107,10 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
 		ing.Labels = lbls
+		// Bind to the helmfile-installed ingress-nginx controller. Without an ingressClassName the
+		// controller ignores the Ingress (no ADDRESS assigned → nothing routes). Configurable via
+		// spec.ingressClassName (default "nginx").
+		ing.Spec.IngressClassName = strPtr(ingressClassName(oc))
 		ing.Spec.Rules = []networkingv1.IngressRule{{
 			Host: host,
 			IngressRuleValue: networkingv1.IngressRuleValue{
