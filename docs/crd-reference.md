@@ -59,3 +59,23 @@ Sample: [`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).
 | `spec.image` | **Runner base image** (default `alpine:3.20`). Must provide `sh` + a package manager — the Job installs curl+jq into it, then runs the embedded suite. Override only with another curl/jq-capable base. |
 | `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
 | `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ocv1e2e`. |
+
+## `OramaZettaCluster` (separate CRD) — step 1 of One Orama
+
+Deploys a **headless Orama Zetta cluster** (a StatefulSet of equal-peer CRDT nodes) from one CR — the
+first step of the [One Orama](https://github.com/oramasearch/orama-bridge/tree/main/docs/projects/one-orama)
+convergence ([orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)). It creates a
+**headless Service** (peer DNS on 7777), a **client Service** (the HTTP API on 4800 — MCP + REST +
+serving), and the **StatefulSet** (each node a per-node PVC at `/data`; `node-0` bootstraps, peers join
+it). This stage only **runs** Zetta headless — no operator↔Zetta symbiosis and **no** changes to
+Zetta's MCP service. Sample: [`../config/samples/oramazettacluster.yaml`](../config/samples/oramazettacluster.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.replicas` | Number of equal-peer headless zetta nodes (default 1). |
+| `spec.image` | Zetta-headless image (default `oramasearch/zetta:headless-v1-sandbox`), built by [`zetta-bridge/build/images/zetta-headless`](https://github.com/oramasearch/zetta-bridge/tree/main/build/images/zetta-headless). |
+| `spec.pullSecretName` | Pull secret for the private zetta image. |
+| `spec.storage.size` / `.storageClassName` | Per-node PVC at `--data-dir` (`/data`) — the CRDT doc, `node_id`, certs, JSONL/large-object data. |
+| `spec.resources` | Per-node mem/cpu caps (right-sizing). |
+| `spec.clusterPlaintext` | Disable inter-node mTLS (single node mints its own token; set `true` for a multi-node cluster until mTLS token-sharing lands). |
+| `status.phase` / `.readyNodes` / `.totalNodes` | Readiness roll-up. `kubectl get ozc`. |

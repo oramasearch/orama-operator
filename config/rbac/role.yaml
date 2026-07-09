@@ -78,6 +78,7 @@ rules:
   - cloudflarer2buckets
   - oramacloudv1e2etests
   - oramacloudv1s
+  - oramazettaclusters
   verbs:
   - create
   - delete
@@ -92,6 +93,7 @@ rules:
   - cloudflarednsrecords/finalizers
   - cloudflarekvnamespaces/finalizers
   - cloudflarer2buckets/finalizers
+  - oramazettaclusters/finalizers
   verbs:
   - update
 - apiGroups:
@@ -102,6 +104,7 @@ rules:
   - cloudflarer2buckets/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
+  - oramazettaclusters/status
   verbs:
   - get
   - patch
