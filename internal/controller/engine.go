@@ -74,7 +74,7 @@ static_resources:
 // with an Envoy sidecar on readers, plus a shared config ConfigMap and Services.
 func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.Engine.Enabled {
-		return nil
+		return r.teardownByComponent(ctx, oc, "engine", "embeddings", "writer", "reader")
 	}
 	if _, err := r.ensureComponentSecret(ctx, oc, "engine"); err != nil {
 		return fmt.Errorf("engine secret: %w", err)

@@ -42,6 +42,14 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
 Each component consumes `envFrom: [<cr>-config, <cr>-<component>-secret]` (its own
 secret only). Everything is owner-referenced → GC'd with the CR.
 
+**Disable ≠ leave running ([#23](https://github.com/oramasearch/orama-cloud-v1-operator/issues/23)).**
+Owner-GC only fires on CR *deletion*; so when a `components.<x>.enabled` toggle flips off, the
+reconciler actively **prunes** that component's owned resources by label
+(`internal/controller/teardown.go` — `teardownByComponent`), covering Deployments/StatefulSets/
+Services/ConfigMaps/Secrets/PDBs/Ingresses/Jobs (and the CNPG `Cluster` for `controlDB`). StatefulSet
+PVCs are left behind (data preserved). Idempotent — `enable → disable → enable` round-trips cleanly
+(validated on AKS: disabling `docs` pruned it, re-enabling restored it, `Ready 22/22`).
+
 - **JWT keypair (real, generated)** — the operator generates a **real RSA-2048
   keypair** once (create-if-absent) into `<cr>-jwt` (private + public, for the
   **dashboard** to sign the OramaCore writer JWT) and `<cr>-jwt-pub` (public **only**,

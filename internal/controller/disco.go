@@ -27,7 +27,7 @@ const (
 // a restart cold-starts the cache), single-node, exposed on discoPort.
 func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.Disco.Enabled {
-		return nil
+		return r.teardownByComponent(ctx, oc, "disco")
 	}
 	if _, err := r.ensureComponentSecret(ctx, oc, "disco"); err != nil {
 		return err

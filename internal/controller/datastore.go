@@ -32,8 +32,11 @@ type dataStoreDef struct {
 
 // reconcileDataStore provisions (or skips) one data store per its DataStoreSpec.
 func (r *OramaCloudV1Reconciler) reconcileDataStore(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, spec oramav1alpha1.DataStoreSpec, def dataStoreDef) error {
-	if !spec.Enabled || spec.Mode == "external" {
-		return nil // disabled, or the app points at an external endpoint
+	if spec.Mode == "external" {
+		return nil // the app points at an external endpoint — nothing to tear down
+	}
+	if !spec.Enabled {
+		return r.teardownByComponent(ctx, oc, def.component) // disable ≠ leave running (#23)
 	}
 	// "central" placement: only the primary runs it; read tiers reference the endpoint.
 	if spec.Placement == "central" && oc.Spec.Region.Role == "read" {

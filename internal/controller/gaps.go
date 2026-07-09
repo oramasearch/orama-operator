@@ -56,7 +56,7 @@ postgres:
 // patched at build to bind 0.0.0.0:8080 instead of its hardcoded 127.0.0.1:8888.)
 func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.AnalyticsProcessor.Enabled {
-		return nil
+		return r.teardownByComponent(ctx, oc, "analytics-processor")
 	}
 	img := componentImage(oc, "analytics-processor", "analytics-processor")
 	cmName := oc.Name + "-analytics-processor-config"
@@ -100,7 +100,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 func (r *OramaCloudV1Reconciler) reconcileOramasearchApp(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	a := oc.Spec.Components.OramasearchApp
 	if !a.Enabled {
-		return nil
+		return r.teardownByComponent(ctx, oc, "oramasearch-app")
 	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component:   "oramasearch-app",
@@ -123,7 +123,7 @@ var searchWorkerNames = []string{
 
 func (r *OramaCloudV1Reconciler) reconcileSearchWorkers(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.SearchWorkers.Enabled {
-		return nil
+		return r.teardownByComponent(ctx, oc, searchWorkerNames...)
 	}
 	for _, w := range searchWorkerNames {
 		if err := r.reconcileApp(ctx, oc, appDef{

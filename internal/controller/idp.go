@@ -22,7 +22,7 @@ import (
 // none/firebase/clerk are external (nothing to deploy).
 func (r *OramaCloudV1Reconciler) reconcileIdP(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if oc.Spec.IDP.Provider != "keycloak" {
-		return nil
+		return r.teardownByComponent(ctx, oc, "keycloak")
 	}
 	// KC_BOOTSTRAP_ADMIN_USERNAME / KC_HTTP_ENABLED / KC_PROXY_HEADERS come from the
 	// shared ConfigMap and KC_BOOTSTRAP_ADMIN_PASSWORD from the shared Secret (envFrom).

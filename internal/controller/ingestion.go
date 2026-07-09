@@ -19,7 +19,7 @@ import (
 func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	ing := oc.Spec.Components.Ingestion
 	if !ing.Enabled {
-		return nil
+		return r.teardownByComponent(ctx, oc, "index-builder", "harvest-master", "harvest-mongo", "selenium")
 	}
 
 	// index-builder orchestrator (was GCP Cloud Run). Its EnvSchema requires ~29 vars at boot;

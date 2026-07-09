@@ -48,8 +48,11 @@ func pgURIEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
 // Requires the CloudNativePG operator to be installed (see helmfile).
 func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	db := oc.Spec.Components.ControlDB
-	if !db.Enabled || db.Mode == "external" {
-		return nil
+	if db.Mode == "external" {
+		return nil // external DB — the operator manages nothing to tear down
+	}
+	if !db.Enabled {
+		return r.teardownControlDB(ctx, oc) // disable ≠ leave running (#23)
 	}
 
 	cluster := &unstructured.Unstructured{}

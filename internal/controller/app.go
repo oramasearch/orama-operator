@@ -134,7 +134,7 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	w := oc.Spec.Components.Workers
 	if !w.Enabled {
-		return nil
+		return r.teardownByComponent(ctx, oc, "workers")
 	}
 	img := w.Image
 	if img == "" {
@@ -146,7 +146,7 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	d := oc.Spec.Components.Dashboard
 	if !d.Enabled {
-		return nil
+		return r.teardownByComponent(ctx, oc, "dashboard")
 	}
 	img := componentImage(oc, "dashboard", "dashboard")
 	// Run the dashboard's Drizzle migrations before it serves (#34). GUARDED so it's a safe no-op
@@ -175,7 +175,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 func (r *OramaCloudV1Reconciler) reconcileDocs(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	d := oc.Spec.Components.Docs
 	if !d.Enabled {
-		return nil
+		return r.teardownByComponent(ctx, oc, "docs")
 	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component:   "docs",
