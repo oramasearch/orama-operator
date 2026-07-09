@@ -74,6 +74,8 @@ rules:
   - orama.cloud
   resources:
   - cloudflarednsrecords
+  - cloudflarekvnamespaces
+  - cloudflarer2buckets
   - oramacloudv1e2etests
   - oramacloudv1s
   verbs:
@@ -88,12 +90,16 @@ rules:
   - orama.cloud
   resources:
   - cloudflarednsrecords/finalizers
+  - cloudflarekvnamespaces/finalizers
+  - cloudflarer2buckets/finalizers
   verbs:
   - update
 - apiGroups:
   - orama.cloud
   resources:
   - cloudflarednsrecords/status
+  - cloudflarekvnamespaces/status
+  - cloudflarer2buckets/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
   verbs:

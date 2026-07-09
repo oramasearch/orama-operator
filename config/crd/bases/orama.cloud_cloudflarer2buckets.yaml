@@ -1,0 +1,80 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: cloudflarer2buckets.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: CloudflareR2Bucket
+    listKind: CloudflareR2BucketList
+    plural: cloudflarer2buckets
+    shortNames:
+    - cfr2
+    singular: cloudflarer2bucket
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.name
+      name: Bucket
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CloudflareR2Bucket is an R2 (S3-compatible) bucket the operator provisions via the CF API,
+          owned by an OramaCloudV1 CR. A finalizer deletes the bucket from Cloudflare on delete.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CloudflareR2BucketSpec is the desired state of an R2 bucket. The API token + account come
+              from the referenced Secret (keys `token` + `accountID`).
+            properties:
+              name:
+                description: Name is the R2 bucket name.
+                type: string
+              secretRef:
+                description: SecretRef names the Secret holding the Cloudflare credentials
+                  (`token`, `accountID`).
+                type: string
+            required:
+            - name
+            - secretRef
+            type: object
+          status:
+            description: CloudflareR2BucketStatus is the observed state.
+            properties:
+              created:
+                type: boolean
+              message:
+                type: string
+              ready:
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

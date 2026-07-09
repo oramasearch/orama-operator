@@ -31,26 +31,49 @@ const cfAPIBase = "https://api.cloudflare.com/client/v4"
 // child is itself a no-op until its Secret (token+zoneID) exists.
 func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	cf := oc.Spec.Cloudflare
-	if !cf.Enabled || cf.APITokenSecretRef == nil || !cf.ManageDNS {
+	if !cf.Enabled || cf.APITokenSecretRef == nil {
 		return nil
 	}
-	host := oc.Spec.Components.Dashboard.Host
-	if host == "" {
-		return nil
+	secretName := cf.APITokenSecretRef.Name
+
+	// Dashboard DNS record (when manageDNS + a resolvable ingress target).
+	if cf.ManageDNS {
+		if host := oc.Spec.Components.Dashboard.Host; host != "" {
+			if target := r.ingressTarget(ctx, oc); target != "" {
+				rec := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-dashboard-dns", Namespace: oc.Namespace}}
+				if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rec, func() error {
+					rec.Spec.SecretRef, rec.Spec.Name, rec.Spec.Content, rec.Spec.Proxied = secretName, host, target, true
+					return controllerutil.SetControllerReference(oc, rec, r.Scheme)
+				}); err != nil {
+					return err
+				}
+			}
+		}
 	}
-	target := r.ingressTarget(ctx, oc)
-	if target == "" {
-		return nil // no ingress address assigned yet; retry on the next reconcile
+
+	// KV namespaces + R2 bucket the ingestion path (index-builder) consumes.
+	if oc.Spec.Components.Ingestion.Enabled {
+		for _, kv := range []struct{ name, title string }{
+			{oc.Name + "-kv-dumps", oc.Name + "-dumps"},
+			{oc.Name + "-kv-api-keys", oc.Name + "-api-keys"},
+		} {
+			obj := &oramav1alpha1.CloudflareKVNamespace{ObjectMeta: metav1.ObjectMeta{Name: kv.name, Namespace: oc.Namespace}}
+			if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, obj, func() error {
+				obj.Spec.SecretRef, obj.Spec.Title = secretName, kv.title
+				return controllerutil.SetControllerReference(oc, obj, r.Scheme)
+			}); err != nil {
+				return err
+			}
+		}
+		bucket := &oramav1alpha1.CloudflareR2Bucket{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-legacy-indexes", Namespace: oc.Namespace}}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, bucket, func() error {
+			bucket.Spec.SecretRef, bucket.Spec.Name = secretName, oc.Name+"-legacy-indexes"
+			return controllerutil.SetControllerReference(oc, bucket, r.Scheme)
+		}); err != nil {
+			return err
+		}
 	}
-	rec := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-dashboard-dns", Namespace: oc.Namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, rec, func() error {
-		rec.Spec.SecretRef = cf.APITokenSecretRef.Name
-		rec.Spec.Name = host
-		rec.Spec.Content = target
-		rec.Spec.Proxied = true
-		return controllerutil.SetControllerReference(oc, rec, r.Scheme)
-	})
-	return err
+	return nil
 }
 
 // ingressTarget returns the external address of the dashboard Ingress, if assigned.
