@@ -203,16 +203,49 @@ func resourceCaps(memLimit, cpuLimit, memReq, cpuReq string) *corev1.ResourceReq
 	}
 }
 
-// clickhouseMemoryXML instructs ClickHouse to respect its container limit (#42). ClickHouse 24.x is
-// cgroup-aware for the ratio, BUT its default mark cache is 5 GiB and it targets 90% of RAM — fatal
-// in a small pod. Cap the server at 80% of the (cgroup) limit and shrink the caches.
+// clickhouseMemoryXML instructs ClickHouse to respect its container limit (#42, #16).
+//
+// The `*_to_ram_ratio` knob reads the **host's** physical RAM, NOT the cgroup limit — on our 30 GiB
+// AKS node it computed a ~24 GiB ceiling and ClickHouse was OOMKilled at startup (exit 137) inside its
+// 2Gi pod, crashlooping. The correct binary-aware cap (principle #8) is an ABSOLUTE
+// `max_server_memory_usage` in bytes, derived from the SAME number as the pod's memory limit, so it
+// holds regardless of host RAM. Keep it ~25% under the pod limit for untracked allocations at boot.
+//
+// Also (#16): enable console logging so `kubectl logs` shows ClickHouse's own logs (it otherwise logs
+// only to files under /var/log/clickhouse-server, making OOMs/crashes invisible to the log stream).
+//
+// Sized against the 4Gi pod limit (below): server cap 3 GiB, leaving ~1 GiB for UNTRACKED startup RSS
+// (mmap'd parts, jemalloc arenas, thread stacks) that `max_server_memory_usage` does NOT bound.
+// ClickHouse ran fine at 2Gi steady-state but OOMed on restart because loading the accumulated
+// analytics parts' metadata spikes RSS past 2Gi — so the pod floor is ~4Gi, not 2Gi. Keep in lockstep.
 const clickhouseMemoryXML = `<clickhouse>
-    <!-- 24.x reads the cgroup memory limit; use 80% of it as the server cap (headroom for the OS). -->
-    <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+    <!-- ABSOLUTE cap (bytes) = 3 GiB, derived from the 4Gi pod limit. NOT the host-relative ratio. -->
+    <max_server_memory_usage>3221225472</max_server_memory_usage>
     <!-- Default mark cache is 5 GiB — far too large for a small pod. -->
-    <mark_cache_size>536870912</mark_cache_size>
+    <mark_cache_size>268435456</mark_cache_size>
     <!-- Uncompressed cache is rarely useful for analytics; disable it. -->
     <uncompressed_cache_size>0</uncompressed_cache_size>
+    <!-- #16: log to stdout so kubectl logs surfaces server logs, not just the entrypoint banner. -->
+    <logger>
+        <console>1</console>
+    </logger>
+    <!-- #42: disable ClickHouse's heavy INTERNAL system-log tables. They write parts constantly
+         (thousands accumulated over hours here), and merging that backlog on startup blew RSS past the
+         pod limit -> OOMKilled crashloop. A self-host analytics store (which holds the oramacore_*
+         tables) does not need ClickHouse's own trace/metric/query telemetry. Console logging (above)
+         still gives operational logs on stdout. -->
+    <asynchronous_metric_log remove="1"/>
+    <metric_log remove="1"/>
+    <trace_log remove="1"/>
+    <text_log remove="1"/>
+    <query_log remove="1"/>
+    <query_thread_log remove="1"/>
+    <query_views_log remove="1"/>
+    <part_log remove="1"/>
+    <session_log remove="1"/>
+    <processors_profile_log remove="1"/>
+    <opentelemetry_span_log remove="1"/>
+    <crash_log remove="1"/>
 </clickhouse>
 `
 
@@ -226,8 +259,9 @@ func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *ora
 		},
 		dataPath: "/var/lib/clickhouse",
 		// Right-size ClickHouse (#42): cap the pod AND derive its own config from that cap so it
-		// stops grabbing the whole node (default 5 GiB mark cache + 90% RAM target).
-		resources:   resourceCaps("2Gi", "1", "512Mi", "100m"),
+		// stops grabbing the whole node (default 5 GiB mark cache + 90% RAM target). 4Gi is the real
+		// floor — 2Gi OOMed on restart when loading accumulated part metadata (see clickhouseMemoryXML).
+		resources:   resourceCaps("4Gi", "1", "1Gi", "100m"),
 		configMount: "/etc/clickhouse-server/config.d",
 		configFiles: map[string]string{"orama-memory.xml": clickhouseMemoryXML},
 	})
