@@ -17,14 +17,12 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
 
-const (
-	discoPort           = 8080
-	discoEmbeddingsPort = 50051
-)
+const discoPort = 8080
 
-// reconcileDisco provisions the DISCO semantic cache as a Deployment: the Go DISCO
-// service + a co-located gRPC embeddings sidecar (matches prod). In-memory (no PVC —
-// a restart cold-starts the cache), single-node, exposed on discoPort.
+// reconcileDisco provisions the DISCO semantic cache as a Deployment: the Go DISCO service,
+// pointed at the SHARED embeddings Deployment (#14/#39) rather than a co-located sidecar — DISCO
+// was the third redundant copy of the embedding model weights. In-memory (no PVC — a restart
+// cold-starts the cache), single-node, exposed on discoPort.
 func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.Disco.Enabled {
 		return r.teardownByComponent(ctx, oc, "disco")
@@ -53,13 +51,10 @@ func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1
 						ReadinessProbe: tcpReadiness(discoPort),
 						Env: []corev1.EnvVar{
 							{Name: "DISCO_PORT", Value: "8080"},
-							{Name: "EMBEDDINGS_ENDPOINT", Value: "127.0.0.1:50051"},
+							// Use the SHARED embeddings Deployment (#14/#39), not a co-located sidecar —
+							// DISCO was the third redundant copy of the model weights.
+							{Name: "EMBEDDINGS_ENDPOINT", Value: oc.Name + "-embeddings:50051"},
 						},
-					},
-					{
-						Name:  "embeddings",
-						Image: embeddingsImage(oc),
-						Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: discoEmbeddingsPort}},
 					},
 				},
 			},
