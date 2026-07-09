@@ -1,6 +1,10 @@
-# Run the oramacore-test-e2e suite against a deployed OramaCloudV1 stack. The controller creates a
-# Job (from spec.image) pointed at the target's engine Services (<targetRef>-writer / -reader) and
-# reflects pass/fail in .status.phase. Watch: kubectl get ocv1e2e -n orama-system
+# Run the oramacore-test-e2e suite against a deployed OramaCloudV1 stack. The controller renders a
+# config.json (a ConfigMap) pointing the suite at the target's engine Services
+# (<targetRef>-writer:8080 / <targetRef>-reader) and creates a Job that (1) bootstraps a throwaway
+# collection + index via an init container — authenticating with the target's MASTER_API_KEY from
+# its engine Secret, "automatic" embedding so vector search works — then (2) runs the suite via
+# CONFIG_PATH, reflecting pass/fail in .status.phase. Watch: kubectl get ocv1e2e -n orama-system
+# Re-run: kubectl delete ocv1e2e v1-e2e -n orama-system && kubectl apply -f config/samples/e2e-test.yaml
 apiVersion: orama.cloud/v1alpha1
 kind: OramaCloudV1E2ETest
 metadata:
