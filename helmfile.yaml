@@ -40,6 +40,13 @@ releases:
         value: LoadBalancer
       - name: controller.ingressClassResource.default
         value: "true"
+      # externalTrafficPolicy: Local — REQUIRED on AKS. With the default Cluster policy the Azure LB
+      # HTTP-probes the ingress nodePort, gets a 404 (ingress default backend), marks the backend
+      # UNHEALTHY, and drops all traffic → the public IP times out (HTTP 522 through Cloudflare).
+      # Local makes k8s allocate a healthCheckNodePort that returns 200 only where a ready ingress
+      # pod runs, so the Azure probe passes (and it preserves the client source IP). (operator#38)
+      - name: controller.service.externalTrafficPolicy
+        value: Local
 
   # NOTE — no RabbitMQ / ClickHouse operator: the broker is a plain StatefulSet whose topology is
   # driven by our own CRDs (operator#41); analytics is a plain clickhouse-server StatefulSet, like
