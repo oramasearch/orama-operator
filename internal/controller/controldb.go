@@ -7,15 +7,26 @@ package controller
 
 import (
 	"context"
+	_ "embed"
 	"strings"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
+
+// dashboardSchemaSQL is the control-plane Postgres schema — the dashboard's Drizzle migrations
+// (0000..0007, journal order) vendored from oramasearch/dashboard .drizzle. The operator applies it
+// because the dashboard image ships no .drizzle and nothing else runs the migrations (operator#34).
+// Re-sync when the dashboard schema changes; then delete the migrate Job to re-apply.
+//
+//go:embed assets/dashboard-schema.sql
+var dashboardSchemaSQL string
 
 // cnpgClusterGVK is the CloudNativePG Cluster CRD. We provision it as an unstructured
 // object so this operator stays decoupled from CNPG's Go types / version.
@@ -89,6 +100,73 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 		}
 		cluster.Object["spec"] = spec
 		return controllerutil.SetControllerReference(oc, cluster, r.Scheme)
+	})
+	if err != nil {
+		return err
+	}
+	// Apply the dashboard schema on the PRIMARY (read-tier replicas stream it) — operator#34.
+	if oc.Spec.Region.Role == "read" && db.Replicate {
+		return nil
+	}
+	return r.reconcileControlDBMigrations(ctx, oc)
+}
+
+// reconcileControlDBMigrations applies the vendored dashboard schema (operator#34) via an idempotent
+// psql Job: it waits for the control-DB, skips if already migrated, then applies the whole schema in
+// one transaction (all-or-nothing). The dashboard image ships no .drizzle and nothing else runs the
+// migrations, so the operator owns this. To re-apply after a schema re-sync, delete the Job.
+func (r *OramaCloudV1Reconciler) reconcileControlDBMigrations(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	cmName := oc.Name + "-controldb-migrations"
+	jobName := oc.Name + "-controldb-migrate"
+
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: oc.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		cm.Data = map[string]string{"schema.sql": dashboardSchemaSQL}
+		return controllerutil.SetControllerReference(oc, cm, r.Scheme)
+	}); err != nil {
+		return err
+	}
+
+	// crawler_configs is created by migration 0000; with --single-transaction it exists iff the whole
+	// schema applied, so it's a correct "already migrated" guard.
+	script := `set -eu
+echo "control-DB migrate: waiting for the database..."
+until psql "$DATABASE_URL" -c 'SELECT 1' >/dev/null 2>&1; do sleep 3; done
+if psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.crawler_configs')" | grep -q crawler_configs; then
+  echo "control-DB already migrated (crawler_configs present) — nothing to do"; exit 0
+fi
+echo "applying dashboard schema (vendored Drizzle migrations)..."
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f /migrations/schema.sql
+echo "control-DB migrate: done"`
+
+	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: oc.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, job, func() error {
+		if job.CreationTimestamp.IsZero() {
+			lbls := labelsFor(oc, "controldb-migrate")
+			job.Labels = lbls
+			job.Spec = batchv1.JobSpec{
+				BackoffLimit: int32Ptr(20), // retry while the control-DB comes up
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: lbls},
+					Spec: corev1.PodSpec{
+						RestartPolicy: corev1.RestartPolicyNever,
+						Containers: []corev1.Container{{
+							Name:         "migrate",
+							Image:        "postgres:16-alpine", // ships psql
+							Command:      []string{"sh", "-c", script},
+							Env:          []corev1.EnvVar{pgURIEnv(oc, "DATABASE_URL")},
+							VolumeMounts: []corev1.VolumeMount{{Name: "migrations", MountPath: "/migrations", ReadOnly: true}},
+						}},
+						Volumes: []corev1.Volume{{
+							Name: "migrations",
+							VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: cmName}}},
+						}},
+					},
+				},
+			}
+		}
+		return controllerutil.SetControllerReference(oc, job, r.Scheme)
 	})
 	return err
 }
