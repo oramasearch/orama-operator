@@ -49,9 +49,11 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 		}
 		return err
 	}
+	// All Cloudflare credentials live in the one Secret: token + zoneID + accountID.
 	token := string(sec.Data["token"])
-	if token == "" || cf.ZoneID == "" || !cf.ManageDNS {
-		l.Info("cloudflare not fully configured (token/zoneID/manageDNS); skipping")
+	zoneID := string(sec.Data["zoneID"])
+	if token == "" || zoneID == "" || !cf.ManageDNS {
+		l.Info("cloudflare not fully configured (secret needs token+zoneID, and manageDNS on); skipping")
 		return nil
 	}
 
@@ -65,7 +67,7 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 		return nil
 	}
 	l.Info("cloudflare: upserting DNS record", "host", host, "target", target)
-	return cfUpsertDNSRecord(ctx, token, cf.ZoneID, host, target)
+	return cfUpsertDNSRecord(ctx, token, zoneID, host, target)
 }
 
 // ingressTarget returns the external address of the dashboard Ingress, if assigned.

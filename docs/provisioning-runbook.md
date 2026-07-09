@@ -46,18 +46,21 @@ whole `[CF]` tier at once.
 
 **1b. Store it as a Secret and wire it into the CR:**
 
+The Secret holds **all three** Cloudflare credentials as keys — `token`, `zoneID`, and
+`accountID` — so nothing Cloudflare-related lives in the CR itself:
+
 ```bash
 kubectl create secret generic cloudflare-api-token -n orama-system \
-  --from-literal=token='<CF_API_TOKEN>'
+  --from-literal=token='<CF_API_TOKEN>' \
+  --from-literal=zoneID='<zone-id>' \
+  --from-literal=accountID='<account-id>'
 ```
 ```yaml
-# in the OramaCloudV1 CR
+# in the OramaCloudV1 CR — just point at the Secret; the operator reads token/zoneID/accountID from it
 spec:
   cloudflare:
     enabled: true
-    apiTokenSecretRef: { name: cloudflare-api-token }
-    zoneID: "<zone-id>"
-    accountID: "<account-id>"
+    apiTokenSecretRef: { name: cloudflare-api-token }   # holds token + zoneID + accountID
     manageDNS: true
     manageLoadBalancers: true
     manageWorkerRoutes: true

@@ -11,8 +11,7 @@ spec:
     provider: keycloak
   cloudflare:
     enabled: true
-    zoneID: REPLACE_ME
-    apiTokenSecretRef: { name: cloudflare-api-token }
+    apiTokenSecretRef: { name: cloudflare-api-token }   # Secret holds token + zoneID + accountID
     manageDNS: true          # adds eu DNS + a Cloudflare LB pool member for geo-steering
     manageLoadBalancers: true
   peers:

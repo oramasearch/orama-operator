@@ -17,8 +17,7 @@ spec:
       - { name: anthropic, models: [claude-3-5-sonnet] }
   cloudflare:              # DNS + geo load-balancing always live in Cloudflare
     enabled: true
-    zoneID: REPLACE_ME
-    apiTokenSecretRef: { name: cloudflare-api-token }
+    apiTokenSecretRef: { name: cloudflare-api-token }   # Secret holds token + zoneID + accountID
     manageDNS: true
     manageLoadBalancers: true
   demoSeed: true

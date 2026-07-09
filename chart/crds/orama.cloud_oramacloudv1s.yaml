@@ -68,11 +68,12 @@ spec:
                   reconciles CF resources (DNS records, worker routes) via the CF API based on
                   this config — provisioning/deprovisioning as components change.
                 properties:
-                  accountID:
-                    type: string
                   apiTokenSecretRef:
-                    description: APITokenSecretRef holds the Cloudflare API token
-                      (ESO-materialized).
+                    description: |-
+                      APITokenSecretRef references a Secret holding ALL of the operator's Cloudflare
+                      credentials as three keys: `token` (the API token), `zoneID`, and `accountID`. Keeping
+                      the zone + account IDs in the same Secret as the token means all Cloudflare config lives
+                      in one place (never split between the CR spec and a Secret, and never in the CR itself).
                     properties:
                       name:
                         default: ""
@@ -107,9 +108,6 @@ spec:
                       ManageWorkerRoutes: reconcile CF Worker routes for any workers kept on CF
                       rather than the in-cluster bundle.
                     type: boolean
-                  zoneID:
-                    description: ZoneID / AccountID the operator manages.
-                    type: string
                 type: object
               components:
                 description: |-

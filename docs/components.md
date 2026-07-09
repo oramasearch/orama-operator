@@ -204,7 +204,7 @@ sidecar (`:50051`), matching prod. Service on `:8080`. **Validated on AKS.**
 Cloudflare stays the permanent edge/geo-LB; the operator reconciles CF **DNS** via the
 CF API (raw HTTP): it upserts a proxied record pointing `dashboard.host` at this
 cluster's ingress address. **Safe no-op** unless fully configured — `enabled` +
-`apiTokenSecretRef` (key `token`) present + `zoneID` + `manageDNS` + a resolvable
+`apiTokenSecretRef` → a Secret with keys `token` + `zoneID` + `accountID` + `manageDNS` + a resolvable
 ingress target. The no-op path is validated on AKS (loop stays green with `enabled`
 but no token).
 
