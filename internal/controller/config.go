@@ -188,7 +188,7 @@ func componentSecretData(component string) map[string]string {
 			"TYPESENSE_API_KEY":           "dev-typesense-api-key",
 			"MASTER_API_KEY":              "dev-master-api-key",
 			"ORAMA_EMBEDDINGS_BEARER":     "dev-hpes-bearer",
-			"ABLY_API_KEY":                "dev-ably-api-key",
+			"ABLY_API_KEY":                "sandbox.dummy:sandboxdummyablysecret000000",
 			"API_SECRET":                  "dev-index-builder-api-secret",
 			"DEPLOYMENT_API_API_KEY":      "dev-deployment-api-key",
 			"DECRYPTER_API_SECRET_BASE64": "ZGV2LWRlY3J5cHRlci1zZWNyZXQ=", // base64("dev-decrypter-secret")
@@ -202,7 +202,7 @@ func componentSecretData(component string) map[string]string {
 		return map[string]string{
 			"AWS_ACCESS_KEY_ID":     "dev",
 			"AWS_SECRET_ACCESS_KEY": "dev-secret",
-			"ABLY_API_KEY":          "dev-ably-api-key",
+			"ABLY_API_KEY":          "sandbox.dummy:sandboxdummyablysecret000000",
 			"HARVEST_SIGN":          "dev-harvest-signature",
 		}
 	case "harvest-master": // crawler master (job API): job-signing + worker-image pull creds
