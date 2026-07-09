@@ -46,21 +46,29 @@ whole `[CF]` tier at once.
 
 **1b. Store it as a Secret and wire it into the CR:**
 
-The Secret holds **all three** Cloudflare credentials as keys — `token`, `zoneID`, and
-`accountID` — so nothing Cloudflare-related lives in the CR itself:
+**Two Secrets** — the control-plane API token, and the R2 (S3-compatible) data-plane keys.
+Nothing Cloudflare-related lives in the CR; it just points at the two Secrets.
 
 ```bash
+# 1) Control plane — DNS / Load Balancing / Workers KV / R2 bucket provisioning
 kubectl create secret generic cloudflare-api-token -n orama-system \
   --from-literal=token='<CF_API_TOKEN>' \
   --from-literal=zoneID='<zone-id>' \
   --from-literal=accountID='<account-id>'
+
+# 2) Data plane — R2 object read/write via the S3-compatible API (distinct credential type)
+kubectl create secret generic cloudflare-r2 -n orama-system \
+  --from-literal=s3ApiEndpoint='https://<account-id>.r2.cloudflarestorage.com' \
+  --from-literal=accessKeyId='<r2-access-key-id>' \
+  --from-literal=secretAccessKey='<r2-secret-access-key>'
 ```
 ```yaml
-# in the OramaCloudV1 CR — just point at the Secret; the operator reads token/zoneID/accountID from it
+# in the OramaCloudV1 CR — point at both Secrets
 spec:
   cloudflare:
     enabled: true
-    apiTokenSecretRef: { name: cloudflare-api-token }   # holds token + zoneID + accountID
+    apiTokenSecretRef: { name: cloudflare-api-token }   # token + zoneID + accountID (control plane)
+    r2SecretRef:       { name: cloudflare-r2 }          # s3ApiEndpoint + accessKeyId + secretAccessKey (R2 data plane)
     manageDNS: true
     manageLoadBalancers: true
     manageWorkerRoutes: true

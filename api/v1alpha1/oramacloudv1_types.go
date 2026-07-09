@@ -136,12 +136,18 @@ type CloudflareSpec struct {
 	// only to opt this cluster out of operator-managed CF (rare).
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled,omitempty"`
-	// APITokenSecretRef references a Secret holding ALL of the operator's Cloudflare
-	// credentials as three keys: `token` (the API token), `zoneID`, and `accountID`. Keeping
-	// the zone + account IDs in the same Secret as the token means all Cloudflare config lives
-	// in one place (never split between the CR spec and a Secret, and never in the CR itself).
+	// APITokenSecretRef references the Secret holding the Cloudflare **control-plane** API
+	// credentials as three keys: `token` (the account API token), `zoneID`, and `accountID`.
+	// This token provisions DNS, Load Balancing, Workers KV, and R2 buckets.
 	// +optional
 	APITokenSecretRef *corev1.LocalObjectReference `json:"apiTokenSecretRef,omitempty"`
+	// R2SecretRef references a SEPARATE Secret holding the Cloudflare **R2 (S3-compatible)
+	// data-plane** credentials as three keys: `s3ApiEndpoint`, `accessKeyId`, and
+	// `secretAccessKey`. Kept apart from apiTokenSecretRef because these are object-storage
+	// access keys (read/write R2 objects) — a different credential type from the account API
+	// token. Components that read/write R2 (e.g. legacy indexes) consume it.
+	// +optional
+	R2SecretRef *corev1.LocalObjectReference `json:"r2SecretRef,omitempty"`
 	// ManageDNS: create/update DNS records pointing at this cluster's ingress.
 	// +kubebuilder:default=true
 	ManageDNS bool `json:"manageDNS,omitempty"`

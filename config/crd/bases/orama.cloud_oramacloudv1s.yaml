@@ -70,10 +70,9 @@ spec:
                 properties:
                   apiTokenSecretRef:
                     description: |-
-                      APITokenSecretRef references a Secret holding ALL of the operator's Cloudflare
-                      credentials as three keys: `token` (the API token), `zoneID`, and `accountID`. Keeping
-                      the zone + account IDs in the same Secret as the token means all Cloudflare config lives
-                      in one place (never split between the CR spec and a Secret, and never in the CR itself).
+                      APITokenSecretRef references the Secret holding the Cloudflare **control-plane** API
+                      credentials as three keys: `token` (the account API token), `zoneID`, and `accountID`.
+                      This token provisions DNS, Load Balancing, Workers KV, and R2 buckets.
                     properties:
                       name:
                         default: ""
@@ -108,6 +107,25 @@ spec:
                       ManageWorkerRoutes: reconcile CF Worker routes for any workers kept on CF
                       rather than the in-cluster bundle.
                     type: boolean
+                  r2SecretRef:
+                    description: |-
+                      R2SecretRef references a SEPARATE Secret holding the Cloudflare **R2 (S3-compatible)
+                      data-plane** credentials as three keys: `s3ApiEndpoint`, `accessKeyId`, and
+                      `secretAccessKey`. Kept apart from apiTokenSecretRef because these are object-storage
+                      access keys (read/write R2 objects) — a different credential type from the account API
+                      token. Components that read/write R2 (e.g. legacy indexes) consume it.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
                 type: object
               components:
                 description: |-
