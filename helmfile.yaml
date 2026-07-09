@@ -2,9 +2,12 @@
 # Usage: helmfile apply    (installs everything in order)
 #        helmfile -l app=orama-cloud-v1-operator apply   (just our operator)
 #
-# Toggle any platform operator your cluster already provides to installed: false.
-# (No Knative — the cloud functions run as plain Deployments. No External Secrets —
-# secrets are in-cluster Kubernetes Secrets the operator generates.)
+# The ONLY hard platform-operator dependency is CloudNativePG — the control DB is a CNPG
+# `Cluster` CR (controldb.go). Everything else the operator provisions directly as a plain
+# StatefulSet (RabbitMQ, ClickHouse, Redis, Typesense, Mongo — datastore.go) or Deployment;
+# no operator needed. Toggle any platform operator your cluster already provides to
+# installed: false. (No Knative — cloud functions run as plain Deployments. No External
+# Secrets — secrets are in-cluster Kubernetes Secrets the operator generates.)
 
 repositories:
   - name: cnpg
@@ -16,8 +19,9 @@ environments:
   default:
     values:
       - platformDeps:
-          cloudnativePG: true
-          rabbitmq: true
+          cloudnativePG: true   # REQUIRED — the control DB is a CNPG Cluster CR
+          rabbitmq: false       # NOT used today (the broker is a plain StatefulSet); enable
+                                # only if reconcileBroker is migrated to a RabbitmqCluster CR
 
 releases:
   # ---- platform operators (building blocks the v1 operator reconciles against) ----
@@ -26,15 +30,26 @@ releases:
     chart: cnpg/cloudnative-pg
     installed: {{ .Values.platformDeps.cloudnativePG }}
 
+  # OPTIONAL — off by default. The operator currently runs RabbitMQ as a plain StatefulSet,
+  # so this operator is unused unless the broker is moved to a RabbitmqCluster CR.
   - name: rabbitmq-cluster-operator
     namespace: rabbitmq-system
     chart: bitnami/rabbitmq-cluster-operator
     installed: {{ .Values.platformDeps.rabbitmq }}
 
-  # NOTE: the Altinity ClickHouse operator installs via its published manifest, not a
-  # Helm chart on a stable repo — add it here once the chart source is pinned.
+  # NOTE — no ClickHouse operator: analytics is a plain StatefulSet
+  # (clickhouse/clickhouse-server), like Redis/Typesense/Mongo — nothing to install here.
+  #
+  # NOTE — Airbyte (structured connectors, operator#4) is referenced by AIRBYTE_URL
+  # (http://airbyte-airbyte-server-svc.airbyte:8001) but is a heavy multi-service platform
+  # installed from its OWN chart into the `airbyte` namespace — it is NOT installed here. Add
+  # a release (or `helm install airbyte airbyte/airbyte -n airbyte`) if you need the
+  # structured-connector path; the dashboard's Airbyte integration is inert until then.
 
   # ---- the Orama Cloud v1 operator (this repo) ----
+  # Carries the CRDs in chart/crds/ (OramaCloudV1 + OramaCloudV1E2ETest + the Cloudflare
+  # DNS/KV/R2 resource CRDs). helm applies crds/ on INSTALL only — after adding/altering a
+  # CRD, run `kubectl apply -f chart/crds/` to update an existing install.
   - name: orama-cloud-v1-operator
     namespace: orama-system
     createNamespace: true
