@@ -178,12 +178,25 @@ func componentSecretData(component string) map[string]string {
 		return map[string]string{"DISCO_SECRET": "dev-disco-secret", "CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "keycloak":
 		return map[string]string{"KC_BOOTSTRAP_ADMIN_PASSWORD": "dev-keycloak-password"}
-	case "index-builder": // writes Typesense, embeds via HPES, live progress via Ably
+	case "index-builder": // writes Typesense, embeds via HPES, Ably progress, CF KV, decrypter, DISCO
+		// index-builder's EnvSchema (src/utils.ts) requires 27 vars at boot; the secret
+		// carries the credential-shaped ones (envFrom exposes each key as its env var). The
+		// external ones (Apify/Ably/CF/Sentry) are dummies until real tokens are provisioned
+		// (see the provisioning runbook + operator#28/#29). Non-secret URLs/constants are set
+		// as plain env in reconcileIngestion.
 		return map[string]string{
-			"TYPESENSE_API_KEY":       "dev-typesense-api-key",
-			"MASTER_API_KEY":          "dev-master-api-key",
-			"ORAMA_EMBEDDINGS_BEARER": "dev-hpes-bearer",
-			"ABLY_API_KEY":            "dev-ably-api-key",
+			"TYPESENSE_API_KEY":           "dev-typesense-api-key",
+			"MASTER_API_KEY":              "dev-master-api-key",
+			"ORAMA_EMBEDDINGS_BEARER":     "dev-hpes-bearer",
+			"ABLY_API_KEY":                "dev-ably-api-key",
+			"API_SECRET":                  "dev-index-builder-api-secret",
+			"DEPLOYMENT_API_API_KEY":      "dev-deployment-api-key",
+			"DECRYPTER_API_SECRET_BASE64": "ZGV2LWRlY3J5cHRlci1zZWNyZXQ=", // base64("dev-decrypter-secret")
+			"APIFY_TOKEN":                 "dev-apify-token",
+			"DISCO_SECRET_KEY":            "dev-disco-secret",
+			"HARVEST_SIGN":                "dev-harvest-signature",
+			"CLOUDFLARE_API_TOKEN":        "dev-cloudflare-token",
+			"CLOUDFLARE_ACCOUNT_ID":       "dev-cloudflare-account",
 		}
 	case "harvest": // crawler: S3 exports, Ably, job-signing
 		return map[string]string{
