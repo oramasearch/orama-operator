@@ -276,6 +276,14 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		c := oramacoreContainer(oc)
 		if w.Resources != nil {
 			c.Resources = *w.Resources
+		} else {
+			// Right-size (#42): default caps so the writer can't consume the node. OramaCore's
+			// Rust/tokio runtime is cgroup-aware — it sizes its worker threads to this CPU limit and
+			// backs off under the memory limit — so the container limit IS the binary-aware lever
+			// (unlike ClickHouse, which ignores the cgroup for its caches). The config's
+			// embedding_queue_limit / insert_batch_commit_size bound in-flight indexing memory on
+			// top. Override via spec.components.engine.writer.resources.
+			c.Resources = *resourceCaps("4Gi", "2", "1Gi", "500m")
 		}
 		// The GPU belongs to the shared embeddings Deployment (#14), not the writer — OramaCore
 		// is CPU; the embedding model is the GPU consumer (see reconcileEmbeddings).
@@ -324,6 +332,10 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		c := oramacoreContainer(oc)
 		if rd.Resources != nil {
 			c.Resources = *rd.Resources
+		} else {
+			// Right-size (#42): readers are query-serving; cgroup-aware tokio sizes threads to this
+			// CPU limit. Override via spec.components.engine.reader.resources.
+			c.Resources = *resourceCaps("2Gi", "1", "512Mi", "250m")
 		}
 		// Readers reach the shared embeddings Deployment over its Service (#14) — no per-pod
 		// sidecar, so N readers no longer each load the model into RAM.
