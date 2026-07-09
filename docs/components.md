@@ -5,7 +5,7 @@ reconciler lands.
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (+GPU, PVC) on the primary; readers `Deployment` (+Envoy sidecar); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
+| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -61,18 +61,29 @@ cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boo
 Driven by `spec.region.role`:
 
 - **Writer** (primary only) — a `StatefulSet` (1 replica) running `oramasearch/oramacore`,
-  a `volumeClaimTemplate` for `/app/.data`, and (when `writer.gpu`) an
-  `nvidia.com/gpu: 1` limit + the CR's nodeSelector/tolerations. Service on `:8080`.
+  a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
+  `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
+  on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
 - **Readers** (primary + read tiers) — a `Deployment` (`reader.replicas`) with the
   `oramacore` container **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
   127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set.
   Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
-- **Embeddings ai-server** — a co-located `embeddings` sidecar (gRPC on `:50051`) on
-  both writer and readers, so the config's `ai_server.host` points at `127.0.0.1`
-  (matches prod's engine↔embeddings co-location). `embeddingsImage()` resolves the **published**
-  `oramasearch/oramacore-ai-server:latest` (or `-cuda` for `writer.gpu`) — OramaCore's own
-  ai-server, which auto-falls back to CPUExecutionProvider on a CPU node. **Not**
-  `embeddings-server-py` (that's the separate HPES / index-manager path). Validated 2/2 on AKS.
+- **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
+  Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
+  **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
+  matches OramaCore's reference architecture (`config-docker.yaml` points `ai_server.host` at a
+  standalone `python-ai-server`). `embeddingsImage()` resolves the **published**
+  `oramasearch/oramacore-ai-server:latest` (or `-cuda` for `writer.gpu`, which also puts the
+  `nvidia.com/gpu: 1` limit + the writer's nodeSelector/tolerations on **this** Deployment — the
+  embedding model, not OramaCore, is the GPU consumer). Auto-falls back to CPUExecutionProvider on
+  a CPU node. **Not** `embeddings-server-py` (the separate HPES / index-manager path). Validated on
+  AKS: shared `<cr>-embeddings` pod serving gRPC, writer **1/1** + readers **2/2** (sidecar gone).
+
+  > **Deeper redundancy ([#39](https://github.com/oramasearch/orama-cloud-v1-operator/issues/39)):**
+  > the `oramacore` image *also* embeds a Python interpreter and loads the embedding models
+  > **in-process** per pod ("Building Python service" → "src.embeddings.models: Models loaded"), so
+  > each writer/reader still carries a model copy independent of this shared ai-server. Whether to
+  > offload those to the shared ai-server (or drop the redundant one) is tracked in #39.
 - **Config** — a `ConfigMap` with `envoy.yaml` + a **full, valid** `config.yaml`
   (`http` / `writer_side` / `reader_side` / `ai_server` / `log`, matching
   `oramacore/config-docker.yaml`; `execution_providers: CUDA|CPU` from `writer.gpu`).

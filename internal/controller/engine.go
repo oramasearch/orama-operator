@@ -82,6 +82,9 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	if err := r.reconcileEngineConfig(ctx, oc); err != nil {
 		return fmt.Errorf("engine config: %w", err)
 	}
+	if err := r.reconcileEmbeddings(ctx, oc); err != nil {
+		return fmt.Errorf("embeddings: %w", err)
+	}
 	if oc.Spec.Region.Role == "primary" {
 		if err := r.reconcileWriter(ctx, oc); err != nil {
 			return fmt.Errorf("writer: %w", err)
@@ -123,6 +126,9 @@ func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	if oc.Spec.Components.Engine.Writer.GPU {
 		ep = "CUDAExecutionProvider"
 	}
+	// The embeddings ai-server is a SHARED Deployment (#14), reached by its Service DNS name —
+	// not a per-pod 127.0.0.1 sidecar — so the model loads into RAM once, not once per engine pod.
+	embHost := oc.Name + "-embeddings"
 	return fmt.Sprintf(`http:
   host: 0.0.0.0
   port: 8080
@@ -157,7 +163,7 @@ reader_side:
     commit_interval: 1m
 ai_server:
   scheme: http
-  host: 127.0.0.1
+  host: %s
   port: 50051
   api_key: ""
   max_connections: 15
@@ -172,17 +178,63 @@ ai_server:
     port: 8000
     host: 127.0.0.1
     model: "Qwen/Qwen2.5-3B-Instruct"
-`, ep)
+`, embHost, ep)
 }
 
-// embeddingsSidecar is the OramaCore ai-server (gRPC embeddings on :50051), co-located
-// so config points ai_server.host at 127.0.0.1.
-func embeddingsSidecar(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
+// embeddingsContainer is the OramaCore ai-server (gRPC embeddings on :50051). It runs as ONE
+// shared Deployment (reconcileEmbeddings, #14) that the writer + all readers reach over its
+// Service — matching OramaCore's reference architecture (config-docker.yaml points
+// ai_server.host at a standalone `python-ai-server`), not a per-pod sidecar.
+func embeddingsContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	return corev1.Container{
 		Name:  "embeddings",
 		Image: embeddingsImage(oc),
 		Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: 50051}},
 	}
+}
+
+// reconcileEmbeddings runs the ai-server as a single SHARED Deployment + Service instead of a
+// sidecar in every engine pod (#14): the embedding model loads into RAM once, not once per
+// writer/reader. The GPU (when the engine is GPU) belongs HERE — the model inference is the GPU
+// consumer, OramaCore itself is CPU — so writer.gpu provisions this Deployment on the GPU node
+// and the writer/reader pods stay CPU-only.
+func (r *OramaCloudV1Reconciler) reconcileEmbeddings(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	name := oc.Name + "-embeddings"
+	lbls := labelsFor(oc, "embeddings")
+	w := oc.Spec.Components.Engine.Writer
+
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
+		dep.Labels = lbls
+		dep.Spec.Replicas = int32Ptr(1)
+		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
+		c := embeddingsContainer(oc)
+		var nodeSelector map[string]string
+		var tolerations []corev1.Toleration
+		if w.GPU {
+			if c.Resources.Limits == nil {
+				c.Resources.Limits = corev1.ResourceList{}
+			}
+			c.Resources.Limits[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse("1")
+			// Pin to the GPU node the writer would otherwise have used.
+			nodeSelector = w.NodeSelector
+			tolerations = w.Tolerations
+		}
+		dep.Spec.Template = corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
+			Spec: corev1.PodSpec{
+				ImagePullSecrets: imagePullSecrets(oc),
+				NodeSelector:     nodeSelector,
+				Tolerations:      tolerations,
+				Containers:       []corev1.Container{c},
+			},
+		}
+		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
+	}); err != nil {
+		return err
+	}
+	return r.upsertService(ctx, oc, name, "embeddings",
+		[]corev1.ServicePort{{Name: "grpc", Port: 50051, TargetPort: intstr.FromInt32(50051)}})
 }
 
 // renderConfigInit substitutes the MASTER_API_KEY (from the engine Secret, via envFrom)
@@ -225,12 +277,8 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		if w.Resources != nil {
 			c.Resources = *w.Resources
 		}
-		if w.GPU {
-			if c.Resources.Limits == nil {
-				c.Resources.Limits = corev1.ResourceList{}
-			}
-			c.Resources.Limits[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse("1")
-		}
+		// The GPU belongs to the shared embeddings Deployment (#14), not the writer — OramaCore
+		// is CPU; the embedding model is the GPU consumer (see reconcileEmbeddings).
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
@@ -238,7 +286,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 				NodeSelector:                  w.NodeSelector,
 				Tolerations:                   w.Tolerations,
 				InitContainers:                []corev1.Container{renderConfigInit(oc)},
-				Containers:                    []corev1.Container{c, embeddingsSidecar(oc)},
+				Containers:                    []corev1.Container{c},
 				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
 				TerminationGracePeriodSeconds: int64Ptr(writerGracePeriodSeconds),
 			},
@@ -277,7 +325,9 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		if rd.Resources != nil {
 			c.Resources = *rd.Resources
 		}
-		containers := []corev1.Container{c, embeddingsSidecar(oc)}
+		// Readers reach the shared embeddings Deployment over its Service (#14) — no per-pod
+		// sidecar, so N readers no longer each load the model into RAM.
+		containers := []corev1.Container{c}
 		if useEnvoy {
 			containers = append(containers, envoySidecar())
 		}
