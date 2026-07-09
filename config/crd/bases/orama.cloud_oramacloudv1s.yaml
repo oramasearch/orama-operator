@@ -614,6 +614,15 @@ spec:
                     required:
                     - enabled
                     type: object
+                  pgAdmin:
+                    description: Toggle is a simple on/off component.
+                    properties:
+                      enabled:
+                        default: true
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
                   search:
                     description: |-
                       DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream

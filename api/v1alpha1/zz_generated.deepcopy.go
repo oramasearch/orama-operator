@@ -331,6 +331,7 @@ func (in *ComponentsSpec) DeepCopyInto(out *ComponentsSpec) {
 	out.Ingestion = in.Ingestion
 	in.Analytics.DeepCopyInto(&out.Analytics)
 	in.ControlDB.DeepCopyInto(&out.ControlDB)
+	out.PgAdmin = in.PgAdmin
 	in.Cache.DeepCopyInto(&out.Cache)
 	in.Broker.DeepCopyInto(&out.Broker)
 	in.Search.DeepCopyInto(&out.Search)

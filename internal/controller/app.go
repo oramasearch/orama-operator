@@ -46,6 +46,8 @@ type appDef struct {
 	initContainers []corev1.Container
 	volumes        []corev1.Volume
 	volumeMounts   []corev1.VolumeMount
+	// securityContext (optional) — e.g. an fsGroup so a non-root image can write its mounted volume.
+	securityContext *corev1.PodSecurityContext
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
@@ -69,6 +71,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets: imagePullSecrets(oc),
+				SecurityContext:  def.securityContext,
 				InitContainers:   def.initContainers,
 				Volumes:          def.volumes,
 				Containers: []corev1.Container{{

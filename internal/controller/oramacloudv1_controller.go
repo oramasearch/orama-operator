@@ -62,6 +62,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"bootstrap", r.reconcileBootstrap}, // shared config + dummy secrets first
 		{"engine", r.reconcileEngine},
 		{"controlDB", r.reconcileControlDB},
+		{"pgadmin", r.reconcilePgAdmin}, // pgAdmin4 web (admin UI for the control-DB)
 		{"cache", r.reconcileCache},
 		{"broker", r.reconcileBroker},
 		{"analytics", r.reconcileAnalytics},

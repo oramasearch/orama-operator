@@ -185,6 +185,8 @@ func componentSecretData(component string) map[string]string {
 		return map[string]string{"DISCO_SECRET": "dev-disco-secret", "CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "keycloak":
 		return map[string]string{"KC_BOOTSTRAP_ADMIN_PASSWORD": "dev-keycloak-password"}
+	case "pgadmin": // pgAdmin4 web login (PGADMIN_DEFAULT_EMAIL is non-secret, set in the Deployment env)
+		return map[string]string{"PGADMIN_DEFAULT_PASSWORD": "dev-pgadmin-password"}
 	case "index-builder": // writes Typesense, embeds via HPES, Ably progress, CF KV, decrypter, DISCO
 		// index-builder's EnvSchema (src/utils.ts) requires 27 vars at boot; the secret
 		// carries the credential-shaped ones (envFrom exposes each key as its env var). The
