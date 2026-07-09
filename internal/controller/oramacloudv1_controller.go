@@ -81,7 +81,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	for _, s := range steps {
 		if err := s.fn(ctx, &oc); err != nil {
 			l.Error(err, "component reconcile failed", "component", s.name)
-			r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, metav1.Condition{
+			r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, metav1.Condition{
 				Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
 				Message: fmt.Sprintf("%s: %v", s.name, err),
 			})

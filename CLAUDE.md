@@ -36,7 +36,14 @@ against production-readiness, not "does a pod start."
 6. **Disaster recovery is first-class.** Backup / restore / config-snapshot are CRDs, scheduled,
    and tested (see [operator#33](https://github.com/oramasearch/orama-cloud-v1-operator/issues/33)).
    "Can we rebuild this from nothing, and recover data after a loss?" must always be **yes**.
-7. **e2e is the forcing function, not the target.** The e2e suite progresses **only** as the
+7. **Status is accurate, component-level observability — and anti-flap.** Every CRD's `.status`
+   reflects real child readiness at **component granularity** — one entry per deployable component
+   (writer/reader/broker/dashboard/…), **not** per-pod and **not** per-field. Surface a
+   `Ready | Progressing | Degraded` phase, an `n/total` count, a per-component list, and standard
+   `conditions` (+ `printcolumn`s for at-a-glance `kubectl get`). **Write the status subresource
+   ONLY on a real state transition** (deep-compare first): a steady stack must produce **zero**
+   control-plane traffic. Middle ground — accurate enough to trust, coarse enough not to flap.
+8. **e2e is the forcing function, not the target.** The e2e suite progresses **only** as the
    operator matures to encapsulate this complexity (real writer→reader replication, real schema,
    real creds, …). **Never hack the test green** — make the operator correct and e2e follows.
 

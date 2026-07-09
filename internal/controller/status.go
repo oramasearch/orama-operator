@@ -21,28 +21,30 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
 
-// componentReadiness lists the operator-owned workloads for this CR and reports how many are
-// ready vs total, plus the names not yet ready. It covers Deployments + StatefulSets (the bulk of
-// the stack) and the CNPG control DB (unstructured). The component reconcilers only CREATE
-// resources; this roll-up over their LIVE status is what advances the CR phase from Provisioning
-// to Ready (#37).
-func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (ready, total int, notReady []string) {
+const componentLabel = "app.kubernetes.io/component"
+
+// componentReadiness returns a per-component readiness list for the operator-owned workloads —
+// one entry per DEPLOYABLE component (Deployment / StatefulSet, keyed by its component label) plus
+// the CNPG control DB. Middle granularity: component-level, not per-pod. Sorted by name so the
+// list is stable and never triggers a status write just from map/list ordering.
+func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) []oramav1alpha1.ComponentStatus {
 	owned := client.MatchingLabels{
 		"app.kubernetes.io/managed-by": "orama-cloud-v1-operator",
 		"app.kubernetes.io/instance":   oc.Name,
 	}
 	ns := client.InNamespace(oc.Namespace)
+	var comps []oramav1alpha1.ComponentStatus
 
 	var deps appsv1.DeploymentList
 	if err := r.List(ctx, &deps, ns, owned); err == nil {
 		for i := range deps.Items {
 			d := &deps.Items[i]
-			total++
-			if want := replicasOf(d.Spec.Replicas); want > 0 && d.Status.ReadyReplicas >= want {
-				ready++
-			} else {
-				notReady = append(notReady, "deploy/"+d.Name)
-			}
+			want := replicasOf(d.Spec.Replicas)
+			comps = append(comps, oramav1alpha1.ComponentStatus{
+				Name:   componentName(d.Labels, d.Name),
+				Ready:  want > 0 && d.Status.ReadyReplicas >= want,
+				Detail: fmt.Sprintf("%d/%d", d.Status.ReadyReplicas, want),
+			})
 		}
 	}
 
@@ -50,31 +52,38 @@ func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *ora
 	if err := r.List(ctx, &sts, ns, owned); err == nil {
 		for i := range sts.Items {
 			s := &sts.Items[i]
-			total++
-			if want := replicasOf(s.Spec.Replicas); want > 0 && s.Status.ReadyReplicas >= want {
-				ready++
-			} else {
-				notReady = append(notReady, "sts/"+s.Name)
-			}
+			want := replicasOf(s.Spec.Replicas)
+			comps = append(comps, oramav1alpha1.ComponentStatus{
+				Name:   componentName(s.Labels, s.Name),
+				Ready:  want > 0 && s.Status.ReadyReplicas >= want,
+				Detail: fmt.Sprintf("%d/%d", s.Status.ReadyReplicas, want),
+			})
 		}
 	}
 
-	// CNPG control DB (unstructured Cluster). Best-effort — if CNPG isn't installed or the cluster
-	// isn't found yet, it counts as not-ready rather than failing the roll-up.
+	// CNPG control DB (unstructured Cluster). Best-effort — not-found counts as not-ready.
 	if oc.Spec.Components.ControlDB.Enabled {
-		total++
 		cluster := &unstructured.Unstructured{}
 		cluster.SetGroupVersionKind(cnpgClusterGVK)
 		key := client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-controldb"}
-		if err := r.Get(ctx, key, cluster); err == nil && cnpgClusterReady(cluster) {
-			ready++
-		} else {
-			notReady = append(notReady, "cnpg/"+oc.Name+"-controldb")
+		ready, detail := false, "0"
+		if err := r.Get(ctx, key, cluster); err == nil {
+			ri, _, _ := unstructured.NestedInt64(cluster.Object, "status", "readyInstances")
+			inst, _, _ := unstructured.NestedInt64(cluster.Object, "status", "instances")
+			ready, detail = ri >= 1, fmt.Sprintf("%d/%d", ri, inst)
 		}
+		comps = append(comps, oramav1alpha1.ComponentStatus{Name: "controldb", Ready: ready, Detail: detail})
 	}
 
-	sort.Strings(notReady)
-	return ready, total, notReady
+	sort.Slice(comps, func(i, j int) bool { return comps[i].Name < comps[j].Name })
+	return comps
+}
+
+func componentName(labels map[string]string, fallback string) string {
+	if c := labels[componentLabel]; c != "" {
+		return c
+	}
+	return fallback
 }
 
 func replicasOf(p *int32) int32 {
@@ -84,39 +93,52 @@ func replicasOf(p *int32) int32 {
 	return *p
 }
 
-// cnpgClusterReady reports whether a CNPG Cluster has at least one ready instance.
-func cnpgClusterReady(c *unstructured.Unstructured) bool {
-	readyInstances, found, err := unstructured.NestedInt64(c.Object, "status", "readyInstances")
-	return err == nil && found && readyInstances >= 1
-}
-
-// applyReadiness computes the readiness roll-up and updates the CR status: phase (Ready once every
-// owned workload is ready, else Provisioning), componentsReady ("n/total"), and a standard Ready
-// condition. Returns whether the stack is fully ready.
+// applyReadiness rolls the per-component states up into the CR status: phase (Ready when every
+// component is ready; Degraded when one regressed after having been Ready; else Progressing),
+// componentsReady ("n/total"), the per-component list, and a standard Ready condition. Returns
+// whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
 func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) bool {
-	ready, total, notReady := r.componentReadiness(ctx, oc)
+	comps := r.componentReadiness(ctx, oc)
+	ready, notReady := 0, []string(nil)
+	for _, c := range comps {
+		if c.Ready {
+			ready++
+		} else {
+			notReady = append(notReady, c.Name)
+		}
+	}
+	total := len(comps)
 	allReady := ready == total // total==0 (nothing enabled) is vacuously ready
 
-	phase, condStatus, reason := "Provisioning", metav1.ConditionFalse, "ComponentsNotReady"
-	msg := fmt.Sprintf("%d/%d components ready; waiting on: %s", ready, total, strings.Join(notReady, ", "))
-	if allReady {
+	// Progressing (coming up) vs Degraded (was Ready, a component regressed) — decided from the
+	// existing Ready condition, so no extra state and it only flips on a genuine transition.
+	wasReady := meta.IsStatusConditionTrue(oc.Status.Conditions, "Ready")
+	phase, condStatus, reason := "Progressing", metav1.ConditionFalse, "ComponentsProgressing"
+	msg := fmt.Sprintf("%d/%d ready; waiting on: %s", ready, total, strings.Join(notReady, ", "))
+	switch {
+	case allReady:
 		phase, condStatus, reason = "Ready", metav1.ConditionTrue, "AllComponentsReady"
 		msg = fmt.Sprintf("all %d components ready", total)
+	case wasReady:
+		phase, reason = "Degraded", "ComponentsDegraded"
+		msg = fmt.Sprintf("%d/%d ready; degraded: %s", ready, total, strings.Join(notReady, ", "))
 	}
 
-	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), metav1.Condition{
+	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, metav1.Condition{
 		Type: "Ready", Status: condStatus, Reason: reason, Message: msg,
 	})
 	return allReady
 }
 
-// setStatus best-effort updates phase + componentsReady and merges a condition, writing the
-// status subresource only when something actually changed.
-func (r *OramaCloudV1Reconciler) setStatus(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, phase, componentsReady string, cond metav1.Condition) {
+// setStatus writes phase + componentsReady + the per-component list + a merged condition — but
+// only when something actually changed, so a steady state produces NO control-plane traffic even
+// though reconcile runs on every child event. This is the anti-flap guard.
+func (r *OramaCloudV1Reconciler) setStatus(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, phase, componentsReady string, comps []oramav1alpha1.ComponentStatus, cond metav1.Condition) {
 	cond.ObservedGeneration = oc.Generation
 	changed := oc.Status.Phase != phase ||
 		oc.Status.ComponentsReady != componentsReady ||
-		oc.Status.ObservedGeneration != oc.Generation
+		oc.Status.ObservedGeneration != oc.Generation ||
+		!componentsEqual(oc.Status.Components, comps)
 	if meta.SetStatusCondition(&oc.Status.Conditions, cond) {
 		changed = true
 	}
@@ -125,8 +147,22 @@ func (r *OramaCloudV1Reconciler) setStatus(ctx context.Context, oc *oramav1alpha
 	}
 	oc.Status.Phase = phase
 	oc.Status.ComponentsReady = componentsReady
+	oc.Status.Components = comps
 	oc.Status.ObservedGeneration = oc.Generation
 	if err := r.Status().Update(ctx, oc); err != nil {
 		log.FromContext(ctx).Error(err, "status update failed", "phase", phase)
 	}
+}
+
+// componentsEqual reports whether two component lists are identical (both are name-sorted).
+func componentsEqual(a, b []oramav1alpha1.ComponentStatus) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -302,17 +302,39 @@ type PeerSpec struct {
 	PostgresEndpoint string `json:"postgresEndpoint,omitempty"`
 }
 
+// ComponentStatus is the readiness of ONE deployable component (middle granularity — one entry
+// per workload the operator owns, e.g. writer/reader/broker/dashboard — not per-pod, not per-field).
+// Kept terse on purpose: the status subresource is written only on a real state transition, so it
+// stays an accurate signal without flapping or churning the k8s control plane.
+type ComponentStatus struct {
+	// Name of the component (its app.kubernetes.io/component label).
+	Name string `json:"name"`
+	// Ready is true when the component's workload is fully available (readyReplicas >= desired).
+	Ready bool `json:"ready"`
+	// Detail is a short human summary (e.g. "3/3"). Coarse by design — avoids per-pod churn.
+	// +optional
+	Detail string `json:"detail,omitempty"`
+}
+
 // OramaCloudV1Status is the observed state.
 type OramaCloudV1Status struct {
-	// Phase: Pending | Provisioning | Ready | Degraded.
+	// Phase: Progressing (coming up) | Ready (all components ready) | Degraded (was ready, a
+	// component regressed) | Pending.
 	Phase string `json:"phase,omitempty"`
-	// Conditions follows the standard k8s condition convention.
+	// Conditions follows the standard k8s condition convention (the Ready condition is the
+	// machine-readable roll-up).
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-	// ComponentsReady counts reconciled/ready child components.
+	// ComponentsReady is the ready/total count (e.g. "22/22").
 	// +optional
-	ComponentsReady    string `json:"componentsReady,omitempty"`
-	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
+	ComponentsReady string `json:"componentsReady,omitempty"`
+	// Components is the per-component readiness summary — accurate component-level visibility
+	// without per-pod detail. Ordered by name for stability (so re-ordering never triggers a write).
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Components         []ComponentStatus `json:"components,omitempty"`
+	ObservedGeneration int64             `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -322,6 +344,7 @@ type OramaCloudV1Status struct {
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.region.role`
 // +kubebuilder:printcolumn:name="Profile",type=string,JSONPath=`.spec.profile`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.componentsReady`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // OramaCloudV1 is one regional deployment of the entire Orama Cloud v1 stack.

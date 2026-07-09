@@ -31,6 +31,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.componentsReady
+      name: Ready
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -873,11 +876,44 @@ spec:
           status:
             description: OramaCloudV1Status is the observed state.
             properties:
+              components:
+                description: |-
+                  Components is the per-component readiness summary — accurate component-level visibility
+                  without per-pod detail. Ordered by name for stability (so re-ordering never triggers a write).
+                items:
+                  description: |-
+                    ComponentStatus is the readiness of ONE deployable component (middle granularity — one entry
+                    per workload the operator owns, e.g. writer/reader/broker/dashboard — not per-pod, not per-field).
+                    Kept terse on purpose: the status subresource is written only on a real state transition, so it
+                    stays an accurate signal without flapping or churning the k8s control plane.
+                  properties:
+                    detail:
+                      description: Detail is a short human summary (e.g. "3/3"). Coarse
+                        by design — avoids per-pod churn.
+                      type: string
+                    name:
+                      description: Name of the component (its app.kubernetes.io/component
+                        label).
+                      type: string
+                    ready:
+                      description: Ready is true when the component's workload is
+                        fully available (readyReplicas >= desired).
+                      type: boolean
+                  required:
+                  - name
+                  - ready
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               componentsReady:
-                description: ComponentsReady counts reconciled/ready child components.
+                description: ComponentsReady is the ready/total count (e.g. "22/22").
                 type: string
               conditions:
-                description: Conditions follows the standard k8s condition convention.
+                description: |-
+                  Conditions follows the standard k8s condition convention (the Ready condition is the
+                  machine-readable roll-up).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -937,7 +973,9 @@ spec:
                 format: int64
                 type: integer
               phase:
-                description: 'Phase: Pending | Provisioning | Ready | Degraded.'
+                description: |-
+                  Phase: Progressing (coming up) | Ready (all components ready) | Degraded (was ready, a
+                  component regressed) | Pending.
                 type: string
             type: object
         type: object

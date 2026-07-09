@@ -113,9 +113,13 @@ Driven by `spec.region.role`:
 (+ dynamically-provisioned PVC), the reader Deployment, both Services, and the
 ConfigMap; the CR reaches **`Phase=Ready`** once every owned workload is ready — a status
 roll-up over the live Deployment/StatefulSet + CNPG readiness (`internal/controller/status.go`,
-[#37](https://github.com/oramasearch/orama-cloud-v1-operator/issues/37)), also exposed as
-`status.componentsReady` (e.g. `22/22`) and a standard `Ready` condition. Deleting the CR GC'd
-everything. The
+[#37](https://github.com/oramasearch/orama-cloud-v1-operator/issues/37)). Phase is
+`Progressing | Ready | Degraded` (Degraded = a component regressed after being Ready); it also
+exposes `status.componentsReady` (`22/22`, a print column), a **per-component list**
+(`status.components[]` — one entry per deployable component, e.g. `writer 1/1`, `broker 1/1` — not
+per-pod), and a standard `Ready` condition. The status subresource is **written only on a real
+transition** (deep-compared first), so a steady stack generates no control-plane churn. Deleting
+the CR GC'd everything. The
 `render-config` init container renders the config, and **OramaCore 1.2.28 parses it and
 boots** (`Configuration loaded successfully` → `Starting web server on
 http://0.0.0.0:8080`); the ConfigMap shows only `master_api_key: "__MASTER_API_KEY__"`
