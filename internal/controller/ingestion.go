@@ -53,7 +53,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 			{Name: "EXPRESS_PORT", Value: "8080"},
 			{Name: "MONGODB_URL", Value: "mongodb://" + n + "-harvest-mongo:27017/harvest"},
 			{Name: "AMQP_HOST", Value: "amqp://orama:dev-rabbitmq-password@" + n + "-broker:5672"},
-			{Name: "REDIS_HOST", Value: "redis://:dev-redis-password@" + n + "-cache:6379"},
+			{Name: "REDIS_HOST", Value: "redis://" + n + "-cache:6379"}, // in-cluster Redis is passwordless
 			{Name: "MASTER_URI", Value: "http://" + n + "-harvest-master:8080"},
 			{Name: "WORKER_IMAGE", Value: componentImage(oc, "harvest", "harvest")},
 		},
