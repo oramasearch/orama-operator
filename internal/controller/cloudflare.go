@@ -12,17 +12,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
 
 const cfAPIBase = "https://api.cloudflare.com/client/v4"
+
+// cfLBBillingOnce ensures the Load-Balancing "enable the paid feature" guidance is logged only once
+// per operator process (not on every reconcile).
+var cfLBBillingOnce sync.Once
 
 // reconcileCloudflare models this cluster's dashboard DNS record as an OWNED
 // CloudflareDNSRecord CR (epic #31): the child controller makes the CF API call and holds a
@@ -72,6 +78,23 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 		}); err != nil {
 			return err
 		}
+	}
+
+	// Cloudflare Load Balancing (Pools / Monitors / Load Balancers) is a PAID add-on that must be
+	// enabled on the account before its API will accept requests — the operator cannot enable billing
+	// for you. Surface clear guidance in the log so users know the one manual step to take (as seen in
+	// the dashboard: Delivery & performance → Load Balancing). Logged once per process to avoid noise.
+	// TODO(operator#66): reconcile CloudflareLoadBalancer / Pool / Monitor via the CF LB API.
+	if cf.ManageLoadBalancers {
+		cfLBBillingOnce.Do(func() {
+			logf.FromContext(ctx).Info(
+				"spec.cloudflare.manageLoadBalancers is enabled, but Cloudflare Load Balancing is a PAID "+
+					"feature that must be activated on the account FIRST — the operator cannot enable billing. "+
+					"Enable it in the Cloudflare dashboard (Delivery & performance → Load Balancing → Create / "+
+					"Purchase additional features), then the operator will reconcile Pools, Monitors, and Load "+
+					"Balancers for the configured hosts. Docs: https://developers.cloudflare.com/load-balancing/",
+				"component", "cloudflare", "manageLoadBalancers", true, "account", "see cloudflare-api-token accountID")
+		})
 	}
 	return nil
 }
