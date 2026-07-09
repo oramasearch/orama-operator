@@ -2,26 +2,36 @@
 # Usage: helmfile apply    (installs everything in order)
 #        helmfile -l app=orama-cloud-v1-operator apply   (just our operator)
 #
-# The ONLY hard platform-operator dependency is CloudNativePG — the control DB is a CNPG
-# `Cluster` CR (controldb.go). Everything else the operator provisions directly as a plain
-# StatefulSet (RabbitMQ, ClickHouse, Redis, Typesense, Mongo — datastore.go) or Deployment;
-# no operator needed. Toggle any platform operator your cluster already provides to
-# installed: false. (No Knative — cloud functions run as plain Deployments. No External
-# Secrets — secrets are in-cluster Kubernetes Secrets the operator generates.)
+# Platform-operator dependencies (production-grade path — we drive each datastore's OWN operator
+# CRDs rather than hand-rolling; see the operator CLAUDE.md principle):
+#   - CloudNativePG        — the control DB is a CNPG `Cluster` CR + per-service managed roles
+#                            + a `Database` CR (controldb.go). REQUIRED.
+#   - RabbitMQ operators   — the broker is a `RabbitmqCluster` CR with the stream plugin, and the
+#                            writer→reader replication `oramacore-operations` stream + per-service
+#                            users are declared via the Messaging Topology Operator CRDs. The
+#                            bitnami `rabbitmq-cluster-operator` chart bundles BOTH the Cluster
+#                            Operator and the Messaging Topology Operator. REQUIRED for streams.
+#   - ingress-nginx        — gives the operator's Ingresses a public LoadBalancer address (the
+#                            Cloudflare DNS target); external access + edge. REQUIRED for ingress.
+# ClickHouse/Redis/Typesense/Mongo still run as plain StatefulSets (no operator). Toggle any
+# platform operator your cluster already provides to installed: false.
 
 repositories:
   - name: cnpg
     url: https://cloudnative-pg.github.io/charts
   - name: bitnami
     url: https://charts.bitnami.com/bitnami
+  - name: ingress-nginx
+    url: https://kubernetes.github.io/ingress-nginx
 
 environments:
   default:
     values:
       - platformDeps:
-          cloudnativePG: true   # REQUIRED — the control DB is a CNPG Cluster CR
-          rabbitmq: false       # NOT used today (the broker is a plain StatefulSet); enable
-                                # only if reconcileBroker is migrated to a RabbitmqCluster CR
+          cloudnativePG: true   # REQUIRED — control DB is a CNPG Cluster CR + managed roles
+          rabbitmq: true        # REQUIRED — broker is a RabbitmqCluster CR; streams need the
+                                # rabbitmq_stream plugin + the topology operator (bundled)
+          ingressNginx: true    # REQUIRED — public LB address for the operator's Ingresses
 
 releases:
   # ---- platform operators (building blocks the v1 operator reconciles against) ----
@@ -30,12 +40,29 @@ releases:
     chart: cnpg/cloudnative-pg
     installed: {{ .Values.platformDeps.cloudnativePG }}
 
-  # OPTIONAL — off by default. The operator currently runs RabbitMQ as a plain StatefulSet,
-  # so this operator is unused unless the broker is moved to a RabbitmqCluster CR.
+  # Cluster Operator (RabbitmqCluster CR) + Messaging Topology Operator (Queue/Vhost/User/
+  # Permission CRDs) — the bitnami chart installs both. `reconcileBroker` creates a
+  # RabbitmqCluster with additionalPlugins: [rabbitmq_stream] (port 5552) so OramaCore can
+  # replicate writer→reader over a stream (operator#36/#40).
   - name: rabbitmq-cluster-operator
     namespace: rabbitmq-system
     chart: bitnami/rabbitmq-cluster-operator
     installed: {{ .Values.platformDeps.rabbitmq }}
+
+  # ingress controller with a Service type=LoadBalancer — AKS/EKS/GKE provision a public IP so
+  # the operator's Ingresses (app./docs./api.) get an address for Cloudflare DNS to point at
+  # (operator#38). Set controller.ingressClassResource.default=true so operator Ingresses need
+  # no explicit class.
+  - name: ingress-nginx
+    namespace: ingress-nginx
+    createNamespace: true
+    chart: ingress-nginx/ingress-nginx
+    installed: {{ .Values.platformDeps.ingressNginx }}
+    set:
+      - name: controller.service.type
+        value: LoadBalancer
+      - name: controller.ingressClassResource.default
+        value: "true"
 
   # NOTE — no ClickHouse operator: analytics is a plain StatefulSet
   # (clickhouse/clickhouse-server), like Redis/Typesense/Mongo — nothing to install here.
