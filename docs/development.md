@@ -24,11 +24,27 @@ helm lint chart
 
 ## Run locally (dev loop)
 
-Reconciles against your current kube-context using your kubeconfig creds:
+The standard loop: run the manager **out-of-cluster** against your current kube-context,
+using your kubeconfig creds (no in-cluster deploy needed to iterate):
 
 ```sh
 make run           # = go run ./cmd/main.go
 ```
+
+**Run only ONE manager at a time.** The metrics server binds `:8080`; a second manager
+(or a stale/wedged one left running) fails with `bind: address already in use`, and two
+managers reconciling the same CR will fight. If startup errors on `:8080`, an old manager
+is still alive — find and stop it, then re-run:
+
+```sh
+lsof -nP -iTCP:8080 -sTCP:LISTEN     # the holder is the manager (COMMAND ocv1-mgr / main)
+kill <pid>                            # killing the manager does NOT delete deployed pods
+```
+
+A wedged manager shows up as the CR's `.status.observedGeneration` lagging
+`.metadata.generation` (it stopped reconciling) — restart it to catch up. To run a second
+manager deliberately (e.g. debugging), override the ports:
+`go run ./cmd/main.go --metrics-bind-address=:8090 --health-probe-bind-address=:8091`.
 
 ## AKS smoke test
 

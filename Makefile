@@ -1,11 +1,11 @@
 # orama-cloud-v1-operator — standard kubebuilder targets.
-# Requires: go, controller-gen, kustomize (installed via `make deps`). Go is NOT
-# installed on the doc-authoring machine; run these in CI or a Go dev env.
+# Requires: go on PATH (export PATH="/opt/homebrew/bin:$(go env GOPATH)/bin:$PATH");
+# controller-gen is fetched on demand by `make generate`/`make manifests`.
 
 IMG ?= oramasearch/orama-cloud-v1-operator:latest
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@latest
 
-.PHONY: manifests generate fmt vet build docker-build helm-package test
+.PHONY: manifests generate fmt vet build run docker-build helm-package test
 
 manifests: ## Generate CRDs + RBAC from kubebuilder markers into config/crd, config/rbac.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook \
@@ -17,6 +17,8 @@ generate: ## Generate DeepCopy methods.
 fmt: ; go fmt ./...
 vet: ; go vet ./...
 build: generate fmt vet ; go build -o bin/manager cmd/main.go
+run: ## Run the manager locally (out-of-cluster) against your current kube-context.
+	go run ./cmd/main.go
 test: ; go test ./... -coverprofile cover.out
 docker-build: ; docker build -t $(IMG) .
 
