@@ -173,7 +173,10 @@ func componentSecretData(component string) map[string]string {
 		// requirepass is a hardening follow-up (#18).
 		return map[string]string{}
 	case "broker":
-		return map[string]string{"RABBITMQ_DEFAULT_USER": "orama", "RABBITMQ_DEFAULT_PASS": "dev-rabbitmq-password"}
+		// Creds live in the mounted rabbitmq.conf (default_user/pass) — the RABBITMQ_DEFAULT_USER
+		// env conflicts with a mounted config, so keep the broker secret empty (#41). (Prod: render
+		// the password from a Secret via an init container instead of the config dummy.)
+		return map[string]string{}
 	case "analytics":
 		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "analytics-processor": // pulls /v1/analytics -> ClickHouse

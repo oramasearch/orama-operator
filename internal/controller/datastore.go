@@ -158,15 +158,38 @@ func (r *OramaCloudV1Reconciler) reconcileCache(ctx context.Context, oc *oramav1
 	})
 }
 
+// rabbitmqConf renders the broker config (#41): enable the stream listener on 5552 and set
+// advertised_host to the broker Service — for our SINGLE-node broker the Service routes to the one
+// pod, so the stream client reconnects correctly (the pod-DNS "advertised host" gotcha only bites
+// multi-node clusters). default_user/pass live here (a sandbox dummy) rather than the
+// RABBITMQ_DEFAULT_USER env, because a mounted rabbitmq.conf and that env conflict; prod should
+// render the password from the broker Secret via an init container (like the engine config).
+func rabbitmqConf(advertisedHost string) string {
+	return "default_user = orama\n" +
+		"default_pass = dev-rabbitmq-password\n" +
+		"stream.listeners.tcp.1 = 5552\n" +
+		"stream.advertised_host = " + advertisedHost + "\n" +
+		"stream.advertised_port = 5552\n"
+}
+
 func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	advertised := oc.Name + "-broker." + oc.Namespace + ".svc.cluster.local"
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Broker, dataStoreDef{
 		component: "broker",
 		image:     "rabbitmq:3.13-management",
 		ports: []corev1.ContainerPort{
 			{Name: "amqp", ContainerPort: 5672},
 			{Name: "management", ContainerPort: 15672},
+			{Name: "stream", ContainerPort: 5552}, // rabbitmq_stream — OramaCore writer→reader replication (#41)
 		},
 		dataPath: "/var/lib/rabbitmq",
+		// Enable the stream plugin + expose 5552 so OramaCore replicates over a stream — our OWN
+		// topology (no vendor operator, #41). subPath-mounted so we add to /etc/rabbitmq, not clobber it.
+		configMount: "/etc/rabbitmq",
+		configFiles: map[string]string{
+			"enabled_plugins": "[rabbitmq_management,rabbitmq_stream].\n",
+			"rabbitmq.conf":   rabbitmqConf(advertised),
+		},
 	})
 }
 

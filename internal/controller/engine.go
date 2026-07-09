@@ -129,6 +129,9 @@ func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	// The embeddings ai-server is a SHARED Deployment (#14), reached by its Service DNS name —
 	// not a per-pod 127.0.0.1 sidecar — so the model loads into RAM once, not once per engine pod.
 	embHost := oc.Name + "-embeddings"
+	// writer→reader replication over a RabbitMQ stream (#41): the broker Service on 5552. OramaCore
+	// creates the stream on connect; the broker advertises the Service host so reconnect works.
+	brokerHost := oc.Name + "-broker"
 	return fmt.Sprintf(`http:
   host: 0.0.0.0
   port: 8080
@@ -137,7 +140,15 @@ func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 log: {}
 writer_side:
   output:
-    type: in-memory
+    type: rabbitmq
+    host: %s
+    port: 5552
+    user: orama
+    password: dev-rabbitmq-password
+    v_host: /
+    stream_name: oramacore-operations
+    client_provided_name: oramacore-writer
+    producer_name: write
   hooks:
     select_embeddings_properties:
       check_interval: 60s
@@ -156,7 +167,15 @@ writer_side:
     commit_interval: 1m
 reader_side:
   input:
-    type: in-memory
+    type: rabbitmq
+    host: %s
+    port: 5552
+    user: orama
+    password: dev-rabbitmq-password
+    v_host: /
+    stream_name: oramacore-operations
+    client_provided_name: oramacore-reader
+    consumer_name: reader
   config:
     data_dir: /app/.data/reader
     insert_batch_commit_size: 50000000
@@ -178,7 +197,7 @@ ai_server:
     port: 8000
     host: 127.0.0.1
     model: "Qwen/Qwen2.5-3B-Instruct"
-`, embHost, ep)
+`, brokerHost, brokerHost, embHost, ep)
 }
 
 // embeddingsContainer is the OramaCore ai-server (gRPC embeddings on :50051). It runs as ONE
@@ -237,6 +256,18 @@ func (r *OramaCloudV1Reconciler) reconcileEmbeddings(ctx context.Context, oc *or
 		[]corev1.ServicePort{{Name: "grpc", Port: 50051, TargetPort: intstr.FromInt32(50051)}})
 }
 
+// waitForBrokerInit blocks OramaCore startup until the broker's stream listener (:5552) is up.
+// OramaCore's RabbitMQ *producer* does NOT retry — it exits 1 with "Cannot create RabbitMQ sender:
+// Connection refused" if the broker isn't ready — so gate on it instead of crash-looping (#41).
+func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
+	broker := oc.Name + "-broker"
+	return corev1.Container{
+		Name:    "wait-for-broker",
+		Image:   "busybox:1.37",
+		Command: []string{"sh", "-c", "until nc -z " + broker + " 5552; do echo 'waiting for broker stream :5552'; sleep 2; done"},
+	}
+}
+
 // renderConfigInit substitutes the MASTER_API_KEY (from the engine Secret, via envFrom)
 // into the config.yaml template (from the ConfigMap) and writes the rendered file to the
 // shared rendered-config emptyDir that the OramaCore container reads via CONFIG_PATH.
@@ -293,7 +324,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 				ImagePullSecrets:              imagePullSecrets(oc),
 				NodeSelector:                  w.NodeSelector,
 				Tolerations:                   w.Tolerations,
-				InitContainers:                []corev1.Container{renderConfigInit(oc)},
+				InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc)},
 				Containers:                    []corev1.Container{c},
 				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
 				TerminationGracePeriodSeconds: int64Ptr(writerGracePeriodSeconds),
@@ -347,7 +378,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets:              imagePullSecrets(oc),
-				InitContainers:                []corev1.Container{renderConfigInit(oc)},
+				InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc)},
 				Containers:                    containers,
 				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume(), dataEmptyDir()},
 				TerminationGracePeriodSeconds: int64Ptr(readerGracePeriodSeconds),
