@@ -72,14 +72,18 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 				InitContainers:   def.initContainers,
 				Volumes:          def.volumes,
 				Containers: []corev1.Container{{
-					Name:           def.component,
-					Image:          def.image,
-					Args:           def.args,
-					Ports:          []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
-					Env:            def.env,
-					EnvFrom:        envFromFor(oc, def.component),
-					VolumeMounts:   def.volumeMounts,
-					ReadinessProbe: tcpReadiness(def.port),
+					Name:  def.component,
+					Image: def.image,
+					// Dev image tags (e.g. v1-sandbox) are MUTABLE — the same tag is re-pushed on
+					// each rebuild. Default IfNotPresent would keep a stale cached image, so pull
+					// Always to pick up the latest build (build-manifest.tsv records the digest).
+					ImagePullPolicy: corev1.PullAlways,
+					Args:            def.args,
+					Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
+					Env:             def.env,
+					EnvFrom:         envFromFor(oc, def.component),
+					VolumeMounts:    def.volumeMounts,
+					ReadinessProbe:  tcpReadiness(def.port),
 				}},
 			},
 		}
