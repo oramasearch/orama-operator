@@ -95,8 +95,10 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 	})
 }
 
-// reconcileOramasearchApp deploys the legacy api.askorama.ai app (#7): Deployment + Service +
-// Ingress. Still-serving legacy frontend (the "old dashboard", predecessor to app.orama.com).
+// reconcileOramasearchApp deploys the legacy api.askorama.ai app (#7).
+// Deprecated: UNWIRED from the reconcile step-list (operator#35) — the legacy app just redirects
+// to the new app, so we don't run it in-cluster (this also moots the MySQL-vs-CNPG mismatch). Kept
+// for reference; not called.
 func (r *OramaCloudV1Reconciler) reconcileOramasearchApp(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	a := oc.Spec.Components.OramasearchApp
 	if !a.Enabled {

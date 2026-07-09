@@ -601,7 +601,10 @@ spec:
                     - enabled
                     type: object
                   oramasearchApp:
-                    description: ToggleWithHost is a toggle plus an ingress host.
+                    description: |-
+                      Deprecated: oramasearch-app (api.askorama.ai, the legacy "old dashboard") just redirects to
+                      the new app, so it is NOT run in-cluster — the reconciler is unwired (operator#35). Field
+                      kept for API compatibility; setting it has no effect.
                     properties:
                       enabled:
                         default: true

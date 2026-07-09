@@ -72,7 +72,9 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"docs", r.reconcileDocs},
 		{"disco", r.reconcileDisco},
 		{"analytics-processor", r.reconcileAnalyticsProcessor},
-		{"oramasearch-app", r.reconcileOramasearchApp},
+		// oramasearch-app (api.askorama.ai, the legacy "old dashboard") is REMOVED — it just
+		// redirects to the new app, so we don't run it in-cluster (this also moots the MySQL-vs-
+		// CNPG mismatch, operator#35). The reconciler + toggle remain for reference but are unwired.
 		{"search-workers", r.reconcileSearchWorkers},
 		{"idp", r.reconcileIdP},
 		{"cloudflare", r.reconcileCloudflare},

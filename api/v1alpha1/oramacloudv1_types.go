@@ -177,7 +177,10 @@ type ComponentsSpec struct {
 
 	// Additional v1 components (gap fill — techops-docs issues #5–#7):
 	AnalyticsProcessor Toggle         `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
-	OramasearchApp     ToggleWithHost `json:"oramasearchApp,omitempty"`     // api.askorama.ai (legacy "old dashboard")
+	// Deprecated: oramasearch-app (api.askorama.ai, the legacy "old dashboard") just redirects to
+	// the new app, so it is NOT run in-cluster — the reconciler is unwired (operator#35). Field
+	// kept for API compatibility; setting it has no effect.
+	OramasearchApp ToggleWithHost `json:"oramasearchApp,omitempty"`
 	SearchWorkers      Toggle         `json:"searchWorkers,omitempty"`      // index-manager hosted-search serving workers
 	// Airbyte (#4) is a heavy multi-service platform → installed via its Helm chart (helmfile
 	// platformDeps), not a CR component; the dashboard/index-builder reference its endpoint.
