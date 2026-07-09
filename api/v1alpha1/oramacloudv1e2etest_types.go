@@ -15,8 +15,11 @@ type OramaCloudV1E2ETestSpec struct {
 	// points the test at that CR's engine Services (<target>-writer / <target>-reader).
 	TargetRef string `json:"targetRef"`
 
-	// Image is the e2e test image (the oramacore-test-e2e suite).
-	// +kubebuilder:default="oramasearch/oramacore-test-e2e:latest"
+	// Image is the RUNNER base image for the embedded functional e2e suite
+	// (assets/e2e-functional.sh). It must provide `sh`; the Job installs curl + jq into it
+	// before running the suite. Default is a pinned alpine (has apk). Override only with
+	// another curl/jq-capable base.
+	// +kubebuilder:default="alpine:3.20"
 	Image string `json:"image,omitempty"`
 
 	// Args passed to the test container.

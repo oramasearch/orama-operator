@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -22,14 +23,26 @@ import (
 
 // e2e smoke-test fixture (sandbox): a throwaway collection + index the suite writes to.
 // e2eRWKey is a **test-only** collection read/write key (NOT the master key) — safe to carry
-// in a plain ConfigMap. The master key (used only to CREATE the collection) is sourced from
-// the target's engine Secret at pod start and never lands in a ConfigMap.
+// in a plain ConfigMap. The master key (used to create the collection AND to run the admin/
+// analytics assertions) is sourced from the target's engine Secret at pod start and never
+// lands in a ConfigMap.
 const (
 	e2eCollectionID = "e2e-test"
 	e2eIndexID      = "e2e-index"
 	e2eRWKey        = "e2e-rw-key"
 	e2eConfigPath   = "/etc/e2e/config.json"
+	e2eScriptPath   = "/etc/e2e/functional.sh"
+	// e2eRunnerImage is the default runner: a minimal base that provides sh; the Job installs
+	// curl + jq into it and runs the mounted functional suite. Pinned for determinism.
+	e2eRunnerImage = "alpine:3.20"
 )
+
+// e2eFunctionalScript is the comprehensive functional suite (curl + jq) that exercises every
+// critical OramaCore function in multiple variations against a live OramaCloudV1. It is embedded
+// from source (assets/e2e-functional.sh), shipped in the e2e ConfigMap, and run by the Job.
+//
+//go:embed assets/e2e-functional.sh
+var e2eFunctionalScript string
 
 // OramaCloudV1E2ETestReconciler runs the oramacore-test-e2e suite as a Job against a deployed
 // OramaCloudV1 and reflects the Job's result in the test's status.
@@ -59,54 +72,36 @@ func e2eConfigJSON(t *oramav1alpha1.OramaCloudV1E2ETest) string {
 `, t.Spec.TargetRef, t.Spec.TargetRef, e2eCollectionID, e2eIndexID, e2eRWKey)
 }
 
-// e2eBootstrapScript creates the throwaway collection + index the suite writes to, idempotently.
-// The collection is created with the target's MASTER_API_KEY (auth), assigning our test key as
-// both read + write key; the index is created with that test key. EXPLICIT embedding of the
-// "title" field (`"embedding":["title"]` → IndexEmbeddingsCalculation::Properties) so the suite's
-// vector search works via the embeddings server directly — NOT "automatic", which invokes
-// OramaCore's LLM field-selector and panics in async-openai 0.28.3 (CannotCloneRequestError on a
-// streaming request's retry-clone) regardless of a valid key. See operator#41. Re-runs tolerate
-// "already exists".
-func e2eBootstrapScript(t *oramav1alpha1.OramaCloudV1E2ETest) string {
-	w := "http://" + t.Spec.TargetRef + "-writer:8080"
-	return fmt.Sprintf(`set -eu
-W=%q
-echo "e2e-bootstrap: create collection %s (idempotent)"
-curl -fsS -X POST "$W/v1/collections/create" \
-  -H "Authorization: Bearer $MASTER_API_KEY" -H 'Content-Type: application/json' \
-  -d '{"id":%q,"description":"e2e smoke","read_api_key":%q,"write_api_key":%q,"language":"english"}' \
-  || echo "  collection create non-2xx (already exists?) — continuing"
-echo "e2e-bootstrap: create index %s (idempotent)"
-curl -fsS -X POST "$W/v1/collections/%s/indexes/create" \
-  -H "Authorization: Bearer %s" -H 'Content-Type: application/json' \
-  -d '{"id":%q,"embedding":["title"]}' \
-  || echo "  index create non-2xx (already exists?) — continuing"
-`, w, e2eCollectionID, e2eCollectionID, e2eRWKey, e2eRWKey, e2eIndexID, e2eCollectionID, e2eRWKey, e2eIndexID)
-}
-
 func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var t oramav1alpha1.OramaCloudV1E2ETest
 	if err := r.Get(ctx, req.NamespacedName, &t); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	image := t.Spec.Image
-	if image == "" {
-		image = "oramasearch/oramacore-test-e2e:latest"
+	// The runner base image provides `sh`; the Job installs curl + jq and runs the mounted suite.
+	// spec.Image can override it (e.g. a pre-baked runner) but must contain sh + a package manager.
+	runner := t.Spec.Image
+	if runner == "" {
+		runner = e2eRunnerImage
 	}
 	cmName := t.Name + "-e2e-config"
 	jobName := t.Name + "-e2e"
 
-	// 1. The suite's config.json (plain — the collection key is a test-only credential).
+	// 1. The suite's config.json (plain — the collection key is a test-only credential) + the
+	//    embedded functional suite script.
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: t.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
-		cm.Data = map[string]string{"config.json": e2eConfigJSON(&t)}
+		cm.Data = map[string]string{
+			"config.json":   e2eConfigJSON(&t),
+			"functional.sh": e2eFunctionalScript,
+		}
 		return controllerutil.SetControllerReference(&t, cm, r.Scheme)
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// 2. The Job: bootstrap init container (create collection+index) → suite container.
+	// 2. The Job: a single runner container that installs curl+jq and runs the embedded
+	//    functional suite (which self-bootstraps a clean-slate collection/index before asserting).
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: t.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, job, func() error {
 		// Job spec is immutable after creation — only populate it on create.
@@ -134,17 +129,17 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 							VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 								LocalObjectReference: corev1.LocalObjectReference{Name: cmName}}},
 						}},
-						InitContainers: []corev1.Container{{
-							Name:    "bootstrap",
-							Image:   "curlimages/curl:8.10.1",
-							Command: []string{"sh", "-c", e2eBootstrapScript(&t)},
-							Env:     []corev1.EnvVar{masterKey},
-						}},
 						Containers: []corev1.Container{{
-							Name:         "e2e",
-							Image:        image,
-							Args:         t.Spec.Args,
-							Env:          []corev1.EnvVar{{Name: "CONFIG_PATH", Value: e2eConfigPath}},
+							Name:  "e2e",
+							Image: runner,
+							// Install curl + jq into the runner, then exec the mounted suite. The
+							// master key (admin + analytics assertions) comes from the engine Secret.
+							Command: []string{"sh", "-c",
+								"apk add --no-cache curl jq >/dev/null 2>&1 || apk add --no-cache curl jq; exec sh " + e2eScriptPath},
+							Env: []corev1.EnvVar{
+								{Name: "CONFIG_PATH", Value: e2eConfigPath},
+								masterKey,
+							},
 							VolumeMounts: []corev1.VolumeMount{configVol},
 						}},
 					},

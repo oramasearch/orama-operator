@@ -61,8 +61,12 @@ spec:
                   type: string
                 type: array
               image:
-                default: oramasearch/oramacore-test-e2e:latest
-                description: Image is the e2e test image (the oramacore-test-e2e suite).
+                default: alpine:3.20
+                description: |-
+                  Image is the RUNNER base image for the embedded functional e2e suite
+                  (assets/e2e-functional.sh). It must provide `sh`; the Job installs curl + jq into it
+                  before running the suite. Default is a pinned alpine (has apk). Override only with
+                  another curl/jq-capable base.
                 type: string
               pullSecretName:
                 description: PullSecretName lets the Job pull a private test image.

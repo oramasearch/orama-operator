@@ -99,6 +99,16 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
   single-node **sandbox** (no GPU). Install the CRD + apply a sample into an isolated
   `orama-system` namespace. **No GPU node yet → set `writer.gpu: false`** when testing
   the engine, or the writer pod stays Pending.
+- **Functional e2e (`OramaCloudV1E2ETest`):** the comprehensive suite lives at
+  `internal/controller/assets/e2e-functional.sh` (a curl+jq script embedded via `go:embed`,
+  shipped in a ConfigMap, run by an `alpine` Job that installs curl+jq). It self-bootstraps a
+  clean-slate collection+index and asserts **every critical OramaCore function in variations**
+  (search modes/filters/facets/sort/group, CRUD/upsert/delete, replication canary, batch-get, KV,
+  hooks, merchandising, MCP, analytics, answer/RAG). **~70 assertions; must stay `fail=0`.** Editing
+  the script requires re-running the operator (the script is embedded at compile time). Coverage +
+  the per-subsystem backlog are tracked under
+  [operator#44](https://github.com/oramasearch/orama-cloud-v1-operator/issues/44). Per principle #9,
+  extend the operator to make an assertion pass — never soften the assertion.
 
 ## Conventions
 

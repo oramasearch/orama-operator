@@ -41,14 +41,21 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 
 ## `OramaCloudV1E2ETest` (separate CRD)
 
-Runs the `oramacore-test-e2e` suite as a Job against a deployed stack — a test is a first-class,
-repeatable resource (the operator never runs suites during normal reconcile). Sample:
-[`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).
+Runs the **comprehensive functional e2e suite** as a Job against a deployed stack — a test is a
+first-class, repeatable resource (the operator never runs suites during normal reconcile). The suite
+(`internal/controller/assets/e2e-functional.sh`, embedded via `go:embed` and shipped in a ConfigMap)
+is a curl+jq script that self-bootstraps a clean-slate collection+index and asserts **every critical
+OramaCore function in variations** — liveness, auth (keys + negatives), collection/index lifecycle +
+document CRUD/upsert/delete, the write→searchable replication canary, fulltext (typo tolerance/exact/
+threshold/boost/pagination), vector + hybrid, filters (number/date/bool/string/geo + and/or/not),
+facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, analytics, and answer/RAG. It is the
+forcing function (see the production-migration principle in `CLAUDE.md`) — never softened to pass.
+Coverage is tracked by [operator#44](https://github.com/oramasearch/orama-cloud-v1-operator/issues/44).
+Sample: [`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).
 
 | Field | Purpose |
 |---|---|
 | `spec.targetRef` | Name of the `OramaCloudV1` to test (same namespace); the Job points at `<targetRef>-writer` / `-reader`. |
-| `spec.image` | e2e suite image (default `oramasearch/oramacore-test-e2e:latest`). |
-| `spec.args` | Args passed to the test container. |
-| `spec.pullSecretName` | Pull secret for a private test image. |
+| `spec.image` | **Runner base image** (default `alpine:3.20`). Must provide `sh` + a package manager — the Job installs curl+jq into it, then runs the embedded suite. Override only with another curl/jq-capable base. |
+| `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
 | `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ocv1e2e`. |
