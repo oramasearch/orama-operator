@@ -18,14 +18,17 @@ against production-readiness, not "does a pod start."
 2. **Codify all operational complexity in the operator** (first choice) or the **helmfile**
    (platform prereqs only, e.g. CNPG / an ingress controller). **No out-of-band `kubectl`, no
    undocumented manual steps.** If an operator can own it, the operator owns it.
-3. **Model all infrastructure state as CRDs — and prefer the datastore's OWN operator's native
-   CRDs over hand-rolling.** Each store's schema/topology/roles is declarative, owned, reconciled
-   state — **not** imperative one-shot Jobs or app-boot side effects. **Don't reinvent** what a
-   mature operator already does: use **CNPG's** `managed.roles` / `Database` / `DatabaseRole`
-   CRDs, the **RabbitMQ Cluster + Messaging Topology Operators** (`RabbitmqCluster`, `Vhost`,
-   `User`, `Permission`, `Queue`), etc. Install those operators as platform prereqs (helmfile)
-   and drive them from our reconcilers. This holds for **off-cluster infra too** (Cloudflare
-   DNS/KV/R2 are already owned CRDs). Learn an operator's API (use perplexity) before modeling it.
+3. **Model all infrastructure state as CRDs — declarative, owned, reconciled (never imperative
+   one-shot Jobs or app-boot side effects). Reuse a datastore's OWN operator's CRDs only when that
+   operator is RELIABLE; otherwise own the CRD yourself.** Judge the dependency first — is it
+   maintained, are its images actually pullable, is the release cadence sane? **CNPG is reliable**
+   → use its `managed.roles` / `Database` / `DatabaseRole` CRDs. The **bitnami RabbitMQ
+   Cluster/Topology operators were NOT** — their images 404'd (`ErrImagePull`, deprecated catalog),
+   so we **dropped them** and model the broker's streams/topology with our **own** small CRD
+   reconciling the plain RabbitMQ StatefulSet via its management API ([#41](https://github.com/oramasearch/orama-cloud-v1-operator/issues/41)).
+   A purpose-built CRD you control beats an unstable vendor dependency: faster to build, and it
+   can't rot out from under you. This holds for **off-cluster infra too** (Cloudflare DNS/KV/R2 are
+   owned CRDs). Learn an operator's API **and check its health** (perplexity) before relying on it.
 4. **Least-privilege, per-service access.** Every service that connects to a datastore gets its
    **own role/user with only the grants it needs** — never a shared superuser/owner. Postgres:
    one CNPG `managed.role` per service (`login`, `superuser: false`, `connectionLimit`, scoped

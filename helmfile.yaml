@@ -2,76 +2,51 @@
 # Usage: helmfile apply    (installs everything in order)
 #        helmfile -l app=orama-cloud-v1-operator apply   (just our operator)
 #
-# Platform-operator dependencies (production-grade path — we drive each datastore's OWN operator
-# CRDs rather than hand-rolling; see the operator CLAUDE.md principle):
-#   - CloudNativePG        — the control DB is a CNPG `Cluster` CR + per-service managed roles
-#                            + a `Database` CR (controldb.go). REQUIRED.
-#   - RabbitMQ operators   — the broker is a `RabbitmqCluster` CR with the stream plugin, and the
-#                            writer→reader replication `oramacore-operations` stream + per-service
-#                            users are declared via the Messaging Topology Operator CRDs. The
-#                            bitnami `rabbitmq-cluster-operator` chart bundles BOTH the Cluster
-#                            Operator and the Messaging Topology Operator. REQUIRED for streams.
-#   - ingress-nginx        — gives the operator's Ingresses a public LoadBalancer address (the
-#                            Cloudflare DNS target); external access + edge. REQUIRED for ingress.
-# ClickHouse/Redis/Typesense/Mongo still run as plain StatefulSets (no operator). Toggle any
-# platform operator your cluster already provides to installed: false.
+# Platform operators we depend on:
+#   - CloudNativePG  — REQUIRED. The control DB is a CNPG `Cluster` CR + managed roles +
+#                      `Database` CR (controldb.go). CNPG is stable + well-maintained, so we
+#                      reuse its native CRDs.
+#   - ingress-nginx  — REQUIRED for external access: gives the operator's Ingresses a public
+#                      LoadBalancer address (the Cloudflare DNS target, operator#38).
+# RabbitMQ is deliberately NOT an operator dependency: it runs as a plain StatefulSet
+# (datastore.go), and its topology/streams are modeled by OUR OWN CRDs (operator#41) — we
+# dropped the bitnami RabbitMQ Cluster/Topology operators after their images 404'd (deprecated
+# catalog). ClickHouse/Redis/Typesense/Mongo likewise run as plain StatefulSets.
+# Toggle any platform operator your cluster already provides to installed: false.
 
 repositories:
   - name: cnpg
     url: https://cloudnative-pg.github.io/charts
-  - name: bitnami
-    url: https://charts.bitnami.com/bitnami
   - name: ingress-nginx
     url: https://kubernetes.github.io/ingress-nginx
-
-environments:
-  default:
-    values:
-      - platformDeps:
-          cloudnativePG: true   # REQUIRED — control DB is a CNPG Cluster CR + managed roles
-          rabbitmq: true        # REQUIRED — broker is a RabbitmqCluster CR; streams need the
-                                # rabbitmq_stream plugin + the topology operator (bundled)
-          ingressNginx: true    # REQUIRED — public LB address for the operator's Ingresses
 
 releases:
   # ---- platform operators (building blocks the v1 operator reconciles against) ----
   - name: cloudnative-pg
     namespace: cnpg-system
     chart: cnpg/cloudnative-pg
-    installed: {{ .Values.platformDeps.cloudnativePG }}
+    installed: true   # REQUIRED — control DB is a CNPG Cluster CR + managed roles
 
-  # Cluster Operator (RabbitmqCluster CR) + Messaging Topology Operator (Queue/Vhost/User/
-  # Permission CRDs) — the bitnami chart installs both. `reconcileBroker` creates a
-  # RabbitmqCluster with additionalPlugins: [rabbitmq_stream] (port 5552) so OramaCore can
-  # replicate writer→reader over a stream (operator#36/#40).
-  - name: rabbitmq-cluster-operator
-    namespace: rabbitmq-system
-    chart: bitnami/rabbitmq-cluster-operator
-    installed: {{ .Values.platformDeps.rabbitmq }}
-
-  # ingress controller with a Service type=LoadBalancer — AKS/EKS/GKE provision a public IP so
-  # the operator's Ingresses (app./docs./api.) get an address for Cloudflare DNS to point at
-  # (operator#38). Set controller.ingressClassResource.default=true so operator Ingresses need
-  # no explicit class.
+  # ingress controller with a Service type=LoadBalancer — the cloud provisions a public IP so the
+  # operator's Ingresses (app./docs./api.) get an address for Cloudflare DNS to point at
+  # (operator#38). ingressClassResource.default=true so operator Ingresses need no explicit class.
   - name: ingress-nginx
     namespace: ingress-nginx
     createNamespace: true
     chart: ingress-nginx/ingress-nginx
-    installed: {{ .Values.platformDeps.ingressNginx }}
+    installed: true
     set:
       - name: controller.service.type
         value: LoadBalancer
       - name: controller.ingressClassResource.default
         value: "true"
 
-  # NOTE — no ClickHouse operator: analytics is a plain StatefulSet
-  # (clickhouse/clickhouse-server), like Redis/Typesense/Mongo — nothing to install here.
+  # NOTE — no RabbitMQ / ClickHouse operator: the broker is a plain StatefulSet whose topology is
+  # driven by our own CRDs (operator#41); analytics is a plain clickhouse-server StatefulSet, like
+  # Redis/Typesense/Mongo — nothing to install here.
   #
-  # NOTE — Airbyte (structured connectors, operator#4) is referenced by AIRBYTE_URL
-  # (http://airbyte-airbyte-server-svc.airbyte:8001) but is a heavy multi-service platform
-  # installed from its OWN chart into the `airbyte` namespace — it is NOT installed here. Add
-  # a release (or `helm install airbyte airbyte/airbyte -n airbyte`) if you need the
-  # structured-connector path; the dashboard's Airbyte integration is inert until then.
+  # NOTE — Airbyte (structured connectors, operator#4) is a heavy multi-service platform installed
+  # from its OWN chart into the `airbyte` namespace — NOT installed here.
 
   # ---- the Orama Cloud v1 operator (this repo) ----
   # Carries the CRDs in chart/crds/ (OramaCloudV1 + OramaCloudV1E2ETest + the Cloudflare
