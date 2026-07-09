@@ -5,6 +5,36 @@ entire self-contained **Orama Cloud v1** stack in-cluster from one `OramaCloudV1
 Read [`README.md`](README.md) for the overview and [`DESIGN.md`](DESIGN.md) for the
 architecture + decision log. Deep docs live in [`docs/`](docs/).
 
+## Guiding principle — this is a production migration (non-negotiable)
+
+**We are migrating Orama Cloud v1 to run on this operator in production.** The operator's job
+is to **encapsulate the entire operational complexity of the stack** so the whole system is
+deterministic, reproducible, and recoverable — not to be a dev/demo toy. Every change is judged
+against production-readiness, not "does a pod start."
+
+1. **Everything production-grade.** No shortcuts that "just make it pass." If a thing is wrong
+   for production (a hack, a placeholder, a single point of failure, a non-reproducible manual
+   step), it is not done — even if the sandbox appears healthy.
+2. **Codify all operational complexity in the operator** (first choice) or the **helmfile**
+   (platform prereqs only, e.g. CNPG / an ingress controller). **No out-of-band `kubectl`, no
+   undocumented manual steps.** If an operator can own it, the operator owns it.
+3. **Datastore schema & topology are declarative CRDs — one per datastore.** Each store's
+   schema/state is its own owned, reconciled CRD (e.g. a Postgres-schema CRD, a RabbitMQ-topology
+   CRD, a ClickHouse-schema CRD, …), applied deterministically and idempotently — **not**
+   imperative one-shot Jobs or app-boot side effects. This is how schema state stays reproducible
+   and auditable.
+4. **Determinism.** The same `OramaCloudV1` (+ its child CRs) must produce the same stack every
+   time. Idempotent reconcile, pinned versions, no hidden/implicit state, ordered dependencies.
+5. **Disaster recovery is first-class.** Backup / restore / config-snapshot are CRDs, scheduled,
+   and tested (see [operator#33](https://github.com/oramasearch/orama-cloud-v1-operator/issues/33)).
+   "Can we rebuild this from nothing, and recover data after a loss?" must always be **yes**.
+6. **e2e is the forcing function, not the target.** The e2e suite progresses **only** as the
+   operator matures to encapsulate this complexity (real writer→reader replication, real schema,
+   real creds, …). **Never hack the test green** — make the operator correct and e2e follows.
+
+When in doubt, choose the option that makes the operator more complete and the system more
+deterministic/recoverable, even if it is more work now.
+
 ## Docs discipline (non-negotiable)
 
 **Keep the docs in lockstep with the source.** Every change to the operator's
