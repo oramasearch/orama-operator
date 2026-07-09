@@ -7,6 +7,11 @@ package controller
 
 import (
 	"context"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
@@ -16,17 +21,77 @@ import (
 // QStash-equivalent queue (#8) is config wiring (workers → the in-cluster RabbitMQ) — neither
 // is a reconciled component here.
 
+// analyticsProcessorConfigYAML renders the config the `server` binary reads (config.rs). It
+// connects to ClickHouse + Postgres at startup, so these are the real in-cluster endpoints.
+// Secret values are __PLACEHOLDER__s the render init container substitutes — never in the CM.
+func analyticsProcessorConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
+	n := oc.Name
+	return fmt.Sprintf(`clickhouse:
+  url: http://%s-analytics:8123
+  user: default
+  password: __CLICKHOUSE_PASSWORD__
+  database: default
+  search_table: oramacore_analytics_search_raw
+  interaction_table: oramacore_analytics_interaction_raw
+  aggregated_search_table: oramacore_analytics_search_aggregated
+create_tables: true
+oramacores:
+  - name: oramacore_1
+    api_url: http://%s-writer:8080/v1/analytics
+    api_key: __MASTER_API_KEY__
+    enabled: true
+postgres:
+  url: postgres://%s:__PG_PASSWORD__@%s-controldb-rw:5432/%s
+  schema: analytics
+  runs_table: runs
+  delta: 60m
+`, n, n, controlDBName, n, controlDBName)
+}
+
 // reconcileAnalyticsProcessor deploys analytics-processor (#5): the worker that pulls
-// /v1/analytics into ClickHouse (deployed US/EU/Asia in prod). Plain Deployment + Service; it
-// reads the in-cluster ClickHouse + engine endpoints from the shared config + its scoped secret.
+// /v1/analytics into ClickHouse. Its `server` binary reads a YAML config FILE (CONFIG_PATH) and
+// connects to ClickHouse + Postgres at startup — so the operator renders that file via an init
+// container (ClickHouse password + master key from the component Secret; the CNPG-generated
+// Postgres password from the <cr>-controldb-app Secret) and mounts it. (The image is also
+// patched at build to bind 0.0.0.0:8080 instead of its hardcoded 127.0.0.1:8888.)
 func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.AnalyticsProcessor.Enabled {
 		return nil
 	}
+	img := componentImage(oc, "analytics-processor", "analytics-processor")
+	cmName := oc.Name + "-analytics-processor-config"
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: oc.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		cm.Data = map[string]string{"config.yaml": analyticsProcessorConfigYAML(oc)}
+		return controllerutil.SetControllerReference(oc, cm, r.Scheme)
+	}); err != nil {
+		return err
+	}
+	render := corev1.Container{
+		Name:  "render-config",
+		Image: img,
+		Command: []string{"sh", "-c",
+			`sed -e "s#__CLICKHOUSE_PASSWORD__#${CLICKHOUSE_PASSWORD}#g" -e "s#__MASTER_API_KEY__#${MASTER_API_KEY}#g" -e "s#__PG_PASSWORD__#${PG_PASSWORD}#g" /tmpl/config.yaml > /etc/analytics-processor/config.yaml`},
+		EnvFrom: envFromFor(oc, "analytics-processor"),
+		Env: []corev1.EnvVar{{Name: "PG_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: oc.Name + "-controldb-app"}, Key: "password"}}}},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "config-tmpl", MountPath: "/tmpl"},
+			{Name: "rendered-config", MountPath: "/etc/analytics-processor"},
+		},
+	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "analytics-processor",
-		image:     componentImage(oc, "analytics-processor", "analytics-processor"),
+		image:     img,
 		port:      8080,
+		env:       []corev1.EnvVar{{Name: "CONFIG_PATH", Value: "/etc/analytics-processor/config.yaml"}},
+		initContainers: []corev1.Container{render},
+		volumes: []corev1.Volume{
+			{Name: "config-tmpl", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: cmName}}}},
+			{Name: "rendered-config", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		},
+		volumeMounts: []corev1.VolumeMount{{Name: "rendered-config", MountPath: "/etc/analytics-processor"}},
 	})
 }
 

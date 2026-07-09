@@ -40,6 +40,12 @@ type appDef struct {
 	env         []corev1.EnvVar
 	args        []string
 	ingressHost string
+	// Optional config-file rendering: an init container renders a config file (from a
+	// ConfigMap template with secret placeholders) into a shared volume the app reads via
+	// CONFIG_PATH. initContainers/volumes are added to the pod; volumeMounts to the app container.
+	initContainers []corev1.Container
+	volumes        []corev1.Volume
+	volumeMounts   []corev1.VolumeMount
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
@@ -63,6 +69,8 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets: imagePullSecrets(oc),
+				InitContainers:   def.initContainers,
+				Volumes:          def.volumes,
 				Containers: []corev1.Container{{
 					Name:           def.component,
 					Image:          def.image,
@@ -70,6 +78,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 					Ports:          []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
 					Env:            def.env,
 					EnvFrom:        envFromFor(oc, def.component),
+					VolumeMounts:   def.volumeMounts,
 					ReadinessProbe: tcpReadiness(def.port),
 				}},
 			},
