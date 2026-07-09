@@ -7,12 +7,15 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -78,25 +81,22 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	for _, s := range steps {
 		if err := s.fn(ctx, &oc); err != nil {
 			l.Error(err, "component reconcile failed", "component", s.name)
-			r.setPhase(ctx, &oc, "Degraded")
+			r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, metav1.Condition{
+				Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
+				Message: fmt.Sprintf("%s: %v", s.name, err),
+			})
 			return ctrl.Result{}, err
 		}
 	}
 
-	r.setPhase(ctx, &oc, "Provisioning")
-	return ctrl.Result{}, nil
-}
-
-// setPhase best-effort updates the CR's status phase.
-func (r *OramaCloudV1Reconciler) setPhase(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, phase string) {
-	if oc.Status.Phase == phase {
-		return
+	// Roll child readiness up into the phase (#37): Ready once every owned workload is ready,
+	// else Provisioning. Requeue while still coming up so the phase advances as pods go ready —
+	// Owns() events cover most transitions; the requeue is the backstop (e.g. the polled CNPG
+	// cluster readiness).
+	if r.applyReadiness(ctx, &oc) {
+		return ctrl.Result{}, nil
 	}
-	oc.Status.Phase = phase
-	oc.Status.ObservedGeneration = oc.Generation
-	if err := r.Status().Update(ctx, oc); err != nil {
-		log.FromContext(ctx).Error(err, "status update failed", "phase", phase)
-	}
+	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
 }
 
 // SetupWithManager wires the controller and the child resources it owns.

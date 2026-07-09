@@ -110,7 +110,11 @@ Driven by `spec.region.role`:
 
 **Validated on AKS (2026-07-08):** applying a `primary` CR created the writer STS
 (+ dynamically-provisioned PVC), the reader Deployment, both Services, and the
-ConfigMap; the CR reached `Phase=Provisioning`; deleting the CR GC'd everything. The
+ConfigMap; the CR reaches **`Phase=Ready`** once every owned workload is ready — a status
+roll-up over the live Deployment/StatefulSet + CNPG readiness (`internal/controller/status.go`,
+[#37](https://github.com/oramasearch/orama-cloud-v1-operator/issues/37)), also exposed as
+`status.componentsReady` (e.g. `22/22`) and a standard `Ready` condition. Deleting the CR GC'd
+everything. The
 `render-config` init container renders the config, and **OramaCore 1.2.28 parses it and
 boots** (`Configuration loaded successfully` → `Starting web server on
 http://0.0.0.0:8080`); the ConfigMap shows only `master_api_key: "__MASTER_API_KEY__"`
