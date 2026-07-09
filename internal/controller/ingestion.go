@@ -97,8 +97,8 @@ func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav
 		{Name: "DEPLOYMENT_API_BASE_URL", Value: "http://" + n + "-dashboard:3000"},
 		{Name: "APIFY_ACT_ENDPOINT", Value: "https://api.apify.com/v2/acts/placeholder/runs"},
 		{Name: "APIFY_DATASET_ENDPOINT", Value: "https://api.apify.com/v2/datasets/placeholder/items"},
-		{Name: "REDIS_URL", Value: "redis://" + n + "-cache:6379"},
-		{Name: "DATABASE_URL", Value: "postgres://" + controlDBName + ":placeholder@" + n + "-controldb-rw:5432/" + controlDBName},
+		{Name: "REDIS_URL", Value: "redis://" + n + "-cache:6379"}, // in-cluster Redis is passwordless
+		pgURIEnv(oc, "DATABASE_URL"), // CNPG-generated URI (real password), not a placeholder (#32)
 		{Name: "ORAMA_EMBEDDINGS_URL", Value: "http://" + n + "-disco:50051"},
 		{Name: "DISCO_URL", Value: "http://" + n + "-disco:8080"},
 		{Name: "DISCO_PEERS", Value: ""},

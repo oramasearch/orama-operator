@@ -167,7 +167,11 @@ func componentSecretData(component string) map[string]string {
 	case "search":
 		return map[string]string{"TYPESENSE_API_KEY": "dev-typesense-api-key"}
 	case "cache":
-		return map[string]string{"REDIS_PASSWORD": "dev-redis-password"}
+		// In-cluster Redis runs WITHOUT requirepass (the redis image ignores REDIS_PASSWORD;
+		// it needs --requirepass), and every client uses a passwordless URL — so advertising a
+		// password here only causes AUTH failures. Passwordless everywhere (#32); enforcing
+		// requirepass is a hardening follow-up (#18).
+		return map[string]string{}
 	case "broker":
 		return map[string]string{"RABBITMQ_DEFAULT_USER": "orama", "RABBITMQ_DEFAULT_PASS": "dev-rabbitmq-password"}
 	case "analytics":
@@ -215,10 +219,10 @@ func componentSecretData(component string) map[string]string {
 		return map[string]string{
 			// JWT_PRIVATE_KEY + JWT_PUBLIC_KEY come from the generated <cr>-jwt secret
 			// (the dashboard signs the OramaCore writer JWT); JWT_ISSUER is in the config.
+			// POSTGRES_PASSWORD is sourced from the CNPG-generated <cr>-controldb-app Secret via
+			// an explicit env in reconcileDashboard (#32) — not the dummy. Redis is passwordless.
 			"MASTER_API_KEY":           "dev-master-api-key",
-			"POSTGRES_PASSWORD":        "dev-postgres-password",
 			"CLICKHOUSE_PASSWORD":      "dev-clickhouse-password",
-			"REDIS_PASSWORD":           "dev-redis-password",
 			"FIREBASE_SERVICE_ACCOUNT": "dev-firebase-service-account-json",
 			"STRIPE_SECRET_KEY":        "dev-stripe-secret-key",
 			"STRIPE_WEBHOOK_SECRET":    "dev-stripe-webhook-secret",

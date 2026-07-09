@@ -32,8 +32,9 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
   Keycloak non-secret config. Reconciled every pass.
 - **Per-component secrets** `<cr>-<component>-secret` — each holds **only the dummy
   credentials that component needs** (`componentSecretData`). e.g. `search-secret` =
-  `TYPESENSE_API_KEY`; `cache-secret` = `REDIS_PASSWORD`; `engine-secret` = master
-  key + JWT keys + LLM keys; `dashboard-secret` = DB/JWT/Stripe. **No shared blob** —
+  `TYPESENSE_API_KEY`; `cache-secret` = empty (Redis is passwordless, #32); `engine-secret`
+  = master key + JWT keys + LLM keys; `dashboard-secret` = ClickHouse/JWT/Stripe (its **Postgres
+  password comes from the CNPG `<cr>-controldb-app` secret**, not here — #32). **No shared blob** —
   a pod never sees a credential it doesn't use. **Create-if-absent** — the operator
   never overwrites an existing secret, so real / rotated values are
   preserved. Components with no secret needs (selenium, mongo) get none.

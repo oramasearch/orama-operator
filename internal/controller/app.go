@@ -153,6 +153,9 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		image:       componentImage(oc, "dashboard", "dashboard"),
 		port:        3000,
 		ingressHost: d.Host,
+		// The real control-DB password comes from the CNPG-generated secret, not the dummy in
+		// the dashboard component secret (#32). (DATABASE_URL wiring for Drizzle is #34.)
+		env: []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD")},
 	})
 }
 
