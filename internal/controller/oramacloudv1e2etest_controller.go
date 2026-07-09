@@ -61,8 +61,12 @@ func e2eConfigJSON(t *oramav1alpha1.OramaCloudV1E2ETest) string {
 
 // e2eBootstrapScript creates the throwaway collection + index the suite writes to, idempotently.
 // The collection is created with the target's MASTER_API_KEY (auth), assigning our test key as
-// both read + write key; the index is created with that test key. "automatic" embedding so the
-// suite's vector search works. Re-runs tolerate "already exists".
+// both read + write key; the index is created with that test key. EXPLICIT embedding of the
+// "title" field (`"embedding":["title"]` → IndexEmbeddingsCalculation::Properties) so the suite's
+// vector search works via the embeddings server directly — NOT "automatic", which invokes
+// OramaCore's LLM field-selector and panics in async-openai 0.28.3 (CannotCloneRequestError on a
+// streaming request's retry-clone) regardless of a valid key. See operator#41. Re-runs tolerate
+// "already exists".
 func e2eBootstrapScript(t *oramav1alpha1.OramaCloudV1E2ETest) string {
 	w := "http://" + t.Spec.TargetRef + "-writer:8080"
 	return fmt.Sprintf(`set -eu
@@ -75,7 +79,7 @@ curl -fsS -X POST "$W/v1/collections/create" \
 echo "e2e-bootstrap: create index %s (idempotent)"
 curl -fsS -X POST "$W/v1/collections/%s/indexes/create" \
   -H "Authorization: Bearer %s" -H 'Content-Type: application/json' \
-  -d '{"id":%q,"embedding":"automatic"}' \
+  -d '{"id":%q,"embedding":["title"]}' \
   || echo "  index create non-2xx (already exists?) — continuing"
 `, w, e2eCollectionID, e2eCollectionID, e2eRWKey, e2eRWKey, e2eIndexID, e2eCollectionID, e2eRWKey, e2eIndexID)
 }
