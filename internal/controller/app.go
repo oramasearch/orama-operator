@@ -148,14 +148,25 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if !d.Enabled {
 		return nil
 	}
+	img := componentImage(oc, "dashboard", "dashboard")
+	// Run the dashboard's Drizzle migrations before it serves (#34). GUARDED so it's a safe no-op
+	// on an image that doesn't yet ship the migrations (`.drizzle` + `drizzle.config.ts`) — it
+	// activates once the image is rebuilt to include them. Idempotent (drizzle-kit tracks applied
+	// migrations in `__drizzle_migrations`).
+	migrate := corev1.Container{
+		Name:    "db-migrate",
+		Image:   img,
+		Command: []string{"sh", "-c", `if [ -f drizzle.config.ts ] && [ -d .drizzle ]; then npm run db:migrate; else echo "dashboard image ships no migrations yet (operator#34) — skipping"; fi`},
+		Env:     []corev1.EnvVar{pgURIEnv(oc, "DATABASE_URL")},
+	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component:   "dashboard",
-		image:       componentImage(oc, "dashboard", "dashboard"),
+		image:       img,
 		port:        3000,
 		ingressHost: d.Host,
-		// The real control-DB password comes from the CNPG-generated secret, not the dummy in
-		// the dashboard component secret (#32). (DATABASE_URL wiring for Drizzle is #34.)
-		env: []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD")},
+		// Real control-DB password from the CNPG secret (#32) + DATABASE_URL for Drizzle (#34).
+		env:            []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
+		initContainers: []corev1.Container{migrate},
 	})
 }
 

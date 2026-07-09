@@ -6,7 +6,7 @@ reconciler lands.
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
-| **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` | ✅ **done** (validated on AKS) |
+| **dashboard** | `internal/controller/app.go` | `Deployment` (+ `db-migrate` init: Drizzle, [#34](https://github.com/oramasearch/orama-cloud-v1-operator/issues/34)) + Service + `Ingress` | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
 | **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica) | ✅ **done** (validated on AKS) |
