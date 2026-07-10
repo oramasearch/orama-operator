@@ -11,10 +11,32 @@ metadata:
   name: {{ include "operator.fullname" . }}-manager
   labels: {{- include "operator.labels" . | nindent 4 }}
 rules:
-  # The operator manages the app stack. Generated precisely by `make manifests`
-  # from the controller's +kubebuilder:rbac markers; this is the install-time union.
+  # The operator manages the app stack. Mirror of the +kubebuilder:rbac markers
+  # (`make manifests` → config/rbac/role.yaml) — the install-time union. Keep this in
+  # sync when a CRD/reconciler is added (the SA is enforced in-cluster, unlike a local
+  # `go run` with admin creds).
   - apiGroups: ["orama.cloud"]
-    resources: ["oramacloudv1s", "oramacloudv1s/status", "oramacloudv1s/finalizers"]
+    resources:
+      - oramacloudv1s
+      - oramazettaclusters
+      - oramacloudv1e2etests
+      - cloudflarednsrecords
+      - cloudflarekvnamespaces
+      - cloudflarer2buckets
+    verbs: ["*"]
+  - apiGroups: ["orama.cloud"]
+    resources:
+      - oramacloudv1s/status
+      - oramazettaclusters/status
+      - oramacloudv1e2etests/status
+      - cloudflarednsrecords/status
+      - cloudflarekvnamespaces/status
+      - cloudflarer2buckets/status
+      - oramacloudv1s/finalizers
+      - oramazettaclusters/finalizers
+      - cloudflarednsrecords/finalizers
+      - cloudflarekvnamespaces/finalizers
+      - cloudflarer2buckets/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
@@ -53,6 +75,37 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "operator.fullname" . }}-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+---
+# Leader-election Role — the manager runs with --leader-elect, which needs a Lease (+ events) in its
+# own namespace. Namespaced (not cluster-wide) since the lock lives beside the manager.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "operator.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "operator.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "operator.fullname" . }}-leader-election
 subjects:
   - kind: ServiceAccount
     name: {{ .Values.serviceAccount.name }}
