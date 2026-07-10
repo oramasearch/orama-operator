@@ -85,10 +85,22 @@ type OramaZettaClusterSpec struct {
 
 	// HostNetwork runs the node pods on the host network, so the peer (:7777) + API (:4800) ports are
 	// reachable at the k8s node's own address — the simplest way to make a node dialable by siblings in
-	// other clusters (esp. a single-node cluster). Default false.
+	// other clusters (esp. a single-node cluster). When replicas>1, the nodes pack onto the shared
+	// host(s) with per-ordinal ports (node-n listens on 7777+n / 4800+n) and seed off node-0 on the host
+	// loopback — correct for a single big host / single-node k8s cluster. Default false.
 	// +kubebuilder:default=false
 	// +optional
 	HostNetwork bool `json:"hostNetwork,omitempty"`
+
+	// ExposePeerLoadBalancer creates a LoadBalancer Service for the peer port (:7777) so nodes in OTHER
+	// k8s clusters can dial this cluster from outside (cross-cloud siblings) — the way to reach an
+	// AKS/EKS/GKE node whose pod/node IPs aren't routable from the peer's network. The cloud provisions a
+	// public IP; put `<ip>:7777` in a sibling's spec.externalPeers. NOTE: peer traffic is then plaintext
+	// over the public internet when clusterPlaintext is set — only do this on a trusted path until the
+	// mTLS join token (oramasearch/zetta#670) lands. Default false.
+	// +kubebuilder:default=false
+	// +optional
+	ExposePeerLoadBalancer bool `json:"exposePeerLoadBalancer,omitempty"`
 
 	// ProvisionOperatorSchema makes this cluster the operator's own datastore (One Orama symbiosis v0):
 	// once the node is up, the operator applies its control-plane + data-plane schema to it — the

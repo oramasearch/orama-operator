@@ -132,6 +132,28 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		_ = deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: z.Name + "-zetta-mcp", Namespace: z.Namespace}})
 	}
 
+	// 2.6 Peer LoadBalancer — OPT-IN (spec.exposePeerLoadBalancer). A cloud LB fronting the peer port so
+	//     siblings in OTHER clusters can dial this cluster from outside (put its public IP in their
+	//     spec.externalPeers). No-op unless set; torn down when cleared.
+	peerLBName := z.Name + "-zetta-peer"
+	if z.Spec.ExposePeerLoadBalancer {
+		peerLB := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: peerLBName, Namespace: z.Namespace}}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, peerLB, func() error {
+			peerLB.Labels = lbls
+			peerLB.Spec.Type = corev1.ServiceTypeLoadBalancer
+			peerLB.Spec.Selector = lbls
+			// External dial-in lands on node-0 (the seed); gossip relays to the rest of the mesh.
+			peerLB.Spec.Ports = []corev1.ServicePort{
+				{Name: "peer", Port: zettaPeerPort, TargetPort: intstr.FromInt32(zettaPeerPort)},
+			}
+			return controllerutil.SetControllerReference(&z, peerLB, r.Scheme)
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		_ = deleteIfExists(ctx, r.Client, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: peerLBName, Namespace: z.Namespace}})
+	}
+
 	// 3. StatefulSet — N equal-peer headless nodes, each with a per-node PVC at /data.
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: z.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
@@ -401,15 +423,30 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	// the <name>-zetta-mcp Secret (reconcileZettaMCPToken).
 	entry := fmt.Sprintf(`set -eu
 ORD="${HOSTNAME##*-}"
-A="--headless --data-dir %s --listen 0.0.0.0:%d --mcp-listen 0.0.0.0:%d"
-if [ "$ORD" != "0" ]; then A="$A --peer %s"; fi
+PEER_PORT=%[2]d
+API_PORT=%[3]d
+SEED="%[4]s"
+if [ "${ZETTA_HOST_NETWORK:-0}" = "1" ] && [ "$ORD" != "0" ]; then
+  # hostNetwork packs peers onto the shared host(s): every ordinal binds host ports, so give each its
+  # own (node-n → 7777+n / 4800+n) and seed off node-0 on the host loopback (all hostNetwork pods share
+  # the host network namespace's loopback). Correct for a single big host / single-node k8s cluster.
+  PEER_PORT=$((%[2]d + ORD))
+  API_PORT=$((%[3]d + ORD))
+  SEED="127.0.0.1:%[2]d"
+fi
+A="--headless --data-dir %[1]s --listen 0.0.0.0:$PEER_PORT --mcp-listen 0.0.0.0:$API_PORT"
+if [ "$ORD" != "0" ]; then A="$A --peer $SEED"; fi
 if [ "$ZETTA_CLUSTER_PLAINTEXT" = "1" ]; then A="$A --cluster-plaintext"; fi
-A="$A%s"
+A="$A%[5]s"
 echo "zetta node $HOSTNAME (ordinal $ORD): zetta $A${ZETTA_MCP_TOKEN:+ --mcp-token ****}"
 if [ -n "${ZETTA_MCP_TOKEN:-}" ]; then A="$A --mcp-token $ZETTA_MCP_TOKEN"; fi
 exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 
 	zettaEnv := []corev1.EnvVar{{Name: "ZETTA_CLUSTER_PLAINTEXT", Value: plaintext}}
+	if z.Spec.HostNetwork {
+		// Tells the entrypoint to pack ordinals onto per-ordinal ports + a loopback seed (see entry).
+		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_HOST_NETWORK", Value: "1"})
+	}
 	if z.Spec.MCPTokenAuth {
 		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_MCP_TOKEN", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-mcp"}, Key: "token"}}})
