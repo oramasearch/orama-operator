@@ -528,6 +528,13 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 		// replica would reserve the SAME host ports and only one could schedule. Drop the declarations —
 		// each ordinal binds its own ports from the entrypoint flags, and the Services target them numerically.
 		sts.Spec.Template.Spec.Containers[0].Ports = nil
+		// The liveness/startup probes TCP-check the fixed peer port (:7777), but packed ordinals bind
+		// per-ordinal ports (7777+n) — and all packed pods share the host netns, so a :7777 probe would
+		// false-pass on a peer or false-fail after a port drift. Drop them under hostNetwork packing (as
+		// readiness already is); Zetta peers are equal CRDT nodes and a wrong-port probe does more harm
+		// than good here. Restore ordinal-aware probes once the port scheme is authoritative.
+		sts.Spec.Template.Spec.Containers[0].LivenessProbe = nil
+		sts.Spec.Template.Spec.Containers[0].StartupProbe = nil
 	}
 	return controllerutil.SetControllerReference(z, sts, r.Scheme)
 }
