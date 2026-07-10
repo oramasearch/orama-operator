@@ -63,6 +63,28 @@ against production-readiness, not "does a pod start."
 When in doubt, choose the option that makes the operator more complete and the system more
 deterministic/recoverable, even if it is more work now.
 
+## One Orama: Zetta is the operator's datastore (multi-cluster)
+
+Beyond deploying v1, this operator is becoming **symbiotic with Orama Zetta** (One Orama stage 2,
+[orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)). Know the model — see
+[`docs/zetta-datastore.md`](docs/zetta-datastore.md):
+
+- **k8s (etcd) is the source of truth for DESIRED state** (the CRs). **Zetta holds OBSERVED state** —
+  the operator continuously syncs its coarse, component-granular status into `orama_control.components`
+  (`zetta_statesync.go`), with the **same anti-flap discipline as the status subresource** (steady stack
+  ⇒ zero Zetta writes).
+- **One Zetta cluster can span many k8s clusters** (equal CRDT peers on :7777 — not bound to one
+  cluster). So the topology is **N k8s clusters → 1 operator each → 1 shared Zetta.** Every synced row is
+  namespaced by an **operator identity** (`ORAMA_OPERATOR_ID`, default the `kube-system` Namespace UID)
+  so states never collide.
+- **Elastic capacity (planned):** Zetta signals the operator, the operator drives the cluster's node
+  autoscaler (Karpenter/NAP), and more Zetta nodes schedule onto the new nodes —
+  [operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69).
+- **Zetta SQL is a Postgres subset** (append-only on the deployed engine — no `UPDATE`/`DELETE` until
+  [zetta#735](https://github.com/oramasearch/zetta/issues/735) ships); the node HTTP server is flaky
+  ([zetta#731](https://github.com/oramasearch/zetta/issues/731)) so all Zetta writes are best-effort +
+  retried. The **MCP boundary** holds: adding a capability to Zetta's MCP needs a green light.
+
 ## Docs discipline (non-negotiable)
 
 **Keep the docs in lockstep with the source.** Every change to the operator's

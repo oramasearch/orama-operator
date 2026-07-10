@@ -8,6 +8,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -46,10 +48,19 @@ const (
 type OramaZettaClusterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// stateCache is the anti-flap memory for the operator-state sync into Zetta: component key →
+	// last-synced fingerprint, so a steady stack produces zero Zetta writes (see zetta_statesync.go).
+	stateCache sync.Map
+	// operatorID{Once,Value} memoize this operator's unique identity (one per k8s cluster) so its state
+	// stays distinct in a Zetta cluster shared across k8s clusters.
+	operatorIDOnce  sync.Once
+	operatorIDValue string
 }
 
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s,verbs=get;list;watch
+//+kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s/status,verbs=get
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -135,18 +146,29 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// 5. Operator control/data-plane schema (One Orama symbiosis v0) — this cluster as the operator's
-	//    datastore. Provisions the orama_control + orama_data databases + tables via /v1/sql (default on).
-	if z.Spec.ProvisionOperatorSchema == nil || *z.Spec.ProvisionOperatorSchema {
+	// 5. Operator datastore (One Orama symbiosis v0) — this cluster as the operator's store. Provisions
+	//    the orama_control + orama_data schema, then coarsely syncs the operator's OBSERVED state into
+	//    orama_control.components (anti-flap; default on).
+	syncEnabled := z.Spec.ProvisionOperatorSchema == nil || *z.Spec.ProvisionOperatorSchema
+	if syncEnabled {
 		if err := r.reconcileZettaControlPlane(ctx, &z, clientName); err != nil {
 			return ctrl.Result{}, err
 		}
+		r.reconcileOperatorStateSync(ctx, &z, clientName) // best-effort; never fails the reconcile
 	} else if err := r.teardownZettaControlPlane(ctx, &z); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// 6. Status — readiness roll-up (write only on change; anti-flap).
-	return ctrl.Result{}, r.reconcileZettaStatus(ctx, &z, stsName)
+	if err := r.reconcileZettaStatus(ctx, &z, stsName); err != nil {
+		return ctrl.Result{}, err
+	}
+	// When acting as the datastore, requeue periodically so the coarse state sync tracks the rest of
+	// the operator's CRs even without a Zetta-cluster event (anti-flap keeps the Zetta writes rare).
+	if syncEnabled {
+		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+	}
+	return ctrl.Result{}, nil
 }
 
 // reconcileZettaMCPToken ensures a Secret holding a 64-char (32-byte hex) MCP bearer token exists for

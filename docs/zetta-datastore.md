@@ -92,13 +92,30 @@ Two different kinds of state, two homes — this is the key design point:
   config snapshots. **This is what belongs in Zetta and should stay in sync**, giving a durable,
   SQL-queryable, replicated record independent of etcd. That is the real symbiosis.
 
-**Status today (be honest):** the operator provisions the **schema** (the tables above) but does **not
-yet continuously write its observed state into them** — the sample `components` row was seeded manually.
-Closing that gap is the next step: on each reconcile, **append** a `components` row (current image/status
-per component) and a `reconcile_events` row, and read **latest-wins** (append-only, because Zetta has no
-`UPDATE`). Tracked in [orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130) (stage 2).
-The operator reaching the node to write is the same constraint as the schema Job — trivial in-cluster,
-via the ingress/MCP when running locally.
+The operator **continuously syncs** its observed state (`zetta_statesync.go`): on each reconcile it reads
+the coarse, component-granular CR statuses it already maintains (`OramaCloudV1.status.components[]` +
+each `OramaZettaCluster` phase) and writes the **changed** rows to `orama_control.components` — **same
+anti-flap discipline as the status subresource** (a steady stack produces zero Zetta writes). The
+deployed engine is append-only (no `UPDATE` yet — [zetta#735](https://github.com/oramasearch/zetta/issues/735)),
+so a change **appends** a row; read **latest-wins** by `updated_at`. Best-effort: the flaky node
+([zetta#731](https://github.com/oramasearch/zetta/issues/731)) just retries next reconcile. A 60 s
+requeue keeps it tracking the rest of the operator's CRs.
+
+## Many operators, one Zetta (multi-cluster)
+
+A Zetta cluster is a set of **equal CRDT peers joined on :7777** — it is **not bound to one k8s cluster**.
+Nodes can live in different k8s clusters (or on bare hosts) and still form **one logical datastore**, as
+long as they can reach each other's peer port. So the target topology is **N k8s clusters → 1 Zetta**:
+
+- **One operator per k8s cluster** (they don't share an operator), all using the **same** Zetta as their
+  store.
+- **Per-operator identity.** Because they share one store, every synced row is namespaced by an
+  `operator` id so states never collide (two clusters each with a `v1/writer` stay distinct). The id
+  defaults to the **`kube-system` Namespace UID** (stable + unique per cluster); override with the
+  `ORAMA_OPERATOR_ID` env var. Query one operator's view with `… WHERE operator = '<id>'`.
+- **Peering across clusters** is the networking piece: same-LAN nodes reach each other directly on
+  :7777; cross-cloud needs a routable peer address (a LoadBalancer on 7777) or a tunnel/mesh. Multi-node
+  currently uses `clusterPlaintext` on a trusted network until mTLS token-sharing lands.
 
 ## Evolving the schema
 
