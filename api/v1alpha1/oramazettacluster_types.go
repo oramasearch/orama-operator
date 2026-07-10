@@ -54,6 +54,21 @@ type OramaZettaClusterSpec struct {
 	// Secret — normally the same `cloudflare-api-token` Secret the OramaCloudV1 uses.
 	// +optional
 	DNSSecretRef *corev1.LocalObjectReference `json:"dnsSecretRef,omitempty"`
+
+	// MCPTokenAuth provisions a 64-char bearer token (Secret `<name>-zetta-mcp`) and requires it on
+	// the node's MCP + REST surface (`--mcp-token`).
+	//
+	// DEFAULT false — because Zetta's `--mcp-token` treats the token as an *access-key id* that must
+	// already be a provisioned principal with grants. A bare operator-minted token currently passes
+	// the bearer check but is then denied EVERY capability call ("unknown access key — denied"), for
+	// both REST `/v1/*` and MCP `tools/call` — so turning this on makes the node authenticate but do
+	// nothing. Leave it off (the node runs as the functional unauthenticated-local session) until the
+	// node can seed the configured bearer as an owner key (oramasearch/zetta#733). When true, the
+	// operator still won't expose a working session — only enable it once you also provision a
+	// matching access key.
+	// +kubebuilder:default=false
+	// +optional
+	MCPTokenAuth bool `json:"mcpTokenAuth,omitempty"`
 }
 
 // OramaZettaStorage configures each node's data volume.

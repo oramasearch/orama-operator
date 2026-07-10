@@ -106,11 +106,17 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// 2.5 MCP bearer token — secure by default. Provision a 64-char token in a Secret and wire it into
-	//     the node (entrypoint --mcp-token), so /mcp + /v1/* require a bearer. Must run before the
-	//     StatefulSet so the pod's ZETTA_MCP_TOKEN secretKeyRef resolves on first start.
-	if err := r.reconcileZettaMCPToken(ctx, &z); err != nil {
-		return ctrl.Result{}, err
+	// 2.5 MCP bearer token — OPT-IN (spec.mcpTokenAuth, default off). Zetta's --mcp-token treats the
+	//     token as an access-key id that must already be a provisioned principal; a bare token
+	//     authenticates but is then denied every capability ("unknown access key"), so the default is
+	//     the functional unauthenticated-local session (see the field doc + oramasearch/zetta#733).
+	//     When enabled, provision the token before the StatefulSet so its secretKeyRef resolves.
+	if z.Spec.MCPTokenAuth {
+		if err := r.reconcileZettaMCPToken(ctx, &z); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		_ = deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: z.Name + "-zetta-mcp", Namespace: z.Namespace}})
 	}
 
 	// 3. StatefulSet — N equal-peer headless nodes, each with a per-node PVC at /data.
@@ -362,6 +368,25 @@ echo "zetta node $HOSTNAME (ordinal $ORD): zetta $A${ZETTA_MCP_TOKEN:+ --mcp-tok
 if [ -n "${ZETTA_MCP_TOKEN:-}" ]; then A="$A --mcp-token $ZETTA_MCP_TOKEN"; fi
 exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed)
 
+	// The MCP token env + readiness probe depend on spec.mcpTokenAuth (default off = unauthenticated,
+	// functional). Default: an HTTP probe on GET /v1/server_info (works for the unauthenticated-local
+	// session). When token auth is on, every HTTP route is bearer-gated and a probe can't carry the
+	// token without leaking it, so readiness falls back to a TCP check on the API port.
+	zettaEnv := []corev1.EnvVar{{Name: "ZETTA_CLUSTER_PLAINTEXT", Value: plaintext}}
+	readiness := &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+			Path: "/v1/server_info", Port: intstr.FromInt32(zettaAPIPort)}},
+		InitialDelaySeconds: 5, PeriodSeconds: 10, TimeoutSeconds: 3, FailureThreshold: 6,
+	}
+	if z.Spec.MCPTokenAuth {
+		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_MCP_TOKEN", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-mcp"}, Key: "token"}}})
+		readiness = &corev1.Probe{
+			ProbeHandler:        corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(zettaAPIPort)}},
+			InitialDelaySeconds: 5, PeriodSeconds: 10, TimeoutSeconds: 3, FailureThreshold: 6,
+		}
+	}
+
 	sts.Labels = lbls
 	sts.Spec.ServiceName = headlessName
 	sts.Spec.Replicas = &replicas
@@ -385,29 +410,17 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed)
 				Name:    "zetta",
 				Image:   image,
 				Command: []string{"/bin/sh", "-c", entry},
-				Env: []corev1.EnvVar{
-					{Name: "ZETTA_CLUSTER_PLAINTEXT", Value: plaintext},
-					// The MCP bearer token (operator-provisioned; secure by default). The entrypoint
-					// appends --mcp-token from this, so the node requires a bearer on /mcp + /v1/*.
-					{Name: "ZETTA_MCP_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-mcp"}, Key: "token"}}},
-				},
+				Env: zettaEnv,
 				Ports: []corev1.ContainerPort{
 					{Name: "peer", ContainerPort: zettaPeerPort},
 					{Name: "api", ContainerPort: zettaAPIPort},
 				},
 				VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: zettaDataDir}},
 				Resources:    resources,
-				// Readiness: the HTTP API port (4800) accepts connections. A TCP check (not GET
-				// /v1/server_info) because the MCP token gates every /v1/* route — an HTTP probe can't
-				// carry the bearer without leaking it into the pod spec, and the node exposes no
-				// unauthenticated health route in this image. TODO: switch to GET /mcp.md (public,
-				// always-200) once the image carrying that route ships — a real HTTP-level check.
-				ReadinessProbe: &corev1.Probe{
-					ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{
-						Port: intstr.FromInt32(zettaAPIPort)}},
-					InitialDelaySeconds: 5, PeriodSeconds: 10, TimeoutSeconds: 3, FailureThreshold: 6,
-				},
+				// Readiness: GET /v1/server_info when unauthenticated, else a TCP check (see zettaEnv/
+				// readiness above). Once the image carrying the public GET /mcp.md route ships, that
+				// becomes the token-safe HTTP-level check for the authenticated case.
+				ReadinessProbe: readiness,
 				// Liveness: the peer listener is up.
 				LivenessProbe: &corev1.Probe{
 					ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{
