@@ -60,6 +60,12 @@ spec:
               Step 1 of the One Orama plan (orama-bridge#130): the operator only *runs* Zetta headless; the
               bi-directional operator↔Zetta symbiosis (Zetta as the operator's datastore) is a later stage.
             properties:
+              clusterName:
+                description: |-
+                  ClusterName is the GLOBAL Zetta cluster name. A Zetta cluster can span multiple k8s clusters; each
+                  k8s cluster's OramaZettaCluster CR is a SLICE of it, and CRs sharing this name are SIBLINGS — equal
+                  peers in one multi-leader cluster (operator#71). Empty = a standalone cluster named after the CR.
+                type: string
               clusterPlaintext:
                 default: false
                 description: |-
@@ -83,11 +89,27 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              externalPeers:
+                description: |-
+                  ExternalPeers are peer addresses (`host:port`) of sibling nodes in OTHER k8s clusters (or bare
+                  hosts) — the route table (operator#70). Each is appended as a `--peer` flag so this node's nodes
+                  dial them and join the shared Zetta cluster. Zetta is the mesh (gossip relays transitively), so a
+                  connected dial-graph is enough; NAT'd nodes just list a reachable sibling here.
+                items:
+                  type: string
+                type: array
               host:
                 description: |-
                   Host, if set, exposes the cluster's HTTP API (:4800 — MCP + REST + serving, the Zetta UI) via an
                   Ingress at this hostname (e.g. zetta.oramadev.net). Requires an ingress controller.
                 type: string
+              hostNetwork:
+                default: false
+                description: |-
+                  HostNetwork runs the node pods on the host network, so the peer (:7777) + API (:4800) ports are
+                  reachable at the k8s node's own address — the simplest way to make a node dialable by siblings in
+                  other clusters (esp. a single-node cluster). Default false.
+                type: boolean
               image:
                 default: oramasearch/zetta:headless-v1-sandbox
                 description: Image is the Zetta-headless container image (built like

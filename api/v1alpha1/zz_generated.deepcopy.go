@@ -787,6 +787,11 @@ func (in *OramaZettaClusterSpec) DeepCopyInto(out *OramaZettaClusterSpec) {
 		*out = new(v1.LocalObjectReference)
 		**out = **in
 	}
+	if in.ExternalPeers != nil {
+		in, out := &in.ExternalPeers, &out.ExternalPeers
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.ProvisionOperatorSchema != nil {
 		in, out := &in.ProvisionOperatorSchema, &out.ProvisionOperatorSchema
 		*out = new(bool)

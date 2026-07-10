@@ -70,6 +70,26 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	MCPTokenAuth bool `json:"mcpTokenAuth,omitempty"`
 
+	// ClusterName is the GLOBAL Zetta cluster name. A Zetta cluster can span multiple k8s clusters; each
+	// k8s cluster's OramaZettaCluster CR is a SLICE of it, and CRs sharing this name are SIBLINGS — equal
+	// peers in one multi-leader cluster (operator#71). Empty = a standalone cluster named after the CR.
+	// +optional
+	ClusterName string `json:"clusterName,omitempty"`
+
+	// ExternalPeers are peer addresses (`host:port`) of sibling nodes in OTHER k8s clusters (or bare
+	// hosts) — the route table (operator#70). Each is appended as a `--peer` flag so this node's nodes
+	// dial them and join the shared Zetta cluster. Zetta is the mesh (gossip relays transitively), so a
+	// connected dial-graph is enough; NAT'd nodes just list a reachable sibling here.
+	// +optional
+	ExternalPeers []string `json:"externalPeers,omitempty"`
+
+	// HostNetwork runs the node pods on the host network, so the peer (:7777) + API (:4800) ports are
+	// reachable at the k8s node's own address — the simplest way to make a node dialable by siblings in
+	// other clusters (esp. a single-node cluster). Default false.
+	// +kubebuilder:default=false
+	// +optional
+	HostNetwork bool `json:"hostNetwork,omitempty"`
+
 	// ProvisionOperatorSchema makes this cluster the operator's own datastore (One Orama symbiosis v0):
 	// once the node is up, the operator applies its control-plane + data-plane schema to it — the
 	// `orama_control` database (the operator's registry: components, reconcile_events) and the

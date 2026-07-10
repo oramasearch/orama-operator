@@ -390,6 +390,12 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	if z.Spec.ClusterPlaintext {
 		plaintext = "1"
 	}
+	// External peers (spec.externalPeers) — sibling nodes in OTHER k8s clusters / bare hosts, dialed by
+	// EVERY node here so they join the shared (globally-named) Zetta cluster. Zetta is the mesh.
+	extPeers := ""
+	for _, p := range z.Spec.ExternalPeers {
+		extPeers += " --peer " + p
+	}
 	// The --mcp-token is appended AFTER the echo, and the echo shows only a redacted "****", so the
 	// bearer token never lands in the pod log. The token is injected via the ZETTA_MCP_TOKEN env from
 	// the <name>-zetta-mcp Secret (reconcileZettaMCPToken).
@@ -398,9 +404,10 @@ ORD="${HOSTNAME##*-}"
 A="--headless --data-dir %s --listen 0.0.0.0:%d --mcp-listen 0.0.0.0:%d"
 if [ "$ORD" != "0" ]; then A="$A --peer %s"; fi
 if [ "$ZETTA_CLUSTER_PLAINTEXT" = "1" ]; then A="$A --cluster-plaintext"; fi
+A="$A%s"
 echo "zetta node $HOSTNAME (ordinal $ORD): zetta $A${ZETTA_MCP_TOKEN:+ --mcp-token ****}"
 if [ -n "${ZETTA_MCP_TOKEN:-}" ]; then A="$A --mcp-token $ZETTA_MCP_TOKEN"; fi
-exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed)
+exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 
 	zettaEnv := []corev1.EnvVar{{Name: "ZETTA_CLUSTER_PLAINTEXT", Value: plaintext}}
 	if z.Spec.MCPTokenAuth {
@@ -470,6 +477,13 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed)
 		pvc.Spec.StorageClassName = &z.Spec.Storage.StorageClassName
 	}
 	sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{pvc}
+
+	// hostNetwork makes :7777/:4800 reachable at the k8s node's own address — the simplest way for a
+	// node to be dialable by siblings in other clusters (esp. a single-node cluster).
+	if z.Spec.HostNetwork {
+		sts.Spec.Template.Spec.HostNetwork = true
+		sts.Spec.Template.Spec.DNSPolicy = corev1.DNSClusterFirstWithHostNet
+	}
 	return controllerutil.SetControllerReference(z, sts, r.Scheme)
 }
 
