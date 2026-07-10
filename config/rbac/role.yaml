@@ -130,6 +130,7 @@ rules:
   resources:
   - cloudflarednsrecords
   - cloudflarekvnamespaces
+  - cloudflareloadbalancers
   - cloudflarer2buckets
   - oramacloudv1e2etests
   - oramacloudv1s
@@ -148,6 +149,7 @@ rules:
   resources:
   - cloudflarednsrecords/finalizers
   - cloudflarekvnamespaces/finalizers
+  - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
   - oramazettaclusters/finalizers
   verbs:
@@ -157,6 +159,7 @@ rules:
   resources:
   - cloudflarednsrecords/status
   - cloudflarekvnamespaces/status
+  - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status

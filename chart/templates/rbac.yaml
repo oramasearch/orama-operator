@@ -24,6 +24,7 @@ rules:
       - cloudflarednsrecords
       - cloudflarekvnamespaces
       - cloudflarer2buckets
+      - cloudflareloadbalancers
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -34,11 +35,13 @@ rules:
       - cloudflarednsrecords/status
       - cloudflarekvnamespaces/status
       - cloudflarer2buckets/status
+      - cloudflareloadbalancers/status
       - oramacloudv1s/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
       - cloudflarekvnamespaces/finalizers
       - cloudflarer2buckets/finalizers
+      - cloudflareloadbalancers/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]

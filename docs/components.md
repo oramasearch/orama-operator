@@ -19,7 +19,8 @@ reconciler lands.
 | **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — pulls `/v1/analytics` → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-cloud-v1-operator/issues/5); image is a follow-up) |
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-cloud-v1-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-cloud-v1-operator/issues/6); images + CF-binding wiring are a follow-up) |
-| **cloudflare** | `internal/controller/cloudflare.go` | CF DNS record via the CF API (safe no-op until configured) | 🟡 **implemented** (not live-tested; LB pools are a follow-up) |
+| **cloudflare** | `internal/controller/cloudflare.go` | CF DNS record via the CF API (safe no-op until configured) | 🟡 **implemented** (not live-tested) |
+| **cloudflare-lb** | `internal/controller/cloudflareloadbalancer_controller.go` | global **Load Balancer** + **Origin Pool(s)** + **Health Monitor** via the CF Load Balancing API, from an owned `CloudflareLoadBalancer` CRD (finalizer teardown) | 🟡 **implemented** ([#73](https://github.com/oramasearch/orama-cloud-v1-operator/issues/73); not live-tested — needs LB enabled on the account; live-node origins are [#74](https://github.com/oramasearch/orama-cloud-v1-operator/issues/74)) |
 | **idp** (keycloak) | `internal/controller/idp.go` | Keycloak `Deployment` + Service (when `idp.provider=keycloak`) | ✅ **done** (validated on AKS) |
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
 | **zetta-capacity** | `internal/controller/zetta_capacity.go` | Karpenter `NodePool` (unstructured, cluster-scoped) + a `PodDisruptionBudget`; pins the Zetta pods onto the pool (taint/toleration + nodeSelector + `do-not-disrupt`) | 🟡 **implemented** (opt-in, [#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69) first slice; not yet live-tested — needs an EKS/AKS-NAP cluster) |
@@ -340,3 +341,40 @@ install** too. Opt-in via `OramaZettaCluster.spec.capacity.karpenter.install` (d
 > (`orama_control.scale_requests`); drain-safe, quorum-aware scale-down; multi-cluster
 > placement policy (per-operator identity already namespaces the state); consent-trail
 > integration (`add_nodes` / `approve_consent`); live validation on an EKS + AKS-NAP cluster.
+> **Follow-ups:** validate against a live Cloudflare account; deprovision records on
+> teardown; surface the managed hostnames beyond just the dashboard.
+
+## Cloudflare global Load Balancer (`cloudflareloadbalancer_controller.go`) — 🟡 implemented, not live-tested
+
+The `CloudflareLoadBalancer` CRD ([#73](https://github.com/oramasearch/orama-cloud-v1-operator/issues/73))
+turns a single hostname into a **global load balancer** — origin pools of wan-accessible
+nodes, health checks, geo/proximity steering, and failover — the actual geo-LB. It is the
+same "external resource as an owned CRD" shape as `CloudflareDNSRecord`: the child
+controller makes the CF API calls and holds a finalizer, so the main loop never mutates
+Cloudflare directly. From **one** CR it reconciles three Cloudflare Load Balancing objects:
+
+- a **Health Monitor** (account-scoped) — `type` http/https/tcp, `path` (default
+  `/v1/server_info`), `interval`/`timeout`/`retries`, `expectedCodes`; drops unhealthy
+  origins from rotation.
+- one or more **Origin Pools** (account-scoped) — each a named set of origins
+  (`{name, address, enabled, weight}`), `minimumOrigins`, the monitor attached. Pools that
+  leave the spec are pruned after the LB stops referencing them.
+- the **Load Balancer** (zone-scoped) — the `hostname`, `default_pools` (spec order),
+  `fallbackPool`, `steeringPolicy` (`off｜geo｜dynamic｜proximity｜random`; `dynamic` maps to the
+  API's `dynamic_latency`), optional `regionPools` (region code → pool names) for geo
+  steering, and `proxied`.
+
+**Idempotent + merge-not-clobber:** create-or-adopt (list by our `orama-operator:<ns>/<name>`
+description tag / by pool name / by hostname), then **PATCH only the fields we manage** so
+server-managed fields are left intact. **Anti-flap (principle #7):** the status subresource
+(LB id, monitor id, per-pool ids + health, a `Ready` condition) is written **only on a real
+transition** (deep-compare); a steady LB produces zero control-plane writes, refreshed on a
+5-minute resync. **Graceful when Load Balancing is off:** a 403/entitlement error →
+`Ready=False (LoadBalancingNotEnabled)` + a gentle requeue, never a crash-loop. **Safe no-op**
+until the Secret (token+zoneID+accountID) exists → `Ready=False (WaitingForCredentials)`.
+
+> **Follow-ups:** validate against a live Cloudflare account with Load Balancing enabled;
+> auto-populate pool origins from the live wan-accessible node set
+> ([#74](https://github.com/oramasearch/orama-cloud-v1-operator/issues/74) /
+> [zetta#739](https://github.com/oramasearch/zetta/issues/739)) so the main loop creates/updates
+> the `CloudflareLoadBalancer` as nodes come and go.

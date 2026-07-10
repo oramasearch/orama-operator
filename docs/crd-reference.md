@@ -139,3 +139,36 @@ this operator (the CRD). Sample: [`../config/samples/zetta-e2e-test.yaml`](../co
 | `spec.levels` | Which test levels to run (`ZETTA_E2E_LEVELS`, default `2,3`). |
 | `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
 | `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ozce2e`; `kubectl logs job/<name>-e2e`. |
+## `CloudflareLoadBalancer` (separate CRD) — the global geo-LB
+
+Owns a Cloudflare **global Load Balancer** ([operator#73](https://github.com/oramasearch/orama-cloud-v1-operator/issues/73)):
+a single hostname served across the cluster's wan-accessible nodes with origin pools, health checks,
+geo/proximity steering, and failover. Same "external resource as an owned CRD" pattern as
+`CloudflareDNSRecord` — the child controller (`cloudflareloadbalancer_controller.go`) makes the CF
+Load Balancing API calls and holds a finalizer, so the main loop never mutates Cloudflare directly.
+From one CR it reconciles an account-scoped **Monitor**, one or more account-scoped **Pools**, and the
+zone-scoped **Load Balancer**; teardown deletes them in dependency order (LB → pools → monitor). All
+credentials come from the referenced Secret (`token`/`zoneID`/`accountID`).
+
+**Cloudflare Load Balancing is a PAID add-on** — enable it on the account first
+(dashboard: Delivery & performance → Load Balancing). Until then the reconciler is a safe no-op that
+reports `Ready=False (LoadBalancingNotEnabled)` rather than crash-looping. Populating pool origins from
+the **live** wan-accessible node set is tracked separately
+([operator#74](https://github.com/oramasearch/orama-cloud-v1-operator/issues/74) /
+[zetta#739](https://github.com/oramasearch/zetta/issues/739)).
+Sample: [`../config/samples/cloudflareloadbalancer.yaml`](../config/samples/cloudflareloadbalancer.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.secretRef` | Secret with the Cloudflare credentials (keys `token`/`zoneID`/`accountID`) — normally the `cloudflare-api-token` Secret. |
+| `spec.hostname` | The FQDN the load balancer answers on (e.g. `zetta.oramadev.net`). Cloudflare owns this DNS entry — do **not** also manage it with a `CloudflareDNSRecord`. |
+| `spec.steeringPolicy` | `off` (failover order) `\| geo` (by region via `regionPools`) `\| dynamic` (by measured latency; sent as `dynamic_latency`) `\| proximity` (nearest origin) `\| random`. Default `geo`. |
+| `spec.fallbackPool` | Pool name (`pools[].name`) used as the last resort when all default pools are unhealthy. Empty = the last declared pool. |
+| `spec.regionPools` | Map of Cloudflare region code (e.g. `ENAM`, `WEUR`) → ordered list of pool names — for `geo` steering. |
+| `spec.proxied` | Route the hostname through Cloudflare's proxy (orange-cloud). Default `true`. |
+| `spec.sessionAffinity` | `none \| cookie \| ip_cookie \| header`. Default `none`. |
+| `spec.monitor.*` | The health monitor: `type` (`http\|https\|tcp`, default `https`), `method` (default `GET`), `path` (default `/v1/server_info`), `port`, `expectedCodes` (default `200`), `expectedBody`, `interval` (60), `timeout` (5), `retries` (2), `followRedirects`. |
+| `spec.pools[]` | Origin pools (≥1). Each: `name`, `origins[]`, `minimumOrigins` (1), `enabled` (true), `useMonitor` (true = attach the monitor). Become the LB's `default_pools` in declared order. |
+| `spec.pools[].origins[]` | `{ name, address, enabled (true), weight ("1", a decimal 0..1) }`. `address` is a node's public endpoint; the monitor probes it. |
+| `status.loadBalancerID` / `.monitorID` / `.pools[]` | The provisioned Cloudflare IDs + per-pool `id` and `health` (`healthy\|unhealthy\|unknown`). `kubectl get cflb`. |
+| `status.conditions[Ready]` | `Reconciled` \| `WaitingForCredentials` \| `LoadBalancingNotEnabled` \| `ReconcileError`. Written only on a real transition (anti-flap). |
