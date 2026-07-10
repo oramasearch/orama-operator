@@ -26,6 +26,10 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.provisionedNodes
+      name: Provisioned
+      priority: 1
+      type: string
     - jsonPath: .spec.image
       name: Image
       type: string
@@ -60,6 +64,100 @@ spec:
               Step 1 of the One Orama plan (orama-bridge#130): the operator only *runs* Zetta headless; the
               bi-directional operator↔Zetta symbiosis (Zetta as the operator's datastore) is a later stage.
             properties:
+              capacity:
+                description: |-
+                  Capacity opts this cluster into elastic node capacity — the first slice of Zetta-driven elastic
+                  capacity (operator#69). When enabled, the operator owns a cluster-node-autoscaler NodePool
+                  (Karpenter) and pins the Zetta pods onto it, so raising `spec.replicas` beyond current node
+                  capacity leaves pods Pending → the autoscaler provisions matching nodes just-in-time → the new
+                  pods schedule and join the CRDT cluster. Off by default (a standalone Zetta doesn't need it).
+                properties:
+                  karpenter:
+                    description: Karpenter drives node provisioning through a Karpenter
+                      NodePool the operator owns and reconciles.
+                    properties:
+                      arch:
+                        default: amd64
+                        description: Arch is the CPU architecture the pool provisions.
+                          Default amd64.
+                        enum:
+                        - amd64
+                        - arm64
+                        type: string
+                      capacityType:
+                        default: on-demand
+                        description: |-
+                          CapacityType selects on-demand or spot nodes. Default on-demand: a Zetta node is a stateful CRDT
+                          peer, so stable On-Demand capacity is the safe default — only choose spot with enough replicas to
+                          tolerate an interruption (a spot reclaim evicts a peer).
+                        enum:
+                        - on-demand
+                        - spot
+                        type: string
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled turns on operator-managed Karpenter capacity. When true the operator reconciles the Zetta
+                          NodePool and pins the Zetta pods onto it (a dedicated taint + toleration and a pool nodeSelector),
+                          so the pods land only on Karpenter-provisioned Zetta nodes. Default false.
+                        type: boolean
+                      instanceTypes:
+                        description: |-
+                          InstanceTypes optionally restricts the pool to specific instance types via the well-known
+                          `node.kubernetes.io/instance-type` label (portable across AWS + Azure). Empty (recommended) lets
+                          Karpenter choose the cheapest fitting type from the NodeClass offerings — broadest availability.
+                        items:
+                          type: string
+                        type: array
+                      limits:
+                        description: |-
+                          Limits caps the aggregate capacity this pool may provision — the cost/scale guardrail (operator#69).
+                          Karpenter stops provisioning once any limit is hit, so a runaway replica bump can't launch unbounded
+                          nodes.
+                        properties:
+                          cpu:
+                            default: "16"
+                            description: CPU cap across the pool (Karpenter DecimalSI,
+                              e.g. "16"). Default "16".
+                            type: string
+                          memory:
+                            default: 64Gi
+                            description: Memory cap across the pool (Karpenter BinarySI,
+                              e.g. "64Gi"). Default "64Gi".
+                            type: string
+                          nodes:
+                            default: 3
+                            description: Nodes caps the node count of the pool — the
+                              hard ceiling on elastic scale-out. Default 3.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        type: object
+                      nodeClassRef:
+                        description: |-
+                          NodeClassRef points at the provider NodeClass Karpenter uses to launch nodes: an EC2NodeClass
+                          (group `karpenter.k8s.aws`, the default) on EKS, or an AKSNodeClass (group `karpenter.azure.com`)
+                          on AKS Node Auto Provisioning. Name is REQUIRED when enabled — without it the operator cannot
+                          build a valid NodePool and reports `CapacityReady=False, Reason=Blocked` instead of crash-looping.
+                        properties:
+                          group:
+                            default: karpenter.k8s.aws
+                            description: |-
+                              Group of the provider NodeClass API. Default `karpenter.k8s.aws` (EKS); use `karpenter.azure.com`
+                              on AKS NAP.
+                            type: string
+                          kind:
+                            default: EC2NodeClass
+                            description: Kind of the provider NodeClass. Default `EC2NodeClass`
+                              (EKS); use `AKSNodeClass` on AKS NAP.
+                            type: string
+                          name:
+                            description: Name of the platform-owned NodeClass. Required
+                              when `karpenter.enabled`.
+                            type: string
+                        type: object
+                    type: object
+                type: object
               clusterName:
                 description: |-
                   ClusterName is the GLOBAL Zetta cluster name. A Zetta cluster can span multiple k8s clusters; each
@@ -296,6 +394,13 @@ spec:
               phase:
                 description: 'Phase: Progressing | Ready | Degraded.'
                 type: string
+              provisionedNodes:
+                description: |-
+                  ProvisionedNodes is the number of k8s nodes the operator-managed Karpenter NodePool currently
+                  backs this cluster with (nodes carrying `karpenter.sh/nodepool=<pool>`). 0 when elastic capacity
+                  is off or no autoscaler node has been provisioned yet. Surfaced with the `CapacityReady` condition.
+                format: int32
+                type: integer
               readyNodes:
                 description: ReadyNodes is the number of ready zetta pods.
                 format: int32
