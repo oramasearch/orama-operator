@@ -7,6 +7,8 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -93,6 +95,16 @@ func oramacoreImage(oc *oramav1alpha1.OramaCloudV1) string {
 }
 
 func strPtr(s string) *string { return &s }
+
+// randHex returns a cryptographically-random hex string of 2*nbytes characters (e.g. randHex(32) →
+// a 64-char token). Used to mint bearer/secret material the operator provisions.
+func randHex(nbytes int) (string, error) {
+	b := make([]byte, nbytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
 
 // deleteIfExists deletes an object, treating an already-absent object as success — for tearing down
 // an optional child (e.g. an Ingress/DNS record) when its enabling spec field is cleared.

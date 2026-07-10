@@ -19,6 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
@@ -50,7 +51,7 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
 
@@ -105,6 +106,13 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
+	// 2.5 MCP bearer token — secure by default. Provision a 64-char token in a Secret and wire it into
+	//     the node (entrypoint --mcp-token), so /mcp + /v1/* require a bearer. Must run before the
+	//     StatefulSet so the pod's ZETTA_MCP_TOKEN secretKeyRef resolves on first start.
+	if err := r.reconcileZettaMCPToken(ctx, &z); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 3. StatefulSet — N equal-peer headless nodes, each with a per-node PVC at /data.
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: z.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
@@ -121,6 +129,41 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// 5. Status — readiness roll-up (write only on change; anti-flap).
 	return ctrl.Result{}, r.reconcileZettaStatus(ctx, &z, stsName)
+}
+
+// reconcileZettaMCPToken ensures a Secret holding a 64-char (32-byte hex) MCP bearer token exists for
+// this cluster. Secure by default: the token is injected into the node (ZETTA_MCP_TOKEN → --mcp-token),
+// so the MCP + REST surface requires a bearer instead of being open. Idempotent — the token is minted
+// once and preserved across reconciles; the value is never logged (the entrypoint echo redacts it).
+func (r *OramaZettaClusterReconciler) reconcileZettaMCPToken(ctx context.Context, z *oramav1alpha1.OramaZettaCluster) error {
+	name := z.Name + "-zetta-mcp"
+	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, sec, func() error {
+		sec.Labels = zettaLabels(z)
+		if len(sec.Data["token"]) == 0 { // mint once; preserve on later reconciles
+			token, gerr := randHex(32) // 32 bytes → 64 hex chars
+			if gerr != nil {
+				return gerr
+			}
+			if sec.Data == nil {
+				sec.Data = map[string][]byte{}
+			}
+			sec.Data["token"] = []byte(token)
+		}
+		return controllerutil.SetControllerReference(z, sec, r.Scheme)
+	})
+	if err != nil {
+		return err
+	}
+	if op == controllerutil.OperationResultCreated {
+		kv := []any{"component", "zetta-mcp", "secret", name,
+			"retrieve", fmt.Sprintf("kubectl get secret %s -n %s -o jsonpath='{.data.token}' | base64 -d", name, z.Namespace)}
+		if z.Spec.Host != "" {
+			kv = append(kv, "connectDocs", "https://"+z.Spec.Host+"/mcp.md")
+		}
+		logf.FromContext(ctx).Info("provisioned MCP bearer token — the node now requires a bearer on /mcp and /v1/*", kv...)
+	}
+	return nil
 }
 
 // reconcileZettaIngress exposes the cluster at spec.host via an nginx Ingress. The host root (`/`)
@@ -307,12 +350,16 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	if z.Spec.ClusterPlaintext {
 		plaintext = "1"
 	}
+	// The --mcp-token is appended AFTER the echo, and the echo shows only a redacted "****", so the
+	// bearer token never lands in the pod log. The token is injected via the ZETTA_MCP_TOKEN env from
+	// the <name>-zetta-mcp Secret (reconcileZettaMCPToken).
 	entry := fmt.Sprintf(`set -eu
 ORD="${HOSTNAME##*-}"
 A="--headless --data-dir %s --listen 0.0.0.0:%d --mcp-listen 0.0.0.0:%d"
 if [ "$ORD" != "0" ]; then A="$A --peer %s"; fi
 if [ "$ZETTA_CLUSTER_PLAINTEXT" = "1" ]; then A="$A --cluster-plaintext"; fi
-echo "zetta node $HOSTNAME (ordinal $ORD): zetta $A"
+echo "zetta node $HOSTNAME (ordinal $ORD): zetta $A${ZETTA_MCP_TOKEN:+ --mcp-token ****}"
+if [ -n "${ZETTA_MCP_TOKEN:-}" ]; then A="$A --mcp-token $ZETTA_MCP_TOKEN"; fi
 exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed)
 
 	sts.Labels = lbls
@@ -340,6 +387,10 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed)
 				Command: []string{"/bin/sh", "-c", entry},
 				Env: []corev1.EnvVar{
 					{Name: "ZETTA_CLUSTER_PLAINTEXT", Value: plaintext},
+					// The MCP bearer token (operator-provisioned; secure by default). The entrypoint
+					// appends --mcp-token from this, so the node requires a bearer on /mcp + /v1/*.
+					{Name: "ZETTA_MCP_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-mcp"}, Key: "token"}}},
 				},
 				Ports: []corev1.ContainerPort{
 					{Name: "peer", ContainerPort: zettaPeerPort},
@@ -347,10 +398,14 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed)
 				},
 				VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: zettaDataDir}},
 				Resources:    resources,
-				// Readiness: the HTTP API answers GET /v1/server_info (bound 0.0.0.0:4800).
+				// Readiness: the HTTP API port (4800) accepts connections. A TCP check (not GET
+				// /v1/server_info) because the MCP token gates every /v1/* route — an HTTP probe can't
+				// carry the bearer without leaking it into the pod spec, and the node exposes no
+				// unauthenticated health route in this image. TODO: switch to GET /mcp.md (public,
+				// always-200) once the image carrying that route ships — a real HTTP-level check.
 				ReadinessProbe: &corev1.Probe{
-					ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-						Path: "/v1/server_info", Port: intstr.FromInt32(zettaAPIPort)}},
+					ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{
+						Port: intstr.FromInt32(zettaAPIPort)}},
 					InitialDelaySeconds: 5, PeriodSeconds: 10, TimeoutSeconds: 3, FailureThreshold: 6,
 				},
 				// Liveness: the peer listener is up.
@@ -418,6 +473,7 @@ func (r *OramaZettaClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Complete(r)
