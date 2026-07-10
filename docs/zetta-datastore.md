@@ -116,17 +116,32 @@ long as they can reach each other's peer port. So the target topology is **N k8s
 - **Peering across clusters** is the networking piece, and it follows the **node-reachability model**
   (see the Zetta [`docs/cluster/cluster.md`](https://github.com/oramasearch/zetta/blob/dev/docs/cluster/cluster.md)
   "Node reachability + the route table"), **not** an inbound endpoint on every node:
-  - Nodes are **wan-accessible** (a routable public/LAN address — a rendezvous others dial **out** to),
-    **ephemeral** (burst/autoscaled, expected to come and go), or otherwise **dial-out-only** (behind
-    NAT or a private VNet — a home node, an AKS pod on a private IP; it dials **outbound** only and
-    accepts **no inbound**).
-  - **The mesh self-forms:** add a wan-accessible node's address to the nodes table (`spec.externalPeers`)
-    and the dial-out-only nodes reach out to it; Zetta relays transitively + computes the route table
-    (oramasearch/zetta#739). A private node is **always the initiator**.
-  - **Do NOT** provision an inbound `LoadBalancer` (or, worse, one source-locked to a specific peer's IP)
-    to "reach" a dial-out-only node — that inverts the model. `spec.exposePeerLoadBalancer` is only for a
-    node the platform intends to be **genuinely wan-accessible** (and even then, cloud LBs are one option;
-    a node whose host already has a public IP needs none).
+  - **Each slice DECLARES its reachability type** (`spec.reachability`, [operator#74](https://github.com/oramasearch/orama-cloud-v1-operator/issues/74)):
+    - **`wan-accessible`** — a routable address (a rendezvous others dial **out** to). The operator
+      advertises that address as **`.status.wanAddress`** — derived from `spec.wanAddress` (a mesh-VPN /
+      stable public IP / DNS name), else `spec.hostNetwork` (the node's host IP), else the
+      `spec.exposePeerLoadBalancer` cloud-LB IP.
+    - **`dial-out-only`** (the **default**) — behind NAT or a private VNet (a home node, an AKS pod on a
+      private IP). It dials **outbound** only and accepts **no inbound**; `.status.wanAddress` is empty.
+    - **`spec.ephemeral`** — burst/autoscaled capacity ([operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69))
+      expected to churn; **always forced to dial-out-only** (its address would flap, so it is never a
+      rendezvous) and its membership blips are not treated as a fault.
+  - **The mesh self-forms:** copy a wan-accessible slice's `.status.wanAddress` into the dial-out-only
+    siblings' `spec.externalPeers` and they reach out to it; Zetta relays transitively + computes the
+    route table ([zetta#739](https://github.com/oramasearch/zetta/issues/739)). A private node is
+    **always the initiator**. The same wan-accessible set feeds the **Cloudflare LB origin pool**
+    ([operator#73](https://github.com/oramasearch/orama-cloud-v1-operator/issues/73) — HTTP origin at the
+    same host `:4800`).
+  - **Anti-pattern — do NOT** provision an inbound `LoadBalancer` (or, worse, one source-locked to a
+    specific peer's IP) to "reach" a `dial-out-only` node — that **inverts** the model. The operator
+    enforces this: `spec.exposePeerLoadBalancer` is **honored only on a `wan-accessible` slice**; on a
+    dial-out-only/ephemeral slice it is **ignored** (a warning is logged and any existing peer LB torn
+    down). And even for a wan-accessible node a cloud LB is only one option — a node whose host already
+    has a public IP (`hostNetwork`) or a mesh-VPN address (`wanAddress`) needs none.
+  - **Advertised address vs bound address:** until Zetta grows a `--advertise HOST:PORT` flag
+    ([zetta#739](https://github.com/oramasearch/zetta/issues/739) request #1), a node gossips the address
+    it **bound** — so wan-accessibility relies on `hostNetwork` (bound == routable) or the LB path today;
+    the operator already surfaces `.status.wanAddress` so the flag is a drop-in once it lands.
   - Multi-node currently uses `clusterPlaintext` on a trusted network until the mTLS join token
     ([zetta#670](https://github.com/oramasearch/zetta/issues/670)) lands — so a wan-accessible node with
     an open peer port must wait for mTLS before its port faces the public internet.

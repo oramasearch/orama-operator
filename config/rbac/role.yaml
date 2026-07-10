@@ -23,21 +23,10 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - nodes
+  - pods
   verbs:
   - get
   - list
-  - watch
-- apiGroups:
-  - apiextensions.k8s.io
-  resources:
-  - customresourcedefinitions
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - apps
@@ -78,42 +67,6 @@ rules:
   - update
   - watch
 - apiGroups:
-  - karpenter.azure.com
-  resources:
-  - aksnodeclasses
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - karpenter.k8s.aws
-  resources:
-  - ec2nodeclasses
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - karpenter.sh
-  resources:
-  - nodeclaims
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - karpenter.sh
-  resources:
-  - nodepools
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
   - networking.k8s.io
   resources:
   - ingresses
@@ -130,12 +83,10 @@ rules:
   resources:
   - cloudflarednsrecords
   - cloudflarekvnamespaces
-  - cloudflareloadbalancers
   - cloudflarer2buckets
   - oramacloudv1e2etests
   - oramacloudv1s
   - oramazettaclusters
-  - zettaclustere2etests
   verbs:
   - create
   - delete
@@ -149,7 +100,6 @@ rules:
   resources:
   - cloudflarednsrecords/finalizers
   - cloudflarekvnamespaces/finalizers
-  - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
   - oramazettaclusters/finalizers
   verbs:
@@ -159,12 +109,10 @@ rules:
   resources:
   - cloudflarednsrecords/status
   - cloudflarekvnamespaces/status
-  - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
   - oramazettaclusters/status
-  - zettaclustere2etests/status
   verbs:
   - get
   - patch
@@ -188,23 +136,6 @@ rules:
   verbs:
   - create
   - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resources:
-  - clusterrolebindings
-  - clusterroles
-  - rolebindings
-  - roles
-  verbs:
-  - bind
-  - create
-  - delete
-  - escalate
   - get
   - list
   - patch

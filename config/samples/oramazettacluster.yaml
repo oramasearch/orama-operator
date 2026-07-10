@@ -5,7 +5,8 @@
 # With `host` set it also fronts the API/UI with an nginx Ingress + a proxied Cloudflare DNS record.
 #
 #   kubectl apply -f config/samples/oramazettacluster.yaml
-#   kubectl get ozc -n orama-system            # Nodes / Desired / Phase / Image
+#   kubectl get ozc -n orama-system            # Nodes / Desired / Phase / Reachability / Image
+#   kubectl get ozc -n orama-system -o wide     # + WAN (the wan-accessible rendezvous address)
 #   kubectl logs -n orama-system zetta-0-zetta-0
 #   curl https://zetta.oramadev.net/v1/server_info   # once host + DNS are set (below)
 apiVersion: orama.cloud/v1alpha1
@@ -25,6 +26,25 @@ spec:
   #   limits:   { cpu: "2",    memory: "4Gi" }
   clusterPlaintext: false                         # single node mints its own mTLS token; set true for
                                                   # a multi-node cluster until mTLS token-sharing lands
+
+  # --- Node reachability (the corrected mesh model, oramasearch/zetta#739) ---
+  # How siblings in the shared Zetta cluster reach THIS slice. Default: dial-out-only.
+  reachability: dial-out-only                     # behind NAT / a private VNet — this slice DIALS OUT to
+                                                  # the wan-accessible rendezvous(es) below and gets NO
+                                                  # inbound LoadBalancer (exposePeerLoadBalancer is ignored).
+  # clusterName: orama-zetta                       # the GLOBAL cluster name; siblings across k8s clusters share it
+  externalPeers:                                  # the route table — wan-accessible rendezvous to dial OUT to
+    - 20.242.132.125:7777                         #   (copy a sibling's .status.wanAddress here)
+  # ephemeral: true                                # burst/autoscaled capacity expected to churn — always
+                                                  #   dial-out-only; its membership blips aren't a fault.
+  #
+  # To make THIS slice a rendezvous instead (advertised as .status.wanAddress, consumed by siblings'
+  # externalPeers + the Cloudflare LB origin pool, operator#73):
+  #   reachability: wan-accessible
+  #   hostNetwork: true                            #   host IP is the routable address (no LB needed), OR
+  #   wanAddress: 20.242.132.125:7777              #   an explicit mesh-VPN / stable public address, OR
+  #   exposePeerLoadBalancer: true                 #   a cloud LB public IP (wan-accessible ONLY)
+
   host: zetta.oramadev.net                        # expose the API/UI (:4800) via an nginx Ingress
   dnsSecretRef:                                   # + a proxied Cloudflare DNS record (host → ingress LB)
     name: cloudflare-api-token                    # Secret with keys: token / zoneID / accountID

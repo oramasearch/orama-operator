@@ -26,8 +26,11 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.provisionedNodes
-      name: Provisioned
+    - jsonPath: .status.reachability
+      name: Reachability
+      type: string
+    - jsonPath: .status.wanAddress
+      name: WAN
       priority: 1
       type: string
     - jsonPath: .spec.image
@@ -64,140 +67,6 @@ spec:
               Step 1 of the One Orama plan (orama-bridge#130): the operator only *runs* Zetta headless; the
               bi-directional operator↔Zetta symbiosis (Zetta as the operator's datastore) is a later stage.
             properties:
-              capacity:
-                description: |-
-                  Capacity opts this cluster into elastic node capacity — the first slice of Zetta-driven elastic
-                  capacity (operator#69). When enabled, the operator owns a cluster-node-autoscaler NodePool
-                  (Karpenter) and pins the Zetta pods onto it, so raising `spec.replicas` beyond current node
-                  capacity leaves pods Pending → the autoscaler provisions matching nodes just-in-time → the new
-                  pods schedule and join the CRDT cluster. Off by default (a standalone Zetta doesn't need it).
-                properties:
-                  karpenter:
-                    description: Karpenter drives node provisioning through a Karpenter
-                      NodePool the operator owns and reconciles.
-                    properties:
-                      arch:
-                        default: amd64
-                        description: Arch is the CPU architecture the pool provisions.
-                          Default amd64.
-                        enum:
-                        - amd64
-                        - arm64
-                        type: string
-                      capacityType:
-                        default: on-demand
-                        description: |-
-                          CapacityType selects on-demand or spot nodes. Default on-demand: a Zetta node is a stateful CRDT
-                          peer, so stable On-Demand capacity is the safe default — only choose spot with enough replicas to
-                          tolerate an interruption (a spot reclaim evicts a peer).
-                        enum:
-                        - on-demand
-                        - spot
-                        type: string
-                      controllerRoleARN:
-                        description: |-
-                          ControllerRoleARN is the AWS IAM role ARN the Karpenter CONTROLLER assumes to call EC2 — annotated
-                          onto its ServiceAccount for IRSA (`eks.amazonaws.com/role-arn`). This is the cloud IAM identity the
-                          operator CANNOT mint (a cloud-account prerequisite). REQUIRED when `install` is true on EKS unless
-                          the controller identity is wired out-of-band (e.g. EKS Pod Identity); empty ⇒
-                          `KarpenterInstalled=False, Reason=CloudIdentityMissing` and the controller is NOT deployed (no
-                          crash-loop). This is the CONTROLLER identity only; the launched NODES get their own instance
-                          profile via the platform-owned NodeClass (NodeClassRef). Ignored when `install` is false.
-                        type: string
-                      enabled:
-                        default: false
-                        description: |-
-                          Enabled turns on operator-managed Karpenter capacity. When true the operator reconciles the Zetta
-                          NodePool and pins the Zetta pods onto it (a dedicated taint + toleration and a pool nodeSelector),
-                          so the pods land only on Karpenter-provisioned Zetta nodes. Default false.
-                        type: boolean
-                      install:
-                        default: false
-                        description: |-
-                          Install makes the operator OWN the Karpenter controller install itself (operator#75) — its
-                          Deployment + ServiceAccount + RBAC + the Karpenter CRDs (NodePool / NodeClaim / EC2NodeClass),
-                          pinned to a vendored upstream version and reconciled as owned resources — rather than assuming
-                          Karpenter is already present. Off by default (the platform may pre-install Karpenter and just use
-                          `enabled`). Cloud-gated: a graceful no-op on bare-metal / k0s (no cloud provider → no VM API for
-                          Karpenter to drive) and on AKS, where Node Auto Provisioning already deploys and manages Karpenter
-                          for you; the self-install path targets EKS (the self-managed AWS provider). Status is surfaced with
-                          the `KarpenterInstalled` condition.
-
-                          CLOUD IAM PREREQUISITE — the operator CANNOT satisfy this; it is a cloud-account prerequisite, the
-                          same class as the image pull secret. Karpenter's controller needs a cloud identity permitted to
-                          create/terminate VMs, and the launched nodes need their own identity:
-                            - EKS: an IAM role assumed by the controller ServiceAccount via IRSA (set ControllerRoleARN) or
-                              EKS Pod Identity, plus a node instance profile referenced by the platform-owned EC2NodeClass.
-                            - AKS: an Azure managed identity with a role assignment (handled by NAP — the operator does not
-                              self-install on AKS).
-                          The in-cluster operator cannot mint these. When the controller identity is absent the reconciler
-                          reports `KarpenterInstalled=False, Reason=CloudIdentityMissing` and does NOT deploy the controller
-                          (which would otherwise crash-loop). See docs/karpenter-cloud-iam-prerequisite.md.
-                        type: boolean
-                      installClusterName:
-                        description: |-
-                          InstallClusterName is the cloud cluster name Karpenter's controller uses to discover the cluster's
-                          resources (AWS `settings.clusterName` — the tagged subnets / security-groups / interruption queue).
-                          REQUIRED when `install` is true on EKS; empty ⇒ `KarpenterInstalled=False,
-                          Reason=InstallClusterNameRequired`. Ignored when `install` is false.
-                        type: string
-                      instanceTypes:
-                        description: |-
-                          InstanceTypes optionally restricts the pool to specific instance types via the well-known
-                          `node.kubernetes.io/instance-type` label (portable across AWS + Azure). Empty (recommended) lets
-                          Karpenter choose the cheapest fitting type from the NodeClass offerings — broadest availability.
-                        items:
-                          type: string
-                        type: array
-                      limits:
-                        description: |-
-                          Limits caps the aggregate capacity this pool may provision — the cost/scale guardrail (operator#69).
-                          Karpenter stops provisioning once any limit is hit, so a runaway replica bump can't launch unbounded
-                          nodes.
-                        properties:
-                          cpu:
-                            default: "16"
-                            description: CPU cap across the pool (Karpenter DecimalSI,
-                              e.g. "16"). Default "16".
-                            type: string
-                          memory:
-                            default: 64Gi
-                            description: Memory cap across the pool (Karpenter BinarySI,
-                              e.g. "64Gi"). Default "64Gi".
-                            type: string
-                          nodes:
-                            default: 3
-                            description: Nodes caps the node count of the pool — the
-                              hard ceiling on elastic scale-out. Default 3.
-                            format: int32
-                            minimum: 0
-                            type: integer
-                        type: object
-                      nodeClassRef:
-                        description: |-
-                          NodeClassRef points at the provider NodeClass Karpenter uses to launch nodes: an EC2NodeClass
-                          (group `karpenter.k8s.aws`, the default) on EKS, or an AKSNodeClass (group `karpenter.azure.com`)
-                          on AKS Node Auto Provisioning. Name is REQUIRED when enabled — without it the operator cannot
-                          build a valid NodePool and reports `CapacityReady=False, Reason=Blocked` instead of crash-looping.
-                        properties:
-                          group:
-                            default: karpenter.k8s.aws
-                            description: |-
-                              Group of the provider NodeClass API. Default `karpenter.k8s.aws` (EKS); use `karpenter.azure.com`
-                              on AKS NAP.
-                            type: string
-                          kind:
-                            default: EC2NodeClass
-                            description: Kind of the provider NodeClass. Default `EC2NodeClass`
-                              (EKS); use `AKSNodeClass` on AKS NAP.
-                            type: string
-                          name:
-                            description: Name of the platform-owned NodeClass. Required
-                              when `karpenter.enabled`.
-                            type: string
-                        type: object
-                    type: object
-                type: object
               clusterName:
                 description: |-
                   ClusterName is the GLOBAL Zetta cluster name. A Zetta cluster can span multiple k8s clusters; each
@@ -227,15 +96,34 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              ephemeral:
+                default: false
+                description: |-
+                  Ephemeral marks this slice as burst / autoscaled capacity that is EXPECTED to churn — nodes come
+                  and go (e.g. the elastic-capacity autoscaler, operator#69). An ephemeral slice is ALWAYS
+                  dial-out-only: it is never advertised as a rendezvous (its address would flap), so it is forced to
+                  dial-out-only regardless of `spec.reachability`, and its membership blips are not treated as a
+                  cluster fault. Default false.
+                type: boolean
               exposePeerLoadBalancer:
                 default: false
                 description: |-
                   ExposePeerLoadBalancer creates a LoadBalancer Service for the peer port (:7777) so nodes in OTHER
-                  k8s clusters can dial this cluster from outside (cross-cloud siblings) — the way to reach an
-                  AKS/EKS/GKE node whose pod/node IPs aren't routable from the peer's network. The cloud provisions a
-                  public IP; put `<ip>:7777` in a sibling's spec.externalPeers. NOTE: peer traffic is then plaintext
-                  over the public internet when clusterPlaintext is set — only do this on a trusted path until the
-                  mTLS join token (oramasearch/zetta#670) lands. Default false.
+                  k8s clusters can dial this cluster from outside.
+
+                  ONLY valid for a `reachability: wan-accessible` slice — it makes a slice the platform intends to be
+                  GENUINELY wan-accessible reachable via a cloud public IP (put `<ip>:7777` in a sibling's
+                  spec.externalPeers; the operator also surfaces it as `.status.wanAddress`). Even then a cloud LB is
+                  only ONE option — a node whose host already has a public IP (`spec.hostNetwork`) or a mesh-VPN
+                  address (`spec.wanAddress`) needs none.
+
+                  ANTI-PATTERN — do NOT use this to "reach" a private (`dial-out-only`) node. That inverts the mesh
+                  model (oramasearch/zetta#739): a NAT'd/private node must DIAL OUT to a rendezvous, not accept
+                  inbound. On a `dial-out-only` slice (the default) this field is IGNORED and the operator logs a
+                  warning; any previously-created peer LB is torn down.
+
+                  NOTE: peer traffic is plaintext over the public internet when clusterPlaintext is set — only do this
+                  on a trusted path until the mTLS join token (oramasearch/zetta#670) lands. Default false.
                 type: boolean
               externalPeers:
                 description: |-
@@ -291,6 +179,24 @@ spec:
                 type: boolean
               pullSecretName:
                 description: PullSecretName lets the pods pull a private zetta image.
+                type: string
+              reachability:
+                default: dial-out-only
+                description: |-
+                  Reachability declares how siblings in the shared Zetta cluster reach THIS slice's nodes, per the
+                  corrected node-reachability model (oramasearch/zetta#739):
+                    - `dial-out-only` (DEFAULT): the slice is behind NAT / a private VNet — it dials OUT to the
+                      wan-accessible rendezvous(es) in `spec.externalPeers` and accepts NO inbound. The operator
+                      NEVER provisions an inbound LoadBalancer for it (any `exposePeerLoadBalancer` is ignored + a
+                      warning is logged — see that field).
+                    - `wan-accessible`: the slice has a routable address (see `spec.wanAddress` / `spec.hostNetwork`
+                      / `spec.exposePeerLoadBalancer`) — it is a RENDEZVOUS others dial OUT to. The operator
+                      advertises that address as `.status.wanAddress`, which siblings copy into their
+                      `spec.externalPeers` and the Cloudflare LB origin pool (operator#73) consumes.
+                  Default `dial-out-only` (a private node is always the initiator).
+                enum:
+                - wan-accessible
+                - dial-out-only
                 type: string
               replicas:
                 default: 1
@@ -366,6 +272,16 @@ spec:
                       cluster default StorageClass).
                     type: string
                 type: object
+              wanAddress:
+                description: |-
+                  WanAddress is the routable address (`host` or `host:port`) that siblings use to reach this
+                  wan-accessible slice's peer port. If no port is given, the peer port (:7777) is assumed. When set
+                  (and reachability is wan-accessible) it is authoritative — the operator advertises it verbatim as
+                  `.status.wanAddress` (e.g. a Tailscale/WireGuard address, a stable public IP, or a DNS name). When
+                  empty, the operator derives the address from `spec.hostNetwork` (the node's host IP) or
+                  `spec.exposePeerLoadBalancer` (the cloud LB's public IP). Ignored unless reachability is
+                  wan-accessible.
+                type: string
             type: object
           status:
             description: OramaZettaClusterStatus is the observed state of the cluster.
@@ -429,18 +345,20 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              ephemeral:
+                description: Ephemeral echoes spec.ephemeral — this slice is burst/autoscaled
+                  capacity expected to churn.
+                type: boolean
               message:
                 type: string
               phase:
                 description: 'Phase: Progressing | Ready | Degraded.'
                 type: string
-              provisionedNodes:
+              reachability:
                 description: |-
-                  ProvisionedNodes is the number of k8s nodes the operator-managed Karpenter NodePool currently
-                  backs this cluster with (nodes carrying `karpenter.sh/nodepool=<pool>`). 0 when elastic capacity
-                  is off or no autoscaler node has been provisioned yet. Surfaced with the `CapacityReady` condition.
-                format: int32
-                type: integer
+                  Reachability echoes the EFFECTIVE reachability type of this slice (spec.reachability, forced to
+                  `dial-out-only` when spec.ephemeral is set) — the node-reachability model (oramasearch/zetta#739).
+                type: string
               readyNodes:
                 description: ReadyNodes is the number of ready zetta pods.
                 format: int32
@@ -449,6 +367,14 @@ spec:
                 description: TotalNodes is the desired node count.
                 format: int32
                 type: integer
+              wanAddress:
+                description: |-
+                  WanAddress is the routable rendezvous address (`host:port`) siblings dial OUT to when this slice is
+                  wan-accessible. It is the address siblings put in their `spec.externalPeers`, and the Cloudflare LB
+                  origin pool (operator#73) is populated from the wan-accessible set's addresses (its HTTP origin is
+                  the same host at :4800). Empty for a dial-out-only slice, or until the address is known (e.g. a
+                  pending cloud LB IP).
+                type: string
             type: object
         type: object
     served: true

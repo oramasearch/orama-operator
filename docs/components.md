@@ -378,3 +378,17 @@ until the Secret (token+zoneID+accountID) exists → `Ready=False (WaitingForCre
 > ([#74](https://github.com/oramasearch/orama-cloud-v1-operator/issues/74) /
 > [zetta#739](https://github.com/oramasearch/zetta/issues/739)) so the main loop creates/updates
 > the `CloudflareLoadBalancer` as nodes come and go.
+**Zetta cluster reachability + the CF LB origin pool.** The `OramaZettaCluster` reconciler
+(`internal/controller/oramazettacluster_controller.go`) classifies each slice by its **node-reachability
+type** (`spec.reachability`, [operator#74](https://github.com/oramasearch/orama-cloud-v1-operator/issues/74)):
+a **`wan-accessible`** slice is a rendezvous whose routable address the operator advertises as
+`.status.wanAddress` (from `spec.wanAddress` / `spec.hostNetwork` / `spec.exposePeerLoadBalancer`), while a
+**`dial-out-only`** slice (the default, and any `spec.ephemeral` slice) dials OUT only and **never gets an
+inbound peer LoadBalancer** — the operator ignores `spec.exposePeerLoadBalancer` on it (warns + tears down
+any existing LB), fixing the earlier anti-pattern of fronting a private node with an inbound LB
+([zetta#739](https://github.com/oramasearch/zetta/issues/739)). Two consumers read the wan-accessible set:
+siblings copy `.status.wanAddress` into their `spec.externalPeers`, and the **Cloudflare LB origin pool**
+([operator#73](https://github.com/oramasearch/orama-cloud-v1-operator/issues/73) / the
+`CloudflareLoadBalancer` CRD, [operator#76](https://github.com/oramasearch/orama-cloud-v1-operator/pull/76))
+is populated from those addresses (HTTP origin at the same host `:4800`) — the documented wiring hook, not
+yet auto-populated here.
