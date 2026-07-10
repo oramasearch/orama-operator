@@ -110,6 +110,110 @@ type OramaZettaClusterSpec struct {
 	// +kubebuilder:default=true
 	// +optional
 	ProvisionOperatorSchema *bool `json:"provisionOperatorSchema,omitempty"`
+
+	// Capacity opts this cluster into elastic node capacity — the first slice of Zetta-driven elastic
+	// capacity (operator#69). When enabled, the operator owns a cluster-node-autoscaler NodePool
+	// (Karpenter) and pins the Zetta pods onto it, so raising `spec.replicas` beyond current node
+	// capacity leaves pods Pending → the autoscaler provisions matching nodes just-in-time → the new
+	// pods schedule and join the CRDT cluster. Off by default (a standalone Zetta doesn't need it).
+	// +optional
+	Capacity *OramaZettaCapacity `json:"capacity,omitempty"`
+}
+
+// OramaZettaCapacity configures elastic node capacity for the cluster. It abstracts "provision capacity
+// for Zetta" over the cluster's node autoscaler; the first slice targets Karpenter (EKS-native, and the
+// engine behind AKS Node Auto Provisioning). A cluster with no node autoscaler (k0s / bare metal) is a
+// graceful no-op: `spec.replicas` still packs more pods onto the fixed host until it's full.
+type OramaZettaCapacity struct {
+	// Karpenter drives node provisioning through a Karpenter NodePool the operator owns and reconciles.
+	// +optional
+	Karpenter *KarpenterCapacity `json:"karpenter,omitempty"`
+}
+
+// KarpenterCapacity is the operator-managed Karpenter NodePool for the Zetta cluster. The operator owns
+// only the (cloud-neutral) NodePool — labels, taints, requirements, disruption policy, and the cost cap
+// (`limits`); the provider-specific NodeClass (EC2NodeClass on EKS / AKSNodeClass on AKS) is owned by
+// the platform and referenced via NodeClassRef, because it carries cluster-specific cloud details
+// (AMI/subnet/IAM on AWS) the operator cannot invent. Karpenter reference model: NodePool → NodeClass →
+// NodeClaim → Node (see docs/research/karpenter-manual.md).
+type KarpenterCapacity struct {
+	// Enabled turns on operator-managed Karpenter capacity. When true the operator reconciles the Zetta
+	// NodePool and pins the Zetta pods onto it (a dedicated taint + toleration and a pool nodeSelector),
+	// so the pods land only on Karpenter-provisioned Zetta nodes. Default false.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// NodeClassRef points at the provider NodeClass Karpenter uses to launch nodes: an EC2NodeClass
+	// (group `karpenter.k8s.aws`, the default) on EKS, or an AKSNodeClass (group `karpenter.azure.com`)
+	// on AKS Node Auto Provisioning. Name is REQUIRED when enabled — without it the operator cannot
+	// build a valid NodePool and reports `CapacityReady=False, Reason=Blocked` instead of crash-looping.
+	// +optional
+	NodeClassRef KarpenterNodeClassRef `json:"nodeClassRef,omitempty"`
+
+	// InstanceTypes optionally restricts the pool to specific instance types via the well-known
+	// `node.kubernetes.io/instance-type` label (portable across AWS + Azure). Empty (recommended) lets
+	// Karpenter choose the cheapest fitting type from the NodeClass offerings — broadest availability.
+	// +optional
+	InstanceTypes []string `json:"instanceTypes,omitempty"`
+
+	// Arch is the CPU architecture the pool provisions. Default amd64.
+	// +kubebuilder:validation:Enum=amd64;arm64
+	// +kubebuilder:default=amd64
+	// +optional
+	Arch string `json:"arch,omitempty"`
+
+	// CapacityType selects on-demand or spot nodes. Default on-demand: a Zetta node is a stateful CRDT
+	// peer, so stable On-Demand capacity is the safe default — only choose spot with enough replicas to
+	// tolerate an interruption (a spot reclaim evicts a peer).
+	// +kubebuilder:validation:Enum=on-demand;spot
+	// +kubebuilder:default=on-demand
+	// +optional
+	CapacityType string `json:"capacityType,omitempty"`
+
+	// Limits caps the aggregate capacity this pool may provision — the cost/scale guardrail (operator#69).
+	// Karpenter stops provisioning once any limit is hit, so a runaway replica bump can't launch unbounded
+	// nodes.
+	// +optional
+	Limits KarpenterLimits `json:"limits,omitempty"`
+}
+
+// KarpenterNodeClassRef references the provider NodeClass the NodePool launches nodes from (the
+// Karpenter v1 `nodeClassRef` group/kind/name shape).
+type KarpenterNodeClassRef struct {
+	// Group of the provider NodeClass API. Default `karpenter.k8s.aws` (EKS); use `karpenter.azure.com`
+	// on AKS NAP.
+	// +kubebuilder:default="karpenter.k8s.aws"
+	// +optional
+	Group string `json:"group,omitempty"`
+
+	// Kind of the provider NodeClass. Default `EC2NodeClass` (EKS); use `AKSNodeClass` on AKS NAP.
+	// +kubebuilder:default="EC2NodeClass"
+	// +optional
+	Kind string `json:"kind,omitempty"`
+
+	// Name of the platform-owned NodeClass. Required when `karpenter.enabled`.
+	// +optional
+	Name string `json:"name,omitempty"`
+}
+
+// KarpenterLimits caps the aggregate resources the Zetta NodePool may provision.
+type KarpenterLimits struct {
+	// CPU cap across the pool (Karpenter DecimalSI, e.g. "16"). Default "16".
+	// +kubebuilder:default="16"
+	// +optional
+	CPU string `json:"cpu,omitempty"`
+
+	// Memory cap across the pool (Karpenter BinarySI, e.g. "64Gi"). Default "64Gi".
+	// +kubebuilder:default="64Gi"
+	// +optional
+	Memory string `json:"memory,omitempty"`
+
+	// Nodes caps the node count of the pool — the hard ceiling on elastic scale-out. Default 3.
+	// +kubebuilder:default=3
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Nodes int32 `json:"nodes,omitempty"`
 }
 
 // OramaZettaStorage configures each node's data volume.
@@ -135,6 +239,11 @@ type OramaZettaClusterStatus struct {
 	// TotalNodes is the desired node count.
 	// +optional
 	TotalNodes int32 `json:"totalNodes,omitempty"`
+	// ProvisionedNodes is the number of k8s nodes the operator-managed Karpenter NodePool currently
+	// backs this cluster with (nodes carrying `karpenter.sh/nodepool=<pool>`). 0 when elastic capacity
+	// is off or no autoscaler node has been provisioned yet. Surfaced with the `CapacityReady` condition.
+	// +optional
+	ProvisionedNodes int32 `json:"provisionedNodes,omitempty"`
 	// +optional
 	Message string `json:"message,omitempty"`
 	// +optional
@@ -149,6 +258,7 @@ type OramaZettaClusterStatus struct {
 //+kubebuilder:printcolumn:name="Nodes",type=string,JSONPath=`.status.readyNodes`
 //+kubebuilder:printcolumn:name="Desired",type=string,JSONPath=`.status.totalNodes`
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="Provisioned",type=string,JSONPath=`.status.provisionedNodes`,priority=1
 //+kubebuilder:printcolumn:name="Image",type=string,JSONPath=`.spec.image`
 
 // OramaZettaCluster deploys a headless Orama Zetta cluster (a StatefulSet of equal-peer CRDT nodes)

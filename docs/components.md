@@ -22,6 +22,7 @@ reconciler lands.
 | **cloudflare** | `internal/controller/cloudflare.go` | CF DNS record via the CF API (safe no-op until configured) | 🟡 **implemented** (not live-tested; LB pools are a follow-up) |
 | **idp** (keycloak) | `internal/controller/idp.go` | Keycloak `Deployment` + Service (when `idp.provider=keycloak`) | ✅ **done** (validated on AKS) |
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
+| **zetta-capacity** | `internal/controller/zetta_capacity.go` | Karpenter `NodePool` (unstructured, cluster-scoped) + a `PodDisruptionBudget`; pins the Zetta pods onto the pool (taint/toleration + nodeSelector + `do-not-disrupt`) | 🟡 **implemented** (opt-in, [#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69) first slice; not yet live-tested — needs an EKS/AKS-NAP cluster) |
 
 ## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 
@@ -240,3 +241,58 @@ but no token).
 > (geo-steered pools + health checks across the regional clusters — the actual
 > geo-LB); deprovision records on teardown; surface the managed hostnames beyond just
 > the dashboard.
+
+## Zetta elastic capacity (`zetta_capacity.go`) — 🟡 implemented, opt-in, not live-tested
+
+The **first slice** of Zetta-driven elastic capacity ([operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69)):
+`Zetta → operator → Karpenter → nodes → more Zetta nodes`. Opt-in via
+`OramaZettaCluster.spec.capacity.karpenter.enabled` (default off). Reconciled from the
+`OramaZettaCluster` controller (step 0, before the StatefulSet).
+
+- **Owned `NodePool`** — the operator reconciles a Karpenter `NodePool` (`karpenter.sh/v1`)
+  via **`unstructured`** (same decoupling as the CNPG `Cluster` — no dependency on Karpenter's
+  Go types/version). It carries the cloud-neutral policy: a dedicated **taint**
+  (`orama.cloud/zetta:NoSchedule`), the **pool label** (`orama.cloud/zetta-pool`) on the node
+  template, `requirements` (os/arch/capacity-type + optional instance-type pin), the **cost cap**
+  (`spec.limits` cpu/memory/nodes), and **stateful-safe disruption**
+  (`consolidationPolicy: WhenEmpty`, a `nodes: "1"` budget, `expireAfter: Never`,
+  `terminationGracePeriod: 1h`). CreateOrUpdate ⇒ the write is a no-op when nothing changed
+  (anti-flap, principle #7).
+- **Provider `NodeClass` is referenced, not owned** — `spec.capacity.karpenter.nodeClassRef`
+  (`{group, kind, name}`) points at the platform's `EC2NodeClass` (EKS) / `AKSNodeClass`
+  (AKS NAP). The NodeClass carries cluster-specific cloud details (AMI/subnet/IAM on AWS) the
+  operator can't invent, so the platform owns it. `name` is required when enabled; missing ⇒
+  `CapacityReady=False, Reason=Blocked`.
+- **Scale trigger (this slice)** — pure **scheduling**: the Zetta pods get the matching
+  toleration + `nodeSelector: {orama.cloud/zetta-pool: <name>}` (in `mutateZettaStatefulSet`),
+  so raising `spec.replicas` past node capacity leaves pods **Pending → Karpenter provisions →**
+  the pods schedule and join. The operator changes *desired replicas + NodePool limits*;
+  Karpenter does the launch. A **Zetta-signal-driven** trigger (an `orama_control.scale_requests`
+  row the operator polls) is the **next** slice — noted, not built.
+- **Quorum-safety** — the Zetta pods carry `karpenter.sh/do-not-disrupt` (Karpenter never
+  voluntarily evicts a live CRDT peer) + a `maxUnavailable: 1` **PDB**. Drain-safe,
+  operator-driven **scale-down** (lower replicas, let Karpenter reclaim the emptied node) is a
+  later slice.
+- **Karpenter-absent = graceful no-op** — existence is checked via the **RESTMapper** (no
+  informer started for a possibly-missing CRD). No `karpenter.sh/v1 NodePool` mapping ⇒
+  `CapacityReady=False, Reason=KarpenterNotInstalled`, no crash-loop. Covers bare-metal / k0s
+  clusters with no node autoscaler.
+- **Cluster-scoped cleanup** — a `NodePool` is **cluster-scoped**, so a namespaced CR can't own
+  it via `ownerReferences` (k8s GC would treat the owner as absent and delete it). Instead the
+  pool is label-identified and cleaned up by a **finalizer** (`orama.cloud/karpenter-capacity`),
+  added while capacity is on and released on disable or CR-delete. The namespaced PDB is
+  owner-GC'd normally.
+- **Status** — `status.provisionedNodes` (count of nodes labeled
+  `karpenter.sh/nodepool=<pool>`, read via the **uncached APIReader** so the operator holds no
+  cluster-wide Node informer) + the `CapacityReady` condition, both written only on change
+  (anti-flap).
+
+> **RBAC:** `karpenter.sh/nodepools` (`*`), `karpenter.sh/nodeclaims` +
+> `karpenter.k8s.aws/ec2nodeclasses` + `karpenter.azure.com/aksnodeclasses` +
+> core `nodes` (`get;list;watch`), and `policy/poddisruptionbudgets` — mirrored into
+> `chart/templates/rbac.yaml`. A grant for a non-existent apiGroup is harmless.
+
+> **Follow-ups (later slices of #69):** the Zetta→operator signal channel
+> (`orama_control.scale_requests`); drain-safe, quorum-aware scale-down; multi-cluster
+> placement policy (per-operator identity already namespaces the state); consent-trail
+> integration (`add_nodes` / `approve_consent`); live validation on an EKS + AKS-NAP cluster.
