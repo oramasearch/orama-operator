@@ -422,7 +422,7 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	// bearer token never lands in the pod log. The token is injected via the ZETTA_MCP_TOKEN env from
 	// the <name>-zetta-mcp Secret (reconcileZettaMCPToken).
 	entry := fmt.Sprintf(`set -eu
-ORD="${HOSTNAME##*-}"
+ORD="${POD_NAME##*-}"   # NOT $HOSTNAME — under hostNetwork that is the node's name, not the pod's
 PEER_PORT=%[2]d
 API_PORT=%[3]d
 SEED="%[4]s"
@@ -438,11 +438,15 @@ A="--headless --data-dir %[1]s --listen 0.0.0.0:$PEER_PORT --mcp-listen 0.0.0.0:
 if [ "$ORD" != "0" ]; then A="$A --peer $SEED"; fi
 if [ "$ZETTA_CLUSTER_PLAINTEXT" = "1" ]; then A="$A --cluster-plaintext"; fi
 A="$A%[5]s"
-echo "zetta node $HOSTNAME (ordinal $ORD): zetta $A${ZETTA_MCP_TOKEN:+ --mcp-token ****}"
+echo "zetta node $POD_NAME (ordinal $ORD): zetta $A${ZETTA_MCP_TOKEN:+ --mcp-token ****}"
 if [ -n "${ZETTA_MCP_TOKEN:-}" ]; then A="$A --mcp-token $ZETTA_MCP_TOKEN"; fi
 exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 
-	zettaEnv := []corev1.EnvVar{{Name: "ZETTA_CLUSTER_PLAINTEXT", Value: plaintext}}
+	zettaEnv := []corev1.EnvVar{
+		{Name: "ZETTA_CLUSTER_PLAINTEXT", Value: plaintext},
+		// The ordinal comes from the POD name — $HOSTNAME is the NODE's name under hostNetwork.
+		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+	}
 	if z.Spec.HostNetwork {
 		// Tells the entrypoint to pack ordinals onto per-ordinal ports + a loopback seed (see entry).
 		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_HOST_NETWORK", Value: "1"})
@@ -520,6 +524,10 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 	if z.Spec.HostNetwork {
 		sts.Spec.Template.Spec.HostNetwork = true
 		sts.Spec.Template.Spec.DNSPolicy = corev1.DNSClusterFirstWithHostNet
+		// Under hostNetwork a declared containerPort is treated as a hostPort by the scheduler, so every
+		// replica would reserve the SAME host ports and only one could schedule. Drop the declarations —
+		// each ordinal binds its own ports from the entrypoint flags, and the Services target them numerically.
+		sts.Spec.Template.Spec.Containers[0].Ports = nil
 	}
 	return controllerutil.SetControllerReference(z, sts, r.Scheme)
 }
