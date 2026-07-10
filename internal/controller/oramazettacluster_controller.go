@@ -28,6 +28,14 @@ const (
 	zettaPeerPort = 7777 // peer replication + signal plane + blob transfer (mTLS unless plaintext)
 	zettaAPIPort  = 4800 // MCP + REST + model/index serving (one HTTP server)
 	zettaDataDir  = "/data"
+
+	// Landing placeholder served at the host root. The real Zetta web UI is upstream work
+	// (oramasearch/zetta#647); until then the operator serves a static "zetta" page at `/` from a
+	// tiny nginx pod that is INDEPENDENT of Zetta's (currently flaky, zetta#700/#695) HTTP server —
+	// so the host always resolves to something even when the API is down.
+	zettaLandingImage = "nginx:1.27-alpine"
+	zettaLandingPort  = 80
+	zettaLandingText  = "zetta\n"
 )
 
 // OramaZettaClusterReconciler deploys a headless Orama Zetta cluster (StatefulSet of equal-peer CRDT
@@ -41,8 +49,8 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/finalizers,verbs=update
-//+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
 
@@ -115,21 +123,37 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, r.reconcileZettaStatus(ctx, &z, stsName)
 }
 
-// reconcileZettaIngress exposes the cluster's HTTP API/UI (:4800) at spec.host via an nginx Ingress,
-// and — when spec.dnsSecretRef is also set — an OWNED CloudflareDNSRecord (proxied A/CNAME → the
-// ingress LoadBalancer), mirroring the OramaCloudV1 dashboard-DNS pattern (the child controller owns
-// the CF API call + finalizer, so the operator never mutates Cloudflare from the main loop).
-// SAFE no-op unless spec.host is set; the DNS record only appears once the ingress has an address.
+// reconcileZettaIngress exposes the cluster at spec.host via an nginx Ingress. The host root (`/`)
+// serves a static "zetta" landing placeholder from a tiny operator-owned nginx pod (see
+// reconcileZettaLanding) — independent of Zetta's own HTTP server — while every other path proxies
+// to the Zetta HTTP API/UI (:4800). When spec.dnsSecretRef is also set it creates an OWNED
+// CloudflareDNSRecord (proxied A/CNAME → the ingress LoadBalancer), mirroring the OramaCloudV1
+// dashboard-DNS pattern (the child controller owns the CF API call + finalizer, so the operator
+// never mutates Cloudflare from the main loop). SAFE no-op unless spec.host is set.
 func (r *OramaZettaClusterReconciler) reconcileZettaIngress(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, clientSvc string, lbls map[string]string) error {
 	ingName := z.Name + "-zetta"
+	landingName := z.Name + "-zetta-landing"
 	if z.Spec.Host == "" {
-		// No host → tear down any Ingress/DNS we previously created for this cluster.
+		// No host → tear down the Ingress/DNS + landing placeholder we previously created.
 		_ = deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: z.Namespace}})
 		_ = deleteIfExists(ctx, r.Client, &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: ingName + "-dns", Namespace: z.Namespace}})
+		_ = deleteIfExists(ctx, r.Client, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: landingName, Namespace: z.Namespace}})
+		_ = deleteIfExists(ctx, r.Client, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: landingName, Namespace: z.Namespace}})
+		_ = deleteIfExists(ctx, r.Client, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: landingName, Namespace: z.Namespace}})
 		return nil
 	}
 
-	pathType := networkingv1.PathTypePrefix
+	// Landing placeholder (nginx serving "zetta") — the backend for the host root.
+	if err := r.reconcileZettaLanding(ctx, z, landingName); err != nil {
+		return err
+	}
+
+	exact := networkingv1.PathTypeExact
+	prefix := networkingv1.PathTypePrefix
+	svcBackend := func(name string, port int32) networkingv1.IngressBackend {
+		return networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
+			Name: name, Port: networkingv1.ServiceBackendPort{Number: port}}}
+	}
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: z.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
 		ing.Labels = lbls
@@ -137,13 +161,12 @@ func (r *OramaZettaClusterReconciler) reconcileZettaIngress(ctx context.Context,
 		ing.Spec.Rules = []networkingv1.IngressRule{{
 			Host: z.Spec.Host,
 			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
-				Paths: []networkingv1.HTTPIngressPath{{
-					Path: "/", PathType: &pathType,
-					Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-						Name: clientSvc,
-						Port: networkingv1.ServiceBackendPort{Number: zettaAPIPort},
-					}},
-				}},
+				Paths: []networkingv1.HTTPIngressPath{
+					// Exact `/` (nginx `location = /`) → the landing placeholder; wins for the bare root.
+					{Path: "/", PathType: &exact, Backend: svcBackend(landingName, zettaLandingPort)},
+					// Prefix `/` (nginx `location /`) → the Zetta HTTP API/UI for everything else.
+					{Path: "/", PathType: &prefix, Backend: svcBackend(clientSvc, zettaAPIPort)},
+				},
 			}},
 		}}
 		return controllerutil.SetControllerReference(z, ing, r.Scheme)
@@ -162,6 +185,74 @@ func (r *OramaZettaClusterReconciler) reconcileZettaIngress(ctx context.Context,
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// reconcileZettaLanding creates the static "zetta" landing placeholder served at the host root — a
+// ConfigMap (the page), a tiny nginx Deployment, and its Service. It is deliberately DECOUPLED from
+// the Zetta node's own HTTP server (which is currently unreliable — oramasearch/zetta#700/#695), so
+// visiting the host always returns something. Replace with the real Zetta web UI when zetta#647 ships.
+func (r *OramaZettaClusterReconciler) reconcileZettaLanding(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, name string) error {
+	lbls := map[string]string{
+		"app.kubernetes.io/name":       "orama-zetta",
+		"app.kubernetes.io/instance":   z.Name,
+		"app.kubernetes.io/component":  "zetta-landing",
+		"app.kubernetes.io/managed-by": "orama-cloud-v1-operator",
+	}
+
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		cm.Labels = lbls
+		cm.Data = map[string]string{"index.html": zettaLandingText}
+		return controllerutil.SetControllerReference(z, cm, r.Scheme)
+	}); err != nil {
+		return err
+	}
+
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		svc.Labels = lbls
+		svc.Spec.Selector = lbls
+		svc.Spec.Ports = []corev1.ServicePort{{Name: "http", Port: zettaLandingPort, TargetPort: intstr.FromInt32(zettaLandingPort)}}
+		return controllerutil.SetControllerReference(z, svc, r.Scheme)
+	}); err != nil {
+		return err
+	}
+
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
+		dep.Labels = lbls
+		dep.Spec.Replicas = int32Ptr(1)
+		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
+		dep.Spec.Template = corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name:  "nginx",
+					Image: zettaLandingImage,
+					Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: zettaLandingPort}},
+					VolumeMounts: []corev1.VolumeMount{{
+						Name: "content", MountPath: "/usr/share/nginx/html", ReadOnly: true}},
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler:        corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/", Port: intstr.FromInt32(zettaLandingPort)}},
+						InitialDelaySeconds: 2, PeriodSeconds: 10, TimeoutSeconds: 3, FailureThreshold: 3,
+					},
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("16Mi")},
+						Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("64Mi")},
+					},
+				}},
+				Volumes: []corev1.Volume{{
+					Name: "content",
+					VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: name}}},
+				}},
+			},
+		}
+		return controllerutil.SetControllerReference(z, dep, r.Scheme)
+	}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -324,7 +415,9 @@ func (r *OramaZettaClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.OramaZettaCluster{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Complete(r)
