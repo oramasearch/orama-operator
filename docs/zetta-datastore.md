@@ -113,9 +113,23 @@ long as they can reach each other's peer port. So the target topology is **N k8s
   `operator` id so states never collide (two clusters each with a `v1/writer` stay distinct). The id
   defaults to the **`kube-system` Namespace UID** (stable + unique per cluster); override with the
   `ORAMA_OPERATOR_ID` env var. Query one operator's view with `… WHERE operator = '<id>'`.
-- **Peering across clusters** is the networking piece: same-LAN nodes reach each other directly on
-  :7777; cross-cloud needs a routable peer address (a LoadBalancer on 7777) or a tunnel/mesh. Multi-node
-  currently uses `clusterPlaintext` on a trusted network until mTLS token-sharing lands.
+- **Peering across clusters** is the networking piece, and it follows the **node-reachability model**
+  (see the Zetta [`docs/cluster/cluster.md`](https://github.com/oramasearch/zetta/blob/dev/docs/cluster/cluster.md)
+  "Node reachability + the route table"), **not** an inbound endpoint on every node:
+  - Nodes are **wan-accessible** (a routable public/LAN address — a rendezvous others dial **out** to),
+    **ephemeral** (burst/autoscaled, expected to come and go), or otherwise **dial-out-only** (behind
+    NAT or a private VNet — a home node, an AKS pod on a private IP; it dials **outbound** only and
+    accepts **no inbound**).
+  - **The mesh self-forms:** add a wan-accessible node's address to the nodes table (`spec.externalPeers`)
+    and the dial-out-only nodes reach out to it; Zetta relays transitively + computes the route table
+    (oramasearch/zetta#739). A private node is **always the initiator**.
+  - **Do NOT** provision an inbound `LoadBalancer` (or, worse, one source-locked to a specific peer's IP)
+    to "reach" a dial-out-only node — that inverts the model. `spec.exposePeerLoadBalancer` is only for a
+    node the platform intends to be **genuinely wan-accessible** (and even then, cloud LBs are one option;
+    a node whose host already has a public IP needs none).
+  - Multi-node currently uses `clusterPlaintext` on a trusted network until the mTLS join token
+    ([zetta#670](https://github.com/oramasearch/zetta/issues/670)) lands — so a wan-accessible node with
+    an open peer port must wait for mTLS before its port faces the public internet.
 
 ## Evolving the schema
 
