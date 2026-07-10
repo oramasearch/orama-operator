@@ -69,6 +69,15 @@ type OramaZettaClusterSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	MCPTokenAuth bool `json:"mcpTokenAuth,omitempty"`
+
+	// ProvisionOperatorSchema makes this cluster the operator's own datastore (One Orama symbiosis v0):
+	// once the node is up, the operator applies its control-plane + data-plane schema to it — the
+	// `orama_control` database (the operator's registry: components, reconcile_events) and the
+	// `orama_data` database (the application data landing zone: documents) — via Zetta's `/v1/sql`.
+	// Idempotent (tolerates "already exists"; Zetta has no IF NOT EXISTS). Default true.
+	// +kubebuilder:default=true
+	// +optional
+	ProvisionOperatorSchema *bool `json:"provisionOperatorSchema,omitempty"`
 }
 
 // OramaZettaStorage configures each node's data volume.

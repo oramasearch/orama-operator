@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -51,6 +52,7 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
@@ -133,7 +135,17 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// 5. Status — readiness roll-up (write only on change; anti-flap).
+	// 5. Operator control/data-plane schema (One Orama symbiosis v0) — this cluster as the operator's
+	//    datastore. Provisions the orama_control + orama_data databases + tables via /v1/sql (default on).
+	if z.Spec.ProvisionOperatorSchema == nil || *z.Spec.ProvisionOperatorSchema {
+		if err := r.reconcileZettaControlPlane(ctx, &z, clientName); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else if err := r.teardownZettaControlPlane(ctx, &z); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 6. Status — readiness roll-up (write only on change; anti-flap).
 	return ctrl.Result{}, r.reconcileZettaStatus(ctx, &z, stsName)
 }
 
@@ -368,23 +380,10 @@ echo "zetta node $HOSTNAME (ordinal $ORD): zetta $A${ZETTA_MCP_TOKEN:+ --mcp-tok
 if [ -n "${ZETTA_MCP_TOKEN:-}" ]; then A="$A --mcp-token $ZETTA_MCP_TOKEN"; fi
 exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed)
 
-	// The MCP token env + readiness probe depend on spec.mcpTokenAuth (default off = unauthenticated,
-	// functional). Default: an HTTP probe on GET /v1/server_info (works for the unauthenticated-local
-	// session). When token auth is on, every HTTP route is bearer-gated and a probe can't carry the
-	// token without leaking it, so readiness falls back to a TCP check on the API port.
 	zettaEnv := []corev1.EnvVar{{Name: "ZETTA_CLUSTER_PLAINTEXT", Value: plaintext}}
-	readiness := &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-			Path: "/v1/server_info", Port: intstr.FromInt32(zettaAPIPort)}},
-		InitialDelaySeconds: 5, PeriodSeconds: 10, TimeoutSeconds: 3, FailureThreshold: 6,
-	}
 	if z.Spec.MCPTokenAuth {
 		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_MCP_TOKEN", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-mcp"}, Key: "token"}}})
-		readiness = &corev1.Probe{
-			ProbeHandler:        corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(zettaAPIPort)}},
-			InitialDelaySeconds: 5, PeriodSeconds: 10, TimeoutSeconds: 3, FailureThreshold: 6,
-		}
 	}
 
 	sts.Labels = lbls
@@ -417,10 +416,11 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed)
 				},
 				VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: zettaDataDir}},
 				Resources:    resources,
-				// Readiness: GET /v1/server_info when unauthenticated, else a TCP check (see zettaEnv/
-				// readiness above). Once the image carrying the public GET /mcp.md route ships, that
-				// becomes the token-safe HTTP-level check for the authenticated case.
-				ReadinessProbe: readiness,
+				// Readiness probe intentionally DISABLED (operator#68): the node's HTTP server is flaky
+				// (drops ~2/3 of back-to-back requests, zetta#731), so an HTTP/TCP readiness probe keeps
+				// flapping the pod out of the Service — starving the schema Job + clients. Without a
+				// readiness gate the pod stays a Service endpoint. Restore a real probe (GET /mcp.md)
+				// once zetta#731 lands. Liveness (peer port) + startup still guard genuine hangs.
 				// Liveness: the peer listener is up.
 				LivenessProbe: &corev1.Probe{
 					ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{
@@ -487,6 +487,7 @@ func (r *OramaZettaClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
+		Owns(&batchv1.Job{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Complete(r)

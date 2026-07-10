@@ -108,6 +108,15 @@ spec:
                   operator still won't expose a working session — only enable it once you also provision a
                   matching access key.
                 type: boolean
+              provisionOperatorSchema:
+                default: true
+                description: |-
+                  ProvisionOperatorSchema makes this cluster the operator's own datastore (One Orama symbiosis v0):
+                  once the node is up, the operator applies its control-plane + data-plane schema to it — the
+                  `orama_control` database (the operator's registry: components, reconcile_events) and the
+                  `orama_data` database (the application data landing zone: documents) — via Zetta's `/v1/sql`.
+                  Idempotent (tolerates "already exists"; Zetta has no IF NOT EXISTS). Default true.
+                type: boolean
               pullSecretName:
                 description: PullSecretName lets the pods pull a private zetta image.
                 type: string
