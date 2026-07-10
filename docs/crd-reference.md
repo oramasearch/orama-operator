@@ -67,8 +67,11 @@ first step of the [One Orama](https://github.com/oramasearch/orama-bridge/tree/m
 convergence ([orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)). It creates a
 **headless Service** (peer DNS on 7777), a **client Service** (the HTTP API on 4800 — MCP + REST +
 serving), and the **StatefulSet** (each node a per-node PVC at `/data`; `node-0` bootstraps, peers join
-it). This stage only **runs** Zetta headless — no operator↔Zetta symbiosis and **no** changes to
-Zetta's MCP service. Sample: [`../config/samples/oramazettacluster.yaml`](../config/samples/oramazettacluster.yaml).
+it). With `spec.host` set it also fronts the API/UI with an **nginx Ingress** and — when
+`spec.dnsSecretRef` is given — an **owned `CloudflareDNSRecord`** (a proxied A/CNAME record → the ingress
+LoadBalancer), reusing the same Cloudflare child-controller path as the dashboard DNS. This stage only
+**runs** Zetta headless — no operator↔Zetta symbiosis and **no** changes to Zetta's MCP service. Sample:
+[`../config/samples/oramazettacluster.yaml`](../config/samples/oramazettacluster.yaml).
 
 | Field | Purpose |
 |---|---|
@@ -78,4 +81,10 @@ Zetta's MCP service. Sample: [`../config/samples/oramazettacluster.yaml`](../con
 | `spec.storage.size` / `.storageClassName` | Per-node PVC at `--data-dir` (`/data`) — the CRDT doc, `node_id`, certs, JSONL/large-object data. |
 | `spec.resources` | Per-node mem/cpu caps (right-sizing). |
 | `spec.clusterPlaintext` | Disable inter-node mTLS (single node mints its own token; set `true` for a multi-node cluster until mTLS token-sharing lands). |
+| `spec.host` | Hostname to expose the HTTP API/UI (:4800) at (e.g. `zetta.oramadev.net`) via an nginx Ingress. Empty = no external exposure (the Ingress/DNS are torn down if the field is later cleared). |
+| `spec.dnsSecretRef.name` | With `spec.host`, create a **proxied Cloudflare DNS record** (host → ingress LB) using the named Secret (keys `token`/`zoneID`/`accountID`) — normally the same `cloudflare-api-token` Secret the `OramaCloudV1` uses. |
 | `status.phase` / `.readyNodes` / `.totalNodes` | Readiness roll-up. `kubectl get ozc`. |
+
+**Live (`oramadev.net` sandbox):** `zetta.oramadev.net` → nginx Ingress → the `zetta-0-zetta` client
+Service :4800; `GET https://zetta.oramadev.net/v1/server_info` returns the node's server info through
+Cloudflare (proxied), the same reachability path as `app.oramadev.net` → the dashboard.

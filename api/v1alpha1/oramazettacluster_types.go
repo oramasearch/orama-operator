@@ -43,6 +43,17 @@ type OramaZettaClusterSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	ClusterPlaintext bool `json:"clusterPlaintext,omitempty"`
+
+	// Host, if set, exposes the cluster's HTTP API (:4800 — MCP + REST + serving, the Zetta UI) via an
+	// Ingress at this hostname (e.g. zetta.oramadev.net). Requires an ingress controller.
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// DNSSecretRef, if set together with Host, creates a proxied Cloudflare DNS record (Host → the
+	// ingress LoadBalancer) using the Cloudflare credentials (token/zoneID/accountID) in the named
+	// Secret — normally the same `cloudflare-api-token` Secret the OramaCloudV1 uses.
+	// +optional
+	DNSSecretRef *corev1.LocalObjectReference `json:"dnsSecretRef,omitempty"`
 }
 
 // OramaZettaStorage configures each node's data volume.

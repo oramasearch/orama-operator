@@ -66,6 +66,28 @@ spec:
                   ClusterPlaintext disables inter-node mTLS (the peers join without a token). Convenient inside a
                   single trusted namespace (+ a NetworkPolicy); leave false to use the generated join-token Secret.
                 type: boolean
+              dnsSecretRef:
+                description: |-
+                  DNSSecretRef, if set together with Host, creates a proxied Cloudflare DNS record (Host → the
+                  ingress LoadBalancer) using the Cloudflare credentials (token/zoneID/accountID) in the named
+                  Secret — normally the same `cloudflare-api-token` Secret the OramaCloudV1 uses.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              host:
+                description: |-
+                  Host, if set, exposes the cluster's HTTP API (:4800 — MCP + REST + serving, the Zetta UI) via an
+                  Ingress at this hostname (e.g. zetta.oramadev.net). Requires an ingress controller.
+                type: string
               image:
                 default: oramasearch/zetta:headless-v1-sandbox
                 description: Image is the Zetta-headless container image (built like

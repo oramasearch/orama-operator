@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -42,6 +43,8 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
 
 func zettaLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 	return map[string]string{
@@ -102,8 +105,83 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// 4. Status — readiness roll-up (write only on change; anti-flap).
+	// 4. Optional external exposure — Ingress (+ proxied Cloudflare DNS) for the HTTP API/UI on 4800
+	//    (e.g. zetta.oramadev.net). No-op unless spec.host is set.
+	if err := r.reconcileZettaIngress(ctx, &z, clientName, lbls); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 5. Status — readiness roll-up (write only on change; anti-flap).
 	return ctrl.Result{}, r.reconcileZettaStatus(ctx, &z, stsName)
+}
+
+// reconcileZettaIngress exposes the cluster's HTTP API/UI (:4800) at spec.host via an nginx Ingress,
+// and — when spec.dnsSecretRef is also set — an OWNED CloudflareDNSRecord (proxied A/CNAME → the
+// ingress LoadBalancer), mirroring the OramaCloudV1 dashboard-DNS pattern (the child controller owns
+// the CF API call + finalizer, so the operator never mutates Cloudflare from the main loop).
+// SAFE no-op unless spec.host is set; the DNS record only appears once the ingress has an address.
+func (r *OramaZettaClusterReconciler) reconcileZettaIngress(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, clientSvc string, lbls map[string]string) error {
+	ingName := z.Name + "-zetta"
+	if z.Spec.Host == "" {
+		// No host → tear down any Ingress/DNS we previously created for this cluster.
+		_ = deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: z.Namespace}})
+		_ = deleteIfExists(ctx, r.Client, &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: ingName + "-dns", Namespace: z.Namespace}})
+		return nil
+	}
+
+	pathType := networkingv1.PathTypePrefix
+	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: z.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
+		ing.Labels = lbls
+		ing.Spec.IngressClassName = strPtr("nginx")
+		ing.Spec.Rules = []networkingv1.IngressRule{{
+			Host: z.Spec.Host,
+			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
+				Paths: []networkingv1.HTTPIngressPath{{
+					Path: "/", PathType: &pathType,
+					Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
+						Name: clientSvc,
+						Port: networkingv1.ServiceBackendPort{Number: zettaAPIPort},
+					}},
+				}},
+			}},
+		}}
+		return controllerutil.SetControllerReference(z, ing, r.Scheme)
+	}); err != nil {
+		return err
+	}
+
+	// Proxied Cloudflare DNS (opt-in via dnsSecretRef) → resolves once the ingress LB has an address.
+	if z.Spec.DNSSecretRef != nil && z.Spec.DNSSecretRef.Name != "" {
+		if target := r.zettaIngressTarget(ctx, z, ingName); target != "" {
+			rec := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: ingName + "-dns", Namespace: z.Namespace}}
+			if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rec, func() error {
+				rec.Spec.SecretRef, rec.Spec.Name, rec.Spec.Content, rec.Spec.Proxied = z.Spec.DNSSecretRef.Name, z.Spec.Host, target, true
+				return controllerutil.SetControllerReference(z, rec, r.Scheme)
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// zettaIngressTarget returns the external address (hostname preferred, else IP) of the cluster's
+// Ingress once the ingress controller has assigned one — the Content for the Cloudflare DNS record.
+func (r *OramaZettaClusterReconciler) zettaIngressTarget(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, ingName string) string {
+	ing := &networkingv1.Ingress{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: ingName}, ing); err != nil {
+		return ""
+	}
+	for _, lb := range ing.Status.LoadBalancer.Ingress {
+		if lb.Hostname != "" {
+			return lb.Hostname
+		}
+		if lb.IP != "" {
+			return lb.IP
+		}
+	}
+	return ""
 }
 
 func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet, headlessName, stsName string, lbls map[string]string) error {
@@ -247,5 +325,7 @@ func (r *OramaZettaClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&oramav1alpha1.OramaZettaCluster{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
+		Owns(&networkingv1.Ingress{}).
+		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Complete(r)
 }

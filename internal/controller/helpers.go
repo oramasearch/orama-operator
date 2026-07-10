@@ -6,7 +6,11 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"context"
+
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
@@ -89,6 +93,15 @@ func oramacoreImage(oc *oramav1alpha1.OramaCloudV1) string {
 }
 
 func strPtr(s string) *string { return &s }
+
+// deleteIfExists deletes an object, treating an already-absent object as success — for tearing down
+// an optional child (e.g. an Ingress/DNS record) when its enabling spec field is cleared.
+func deleteIfExists(ctx context.Context, c client.Client, obj client.Object) error {
+	if err := c.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
 
 // ingressClassName is the IngressClass the operator binds its Ingresses to — the
 // helmfile-installed ingress-nginx (which fronts the cluster LoadBalancer). TODO: make
