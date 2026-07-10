@@ -23,6 +23,7 @@ reconciler lands.
 | **idp** (keycloak) | `internal/controller/idp.go` | Keycloak `Deployment` + Service (when `idp.provider=keycloak`) | ✅ **done** (validated on AKS) |
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
 | **zetta-capacity** | `internal/controller/zetta_capacity.go` | Karpenter `NodePool` (unstructured, cluster-scoped) + a `PodDisruptionBudget`; pins the Zetta pods onto the pool (taint/toleration + nodeSelector + `do-not-disrupt`) | 🟡 **implemented** (opt-in, [#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69) first slice; not yet live-tested — needs an EKS/AKS-NAP cluster) |
+| **zetta-capacity-install** | `internal/controller/zetta_capacity_install.go` | Operator-owned **Karpenter install** (cloud-gated): server-side-applies the pinned upstream controller (Deployment + ServiceAccount + RBAC) + Karpenter CRDs, as `unstructured` | 🟡 **implemented** (opt-in `install: true`, [#75](https://github.com/oramasearch/orama-cloud-v1-operator/issues/75); EKS self-install, no-op on AKS-NAP/bare-metal; not yet live-tested) |
 
 ## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 
@@ -291,6 +292,49 @@ The **first slice** of Zetta-driven elastic capacity ([operator#69](https://gith
 > `karpenter.k8s.aws/ec2nodeclasses` + `karpenter.azure.com/aksnodeclasses` +
 > core `nodes` (`get;list;watch`), and `policy/poddisruptionbudgets` — mirrored into
 > `chart/templates/rbac.yaml`. A grant for a non-existent apiGroup is harmless.
+
+## Operator-owned Karpenter install (`zetta_capacity_install.go`) — 🟡 implemented, opt-in, not live-tested
+
+The **second slice** of [operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69)
+([operator#75](https://github.com/oramasearch/orama-cloud-v1-operator/issues/75)), extending the NodePool
+work above: the NodePool reconcile *assumes* Karpenter is installed; this makes the operator **own the
+install** too. Opt-in via `OramaZettaCluster.spec.capacity.karpenter.install` (default off). Reconciled as
+**step 0** of the `OramaZettaCluster` controller, before the NodePool, so the CRDs exist first.
+
+- **Vendored upstream manifests, server-side-applied** — the operator embeds (`go:embed`) the pinned
+  **Karpenter v1.13.0** manifests under `internal/controller/assets/karpenter/v1.13.0/` — the CRD bundle
+  (`NodePool`/`NodeClaim`/`EC2NodeClass`/`NodeOverlay`) and the controller bundle (ServiceAccount + RBAC +
+  Deployment + Service + PDB) — and applies each document as an `unstructured` object via **server-side
+  apply** (`client.Apply` + force-ownership). **No Karpenter Go types are vendored** (same decoupling as
+  the NodePool reconcile). Re-vendor with [`hack/fetch-karpenter-manifests.sh`](../hack/fetch-karpenter-manifests.sh)
+  (a reproducible `helm template` of the upstream OCI charts); two placeholders
+  (`__CLUSTER_NAME__` / `__CONTROLLER_ROLE_ARN__`) are substituted per-CR at apply time.
+- **Cloud-gated** — the cloud is detected from a node's `providerID`:
+  - **bare-metal / k0s** (no cloud providerID) ⇒ no-op, `KarpenterInstalled=False, Reason=BareMetalNoCloud`.
+  - **AKS** ⇒ no-op, `Reason=ManagedByAKSNAP` — Node Auto Provisioning already deploys and manages
+    Karpenter; use `enabled` (not `install`) there.
+  - **EKS** ⇒ the self-install path proceeds.
+- **Cloud IAM prerequisite, surfaced not crashed** — Karpenter's controller needs a cloud identity to
+  create VMs, which the in-cluster operator **cannot mint** (a cloud-account prereq, like the image pull
+  secret). On EKS the reconciler checks `controllerRoleARN` (the IRSA role) + `installClusterName`
+  **before** deploying the controller; if the identity is missing it reports
+  `KarpenterInstalled=False, Reason=CloudIdentityMissing` and does **not** deploy (no `CrashLoopBackOff`).
+  Full detail: [`docs/karpenter-cloud-iam-prerequisite.md`](karpenter-cloud-iam-prerequisite.md).
+- **Cluster-singleton, ref-counted cleanup** — the controller install is shared by every CR that opts in.
+  A namespaced CR can't own the cluster-scoped CRDs/ClusterRoles, so cleanup is a **finalizer**
+  (`orama.cloud/karpenter-install`) that removes the operator-managed controller resources only when **no
+  other** `OramaZettaCluster` still requests the install. **The CRDs are applied but never deleted** on
+  teardown — deleting a Karpenter CRD cascades to every `NodePool`/`NodeClaim` in the cluster.
+- **Status** — a `KarpenterInstalled` condition (`BareMetalNoCloud` / `ManagedByAKSNAP` / `UnsupportedCloud`
+  / `CloudIdentityMissing` / `InstallClusterNameRequired` → `InstallProgressing` → `Installed`), written
+  only on change (anti-flap).
+
+> **RBAC (install):** `apiextensions.k8s.io/customresourcedefinitions`
+> (`get;list;watch;create;update;patch` — **no `delete`**, CRDs aren't GC'd) and
+> `rbac.authorization.k8s.io` `clusterroles`/`clusterrolebindings`/`roles`/`rolebindings`
+> (`…;delete;bind;escalate` — creating RBAC that grants Karpenter's broad permissions needs `bind` +
+> `escalate`, since the operator doesn't itself carry every node/pod grant). ServiceAccounts, Deployments,
+> Services and PDBs the install creates are already granted. Mirrored into `chart/templates/rbac.yaml`.
 
 > **Follow-ups (later slices of #69):** the Zetta→operator signal channel
 > (`orama_control.scale_requests`); drain-safe, quorum-aware scale-down; multi-cluster

@@ -176,6 +176,46 @@ type KarpenterCapacity struct {
 	// nodes.
 	// +optional
 	Limits KarpenterLimits `json:"limits,omitempty"`
+
+	// Install makes the operator OWN the Karpenter controller install itself (operator#75) — its
+	// Deployment + ServiceAccount + RBAC + the Karpenter CRDs (NodePool / NodeClaim / EC2NodeClass),
+	// pinned to a vendored upstream version and reconciled as owned resources — rather than assuming
+	// Karpenter is already present. Off by default (the platform may pre-install Karpenter and just use
+	// `enabled`). Cloud-gated: a graceful no-op on bare-metal / k0s (no cloud provider → no VM API for
+	// Karpenter to drive) and on AKS, where Node Auto Provisioning already deploys and manages Karpenter
+	// for you; the self-install path targets EKS (the self-managed AWS provider). Status is surfaced with
+	// the `KarpenterInstalled` condition.
+	//
+	// CLOUD IAM PREREQUISITE — the operator CANNOT satisfy this; it is a cloud-account prerequisite, the
+	// same class as the image pull secret. Karpenter's controller needs a cloud identity permitted to
+	// create/terminate VMs, and the launched nodes need their own identity:
+	//   - EKS: an IAM role assumed by the controller ServiceAccount via IRSA (set ControllerRoleARN) or
+	//     EKS Pod Identity, plus a node instance profile referenced by the platform-owned EC2NodeClass.
+	//   - AKS: an Azure managed identity with a role assignment (handled by NAP — the operator does not
+	//     self-install on AKS).
+	// The in-cluster operator cannot mint these. When the controller identity is absent the reconciler
+	// reports `KarpenterInstalled=False, Reason=CloudIdentityMissing` and does NOT deploy the controller
+	// (which would otherwise crash-loop). See docs/karpenter-cloud-iam-prerequisite.md.
+	// +kubebuilder:default=false
+	// +optional
+	Install bool `json:"install,omitempty"`
+
+	// InstallClusterName is the cloud cluster name Karpenter's controller uses to discover the cluster's
+	// resources (AWS `settings.clusterName` — the tagged subnets / security-groups / interruption queue).
+	// REQUIRED when `install` is true on EKS; empty ⇒ `KarpenterInstalled=False,
+	// Reason=InstallClusterNameRequired`. Ignored when `install` is false.
+	// +optional
+	InstallClusterName string `json:"installClusterName,omitempty"`
+
+	// ControllerRoleARN is the AWS IAM role ARN the Karpenter CONTROLLER assumes to call EC2 — annotated
+	// onto its ServiceAccount for IRSA (`eks.amazonaws.com/role-arn`). This is the cloud IAM identity the
+	// operator CANNOT mint (a cloud-account prerequisite). REQUIRED when `install` is true on EKS unless
+	// the controller identity is wired out-of-band (e.g. EKS Pod Identity); empty ⇒
+	// `KarpenterInstalled=False, Reason=CloudIdentityMissing` and the controller is NOT deployed (no
+	// crash-loop). This is the CONTROLLER identity only; the launched NODES get their own instance
+	// profile via the platform-owned NodeClass (NodeClassRef). Ignored when `install` is false.
+	// +optional
+	ControllerRoleARN string `json:"controllerRoleARN,omitempty"`
 }
 
 // KarpenterNodeClassRef references the provider NodeClass the NodePool launches nodes from (the

@@ -86,6 +86,18 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
+  # Operator-owned Karpenter install (operator#75): server-side-apply the Karpenter CRDs + the
+  # controller's ServiceAccount/RBAC/Deployment/Service/PDB. Creating RBAC that grants Karpenter's
+  # (broad) permissions requires `bind` + `escalate` on roles/bindings (RBAC privilege-escalation
+  # prevention) since the operator doesn't itself carry every node/pod grant. CRDs are applied but
+  # never deleted (no `delete` — deleting a Karpenter CRD cascades to all NodePools/NodeClaims).
+  # (ServiceAccounts/Deployments/Services/PDBs the install also creates are already granted above.)
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "bind", "escalate"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

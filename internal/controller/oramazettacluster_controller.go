@@ -82,6 +82,13 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=karpenter.k8s.aws,resources=ec2nodeclasses,verbs=get;list;watch
 //+kubebuilder:rbac:groups=karpenter.azure.com,resources=aksnodeclasses,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// Operator-owned Karpenter install (operator#75): server-side-apply the Karpenter CRDs + the
+// controller's ServiceAccount/RBAC/Deployment/Service/PDB. Creating RBAC that grants Karpenter's (broad)
+// permissions requires the operator hold `bind` + `escalate` on roles/bindings (RBAC
+// privilege-escalation prevention) since the operator doesn't itself carry every node/pod grant. CRDs
+// are applied but never deleted (no `delete` verb — deleting a CRD cascades to all NodePools/NodeClaims).
+//+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings;roles;rolebindings,verbs=get;list;watch;create;update;patch;delete;bind;escalate
 
 func zettaLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 	return map[string]string{
@@ -102,10 +109,15 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Deletion: release the elastic-capacity finalizer (drop the CLUSTER-SCOPED Karpenter NodePool,
-	// which can't be owner-GC'd by a namespaced CR) before k8s GC removes the CR + its owned children.
+	// Deletion: release the cluster-scoped capacity finalizers before k8s GC removes the CR + its owned
+	// children — neither the Karpenter NodePool nor the operator-owned Karpenter install (CRDs,
+	// ClusterRoles) can be owner-GC'd by a namespaced CR. Tear the NodePool down FIRST so Karpenter (if
+	// this CR also owns the install) can still process the NodeClaim termination before its controller goes.
 	if !z.DeletionTimestamp.IsZero() {
 		if err := r.finalizeZettaCapacity(ctx, &z); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.finalizeKarpenterInstall(ctx, &z); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -114,9 +126,19 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	stsName, headlessName, clientName := zettaNames(&z)
 	lbls := zettaLabels(&z)
 
-	// 0. Elastic capacity (operator#69) — when enabled, own a Karpenter NodePool the Zetta pods pin
-	//    onto, so raising spec.replicas past node capacity provisions new nodes. Reconciled first so the
-	//    pool exists before the (possibly Pending) pods below. Graceful no-op if Karpenter is absent.
+	// 0. Karpenter install (operator#75) — when spec.capacity.karpenter.install is set, OWN the Karpenter
+	//    controller + CRDs (pinned upstream manifests, server-side-applied). Reconciled BEFORE the
+	//    NodePool so the CRDs exist first. Cloud-gated: a clean no-op on bare-metal/k0s and on AKS (NAP
+	//    manages Karpenter); on EKS it surfaces KarpenterInstalled and blocks (not crash-loops) if the
+	//    cloud IAM identity is missing.
+	installCond, err := r.reconcileKarpenterInstall(ctx, &z)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 0.5 Elastic capacity (operator#69) — when enabled, own a Karpenter NodePool the Zetta pods pin
+	//    onto, so raising spec.replicas past node capacity provisions new nodes. Reconciled before the
+	//    (possibly Pending) pods below. Graceful no-op if Karpenter is absent (RESTMapper check).
 	capCond, provisionedNodes, err := r.reconcileZettaCapacity(ctx, &z)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -213,8 +235,8 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// 6. Status — readiness roll-up + the capacity condition/count (write only on change; anti-flap).
-	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, provisionedNodes); err != nil {
+	// 6. Status — readiness roll-up + the capacity + install conditions/count (write only on change; anti-flap).
+	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, provisionedNodes); err != nil {
 		return ctrl.Result{}, err
 	}
 	// When acting as the datastore, requeue periodically so the coarse state sync tracks the rest of
@@ -601,11 +623,11 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 }
 
 // reconcileZettaStatus rolls the StatefulSet's readiness up into the CR status, and folds in the
-// elastic-capacity condition + provisioned-node count. Writes only on a real change (anti-flap —
-// operator principle #7): the phase/counts/message are deep-compared and the CapacityReady condition is
-// merged via meta.SetStatusCondition (which reports whether anything actually moved). A nil capCond
-// (capacity off) drops the condition so a non-capacity cluster keeps a clean status.
-func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond *metav1.Condition, provisionedNodes int32) error {
+// elastic-capacity + Karpenter-install conditions and the provisioned-node count. Writes only on a real
+// change (anti-flap — operator principle #7): the phase/counts/message are deep-compared and each
+// condition is merged via meta.SetStatusCondition (which reports whether anything actually moved). A nil
+// condition (capacity/install off) drops that condition so a non-capacity cluster keeps a clean status.
+func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond, installCond *metav1.Condition, provisionedNodes int32) error {
 	desired := z.Spec.Replicas
 	if desired < 1 {
 		desired = 1
@@ -634,6 +656,15 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 			changed = true
 		}
 	} else if meta.RemoveStatusCondition(&z.Status.Conditions, capacityConditionType) {
+		changed = true
+	}
+
+	if installCond != nil {
+		installCond.ObservedGeneration = z.Generation
+		if meta.SetStatusCondition(&z.Status.Conditions, *installCond) {
+			changed = true
+		}
+	} else if meta.RemoveStatusCondition(&z.Status.Conditions, installConditionType) {
 		changed = true
 	}
 
