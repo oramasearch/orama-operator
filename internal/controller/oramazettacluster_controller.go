@@ -428,11 +428,12 @@ API_PORT=%[3]d
 SEED="%[4]s"
 if [ "${ZETTA_HOST_NETWORK:-0}" = "1" ] && [ "$ORD" != "0" ]; then
   # hostNetwork packs peers onto the shared host(s): every ordinal binds host ports, so give each its
-  # own (node-n → 7777+n / 4800+n) and seed off node-0 on the host loopback (all hostNetwork pods share
-  # the host network namespace's loopback). Correct for a single big host / single-node k8s cluster.
+  # own (node-n → 7777+n / 4800+n) and seed off node-0 at the HOST's real IP (HOST_IP, not 127.0.0.1).
+  # The seed address must equal what node-0 advertises (its non-loopback IP) or Zetta's address-keyed
+  # reconnect dedup never matches and leaks duplicate links (oramasearch/zetta#739).
   PEER_PORT=$((%[2]d + ORD))
   API_PORT=$((%[3]d + ORD))
-  SEED="127.0.0.1:%[2]d"
+  SEED="${HOST_IP}:%[2]d"
 fi
 A="--headless --data-dir %[1]s --listen 0.0.0.0:$PEER_PORT --mcp-listen 0.0.0.0:$API_PORT"
 if [ "$ORD" != "0" ]; then A="$A --peer $SEED"; fi
@@ -448,8 +449,13 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 	}
 	if z.Spec.HostNetwork {
-		// Tells the entrypoint to pack ordinals onto per-ordinal ports + a loopback seed (see entry).
-		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_HOST_NETWORK", Value: "1"})
+		// Pack ordinals onto per-ordinal ports; seed peers off HOST_IP (the node's real address, via the
+		// downward API) — NOT 127.0.0.1 — so the dialed address equals node-0's advertised address and
+		// Zetta's address-keyed reconnect dedup doesn't leak duplicate links (oramasearch/zetta#739).
+		zettaEnv = append(zettaEnv,
+			corev1.EnvVar{Name: "ZETTA_HOST_NETWORK", Value: "1"},
+			corev1.EnvVar{Name: "HOST_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"}}},
+		)
 	}
 	if z.Spec.MCPTokenAuth {
 		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_MCP_TOKEN", ValueFrom: &corev1.EnvVarSource{
