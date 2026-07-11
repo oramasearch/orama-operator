@@ -72,7 +72,7 @@ func (r *ZettaClusterE2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 		t.Spec.TargetRef, t.Spec.TargetRef, t.Namespace, zettaAPIPort)
 	var peers []string
 	for i := int32(1); i < replicas; i++ {
-		peers = append(peers, fmt.Sprintf("%s-zetta-%d.%s-zetta-headless.%s.svc.cluster.local:%d",
+		peers = append(peers, fmt.Sprintf("http://%s-zetta-%d.%s-zetta-headless.%s.svc.cluster.local:%d",
 			t.Spec.TargetRef, i, t.Spec.TargetRef, t.Namespace, zettaAPIPort))
 	}
 	peerURLs := strings.Join(peers, " ") // empty when replicas == 1
