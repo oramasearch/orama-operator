@@ -11,6 +11,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -59,6 +60,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A typed clientset for the one thing the controller-runtime client can't do: read a finished Job's
+	// pod logs (corev1 GetLogs) so the Zetta e2e reconciler can parse pass/fail/skip counts into status.
+	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to build kubernetes clientset")
+		os.Exit(1)
+	}
+
 	if err = (&controller.OramaCloudV1Reconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -82,8 +91,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.ZettaClusterE2ETestReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Clientset: clientset,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ZettaClusterE2ETest")
 		os.Exit(1)

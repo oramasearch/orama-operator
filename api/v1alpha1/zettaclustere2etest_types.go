@@ -41,6 +41,16 @@ type ZettaClusterE2ETestStatus struct {
 	Message string `json:"message,omitempty"`
 	// +optional
 	JobName string `json:"jobName,omitempty"`
+	// Pass is the number of passed assertions parsed (best-effort) from the Job's pod logs
+	// (`Zetta e2e: pass=N fail=N skip=N`). 0 until the Job is terminal and the summary is readable.
+	// +optional
+	Pass int32 `json:"pass,omitempty"`
+	// Fail is the number of failed assertions parsed (best-effort) from the Job's pod logs.
+	// +optional
+	Fail int32 `json:"fail,omitempty"`
+	// Skip is the number of skipped assertions parsed (best-effort) from the Job's pod logs.
+	// +optional
+	Skip int32 `json:"skip,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -49,6 +59,9 @@ type ZettaClusterE2ETestStatus struct {
 //+kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.targetRef`
 //+kubebuilder:printcolumn:name="Levels",type=string,JSONPath=`.spec.levels`
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="Pass",type=integer,JSONPath=`.status.pass`
+//+kubebuilder:printcolumn:name="Fail",type=integer,JSONPath=`.status.fail`
+//+kubebuilder:printcolumn:name="Skip",type=integer,JSONPath=`.status.skip`
 //+kubebuilder:printcolumn:name="Job",type=string,JSONPath=`.status.jobName`
 
 // ZettaClusterE2ETest runs the live-cluster zetta e2e suite as a Kubernetes Job against a deployed
