@@ -81,10 +81,11 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 		},
 	}
 	return r.reconcileApp(ctx, oc, appDef{
-		component: "analytics-processor",
-		image:     img,
-		port:      8080,
-		env:       []corev1.EnvVar{{Name: "CONFIG_PATH", Value: "/etc/analytics-processor/config.yaml"}},
+		component:      "analytics-processor",
+		image:          img,
+		port:           8080,
+		env:            []corev1.EnvVar{{Name: "CONFIG_PATH", Value: "/etc/analytics-processor/config.yaml"}},
+		resources:      resourcesOr(oc.Spec.Components.AnalyticsProcessor.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 		initContainers: []corev1.Container{render},
 		volumes: []corev1.Volume{
 			{Name: "config-tmpl", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -109,6 +110,7 @@ func (r *OramaCloudV1Reconciler) reconcileOramasearchApp(ctx context.Context, oc
 		image:       componentImage(oc, "oramasearch-app", "oramasearch-app"),
 		port:        3000,
 		ingressHost: a.Host,
+		resources:   resourcesOr(a.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }
 
@@ -132,6 +134,7 @@ func (r *OramaCloudV1Reconciler) reconcileSearchWorkers(ctx context.Context, oc 
 			component: w,
 			image:     componentImage(oc, w, w),
 			port:      8080,
+			resources: resourcesOr(oc.Spec.Components.SearchWorkers.Resources, resourceReqs("64Mi", "25m", "256Mi")),
 		}); err != nil {
 			return err
 		}

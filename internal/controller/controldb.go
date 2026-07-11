@@ -151,11 +151,13 @@ echo "control-DB migrate: done"`
 					Spec: corev1.PodSpec{
 						RestartPolicy: corev1.RestartPolicyNever,
 						Containers: []corev1.Container{{
-							Name:         "migrate",
-							Image:        "postgres:16-alpine", // ships psql
-							Command:      []string{"sh", "-c", script},
-							Env:          []corev1.EnvVar{pgURIEnv(oc, "DATABASE_URL")},
-							VolumeMounts: []corev1.VolumeMount{{Name: "migrations", MountPath: "/migrations", ReadOnly: true}},
+							Name:            "migrate",
+							Image:           "postgres:16-alpine", // ships psql
+							Command:         []string{"sh", "-c", script},
+							Env:             []corev1.EnvVar{pgURIEnv(oc, "DATABASE_URL")},
+							Resources:       *resourceReqs("64Mi", "25m", "256Mi"), // scheduler requests (#18)
+							SecurityContext: hardenedSecurityContext(),             // workload hardening baseline (#18)
+							VolumeMounts:    []corev1.VolumeMount{{Name: "migrations", MountPath: "/migrations", ReadOnly: true}},
 						}},
 						Volumes: []corev1.Volume{{
 							Name: "migrations",

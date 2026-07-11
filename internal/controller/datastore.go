@@ -39,6 +39,10 @@ type dataStoreDef struct {
 	// assuming it owns the whole node.
 	configFiles map[string]string
 	configMount string
+	// gracePeriodSeconds is terminationGracePeriodSeconds. 0 → a store default (60s) — headroom for
+	// the engine's SIGTERM flush (fsync the AOF, checkpoint parts, persist queues) so k8s doesn't
+	// SIGKILL mid-write and corrupt state. Workload hardening (#18).
+	gracePeriodSeconds int64
 }
 
 // reconcileDataStore provisions (or skips) one data store per its DataStoreSpec.
@@ -64,9 +68,23 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 	}
 	name := oc.Name + "-" + def.component
 	lbls := labelsFor(oc, def.component)
-	var readiness *corev1.Probe
+	// Workload hardening (#18): startup gates liveness/readiness so a slow data load isn't killed;
+	// readiness gates Service routing; liveness restarts a hung store. TCP on the store's first port
+	// (health paths differ per store; a wrong HTTP liveness path would restart-loop a healthy pod).
+	var readiness, liveness, startup *corev1.Probe
 	if len(def.ports) > 0 {
-		readiness = tcpReadiness(def.ports[0].ContainerPort)
+		p := def.ports[0].ContainerPort
+		readiness, liveness, startup = tcpReadiness(p), tcpLiveness(p), tcpStartup(p)
+	}
+	// Requests on every container; nil → a modest default (heavy stores like ClickHouse pass their
+	// own, or the CR overrides per component).
+	res := def.resources
+	if res == nil {
+		res = resourceReqs("128Mi", "50m", "512Mi")
+	}
+	grace := def.gracePeriodSeconds
+	if grace == 0 {
+		grace = 60
 	}
 
 	volumes := []corev1.Volume{}
@@ -105,24 +123,26 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 		sts.Spec.ServiceName = name
 		sts.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 		c := corev1.Container{
-			Name:           def.component,
-			Image:          storeImage(oc, def.component, def.image),
-			Ports:          def.ports,
-			Env:            def.env,
-			EnvFrom:        envFromFor(oc, def.component),
-			Args:           def.args,
-			ReadinessProbe: readiness,
-			VolumeMounts:   mounts,
-		}
-		if def.resources != nil {
-			c.Resources = *def.resources
+			Name:            def.component,
+			Image:           storeImage(oc, def.component, def.image),
+			Ports:           def.ports,
+			Env:             def.env,
+			EnvFrom:         envFromFor(oc, def.component),
+			Args:            def.args,
+			Resources:       *res,
+			StartupProbe:    startup,
+			ReadinessProbe:  readiness,
+			LivenessProbe:   liveness,
+			SecurityContext: dataStoreSecurityContext(), // root-entrypoint chown needs CHOWN/SETUID (#18)
+			VolumeMounts:    mounts,
 		}
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
-				ImagePullSecrets: imagePullSecrets(oc),
-				Containers:       []corev1.Container{c},
-				Volumes:          volumes,
+				ImagePullSecrets:              imagePullSecrets(oc),
+				Containers:                    []corev1.Container{c},
+				Volumes:                       volumes,
+				TerminationGracePeriodSeconds: int64Ptr(grace),
 			},
 		}
 		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC()}
@@ -135,7 +155,13 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 	for _, p := range def.ports {
 		svcPorts = append(svcPorts, corev1.ServicePort{Name: p.Name, Port: p.ContainerPort, TargetPort: intstr.FromInt32(p.ContainerPort)})
 	}
-	return r.upsertService(ctx, oc, name, def.component, svcPorts)
+	if err := r.upsertService(ctx, oc, name, def.component, svcPorts); err != nil {
+		return err
+	}
+	// Single-node stores are singletons → PDB with maxUnavailable 0: block casual eviction so a node
+	// drain/autoscaler can't silently take the store (and its data-plane) down; node maintenance
+	// handles it consciously (#18).
+	return r.upsertPDB(ctx, oc, name, def.component, 0)
 }
 
 // storeImage: an override wins, else the default upstream image.
@@ -155,6 +181,10 @@ func (r *OramaCloudV1Reconciler) reconcileCache(ctx context.Context, oc *oramav1
 		ports:     []corev1.ContainerPort{{Name: "redis", ContainerPort: 6379}},
 		dataPath:  "/data",
 		args:      []string{"redis-server", "--appendonly", "yes"},
+		// Right-size (#18): a GENEROUS memory limit — the binary-side cap (Redis `maxmemory` +
+		// eviction policy, derived from this number) is #42; until then keep headroom so the cache
+		// isn't OOM-killed. Override via spec.components.cache.resources.
+		resources: resourcesOr(oc.Spec.Components.Cache.Resources, resourceReqs("128Mi", "50m", "1Gi")),
 	})
 }
 
@@ -190,6 +220,10 @@ func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav
 			"enabled_plugins": "[rabbitmq_management,rabbitmq_stream].\n",
 			"rabbitmq.conf":   rabbitmqConf(advertised),
 		},
+		// Right-size (#18): RabbitMQ 3.13 detects the cgroup memory limit and derives its
+		// vm_memory_high_watermark from it, so this limit is binary-aware. Generous default; override
+		// via spec.components.broker.resources.
+		resources: resourcesOr(oc.Spec.Components.Broker.Resources, resourceReqs("256Mi", "50m", "1Gi")),
 	})
 }
 
@@ -200,6 +234,20 @@ func resourceCaps(memLimit, cpuLimit, memReq, cpuReq string) *corev1.ResourceReq
 	return &corev1.ResourceRequirements{
 		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(memLimit), corev1.ResourceCPU: resource.MustParse(cpuLimit)},
 		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(memReq), corev1.ResourceCPU: resource.MustParse(cpuReq)},
+	}
+}
+
+// resourceReqs is the default-sizing helper for the non-engine components (issue #18): CPU+memory
+// REQUESTS on every container (the scheduler needs them — unset requests make a node's capacity
+// invisible) plus a MEMORY limit only. It deliberately sets NO CPU limit — a CPU limit throttles
+// (CFS quota) rather than protecting the node, and the request already gives the scheduler what it
+// needs. Memory limits are sized PER COMPONENT at the call sites (a blanket small one OOM-kills the
+// heavy ones — embeddings/OramaCore/ClickHouse); the engine keeps resourceCaps (cgroup-aware tokio
+// tolerates a CPU limit). Override any of it via the CR's per-component `resources`.
+func resourceReqs(memReq, cpuReq, memLimit string) *corev1.ResourceRequirements {
+	return &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(memReq), corev1.ResourceCPU: resource.MustParse(cpuReq)},
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse(memLimit)},
 	}
 }
 
@@ -261,7 +309,9 @@ func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *ora
 		// Right-size ClickHouse (#42): cap the pod AND derive its own config from that cap so it
 		// stops grabbing the whole node (default 5 GiB mark cache + 90% RAM target). 4Gi is the real
 		// floor — 2Gi OOMed on restart when loading accumulated part metadata (see clickhouseMemoryXML).
-		resources:   resourceCaps("4Gi", "1", "1Gi", "100m"),
+		// The clickhouseMemoryXML absolute cap is derived from this 4Gi — keep them in lockstep if the
+		// CR overrides it (spec.components.analytics.resources).
+		resources:   resourcesOr(oc.Spec.Components.Analytics.Resources, resourceCaps("4Gi", "1", "1Gi", "100m")),
 		configMount: "/etc/clickhouse-server/config.d",
 		configFiles: map[string]string{"orama-memory.xml": clickhouseMemoryXML},
 	})
@@ -275,5 +325,7 @@ func (r *OramaCloudV1Reconciler) reconcileSearch(ctx context.Context, oc *oramav
 		image:     "typesense/typesense:0.25.2",
 		ports:     []corev1.ContainerPort{{Name: "http", ContainerPort: 8108}},
 		dataPath:  "/data",
+		// Right-size (#18): generous default; override via spec.components.search.resources.
+		resources: resourcesOr(oc.Spec.Components.Search.Resources, resourceReqs("256Mi", "50m", "1Gi")),
 	})
 }

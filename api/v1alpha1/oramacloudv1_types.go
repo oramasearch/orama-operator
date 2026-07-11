@@ -80,6 +80,11 @@ type IDPSpec struct {
 	// provider config (e.g. Firebase service account, Clerk keys). Ignored for "none".
 	// +optional
 	ConfigSecretRef *corev1.LocalObjectReference `json:"configSecretRef,omitempty"`
+
+	// Resources overrides the in-cluster IdP (Keycloak) pod resources. When unset the
+	// operator applies a sensible per-component default (workload hardening, #18).
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // ImagesSpec sets default and per-component images.
@@ -177,12 +182,12 @@ type ComponentsSpec struct {
 	Workers   WorkersSpec    `json:"workers,omitempty"`   // the ported CF workers (one bundled image)
 
 	// Additional v1 components (gap fill — techops-docs issues #5–#7):
-	AnalyticsProcessor Toggle         `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
+	AnalyticsProcessor Toggle `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
 	// Deprecated: oramasearch-app (api.askorama.ai, the legacy "old dashboard") just redirects to
 	// the new app, so it is NOT run in-cluster — the reconciler is unwired (operator#35). Field
 	// kept for API compatibility; setting it has no effect.
 	OramasearchApp ToggleWithHost `json:"oramasearchApp,omitempty"`
-	SearchWorkers      Toggle         `json:"searchWorkers,omitempty"`      // index-manager hosted-search serving workers
+	SearchWorkers  Toggle         `json:"searchWorkers,omitempty"` // index-manager hosted-search serving workers
 	// Airbyte (#4) is a heavy multi-service platform → installed via its Helm chart (helmfile
 	// platformDeps), not a CR component; the dashboard/index-builder reference its endpoint.
 }
@@ -238,6 +243,11 @@ type IngestionSpec struct {
 	// Harvest enables the crawler (Deployment + Mongo + Selenium grid).
 	// +kubebuilder:default=true
 	Harvest bool `json:"harvest,omitempty"`
+	// Resources overrides the index-builder pod resources. When unset the operator applies
+	// a sensible per-component default (workload hardening, #18). HARVEST's master/Mongo/
+	// Selenium keep their own defaults.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // WorkersSpec configures the ported Cloudflare Workers, bundled into ONE image and
@@ -251,6 +261,10 @@ type WorkersSpec struct {
 	// Replicas of the bundled workers Deployment.
 	// +kubebuilder:default=2
 	Replicas int32 `json:"replicas,omitempty"`
+	// Resources overrides the workers pod resources. When unset the operator applies a
+	// sensible per-component default (workload hardening, #18).
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
@@ -278,12 +292,22 @@ type DataStoreSpec struct {
 	// CredentialsSecretRef (ExternalSecret-materialized) when Mode=external.
 	// +optional
 	CredentialsSecretRef *corev1.LocalObjectReference `json:"credentialsSecretRef,omitempty"`
+	// Resources overrides the store's pod resources (requests + memory limit). When unset the
+	// operator applies a sensible per-component default — a GENEROUS memory limit sized so the
+	// store isn't OOM-killed in normal operation (workload hardening, #18). Ignored when
+	// Mode=external. Binary-side right-sizing (Redis maxmemory, etc.) is tracked in #42.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // Toggle is a simple on/off component.
 type Toggle struct {
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
+	// Resources overrides the component's pod resources. When unset the operator applies a
+	// sensible per-component default (workload hardening, #18).
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // ToggleWithHost is a toggle plus an ingress host.
@@ -292,6 +316,10 @@ type ToggleWithHost struct {
 	Enabled bool `json:"enabled"`
 	// +optional
 	Host string `json:"host,omitempty"`
+	// Resources overrides the component's pod resources. When unset the operator applies a
+	// sensible per-component default (workload hardening, #18).
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // PeerSpec identifies another region for cross-cluster wiring (no mesh).
