@@ -133,6 +133,13 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "RabbitMQTopology")
 		os.Exit(1)
 	}
+	if err = (&controller.PostgresSchemaReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PostgresSchema")
+		os.Exit(1)
+	}
 
 	utilruntime.Must(mgr.AddHealthzCheck("healthz", healthz.Ping))
 	utilruntime.Must(mgr.AddReadyzCheck("readyz", healthz.Ping))

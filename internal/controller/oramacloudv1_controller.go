@@ -118,5 +118,6 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&oramav1alpha1.CloudflareKVNamespace{}).
 		Owns(&oramav1alpha1.CloudflareR2Bucket{}).
 		Owns(&oramav1alpha1.RabbitMQTopology{}).
+		Owns(&oramav1alpha1.PostgresSchema{}).
 		Complete(r)
 }

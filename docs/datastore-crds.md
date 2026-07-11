@@ -90,13 +90,36 @@ reconciles.
    secrets, render-config substitution) is the fast-follow, kept separate so the replication e2e can be
    validated against the credential switch on a real cluster.
 
-## `PostgresSchema` — the control-DB schema (planned in this epic)
+## `PostgresSchema` — the control-DB schema
 
-The control-plane Postgres schema (the dashboard's Drizzle migrations) is currently applied by an
-idempotent psql **Job** (`reconcileControlDBMigrations`, folded in from
-[#34](https://github.com/oramasearch/orama-cloud-v1-operator/issues/34)). The epic supersedes that bare
-Job with a reconciled `PostgresSchema` CRD that owns/drives the migration and records the applied
-schema version in `.status`. See the [components doc](components.md) for current state.
+**Status: implemented.** `api/v1alpha1/postgresschema_types.go` +
+`internal/controller/postgresschema_controller.go`.
+
+The control-plane Postgres schema (the dashboard's vendored Drizzle migrations) was applied by a bare
+idempotent psql **Job** ([#34](https://github.com/oramasearch/orama-cloud-v1-operator/issues/34)). That
+Job worked but was an imperative one-shot with **no applied-version tracking** — exactly what the epic
+supersedes. It is now a reconciled `PostgresSchema` CRD:
+
+- `reconcileControlDBMigrations` renders the schema into the `<cr>-controldb-migrations` ConfigMap and
+  declares a `<cr>-controldb-schema` `PostgresSchema` referencing it, the CNPG connection Secret
+  (`<cr>-controldb-app`, key `uri`), and a **version** = a content hash of the schema SQL (so it changes
+  exactly when the vendored schema does).
+- The `PostgresSchema` controller **owns** the migration Job (wait-for-DB → guard on the
+  `crawler_configs` table → apply the whole schema in one transaction) and records
+  `.status.appliedVersion` + `.status.phase` (`Pending`/`Applying`/`Applied`/`Failed`) + an `Applied`
+  condition. The applied version is **read back from the Job's annotation**, so a bumped-but-not-re-run
+  desired version never misreports.
+- **No finalizer** — deleting the CR must never drop the schema/data; it only stops managing the
+  migration (the Job is GC'd). **Ordered gating:** a safe no-op (`Applied=False WaitingForDatabase`)
+  until the connection Secret exists.
+- The pre-CRD `<cr>-controldb-migrate` Job is cleaned up on upgrade (the new Job runs under
+  `<cr>-controldb-schema-migrate`).
+
+**Follow-up:** the schema is a single combined SQL applied once (guard-gated), so a `version` bump
+re-applies only after the prior Job is deleted — true incremental/versioned re-application needs
+incremental migration files, tracked separately. **Least-privilege Postgres roles** (CNPG
+`managed.roles`: one login role per service instead of the shared `oramacore` owner, per the #40
+refinement + principle #4) is also a separate slice.
 
 ## Deferred / tracked separately
 

@@ -225,3 +225,29 @@ WaitingForCredentials)`, not an error. Sample:
 | `spec.streams[]` | Stream queues (x-queue-type=stream): `{ name, vhost, maxAge, maxLengthBytes, maxSegmentSizeBytes }`. **Retention is declaration-time only** (RabbitMQ cannot change it later via policy) and must MATCH any native stream-protocol client that also `Create`s the stream, or the client's Create conflicts — leave retention unset unless you know the client's exact create args. |
 | `status.vhosts` / `.users` / `.permissions` / `.streams[]` | Applied counts + per-stream `present`. `kubectl get rmqtopo`. |
 | `status.conditions[Ready]` | `Reconciled` \| `WaitingForCredentials` \| `BrokerUnavailable` \| `ReconcileError`. Written only on a real transition (anti-flap, principle #7). |
+
+## `PostgresSchema` (separate CRD) — a versioned, tracked SQL schema
+
+Applies + tracks a **versioned Postgres schema**
+([operator#40](https://github.com/oramasearch/orama-cloud-v1-operator/issues/40)) — superseding the
+bare idempotent migration Job ([#34](https://github.com/oramasearch/orama-cloud-v1-operator/issues/34))
+with a reconciled, auditable CRD that records the applied version in `.status`. The controller
+(`postgresschema_controller.go`) **owns** an idempotent migration Job (wait-for-DB → guard →
+apply-in-one-transaction) and reflects `phase` + `appliedVersion` (read back from the Job, so a bumped
+desired version never misreports). It carries **no finalizer** — deleting the CR never drops the
+schema/data, it only stops managing the migration.
+
+`OramaCloudV1` creates + owns a `<cr>-controldb-schema` instance (`reconcileControlDBMigrations`)
+applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
+[`datastore-crds.md`](datastore-crds.md) for the full design. Sample:
+[`../config/samples/postgresschema.yaml`](../config/samples/postgresschema.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.connectionSecretRef` | `{ name, key }` — Secret + key holding the Postgres connection URI (the CNPG `<cr>-controldb-app` Secret, key `uri`). Missing = safe no-op (waits). |
+| `spec.schemaConfigMapRef` | `{ name, key }` — ConfigMap + key holding the schema SQL (applied all-or-nothing in one transaction). |
+| `spec.version` | Schema version recorded in `.status.appliedVersion` once applied (the operator uses a content hash of the SQL). |
+| `spec.guardTable` | A `public` table whose existence means the schema is already applied (idempotency guard). Default `crawler_configs`. |
+| `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
+| `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
+| `status.conditions[Applied]` | `Applied` \| `Applying` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
