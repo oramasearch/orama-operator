@@ -93,9 +93,10 @@ type OramaZettaClusterSpec struct {
 	// `--require-auth --admin-token <token>` to the node; the ZettaClusterE2ETest then runs its authz
 	// assertions against the target (`ZETTA_E2E_REQUIRE_AUTH=1`). This is the regression harness for the
 	// zetta auth work — the target's image MUST implement these flags (oramasearch/zetta#780); the
-	// deployed sandbox image predates them and rejects unknown flags, so only enable this against an
-	// auth-capable build. Default off = today's unauthenticated-local behavior, no Secret, no flags.
-	// +kubebuilder:default=false
+	// deployed sandbox image predates them and rejects unknown flags, so the target's image MUST be an
+	// auth-capable build (built from the branch carrying the auth work, oramasearch/zetta#780).
+	// Defaults TRUE — secure by default; set `requireAuth: false` for a legacy unauthenticated-local node.
+	// +kubebuilder:default=true
 	// +optional
 	RequireAuth bool `json:"requireAuth,omitempty"`
 
