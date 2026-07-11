@@ -160,9 +160,11 @@ echo "postgres-schema: done"`
 			Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyNever,
 				Containers: []corev1.Container{{
-					Name:    "migrate",
-					Image:   image, // ships psql
-					Command: []string{"sh", "-c", script},
+					Name:            "migrate",
+					Image:           image, // ships psql
+					Command:         []string{"sh", "-c", script},
+					Resources:       *resourceReqs("64Mi", "25m", "256Mi"), // scheduler requests (#18, preserved through the CRD swap)
+					SecurityContext: hardenedSecurityContext(),             // workload hardening baseline (#18)
 					Env: []corev1.EnvVar{{Name: "DATABASE_URL", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: ps.Spec.ConnectionSecretRef.Name}, Key: ps.Spec.ConnectionSecretRef.Key}}}},
 					VolumeMounts: []corev1.VolumeMount{{Name: "migrations", MountPath: "/migrations", ReadOnly: true}},
