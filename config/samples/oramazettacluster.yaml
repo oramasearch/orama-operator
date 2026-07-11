@@ -28,3 +28,21 @@ spec:
   host: zetta.oramadev.net                        # expose the API/UI (:4800) via an nginx Ingress
   dnsSecretRef:                                   # + a proxied Cloudflare DNS record (host → ingress LB)
     name: cloudflare-api-token                    # Secret with keys: token / zoneID / accountID
+  # Elastic node capacity (operator#69) — OPT-IN. When enabled the operator owns a Karpenter NodePool
+  # and pins the Zetta pods onto it (dedicated taint/toleration + pool nodeSelector), so raising
+  # `replicas` past current node capacity leaves pods Pending → Karpenter provisions matching nodes →
+  # the new pods schedule and join the CRDT cluster. Graceful no-op if Karpenter/NAP isn't installed.
+  # capacity:
+  #   karpenter:
+  #     enabled: true
+  #     nodeClassRef:                             # the platform-owned provider NodeClass (REQUIRED)
+  #       group: karpenter.k8s.aws                #   EKS default; use karpenter.azure.com on AKS NAP
+  #       kind: EC2NodeClass                      #   EKS default; use AKSNodeClass on AKS NAP
+  #       name: default                           #   name of the EC2NodeClass/AKSNodeClass to launch from
+  #     capacityType: on-demand                   # on-demand (default, stateful-safe) | spot
+  #     arch: amd64                               # amd64 (default) | arm64
+  #     # instanceTypes: ["m6i.large", "m6a.large"]   # optional pin; empty = Karpenter chooses (recommended)
+  #     limits:                                   # cost/scale guardrail — Karpenter stops at these caps
+  #       cpu: "16"
+  #       memory: 64Gi
+  #       nodes: 3

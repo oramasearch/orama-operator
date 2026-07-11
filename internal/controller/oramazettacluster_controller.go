@@ -15,6 +15,8 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -48,6 +50,10 @@ const (
 type OramaZettaClusterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// APIReader is the manager's uncached reader (mgr.GetAPIReader()). Used for the elastic-capacity
+	// node count so the operator doesn't hold a cluster-wide Node informer just for a status field. May be
+	// nil under `make run`/tests — reader() then falls back to the cached client.
+	APIReader client.Reader
 	// stateCache is the anti-flap memory for the operator-state sync into Zetta: component key →
 	// last-synced fingerprint, so a steady stack produces zero Zetta writes (see zetta_statesync.go).
 	stateCache sync.Map
@@ -67,6 +73,15 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// Elastic capacity (operator#69): own the Karpenter NodePool + read the provider NodeClasses/NodeClaims
+// + count provisioned nodes. karpenter.sh/karpenter.k8s.aws/karpenter.azure.com may be absent (the
+// reconciler no-ops when the CRD is missing) — the grants are harmless when the groups don't exist.
+//+kubebuilder:rbac:groups=karpenter.sh,resources=nodepools,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=karpenter.sh,resources=nodeclaims,verbs=get;list;watch
+//+kubebuilder:rbac:groups=karpenter.k8s.aws,resources=ec2nodeclasses,verbs=get;list;watch
+//+kubebuilder:rbac:groups=karpenter.azure.com,resources=aksnodeclasses,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 
 func zettaLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 	return map[string]string{
@@ -87,8 +102,25 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Deletion: release the elastic-capacity finalizer (drop the CLUSTER-SCOPED Karpenter NodePool,
+	// which can't be owner-GC'd by a namespaced CR) before k8s GC removes the CR + its owned children.
+	if !z.DeletionTimestamp.IsZero() {
+		if err := r.finalizeZettaCapacity(ctx, &z); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
 	stsName, headlessName, clientName := zettaNames(&z)
 	lbls := zettaLabels(&z)
+
+	// 0. Elastic capacity (operator#69) — when enabled, own a Karpenter NodePool the Zetta pods pin
+	//    onto, so raising spec.replicas past node capacity provisions new nodes. Reconciled first so the
+	//    pool exists before the (possibly Pending) pods below. Graceful no-op if Karpenter is absent.
+	capCond, provisionedNodes, err := r.reconcileZettaCapacity(ctx, &z)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
 	// 1. Headless Service — stable per-pod DNS for peer discovery (<sts>-0.<headless>.<ns>.svc:7777).
 	headless := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: headlessName, Namespace: z.Namespace}}
@@ -181,8 +213,8 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// 6. Status — readiness roll-up (write only on change; anti-flap).
-	if err := r.reconcileZettaStatus(ctx, &z, stsName); err != nil {
+	// 6. Status — readiness roll-up + the capacity condition/count (write only on change; anti-flap).
+	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, provisionedNodes); err != nil {
 		return ctrl.Result{}, err
 	}
 	// When acting as the datastore, requeue periodically so the coarse state sync tracks the rest of
@@ -485,7 +517,7 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 				Name:    "zetta",
 				Image:   image,
 				Command: []string{"/bin/sh", "-c", entry},
-				Env: zettaEnv,
+				Env:     zettaEnv,
 				Ports: []corev1.ContainerPort{
 					{Name: "peer", ContainerPort: zettaPeerPort},
 					{Name: "api", ContainerPort: zettaAPIPort},
@@ -542,12 +574,38 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 		sts.Spec.Template.Spec.Containers[0].LivenessProbe = nil
 		sts.Spec.Template.Spec.Containers[0].StartupProbe = nil
 	}
+
+	// Elastic capacity (operator#69): pin the Zetta pods onto the operator-owned Karpenter pool. The
+	// pods tolerate the dedicated Zetta taint and nodeSelect the pool label, so a replica bump past node
+	// capacity leaves them Pending → Karpenter provisions matching Zetta nodes → the pods schedule and
+	// join. The do-not-disrupt annotation keeps Karpenter's disruption controller from voluntarily
+	// evicting a live CRDT peer (quorum-safety). When capacity is off this is a no-op (pods schedule
+	// wherever the scheduler fits them), and clearing it reverts cleanly on the next reconcile.
+	if capacityEnabled(z) {
+		sts.Spec.Template.Spec.NodeSelector = map[string]string{zettaPoolLabel: z.Name}
+		sts.Spec.Template.Spec.Tolerations = []corev1.Toleration{{
+			Key: zettaCapacityTaintKey, Operator: corev1.TolerationOpEqual, Value: z.Name, Effect: corev1.TaintEffectNoSchedule,
+		}}
+		if sts.Spec.Template.Annotations == nil {
+			sts.Spec.Template.Annotations = map[string]string{}
+		}
+		sts.Spec.Template.Annotations[doNotDisruptAnnotation] = "true"
+	} else {
+		// Revert if capacity was previously enabled then turned off.
+		sts.Spec.Template.Spec.NodeSelector = nil
+		sts.Spec.Template.Spec.Tolerations = nil
+		delete(sts.Spec.Template.Annotations, doNotDisruptAnnotation)
+	}
+
 	return controllerutil.SetControllerReference(z, sts, r.Scheme)
 }
 
-// reconcileZettaStatus rolls the StatefulSet's readiness up into the CR status, writing only on a
-// real change (anti-flap — operator principle #7).
-func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string) error {
+// reconcileZettaStatus rolls the StatefulSet's readiness up into the CR status, and folds in the
+// elastic-capacity condition + provisioned-node count. Writes only on a real change (anti-flap —
+// operator principle #7): the phase/counts/message are deep-compared and the CapacityReady condition is
+// merged via meta.SetStatusCondition (which reports whether anything actually moved). A nil capCond
+// (capacity off) drops the condition so a non-capacity cluster keeps a clean status.
+func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond *metav1.Condition, provisionedNodes int32) error {
 	desired := z.Spec.Replicas
 	if desired < 1 {
 		desired = 1
@@ -566,10 +624,24 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 		phase = "Progressing"
 	}
 
-	if z.Status.Phase == phase && z.Status.ReadyNodes == ready && z.Status.TotalNodes == desired && z.Status.Message == msg {
+	changed := z.Status.Phase != phase || z.Status.ReadyNodes != ready ||
+		z.Status.TotalNodes != desired || z.Status.Message != msg ||
+		z.Status.ProvisionedNodes != provisionedNodes
+
+	if capCond != nil {
+		capCond.ObservedGeneration = z.Generation
+		if meta.SetStatusCondition(&z.Status.Conditions, *capCond) {
+			changed = true
+		}
+	} else if meta.RemoveStatusCondition(&z.Status.Conditions, capacityConditionType) {
+		changed = true
+	}
+
+	if !changed {
 		return nil // no change — don't touch the status subresource (anti-flap)
 	}
 	z.Status.Phase, z.Status.ReadyNodes, z.Status.TotalNodes, z.Status.Message = phase, ready, desired, msg
+	z.Status.ProvisionedNodes = provisionedNodes
 	return r.Status().Update(ctx, z)
 }
 
@@ -583,6 +655,7 @@ func (r *OramaZettaClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Secret{}).
 		Owns(&batchv1.Job{}).
 		Owns(&networkingv1.Ingress{}).
+		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Complete(r)
 }
