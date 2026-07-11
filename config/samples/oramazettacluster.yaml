@@ -28,6 +28,18 @@ spec:
   host: zetta.oramadev.net                        # expose the API/UI (:4800) via an nginx Ingress
   dnsSecretRef:                                   # + a proxied Cloudflare DNS record (host → ingress LB)
     name: cloudflare-api-token                    # Secret with keys: token / zoneID / accountID
+  # capacity:                                      # opt-in elastic node capacity (operator#69/#72/#75)
+  #   karpenter:
+  #     enabled: true                              # own a Karpenter NodePool + pin the Zetta pods onto it
+  #     nodeClassRef:                              # the PLATFORM-owned provider NodeClass (referenced)
+  #       name: zetta                              #   EC2NodeClass (EKS) / AKSNodeClass (AKS NAP)
+  #     # --- operator-owned Karpenter install (operator#75), EKS only ---
+  #     install: true                              # operator installs Karpenter itself (controller + CRDs)
+  #     installClusterName: orama-eks-prod         # AWS settings.clusterName (required when install on EKS)
+  #     controllerRoleARN: arn:aws:iam::123456789012:role/KarpenterController-orama-eks-prod
+  #                                                # ^ CLOUD IAM PREREQ the operator can't mint — the
+  #                                                #   controller's IRSA role. Missing ⇒ CloudIdentityMissing.
+  #                                                #   See docs/karpenter-cloud-iam-prerequisite.md.
   # Elastic node capacity (operator#69) — OPT-IN. When enabled the operator owns a Karpenter NodePool
   # and pins the Zetta pods onto it (dedicated taint/toleration + pool nodeSelector), so raising
   # `replicas` past current node capacity leaves pods Pending → Karpenter provisions matching nodes →
