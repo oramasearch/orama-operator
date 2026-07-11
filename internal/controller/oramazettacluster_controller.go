@@ -33,7 +33,7 @@ import (
 
 // Zetta headless ports (source-verified — see docs/projects/one-orama/zetta-headless-reference.md).
 const (
-	zettaPeerPort = 7777 // peer replication + signal plane + blob transfer (mTLS unless plaintext)
+	zettaPeerPort = 7777 // peer replication + signal plane + blob transfer (always mTLS — shared join token)
 	zettaAPIPort  = 4800 // MCP + REST + model/index serving (one HTTP server)
 	zettaDataDir  = "/data"
 
@@ -273,6 +273,15 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		_ = deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: z.Name + "-zetta-admin", Namespace: z.Namespace}})
 	}
 
+	// 2.57 Cluster join token — UNCONDITIONAL (the mTLS cluster identity, operator#92). Zetta derives the
+	//      cluster CA deterministically from a shared join token, so every node MUST hold the SAME token or
+	//      each derives a different CA and forms a cluster-of-one. The operator mints it once into
+	//      `<name>-zetta-cluster` and injects it into EVERY node as ZETTA_CLUSTER_TOKEN. Provisioned before
+	//      the StatefulSet so its secretKeyRef resolves. Never deleted — it IS the cluster's durable identity.
+	if err := r.reconcileZettaClusterToken(ctx, &z); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 2.6 Peer LoadBalancer — OPT-IN (spec.exposePeerLoadBalancer) and ONLY for a wan-accessible slice.
 	//     A cloud LB fronting the peer port makes a GENUINELY wan-accessible slice reachable from other
 	//     clusters (its public IP → siblings' spec.externalPeers + this slice's .status.wanAddress).
@@ -414,6 +423,45 @@ func (r *OramaZettaClusterReconciler) reconcileZettaAdminToken(ctx context.Conte
 	if op == controllerutil.OperationResultCreated {
 		logf.FromContext(ctx).Info("provisioned admin token — the node runs with --require-auth (authz ENFORCED)",
 			"component", "zetta-admin", "secret", name,
+			"retrieve", fmt.Sprintf("kubectl get secret %s -n %s -o jsonpath='{.data.token}' | base64 -d", name, z.Namespace))
+	}
+	return nil
+}
+
+// reconcileZettaClusterToken ensures the Secret holding this cluster's shared mTLS join token exists.
+// The join token IS the cluster identity: Zetta derives the cluster CA deterministically from it
+// (SHA256(token ‖ "zetta-cluster-ca-v1"), see the engine's docs/cluster/security.md), so ONLY nodes
+// holding the SAME token trust each other. The operator mints it ONCE (32 random bytes → 64 hex) into
+// `<name>-zetta-cluster` and injects it into EVERY node as ZETTA_CLUSTER_TOKEN (the engine reads that env
+// → --join-token at boot). Without it each node mints its OWN token on first boot, derives a different
+// CA, and rejects every peer — so every node forms its own cluster-of-one (operator#92). Mirrors
+// reconcileZettaMCPToken / reconcileZettaAdminToken, with two differences: it is UNCONDITIONAL (the shared
+// CA is fundamental to a multi-node cluster — there is no "off" state) and it is NEVER rotated (a new
+// token re-derives the CA and orphans every existing node cert, splitting the cluster). The value is
+// never logged. Provisioned before the StatefulSet so its secretKeyRef resolves.
+func (r *OramaZettaClusterReconciler) reconcileZettaClusterToken(ctx context.Context, z *oramav1alpha1.OramaZettaCluster) error {
+	name := z.Name + "-zetta-cluster"
+	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, sec, func() error {
+		sec.Labels = zettaLabels(z)
+		if len(sec.Data["token"]) == 0 { // mint once; preserve on later reconciles (rotating orphans node certs)
+			token, gerr := randHex(32) // 32 bytes → 64 hex chars
+			if gerr != nil {
+				return gerr
+			}
+			if sec.Data == nil {
+				sec.Data = map[string][]byte{}
+			}
+			sec.Data["token"] = []byte(token)
+		}
+		return controllerutil.SetControllerReference(z, sec, r.Scheme)
+	})
+	if err != nil {
+		return err
+	}
+	if op == controllerutil.OperationResultCreated {
+		logf.FromContext(ctx).Info("provisioned shared cluster join token — every node forms ONE mTLS cluster from this CA",
+			"component", "zetta-cluster", "secret", name,
 			"retrieve", fmt.Sprintf("kubectl get secret %s -n %s -o jsonpath='{.data.token}' | base64 -d", name, z.Namespace))
 	}
 	return nil
@@ -594,26 +642,28 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 		resources = *z.Spec.Resources
 	}
 
-	// The seed is node-0's stable DNS. node-0 bootstraps (mints its own mTLS cluster token); peers
-	// join it. A tiny sh wrapper keys off the pod ordinal ($HOSTNAME = <sts>-<ord>) so node-0 gets
-	// neither --peer nor a token, while peers seed off node-0. Multi-node mTLS token-sharing is a
-	// later stage — set clusterPlaintext for a multi-node cluster today.
+	// The seed is node-0's stable DNS. A tiny sh wrapper keys off the pod ordinal ($HOSTNAME = <sts>-<ord>)
+	// so node-0 gets no --peer (it is the rendezvous) while peers seed off node-0. EVERY node — node-0
+	// included — boots with the SAME shared cluster join token (ZETTA_CLUSTER_TOKEN, injected below): the
+	// engine derives the cluster CA from it, so all nodes trust one another and form ONE mTLS cluster
+	// (operator#92). Peer traffic is always mTLS — there is no plaintext mode.
 	seed := fmt.Sprintf("%s-0.%s.%s.svc.cluster.local:%d", stsName, headlessName, z.Namespace, zettaPeerPort)
-	plaintext := "0"
-	if z.Spec.ClusterPlaintext {
-		plaintext = "1"
-	}
 	// External peers (spec.externalPeers) — sibling nodes in OTHER k8s clusters / bare hosts, dialed by
 	// EVERY node here so they join the shared (globally-named) Zetta cluster. Zetta is the mesh.
 	extPeers := ""
 	for _, p := range z.Spec.ExternalPeers {
 		extPeers += " --peer " + p
 	}
+	// The shared cluster join token (ZETTA_CLUSTER_TOKEN) is NOT passed as a flag: the engine reads that
+	// env var directly at boot and maps it to --join-token internally (src/main.cpp provisioning env). We
+	// keep it env-only on purpose — an unknown env var is safely ignored by an image that predates the
+	// feature, whereas an unknown FLAG would crash the node (as the sandbox image does for unknown flags).
 	// Secret flags (--mcp-token / --admin-token) are appended AFTER the echo, and the echo shows only a
 	// redacted "****", so no token ever lands in the pod log. Tokens are injected via env from their
-	// Secrets: ZETTA_MCP_TOKEN (<name>-zetta-mcp, reconcileZettaMCPToken) and, when spec.requireAuth is
-	// set, ZETTA_ADMIN_TOKEN (<name>-zetta-admin, reconcileZettaAdminToken) which also flips on
-	// --require-auth so the node ENFORCES authz (regression harness for oramasearch/zetta#759–#769).
+	// Secrets: ZETTA_CLUSTER_TOKEN (<name>-zetta-cluster, reconcileZettaClusterToken; every node);
+	// ZETTA_MCP_TOKEN (<name>-zetta-mcp, reconcileZettaMCPToken); and, when spec.requireAuth is set,
+	// ZETTA_ADMIN_TOKEN (<name>-zetta-admin, reconcileZettaAdminToken) which also flips on --require-auth so
+	// the node ENFORCES authz (regression harness for oramasearch/zetta#759–#769).
 	entry := fmt.Sprintf(`set -eu
 ORD="${POD_NAME##*-}"   # NOT $HOSTNAME — under hostNetwork that is the node's name, not the pod's
 PEER_PORT=%[2]d
@@ -630,17 +680,20 @@ if [ "${ZETTA_HOST_NETWORK:-0}" = "1" ] && [ "$ORD" != "0" ]; then
 fi
 A="--headless --data-dir %[1]s --listen 0.0.0.0:$PEER_PORT --mcp-listen 0.0.0.0:$API_PORT"
 if [ "$ORD" != "0" ]; then A="$A --peer $SEED"; fi
-if [ "$ZETTA_CLUSTER_PLAINTEXT" = "1" ]; then A="$A --cluster-plaintext"; fi
 A="$A%[5]s"
-echo "zetta node $POD_NAME (ordinal $ORD): zetta $A${ZETTA_MCP_TOKEN:+ --mcp-token ****}${ZETTA_ADMIN_TOKEN:+ --require-auth --admin-token ****}"
+echo "zetta node $POD_NAME (ordinal $ORD): zetta $A${ZETTA_CLUSTER_TOKEN:+ [join-token via env ****]}${ZETTA_MCP_TOKEN:+ --mcp-token ****}${ZETTA_ADMIN_TOKEN:+ --require-auth --admin-token ****}"
 if [ -n "${ZETTA_MCP_TOKEN:-}" ]; then A="$A --mcp-token $ZETTA_MCP_TOKEN"; fi
 if [ -n "${ZETTA_ADMIN_TOKEN:-}" ]; then A="$A --require-auth --admin-token $ZETTA_ADMIN_TOKEN"; fi
 exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 
 	zettaEnv := []corev1.EnvVar{
-		{Name: "ZETTA_CLUSTER_PLAINTEXT", Value: plaintext},
 		// The ordinal comes from the POD name — $HOSTNAME is the NODE's name under hostNetwork.
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+		// Shared cluster join token → the mTLS cluster identity. Injected into EVERY node (incl. node-0):
+		// the engine derives the cluster CA from it, so all nodes trust each other and form ONE cluster.
+		// Without a SHARED token each node mints its own → different CA → cluster-of-one (operator#92).
+		{Name: "ZETTA_CLUSTER_TOKEN", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-cluster"}, Key: "token"}}},
 	}
 	if z.Spec.HostNetwork {
 		// Pack ordinals onto per-ordinal ports; seed peers off HOST_IP (the node's real address, via the

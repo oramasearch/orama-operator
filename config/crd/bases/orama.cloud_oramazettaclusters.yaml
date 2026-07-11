@@ -45,7 +45,9 @@ spec:
       openAPIV3Schema:
         description: |-
           OramaZettaCluster deploys a headless Orama Zetta cluster (a StatefulSet of equal-peer CRDT nodes)
-          from one CR. Peer replication is TCP 7777 (mTLS unless clusterPlaintext); the HTTP API (MCP + REST
+          from one CR. Peer replication is TCP 7777 (always mTLS — every node shares one operator-minted
+          cluster join token that derives the cluster CA, operator#92); the HTTP API (MCP + REST + serving)
+          is 4800; each node persists to a per-node PVC at /data. See the plan of record in
           oramasearch/orama-bridge docs/projects/one-orama.
         properties:
           apiVersion:
@@ -211,12 +213,6 @@ spec:
                   k8s cluster's OramaZettaCluster CR is a SLICE of it, and CRs sharing this name are SIBLINGS — equal
                   peers in one multi-leader cluster (operator#71). Empty = a standalone cluster named after the CR.
                 type: string
-              clusterPlaintext:
-                default: false
-                description: |-
-                  ClusterPlaintext disables inter-node mTLS (the peers join without a token). Convenient inside a
-                  single trusted namespace (+ a NetworkPolicy); leave false to use the generated join-token Secret.
-                type: boolean
               dnsSecretRef:
                 description: |-
                   DNSSecretRef, if set together with Host, creates a proxied Cloudflare DNS record (Host → the
@@ -260,8 +256,9 @@ spec:
                   inbound. On a `dial-out-only` slice (the default) this field is IGNORED and the operator logs a
                   warning; any previously-created peer LB is torn down.
 
-                  NOTE: peer traffic is plaintext over the public internet when clusterPlaintext is set — only do this
-                  on a trusted path until the mTLS join token (oramasearch/zetta#670) lands. Default false.
+                  NOTE: peer traffic is mTLS (the shared cluster join token derives the cluster CA, operator#92), so
+                  the exposed port is encrypted on the wire — keep the `<name>-zetta-cluster` Secret protected, as it
+                  is the cluster's identity. Default false.
                 type: boolean
               externalPeers:
                 description: |-
