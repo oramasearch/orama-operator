@@ -31,6 +31,9 @@ func (r *OramaCloudV1Reconciler) reconcileIdP(ctx context.Context, oc *oramav1al
 		image:     "quay.io/keycloak/keycloak:26.0",
 		port:      8080,
 		args:      []string{"start-dev"},
+		// JVM — Keycloak's image derives its heap from the container limit (MaxRAMPercentage), so this
+		// limit is binary-aware. Roomier default; override via spec.idp.resources.
+		resources: resourcesOr(oc.Spec.IDP.Resources, resourceReqs("384Mi", "100m", "1Gi")),
 	})
 }
 
@@ -61,7 +64,9 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 						Image: "curlimages/curl:8.10.1",
 						// Placeholder: real seed creates a demo project + index + docs via
 						// the dashboard/OramaCore API once the engine is Ready.
-						Command: []string{"sh", "-c", "echo 'demo-seed placeholder: create a demo project+index+docs via the API'"},
+						Command:         []string{"sh", "-c", "echo 'demo-seed placeholder: create a demo project+index+docs via the API'"},
+						Resources:       *resourceReqs("32Mi", "10m", "128Mi"), // scheduler requests (#18)
+						SecurityContext: hardenedSecurityContext(),             // workload hardening baseline (#18)
 					}},
 				},
 			},

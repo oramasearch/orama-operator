@@ -63,8 +63,10 @@ func (r *OramaCloudV1Reconciler) reconcilePgAdmin(ctx context.Context, oc *orama
 			{Name: "PGADMIN_SERVER_JSON_FILE", Value: "/config/servers.json"},
 		},
 		// pgAdmin runs as uid 5050 and writes its config DB to /var/lib/pgadmin — fsGroup makes the
-		// mounted emptyDir writable by that non-root user.
+		// mounted emptyDir writable by that non-root user. (Pod-level; composes with the per-container
+		// hardening baseline reconcileApp applies.)
 		securityContext: &corev1.PodSecurityContext{FSGroup: int64Ptr(5050)},
+		resources:       resourcesOr(oc.Spec.Components.PgAdmin.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 		volumes: []corev1.Volume{
 			{Name: "pgadmin-data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			{Name: "servers", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{

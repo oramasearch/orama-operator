@@ -32,6 +32,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 		image:     componentImage(oc, "index-builder", "index-builder"),
 		port:      8080,
 		env:       r.indexBuilderEnv(ctx, oc),
+		resources: resourcesOr(ing.Resources, resourceReqs("256Mi", "100m", "768Mi")),
 	}); err != nil {
 		return err
 	}
@@ -57,25 +58,29 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 			{Name: "MASTER_URI", Value: "http://" + n + "-harvest-master:8080"},
 			{Name: "WORKER_IMAGE", Value: componentImage(oc, "harvest", "harvest")},
 		},
+		resources: resourceReqs("128Mi", "50m", "512Mi"),
 	}); err != nil {
 		return err
 	}
 
-	// HARVEST's record store (Mongo). Single-node StatefulSet + PVC + Service.
+	// HARVEST's record store (Mongo). Single-node StatefulSet + PVC + Service. Mongo 7 detects the
+	// cgroup memory limit for its WiredTiger cache sizing, so this limit is binary-aware (#18).
 	if err := r.provisionStatefulSet(ctx, oc, dataStoreDef{
 		component: "harvest-mongo",
 		image:     "mongo:7",
 		ports:     []corev1.ContainerPort{{Name: "mongo", ContainerPort: 27017}},
 		dataPath:  "/data/db",
+		resources: resourceReqs("256Mi", "50m", "1Gi"),
 	}); err != nil {
 		return err
 	}
 
-	// Selenium grid for JS-rendered crawls.
+	// Selenium grid for JS-rendered crawls. Chromium is memory-heavy → a roomier limit than an app.
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "selenium",
 		image:     "selenium/standalone-chromium:latest",
 		port:      4444,
+		resources: resourceReqs("512Mi", "100m", "1536Mi"),
 	})
 }
 
@@ -98,7 +103,7 @@ func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav
 		{Name: "APIFY_ACT_ENDPOINT", Value: "https://api.apify.com/v2/acts/placeholder/runs"},
 		{Name: "APIFY_DATASET_ENDPOINT", Value: "https://api.apify.com/v2/datasets/placeholder/items"},
 		{Name: "REDIS_URL", Value: "redis://" + n + "-cache:6379"}, // in-cluster Redis is passwordless
-		pgURIEnv(oc, "DATABASE_URL"), // CNPG-generated URI (real password), not a placeholder (#32)
+		pgURIEnv(oc, "DATABASE_URL"),                               // CNPG-generated URI (real password), not a placeholder (#32)
 		{Name: "ORAMA_EMBEDDINGS_URL", Value: "http://" + n + "-disco:50051"},
 		{Name: "DISCO_URL", Value: "http://" + n + "-disco:8080"},
 		{Name: "DISCO_PEERS", Value: ""},

@@ -12,6 +12,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
@@ -32,6 +33,95 @@ func labelsFor(oc *oramav1alpha1.OramaCloudV1, component string) map[string]stri
 
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
+func boolPtr(b bool) *bool    { return &b }
+
+// hardenedSecurityContext is the conservative CONTAINER securityContext the operator applies to
+// EVERY workload it creates (issue #18): no privilege escalation, drop ALL Linux capabilities, and
+// the RuntimeDefault seccomp profile. This baseline is safe for essentially all modern images (it
+// doesn't force a non-root user or a read-only root filesystem). The stronger `runAsNonRoot` /
+// `readOnlyRootFilesystem` knobs break images that expect root or write to `/`, so they're rolled
+// out per-component with testing — NOT applied blanket here. Also satisfies the cluster's Gatekeeper
+// / Pod Security "baseline" expectations out of the box.
+func hardenedSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: boolPtr(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+// hardenedSecurityContextNetBind is the baseline PLUS CAP_NET_BIND_SERVICE — for a container that
+// binds a PRIVILEGED port (<1024, e.g. Envoy / pgAdmin on :80). Dropping ALL capabilities strips
+// NET_BIND_SERVICE even from a root process, so a privileged-port bind fails ("permission denied")
+// unless it's added back. Adding just this one cap keeps the least-privilege posture (issue #18 —
+// exactly the "a blanket securityContext can break a healthy stack" case the audit warns about).
+func hardenedSecurityContextNetBind() *corev1.SecurityContext {
+	sc := hardenedSecurityContext()
+	sc.Capabilities.Add = []corev1.Capability{"NET_BIND_SERVICE"}
+	return sc
+}
+
+// containerSecurityContext picks the right baseline for a container by its bind port: the
+// NET_BIND_SERVICE variant for privileged ports (<1024), the plain baseline otherwise.
+func containerSecurityContext(port int32) *corev1.SecurityContext {
+	if port > 0 && port < 1024 {
+		return hardenedSecurityContextNetBind()
+	}
+	return hardenedSecurityContext()
+}
+
+// dataStoreSecurityContext is the hardening baseline for a STATEFUL store whose image runs a ROOT
+// entrypoint that chown's the mounted data volume and then drops to a non-root service user — redis,
+// rabbitmq, clickhouse, and mongo all do this. Plain drop-ALL strips CAP_CHOWN / CAP_SETUID and the
+// entrypoint crash-loops ("chown: Operation not permitted") — this was caught by the #18 on-cluster
+// smoke test. So we drop ALL and add back ONLY the file-ownership + setuid capabilities the
+// entrypoint needs, while still dropping the dangerous ones (NET_RAW/NET_ADMIN/SYS_*) and keeping
+// allowPrivilegeEscalation=false + seccomp RuntimeDefault. (gosu/su-exec drops privileges via
+// SETUID/SETGID; dropping privileges is not blocked by allowPrivilegeEscalation=false.)
+func dataStoreSecurityContext() *corev1.SecurityContext {
+	sc := hardenedSecurityContext()
+	sc.Capabilities.Add = []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"}
+	return sc
+}
+
+// harden sets the conservative securityContext on a container in place (unless the caller already
+// set one). Used for both the main containers and the operator's init/render/wait containers so the
+// whole pod meets the baseline.
+func harden(c *corev1.Container) {
+	if c.SecurityContext == nil {
+		c.SecurityContext = hardenedSecurityContext()
+	}
+}
+
+// hardenAll applies harden() to every container in the slice (in place).
+func hardenAll(cs []corev1.Container) {
+	for i := range cs {
+		harden(&cs[i])
+	}
+}
+
+// spreadConstraints keeps a replicated Deployment's pods off the same node so one node failing
+// doesn't take out every replica. WhenUnsatisfiable=ScheduleAnyway makes it a SOFT preference: a
+// single-node sandbox still schedules all replicas, while a real multi-node cluster honors the
+// spread. Applied only to replicated (>1) workloads (issue #18).
+func spreadConstraints(lbls map[string]string) []corev1.TopologySpreadConstraint {
+	return []corev1.TopologySpreadConstraint{{
+		MaxSkew:           1,
+		TopologyKey:       "kubernetes.io/hostname",
+		WhenUnsatisfiable: corev1.ScheduleAnyway,
+		LabelSelector:     &metav1.LabelSelector{MatchLabels: lbls},
+	}}
+}
+
+// resourcesOr returns the CR-provided resource override when set, else the operator's sensible
+// per-component default. Lets every component's requests/limits be tuned via the CR (like the engine
+// writer/reader already are) while staying right-sized out of the box (issue #18, principle #8).
+func resourcesOr(override, def *corev1.ResourceRequirements) *corev1.ResourceRequirements {
+	if override != nil {
+		return override
+	}
+	return def
+}
 
 // imagePullSecrets returns the pull secret (if any) for pods, so private-registry images
 // (e.g. the private Docker Hub repos built by the bridge's build/images tooling) can be

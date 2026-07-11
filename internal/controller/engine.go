@@ -214,6 +214,12 @@ func embeddingsContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 		Name:  "embeddings",
 		Image: embeddingsImage(oc),
 		Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: 50051}},
+		// The ai-server preloads the embedding model(s) into RAM, so it's one of the heavy ones the
+		// audit (#18) warns NOT to blanket-OOM — a generous memory limit + a real request so the
+		// scheduler sees it. Deeper embeddings-memory tuning is #14; on a GPU writer the GPU limit is
+		// added on top in reconcileEmbeddings.
+		Resources:       *resourceReqs("512Mi", "250m", "4Gi"),
+		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
 	}
 }
 
@@ -267,9 +273,10 @@ func (r *OramaCloudV1Reconciler) reconcileEmbeddings(ctx context.Context, oc *or
 func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	broker := oc.Name + "-broker"
 	return corev1.Container{
-		Name:    "wait-for-broker",
-		Image:   "busybox:1.37",
-		Command: []string{"sh", "-c", "until nc -z " + broker + " 5552; do echo 'waiting for broker stream :5552'; sleep 2; done"},
+		Name:            "wait-for-broker",
+		Image:           "busybox:1.37",
+		Command:         []string{"sh", "-c", "until nc -z " + broker + " 5552; do echo 'waiting for broker stream :5552'; sleep 2; done"},
+		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
 	}
 }
 
@@ -289,6 +296,7 @@ func renderConfigInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 			{Name: "config", MountPath: "/tmpl"},
 			{Name: "rendered-config", MountPath: "/etc/oramacore"},
 		},
+		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
 	}
 }
 
@@ -379,15 +387,21 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		if useEnvoy {
 			containers = append(containers, envoySidecar())
 		}
+		podSpec := corev1.PodSpec{
+			ImagePullSecrets:              imagePullSecrets(oc),
+			InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc)},
+			Containers:                    containers,
+			Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume(), dataEmptyDir()},
+			TerminationGracePeriodSeconds: int64Ptr(readerGracePeriodSeconds),
+		}
+		// Spread readers across nodes when there's more than one (soft — a single-node sandbox still
+		// schedules; a real cluster honors it). #18.
+		if replicas > 1 {
+			podSpec.TopologySpreadConstraints = spreadConstraints(lbls)
+		}
 		dep.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
-			Spec: corev1.PodSpec{
-				ImagePullSecrets:              imagePullSecrets(oc),
-				InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc)},
-				Containers:                    containers,
-				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume(), dataEmptyDir()},
-				TerminationGracePeriodSeconds: int64Ptr(readerGracePeriodSeconds),
-			},
+			Spec:       podSpec,
 		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
 	}); err != nil {
@@ -432,10 +446,11 @@ func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 			// rather than the raw ConfigMap template.
 			{Name: "CONFIG_PATH", Value: "/etc/oramacore/config.yaml"},
 		},
-		EnvFrom:        envFromFor(oc, "engine"),
-		StartupProbe:   startup,
-		ReadinessProbe: readiness,
-		LivenessProbe:  liveness,
+		EnvFrom:         envFromFor(oc, "engine"),
+		StartupProbe:    startup,
+		ReadinessProbe:  readiness,
+		LivenessProbe:   liveness,
+		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "rendered-config", MountPath: "/etc/oramacore"},
 			{Name: "data", MountPath: "/app/.data"},
@@ -451,6 +466,8 @@ func envoySidecar() corev1.Container {
 			{Name: "http", ContainerPort: envoyPort},
 			{Name: "admin", ContainerPort: envoyAdminPort},
 		},
+		// Envoy binds :80 (privileged) — needs NET_BIND_SERVICE back after drop-ALL (#18).
+		SecurityContext: hardenedSecurityContextNetBind(),
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "config", MountPath: "/etc/envoy/envoy.yaml", SubPath: "envoy.yaml"},
 		},

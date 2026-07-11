@@ -68,6 +68,64 @@ cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boo
 > (they're plain in-cluster K8s Secrets; the operator won't overwrite them). (The JWT
 > keypair is already real + generated.)
 
+## Workload hardening — applied to EVERY component ([#18](https://github.com/oramasearch/orama-cloud-v1-operator/issues/18))
+
+The engine used to be the only component wired with full probes/resources/grace/PDB; every other
+workload got readiness-only and nothing else. The shared builders (`reconcileApp`,
+`provisionStatefulSet`) and the engine now apply one **workload-hardening baseline** to every pod
+the operator creates, so a component is run *well*, not just *running*. The helpers live in
+`helpers.go` / `app.go` / `datastore.go`.
+
+- **Health probes — startup + readiness + liveness.** The engine keeps its rich HTTP `GET /health`
+  probes; every other container gets **TCP** probes on its primary port (`tcpStartup` /
+  `tcpReadiness` / `tcpLiveness`). **Startup** (`30 × 10s` ≈ 5 min) gates the others so a slow boot
+  (index-builder's ~29-var wiring, Keycloak `start-dev`, a store loading data) isn't killed;
+  **readiness** gates Service routing; **liveness** (lenient — `20s` period) restarts a hung pod. TCP
+  (not a guessed HTTP path) because a wrong liveness path would restart-loop a *healthy* pod.
+- **Resource requests on every container + per-component memory limits.** `resourceReqs(memReq,
+  cpuReq, memLimit)` puts CPU+memory **requests** on every container (the scheduler needs them) plus
+  a **memory limit** — but **no CPU limit** (a CPU limit throttles rather than protects; the request
+  suffices). Limits are sized **per component** (a blanket small one OOM-kills the heavy ones):
+  light apps `512Mi`, dashboard/disco/keycloak/stores `~1Gi`, Selenium `1.5Gi`, ClickHouse `4Gi`
+  (kept in lockstep with `clickhouseMemoryXML`), embeddings `4Gi`. The engine keeps its cgroup-aware
+  `resourceCaps` (CPU limit included — tokio tolerates it). Every component's `resources` is
+  **overridable on the CR** (`spec.components.<x>.resources`, `spec.idp.resources`,
+  `spec.components.ingestion.resources`) — like the engine writer/reader already were.
+- **SecurityContext baseline.** A conservative **per-container** `securityContext`
+  (`allowPrivilegeEscalation: false`, drop **ALL** capabilities, seccomp `RuntimeDefault`) on every
+  container — main *and* init/render/wait — safe for essentially all modern images and satisfying the
+  cluster's Gatekeeper / Pod Security "baseline". Composes with pod-level settings (e.g. pgAdmin's
+  `fsGroup`). Two **capability exceptions** (both found by the on-cluster smoke test, both least-
+  privilege — drop ALL then add back only what's needed): a container that binds a **privileged port**
+  (<1024 — Envoy and pgAdmin on `:80`) gets `CAP_NET_BIND_SERVICE` back (`containerSecurityContext`
+  picks it by port); a **data store** whose image runs a root entrypoint that `chown`s the mounted
+  PVC before dropping to a service user (redis/rabbitmq/clickhouse/mongo) gets `CHOWN`, `DAC_OVERRIDE`,
+  `FOWNER`, `SETGID`, `SETUID` back (`dataStoreSecurityContext`) — without them the entrypoint
+  crash-loops on `chown: Operation not permitted`. The stronger `runAsNonRoot` /
+  `readOnlyRootFilesystem` are **deliberately not** blanket
+  (they break images that expect root or write to `/`) — rolled out per-component with testing.
+- **Graceful shutdown.** `terminationGracePeriodSeconds` per component — stores default **60s**
+  (headroom for the SIGTERM flush: AOF fsync, part checkpoint, queue persist), stateless apps **30s**,
+  the writer keeps **300s** (index flush). App containers get a `preStop` **`sleep 5`** drain so they
+  leave Service endpoints before exiting (a rolling update doesn't drop in-flight requests) — an exec
+  sleep, not the native `SleepAction` (only default-on from k8s 1.30), so it's portable.
+- **PodDisruptionBudgets + placement.** A **PDB on every workload**: singletons (all stores, the
+  writer, single-replica apps) → `maxUnavailable: 0` (block casual eviction; node maintenance handles
+  it consciously); replicated sets (readers, multi-replica apps) → `maxUnavailable: 1` (roll one at a
+  time). Replicated Deployments also get a **soft topology spread** across nodes
+  (`kubernetes.io/hostname`, `whenUnsatisfiable: ScheduleAnyway` so a single-node sandbox still
+  schedules). The one-shot **Jobs** (control-DB migrate, demo-seed) get the securityContext + requests
+  but no probes/PDB (they're short-lived). **controlDB** delegates pod hardening to its own operator
+  (**CNPG** owns its pods' probes/securityContext/PDB).
+
+**Validated on AKS (2026-07-11):** a scoped (`WATCH_NAMESPACE`) smoke deploy of Redis/RabbitMQ/
+ClickHouse/Typesense + pgAdmin (`:80`) + Keycloak reached **`Ready 6/6`**, every pod `1/1` with the
+baseline applied (probes, per-container securityContext, requests + memory limit, `60s`/`30s` grace,
+`maxUnavailable: 0` PDBs); a replicated (`replicas: 2`) Deployment got the soft topology spread + a
+`maxUnavailable: 1` PDB; a CR-level `resources` override was honored over the default. The smoke
+caught the two capability exceptions above before merge (drop-ALL had crash-looped the stores on
+`chown` and would have broken Envoy/pgAdmin's `:80` bind).
+
 ## engine (`internal/controller/engine.go`)
 
 Driven by `spec.region.role`:
@@ -187,10 +245,15 @@ removed the workloads.
 > data is left in place, not auto-deleted). Orphaned PVCs are cleaned up manually.
 > (A configurable `delete`-on-teardown option can be added later.)
 
+Each store also gets the **workload-hardening baseline** (startup/readiness/liveness TCP probes, a
+per-container securityContext, requests + a generous per-store memory limit, a `60s` grace period,
+and a `maxUnavailable: 0` PDB) — see [Workload hardening](#workload-hardening--applied-to-every-component-18).
+
 > **Follow-ups:** these are single-node for light/medium. **Heavy/production** should
 > swap in the dedicated operators (Altinity ClickHouse, RabbitMQ cluster-operator) and
 > a clustered Typesense; wire credentials via the component secret (the Typesense API key
-> is a dev placeholder today); add readiness probes per store.
+> is a dev placeholder today). Binary-side right-sizing derived from the memory limits (Redis
+> `maxmemory`, etc.) is [#42](https://github.com/oramasearch/orama-cloud-v1-operator/issues/42).
 
 ## App compute — ingestion / workers / dashboard / docs (`app.go`, `ingestion.go`)
 
@@ -216,9 +279,12 @@ the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd the
 
 ## DISCO (`disco.go`)
 
-A `Deployment` (in-memory → no PVC; restart cold-starts the cache) with two
-containers: the Go **DISCO** service (`:8080`) + a co-located gRPC **embeddings**
-sidecar (`:50051`), matching prod. Service on `:8080`. **Validated on AKS.**
+A `Deployment` (in-memory → no PVC; restart cold-starts the cache) running the Go **DISCO** service
+(`:8080`), pointed at the **shared `<cr>-embeddings` Deployment** via `EMBEDDINGS_ENDPOINT`
+([#14](https://github.com/oramasearch/orama-cloud-v1-operator/issues/14)/[#39](https://github.com/oramasearch/orama-cloud-v1-operator/issues/39))
+instead of a co-located model sidecar (DISCO was the third redundant copy of the model weights).
+Routed through the shared `reconcileApp` builder, so it inherits the workload-hardening baseline
+(probes, securityContext, resources, PDB, grace). Service on `:8080`. **Validated on AKS.**
 
 ## IdP + demoSeed (`idp.go`)
 
