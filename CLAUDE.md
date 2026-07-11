@@ -24,8 +24,10 @@ against production-readiness, not "does a pod start."
    maintained, are its images actually pullable, is the release cadence sane? **CNPG is reliable**
    → use its `managed.roles` / `Database` / `DatabaseRole` CRDs. The **bitnami RabbitMQ
    Cluster/Topology operators were NOT** — their images 404'd (`ErrImagePull`, deprecated catalog),
-   so we **dropped them** and model the broker's streams/topology with our **own** small CRD
-   reconciling the plain RabbitMQ StatefulSet via its management API ([#41](https://github.com/oramasearch/orama-cloud-v1-operator/issues/41)).
+   so we **dropped them** and model the broker's streams/topology with our **own** small
+   `RabbitMQTopology` CRD reconciling the plain RabbitMQ StatefulSet via its management API
+   ([#41](https://github.com/oramasearch/orama-cloud-v1-operator/issues/41); design +
+   the datastore-state-as-CRDs epic in [`docs/datastore-crds.md`](docs/datastore-crds.md)).
    A purpose-built CRD you control beats an unstable vendor dependency: faster to build, and it
    can't rot out from under you. This holds for **off-cluster infra too** (Cloudflare DNS/KV/R2 are
    owned CRDs). Learn an operator's API **and check its health** (perplexity) before relying on it.

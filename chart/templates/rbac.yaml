@@ -25,6 +25,7 @@ rules:
       - cloudflarekvnamespaces
       - cloudflarer2buckets
       - cloudflareloadbalancers
+      - rabbitmqtopologies
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -36,12 +37,14 @@ rules:
       - cloudflarekvnamespaces/status
       - cloudflarer2buckets/status
       - cloudflareloadbalancers/status
+      - rabbitmqtopologies/status
       - oramacloudv1s/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
       - cloudflarekvnamespaces/finalizers
       - cloudflarer2buckets/finalizers
       - cloudflareloadbalancers/finalizers
+      - rabbitmqtopologies/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]

@@ -12,7 +12,8 @@ reconciler lands.
 | **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica) | ✅ **done** (validated on AKS) |
 | **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
-| **broker** | `internal/controller/datastore.go` | RabbitMQ `StatefulSet` + Service (5672/15672), central placement | ✅ **done** (validated on AKS) |
+| **broker** | `internal/controller/datastore.go` | RabbitMQ `StatefulSet` + Service (5672/15672/5552), central placement; + an owned **`RabbitMQTopology`** (vhost/users/permissions/`oramacore-operations` stream) reconciled via the management API | ✅ **done** (validated on AKS); topology CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-cloud-v1-operator/issues/40)/[#41](https://github.com/oramasearch/orama-cloud-v1-operator/issues/41)) — see [`datastore-crds.md`](datastore-crds.md) |
+| **broker-topology** | `internal/controller/rabbitmqtopology_controller.go` | reconciles the broker's vhosts/users/permissions/streams via its management HTTP API (:15672) from an owned `RabbitMQTopology` CRD (finalizer teardown); least-privilege per-service users + the `oramacore-operations` replication stream | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-cloud-v1-operator/issues/40)/[#41](https://github.com/oramasearch/orama-cloud-v1-operator/issues/41); not yet live-tested) |
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
 | **disco** | `internal/controller/disco.go` | `Deployment` (DISCO + embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |

@@ -192,3 +192,36 @@ Sample: [`../config/samples/cloudflareloadbalancer.yaml`](../config/samples/clou
 | `status.loadBalancerID` / `.monitorID` / `.pools[]` | The provisioned Cloudflare IDs + per-pool `id` and `health` (`healthy\|unhealthy\|unknown`). `kubectl get cflb`. |
 | `status.conditions[Ready]` | `Reconciled` \| `WaitingForCredentials` \| `LoadBalancingNotEnabled` \| `ReconcileError`. Written only on a real transition (anti-flap). |
 | `status.pass` / `.fail` / `.skip` | **Best-effort** assertion counts, parsed from the Job's pod logs (`Zetta e2e: pass=N fail=N skip=N`) once the Job is terminal, shown as `kubectl get ozce2e` print columns. `0` until the summary is readable (the operator reads pod logs via a clientset — RBAC `pods/log get`); a crash before the summary line leaves them at their last value. |
+
+## `RabbitMQTopology` (separate CRD) — the broker's declared topology
+
+Models the RabbitMQ broker's **vhosts / users / permissions / streams** as an owned, reconciled CRD
+([operator#40](https://github.com/oramasearch/orama-cloud-v1-operator/issues/40) /
+[#41](https://github.com/oramasearch/orama-cloud-v1-operator/issues/41)) — declarative topology
+instead of OramaCore creating the replication stream as an app-boot side effect and every service
+sharing the admin user. Same "external resource as an owned CRD" pattern as `CloudflareDNSRecord`: the
+child controller (`rabbitmqtopology_controller.go`) drives the broker's **management HTTP API**
+(`:15672`) and holds a finalizer, so the main loop never mutates the broker directly. This is the
+operator's **own** topology CRD — the bitnami RabbitMQ Cluster / Messaging-Topology operators were
+dropped (their images 404'd), so the broker runs as a plain StatefulSet and the operator owns its
+topology (principle #3). See [`datastore-crds.md`](datastore-crds.md) for the full design.
+
+`OramaCloudV1` creates + owns one `<cr>-broker` instance (in `reconcileBrokerTopology`) declaring the
+`/` vhost, the least-privilege per-service users `oramacore-writer` / `oramacore-reader` (passwords
+generated into `<cr>-broker-users`), their stream-scoped permissions, and the `oramacore-operations`
+replication stream. **Ordered readiness gating:** until the broker (and its `<cr>-broker-admin`
+Secret) is reachable the reconciler is a safe no-op reporting `Ready=False (BrokerUnavailable /
+WaitingForCredentials)`, not an error. Sample:
+[`../config/samples/rabbitmqtopology.yaml`](../config/samples/rabbitmqtopology.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.brokerService` | Broker Service DNS name whose management API is reconciled (e.g. `<cr>-broker`); reached at `http://<brokerService>.<ns>.svc.cluster.local:<managementPort>`. |
+| `spec.managementPort` | RabbitMQ management HTTP API port. Default `15672`. |
+| `spec.adminSecretRef` | Secret with the broker admin creds (keys `username`+`password`). Missing = safe no-op (waits). |
+| `spec.vhosts[]` | Virtual hosts to ensure (idempotent). `/` always exists but may be listed for intent. |
+| `spec.users[]` | Per-service accounts (least-privilege, principle #4): `{ name, passwordSecretRef {name,key}, tags }`. Password is sourced from a Secret — never in spec; service accounts stay untagged. |
+| `spec.permissions[]` | `{ user, vhost (`/`), configure, write, read }` regexes. Scope to the exact stream (`^oramacore-operations$`) — a producer needs `write`, a consumer `read`, a declarer `configure`. Default regex `^$` (none). |
+| `spec.streams[]` | Stream queues (x-queue-type=stream): `{ name, vhost, maxAge, maxLengthBytes, maxSegmentSizeBytes }`. **Retention is declaration-time only** (RabbitMQ cannot change it later via policy) and must MATCH any native stream-protocol client that also `Create`s the stream, or the client's Create conflicts — leave retention unset unless you know the client's exact create args. |
+| `status.vhosts` / `.users` / `.permissions` / `.streams[]` | Applied counts + per-stream `present`. `kubectl get rmqtopo`. |
+| `status.conditions[Ready]` | `Reconciled` \| `WaitingForCredentials` \| `BrokerUnavailable` \| `ReconcileError`. Written only on a real transition (anti-flap, principle #7). |

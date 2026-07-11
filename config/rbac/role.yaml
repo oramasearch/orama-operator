@@ -142,6 +142,7 @@ rules:
   - oramacloudv1e2etests
   - oramacloudv1s
   - oramazettaclusters
+  - rabbitmqtopologies
   - zettaclustere2etests
   verbs:
   - create
@@ -159,6 +160,7 @@ rules:
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
   - oramazettaclusters/finalizers
+  - rabbitmqtopologies/finalizers
   verbs:
   - update
 - apiGroups:
@@ -171,6 +173,7 @@ rules:
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
   - oramazettaclusters/status
+  - rabbitmqtopologies/status
   - zettaclustere2etests/status
   verbs:
   - get

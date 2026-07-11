@@ -1,0 +1,328 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: rabbitmqtopologies.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: RabbitMQTopology
+    listKind: RabbitMQTopologyList
+    plural: rabbitmqtopologies
+    shortNames:
+    - rmqtopo
+    singular: rabbitmqtopology
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.brokerService
+      name: Broker
+      type: string
+    - jsonPath: .status.vhosts
+      name: VHosts
+      type: integer
+    - jsonPath: .status.users
+      name: Users
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          RabbitMQTopology is the broker's declared topology (vhosts / users / permissions / streams),
+          owned by an OramaCloudV1 CR and reconciled against the RabbitMQ management HTTP API. A
+          finalizer removes the declared users and streams from the broker on delete, so tearing down the
+          owning CR cascades to real broker cleanup. Until the broker (and its admin Secret) is up the
+          reconciler is a safe no-op that surfaces a clear `Ready=False` condition rather than erroring —
+          ordered readiness gating (the topology settles once the broker is reachable).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              RabbitMQTopologySpec is the desired topology of the RabbitMQ broker — its virtual hosts,
+              per-service users, scoped permissions, and streams — reconciled against the broker's
+              management HTTP API. This is the operator's OWN topology CRD (principle #3): the bitnami
+              RabbitMQ Cluster/Messaging-Topology operators were dropped (their images 404'd), so the
+              broker runs as a plain StatefulSet and the operator models its topology here (#41), the same
+              "external resource as an owned CRD" shape as CloudflareDNSRecord. It supersedes #36's
+              imperative broker settings and app-boot side effects: the topology is declared, owned, and
+              reconciled instead of created implicitly by OramaCore on connect.
+            properties:
+              adminSecretRef:
+                description: |-
+                  AdminSecretRef names the Secret holding the broker admin credentials for the management API
+                  (keys `username` + `password`). Nil-safe: until the Secret exists the reconciler is a safe
+                  no-op (it waits, like the Cloudflare reconcilers wait on their token Secret).
+                type: string
+              brokerService:
+                description: |-
+                  BrokerService is the broker Service DNS name whose management API the operator reconciles
+                  against (e.g. <cr>-broker). The management API is reached at
+                  http://<BrokerService>.<namespace>.svc.cluster.local:<ManagementPort>.
+                type: string
+              managementPort:
+                default: 15672
+                description: ManagementPort is the RabbitMQ management HTTP API port.
+                format: int32
+                type: integer
+              permissions:
+                description: |-
+                  Permissions scope each user's configure/write/read regexes on a vhost. Empty regex ("^$")
+                  grants nothing; scope to the exact stream name (e.g. "^oramacore-operations$") for
+                  least-privilege.
+                items:
+                  description: |-
+                    RabbitMQPermission scopes one user's access on one vhost (the standard RabbitMQ
+                    configure/write/read regex model). A producer needs `write` on the stream; a consumer needs
+                    `read`; a client that declares the stream itself needs `configure`.
+                  properties:
+                    configure:
+                      default: ^$
+                      description: Configure regex (resources the user may declare/delete).
+                        "^$" = none.
+                      type: string
+                    read:
+                      default: ^$
+                      description: Read regex (resources the user may consume from).
+                        "^$" = none.
+                      type: string
+                    user:
+                      description: User is the RabbitMQ username this permission applies
+                        to.
+                      type: string
+                    vhost:
+                      default: /
+                      description: VHost the permission applies to.
+                      type: string
+                    write:
+                      default: ^$
+                      description: Write regex (resources the user may publish to).
+                        "^$" = none.
+                      type: string
+                  required:
+                  - user
+                  type: object
+                type: array
+              streams:
+                description: |-
+                  Streams are the stream queues (x-queue-type=stream) to declare — notably the
+                  `oramacore-operations` writer→reader replication stream (#41). NOTE: RabbitMQ compares stream
+                  properties on (re-)declaration, so a stream a native stream-protocol client (OramaCore) also
+                  creates on connect must be declared with MATCHING arguments — retention set here that the
+                  client does not also request will make the client's Create fail. Leave retention unset unless
+                  you know the client's exact create arguments.
+                items:
+                  description: RabbitMQStream is a stream queue (x-queue-type=stream)
+                    declared via the management API.
+                  properties:
+                    maxAge:
+                      description: |-
+                        MaxAge bounds retention by time using RabbitMQ's stream duration syntax (e.g. "7D", "12h").
+                        Empty = unbounded. Set only at declaration; RabbitMQ cannot change it later via policy.
+                      type: string
+                    maxLengthBytes:
+                      description: MaxLengthBytes bounds retention by total stream
+                        size in bytes. 0 = unbounded.
+                      format: int64
+                      type: integer
+                    maxSegmentSizeBytes:
+                      description: MaxSegmentSizeBytes sets the stream's segment size
+                        in bytes. 0 = broker default (500 MB).
+                      format: int64
+                      type: integer
+                    name:
+                      description: Name of the stream (e.g. oramacore-operations).
+                      type: string
+                    vhost:
+                      default: /
+                      description: VHost the stream lives in.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              users:
+                description: |-
+                  Users are the per-service accounts to ensure (least-privilege, principle #4). Each user's
+                  password is sourced from a referenced Secret so no credential ever lives in spec. Service
+                  accounts should stay untagged (no management/administrator access).
+                items:
+                  description: RabbitMQUser is a broker account whose password is
+                    sourced from a Secret.
+                  properties:
+                    name:
+                      description: Name is the RabbitMQ username (e.g. oramacore-writer).
+                      type: string
+                    passwordSecretRef:
+                      description: PasswordSecretRef names the Secret + key holding
+                        this user's password.
+                      properties:
+                        key:
+                          description: Key within the Secret holding the value.
+                          type: string
+                        name:
+                          description: Name of the Secret.
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    tags:
+                      description: |-
+                        Tags is the RabbitMQ user tag list (comma-separated), e.g. "" (a plain service account) or
+                        "management"/"administrator". Least-privilege service accounts stay untagged.
+                      type: string
+                  required:
+                  - name
+                  - passwordSecretRef
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              vhosts:
+                description: |-
+                  VHosts are the virtual hosts to ensure exist (idempotent PUT). "/" always exists in a fresh
+                  RabbitMQ, but listing it is harmless and documents intent.
+                items:
+                  type: string
+                type: array
+            required:
+            - adminSecretRef
+            - brokerService
+            type: object
+          status:
+            description: |-
+              RabbitMQTopologyStatus is the observed topology. Written to the status subresource ONLY on a
+              real state transition (deep-compare first) — a steady topology produces zero control-plane
+              traffic (anti-flap, principle #7).
+            properties:
+              conditions:
+                description: |-
+                  Conditions carry the standard `Ready` condition. Reason distinguishes
+                  WaitingForCredentials, BrokerUnavailable, ReconcileError, and Reconciled.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              message:
+                description: Message is a human-readable summary of the current state
+                  (or the last error).
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the spec generation this status
+                  reflects.
+                format: int64
+                type: integer
+              permissions:
+                description: Permissions is the number of permission grants reconciled.
+                type: integer
+              streams:
+                description: Streams reflects each managed stream and whether it is
+                  present on the broker.
+                items:
+                  description: RabbitMQStreamStatus is the observed state of one managed
+                    stream.
+                  properties:
+                    name:
+                      description: Name is the stream's spec name.
+                      type: string
+                    present:
+                      description: Present is true once the stream exists on the broker.
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              users:
+                description: Users is the number of users reconciled.
+                type: integer
+              vhosts:
+                description: VHosts is the number of vhosts reconciled.
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
