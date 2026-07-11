@@ -30,6 +30,13 @@ spec:
       name: Provisioned
       priority: 1
       type: string
+    - jsonPath: .status.reachability
+      name: Reachability
+      type: string
+    - jsonPath: .status.wanAddress
+      name: WAN
+      priority: 1
+      type: string
     - jsonPath: .spec.image
       name: Image
       type: string
@@ -227,15 +234,34 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              ephemeral:
+                default: false
+                description: |-
+                  Ephemeral marks this slice as burst / autoscaled capacity that is EXPECTED to churn — nodes come
+                  and go (e.g. the elastic-capacity autoscaler, operator#69). An ephemeral slice is ALWAYS
+                  dial-out-only: it is never advertised as a rendezvous (its address would flap), so it is forced to
+                  dial-out-only regardless of `spec.reachability`, and its membership blips are not treated as a
+                  cluster fault. Default false.
+                type: boolean
               exposePeerLoadBalancer:
                 default: false
                 description: |-
                   ExposePeerLoadBalancer creates a LoadBalancer Service for the peer port (:7777) so nodes in OTHER
-                  k8s clusters can dial this cluster from outside (cross-cloud siblings) — the way to reach an
-                  AKS/EKS/GKE node whose pod/node IPs aren't routable from the peer's network. The cloud provisions a
-                  public IP; put `<ip>:7777` in a sibling's spec.externalPeers. NOTE: peer traffic is then plaintext
-                  over the public internet when clusterPlaintext is set — only do this on a trusted path until the
-                  mTLS join token (oramasearch/zetta#670) lands. Default false.
+                  k8s clusters can dial this cluster from outside.
+
+                  ONLY valid for a `reachability: wan-accessible` slice — it makes a slice the platform intends to be
+                  GENUINELY wan-accessible reachable via a cloud public IP (put `<ip>:7777` in a sibling's
+                  spec.externalPeers; the operator also surfaces it as `.status.wanAddress`). Even then a cloud LB is
+                  only ONE option — a node whose host already has a public IP (`spec.hostNetwork`) or a mesh-VPN
+                  address (`spec.wanAddress`) needs none.
+
+                  ANTI-PATTERN — do NOT use this to "reach" a private (`dial-out-only`) node. That inverts the mesh
+                  model (oramasearch/zetta#739): a NAT'd/private node must DIAL OUT to a rendezvous, not accept
+                  inbound. On a `dial-out-only` slice (the default) this field is IGNORED and the operator logs a
+                  warning; any previously-created peer LB is torn down.
+
+                  NOTE: peer traffic is plaintext over the public internet when clusterPlaintext is set — only do this
+                  on a trusted path until the mTLS join token (oramasearch/zetta#670) lands. Default false.
                 type: boolean
               externalPeers:
                 description: |-
@@ -291,6 +317,24 @@ spec:
                 type: boolean
               pullSecretName:
                 description: PullSecretName lets the pods pull a private zetta image.
+                type: string
+              reachability:
+                default: dial-out-only
+                description: |-
+                  Reachability declares how siblings in the shared Zetta cluster reach THIS slice's nodes, per the
+                  corrected node-reachability model (oramasearch/zetta#739):
+                    - `dial-out-only` (DEFAULT): the slice is behind NAT / a private VNet — it dials OUT to the
+                      wan-accessible rendezvous(es) in `spec.externalPeers` and accepts NO inbound. The operator
+                      NEVER provisions an inbound LoadBalancer for it (any `exposePeerLoadBalancer` is ignored + a
+                      warning is logged — see that field).
+                    - `wan-accessible`: the slice has a routable address (see `spec.wanAddress` / `spec.hostNetwork`
+                      / `spec.exposePeerLoadBalancer`) — it is a RENDEZVOUS others dial OUT to. The operator
+                      advertises that address as `.status.wanAddress`, which siblings copy into their
+                      `spec.externalPeers` and the Cloudflare LB origin pool (operator#73) consumes.
+                  Default `dial-out-only` (a private node is always the initiator).
+                enum:
+                - wan-accessible
+                - dial-out-only
                 type: string
               replicas:
                 default: 1
@@ -366,6 +410,16 @@ spec:
                       cluster default StorageClass).
                     type: string
                 type: object
+              wanAddress:
+                description: |-
+                  WanAddress is the routable address (`host` or `host:port`) that siblings use to reach this
+                  wan-accessible slice's peer port. If no port is given, the peer port (:7777) is assumed. When set
+                  (and reachability is wan-accessible) it is authoritative — the operator advertises it verbatim as
+                  `.status.wanAddress` (e.g. a Tailscale/WireGuard address, a stable public IP, or a DNS name). When
+                  empty, the operator derives the address from `spec.hostNetwork` (the node's host IP) or
+                  `spec.exposePeerLoadBalancer` (the cloud LB's public IP). Ignored unless reachability is
+                  wan-accessible.
+                type: string
             type: object
           status:
             description: OramaZettaClusterStatus is the observed state of the cluster.
@@ -429,6 +483,10 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              ephemeral:
+                description: Ephemeral echoes spec.ephemeral — this slice is burst/autoscaled
+                  capacity expected to churn.
+                type: boolean
               message:
                 type: string
               phase:
@@ -441,6 +499,11 @@ spec:
                   is off or no autoscaler node has been provisioned yet. Surfaced with the `CapacityReady` condition.
                 format: int32
                 type: integer
+              reachability:
+                description: |-
+                  Reachability echoes the EFFECTIVE reachability type of this slice (spec.reachability, forced to
+                  `dial-out-only` when spec.ephemeral is set) — the node-reachability model (oramasearch/zetta#739).
+                type: string
               readyNodes:
                 description: ReadyNodes is the number of ready zetta pods.
                 format: int32
@@ -449,6 +512,14 @@ spec:
                 description: TotalNodes is the desired node count.
                 format: int32
                 type: integer
+              wanAddress:
+                description: |-
+                  WanAddress is the routable rendezvous address (`host:port`) siblings dial OUT to when this slice is
+                  wan-accessible. It is the address siblings put in their `spec.externalPeers`, and the Cloudflare LB
+                  origin pool (operator#73) is populated from the wan-accessible set's addresses (its HTTP origin is
+                  the same host at :4800). Empty for a dial-out-only slice, or until the address is known (e.g. a
+                  pending cloud LB IP).
+                type: string
             type: object
         type: object
     served: true

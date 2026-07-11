@@ -8,6 +8,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,6 +73,7 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 //+kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
@@ -101,6 +104,78 @@ func zettaLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 
 func zettaNames(z *oramav1alpha1.OramaZettaCluster) (sts, headlessSvc, clientSvc string) {
 	return z.Name + "-zetta", z.Name + "-zetta-headless", z.Name + "-zetta"
+}
+
+// zettaReachability returns the EFFECTIVE node-reachability type of a slice (oramasearch/zetta#739) —
+// the single source of truth the reconciler + status share. An ephemeral slice is always dial-out-only
+// (burst/autoscaled capacity must never be advertised as a rendezvous — its address would flap), and an
+// unset value defaults to dial-out-only (a private node is always the initiator).
+func zettaReachability(z *oramav1alpha1.OramaZettaCluster) string {
+	if z.Spec.Ephemeral {
+		return oramav1alpha1.ReachabilityDialOutOnly
+	}
+	if z.Spec.Reachability == oramav1alpha1.ReachabilityWANAccessible {
+		return oramav1alpha1.ReachabilityWANAccessible
+	}
+	return oramav1alpha1.ReachabilityDialOutOnly
+}
+
+// zettaWANAddress resolves the routable rendezvous address the operator advertises for a WAN-ACCESSIBLE
+// slice — `host:port` on the peer port. This is the value siblings copy into their spec.externalPeers,
+// and the Cloudflare LB origin pool (operator#73) is populated from the wan-accessible set (its HTTP
+// origin is the same host at :4800). Empty for a dial-out-only slice, or until the address is known (a
+// pending cloud LB IP, an unscheduled hostNetwork pod). Resolution order: an explicit spec.wanAddress
+// wins (a mesh-VPN address / stable public IP / DNS name); else the peer LoadBalancer's assigned public
+// address (spec.exposePeerLoadBalancer); else node-0's host IP (spec.hostNetwork).
+//
+// NOTE: once Zetta grows a `--advertise HOST:PORT` flag (oramasearch/zetta#739 request #1) the operator
+// will pass this address as --advertise so a NAT'd/LB'd node gossips it instead of its bound address;
+// until then wan-accessibility relies on hostNetwork (bound address == routable address) or the LB path.
+func (r *OramaZettaClusterReconciler) zettaWANAddress(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, peerLBName, stsName string) string {
+	if zettaReachability(z) != oramav1alpha1.ReachabilityWANAccessible {
+		return ""
+	}
+	// 1. Explicit override — authoritative.
+	if a := strings.TrimSpace(z.Spec.WanAddress); a != "" {
+		return withPeerPort(a)
+	}
+	// 2. Peer LoadBalancer public IP/hostname (cloud-provisioned).
+	if z.Spec.ExposePeerLoadBalancer {
+		var lb corev1.Service
+		if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: peerLBName}, &lb); err == nil {
+			for _, ing := range lb.Status.LoadBalancer.Ingress {
+				if ing.Hostname != "" {
+					return withPeerPort(ing.Hostname)
+				}
+				if ing.IP != "" {
+					return withPeerPort(ing.IP)
+				}
+			}
+		}
+	}
+	// 3. hostNetwork — node-0's host IP (the k8s node's own routable address).
+	if z.Spec.HostNetwork {
+		var pod corev1.Pod
+		if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: stsName + "-0"}, &pod); err == nil && pod.Status.HostIP != "" {
+			return withPeerPort(pod.Status.HostIP)
+		}
+	}
+	return ""
+}
+
+// withPeerPort appends the Zetta peer port to a bare host, leaving an already-`host:port` address alone
+// (and bracketing a bare IPv6 literal so the result is a valid dial target).
+func withPeerPort(addr string) string {
+	if _, _, err := net.SplitHostPort(addr); err == nil {
+		return addr // already host:port (or [ipv6]:port)
+	}
+	if strings.HasPrefix(addr, "[") { // bracketed IPv6, no port
+		return fmt.Sprintf("%s:%d", addr, zettaPeerPort)
+	}
+	if strings.Count(addr, ":") >= 2 { // bare IPv6 literal — bracket it
+		return fmt.Sprintf("[%s]:%d", addr, zettaPeerPort)
+	}
+	return fmt.Sprintf("%s:%d", addr, zettaPeerPort)
 }
 
 func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -186,11 +261,22 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		_ = deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: z.Name + "-zetta-mcp", Namespace: z.Namespace}})
 	}
 
-	// 2.6 Peer LoadBalancer — OPT-IN (spec.exposePeerLoadBalancer). A cloud LB fronting the peer port so
-	//     siblings in OTHER clusters can dial this cluster from outside (put its public IP in their
-	//     spec.externalPeers). No-op unless set; torn down when cleared.
+	// 2.6 Peer LoadBalancer — OPT-IN (spec.exposePeerLoadBalancer) and ONLY for a wan-accessible slice.
+	//     A cloud LB fronting the peer port makes a GENUINELY wan-accessible slice reachable from other
+	//     clusters (its public IP → siblings' spec.externalPeers + this slice's .status.wanAddress).
+	//     Corrected mesh model (oramasearch/zetta#739): a dial-out-only/ephemeral/private node must DIAL
+	//     OUT to a rendezvous, never accept inbound — so on such a slice this is IGNORED (with a warning)
+	//     and any previously-created LB is torn down. No-op unless set AND wan-accessible.
+	reachability := zettaReachability(&z)
 	peerLBName := z.Name + "-zetta-peer"
-	if z.Spec.ExposePeerLoadBalancer {
+	wantPeerLB := z.Spec.ExposePeerLoadBalancer && reachability == oramav1alpha1.ReachabilityWANAccessible
+	if z.Spec.ExposePeerLoadBalancer && !wantPeerLB {
+		logf.FromContext(ctx).Info("ignoring spec.exposePeerLoadBalancer on a non-wan-accessible slice: a "+
+			"dial-out-only/ephemeral node must DIAL OUT to a wan-accessible rendezvous, not accept an inbound "+
+			"endpoint (node-reachability model, oramasearch/zetta#739) — set spec.reachability=wan-accessible to expose it",
+			"reachability", reachability, "ephemeral", z.Spec.Ephemeral)
+	}
+	if wantPeerLB {
 		peerLB := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: peerLBName, Namespace: z.Namespace}}
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, peerLB, func() error {
 			peerLB.Labels = lbls
@@ -235,8 +321,10 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// 6. Status — readiness roll-up + the capacity + install conditions/count (write only on change; anti-flap).
-	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, provisionedNodes); err != nil {
+	// 6. Status — readiness roll-up + the capacity/install conditions/count and the slice's reachability
+	//    type + (for a wan-accessible slice) the routable rendezvous address (write only on change; anti-flap).
+	wanAddress := r.zettaWANAddress(ctx, &z, peerLBName, stsName)
+	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, provisionedNodes, reachability, wanAddress); err != nil {
 		return ctrl.Result{}, err
 	}
 	// When acting as the datastore, requeue periodically so the coarse state sync tracks the rest of
@@ -622,12 +710,12 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 	return controllerutil.SetControllerReference(z, sts, r.Scheme)
 }
 
-// reconcileZettaStatus rolls the StatefulSet's readiness up into the CR status, and folds in the
-// elastic-capacity + Karpenter-install conditions and the provisioned-node count. Writes only on a real
-// change (anti-flap — operator principle #7): the phase/counts/message are deep-compared and each
-// condition is merged via meta.SetStatusCondition (which reports whether anything actually moved). A nil
-// condition (capacity/install off) drops that condition so a non-capacity cluster keeps a clean status.
-func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond, installCond *metav1.Condition, provisionedNodes int32) error {
+// reconcileZettaStatus rolls the StatefulSet's readiness up into the CR status, folds in the
+// elastic-capacity + Karpenter-install conditions and the provisioned-node count, and records the slice's
+// effective node-reachability type and (for a wan-accessible slice) the routable rendezvous address.
+// Writes only on a real change (anti-flap — operator principle #7); reachability + wanAddress are computed
+// by the caller (zettaReachability / zettaWANAddress) so the reconcile and status agree.
+func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond, installCond *metav1.Condition, provisionedNodes int32, reachability, wanAddress string) error {
 	desired := z.Spec.Replicas
 	if desired < 1 {
 		desired = 1
@@ -648,7 +736,9 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 
 	changed := z.Status.Phase != phase || z.Status.ReadyNodes != ready ||
 		z.Status.TotalNodes != desired || z.Status.Message != msg ||
-		z.Status.ProvisionedNodes != provisionedNodes
+		z.Status.ProvisionedNodes != provisionedNodes ||
+		z.Status.Reachability != reachability || z.Status.Ephemeral != z.Spec.Ephemeral ||
+		z.Status.WanAddress != wanAddress
 
 	if capCond != nil {
 		capCond.ObservedGeneration = z.Generation
@@ -673,6 +763,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 	}
 	z.Status.Phase, z.Status.ReadyNodes, z.Status.TotalNodes, z.Status.Message = phase, ready, desired, msg
 	z.Status.ProvisionedNodes = provisionedNodes
+	z.Status.Reachability, z.Status.Ephemeral, z.Status.WanAddress = reachability, z.Spec.Ephemeral, wanAddress
 	return r.Status().Update(ctx, z)
 }
 
