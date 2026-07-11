@@ -131,6 +131,15 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
   the per-subsystem backlog are tracked under
   [operator#44](https://github.com/oramasearch/orama-cloud-v1-operator/issues/44). Per principle #9,
   extend the operator to make an assertion pass — never soften the assertion.
+- **Zetta e2e (`ZettaClusterE2ETest`):** runs the **live-cluster zetta suite** as a Job against a
+  deployed `OramaZettaCluster`. Unlike the v1 suite (embedded via `go:embed`), the Zetta script lives in
+  the **zetta repo** (`tests/e2e/zetta-e2e.sh`) and is **baked into the `oramasearch/zetta-e2e` image**
+  (its `ENTRYPOINT` runs it) so it evolves with the engine — the CRD only *triggers* it, reading the
+  target's `spec.replicas` and passing the addressing as `ZETTA_E2E_*` env (`BASE_URL` pinned to node-0,
+  `PEER_URLS` for ordinals 1..N-1, `LEVELS`, optional `TOKEN` when `spec.mcpTokenAuth`). Runs L2
+  (`zetta::testkit`) + L3 (black-box integration). Watch `kubectl get ozce2e`; logs `kubectl logs
+  job/<name>-e2e`. A coverage change touches three repos: zetta (script) → zetta-bridge (image) →
+  operator (CRD).
 
 ## Conventions
 

@@ -97,3 +97,33 @@ service. Sample: [`../config/samples/oramazettacluster.yaml`](../config/samples/
 **Live (`oramadev.net` sandbox):** `GET https://zetta.oramadev.net/` returns `zetta` (the landing pod),
 and `GET https://zetta.oramadev.net/v1/server_info` returns the node's server info from the Zetta API —
 both through Cloudflare (proxied), the same reachability path as `app.oramadev.net` → the dashboard.
+
+## `ZettaClusterE2ETest` (separate CRD)
+
+Runs the **live-cluster zetta e2e suite** as a Job against a deployed `OramaZettaCluster` — a test is a
+first-class, repeatable resource (the operator never runs suites during normal reconcile). **Unlike the
+`OramaCloudV1E2ETest` suite** — which is embedded in the operator via `go:embed` — the Zetta suite lives
+in the **zetta repo** (`tests/e2e/zetta-e2e.sh`) and is **baked into the `oramasearch/zetta-e2e` image**
+(its `ENTRYPOINT` runs the script) so it evolves in lockstep with the engine; this CRD only **triggers**
+it. The reconciler reads the target cluster's `spec.replicas` and wires the cluster addressing to the
+suite via env (the exact contract the script reads — **do not rename**):
+
+| Env var | Value |
+|---|---|
+| `ZETTA_E2E_BASE_URL` | `http://<targetRef>-zetta-0.<targetRef>-zetta-headless.<ns>.svc.cluster.local:4800` — the writer, pinned to node-0 via per-pod DNS. |
+| `ZETTA_E2E_PEER_URLS` | Space-joined per-pod DNS of ordinals `1..replicas-1` (`<targetRef>-zetta-<i>.<targetRef>-zetta-headless.<ns>.svc.cluster.local:4800`); empty for a single node. |
+| `ZETTA_E2E_LEVELS` | `spec.levels` (default `2,3`). The suite runs L2 (`zetta::testkit`) + L3 (black-box integration over the deployed surfaces). |
+| `ZETTA_E2E_TOKEN` | Only when the target has `spec.mcpTokenAuth` — a `SecretKeyRef` to `<targetRef>-zetta-mcp` key `token`. Best-effort (the token authenticates-but-denies today, [zetta#733](https://github.com/oramasearch/zetta/issues/733)). |
+
+If the target `OramaZettaCluster` doesn't exist yet, the test parks in `Pending`
+(`waiting for target OramaZettaCluster <ref>`) and requeues — it never creates a Job without a target.
+A change to Zetta coverage touches **three** repos: zetta (the script) → zetta-bridge (the image) →
+this operator (the CRD). Sample: [`../config/samples/zetta-e2e-test.yaml`](../config/samples/zetta-e2e-test.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.targetRef` | Name of the `OramaZettaCluster` to test (same namespace). Required. |
+| `spec.image` | **Runner image** (default `oramasearch/zetta-e2e:v1-sandbox`) that bakes the suite as its `ENTRYPOINT` — the operator sets only `Env`, never a `Command`. |
+| `spec.levels` | Which test levels to run (`ZETTA_E2E_LEVELS`, default `2,3`). |
+| `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
+| `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ozce2e`; `kubectl logs job/<name>-e2e`. |

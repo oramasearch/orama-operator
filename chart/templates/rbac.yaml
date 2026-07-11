@@ -20,6 +20,7 @@ rules:
       - oramacloudv1s
       - oramazettaclusters
       - oramacloudv1e2etests
+      - zettaclustere2etests
       - cloudflarednsrecords
       - cloudflarekvnamespaces
       - cloudflarer2buckets
@@ -29,6 +30,7 @@ rules:
       - oramacloudv1s/status
       - oramazettaclusters/status
       - oramacloudv1e2etests/status
+      - zettaclustere2etests/status
       - cloudflarednsrecords/status
       - cloudflarekvnamespaces/status
       - cloudflarer2buckets/status
