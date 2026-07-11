@@ -1,0 +1,22 @@
+# Run the live-cluster zetta e2e suite against a deployed OramaZettaCluster. The suite itself lives
+# in the zetta repo (tests/e2e/zetta-e2e.sh) and is BAKED into the oramasearch/zetta-e2e image (its
+# ENTRYPOINT runs the script), so it evolves with the engine — the operator only triggers it. The
+# controller reads the target cluster's replica count and passes the addressing + levels as env:
+#   ZETTA_E2E_BASE_URL   http://<targetRef>-zetta-0.<targetRef>-zetta-headless.<ns>.svc.cluster.local:4800  (writer → node-0)
+#   ZETTA_E2E_PEER_URLS  space-joined per-pod DNS of ordinals 1..replicas-1 (empty for a single node)
+#   ZETTA_E2E_LEVELS     spec.levels (default "2,3")
+#   ZETTA_E2E_TOKEN      only when the target has spec.mcpTokenAuth (SecretKeyRef <targetRef>-zetta-mcp/token)
+# It creates a Job <name>-e2e and reflects pass/fail in .status.phase.
+# Watch:  kubectl get ozce2e -n orama-system
+# Logs:   kubectl logs job/zetta-e2e-e2e -n orama-system
+# Re-run: kubectl delete ozce2e zetta-e2e -n orama-system && kubectl apply -f config/samples/zetta-e2e-test.yaml
+apiVersion: orama.cloud/v1alpha1
+kind: ZettaClusterE2ETest
+metadata:
+  name: zetta-e2e
+  namespace: orama-system
+spec:
+  targetRef: zetta-0                     # the OramaZettaCluster to test (same namespace)
+  # image: oramasearch/zetta-e2e:v1-sandbox  # optional runner override (default); the image bakes the suite as its ENTRYPOINT
+  # levels: "2,3"                        # optional; which test levels to run (default)
+  pullSecretName: oramasearch-dockerhub  # authenticates image pulls (also avoids Docker Hub anon rate limits)

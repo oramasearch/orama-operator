@@ -79,6 +79,7 @@ rules:
   - oramacloudv1e2etests
   - oramacloudv1s
   - oramazettaclusters
+  - zettaclustere2etests
   verbs:
   - create
   - delete
@@ -105,6 +106,7 @@ rules:
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
   - oramazettaclusters/status
+  - zettaclustere2etests/status
   verbs:
   - get
   - patch
