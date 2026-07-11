@@ -139,7 +139,13 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
   `PEER_URLS` for ordinals 1..N-1, `LEVELS`, optional `TOKEN` when `spec.mcpTokenAuth`). Runs L2
   (`zetta::testkit`) + L3 (black-box integration). Watch `kubectl get ozce2e`; logs `kubectl logs
   job/<name>-e2e`. A coverage change touches three repos: zetta (script) → zetta-bridge (image) →
-  operator (CRD).
+  operator (CRD). **Authz coverage:** `OramaZettaCluster.spec.requireAuth` (opt-in, default off) runs the
+  node under `--require-auth` with a seeded admin token (Secret `<name>-zetta-admin`); the e2e then sets
+  `ZETTA_E2E_REQUIRE_AUTH=1` + `ZETTA_E2E_TOKEN` (the admin token) to exercise authz enforcement — the
+  regression harness for the zetta auth work ([operator#88](https://github.com/oramasearch/orama-cloud-v1-operator/issues/88),
+  [zetta#780](https://github.com/oramasearch/zetta/issues/780)). Those flags are unlanded engine work, so
+  the sandbox image rejects them — enable only against an auth-capable build. The test's status also carries
+  best-effort `pass`/`fail`/`skip` counts parsed from the Job's pod logs (RBAC `pods/log get`).
 
 ## Conventions
 

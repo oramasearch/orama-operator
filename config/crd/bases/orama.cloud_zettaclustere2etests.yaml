@@ -26,6 +26,15 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.pass
+      name: Pass
+      type: integer
+    - jsonPath: .status.fail
+      name: Fail
+      type: integer
+    - jsonPath: .status.skip
+      name: Skip
+      type: integer
     - jsonPath: .status.jobName
       name: Job
       type: string
@@ -89,13 +98,29 @@ spec:
             description: ZettaClusterE2ETestStatus is the observed state of a test
               run.
             properties:
+              fail:
+                description: Fail is the number of failed assertions parsed (best-effort)
+                  from the Job's pod logs.
+                format: int32
+                type: integer
               jobName:
                 type: string
               message:
                 type: string
+              pass:
+                description: |-
+                  Pass is the number of passed assertions parsed (best-effort) from the Job's pod logs
+                  (`Zetta e2e: pass=N fail=N skip=N`). 0 until the Job is terminal and the summary is readable.
+                format: int32
+                type: integer
               phase:
                 description: 'Phase: Pending | Running | Succeeded | Failed.'
                 type: string
+              skip:
+                description: Skip is the number of skipped assertions parsed (best-effort)
+                  from the Job's pod logs.
+                format: int32
+                type: integer
             type: object
         type: object
     served: true

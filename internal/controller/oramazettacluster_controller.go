@@ -132,6 +132,18 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		_ = deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: z.Name + "-zetta-mcp", Namespace: z.Namespace}})
 	}
 
+	// 2.55 Admin token — OPT-IN (spec.requireAuth, default off). Runs the node under `--require-auth`
+	//      with a seeded admin token so the authz system is ENFORCED — the regression harness for the
+	//      zetta auth work (oramasearch/zetta#759–#769). Mirrors the MCP-token shape (mint once, never
+	//      rotate). Provisioned before the StatefulSet so its secretKeyRef resolves.
+	if z.Spec.RequireAuth {
+		if err := r.reconcileZettaAdminToken(ctx, &z); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		_ = deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: z.Name + "-zetta-admin", Namespace: z.Namespace}})
+	}
+
 	// 2.6 Peer LoadBalancer — OPT-IN (spec.exposePeerLoadBalancer). A cloud LB fronting the peer port so
 	//     siblings in OTHER clusters can dial this cluster from outside (put its public IP in their
 	//     spec.externalPeers). No-op unless set; torn down when cleared.
@@ -224,6 +236,43 @@ func (r *OramaZettaClusterReconciler) reconcileZettaMCPToken(ctx context.Context
 			kv = append(kv, "connectDocs", "https://"+z.Spec.Host+"/mcp.md")
 		}
 		logf.FromContext(ctx).Info("provisioned MCP bearer token — the node now requires a bearer on /mcp and /v1/*", kv...)
+	}
+	return nil
+}
+
+// reconcileZettaAdminToken ensures a Secret holding a 64-char (32-byte hex) ADMIN token exists for
+// this cluster when spec.requireAuth is set. The token is injected into the node (ZETTA_ADMIN_TOKEN →
+// `--admin-token`, alongside `--require-auth`), which enforces the authz system and seeds this token
+// as the admin principal — so the ZettaClusterE2ETest can drive real authz assertions (the regression
+// harness for oramasearch/zetta#759–#769). Idempotent — minted once and PRESERVED across reconciles
+// (never rotated); the value is never logged (the entrypoint echo redacts it). This mirrors
+// reconcileZettaMCPToken exactly; the only difference is the Secret name (`<name>-zetta-admin`) and the
+// flags the node receives. NOTE: the deployed sandbox image predates `--require-auth`/`--admin-token`
+// (oramasearch/zetta#780) — enable this only against an auth-capable build (see the field doc).
+func (r *OramaZettaClusterReconciler) reconcileZettaAdminToken(ctx context.Context, z *oramav1alpha1.OramaZettaCluster) error {
+	name := z.Name + "-zetta-admin"
+	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, sec, func() error {
+		sec.Labels = zettaLabels(z)
+		if len(sec.Data["token"]) == 0 { // mint once; preserve on later reconciles
+			token, gerr := randHex(32) // 32 bytes → 64 hex chars
+			if gerr != nil {
+				return gerr
+			}
+			if sec.Data == nil {
+				sec.Data = map[string][]byte{}
+			}
+			sec.Data["token"] = []byte(token)
+		}
+		return controllerutil.SetControllerReference(z, sec, r.Scheme)
+	})
+	if err != nil {
+		return err
+	}
+	if op == controllerutil.OperationResultCreated {
+		logf.FromContext(ctx).Info("provisioned admin token — the node runs with --require-auth (authz ENFORCED)",
+			"component", "zetta-admin", "secret", name,
+			"retrieve", fmt.Sprintf("kubectl get secret %s -n %s -o jsonpath='{.data.token}' | base64 -d", name, z.Namespace))
 	}
 	return nil
 }
@@ -418,9 +467,11 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	for _, p := range z.Spec.ExternalPeers {
 		extPeers += " --peer " + p
 	}
-	// The --mcp-token is appended AFTER the echo, and the echo shows only a redacted "****", so the
-	// bearer token never lands in the pod log. The token is injected via the ZETTA_MCP_TOKEN env from
-	// the <name>-zetta-mcp Secret (reconcileZettaMCPToken).
+	// Secret flags (--mcp-token / --admin-token) are appended AFTER the echo, and the echo shows only a
+	// redacted "****", so no token ever lands in the pod log. Tokens are injected via env from their
+	// Secrets: ZETTA_MCP_TOKEN (<name>-zetta-mcp, reconcileZettaMCPToken) and, when spec.requireAuth is
+	// set, ZETTA_ADMIN_TOKEN (<name>-zetta-admin, reconcileZettaAdminToken) which also flips on
+	// --require-auth so the node ENFORCES authz (regression harness for oramasearch/zetta#759–#769).
 	entry := fmt.Sprintf(`set -eu
 ORD="${POD_NAME##*-}"   # NOT $HOSTNAME — under hostNetwork that is the node's name, not the pod's
 PEER_PORT=%[2]d
@@ -439,8 +490,9 @@ A="--headless --data-dir %[1]s --listen 0.0.0.0:$PEER_PORT --mcp-listen 0.0.0.0:
 if [ "$ORD" != "0" ]; then A="$A --peer $SEED"; fi
 if [ "$ZETTA_CLUSTER_PLAINTEXT" = "1" ]; then A="$A --cluster-plaintext"; fi
 A="$A%[5]s"
-echo "zetta node $POD_NAME (ordinal $ORD): zetta $A${ZETTA_MCP_TOKEN:+ --mcp-token ****}"
+echo "zetta node $POD_NAME (ordinal $ORD): zetta $A${ZETTA_MCP_TOKEN:+ --mcp-token ****}${ZETTA_ADMIN_TOKEN:+ --require-auth --admin-token ****}"
 if [ -n "${ZETTA_MCP_TOKEN:-}" ]; then A="$A --mcp-token $ZETTA_MCP_TOKEN"; fi
+if [ -n "${ZETTA_ADMIN_TOKEN:-}" ]; then A="$A --require-auth --admin-token $ZETTA_ADMIN_TOKEN"; fi
 exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 
 	zettaEnv := []corev1.EnvVar{
@@ -460,6 +512,11 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 	if z.Spec.MCPTokenAuth {
 		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_MCP_TOKEN", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-mcp"}, Key: "token"}}})
+	}
+	if z.Spec.RequireAuth {
+		// Inject the admin token; its presence in the entrypoint flips on --require-auth (authz enforced).
+		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-admin"}, Key: "token"}}})
 	}
 
 	sts.Labels = lbls
@@ -485,7 +542,7 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 				Name:    "zetta",
 				Image:   image,
 				Command: []string{"/bin/sh", "-c", entry},
-				Env: zettaEnv,
+				Env:     zettaEnv,
 				Ports: []corev1.ContainerPort{
 					{Name: "peer", ContainerPort: zettaPeerPort},
 					{Name: "api", ContainerPort: zettaAPIPort},

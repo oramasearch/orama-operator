@@ -1,0 +1,48 @@
+# Require-auth target profile for the Zetta e2e — a 3-replica OramaZettaCluster that runs the node
+# under `--require-auth` with a seeded admin token, plus a ZettaClusterE2ETest that exercises the
+# authz-enforcement assertions against it. This is the regression harness for the zetta auth work
+# (oramasearch/zetta#759–#769); see https://github.com/oramasearch/orama-cloud-v1-operator/issues/88.
+#
+# What `spec.requireAuth: true` does:
+#   * mints a 64-hex admin token once into Secret `zetta-auth-zetta-admin` (key `token`), preserved
+#     across reconciles (never rotated) — same shape as the `-zetta-mcp` token;
+#   * injects it as env `ZETTA_ADMIN_TOKEN` and passes `--require-auth --admin-token <token>` to every
+#     node, so the authz system is ENFORCED (deny-by-default).
+# The ZettaClusterE2ETest then sees the target is require-auth and sets `ZETTA_E2E_REQUIRE_AUTH=1` +
+# `ZETTA_E2E_TOKEN` (SecretKeyRef -> `zetta-auth-zetta-admin`/token) for the suite (LEVEL 3.12).
+#
+# MULTI-NODE: the e2e builds `ZETTA_E2E_PEER_URLS` from the target's replicas, so a `replicas: 3`
+# target automatically exercises the authz path across all three nodes (writer node-0 + 2 read peers).
+#
+# IMPORTANT — image requirement: `--require-auth`/`--admin-token` are the zetta auth work
+# (oramasearch/zetta#780). The default sandbox image (`oramasearch/zetta:headless-v1-sandbox`)
+# PREDATES these flags and rejects unknown options (the node exits with a usage error), so only enable
+# `requireAuth` against an auth-capable build — pin that image below when it exists.
+#
+#   kubectl apply -f config/samples/zetta-require-auth.yaml
+#   kubectl get ozc  zetta-auth      -n orama-system      # Nodes / Desired / Phase
+#   kubectl get ozce2e zetta-auth-e2e -n orama-system      # Phase / Pass / Fail / Skip
+#   kubectl logs job/zetta-auth-e2e-e2e -n orama-system
+apiVersion: orama.cloud/v1alpha1
+kind: OramaZettaCluster
+metadata:
+  name: zetta-auth
+  namespace: orama-system
+spec:
+  replicas: 3                                    # writer node-0 + 2 read peers (multi-node authz path)
+  # image: oramasearch/zetta:headless-vX-auth    # MUST implement --require-auth/--admin-token (zetta#780)
+  pullSecretName: oramasearch-dockerhub          # for the private zetta image
+  requireAuth: true                              # run --require-auth with a seeded admin token (authz ENFORCED)
+  clusterPlaintext: true                         # multi-node peers join without a shared mTLS token today
+  storage:
+    size: 10Gi
+---
+apiVersion: orama.cloud/v1alpha1
+kind: ZettaClusterE2ETest
+metadata:
+  name: zetta-auth-e2e
+  namespace: orama-system
+spec:
+  targetRef: zetta-auth                          # the require-auth cluster above (same namespace)
+  # levels: "2,3"                                # L3.12 authz enforcement runs when the target is require-auth
+  pullSecretName: oramasearch-dockerhub

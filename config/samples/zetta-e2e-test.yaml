@@ -5,8 +5,11 @@
 #   ZETTA_E2E_BASE_URL   http://<targetRef>-zetta-0.<targetRef>-zetta-headless.<ns>.svc.cluster.local:4800  (writer → node-0)
 #   ZETTA_E2E_PEER_URLS  space-joined per-pod DNS of ordinals 1..replicas-1 (empty for a single node)
 #   ZETTA_E2E_LEVELS     spec.levels (default "2,3")
-#   ZETTA_E2E_TOKEN      only when the target has spec.mcpTokenAuth (SecretKeyRef <targetRef>-zetta-mcp/token)
-# It creates a Job <name>-e2e and reflects pass/fail in .status.phase.
+#   ZETTA_E2E_REQUIRE_AUTH  "1" when the target has spec.requireAuth (runs the authz-enforcement level)
+#   ZETTA_E2E_TOKEN      require-auth target: SecretKeyRef <targetRef>-zetta-admin/token (seeded admin);
+#                        else mcpTokenAuth target: SecretKeyRef <targetRef>-zetta-mcp/token
+# It creates a Job <name>-e2e and reflects pass/fail in .status.phase (+ pass/fail/skip counts).
+# For a require-auth + multi-node target, see config/samples/zetta-require-auth.yaml.
 # Watch:  kubectl get ozce2e -n orama-system
 # Logs:   kubectl logs job/zetta-e2e-e2e -n orama-system
 # Re-run: kubectl delete ozce2e zetta-e2e -n orama-system && kubectl apply -f config/samples/zetta-e2e-test.yaml
