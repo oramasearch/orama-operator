@@ -70,7 +70,7 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	MCPTokenAuth bool `json:"mcpTokenAuth,omitempty"`
 
-	// RequireAuth is OPT-IN (default off): run the node with `--require-auth` and a seeded admin token
+	// RequireAuth (default TRUE — secure by default): run the node with `--require-auth` and a seeded admin token
 	// so the authz system is ENFORCED (deny-by-default), for exercising the authz work — which has
 	// known open issues (oramasearch/zetta#759–#769). When true the operator mints a 64-hex admin token
 	// once into Secret `<name>-zetta-admin` (key `token`), injects it as `ZETTA_ADMIN_TOKEN`, and passes
