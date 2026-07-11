@@ -86,6 +86,19 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	MCPTokenAuth bool `json:"mcpTokenAuth,omitempty"`
 
+	// RequireAuth is OPT-IN (default off): run the node with `--require-auth` and a seeded admin token
+	// so the authz system is ENFORCED (deny-by-default), for exercising the authz work — which has
+	// known open issues (oramasearch/zetta#759–#769). When true the operator mints a 64-hex admin token
+	// once into Secret `<name>-zetta-admin` (key `token`), injects it as `ZETTA_ADMIN_TOKEN`, and passes
+	// `--require-auth --admin-token <token>` to the node; the ZettaClusterE2ETest then runs its authz
+	// assertions against the target (`ZETTA_E2E_REQUIRE_AUTH=1`). This is the regression harness for the
+	// zetta auth work — the target's image MUST implement these flags (oramasearch/zetta#780); the
+	// deployed sandbox image predates them and rejects unknown flags, so only enable this against an
+	// auth-capable build. Default off = today's unauthenticated-local behavior, no Secret, no flags.
+	// +kubebuilder:default=false
+	// +optional
+	RequireAuth bool `json:"requireAuth,omitempty"`
+
 	// ClusterName is the GLOBAL Zetta cluster name. A Zetta cluster can span multiple k8s clusters; each
 	// k8s cluster's OramaZettaCluster CR is a SLICE of it, and CRs sharing this name are SIBLINGS — equal
 	// peers in one multi-leader cluster (operator#71). Empty = a standalone cluster named after the CR.
