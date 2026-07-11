@@ -24,8 +24,9 @@ spec:
   # resources:                                    # right-size each node (mem/cpu)
   #   requests: { cpu: "500m", memory: "1Gi" }
   #   limits:   { cpu: "2",    memory: "4Gi" }
-  clusterPlaintext: false                         # single node mints its own mTLS token; set true for
-                                                  # a multi-node cluster until mTLS token-sharing lands
+  # Inter-node peer traffic is ALWAYS mTLS. The operator mints one shared cluster join token per cluster
+  # (Secret zetta-0-zetta-cluster) and injects it into every node as ZETTA_CLUSTER_TOKEN, so all nodes
+  # derive the same cluster CA and form ONE cluster (operator#92). There is no plaintext-peer option.
 
   # --- Node reachability (the corrected mesh model, oramasearch/zetta#739) ---
   # How siblings in the shared Zetta cluster reach THIS slice. Default: dial-out-only.

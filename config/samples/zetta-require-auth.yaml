@@ -33,7 +33,9 @@ spec:
   # image: oramasearch/zetta:headless-vX-auth    # MUST implement --require-auth/--admin-token (zetta#780)
   pullSecretName: oramasearch-dockerhub          # for the private zetta image
   requireAuth: true                              # run --require-auth with a seeded admin token (authz ENFORCED)
-  clusterPlaintext: true                         # multi-node peers join without a shared mTLS token today
+  # Inter-node traffic is always mTLS via the shared cluster join token (Secret zetta-auth-zetta-cluster,
+  # operator#92). NOTE: multi-node mTLS convergence additionally needs the engine's DNS-dial + mTLS-sync
+  # fixes (oramasearch/zetta#785, #786) — until those land a >1-node cluster won't fully converge.
   storage:
     size: 10Gi
 ---

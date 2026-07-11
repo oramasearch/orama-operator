@@ -54,11 +54,11 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	// ClusterPlaintext disables inter-node mTLS (the peers join without a token). Convenient inside a
-	// single trusted namespace (+ a NetworkPolicy); leave false to use the generated join-token Secret.
-	// +kubebuilder:default=false
-	// +optional
-	ClusterPlaintext bool `json:"clusterPlaintext,omitempty"`
+	// NOTE: inter-node peer traffic is ALWAYS mutual-TLS. The operator mints one shared cluster join
+	// token per cluster (Secret `<name>-zetta-cluster`) and injects it into every node as
+	// ZETTA_CLUSTER_TOKEN; the engine derives the cluster CA from it, so all nodes form ONE cluster
+	// (operator#92). There is no plaintext-peer option — an unencrypted `--cluster-plaintext` mode was
+	// removed as a security hole once real mTLS clustering worked. See docs/zetta-cluster-mtls.md.
 
 	// Host, if set, exposes the cluster's HTTP API (:4800 — MCP + REST + serving, the Zetta UI) via an
 	// Ingress at this hostname (e.g. zetta.oramadev.net). Requires an ingress controller.
@@ -171,8 +171,9 @@ type OramaZettaClusterSpec struct {
 	// inbound. On a `dial-out-only` slice (the default) this field is IGNORED and the operator logs a
 	// warning; any previously-created peer LB is torn down.
 	//
-	// NOTE: peer traffic is plaintext over the public internet when clusterPlaintext is set — only do this
-	// on a trusted path until the mTLS join token (oramasearch/zetta#670) lands. Default false.
+	// NOTE: peer traffic is mTLS (the shared cluster join token derives the cluster CA, operator#92), so
+	// the exposed port is encrypted on the wire — keep the `<name>-zetta-cluster` Secret protected, as it
+	// is the cluster's identity. Default false.
 	// +kubebuilder:default=false
 	// +optional
 	ExposePeerLoadBalancer bool `json:"exposePeerLoadBalancer,omitempty"`
@@ -393,8 +394,9 @@ type OramaZettaClusterStatus struct {
 //+kubebuilder:printcolumn:name="Image",type=string,JSONPath=`.spec.image`
 
 // OramaZettaCluster deploys a headless Orama Zetta cluster (a StatefulSet of equal-peer CRDT nodes)
-// from one CR. Peer replication is TCP 7777 (mTLS unless clusterPlaintext); the HTTP API (MCP + REST
-// + serving) is 4800; each node persists to a per-node PVC at /data. See the plan of record in
+// from one CR. Peer replication is TCP 7777 (always mTLS — every node shares one operator-minted
+// cluster join token that derives the cluster CA, operator#92); the HTTP API (MCP + REST + serving)
+// is 4800; each node persists to a per-node PVC at /data. See the plan of record in
 // oramasearch/orama-bridge docs/projects/one-orama.
 type OramaZettaCluster struct {
 	metav1.TypeMeta   `json:",inline"`

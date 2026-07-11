@@ -77,6 +77,13 @@ Beyond deploying v1, this operator is becoming **symbiotic with Orama Zetta** (O
   cluster). So the topology is **N k8s clusters → 1 operator each → 1 shared Zetta.** Every synced row is
   namespaced by an **operator identity** (`ORAMA_OPERATOR_ID`, default the `kube-system` Namespace UID)
   so states never collide.
+- **Peer traffic is always mTLS — one shared cluster join token per cluster.** The join token *is* the
+  cluster identity (the CA is derived from it), so the operator mints **one** token (Secret
+  `<name>-zetta-cluster`, minted once/never rotated) and injects it into **every** node as
+  `ZETTA_CLUSTER_TOKEN` — else each node derives its own CA and forms a cluster-of-one. There is **no
+  plaintext-peer mode** (removed as a security hole). See
+  [`docs/zetta-cluster-mtls.md`](docs/zetta-cluster-mtls.md) ([operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92));
+  multi-node convergence also needs [zetta#785](https://github.com/oramasearch/zetta/issues/785)/[#786](https://github.com/oramasearch/zetta/issues/786).
 - **Elastic capacity (planned):** Zetta signals the operator, the operator drives the cluster's node
   autoscaler (Karpenter/NAP), and more Zetta nodes schedule onto the new nodes —
   [operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69).

@@ -142,9 +142,14 @@ long as they can reach each other's peer port. So the target topology is **N k8s
     ([zetta#739](https://github.com/oramasearch/zetta/issues/739) request #1), a node gossips the address
     it **bound** — so wan-accessibility relies on `hostNetwork` (bound == routable) or the LB path today;
     the operator already surfaces `.status.wanAddress` so the flag is a drop-in once it lands.
-  - Multi-node currently uses `clusterPlaintext` on a trusted network until the mTLS join token
-    ([zetta#670](https://github.com/oramasearch/zetta/issues/670)) lands — so a wan-accessible node with
-    an open peer port must wait for mTLS before its port faces the public internet.
+  - Inter-node peer traffic is **always mTLS**: the operator mints one shared cluster join token per
+    cluster (Secret `<name>-zetta-cluster`) and injects it into every node as `ZETTA_CLUSTER_TOKEN`, so
+    all nodes derive the same cluster CA and form one cluster ([operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92),
+    see [`zetta-cluster-mtls.md`](zetta-cluster-mtls.md)). The earlier `clusterPlaintext` escape hatch was
+    **removed** as a security hole once real mTLS clustering worked. NOTE: a *multi-node* cluster only
+    fully converges once the engine's DNS-dial + mTLS-sync fixes land ([zetta#785](https://github.com/oramasearch/zetta/issues/785),
+    [zetta#786](https://github.com/oramasearch/zetta/issues/786)) — the token seeding is necessary but not
+    sufficient on its own.
 
 ## Evolving the schema
 
