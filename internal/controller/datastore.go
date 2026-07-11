@@ -12,9 +12,11 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
@@ -188,6 +190,17 @@ func (r *OramaCloudV1Reconciler) reconcileCache(ctx context.Context, oc *oramav1
 	})
 }
 
+// Broker admin credentials (management HTTP API + AMQP default user). A sandbox dummy today; a
+// single source of truth so rabbitmqConf (mounted into the pod) and the <cr>-broker-admin Secret
+// (read by the RabbitMQTopology reconciler) can never drift. Prod overrides both by editing the
+// Secret + rendering the password into rabbitmq.conf via an init container (the #41 follow-up).
+const (
+	brokerAdminUser     = "orama"
+	brokerAdminPassword = "dev-rabbitmq-password"
+	// The replication stream OramaCore's writer produces to and the reader consumes from (#41).
+	brokerOperationsStream = "oramacore-operations"
+)
+
 // rabbitmqConf renders the broker config (#41): enable the stream listener on 5552 and set
 // advertised_host to the broker Service — for our SINGLE-node broker the Service routes to the one
 // pod, so the stream client reconnects correctly (the pod-DNS "advertised host" gotcha only bites
@@ -195,8 +208,8 @@ func (r *OramaCloudV1Reconciler) reconcileCache(ctx context.Context, oc *oramav1
 // RABBITMQ_DEFAULT_USER env, because a mounted rabbitmq.conf and that env conflict; prod should
 // render the password from the broker Secret via an init container (like the engine config).
 func rabbitmqConf(advertisedHost string) string {
-	return "default_user = orama\n" +
-		"default_pass = dev-rabbitmq-password\n" +
+	return "default_user = " + brokerAdminUser + "\n" +
+		"default_pass = " + brokerAdminPassword + "\n" +
 		"stream.listeners.tcp.1 = 5552\n" +
 		"stream.advertised_host = " + advertisedHost + "\n" +
 		"stream.advertised_port = 5552\n"
@@ -204,7 +217,7 @@ func rabbitmqConf(advertisedHost string) string {
 
 func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	advertised := oc.Name + "-broker." + oc.Namespace + ".svc.cluster.local"
-	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Broker, dataStoreDef{
+	if err := r.reconcileDataStore(ctx, oc, oc.Spec.Components.Broker, dataStoreDef{
 		component: "broker",
 		image:     "rabbitmq:3.13-management",
 		ports: []corev1.ContainerPort{
@@ -224,7 +237,111 @@ func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav
 		// vm_memory_high_watermark from it, so this limit is binary-aware. Generous default; override
 		// via spec.components.broker.resources.
 		resources: resourcesOr(oc.Spec.Components.Broker.Resources, resourceReqs("256Mi", "50m", "1Gi")),
+	}); err != nil {
+		return err
+	}
+	// Model the broker's vhost/users/permissions/streams as an owned, reconciled RabbitMQTopology
+	// CRD (#40/#41) — declarative topology instead of OramaCore creating the stream as an app-boot
+	// side effect and every service sharing the admin user.
+	return r.reconcileBrokerTopology(ctx, oc)
+}
+
+// brokerAdminSecretName / brokerUsersSecretName name the Secrets the broker topology depends on.
+func brokerAdminSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-broker-admin" }
+func brokerUsersSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-broker-users" }
+
+// reconcileBrokerTopology creates + owns a RabbitMQTopology declaring the broker's vhost, the
+// least-privilege per-service users (oramacore-writer / oramacore-reader) with stream-scoped
+// permissions, and the oramacore-operations replication stream. It only manages topology where the
+// broker actually runs in-cluster; elsewhere it removes the CR (whose finalizer cleans the broker).
+//
+// Per the current decision the engine still authenticates as the shared admin user, so the
+// per-service users are declared-but-unused for now — the topology makes least-privilege ready to
+// adopt; wiring the engine's writer/reader to these users is the fast-follow (operator#40).
+func (r *OramaCloudV1Reconciler) reconcileBrokerTopology(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	spec := oc.Spec.Components.Broker
+	brokerLocal := spec.Mode != "external" && spec.Enabled &&
+		!(spec.Placement == "central" && oc.Spec.Region.Role == "read")
+
+	topo := &oramav1alpha1.RabbitMQTopology{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-broker", Namespace: oc.Namespace}}
+	if !brokerLocal {
+		// No in-cluster broker here → no topology to own (deleting the CR runs its finalizer).
+		return deleteIfExists(ctx, r.Client, topo)
+	}
+	if err := r.ensureBrokerSecrets(ctx, oc); err != nil {
+		return err
+	}
+	usersSecret := brokerUsersSecretName(oc)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, topo, func() error {
+		topo.Labels = labelsFor(oc, "broker")
+		topo.Spec = oramav1alpha1.RabbitMQTopologySpec{
+			BrokerService:  oc.Name + "-broker",
+			ManagementPort: 15672,
+			AdminSecretRef: brokerAdminSecretName(oc),
+			VHosts:         []string{"/"},
+			Users: []oramav1alpha1.RabbitMQUser{
+				{Name: "oramacore-writer", PasswordSecretRef: oramav1alpha1.RabbitMQSecretKeyRef{Name: usersSecret, Key: "writer-password"}},
+				{Name: "oramacore-reader", PasswordSecretRef: oramav1alpha1.RabbitMQSecretKeyRef{Name: usersSecret, Key: "reader-password"}},
+			},
+			Permissions: []oramav1alpha1.RabbitMQPermission{
+				// writer produces to (and may declare) the stream; reader consumes from (and may
+				// declare) it. Both scoped to the exact stream — least-privilege (principle #4).
+				{User: "oramacore-writer", VHost: "/", Configure: "^" + brokerOperationsStream + "$", Write: "^" + brokerOperationsStream + "$", Read: "^" + brokerOperationsStream + "$"},
+				{User: "oramacore-reader", VHost: "/", Configure: "^" + brokerOperationsStream + "$", Write: "^$", Read: "^" + brokerOperationsStream + "$"},
+			},
+			// Bare stream (no retention args) so it MATCHES OramaCore's own stream-protocol Create on
+			// connect — RabbitMQ rejects a Create whose properties differ. Retention (to bound growth,
+			// principle #8) must match OramaCore's exact create args, confirmed on a live cluster — a
+			// tracked follow-up, not set blind here.
+			Streams: []oramav1alpha1.RabbitMQStream{{Name: brokerOperationsStream, VHost: "/"}},
+		}
+		return controllerutil.SetControllerReference(oc, topo, r.Scheme)
 	})
+	return err
+}
+
+// ensureBrokerSecrets provisions the two Secrets the topology depends on (create-if-absent so real
+// overrides / generated passwords survive reconciles): the admin creds (matching rabbitmqConf) and
+// per-service user passwords (random, generated once).
+func (r *OramaCloudV1Reconciler) ensureBrokerSecrets(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	admin := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: brokerAdminSecretName(oc), Namespace: oc.Namespace, Labels: labelsFor(oc, "broker")},
+		StringData: map[string]string{"username": brokerAdminUser, "password": brokerAdminPassword},
+	}
+	if err := r.createSecretIfAbsent(ctx, oc, admin); err != nil {
+		return err
+	}
+
+	writerPass, err := randHex(16)
+	if err != nil {
+		return err
+	}
+	readerPass, err := randHex(16)
+	if err != nil {
+		return err
+	}
+	users := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: brokerUsersSecretName(oc), Namespace: oc.Namespace, Labels: labelsFor(oc, "broker")},
+		StringData: map[string]string{"writer-password": writerPass, "reader-password": readerPass},
+	}
+	return r.createSecretIfAbsent(ctx, oc, users)
+}
+
+// createSecretIfAbsent owner-references and creates a Secret only if it does not already exist, so
+// generated material (or a real override) is never rotated out from under running clients.
+func (r *OramaCloudV1Reconciler) createSecretIfAbsent(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, sec *corev1.Secret) error {
+	if err := r.Get(ctx, client.ObjectKey{Namespace: sec.Namespace, Name: sec.Name}, &corev1.Secret{}); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err := controllerutil.SetControllerReference(oc, sec, r.Scheme); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, sec); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
 }
 
 // resourceCaps builds a container ResourceRequirements. The starting point for right-sizing

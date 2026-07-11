@@ -7,7 +7,9 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -111,14 +113,15 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 	return r.reconcileControlDBMigrations(ctx, oc)
 }
 
-// reconcileControlDBMigrations applies the vendored dashboard schema (operator#34) via an idempotent
-// psql Job: it waits for the control-DB, skips if already migrated, then applies the whole schema in
-// one transaction (all-or-nothing). The dashboard image ships no .drizzle and nothing else runs the
-// migrations, so the operator owns this. To re-apply after a schema re-sync, delete the Job.
+// reconcileControlDBMigrations applies the vendored dashboard schema (operator#34) as an owned,
+// reconciled PostgresSchema CRD (operator#40) — the datastore-state-as-declarative-CRDs pattern.
+// The operator renders the schema into a ConfigMap and declares a PostgresSchema referencing it; the
+// PostgresSchema controller owns the idempotent migration Job (wait → guard → apply-in-one-txn) and
+// records the applied version in its `.status`. The dashboard image ships no .drizzle and nothing
+// else runs the migrations, so the operator owns this. To re-apply after a schema re-sync, delete
+// the `<cr>-controldb-schema-migrate` Job.
 func (r *OramaCloudV1Reconciler) reconcileControlDBMigrations(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	cmName := oc.Name + "-controldb-migrations"
-	jobName := oc.Name + "-controldb-migrate"
-
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: oc.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		cm.Data = map[string]string{"schema.sql": dashboardSchemaSQL}
@@ -127,50 +130,36 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBMigrations(ctx context.Contex
 		return err
 	}
 
-	// crawler_configs is created by migration 0000; with --single-transaction it exists iff the whole
-	// schema applied, so it's a correct "already migrated" guard.
-	script := `set -eu
-echo "control-DB migrate: waiting for the database..."
-until psql "$DATABASE_URL" -c 'SELECT 1' >/dev/null 2>&1; do sleep 3; done
-if psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.crawler_configs')" | grep -q crawler_configs; then
-  echo "control-DB already migrated (crawler_configs present) — nothing to do"; exit 0
-fi
-echo "applying dashboard schema (vendored Drizzle migrations)..."
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f /migrations/schema.sql
-echo "control-DB migrate: done"`
+	// Clean up the pre-CRD migration Job (superseded by the PostgresSchema-owned Job under a distinct
+	// name) so an upgraded cluster doesn't leave dangling cruft. Safe — the schema is already applied
+	// and the new Job's guard is idempotent.
+	if err := deleteIfExists(ctx, r.Client, &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-controldb-migrate", Namespace: oc.Namespace}}); err != nil {
+		return err
+	}
 
-	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: oc.Namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, job, func() error {
-		if job.CreationTimestamp.IsZero() {
-			lbls := labelsFor(oc, "controldb-migrate")
-			job.Labels = lbls
-			job.Spec = batchv1.JobSpec{
-				BackoffLimit: int32Ptr(20), // retry while the control-DB comes up
-				Template: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{Labels: lbls},
-					Spec: corev1.PodSpec{
-						RestartPolicy: corev1.RestartPolicyNever,
-						Containers: []corev1.Container{{
-							Name:            "migrate",
-							Image:           "postgres:16-alpine", // ships psql
-							Command:         []string{"sh", "-c", script},
-							Env:             []corev1.EnvVar{pgURIEnv(oc, "DATABASE_URL")},
-							Resources:       *resourceReqs("64Mi", "25m", "256Mi"), // scheduler requests (#18)
-							SecurityContext: hardenedSecurityContext(),             // workload hardening baseline (#18)
-							VolumeMounts:    []corev1.VolumeMount{{Name: "migrations", MountPath: "/migrations", ReadOnly: true}},
-						}},
-						Volumes: []corev1.Volume{{
-							Name: "migrations",
-							VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
-								LocalObjectReference: corev1.LocalObjectReference{Name: cmName}}},
-						}},
-					},
-				},
-			}
+	// crawler_configs is created by migration 0000; with --single-transaction it exists iff the whole
+	// schema applied, so it's a correct "already migrated" guard. The version is a content hash of the
+	// schema SQL so it changes exactly when the vendored schema does (auditable in `.status`).
+	ps := &oramav1alpha1.PostgresSchema{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-controldb-schema", Namespace: oc.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ps, func() error {
+		ps.Labels = labelsFor(oc, "controldb")
+		ps.Spec = oramav1alpha1.PostgresSchemaSpec{
+			ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: controlDBAppSecret(oc), Key: "uri"},
+			SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: cmName, Key: "schema.sql"},
+			Version:             schemaVersion(dashboardSchemaSQL),
+			GuardTable:          "crawler_configs",
+			Image:               "postgres:16-alpine",
 		}
-		return controllerutil.SetControllerReference(oc, job, r.Scheme)
+		return controllerutil.SetControllerReference(oc, ps, r.Scheme)
 	})
 	return err
+}
+
+// schemaVersion is a short content hash identifying a schema SQL, recorded in PostgresSchema status
+// so the applied version changes exactly when the vendored schema does.
+func schemaVersion(sql string) string {
+	sum := sha256.Sum256([]byte(sql))
+	return "sha256:" + hex.EncodeToString(sum[:])[:12]
 }
 
 // profileInstances maps the deployment profile to a Postgres instance count.

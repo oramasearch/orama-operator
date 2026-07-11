@@ -1,0 +1,36 @@
+# The RabbitMQ broker's declared topology (operator#40 / #41): vhosts, least-privilege per-service
+# users, stream-scoped permissions, and the oramacore-operations writer->reader replication stream.
+# The operator reconciles this against the broker's management HTTP API (:15672); a finalizer removes
+# the declared users + streams on delete.
+#
+# NOTE: OramaCloudV1 creates + OWNS a `<cr>-broker` instance of this automatically (reconcileBrokerTopology)
+# — this sample is for reference / standalone use against a broker you already run.
+#
+# Ordered readiness gating: until the broker (and its adminSecretRef Secret) is reachable the reconciler
+# is a safe no-op reporting Ready=False (BrokerUnavailable / WaitingForCredentials), not an error.
+#
+#   kubectl apply -f config/samples/rabbitmqtopology.yaml
+#   kubectl get rmqtopo -n orama-system        # Broker / Users / Streams / Ready
+#   kubectl describe rmqtopo orama-broker -n orama-system
+apiVersion: orama.cloud/v1alpha1
+kind: RabbitMQTopology
+metadata:
+  name: orama-broker
+  namespace: orama-system
+spec:
+  brokerService: orama-broker            # management API at http://orama-broker.<ns>.svc.cluster.local:15672
+  managementPort: 15672
+  adminSecretRef: orama-broker-admin     # Secret with keys: username / password
+  vhosts:
+    - "/"
+  users:                                 # least-privilege per-service accounts (untagged; password from a Secret)
+    - name: oramacore-writer
+      passwordSecretRef: { name: orama-broker-users, key: writer-password }
+    - name: oramacore-reader
+      passwordSecretRef: { name: orama-broker-users, key: reader-password }
+  permissions:                           # scope each user to the exact stream (configure/write/read regexes)
+    - { user: oramacore-writer, vhost: "/", configure: "^oramacore-operations$", write: "^oramacore-operations$", read: "^oramacore-operations$" }
+    - { user: oramacore-reader, vhost: "/", configure: "^oramacore-operations$", write: "^$", read: "^oramacore-operations$" }
+  streams:                               # x-queue-type=stream. Declared BARE to match OramaCore's own
+    - name: oramacore-operations         # stream-protocol Create — retention is declaration-time only and
+      vhost: "/"                         # must match the client's create args, so it is left unset here.

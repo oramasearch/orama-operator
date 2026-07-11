@@ -1,0 +1,29 @@
+# A versioned, tracked Postgres schema (operator#40): the operator applies the SQL once (idempotent,
+# guarded) via an owned migration Job and records the applied version in .status — superseding the bare
+# migration Job (#34) with a reconciled, auditable CRD.
+#
+# NOTE: OramaCloudV1 creates + OWNS a `<cr>-controldb-schema` instance automatically
+# (reconcileControlDBMigrations) applying the dashboard's vendored Drizzle schema — this sample is for
+# reference / standalone use.
+#
+# No finalizer: deleting the CR never drops the schema/data, it only stops managing the migration.
+# Ordered gating: a safe no-op (Applied=False WaitingForDatabase) until the connection Secret exists.
+#
+#   kubectl apply -f config/samples/postgresschema.yaml
+#   kubectl get pgschema -n orama-system        # Version / Applied / Phase
+#   kubectl describe pgschema orama-controldb-schema -n orama-system
+apiVersion: orama.cloud/v1alpha1
+kind: PostgresSchema
+metadata:
+  name: orama-controldb-schema
+  namespace: orama-system
+spec:
+  connectionSecretRef:                   # the CNPG-generated app Secret (real password + a ready `uri`)
+    name: orama-controldb-app
+    key: uri
+  schemaConfigMapRef:                    # ConfigMap holding the schema SQL to apply
+    name: orama-controldb-migrations
+    key: schema.sql
+  version: "sha256:deadbeef1234"         # recorded in .status.appliedVersion (operator uses a content hash)
+  guardTable: crawler_configs            # existence of this table => already applied (skip)
+  image: postgres:16-alpine              # ships psql
