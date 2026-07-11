@@ -1,0 +1,50 @@
+# Own a Cloudflare GLOBAL Load Balancer for the Zetta cluster (operator#73): a single hostname served
+# across the cluster's wan-accessible nodes with health checks, geo steering, and failover. The
+# operator reconciles three Cloudflare Load Balancing objects from this one CR — an account-scoped
+# Monitor, one or more account-scoped Pools, and the zone-scoped Load Balancer — and a finalizer tears
+# all three down (LB -> pools -> monitor) on delete.
+#
+# PREREQUISITE: Cloudflare Load Balancing is a PAID add-on. Enable it on the account first
+# (dashboard: Delivery & performance -> Load Balancing). Until then the reconciler is a safe no-op that
+# reports `Ready=False (LoadBalancingNotEnabled)` instead of crash-looping.
+#
+# The pool origins here are illustrative. Auto-populating the pool from the LIVE wan-accessible node
+# set (their public :4800 endpoints, per the node-reachability model) is tracked separately in
+# operator#74 / oramasearch/zetta#739.
+#
+#   kubectl apply -f config/samples/cloudflareloadbalancer.yaml
+#   kubectl get cflb -n orama-system        # Hostname / Steering / LB / Ready
+#   kubectl describe cflb zetta-global -n orama-system
+apiVersion: orama.cloud/v1alpha1
+kind: CloudflareLoadBalancer
+metadata:
+  name: zetta-global
+  namespace: orama-system
+spec:
+  secretRef: cloudflare-api-token        # Secret with keys: token / zoneID / accountID
+  hostname: zetta.oramadev.net           # the single global hostname the LB answers on
+  steeringPolicy: geo                    # off | geo | dynamic | proximity | random
+  proxied: true                          # route through Cloudflare's proxy (orange-cloud)
+  fallbackPool: us-east                  # last resort when all default pools are unhealthy
+  monitor:                               # one health monitor, attached to every pool
+    type: https
+    method: GET
+    path: /v1/server_info                # Zetta node health endpoint
+    port: 4800
+    expectedCodes: "200"
+    interval: 60
+    timeout: 5
+    retries: 2
+  pools:
+    - name: us-east                      # a pool = a failover/steering unit of origins
+      minimumOrigins: 1
+      origins:
+        - { name: node-use1-a, address: use1-a.nodes.oramadev.net, enabled: true, weight: "1" }
+        - { name: node-use1-b, address: use1-b.nodes.oramadev.net, enabled: true, weight: "1" }
+    - name: eu-west
+      minimumOrigins: 1
+      origins:
+        - { name: node-euw1-a, address: euw1-a.nodes.oramadev.net, enabled: true, weight: "1" }
+  regionPools:                           # geo steering: region code -> ordered pool names
+    ENAM: [us-east]                      # eastern North America -> us-east pool
+    WEUR: [eu-west]                      # western Europe        -> eu-west pool

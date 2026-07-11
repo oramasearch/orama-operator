@@ -1,0 +1,380 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: cloudflareloadbalancers.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: CloudflareLoadBalancer
+    listKind: CloudflareLoadBalancerList
+    plural: cloudflareloadbalancers
+    shortNames:
+    - cflb
+    singular: cloudflareloadbalancer
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.hostname
+      name: Hostname
+      type: string
+    - jsonPath: .spec.steeringPolicy
+      name: Steering
+      type: string
+    - jsonPath: .status.loadBalancerID
+      name: LB
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CloudflareLoadBalancer is a Cloudflare global Load Balancer the operator provisions via the CF
+          Load Balancing API, owned by an OramaCloudV1 CR. It reconciles a Monitor, one or more Pools, and
+          the zone Load Balancer; a finalizer tears all three down (LB → pools → monitor) on delete, so
+          removing the CR cascades to real external cleanup. Cloudflare Load Balancing is a PAID add-on:
+          until it is enabled on the account the reconciler is a safe no-op that surfaces a clear
+          `Ready=False (LoadBalancingNotEnabled)` condition rather than crash-looping.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CloudflareLoadBalancerSpec is the desired state of a Cloudflare **global Load Balancer** — a
+              single hostname served across the cluster's origins with health checks, geo/proximity steering,
+              and failover. The API token, zone, and account all come from the referenced Secret (keys
+              `token`+`zoneID`+`accountID`), so no credential lives in spec. This models three Cloudflare
+              Load Balancing objects together: an account-scoped **Monitor**, one or more account-scoped
+              **Pools**, and a zone-scoped **Load Balancer**.
+            properties:
+              fallbackPool:
+                description: |-
+                  FallbackPool names the pool (by its Pools[].Name) used as the last resort when ALL default
+                  pools are unhealthy. Cloudflare ignores the fallback pool's own health. Empty = the last
+                  declared pool is used (Cloudflare's default behaviour).
+                type: string
+              hostname:
+                description: |-
+                  Hostname is the FQDN the load balancer answers on (e.g. zetta.oramadev.net). Cloudflare
+                  creates/manages the DNS entry for this name in the zone; do NOT also manage it with a
+                  CloudflareDNSRecord — the LB owns the hostname.
+                type: string
+              monitor:
+                description: |-
+                  Monitor is the health monitor attached to every pool. Cloudflare probes each origin on this
+                  schedule and drops unhealthy origins from rotation. (Issue #74 auto-populates pool origins
+                  from the live wan-accessible node set; this CRD owns the LB/pool/monitor resources.)
+                properties:
+                  expectedBody:
+                    description: ExpectedBody, when set, must appear in the response
+                      body for the origin to be healthy.
+                    type: string
+                  expectedCodes:
+                    default: "200"
+                    description: ExpectedCodes is the healthy HTTP status (exact "200"
+                      or a class like "2xx"). Defaults "200".
+                    type: string
+                  followRedirects:
+                    description: FollowRedirects follows 3xx during http/https probes.
+                      Defaults false.
+                    type: boolean
+                  interval:
+                    default: 60
+                    description: Interval is seconds between probes (plan minimums
+                      apply). Defaults 60.
+                    minimum: 1
+                    type: integer
+                  method:
+                    default: GET
+                    description: Method is the HTTP method for http/https probes.
+                      Defaults GET.
+                    type: string
+                  path:
+                    default: /v1/server_info
+                    description: Path is the probe path for http/https, e.g. /v1/server_info.
+                      Defaults /v1/server_info.
+                    type: string
+                  port:
+                    description: Port overrides the probe port (0 = the origin's default
+                      for the scheme).
+                    type: integer
+                  retries:
+                    default: 2
+                    description: Retries is the number of retries before an origin
+                      is marked unhealthy. Defaults 2.
+                    minimum: 0
+                    type: integer
+                  timeout:
+                    default: 5
+                    description: Timeout is seconds to wait for a probe response before
+                      it fails. Defaults 5.
+                    minimum: 1
+                    type: integer
+                  type:
+                    default: https
+                    description: 'Type is the probe protocol: http | https | tcp.
+                      Defaults https.'
+                    enum:
+                    - http
+                    - https
+                    - tcp
+                    type: string
+                type: object
+              pools:
+                description: |-
+                  Pools are the origin pools (one or more). Under normal operation traffic is spread across
+                  the healthy pools per SteeringPolicy; on total failure it drops to FallbackPool. The pools
+                  become the load balancer's `default_pools` (in declared order).
+                items:
+                  description: |-
+                    OriginPool is one Cloudflare origin pool — a named group of origins that Cloudflare treats as a
+                    single failover/steering unit.
+                  properties:
+                    enabled:
+                      default: true
+                      description: Enabled toggles the whole pool. Defaults true.
+                      type: boolean
+                    minimumOrigins:
+                      default: 1
+                      description: |-
+                        MinimumOrigins is how many origins must be healthy for the pool itself to be healthy
+                        (Cloudflare `minimum_origins`). Defaults to 1.
+                      minimum: 1
+                      type: integer
+                    name:
+                      description: |-
+                        Name identifies the pool within this CR. The Cloudflare pool is named
+                        `<cr-name>-<Name>` (namespaced to avoid collisions across CRs in the account).
+                      type: string
+                    origins:
+                      description: Origins are the pool's backend endpoints (the cluster's
+                        wan-accessible nodes).
+                      items:
+                        description: LoadBalancerOrigin is one backend endpoint inside
+                          a pool.
+                        properties:
+                          address:
+                            description: |-
+                              Address is the origin's IP or hostname (e.g. a node's public endpoint). For proxied LBs an
+                              FQDN is resolved by Cloudflare; the health monitor probes this address on the monitor port.
+                            type: string
+                          enabled:
+                            default: true
+                            description: Enabled toggles whether this origin receives
+                              traffic. Defaults true.
+                            type: boolean
+                          name:
+                            description: Name uniquely identifies the origin within
+                              its pool.
+                            type: string
+                          weight:
+                            default: "1"
+                            description: |-
+                              Weight biases weighted steering within the pool — a decimal in [0,1] as a string (Cloudflare
+                              stores origin weight as a float). Defaults "1" (equal weighting). Out-of-range or
+                              unparseable values are clamped into [0,1].
+                            type: string
+                        required:
+                        - address
+                        - name
+                        type: object
+                      minItems: 1
+                      type: array
+                    useMonitor:
+                      default: true
+                      description: |-
+                        UseMonitor attaches spec.Monitor to this pool (the "optional health-monitor ref"). Defaults
+                        true — the point of a pool is health-checked origins. Set false for an unmonitored pool.
+                      type: boolean
+                  required:
+                  - name
+                  - origins
+                  type: object
+                minItems: 1
+                type: array
+              proxied:
+                default: true
+                description: Proxied routes the load-balanced hostname through Cloudflare's
+                  proxy (orange-cloud).
+                type: boolean
+              regionPools:
+                additionalProperties:
+                  items:
+                    type: string
+                  type: array
+                description: |-
+                  RegionPools maps a Cloudflare region code (e.g. WNAM, ENAM, WEUR, SEAS) to an ordered list
+                  of pool names (Pools[].Name), for `geo` steering. Optional; only meaningful when
+                  SteeringPolicy=geo. Without it, `geo` falls back to the default-pool failover order.
+                type: object
+              secretRef:
+                description: |-
+                  SecretRef names the Secret holding the Cloudflare credentials (`token`, `zoneID`,
+                  `accountID`) — normally the CR's `spec.cloudflare.apiTokenSecretRef`
+                  (the `cloudflare-api-token` Secret).
+                type: string
+              sessionAffinity:
+                default: none
+                description: 'SessionAffinity pins a client to the same origin: none
+                  | cookie | ip_cookie | header.'
+                enum:
+                - none
+                - cookie
+                - ip_cookie
+                - header
+                type: string
+              steeringPolicy:
+                default: geo
+                description: |-
+                  SteeringPolicy selects how Cloudflare routes across the pools:
+                    off        — fixed failover order (first healthy pool wins).
+                    geo        — route by client region using RegionPools (nearest configured region).
+                    dynamic    — route by measured pool latency (maps to the API's `dynamic_latency`).
+                    proximity  — route to the pool/origin geographically nearest the client.
+                    random     — spread randomly across healthy pools (weighted by origin weight).
+                enum:
+                - "off"
+                - geo
+                - dynamic
+                - proximity
+                - random
+                type: string
+            required:
+            - hostname
+            - pools
+            - secretRef
+            type: object
+          status:
+            description: |-
+              CloudflareLoadBalancerStatus is the observed state — the provisioned Cloudflare objects and
+              their health. Written to the status subresource ONLY on a real state transition (anti-flap,
+              principle #7): a steady load balancer produces zero control-plane traffic.
+            properties:
+              conditions:
+                description: |-
+                  Conditions carry the standard `Ready` condition (anti-flap). Reason distinguishes
+                  WaitingForCredentials, LoadBalancingNotEnabled, ReconcileError, and Reconciled.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              loadBalancerID:
+                description: LoadBalancerID is the zone-scoped Cloudflare Load Balancer
+                  ID (set once created).
+                type: string
+              message:
+                description: Message is a human-readable summary of the current state
+                  (or the last error).
+                type: string
+              monitorID:
+                description: MonitorID is the account-scoped Cloudflare Monitor ID
+                  (set once created).
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the spec generation this status
+                  reflects.
+                format: int64
+                type: integer
+              pools:
+                description: Pools reflects each managed pool — its Cloudflare ID
+                  and last-observed health.
+                items:
+                  description: LoadBalancerPoolStatus is the observed state of one
+                    managed pool.
+                  properties:
+                    health:
+                      description: 'Health is the last-observed pool health: healthy
+                        | unhealthy | unknown.'
+                      type: string
+                    id:
+                      description: ID is the Cloudflare pool ID.
+                      type: string
+                    name:
+                      description: Name is the pool's spec name (Pools[].Name).
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

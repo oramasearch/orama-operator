@@ -84,7 +84,12 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 	// enabled on the account before its API will accept requests — the operator cannot enable billing
 	// for you. Surface clear guidance in the log so users know the one manual step to take (as seen in
 	// the dashboard: Delivery & performance → Load Balancing). Logged once per process to avoid noise.
-	// TODO(operator#66): reconcile CloudflareLoadBalancer / Pool / Monitor via the CF LB API.
+	//
+	// The Load Balancer / Pool / Monitor objects are now modelled as an owned CloudflareLoadBalancer
+	// CRD reconciled by CloudflareLoadBalancerReconciler (operator#73). The main loop does NOT create
+	// that CR here because its origins are the cluster's live wan-accessible nodes — populating the
+	// pool from the live node set is tracked separately (operator#74 / zetta#739). Apply a
+	// CloudflareLoadBalancer directly (see config/samples) until that wiring lands.
 	if cf.ManageLoadBalancers {
 		cfLBBillingOnce.Do(func() {
 			logf.FromContext(ctx).Info(
@@ -116,6 +121,21 @@ func (r *OramaCloudV1Reconciler) ingressTarget(ctx context.Context, oc *oramav1a
 	return ""
 }
 
+// cfAPIError is a non-2xx Cloudflare API response. It carries the HTTP status + raw body so callers
+// can distinguish cases (e.g. a 404 on delete, or a 403/entitlement error when Load Balancing is not
+// enabled on the account) via errors.As, while Error() keeps the original human-readable format so
+// existing callers that only propagate/log the error are unaffected.
+type cfAPIError struct {
+	Method     string
+	URL        string
+	StatusCode int
+	Body       string
+}
+
+func (e *cfAPIError) Error() string {
+	return fmt.Sprintf("cloudflare API %s %s: %d %s", e.Method, e.URL, e.StatusCode, e.Body)
+}
+
 func cfDo(ctx context.Context, token, method, url string, body, out interface{}) error {
 	var rdr io.Reader
 	if body != nil {
@@ -140,7 +160,7 @@ func cfDo(ctx context.Context, token, method, url string, body, out interface{})
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("cloudflare API %s %s: %d %s", method, url, resp.StatusCode, string(data))
+		return &cfAPIError{Method: method, URL: url, StatusCode: resp.StatusCode, Body: string(data)}
 	}
 	if out != nil {
 		return json.Unmarshal(data, out)
