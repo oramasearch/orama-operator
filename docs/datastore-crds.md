@@ -123,11 +123,16 @@ refinement + principle #4) is also a separate slice.
 
 ## Deferred / tracked separately
 
-- **`ClickHouseSchema`** — the analytics tables are currently auto-created by analytics-processor
-  (`create_tables: true`). Declaring them needs the authoritative DDL (owned by the app, not this
-  repo) — tracked as a follow-up so we don't pin analytics to a guessed schema.
-- **`TypesenseSchema` / `MongoSchema`** — as the ingestion/search paths require; tracked separately.
-- **Pin every image** — determinism cross-cutting (no `:latest`); tracked separately (needs the
-  intended production tags for the oramacore/ai-server/selenium images).
+- **`ClickHouseSchema` + `Typesense`/`Mongo` schema CRDs**
+  ([#97](https://github.com/oramasearch/orama-cloud-v1-operator/issues/97)) — the analytics tables are
+  currently auto-created by analytics-processor (`create_tables: true`); declaring them needs the
+  authoritative DDL (owned by the app, not this repo), so we don't pin analytics to a guessed schema.
+- **Least-privilege adoption** ([#99](https://github.com/oramasearch/orama-cloud-v1-operator/issues/99))
+  — wire the engine to the per-service broker users (they're declared but unused today), bound the
+  `oramacore-operations` stream's retention (needs OramaCore's exact create args), and model CNPG
+  `managed.roles` per service instead of the shared owner (principle #4, revisits #32).
+- **Pin every image** ([#98](https://github.com/oramasearch/orama-cloud-v1-operator/issues/98)) —
+  determinism cross-cutting (no `:latest`); needs the intended production tags for the
+  oramacore/ai-server/selenium images.
 - **DR (backup / restore / snapshot CRDs)** — its own epic
   ([#33](https://github.com/oramasearch/orama-cloud-v1-operator/issues/33)).
