@@ -48,6 +48,25 @@ kubectl get crd oramacloudv1s.orama.cloud
 > (override with `--set operator.image.tag=...`). Build/push it with
 > `make docker-build docker-push IMG=...` (see [development.md](development.md)).
 
+### Gotchas (dev sandbox)
+
+- **Stale mutable-tag image.** A mutable tag (e.g. `:v1-sandbox`) + the default `imagePullPolicy:
+  IfNotPresent` means a node that already cached the tag keeps running the **old** image after a
+  rebuild+push. This silently ran a pre-`#92` operator (still rendering `--cluster-plaintext`) and a
+  pre-`#745` Zetta binary (crashing on `--require-auth`). **Pin by digest** to force the exact build:
+  `kubectl -n orama-system set image deploy/orama-cloud-v1-operator '*=<repo>@sha256:…'` and the OZC
+  `spec.image: <repo>@sha256:…`; **verify the running pod's `imageID` after any rebuild.**
+  `imagePullPolicy: Always` is the real fix.
+- **CRDs already present → `helm install` conflict.** If the CRDs were already `kubectl`-applied, use
+  `helm install --skip-crds` + `kubectl apply -f chart/crds/`. Helm never upgrades `crds/` on `helm
+  upgrade`, so after adding/altering a CRD, **`kubectl apply -f chart/crds/`** to the cluster.
+- **RBAC must match what the image watches.** The manager CrashLoops (*"failed to wait for `<kind>` caches
+  to sync"*) if the image watches a CRD/resource the ClusterRole doesn't grant — including core
+  `namespaces` for the `ORAMA_OPERATOR_ID` read. The chart ClusterRole is hand-maintained; keep it in sync
+  with the generated `config/rbac/role.yaml`.
+- **Multi-cluster:** each k8s cluster runs its **own** in-cluster operator; they share one Zetta and
+  coordinate through it. See [zetta-datastore.md](zetta-datastore.md) + [zetta-cluster-mtls.md](zetta-cluster-mtls.md).
+
 ## 3. Deploy a v1 stack (single-cluster quickstart)
 
 Apply one `OramaCloudV1` — the operator stands up the whole stack, **self-bootstrapped
