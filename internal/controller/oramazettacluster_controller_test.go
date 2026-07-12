@@ -59,7 +59,7 @@ func TestZettaStatefulSetInjectsSharedClusterToken(t *testing.T) {
 	z := newZettaTestCluster()
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
 
-	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z)); err != nil {
+	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), ""); err != nil {
 		t.Fatalf("mutateZettaStatefulSet: %v", err)
 	}
 
@@ -84,6 +84,43 @@ func TestZettaStatefulSetInjectsSharedClusterToken(t *testing.T) {
 	entry := c.Command[len(c.Command)-1]
 	if strings.Contains(entry, "--cluster-plaintext") || strings.Contains(entry, "PLAINTEXT") {
 		t.Error("entrypoint still references the removed plaintext mode")
+	}
+}
+
+// TestZettaStatefulSetPerNodeAdvertise asserts a wan-accessible slice injects the positional advertise
+// map so each node gossips ITS OWN routable address (field ORD+1), spreading cross-cluster sync across all
+// their uplinks instead of dialing unreachable pod IPs (operator#104, oramasearch/zetta#739); and that the
+// sandbox always re-pulls its mutable-tag image (operator#103).
+func TestZettaStatefulSetPerNodeAdvertise(t *testing.T) {
+	r := &OramaZettaClusterReconciler{Scheme: zettaTestScheme(t)}
+	z := newZettaTestCluster()
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
+
+	adv := "1.1.1.1:7777,2.2.2.2:7777,3.3.3.3:7777"
+	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), adv); err != nil {
+		t.Fatalf("mutateZettaStatefulSet: %v", err)
+	}
+	c := sts.Spec.Template.Spec.Containers[0]
+	if env := findEnv(c.Env, "ZETTA_ADVERTISE_MAP"); env == nil || env.Value != adv {
+		t.Fatalf("ZETTA_ADVERTISE_MAP = %+v, want value %q", env, adv)
+	}
+	entry := c.Command[len(c.Command)-1]
+	if !strings.Contains(entry, "--advertise") {
+		t.Error("entrypoint never renders --advertise for a wan slice")
+	}
+	if !strings.Contains(entry, "cut -d, -f$((ORD+1))") {
+		t.Error("entrypoint should select THIS node's OWN advertise address by ordinal, not a shared one")
+	}
+	if string(c.ImagePullPolicy) != "Always" {
+		t.Errorf("imagePullPolicy = %q, want Always (operator#103 — mutable-tag caching runs stale images)", c.ImagePullPolicy)
+	}
+	// A dial-out-only slice (no advertise) must NOT inject the map.
+	sts2 := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
+	if err := r.mutateZettaStatefulSet(z, sts2, "z0-zetta-headless", "z0-zetta", zettaLabels(z), ""); err != nil {
+		t.Fatalf("mutateZettaStatefulSet (dial-out): %v", err)
+	}
+	if findEnv(sts2.Spec.Template.Spec.Containers[0].Env, "ZETTA_ADVERTISE_MAP") != nil {
+		t.Error("dial-out-only slice must not inject ZETTA_ADVERTISE_MAP")
 	}
 }
 

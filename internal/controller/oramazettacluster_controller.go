@@ -131,36 +131,70 @@ func zettaReachability(z *oramav1alpha1.OramaZettaCluster) string {
 // NOTE: once Zetta grows a `--advertise HOST:PORT` flag (oramasearch/zetta#739 request #1) the operator
 // will pass this address as --advertise so a NAT'd/LB'd node gossips it instead of its bound address;
 // until then wan-accessibility relies on hostNetwork (bound address == routable address) or the LB path.
-func (r *OramaZettaClusterReconciler) zettaWANAddress(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, peerLBName, stsName string) string {
+// zettaWANAddresses resolves the routable per-node advertise addresses for a WAN-ACCESSIBLE slice — one
+// entry per replica, IN ORDINAL ORDER (index i = node i) — so every PERMANENT node advertises its OWN
+// address and cross-cluster sync spreads across all their uplinks (aggregate bandwidth) rather than one
+// shared LB (oramasearch/zetta#739). An entry is "" while its address is still pending (LB IP unassigned).
+// An explicit spec.wanAddress override applies to every node (one stable VPN/DNS rendezvous).
+func (r *OramaZettaClusterReconciler) zettaWANAddresses(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, peerLBName, stsName string) []string {
 	if zettaReachability(z) != oramav1alpha1.ReachabilityWANAccessible {
-		return ""
+		return nil
 	}
-	// 1. Explicit override — authoritative.
+	replicas := z.Spec.Replicas
+	if replicas < 1 {
+		replicas = 1
+	}
+	out := make([]string, replicas)
+	// 1. Explicit override — authoritative; every node advertises the same stable address.
 	if a := strings.TrimSpace(z.Spec.WanAddress); a != "" {
-		return withPeerPort(a)
+		for i := range out {
+			out[i] = withPeerPort(a)
+		}
+		return out
 	}
-	// 2. Peer LoadBalancer public IP/hostname (cloud-provisioned).
+	// 2. Per-node peer LoadBalancers (cloud-provisioned) — one public IP per node, keyed by ordinal.
 	if z.Spec.ExposePeerLoadBalancer {
-		var lb corev1.Service
-		if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: peerLBName}, &lb); err == nil {
-			for _, ing := range lb.Status.LoadBalancer.Ingress {
-				if ing.Hostname != "" {
-					return withPeerPort(ing.Hostname)
-				}
-				if ing.IP != "" {
-					return withPeerPort(ing.IP)
+		for ord := int32(0); ord < replicas; ord++ {
+			var lb corev1.Service
+			if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: fmt.Sprintf("%s-%d", peerLBName, ord)}, &lb); err == nil {
+				for _, ing := range lb.Status.LoadBalancer.Ingress {
+					if ing.Hostname != "" {
+						out[ord] = withPeerPort(ing.Hostname)
+						break
+					}
+					if ing.IP != "" {
+						out[ord] = withPeerPort(ing.IP)
+						break
+					}
 				}
 			}
 		}
+		return out
 	}
-	// 3. hostNetwork — node-0's host IP (the k8s node's own routable address).
+	// 3. hostNetwork — each node's own host IP (the k8s node's routable address).
 	if z.Spec.HostNetwork {
-		var pod corev1.Pod
-		if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: stsName + "-0"}, &pod); err == nil && pod.Status.HostIP != "" {
-			return withPeerPort(pod.Status.HostIP)
+		for ord := int32(0); ord < replicas; ord++ {
+			var pod corev1.Pod
+			if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: fmt.Sprintf("%s-%d", stsName, ord)}, &pod); err == nil && pod.Status.HostIP != "" {
+				out[ord] = withPeerPort(pod.Status.HostIP)
+			}
+		}
+		return out
+	}
+	return out
+}
+
+// zettaWANAddress returns the resolved wan addresses as a comma-joined list (pending entries dropped):
+// this is .status.wanAddress and exactly what a SIBLING slice copies into spec.externalPeers so each of
+// its nodes dials all of ours (spreading the cross-cluster load across every permanent node's uplink).
+func (r *OramaZettaClusterReconciler) zettaWANAddress(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, peerLBName, stsName string) string {
+	var resolved []string
+	for _, a := range r.zettaWANAddresses(ctx, z, peerLBName, stsName) {
+		if a != "" {
+			resolved = append(resolved, a)
 		}
 	}
-	return ""
+	return strings.Join(resolved, ",")
 }
 
 // withPeerPort appends the Zetta peer port to a bare host, leaving an already-`host:port` address alone
@@ -297,28 +331,57 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			"endpoint (node-reachability model, oramasearch/zetta#739) — set spec.reachability=wan-accessible to expose it",
 			"reachability", reachability, "ephemeral", z.Spec.Ephemeral)
 	}
+	// Per-node peer LBs: each PERMANENT wan-accessible node gets its OWN public IP so cross-cluster CRDT
+	// sync spreads across ALL their uplinks (aggregate bandwidth) instead of funnelling through one shared
+	// LB (a bottleneck + SPOF). Each LB selects exactly one StatefulSet pod by its stable pod-name label,
+	// and the node advertises its own LB address (--advertise, below) so external peers dial it directly
+	// rather than an unreachable pod IP (oramasearch/zetta#739). A legacy single shared LB is torn down.
+	peerReplicas := z.Spec.Replicas
+	if peerReplicas < 1 {
+		peerReplicas = 1
+	}
 	if wantPeerLB {
-		peerLB := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: peerLBName, Namespace: z.Namespace}}
-		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, peerLB, func() error {
-			peerLB.Labels = lbls
-			peerLB.Spec.Type = corev1.ServiceTypeLoadBalancer
-			peerLB.Spec.Selector = lbls
-			// External dial-in lands on node-0 (the seed); gossip relays to the rest of the mesh.
-			peerLB.Spec.Ports = []corev1.ServicePort{
-				{Name: "peer", Port: zettaPeerPort, TargetPort: intstr.FromInt32(zettaPeerPort)},
+		for ord := int32(0); ord < peerReplicas; ord++ {
+			lbName := fmt.Sprintf("%s-%d", peerLBName, ord)
+			podSel := map[string]string{"statefulset.kubernetes.io/pod-name": fmt.Sprintf("%s-%d", stsName, ord)}
+			for k, v := range lbls {
+				podSel[k] = v
 			}
-			return controllerutil.SetControllerReference(&z, peerLB, r.Scheme)
-		}); err != nil {
-			return ctrl.Result{}, err
+			lb := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: lbName, Namespace: z.Namespace}}
+			if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, lb, func() error {
+				lb.Labels = lbls
+				lb.Spec.Type = corev1.ServiceTypeLoadBalancer
+				lb.Spec.Selector = podSel // exactly one pod → one public IP per permanent node
+				lb.Spec.Ports = []corev1.ServicePort{
+					{Name: "peer", Port: zettaPeerPort, TargetPort: intstr.FromInt32(zettaPeerPort)},
+				}
+				return controllerutil.SetControllerReference(&z, lb, r.Scheme)
+			}); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		// Retire the legacy shared LB and any per-ordinal LBs above the current replica count (scale-down).
+		_ = deleteIfExists(ctx, r.Client, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: peerLBName, Namespace: z.Namespace}})
+		for ord := peerReplicas; ord < peerReplicas+16; ord++ {
+			_ = deleteIfExists(ctx, r.Client, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%d", peerLBName, ord), Namespace: z.Namespace}})
 		}
 	} else {
 		_ = deleteIfExists(ctx, r.Client, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: peerLBName, Namespace: z.Namespace}})
+		for ord := int32(0); ord < peerReplicas+16; ord++ {
+			_ = deleteIfExists(ctx, r.Client, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%d", peerLBName, ord), Namespace: z.Namespace}})
+		}
 	}
 
 	// 3. StatefulSet — N equal-peer headless nodes, each with a per-node PVC at /data.
+	// Build the POSITIONAL per-node advertise map (comma-joined; field i = node i, "" while pending) so
+	// each PERMANENT wan-accessible node gossips ITS OWN routable address (--advertise) instead of its
+	// unreachable bound pod IP — otherwise external peers learn a 10.244.x and dial it forever
+	// (oramasearch/zetta#739). The resolved subset becomes .status.wanAddress below. Recomputed each
+	// reconcile; a later LB IP just rolls the pods once.
+	advertiseMap := strings.Join(r.zettaWANAddresses(ctx, &z, peerLBName, stsName), ",")
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: z.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
-		return r.mutateZettaStatefulSet(&z, sts, headlessName, stsName, lbls)
+		return r.mutateZettaStatefulSet(&z, sts, headlessName, stsName, lbls, advertiseMap)
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -619,7 +682,7 @@ func (r *OramaZettaClusterReconciler) zettaIngressTarget(ctx context.Context, z 
 	return ""
 }
 
-func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet, headlessName, stsName string, lbls map[string]string) error {
+func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet, headlessName, stsName string, lbls map[string]string, advertise string) error {
 	replicas := z.Spec.Replicas
 	if replicas < 1 {
 		replicas = 1
@@ -681,6 +744,15 @@ fi
 A="--headless --data-dir %[1]s --listen 0.0.0.0:$PEER_PORT --mcp-listen 0.0.0.0:$API_PORT"
 if [ "$ORD" != "0" ]; then A="$A --peer $SEED"; fi
 A="$A%[5]s"
+# Per-node WAN advertise (operator#104, oramasearch/zetta#739): ZETTA_ADVERTISE_MAP is a positional
+# comma-joined map — field (ORD+1) is THIS node's own routable addr; a 1-field map applies to all nodes.
+# A permanent wan node gossips ITS OWN reachable address, so cross-cluster peers spread across all of them.
+ADV="${ZETTA_ADVERTISE_MAP:-}"
+if [ -n "$ADV" ]; then
+  N=$(echo "$ADV" | awk -F, '{print NF}')
+  if [ "$N" = "1" ]; then MINE="$ADV"; else MINE=$(echo "$ADV" | cut -d, -f$((ORD+1))); fi
+  [ -n "$MINE" ] && A="$A --advertise $MINE"
+fi
 echo "zetta node $POD_NAME (ordinal $ORD): zetta $A${ZETTA_CLUSTER_TOKEN:+ [join-token via env ****]}${ZETTA_MCP_TOKEN:+ --mcp-token ****}${ZETTA_ADMIN_TOKEN:+ --require-auth --admin-token ****}"
 if [ -n "${ZETTA_MCP_TOKEN:-}" ]; then A="$A --mcp-token $ZETTA_MCP_TOKEN"; fi
 if [ -n "${ZETTA_ADMIN_TOKEN:-}" ]; then A="$A --require-auth --admin-token $ZETTA_ADMIN_TOKEN"; fi
@@ -713,6 +785,11 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-admin"}, Key: "token"}}})
 	}
+	// Per-node WAN advertise map (positional; field ORD+1 = this node's own routable addr) — a wan node
+	// gossips its OWN reachable endpoint, not its unreachable pod IP (operator#104, oramasearch/zetta#739).
+	if advertise != "" {
+		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_ADVERTISE_MAP", Value: advertise})
+	}
 
 	sts.Labels = lbls
 	sts.Spec.ServiceName = headlessName
@@ -734,10 +811,11 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 				FSGroup:    int64Ptr(10001),
 			},
 			Containers: []corev1.Container{{
-				Name:    "zetta",
-				Image:   image,
-				Command: []string{"/bin/sh", "-c", entry},
-				Env:     zettaEnv,
+				Name:            "zetta",
+				Image:           image,
+				ImagePullPolicy: corev1.PullAlways, // dev sandbox: mutable :v1-sandbox tag — always re-pull (operator#103)
+				Command:         []string{"/bin/sh", "-c", entry},
+				Env:             zettaEnv,
 				Ports: []corev1.ContainerPort{
 					{Name: "peer", ContainerPort: zettaPeerPort},
 					{Name: "api", ContainerPort: zettaAPIPort},
