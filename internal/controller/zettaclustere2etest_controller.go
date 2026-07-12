@@ -96,30 +96,18 @@ func (r *ZettaClusterE2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 		{Name: "ZETTA_E2E_PEER_URLS", Value: peerURLs},
 		{Name: "ZETTA_E2E_LEVELS", Value: levels},
 	}
-	// Auth wiring — these env names are the exact contract the suite reads (do NOT rename).
-	//   * requireAuth target: the node ENFORCES authz (--require-auth), so run the authz-enforcement
-	//     assertions (ZETTA_E2E_REQUIRE_AUTH=1) and hand the suite the SEEDED ADMIN token (Secret
-	//     <ref>-zetta-admin key `token`) — the admin principal the node seeded, so authenticated calls
-	//     pass. This is the regression harness for the zetta auth work (oramasearch/zetta#759–#769).
-	//   * else mcpTokenAuth: hand the suite the MCP bearer (<ref>-zetta-mcp). Best-effort — that token
-	//     authenticates-but-denies today (zetta#733), which is fine.
-	// requireAuth takes precedence over mcpTokenAuth for the token source.
-	switch {
-	case target.Spec.RequireAuth:
-		env = append(env,
-			corev1.EnvVar{Name: "ZETTA_E2E_REQUIRE_AUTH", Value: "1"},
-			corev1.EnvVar{Name: "ZETTA_E2E_TOKEN", ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: t.Spec.TargetRef + "-zetta-admin"},
-					Key:                  "token",
-				}}})
-	case target.Spec.MCPTokenAuth:
-		env = append(env, corev1.EnvVar{Name: "ZETTA_E2E_TOKEN", ValueFrom: &corev1.EnvVarSource{
+	// Auth wiring — these env names are the exact contract the suite reads (do NOT rename). Auth is ALWAYS
+	// enforced by the engine (zetta#799 made it mandatory and removed the unauthenticated/plaintext mode), so
+	// ALWAYS run the authz-enforcement assertions (ZETTA_E2E_REQUIRE_AUTH=1) and hand the suite the SEEDED
+	// ADMIN token (Secret <ref>-zetta-admin key `token`, always provisioned) — the owner the node seeded, so
+	// authenticated calls pass.
+	env = append(env,
+		corev1.EnvVar{Name: "ZETTA_E2E_REQUIRE_AUTH", Value: "1"},
+		corev1.EnvVar{Name: "ZETTA_E2E_TOKEN", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: t.Spec.TargetRef + "-zetta-mcp"},
+				LocalObjectReference: corev1.LocalObjectReference{Name: t.Spec.TargetRef + "-zetta-admin"},
 				Key:                  "token",
 			}}})
-	}
 
 	// The runner image's ENTRYPOINT runs the baked suite — do NOT set a Command, only Env.
 	runner := t.Spec.Image

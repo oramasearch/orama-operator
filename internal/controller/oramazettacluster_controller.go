@@ -285,29 +285,18 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// 2.5 MCP bearer token — OPT-IN (spec.mcpTokenAuth, default off). Zetta's --mcp-token treats the
-	//     token as an access-key id that must already be a provisioned principal; a bare token
-	//     authenticates but is then denied every capability ("unknown access key"), so the default is
-	//     the functional unauthenticated-local session (see the field doc + oramasearch/zetta#733).
-	//     When enabled, provision the token before the StatefulSet so its secretKeyRef resolves.
-	if z.Spec.MCPTokenAuth {
-		if err := r.reconcileZettaMCPToken(ctx, &z); err != nil {
-			return ctrl.Result{}, err
-		}
-	} else {
-		_ = deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: z.Name + "-zetta-mcp", Namespace: z.Namespace}})
-	}
-
-	// 2.55 Admin token — OPT-IN (spec.requireAuth, default off). Runs the node under `--require-auth`
-	//      with a seeded admin token so the authz system is ENFORCED — the regression harness for the
-	//      zetta auth work (oramasearch/zetta#759–#769). Mirrors the MCP-token shape (mint once, never
-	//      rotate). Provisioned before the StatefulSet so its secretKeyRef resolves.
-	if z.Spec.RequireAuth {
-		if err := r.reconcileZettaAdminToken(ctx, &z); err != nil {
-			return ctrl.Result{}, err
-		}
-	} else {
-		_ = deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: z.Name + "-zetta-admin", Namespace: z.Namespace}})
+	// 2.55 Admin token — UNCONDITIONAL. zetta#799 made the engine's auth MANDATORY and REMOVED the
+	//      `--require-auth`/`--mcp-token`/`--cluster-plaintext` flags: every node now ALWAYS gates its
+	//      HTTP/MCP/SQL surface on a bearer that resolves to a user. A fresh node auto-generates an admin
+	//      credential the operator can't read, so the operator MUST seed a KNOWN one: it mints a 64-hex
+	//      admin token once into Secret `<name>-zetta-admin` (key `token`), injects it as
+	//      `ZETTA_ADMIN_TOKEN` → `--admin-token` (which seeds the owner), and authenticates its OWN Zetta
+	//      SQL client with it (zetta_statesync.go / zetta_controlplane.go) — otherwise the operator's SQL
+	//      sync 401s against the auth-on engine. Provisioned before the StatefulSet so its secretKeyRef
+	//      resolves; minted once, never rotated. spec.requireAuth / spec.mcpTokenAuth are now deprecated
+	//      no-ops (auth is always enforced — see the CRD types).
+	if err := r.reconcileZettaAdminToken(ctx, &z); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// 2.57 Cluster join token — UNCONDITIONAL (the mTLS cluster identity, operator#92). Zetta derives the
@@ -422,50 +411,13 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-// reconcileZettaMCPToken ensures a Secret holding a 64-char (32-byte hex) MCP bearer token exists for
-// this cluster. Secure by default: the token is injected into the node (ZETTA_MCP_TOKEN → --mcp-token),
-// so the MCP + REST surface requires a bearer instead of being open. Idempotent — the token is minted
-// once and preserved across reconciles; the value is never logged (the entrypoint echo redacts it).
-func (r *OramaZettaClusterReconciler) reconcileZettaMCPToken(ctx context.Context, z *oramav1alpha1.OramaZettaCluster) error {
-	name := z.Name + "-zetta-mcp"
-	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
-	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, sec, func() error {
-		sec.Labels = zettaLabels(z)
-		if len(sec.Data["token"]) == 0 { // mint once; preserve on later reconciles
-			token, gerr := randHex(32) // 32 bytes → 64 hex chars
-			if gerr != nil {
-				return gerr
-			}
-			if sec.Data == nil {
-				sec.Data = map[string][]byte{}
-			}
-			sec.Data["token"] = []byte(token)
-		}
-		return controllerutil.SetControllerReference(z, sec, r.Scheme)
-	})
-	if err != nil {
-		return err
-	}
-	if op == controllerutil.OperationResultCreated {
-		kv := []any{"component", "zetta-mcp", "secret", name,
-			"retrieve", fmt.Sprintf("kubectl get secret %s -n %s -o jsonpath='{.data.token}' | base64 -d", name, z.Namespace)}
-		if z.Spec.Host != "" {
-			kv = append(kv, "connectDocs", "https://"+z.Spec.Host+"/mcp.md")
-		}
-		logf.FromContext(ctx).Info("provisioned MCP bearer token — the node now requires a bearer on /mcp and /v1/*", kv...)
-	}
-	return nil
-}
-
-// reconcileZettaAdminToken ensures a Secret holding a 64-char (32-byte hex) ADMIN token exists for
-// this cluster when spec.requireAuth is set. The token is injected into the node (ZETTA_ADMIN_TOKEN →
-// `--admin-token`, alongside `--require-auth`), which enforces the authz system and seeds this token
-// as the admin principal — so the ZettaClusterE2ETest can drive real authz assertions (the regression
-// harness for oramasearch/zetta#759–#769). Idempotent — minted once and PRESERVED across reconciles
-// (never rotated); the value is never logged (the entrypoint echo redacts it). This mirrors
-// reconcileZettaMCPToken exactly; the only difference is the Secret name (`<name>-zetta-admin`) and the
-// flags the node receives. NOTE: the deployed sandbox image predates `--require-auth`/`--admin-token`
-// (oramasearch/zetta#780) — enable this only against an auth-capable build (see the field doc).
+// reconcileZettaAdminToken ensures a Secret holding a 64-char (32-byte hex) ADMIN token exists for this
+// cluster. UNCONDITIONAL since zetta#799 made the engine's auth mandatory: the token is injected into the
+// node (ZETTA_ADMIN_TOKEN → `--admin-token`), which seeds it as the owner principal, AND it is the
+// credential the operator's OWN Zetta SQL client authenticates with (a fresh node otherwise auto-generates
+// an admin credential the operator can't read, and the auth-on engine 401s an unauthenticated client).
+// Idempotent — minted once and PRESERVED across reconciles (never rotated); the value is never logged
+// (the entrypoint echo redacts it). Provisioned before the StatefulSet so its secretKeyRef resolves.
 func (r *OramaZettaClusterReconciler) reconcileZettaAdminToken(ctx context.Context, z *oramav1alpha1.OramaZettaCluster) error {
 	name := z.Name + "-zetta-admin"
 	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
@@ -487,7 +439,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaAdminToken(ctx context.Conte
 		return err
 	}
 	if op == controllerutil.OperationResultCreated {
-		logf.FromContext(ctx).Info("provisioned admin token — the node runs with --require-auth (authz ENFORCED)",
+		logf.FromContext(ctx).Info("provisioned admin token — the node seeds it as the owner and the operator's SQL client authenticates with it (auth is mandatory, zetta#799)",
 			"component", "zetta-admin", "secret", name,
 			"retrieve", fmt.Sprintf("kubectl get secret %s -n %s -o jsonpath='{.data.token}' | base64 -d", name, z.Namespace))
 	}
@@ -501,10 +453,9 @@ func (r *OramaZettaClusterReconciler) reconcileZettaAdminToken(ctx context.Conte
 // `<name>-zetta-cluster` and injects it into EVERY node as ZETTA_CLUSTER_TOKEN (the engine reads that env
 // → --join-token at boot). Without it each node mints its OWN token on first boot, derives a different
 // CA, and rejects every peer — so every node forms its own cluster-of-one (operator#92). Mirrors
-// reconcileZettaMCPToken / reconcileZettaAdminToken, with two differences: it is UNCONDITIONAL (the shared
-// CA is fundamental to a multi-node cluster — there is no "off" state) and it is NEVER rotated (a new
-// token re-derives the CA and orphans every existing node cert, splitting the cluster). The value is
-// never logged. Provisioned before the StatefulSet so its secretKeyRef resolves.
+// reconcileZettaAdminToken (also UNCONDITIONAL + minted-once), with one further difference: it is NEVER
+// rotated (a new token re-derives the CA and orphans every existing node cert, splitting the cluster). The
+// value is never logged. Provisioned before the StatefulSet so its secretKeyRef resolves.
 func (r *OramaZettaClusterReconciler) reconcileZettaClusterToken(ctx context.Context, z *oramav1alpha1.OramaZettaCluster) error {
 	name := z.Name + "-zetta-cluster"
 	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
@@ -724,12 +675,12 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	// env var directly at boot and maps it to --join-token internally (src/main.cpp provisioning env). We
 	// keep it env-only on purpose — an unknown env var is safely ignored by an image that predates the
 	// feature, whereas an unknown FLAG would crash the node (as the sandbox image does for unknown flags).
-	// Secret flags (--mcp-token / --admin-token) are appended AFTER the echo, and the echo shows only a
-	// redacted "****", so no token ever lands in the pod log. Tokens are injected via env from their
-	// Secrets: ZETTA_CLUSTER_TOKEN (<name>-zetta-cluster, reconcileZettaClusterToken; every node);
-	// ZETTA_MCP_TOKEN (<name>-zetta-mcp, reconcileZettaMCPToken); and, when spec.requireAuth is set,
-	// ZETTA_ADMIN_TOKEN (<name>-zetta-admin, reconcileZettaAdminToken) which also flips on --require-auth so
-	// the node ENFORCES authz (regression harness for oramasearch/zetta#759–#769).
+	// The `--admin-token` flag is appended AFTER the echo, and the echo shows only a redacted "****", so no
+	// token ever lands in the pod log. Tokens are injected via env from their Secrets: ZETTA_CLUSTER_TOKEN
+	// (<name>-zetta-cluster, reconcileZettaClusterToken; every node) and ZETTA_ADMIN_TOKEN (<name>-zetta-admin,
+	// reconcileZettaAdminToken; every node) which seeds the owner. zetta#799 made auth MANDATORY and REMOVED
+	// `--require-auth`/`--mcp-token`/`--cluster-plaintext` — passing any of them is now an unknown-option
+	// error that crashes the node, so the entrypoint renders NONE of them (only `--admin-token`).
 	entry := fmt.Sprintf(`set -eu
 ORD="${POD_NAME##*-}"   # NOT $HOSTNAME — under hostNetwork that is the node's name, not the pod's
 PEER_PORT=%[2]d
@@ -756,9 +707,8 @@ if [ -n "$ADV" ]; then
   if [ "$N" = "1" ]; then MINE="$ADV"; else MINE=$(echo "$ADV" | cut -d, -f$((ORD+1))); fi
   [ -n "$MINE" ] && A="$A --advertise $MINE"
 fi
-echo "zetta node $POD_NAME (ordinal $ORD): zetta $A${ZETTA_CLUSTER_TOKEN:+ [join-token via env ****]}${ZETTA_MCP_TOKEN:+ --mcp-token ****}${ZETTA_ADMIN_TOKEN:+ --require-auth --admin-token ****}"
-if [ -n "${ZETTA_MCP_TOKEN:-}" ]; then A="$A --mcp-token $ZETTA_MCP_TOKEN"; fi
-if [ -n "${ZETTA_ADMIN_TOKEN:-}" ]; then A="$A --require-auth --admin-token $ZETTA_ADMIN_TOKEN"; fi
+echo "zetta node $POD_NAME (ordinal $ORD): zetta $A${ZETTA_CLUSTER_TOKEN:+ [join-token via env ****]}${ZETTA_ADMIN_TOKEN:+ --admin-token ****}"
+if [ -n "${ZETTA_ADMIN_TOKEN:-}" ]; then A="$A --admin-token $ZETTA_ADMIN_TOKEN"; fi
 exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 
 	zettaEnv := []corev1.EnvVar{
@@ -779,15 +729,10 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
 			corev1.EnvVar{Name: "HOST_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"}}},
 		)
 	}
-	if z.Spec.MCPTokenAuth {
-		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_MCP_TOKEN", ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-mcp"}, Key: "token"}}})
-	}
-	if z.Spec.RequireAuth {
-		// Inject the admin token; its presence in the entrypoint flips on --require-auth (authz enforced).
-		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-admin"}, Key: "token"}}})
-	}
+	// Admin token → ZETTA_ADMIN_TOKEN on EVERY node (UNCONDITIONAL since zetta#799): the entrypoint renders
+	// `--admin-token` to seed the owner, and the operator's own SQL client authenticates with the same token.
+	zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{
+		SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-admin"}, Key: "token"}}})
 	// Per-node WAN advertise map (positional; field ORD+1 = this node's own routable addr) — a wan node
 	// gossips its OWN reachable endpoint, not its unreachable pod IP (operator#104, oramasearch/zetta#739).
 	if advertise != "" {

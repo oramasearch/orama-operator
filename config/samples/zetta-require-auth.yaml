@@ -1,23 +1,25 @@
-# Require-auth target profile for the Zetta e2e — a 3-replica OramaZettaCluster that runs the node
-# under `--require-auth` with a seeded admin token, plus a ZettaClusterE2ETest that exercises the
-# authz-enforcement assertions against it. This is the regression harness for the zetta auth work
-# (oramasearch/zetta#759–#769); see https://github.com/oramasearch/orama-cloud-v1-operator/issues/88.
+# Auth-enforcement profile for the Zetta e2e — a 3-replica OramaZettaCluster plus a ZettaClusterE2ETest
+# that exercises the authz-enforcement assertions against it. Regression harness for the zetta auth work;
+# see https://github.com/oramasearch/orama-cloud-v1-operator/issues/88.
 #
-# What `spec.requireAuth: true` does:
+# Auth is MANDATORY (oramasearch/zetta#799) — the engine gates every HTTP/MCP/SQL call on a bearer that
+# resolves to a user, and the `--require-auth`/`--mcp-token`/`--cluster-plaintext` flags were REMOVED. So
+# the operator ALWAYS (no spec field needed):
 #   * mints a 64-hex admin token once into Secret `zetta-auth-zetta-admin` (key `token`), preserved
-#     across reconciles (never rotated) — same shape as the `-zetta-mcp` token;
-#   * injects it as env `ZETTA_ADMIN_TOKEN` and passes `--require-auth --admin-token <token>` to every
-#     node, so the authz system is ENFORCED (deny-by-default).
-# The ZettaClusterE2ETest then sees the target is require-auth and sets `ZETTA_E2E_REQUIRE_AUTH=1` +
-# `ZETTA_E2E_TOKEN` (SecretKeyRef -> `zetta-auth-zetta-admin`/token) for the suite (LEVEL 3.12).
+#     across reconciles (never rotated);
+#   * injects it as env `ZETTA_ADMIN_TOKEN` and passes `--admin-token <token>` to every node, seeding it
+#     as the owner principal; and
+#   * authenticates its OWN Zetta SQL client (state sync + schema provisioning) with that token.
+# The ZettaClusterE2ETest ALWAYS sets `ZETTA_E2E_REQUIRE_AUTH=1` + `ZETTA_E2E_TOKEN` (SecretKeyRef ->
+# `zetta-auth-zetta-admin`/token) for the suite.
 #
 # MULTI-NODE: the e2e builds `ZETTA_E2E_PEER_URLS` from the target's replicas, so a `replicas: 3`
 # target automatically exercises the authz path across all three nodes (writer node-0 + 2 read peers).
 #
-# IMPORTANT — image requirement: `--require-auth`/`--admin-token` are the zetta auth work
-# (oramasearch/zetta#780). The default sandbox image (`oramasearch/zetta:headless-v1-sandbox`)
-# PREDATES these flags and rejects unknown options (the node exits with a usage error), so only enable
-# `requireAuth` against an auth-capable build — pin that image below when it exists.
+# IMPORTANT — image requirement: the target's image MUST be an auth-capable build (post-zetta#799). The
+# old `oramasearch/zetta:headless-v1-sandbox` predates mandatory auth — pin an auth-capable image below.
+#
+# `spec.requireAuth` / `spec.mcpTokenAuth` are DEPRECATED no-ops (auth is enforced regardless).
 #
 #   kubectl apply -f config/samples/zetta-require-auth.yaml
 #   kubectl get ozc  zetta-auth      -n orama-system      # Nodes / Desired / Phase
@@ -30,12 +32,12 @@ metadata:
   namespace: orama-system
 spec:
   replicas: 3                                    # writer node-0 + 2 read peers (multi-node authz path)
-  # image: oramasearch/zetta:headless-vX-auth    # MUST implement --require-auth/--admin-token (zetta#780)
+  # image: oramasearch/zetta:headless-vX-auth    # MUST be an auth-capable build (post-zetta#799)
   pullSecretName: oramasearch-dockerhub          # for the private zetta image
-  requireAuth: true                              # run --require-auth with a seeded admin token (authz ENFORCED)
-  # Inter-node traffic is always mTLS via the shared cluster join token (Secret zetta-auth-zetta-cluster,
-  # operator#92). NOTE: multi-node mTLS convergence additionally needs the engine's DNS-dial + mTLS-sync
-  # fixes (oramasearch/zetta#785, #786) — until those land a >1-node cluster won't fully converge.
+  # Auth is mandatory — the admin token (Secret zetta-auth-zetta-admin) is always seeded + injected; no
+  # spec field toggles it. Inter-node traffic is always mTLS via the shared cluster join token (Secret
+  # zetta-auth-zetta-cluster, operator#92). NOTE: multi-node mTLS convergence additionally needs the
+  # engine's DNS-dial + mTLS-sync fixes (oramasearch/zetta#785, #786).
   storage:
     size: 10Gi
 ---
@@ -45,6 +47,6 @@ metadata:
   name: zetta-auth-e2e
   namespace: orama-system
 spec:
-  targetRef: zetta-auth                          # the require-auth cluster above (same namespace)
-  # levels: "2,3"                                # L3.12 authz enforcement runs when the target is require-auth
+  targetRef: zetta-auth                          # the cluster above (same namespace)
+  # levels: "2,3"                                # L3 authz enforcement runs against every target
   pullSecretName: oramasearch-dockerhub

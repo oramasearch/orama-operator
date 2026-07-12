@@ -63,12 +63,18 @@ Zetta speaks a **Postgres subset** over `/v1/sql`. What the operator relies on:
 
 All three reach the same node; the data is one CRDT store, replicated across the cluster.
 
+Auth is **always enforced** ([zetta#799](https://github.com/oramasearch/zetta/issues/799)) — every request
+needs `Authorization: Bearer <admin-token>` (Secret `<name>-zetta-admin`, key `token`, minted by the
+operator). Retrieve it with `kubectl get secret <name>-zetta-admin -o jsonpath='{.data.token}' | base64 -d`.
+
 ```sh
-# Browser / HTTP (GET; the node is unauthenticated by default):
-https://zetta.oramadev.net/v1/sql?statement=select%20*%20from%20orama_control.components
+# Browser / HTTP (GET; auth is mandatory — send the admin bearer):
+curl -sG -H "Authorization: Bearer $TOKEN" https://zetta.oramadev.net/v1/sql \
+  --data-urlencode "statement=select * from orama_control.components"
 
 # In-cluster (from any pod):
-curl -sG http://<name>-zetta:4800/v1/sql --data-urlencode "statement=SELECT * FROM system.datasets"
+curl -sG -H "Authorization: Bearer $TOKEN" http://<name>-zetta:4800/v1/sql \
+  --data-urlencode "statement=SELECT * FROM system.datasets"
 
 # Over MCP (Claude, or any MCP client):
 #   tool: sql   { "statement": "SELECT name, status FROM components", "database": "orama_control" }
@@ -179,8 +185,11 @@ but **leaves the databases intact**.
   ([zetta#731](https://github.com/oramasearch/zetta/issues/731)); the schema Job retries hard, and the
   pod's **readiness probe is disabled** ([operator#68](https://github.com/oramasearch/orama-cloud-v1-operator/issues/68))
   so it doesn't flap out of the Service.
-- **Auth** — provisioning assumes the node is unauthenticated (the functional default). `spec.mcpTokenAuth`
-  is opt-in and currently breaks capability access until the node supports an owner-key bootstrap
-  ([zetta#733](https://github.com/oramasearch/zetta/issues/733)); leave it off for now.
+- **Auth** — the engine's auth is **mandatory** ([zetta#799](https://github.com/oramasearch/zetta/issues/799)):
+  every HTTP/MCP/SQL call must carry a bearer that resolves to a user. The operator ALWAYS seeds a known
+  admin token (Secret `<name>-zetta-admin`) and authenticates BOTH its state-sync SQL client
+  (`zetta_statesync.go`) and its schema-provisioning curl Job (`zetta_controlplane.go`) with it. The
+  `spec.requireAuth` / `spec.mcpTokenAuth` fields are **deprecated no-ops** (there is no unauthenticated
+  or `--mcp-token` mode anymore).
 - **One node** — with a single `zetta-0` this is straightforward; picking which cluster is *the* operator
   datastore when there are several is future work.
