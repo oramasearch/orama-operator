@@ -122,6 +122,11 @@ func (r *OramaZettaClusterReconciler) gatherOperatorState(ctx context.Context, n
 // operatorID is this operator's unique identity — one operator per k8s cluster, but Zetta's cluster can
 // span many k8s clusters, so each namespaces its state by this id. Defaults to the kube-system Namespace
 // UID (stable + unique per cluster); override with the ORAMA_OPERATOR_ID env var. Computed once.
+//
+// The kube-system UID is read through the uncached reader (operator#106): a cached Get on a cluster-scoped
+// Namespace would make controller-runtime start a cluster-wide Namespace list/watch informer just for this
+// one-time read — over-broad RBAC that crashlooped the operator this session ("failed to wait for
+// namespaces caches to sync"). A single uncached GET needs only `namespaces get`, no list/watch.
 func (r *OramaZettaClusterReconciler) operatorID(ctx context.Context) string {
 	r.operatorIDOnce.Do(func() {
 		if v := os.Getenv("ORAMA_OPERATOR_ID"); v != "" {
@@ -129,7 +134,7 @@ func (r *OramaZettaClusterReconciler) operatorID(ctx context.Context) string {
 			return
 		}
 		var ns corev1.Namespace
-		if err := r.Get(ctx, client.ObjectKey{Name: "kube-system"}, &ns); err == nil && ns.UID != "" {
+		if err := r.reader().Get(ctx, client.ObjectKey{Name: "kube-system"}, &ns); err == nil && ns.UID != "" {
 			r.operatorIDValue = string(ns.UID)
 			return
 		}

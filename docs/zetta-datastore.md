@@ -112,7 +112,9 @@ long as they can reach each other's peer port. So the target topology is **N k8s
 - **Per-operator identity.** Because they share one store, every synced row is namespaced by an
   `operator` id so states never collide (two clusters each with a `v1/writer` stay distinct). The id
   defaults to the **`kube-system` Namespace UID** (stable + unique per cluster); override with the
-  `ORAMA_OPERATOR_ID` env var. Query one operator's view with `… WHERE operator = '<id>'`.
+  `ORAMA_OPERATOR_ID` env var. The UID is read via a single **uncached GET** (operator#106) — not a
+  cluster-wide Namespace informer — so the operator needs only `namespaces: [get]`, never list/watch.
+  Query one operator's view with `… WHERE operator = '<id>'`.
 - **Peering across clusters** is the networking piece, and it follows the **node-reachability model**
   (see the Zetta [`docs/cluster/cluster.md`](https://github.com/oramasearch/zetta/blob/dev/docs/cluster/cluster.md)
   "Node reachability + the route table"), **not** an inbound endpoint on every node:

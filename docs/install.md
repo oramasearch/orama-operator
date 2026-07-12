@@ -61,9 +61,10 @@ kubectl get crd oramacloudv1s.orama.cloud
   `helm install --skip-crds` + `kubectl apply -f chart/crds/`. Helm never upgrades `crds/` on `helm
   upgrade`, so after adding/altering a CRD, **`kubectl apply -f chart/crds/`** to the cluster.
 - **RBAC must match what the image watches.** The manager CrashLoops (*"failed to wait for `<kind>` caches
-  to sync"*) if the image watches a CRD/resource the ClusterRole doesn't grant — including core
-  `namespaces` for the `ORAMA_OPERATOR_ID` read. The chart ClusterRole is hand-maintained; keep it in sync
-  with the generated `config/rbac/role.yaml`.
+  to sync"*) if the image watches a CRD/resource the ClusterRole doesn't grant. The `ORAMA_OPERATOR_ID`
+  read no longer needs a cluster-wide `namespaces` **watch** (operator#106): it is a single **uncached
+  GET** of the `kube-system` Namespace, so the grant is `namespaces: [get]` only — no list/watch informer.
+  The chart ClusterRole is hand-maintained; keep it in sync with the generated `config/rbac/role.yaml`.
 - **Multi-cluster:** each k8s cluster runs its **own** in-cluster operator; they share one Zetta and
   coordinate through it. See [zetta-datastore.md](zetta-datastore.md) + [zetta-cluster-mtls.md](zetta-cluster-mtls.md).
 

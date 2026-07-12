@@ -61,6 +61,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace UID — `get` only,
+  # never list/watch, so the operator holds no cluster-wide Namespace informer.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters"]
     verbs: ["*"]
