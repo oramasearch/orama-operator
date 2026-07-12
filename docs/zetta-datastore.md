@@ -138,10 +138,19 @@ long as they can reach each other's peer port. So the target topology is **N k8s
     dial-out-only/ephemeral slice it is **ignored** (a warning is logged and any existing peer LB torn
     down). And even for a wan-accessible node a cloud LB is only one option — a node whose host already
     has a public IP (`hostNetwork`) or a mesh-VPN address (`wanAddress`) needs none.
-  - **Advertised address vs bound address:** until Zetta grows a `--advertise HOST:PORT` flag
-    ([zetta#739](https://github.com/oramasearch/zetta/issues/739) request #1), a node gossips the address
-    it **bound** — so wan-accessibility relies on `hostNetwork` (bound == routable) or the LB path today;
-    the operator already surfaces `.status.wanAddress` so the flag is a drop-in once it lands.
+  - **Advertised address vs bound address:** Zetta now has `--advertise HOST:PORT[,…]`, and the operator
+    gives each **wan-accessible** node its OWN routable address via `--advertise` — a **per-node peer LB**
+    per permanent node, so every node advertises its own IP and cross-cluster load spreads across all their
+    uplinks (aggregate bandwidth, [operator#104](https://github.com/oramasearch/orama-cloud-v1-operator/issues/104)).
+    `.status.wanAddress` is the joined per-node list a sibling copies into `spec.externalPeers`.
+  - **A `dial-out-only` node must advertise NO dialable address, and peers must never dial it**
+    ([zetta#803](https://github.com/oramasearch/zetta/issues/803)): it has no routable address, so
+    gossiping its private/bound pod IP makes peers try to dial it — and when two clusters **share a pod
+    CIDR** (k0s + AKS both `10.244.0.x`) that dial reaches the WRONG node and undercounts membership
+    (peripheral nodes showed `cluster: 7 node`, not 9). It is a pure initiator; its one outbound link
+    carries CRDT sync both ways, and full membership rides the CRDT node-list
+    ([zetta#800](https://github.com/oramasearch/zetta/issues/800)). The operator passes `spec.reachability`
+    to the node so a dial-out slice never advertises its pod IP.
   - Inter-node peer traffic is **always mTLS**: the operator mints one shared cluster join token per
     cluster (Secret `<name>-zetta-cluster`) and injects it into every node as `ZETTA_CLUSTER_TOKEN`, so
     all nodes derive the same cluster CA and form one cluster ([operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92),

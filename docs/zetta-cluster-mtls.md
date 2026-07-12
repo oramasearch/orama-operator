@@ -98,6 +98,16 @@ the correct shared identity from the operator but won't converge. See also
 [zetta#784](https://github.com/oramasearch/zetta/issues/784) (clusters don't form) and
 [zetta#770](https://github.com/oramasearch/zetta/issues/770) (join-token env-exposure hardening).
 
+**Cross-cluster convergence also needs the reachability-aware dialer**
+([zetta#803](https://github.com/oramasearch/zetta/issues/803)): a `dial-out-only` node must advertise **no**
+dialable address and peers must **never** dial it — otherwise, when two clusters share a pod CIDR (k0s + AKS
+both `10.244.0.x`), the dial reaches the wrong node and membership undercounts (peripheral nodes showed
+`cluster: 7 node`, not 9). Such a node is a pure initiator that syncs both ways over its one outbound link,
+and full membership rides the CRDT node-list ([zetta#800](https://github.com/oramasearch/zetta/issues/800)).
+The reachability model — which node advertises what — lives in [`zetta-datastore.md`](zetta-datastore.md)
+("Peering across clusters"); the operator already knows each slice's `spec.reachability` and passes each
+wan-accessible node its own `--advertise` address ([operator#104](https://github.com/oramasearch/orama-cloud-v1-operator/issues/104)).
+
 ## Related
 
 - [`crd-reference.md`](crd-reference.md) — the `OramaZettaCluster` field reference.
