@@ -18,6 +18,7 @@ Provisioned automatically when `spec.provisionOperatorSchema` is `true` (the def
 |---|---|---|
 | `orama_control` | `components` | the operator's registry — one row per managed component (`name, kind, image, status, node, updated_at`). |
 | `orama_control` | `reconcile_events` | an audit of operator actions (`ts, cluster, action, detail`). |
+| `orama_control` | `topology` | the cross-cluster Zetta node topology ([operator#105](https://github.com/oramasearch/orama-cloud-v1-operator/issues/105)) — one row per wan-accessible node (`operator, cluster, node, address, reachability, node_type, status, updated_at`). Each operator WRITES its slice's wan endpoints; Zetta CRDT-syncs the table; each operator READS it back to derive cross-cluster peering. See [Cross-cluster topology through Zetta](#cross-cluster-topology-through-zetta). |
 | `orama_data` | `documents` | the application-data landing zone (`id, collection, body, updated_at`) — where v1's served data migrates to. |
 
 The definitive list is `operatorZettaSchema` in
@@ -134,12 +135,16 @@ long as they can reach each other's peer port. So the target topology is **N k8s
     - **`spec.ephemeral`** — burst/autoscaled capacity ([operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69))
       expected to churn; **always forced to dial-out-only** (its address would flap, so it is never a
       rendezvous) and its membership blips are not treated as a fault.
-  - **The mesh self-forms:** copy a wan-accessible slice's `.status.wanAddress` into the dial-out-only
-    siblings' `spec.externalPeers` and they reach out to it; Zetta relays transitively + computes the
-    route table ([zetta#739](https://github.com/oramasearch/zetta/issues/739)). A private node is
-    **always the initiator**. The same wan-accessible set feeds the **Cloudflare LB origin pool**
+  - **The mesh self-forms — coordinated THROUGH Zetta** ([operator#105](https://github.com/oramasearch/orama-cloud-v1-operator/issues/105)):
+    each operator writes its slice's wan endpoints into `orama_control.topology`, Zetta CRDT-syncs the
+    table, and each operator reads it back to **derive** its siblings' `--peer` set automatically — no
+    admin hand-copies `.status.wanAddress` into `spec.externalPeers` anymore (though setting
+    `spec.externalPeers` still works and **wins** as an explicit override). Dial-out-only siblings reach
+    out to the derived wan rendezvous; Zetta relays transitively + computes the route table
+    ([zetta#739](https://github.com/oramasearch/zetta/issues/739)). A private node is **always the
+    initiator**. The same wan-accessible set feeds the **Cloudflare LB origin pool**
     ([operator#73](https://github.com/oramasearch/orama-cloud-v1-operator/issues/73) — HTTP origin at the
-    same host `:4800`).
+    same host `:4800`). Full mechanism: [Cross-cluster topology through Zetta](#cross-cluster-topology-through-zetta).
   - **Anti-pattern — do NOT** provision an inbound `LoadBalancer` (or, worse, one source-locked to a
     specific peer's IP) to "reach" a `dial-out-only` node — that **inverts** the model. The operator
     enforces this: `spec.exposePeerLoadBalancer` is **honored only on a `wan-accessible` slice**; on a
@@ -167,6 +172,56 @@ long as they can reach each other's peer port. So the target topology is **N k8s
     fully converges once the engine's DNS-dial + mTLS-sync fixes land ([zetta#785](https://github.com/oramasearch/zetta/issues/785),
     [zetta#786](https://github.com/oramasearch/zetta/issues/786)) — the token seeding is necessary but not
     sufficient on its own.
+
+## Cross-cluster topology through Zetta
+
+Cross-cluster peering ([operator#105](https://github.com/oramasearch/orama-cloud-v1-operator/issues/105))
+used to be hand-wired: an admin copied each slice's `.status.wanAddress` into its siblings'
+`spec.externalPeers`. It is now **coordinated through Zetta itself** — the operator uses its own datastore
+(`orama_control.topology`) as the rendezvous directory, and the mesh self-forms. The loop, per reconcile
+(`internal/controller/zetta_topology.go`, gated on the datastore symbiosis, best-effort):
+
+1. **Write.** The operator appends this slice's **wan-accessible** node endpoints to `orama_control.topology`
+   — one row per node: `operator` (this operator's id — the per-k8s-cluster namespacing), `cluster` (the
+   **global** name = `spec.clusterName`, or the CR name when unset), `node` (the pod name, stable per node),
+   `address` (the routable `host:port`, from `zettaWANAddresses` — `spec.wanAddress` / per-node peer-LB IP /
+   host IP), `reachability`, `node_type` (`permanent`/`ephemeral` — the coarse role the operator knows),
+   `status`, `updated_at`. **Same anti-flap discipline as `components`:** a row is appended **only when its
+   semantic content changes** (a steady wan slice writes nothing). A **dial-out-only** slice has no routable
+   address, so it writes nothing.
+2. **Sync.** Zetta **CRDT-syncs** `orama_control.topology` across every cluster for free — it is a table on
+   the one shared store. No operator work is needed for the sync itself.
+3. **Read + derive.** The operator `SELECT`s the topology back (scoped to its `cluster`), takes **latest-wins
+   per node by `updated_at`**, and **derives** its `--peer` set from the **wan-accessible active** rows of the
+   **other** operators sharing this cluster name — excluding its own nodes and its own advertised addresses.
+   The StatefulSet's `--peer` flags are the **union** of `spec.externalPeers` (explicit override — wins) and
+   this derived set (deduped). Setting `spec.externalPeers` by hand still works; the derived set fills the gap.
+4. **Failover.** When a wan node drops out — this operator scales the slice down, or it flips to
+   `dial-out-only` — the operator appends a **`status='gone'` marker row** for that node (there is no
+   `DELETE`; the engine is append-only, [zetta#735](https://github.com/oramasearch/zetta/issues/735)). On the
+   next read, latest-wins picks the `gone` row and the node **falls out of every sibling's derived `--peer`
+   set**. A node whose address is only momentarily pending (an LB IP not yet assigned) is **not** marked gone
+   — its last active row stands, so a transient blip never flaps the mesh.
+
+```
+operator A (cluster-X)                Zetta (one CRDT store)                operator B (cluster-X)
+  write A's wan nodes ───INSERT──▶  orama_control.topology  ◀──INSERT─── write B's wan nodes
+  read topology       ◀──SELECT───   (CRDT-synced across    ───SELECT──▶ read topology
+  derive --peer = B's wan            all clusters)                       derive --peer = A's wan
+```
+
+Reads use `zettaSQLQuery` (in `zetta_statesync.go`) — the authenticated sibling of `zettaSQL` that parses
+`.value.rows` out of the `/v1/sql` success envelope (`zettaSQL` only checks `ok:true`). Both send the admin
+bearer (auth is mandatory — [zetta#799](https://github.com/oramasearch/zetta/issues/799)).
+
+### Blocked: engine-side node-list GC (out of scope)
+
+The `gone` marker only affects the **operator's derived `--peer` set**. It does **NOT** remove the departed
+node from **Zetta's own membership CRDT** (the engine's `node:<id>` node-list). That GC **cannot be done over
+SQL** (append-only — no `DELETE`) and **there is no node-removal API yet**, so a `gone` marker row is the most
+the operator can express. Removing a node from the engine's node-list is future engine work; the operator
+does **not** attempt any engine-side removal. Until then a departed node lingers in Zetta's membership view
+even though no sibling dials it.
 
 ## Evolving the schema
 

@@ -460,3 +460,19 @@ siblings copy `.status.wanAddress` into their `spec.externalPeers`, and the **Cl
 `CloudflareLoadBalancer` CRD, [operator#76](https://github.com/oramasearch/orama-cloud-v1-operator/pull/76))
 is populated from those addresses (HTTP origin at the same host `:4800`) — the documented wiring hook, not
 yet auto-populated here.
+
+**Cross-cluster topology THROUGH Zetta** (`internal/controller/zetta_topology.go`,
+[operator#105](https://github.com/oramasearch/orama-cloud-v1-operator/issues/105)). Instead of an admin
+hand-copying `.status.wanAddress` into siblings' `spec.externalPeers`, the operator coordinates peering
+through its own datastore. Each reconcile (gated on the datastore symbiosis, best-effort like the state sync)
+it **writes** this slice's wan-accessible endpoints into `orama_control.topology` (append-only, anti-flapped
+like `components` — one row per node, namespaced by `operator` + global `cluster` name), Zetta **CRDT-syncs**
+that table across every cluster, and it **reads** the table back (latest-wins per node by `updated_at`) to
+**derive** its `--peer` set from the OTHER slices' wan endpoints. The StatefulSet's `--peer` flags
+(`mutateZettaStatefulSet` → `zettaPeerSet`) are the **union** of `spec.externalPeers` (explicit override —
+wins) and the derived set (deduped, excluding this slice's own nodes/addresses). Failover: a departed wan node
+(scale-down / flip to `dial-out-only`) gets a **`status='gone'` marker row** and falls out of the derived set
+next reconcile. Reads go through `zettaSQLQuery` (parses `.value.rows`; sends the admin bearer). **Blocked:**
+removing a departed node from Zetta's own **membership CRDT** node-list is not possible over SQL (append-only)
+and has no engine API yet — the `gone` marker affects only the derived `--peer` set, not the engine node-list
+(see [`zetta-datastore.md`](zetta-datastore.md)).

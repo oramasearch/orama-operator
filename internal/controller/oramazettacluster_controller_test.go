@@ -61,7 +61,7 @@ func TestZettaStatefulSetInjectsSharedClusterToken(t *testing.T) {
 	z := newZettaTestCluster()
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
 
-	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), ""); err != nil {
+	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), "", nil); err != nil {
 		t.Fatalf("mutateZettaStatefulSet: %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestZettaStatefulSetPerNodeAdvertise(t *testing.T) {
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
 
 	adv := "1.1.1.1:7777,2.2.2.2:7777,3.3.3.3:7777"
-	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), adv); err != nil {
+	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), adv, nil); err != nil {
 		t.Fatalf("mutateZettaStatefulSet: %v", err)
 	}
 	c := sts.Spec.Template.Spec.Containers[0]
@@ -118,7 +118,7 @@ func TestZettaStatefulSetPerNodeAdvertise(t *testing.T) {
 	}
 	// A dial-out-only slice (no advertise) must NOT inject the map.
 	sts2 := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
-	if err := r.mutateZettaStatefulSet(z, sts2, "z0-zetta-headless", "z0-zetta", zettaLabels(z), ""); err != nil {
+	if err := r.mutateZettaStatefulSet(z, sts2, "z0-zetta-headless", "z0-zetta", zettaLabels(z), "", nil); err != nil {
 		t.Fatalf("mutateZettaStatefulSet (dial-out): %v", err)
 	}
 	if findEnv(sts2.Spec.Template.Spec.Containers[0].Env, "ZETTA_ADVERTISE_MAP") != nil {
@@ -135,7 +135,7 @@ func TestZettaStatefulSetAlwaysSeedsAdminTokenNoRemovedFlags(t *testing.T) {
 	r := &OramaZettaClusterReconciler{Scheme: zettaTestScheme(t)}
 	z := newZettaTestCluster() // RequireAuth / MCPTokenAuth both zero-valued (unset)
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
-	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), ""); err != nil {
+	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), "", nil); err != nil {
 		t.Fatalf("mutateZettaStatefulSet: %v", err)
 	}
 	c := sts.Spec.Template.Spec.Containers[0]

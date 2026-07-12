@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -207,6 +208,82 @@ func zettaSQL(ctx context.Context, base, token, database, statement string) erro
 		return fmt.Errorf("zetta sql %d: %s", resp.StatusCode, msg)
 	}
 	return nil
+}
+
+// zettaSQLResponse is the subset of the /v1/sql success envelope the operator reads back. The engine wraps
+// a capability's output as `{"ok":true,"value":<output>,...}` (src/core/api/rest.cpp rest_envelope), and the
+// `sql` capability's output carries `columns` + `rows`, each row an object keyed by column name
+// (src/core/api/capabilities.cpp sql_output_schema). A failure comes back `{"ok":false,"error":{...}}`.
+type zettaSQLResponse struct {
+	OK    bool `json:"ok"`
+	Value struct {
+		Rows []map[string]any `json:"rows"`
+	} `json:"value"`
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// zettaSQLQuery runs one SELECT against the node's GET /v1/sql and returns the result rows (each a
+// column→string map). Like zettaSQL it authenticates with the seeded admin bearer (auth is mandatory —
+// zetta#799); unlike it, it PARSES `.value.rows` so the caller can read data back (zettaSQL only checks
+// ok:true). Short timeout; returns an error on any non-ok reply so the best-effort caller can retry.
+func zettaSQLQuery(ctx context.Context, base, token, database, statement string) ([]map[string]string, error) {
+	u := base + "/v1/sql?statement=" + url.QueryEscape(statement)
+	if database != "" {
+		u += "&database=" + url.QueryEscape(database)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		msg := string(body)
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		return nil, fmt.Errorf("zetta sql %d: %s", resp.StatusCode, msg)
+	}
+	var parsed zettaSQLResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("zetta sql: decode response: %w", err)
+	}
+	if !parsed.OK {
+		return nil, fmt.Errorf("zetta sql not ok: %s", parsed.Error.Message)
+	}
+	out := make([]map[string]string, 0, len(parsed.Value.Rows))
+	for _, row := range parsed.Value.Rows {
+		m := make(map[string]string, len(row))
+		for k, v := range row {
+			m[k] = coerceSQLString(v)
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// coerceSQLString renders one JSON cell as a string (our topology columns are all TEXT, so a cell is
+// normally a JSON string; a null becomes "" and any other scalar is formatted verbatim).
+func coerceSQLString(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	default:
+		return fmt.Sprintf("%v", t)
+	}
 }
 
 func readyWord(ready bool) string {

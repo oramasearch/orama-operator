@@ -31,6 +31,13 @@ var operatorZettaSchema = []zettaSchemaStmt{
 	{"", "CREATE DATABASE orama_control"},
 	{"orama_control", "CREATE TABLE components (name TEXT, kind TEXT, image TEXT, status TEXT, node TEXT, updated_at TEXT)"},
 	{"orama_control", "CREATE TABLE reconcile_events (ts TEXT, cluster TEXT, action TEXT, detail TEXT)"},
+	// Cross-cluster Zetta topology (operator#105) — one append-only row per wan-accessible node, keyed by
+	// operator + global cluster name. Each operator WRITES its slice's wan endpoints here; Zetta CRDT-syncs
+	// the table across every cluster; each operator READS it back (latest-wins by updated_at) to DERIVE the
+	// `--peer` set of sibling slices — replacing hand-copied spec.externalPeers. Append-only + no
+	// IF NOT EXISTS (zetta#735): a departed node is expressed with a `status='gone'` marker row, never a
+	// DELETE. See zetta_topology.go + docs/zetta-datastore.md.
+	{"orama_control", "CREATE TABLE topology (operator TEXT, cluster TEXT, node TEXT, address TEXT, reachability TEXT, node_type TEXT, status TEXT, updated_at TEXT)"},
 	// Data plane — the application-data landing zone (destined to replace v1's Typesense/ClickHouse/PG).
 	{"", "CREATE DATABASE orama_data"},
 	{"orama_data", "CREATE TABLE documents (id TEXT, collection TEXT, body TEXT, updated_at TEXT)"},
