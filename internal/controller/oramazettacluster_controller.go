@@ -59,6 +59,10 @@ type OramaZettaClusterReconciler struct {
 	// stateCache is the anti-flap memory for the operator-state sync into Zetta: component key →
 	// last-synced fingerprint, so a steady stack produces zero Zetta writes (see zetta_statesync.go).
 	stateCache sync.Map
+	// topologyCache is the anti-flap memory for the cross-cluster topology sync (operator#105): topology
+	// node key → last-written fingerprint, so a steady wan slice appends no new orama_control.topology rows
+	// (see zetta_topology.go).
+	topologyCache sync.Map
 	// operatorID{Once,Value} memoize this operator's unique identity (one per k8s cluster) so its state
 	// stays distinct in a Zetta cluster shared across k8s clusters.
 	operatorIDOnce  sync.Once
@@ -364,6 +368,19 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
+	// 2.9 Cross-cluster topology THROUGH Zetta (operator#105) — write this slice's wan-accessible endpoints
+	//     into orama_control.topology and read the cross-cluster set back to DERIVE the sibling slices'
+	//     --peer addresses, so peering self-forms instead of an admin hand-copying .status.wanAddress into
+	//     each sibling's spec.externalPeers. Gated on the datastore symbiosis (same switch as the state
+	//     sync); best-effort (never fails the reconcile — the node HTTP server is flaky, zetta#731). Runs
+	//     AFTER the per-node peer LBs (so their addresses resolve) and BEFORE the StatefulSet (so the derived
+	//     peers feed its --peer rendering). syncEnabled is reused by the control-plane/state-sync step below.
+	syncEnabled := z.Spec.ProvisionOperatorSchema == nil || *z.Spec.ProvisionOperatorSchema
+	var derivedPeers []string
+	if syncEnabled {
+		derivedPeers = r.reconcileZettaTopology(ctx, &z, clientName, peerLBName, stsName)
+	}
+
 	// 3. StatefulSet — N equal-peer headless nodes, each with a per-node PVC at /data.
 	// Build the POSITIONAL per-node advertise map (comma-joined; field i = node i, "" while pending) so
 	// each PERMANENT wan-accessible node gossips ITS OWN routable address (--advertise) instead of its
@@ -373,7 +390,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	advertiseMap := strings.Join(r.zettaWANAddresses(ctx, &z, peerLBName, stsName), ",")
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: z.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
-		return r.mutateZettaStatefulSet(&z, sts, headlessName, stsName, lbls, advertiseMap)
+		return r.mutateZettaStatefulSet(&z, sts, headlessName, stsName, lbls, advertiseMap, derivedPeers)
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -386,8 +403,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// 5. Operator datastore (One Orama symbiosis v0) — this cluster as the operator's store. Provisions
 	//    the orama_control + orama_data schema, then coarsely syncs the operator's OBSERVED state into
-	//    orama_control.components (anti-flap; default on).
-	syncEnabled := z.Spec.ProvisionOperatorSchema == nil || *z.Spec.ProvisionOperatorSchema
+	//    orama_control.components (anti-flap; default on). syncEnabled was computed at step 2.9 above.
 	if syncEnabled {
 		if err := r.reconcileZettaControlPlane(ctx, &z, clientName); err != nil {
 			return ctrl.Result{}, err
@@ -636,7 +652,7 @@ func (r *OramaZettaClusterReconciler) zettaIngressTarget(ctx context.Context, z 
 	return ""
 }
 
-func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet, headlessName, stsName string, lbls map[string]string, advertise string) error {
+func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet, headlessName, stsName string, lbls map[string]string, advertise string, derivedPeers []string) error {
 	replicas := z.Spec.Replicas
 	if replicas < 1 {
 		replicas = 1
@@ -665,10 +681,13 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	// engine derives the cluster CA from it, so all nodes trust one another and form ONE mTLS cluster
 	// (operator#92). Peer traffic is always mTLS — there is no plaintext mode.
 	seed := fmt.Sprintf("%s-0.%s.%s.svc.cluster.local:%d", stsName, headlessName, z.Namespace, zettaPeerPort)
-	// External peers (spec.externalPeers) — sibling nodes in OTHER k8s clusters / bare hosts, dialed by
-	// EVERY node here so they join the shared (globally-named) Zetta cluster. Zetta is the mesh.
+	// External peers — sibling nodes in OTHER k8s clusters / bare hosts, dialed by EVERY node here so they
+	// join the shared (globally-named) Zetta cluster. Zetta is the mesh. The set is the UNION of the explicit
+	// spec.externalPeers (authoritative override — wins) and the topology-DERIVED wan endpoints of sibling
+	// slices (operator#105, coordinated through orama_control.topology — see zetta_topology.go), deduped.
+	// The derived set already excludes this operator's OWN nodes and our own advertised addresses.
 	extPeers := ""
-	for _, p := range z.Spec.ExternalPeers {
+	for _, p := range zettaPeerSet(z.Spec.ExternalPeers, derivedPeers) {
 		extPeers += " --peer " + p
 	}
 	// The shared cluster join token (ZETTA_CLUSTER_TOKEN) is NOT passed as a flag: the engine reads that
