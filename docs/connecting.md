@@ -27,8 +27,9 @@ Reach `:4800` one of three ways:
   ```
   Pin to one node instead of round-robin with `kubectl port-forward pod/e2e-zetta-0 …`.
 - **Public** — if the CR sets `spec.ingressEnabled: true` + `spec.host`, the operator provisions an
-  Ingress at that host: `/` serves a landing placeholder; **every other path proxies to `:4800`**.
-  With `spec.dnsSecretRef` it also creates the Cloudflare DNS record (an owned `CloudflareDNSRecord`).
+  Ingress at that host that **proxies the whole host to `:4800`** — root `/` is the node's web dashboard,
+  every other path is MCP/REST/serving. With `spec.dnsSecretRef` it also creates the Cloudflare DNS
+  record (an owned `CloudflareDNSRecord`).
 
 ## Authentication
 
@@ -129,8 +130,8 @@ kubectl port-forward svc/e2e-zetta -n orama-system 4800:4800
 open http://127.0.0.1:4800/      # or browse the spec.host URL for a public cluster
 ```
 
-Through the Ingress, the host root shows the landing placeholder and the dashboard lives
-under the proxied paths; via port-forward you hit the node directly and `/` is the dashboard.
+Both routes reach the same node HTTP server: through the Ingress the whole host proxies to `:4800`, and
+via port-forward you hit the node directly — either way `/` is the node's web dashboard.
 
 ## Quick reference
 
