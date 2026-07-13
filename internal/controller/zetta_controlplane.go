@@ -49,17 +49,21 @@ func (r *OramaZettaClusterReconciler) reconcileZettaControlPlane(ctx context.Con
 	var b strings.Builder
 	b.WriteString("set -u\n")
 	b.WriteString(fmt.Sprintf("BASE=\"http://%s:%d\"\n", clientSvc, zettaAPIPort))
+	// The engine's HTTP/SQL gate is always on (zetta#799): authenticate every request with the seeded admin
+	// bearer, injected as ZETTA_ADMIN_TOKEN from Secret <name>-zetta-admin (below). An unauthenticated call
+	// would 401. The value never lands in the pod log (it's only ever in the header, not echoed).
+	b.WriteString("AUTH=\"Authorization: Bearer ${ZETTA_ADMIN_TOKEN:-}\"\n")
 	b.WriteString("echo 'zetta control-plane: waiting for the node...'\n")
-	b.WriteString("until curl -sf -o /dev/null \"$BASE/v1/server_info\"; do sleep 2; done\n")
+	b.WriteString("until curl -sf -o /dev/null -H \"$AUTH\" \"$BASE/v1/server_info\"; do sleep 2; done\n")
 	// GET /v1/sql?statement=...&database=... (the sql capability is GET-bound; a browser query works).
 	// The node's HTTP server (zetta#731) drops ~2/3 of back-to-back requests (curl exit → empty body),
 	// so retry hard on empty/503, succeed on ok / "already exists", and FAST-FAIL a real engine error.
 	b.WriteString(`apply() {
   for try in $(seq 1 60); do
     if [ -n "$1" ]; then
-      resp=$(curl -sG "$BASE/v1/sql" --data-urlencode "database=$1" --data-urlencode "statement=$2")
+      resp=$(curl -sG -H "$AUTH" "$BASE/v1/sql" --data-urlencode "database=$1" --data-urlencode "statement=$2")
     else
-      resp=$(curl -sG "$BASE/v1/sql" --data-urlencode "statement=$2")
+      resp=$(curl -sG -H "$AUTH" "$BASE/v1/sql" --data-urlencode "statement=$2")
     fi
     case "$resp" in
       *'"ok":true'*)      echo "  ok: $2";     return 0 ;;
@@ -97,9 +101,13 @@ func (r *OramaZettaClusterReconciler) reconcileZettaControlPlane(ctx context.Con
 					Spec: corev1.PodSpec{
 						RestartPolicy: corev1.RestartPolicyNever,
 						Containers: []corev1.Container{{
-							Name:         "schema",
-							Image:        "curlimages/curl:8.10.1",
-							Command:      []string{"sh", "-c", "sh /schema/apply.sh"},
+							Name:    "schema",
+							Image:   "curlimages/curl:8.10.1",
+							Command: []string{"sh", "-c", "sh /schema/apply.sh"},
+							// The seeded admin bearer — auth is mandatory (zetta#799), so the schema curls must
+							// authenticate. Read from Secret <name>-zetta-admin (always provisioned before this Job).
+							Env: []corev1.EnvVar{{Name: "ZETTA_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{
+								SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-admin"}, Key: "token"}}}},
 							VolumeMounts: []corev1.VolumeMount{{Name: "schema", MountPath: "/schema", ReadOnly: true}},
 						}},
 						Volumes: []corev1.Volume{{

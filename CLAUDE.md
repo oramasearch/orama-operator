@@ -93,6 +93,14 @@ Beyond deploying v1, this operator is becoming **symbiotic with Orama Zetta** (O
   [zetta#735](https://github.com/oramasearch/zetta/issues/735) ships); the node HTTP server is flaky
   ([zetta#731](https://github.com/oramasearch/zetta/issues/731)) so all Zetta writes are best-effort +
   retried. The **MCP boundary** holds: adding a capability to Zetta's MCP needs a green light.
+- **Auth is mandatory ([zetta#799](https://github.com/oramasearch/zetta/issues/799)).** The engine gates
+  every HTTP/MCP/SQL call on a bearer that resolves to a user — there is no unauthenticated/`--mcp-token`/
+  `--cluster-plaintext` mode (those flags were removed; passing them crashes the node). So the operator
+  **always** mints + injects a seeded admin token (Secret `<name>-zetta-admin`, `--admin-token` on every
+  node) and **authenticates its own SQL client** — the state-sync client (`zetta_statesync.go`) and the
+  schema-provisioning curl Job (`zetta_controlplane.go`) send `Authorization: Bearer <admin>`.
+  `spec.requireAuth`/`spec.mcpTokenAuth` are now **deprecated no-ops**; the target image must be
+  auth-capable (post-#799).
 
 ## Docs discipline (non-negotiable)
 
@@ -145,16 +153,16 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
   the **zetta repo** (`tests/e2e/zetta-e2e.sh`) and is **baked into the `oramasearch/zetta-e2e` image**
   (its `ENTRYPOINT` runs it) so it evolves with the engine — the CRD only *triggers* it, reading the
   target's `spec.replicas` and passing the addressing as `ZETTA_E2E_*` env (`BASE_URL` pinned to node-0,
-  `PEER_URLS` for ordinals 1..N-1, `LEVELS`, optional `TOKEN` when `spec.mcpTokenAuth`). Runs L2
+  `PEER_URLS` for ordinals 1..N-1, `LEVELS`, and the admin `TOKEN`). Runs L2
   (`zetta::testkit`) + L3 (black-box integration). Watch `kubectl get ozce2e`; logs `kubectl logs
   job/<name>-e2e`. A coverage change touches three repos: zetta (script) → zetta-bridge (image) →
-  operator (CRD). **Authz coverage:** `OramaZettaCluster.spec.requireAuth` (opt-in, default off) runs the
-  node under `--require-auth` with a seeded admin token (Secret `<name>-zetta-admin`); the e2e then sets
-  `ZETTA_E2E_REQUIRE_AUTH=1` + `ZETTA_E2E_TOKEN` (the admin token) to exercise authz enforcement — the
-  regression harness for the zetta auth work ([operator#88](https://github.com/oramasearch/orama-cloud-v1-operator/issues/88),
-  [zetta#780](https://github.com/oramasearch/zetta/issues/780)). Those flags are unlanded engine work, so
-  the sandbox image rejects them — enable only against an auth-capable build. The test's status also carries
-  best-effort `pass`/`fail`/`skip` counts parsed from the Job's pod logs (RBAC `pods/log get`).
+  operator (CRD). **Authz coverage (always on):** auth is **mandatory** ([zetta#799](https://github.com/oramasearch/zetta/issues/799)),
+  so the e2e ALWAYS sets `ZETTA_E2E_REQUIRE_AUTH=1` + `ZETTA_E2E_TOKEN` (the seeded admin token, Secret
+  `<name>-zetta-admin`) to exercise authz enforcement — the regression harness for the zetta auth work
+  ([operator#88](https://github.com/oramasearch/orama-cloud-v1-operator/issues/88),
+  [zetta#799](https://github.com/oramasearch/zetta/issues/799)). The target's image MUST be an auth-capable
+  build (post-#799). `spec.requireAuth`/`spec.mcpTokenAuth` are deprecated no-ops. The test's status also
+  carries best-effort `pass`/`fail`/`skip` counts parsed from the Job's pod logs (RBAC `pods/log get`).
 
 ## Conventions
 

@@ -53,7 +53,10 @@ kubectl get crd oramacloudv1s.orama.cloud
 - **Stale mutable-tag image.** A mutable tag (e.g. `:v1-sandbox`) + the default `imagePullPolicy:
   IfNotPresent` means a node that already cached the tag keeps running the **old** image after a
   rebuild+push. This silently ran a pre-`#92` operator (still rendering `--cluster-plaintext`) and a
-  pre-`#745` Zetta binary (crashing on `--require-auth`). **Pin by digest** to force the exact build:
+  pre-[zetta#799](https://github.com/oramasearch/zetta/issues/799) Zetta binary (whose auth wasn't yet
+  mandatory / still accepted the now-removed `--require-auth`/`--mcp-token` flags). Since #799, auth is
+  enforced and the operator seeds + injects the admin token; the target's image MUST be an auth-capable
+  build. **Pin by digest** to force the exact build:
   `kubectl -n orama-system set image deploy/orama-cloud-v1-operator '*=<repo>@sha256:…'` and the OZC
   `spec.image: <repo>@sha256:…`; **verify the running pod's `imageID` after any rebuild.**
   `imagePullPolicy: Always` is the real fix.

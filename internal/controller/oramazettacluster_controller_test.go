@@ -8,6 +8,8 @@ package controller
 import (
 	"context"
 	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -121,6 +123,67 @@ func TestZettaStatefulSetPerNodeAdvertise(t *testing.T) {
 	}
 	if findEnv(sts2.Spec.Template.Spec.Containers[0].Env, "ZETTA_ADVERTISE_MAP") != nil {
 		t.Error("dial-out-only slice must not inject ZETTA_ADVERTISE_MAP")
+	}
+}
+
+// TestZettaStatefulSetAlwaysSeedsAdminTokenNoRemovedFlags asserts the auth-companion behavior to zetta#799:
+// auth is MANDATORY and the flags --require-auth/--mcp-token/--cluster-plaintext were REMOVED (passing any
+// crashes the node). So the entrypoint must render --admin-token but NONE of the removed flags, and
+// ZETTA_ADMIN_TOKEN must be injected on every node UNCONDITIONALLY (even with spec.requireAuth unset), while
+// ZETTA_MCP_TOKEN is never injected.
+func TestZettaStatefulSetAlwaysSeedsAdminTokenNoRemovedFlags(t *testing.T) {
+	r := &OramaZettaClusterReconciler{Scheme: zettaTestScheme(t)}
+	z := newZettaTestCluster() // RequireAuth / MCPTokenAuth both zero-valued (unset)
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
+	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), ""); err != nil {
+		t.Fatalf("mutateZettaStatefulSet: %v", err)
+	}
+	c := sts.Spec.Template.Spec.Containers[0]
+
+	// Admin token injected unconditionally from the <name>-zetta-admin Secret (auth is mandatory).
+	adm := findEnv(c.Env, "ZETTA_ADMIN_TOKEN")
+	if adm == nil {
+		t.Fatal("ZETTA_ADMIN_TOKEN env not injected — auth is mandatory (zetta#799); the admin token must always be seeded")
+	}
+	if adm.ValueFrom == nil || adm.ValueFrom.SecretKeyRef == nil ||
+		adm.ValueFrom.SecretKeyRef.Name != "z0-zetta-admin" || adm.ValueFrom.SecretKeyRef.Key != "token" {
+		t.Errorf("ZETTA_ADMIN_TOKEN must come from Secret z0-zetta-admin key token, got %+v", adm)
+	}
+	// The removed --mcp-token env must never be injected.
+	if findEnv(c.Env, "ZETTA_MCP_TOKEN") != nil {
+		t.Error("ZETTA_MCP_TOKEN env still injected — --mcp-token was removed in zetta#799")
+	}
+
+	// The entrypoint renders --admin-token but NONE of the removed flags.
+	entry := c.Command[len(c.Command)-1]
+	if !strings.Contains(entry, "--admin-token") {
+		t.Error("entrypoint should render --admin-token (seeds the owner)")
+	}
+	for _, removed := range []string{"--require-auth", "--mcp-token", "--cluster-plaintext"} {
+		if strings.Contains(entry, removed) {
+			t.Errorf("entrypoint still renders removed flag %q — passing it crashes the node (zetta#799)", removed)
+		}
+	}
+}
+
+// TestZettaSQLSendsBearer asserts the operator's Zetta SQL client authenticates with the admin bearer — the
+// engine's auth is mandatory (zetta#799), so an unauthenticated call would 401.
+func TestZettaSQLSendsBearer(t *testing.T) {
+	var gotAuth, gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		gotAuth, gotURL = req.Header.Get("Authorization"), req.URL.String()
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	if err := zettaSQL(context.Background(), srv.URL, "sekret-token", "orama_control", "SELECT 1"); err != nil {
+		t.Fatalf("zettaSQL: %v", err)
+	}
+	if gotAuth != "Bearer sekret-token" {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer sekret-token")
+	}
+	if !strings.Contains(gotURL, "database=orama_control") {
+		t.Errorf("request URL missing database param: %q", gotURL)
 	}
 }
 

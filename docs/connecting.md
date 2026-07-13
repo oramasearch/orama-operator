@@ -32,19 +32,18 @@ Reach `:4800` one of three ways:
 
 ## Authentication
 
-Peer traffic is always mTLS (a shared cluster join token, `<name>-zetta-cluster`), but the
-**client** surface auth depends on the CR:
+Peer traffic is always mTLS (a shared cluster join token, `<name>-zetta-cluster`). The **client**
+surface auth is **mandatory** ([zetta#799](https://github.com/oramasearch/zetta/issues/799)) — every
+HTTP/MCP/SQL call needs a bearer that resolves to a user; there is no unauthenticated mode.
 
-- **MCP token** — Secret `<name>-zetta-mcp` (key `token`). When set, MCP calls need
+- **Admin token** — Secret `<name>-zetta-admin` (key `token`), ALWAYS minted by the operator and
+  seeded on the node as the owner principal. All API/SQL/MCP calls need
   `Authorization: Bearer <token>`. Retrieve it:
   ```bash
-  kubectl get secret e2e-zetta-mcp -n orama-system -o jsonpath='{.data.token}' | base64 -d
+  kubectl get secret <name>-zetta-admin -n orama-system -o jsonpath='{.data.token}' | base64 -d
   ```
-- **Admin token** (only when `spec.requireAuth: true`) — Secret `<name>-zetta-admin`. The
-  node runs `--require-auth`; all API/SQL calls then need `Authorization: Bearer <token>`
-  and are authorized against that owner principal.
-- If neither is set the surface is **unauthenticated** — local / trusted-network only. Do
-  not expose an unauthenticated node publicly.
+- `spec.requireAuth` / `spec.mcpTokenAuth` are **deprecated no-ops** — there is no separate
+  `<name>-zetta-mcp` token or unauthenticated mode anymore.
 
 ## 1. REST + SQL API (`/v1/*`)
 
@@ -53,16 +52,20 @@ built in). SQL rows are **objects** keyed by column.
 
 ```bash
 B=http://127.0.0.1:4800
+# auth is mandatory (zetta#799) — send the seeded admin bearer on every call
+TOKEN=$(kubectl get secret <name>-zetta-admin -n orama-system -o jsonpath='{.data.token}' | base64 -d)
+A=(-H "Authorization: Bearer $TOKEN")
+
 # health + cluster membership
-curl -s "$B/v1/server_info"
+curl -s "${A[@]}" "$B/v1/server_info"
 #   {"ok":true,...,"value":{"cluster_members":[<4 node uuids>],"databases":2,"node_id":"…"}}
 
 # run SQL (append-only Postgres subset on the deployed engine)
-curl -sG "$B/v1/sql" --data-urlencode "statement=SELECT name FROM system.tables"
+curl -sG "${A[@]}" "$B/v1/sql" --data-urlencode "statement=SELECT name FROM system.tables"
 
 # the capability registry as OpenAPI + per-capability specs
-curl -s "$B/v1/specs"          # list
-curl -s "$B/openapi.json"      # full OpenAPI
+curl -s "${A[@]}" "$B/v1/specs"          # list
+curl -s "${A[@]}" "$B/openapi.json"      # full OpenAPI
 ```
 
 `server_info.cluster_members` is the quickest "is the cluster formed?" check — it lists
@@ -77,7 +80,7 @@ request/response over `POST /mcp` (**no SSE**), as its own `/mcp.md` documents.
 curl -s -X POST "$B/mcp" \
   -H 'content-type: application/json' \
   -H 'accept: application/json' \
-  ${TOKEN:+-H "authorization: Bearer $TOKEN"} \
+  -H "authorization: Bearer $TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize",
        "params":{"protocolVersion":"2025-06-18","capabilities":{},
                  "clientInfo":{"name":"me","version":"0"}}}'
@@ -93,7 +96,7 @@ curl -s -X POST "$B/mcp" \
     "zetta": {
       "type": "http",
       "url": "http://127.0.0.1:4800/mcp",
-      "headers": { "Authorization": "Bearer <mcp-token, if spec.requireAuth or mcpTokenAuth>" }
+      "headers": { "Authorization": "Bearer <admin-token from <name>-zetta-admin>" }
     }
   }
 }
@@ -134,12 +137,12 @@ under the proxied paths; via port-forward you hit the node directly and `/` is t
 | Want | Where |
 |---|---|
 | Is the cluster formed? | `GET /v1/server_info` → `value.cluster_members` (one id per node) |
-| Run SQL | `GET /v1/sql?statement=…` |
-| Connect an agent | `POST /mcp` (JSON-RPC, `Bearer` if auth on) |
+| Run SQL | `GET /v1/sql?statement=…` (`Bearer` required) |
+| Connect an agent | `POST /mcp` (JSON-RPC, `Bearer` required — auth is mandatory) |
 | How to connect (self-doc) | `GET /mcp.md` |
 | Facts for an LLM | `GET /llms.txt` · `/llms-full.txt` |
 | Web portal | `GET /` (dashboard) |
-| Retrieve MCP token | `kubectl get secret <name>-zetta-mcp -o jsonpath='{.data.token}' \| base64 -d` |
+| Retrieve admin token | `kubectl get secret <name>-zetta-admin -o jsonpath='{.data.token}' \| base64 -d` |
 
 ## See also
 - [`zetta-datastore.md`](zetta-datastore.md) — how the **operator itself** connects to this

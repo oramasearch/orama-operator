@@ -291,17 +291,10 @@ spec:
               mcpTokenAuth:
                 default: false
                 description: |-
-                  MCPTokenAuth provisions a 64-char bearer token (Secret `<name>-zetta-mcp`) and requires it on
-                  the node's MCP + REST surface (`--mcp-token`).
-
-                  DEFAULT false — because Zetta's `--mcp-token` treats the token as an *access-key id* that must
-                  already be a provisioned principal with grants. A bare operator-minted token currently passes
-                  the bearer check but is then denied EVERY capability call ("unknown access key — denied"), for
-                  both REST `/v1/*` and MCP `tools/call` — so turning this on makes the node authenticate but do
-                  nothing. Leave it off (the node runs as the functional unauthenticated-local session) until the
-                  node can seed the configured bearer as an owner key (oramasearch/zetta#733). When true, the
-                  operator still won't expose a working session — only enable it once you also provision a
-                  matching access key.
+                  MCPTokenAuth is DEPRECATED and a NO-OP as of zetta#799. The engine made auth MANDATORY and removed the
+                  `--mcp-token` flag (passing it is now an unknown-option error that crashes the node), so the operator no
+                  longer renders it or provisions a `<name>-zetta-mcp` Secret. Auth is always enforced with the seeded
+                  admin token instead (see RequireAuth). Retained only for API compatibility; setting it has no effect.
                 type: boolean
               provisionOperatorSchema:
                 default: true
@@ -342,16 +335,14 @@ spec:
               requireAuth:
                 default: true
                 description: |-
-                  RequireAuth (default TRUE — secure by default): run the node with `--require-auth` and a seeded admin token
-                  so the authz system is ENFORCED (deny-by-default), for exercising the authz work — which has
-                  known open issues (oramasearch/zetta#759–#769). When true the operator mints a 64-hex admin token
-                  once into Secret `<name>-zetta-admin` (key `token`), injects it as `ZETTA_ADMIN_TOKEN`, and passes
-                  `--require-auth --admin-token <token>` to the node; the ZettaClusterE2ETest then runs its authz
-                  assertions against the target (`ZETTA_E2E_REQUIRE_AUTH=1`). This is the regression harness for the
-                  zetta auth work — the target's image MUST implement these flags (oramasearch/zetta#780); the
-                  deployed sandbox image predates them and rejects unknown flags, so the target's image MUST be an
-                  auth-capable build (built from the branch carrying the auth work, oramasearch/zetta#780).
-                  Defaults TRUE — secure by default; set `requireAuth: false` for a legacy unauthenticated-local node.
+                  RequireAuth is DEPRECATED and a NO-OP as of zetta#799. The engine made auth MANDATORY and removed the
+                  `--require-auth` flag — every node ALWAYS gates its HTTP/MCP/SQL surface on a bearer that resolves to a
+                  user, and there is no unauthenticated/plaintext/legacy-shared-secret mode. The operator now ALWAYS mints
+                  a 64-hex admin token into Secret `<name>-zetta-admin` (key `token`), injects it as `ZETTA_ADMIN_TOKEN` →
+                  `--admin-token` (seeding the owner) on every node, authenticates its OWN Zetta SQL client with it, and
+                  the ZettaClusterE2ETest always runs its authz assertions (`ZETTA_E2E_REQUIRE_AUTH=1`). Retained only for
+                  API compatibility; setting it has no effect (auth is enforced regardless). The target's image MUST be an
+                  auth-capable build (oramasearch/zetta#799) — the pre-#799 sandbox image is not.
                 type: boolean
               resources:
                 description: 'Resources caps each node (mem/cpu) — right-sizing (see

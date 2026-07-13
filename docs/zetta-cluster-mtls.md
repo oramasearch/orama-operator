@@ -36,10 +36,11 @@ on every node indefinitely.
    It is minted **once and preserved** across reconciles — **never rotated**. Rotating the token would
    re-derive the CA and orphan every existing node certificate on disk, splitting the cluster; the token
    is the cluster's durable identity, so it is created and then left alone.
-   - This mirrors the `reconcileZettaMCPToken` / `reconcileZettaAdminToken` reconcilers, with one
-     difference: it is **unconditional**. The MCP and admin tokens are opt-in features (`spec.mcpTokenAuth`
-     / `spec.requireAuth`) that are deleted when off; the cluster CA is fundamental to a multi-node
-     cluster, so there is no "off" state and the Secret is never torn down.
+   - This mirrors the `reconcileZettaAdminToken` reconciler (the admin token that authenticates the
+     engine's now-mandatory auth, [zetta#799](https://github.com/oramasearch/zetta/issues/799)) — both are
+     **unconditional** and minted-once. `spec.mcpTokenAuth` / `spec.requireAuth` are now deprecated no-ops.
+     The cluster CA is fundamental to a multi-node cluster, so there is no "off" state and the Secret is
+     never torn down.
    - It runs **before** the StatefulSet in the reconcile so the pods' `secretKeyRef` resolves on first
      apply.
 

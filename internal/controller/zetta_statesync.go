@@ -62,6 +62,14 @@ func (r *OramaZettaClusterReconciler) zettaBaseURL(z *oramav1alpha1.OramaZettaCl
 // and appends the CHANGED rows to orama_control.components. Best-effort: never fails the reconcile.
 func (r *OramaZettaClusterReconciler) reconcileOperatorStateSync(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, clientSvc string) {
 	log := logf.FromContext(ctx)
+	// The engine's SQL gate is always on (zetta#799): authenticate with the seeded admin token. If the
+	// Secret isn't present yet (race — reconciled just above, but etcd may lag), skip this round and retry
+	// on the next reconcile. NEVER fall back to an unauthenticated call — the auth-on engine would 401.
+	token, err := r.zettaAdminToken(ctx, z)
+	if err != nil {
+		log.V(1).Info("zetta state sync deferred — admin token not ready", "err", err.Error())
+		return
+	}
 	rows := r.gatherOperatorState(ctx, z.Namespace, r.operatorID(ctx))
 	base := r.zettaBaseURL(z, clientSvc)
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -70,7 +78,7 @@ func (r *OramaZettaClusterReconciler) reconcileOperatorStateSync(ctx context.Con
 		if prev, ok := r.stateCache.Load(row.key()); ok && prev == row.fingerprint() {
 			continue // unchanged — anti-flap (no write, no control-plane churn)
 		}
-		if err := zettaSQL(ctx, base, "orama_control", insertComponentSQL(row, now)); err != nil {
+		if err := zettaSQL(ctx, base, token, "orama_control", insertComponentSQL(row, now)); err != nil {
 			// Flaky node / unreachable: leave the cache untouched so we retry next reconcile.
 			log.V(1).Info("zetta state sync deferred", "component", row.key(), "err", err.Error())
 			continue
@@ -152,9 +160,27 @@ func insertComponentSQL(row componentRow, now string) string {
 		q(row.operator), q(row.name), q(row.kind), q(row.owner), q(row.status), q(row.detail), q(now))
 }
 
-// zettaSQL runs one statement against the node's GET /v1/sql (unauthenticated default). Short timeout;
-// returns an error on any non-ok reply so the caller can retry.
-func zettaSQL(ctx context.Context, base, database, statement string) error {
+// zettaAdminToken reads the seeded admin bearer (Secret `<name>-zetta-admin`, key `token`) that the
+// operator uses to authenticate its Zetta SQL client — the engine's auth is mandatory (zetta#799), so an
+// unauthenticated SQL call 401s. Read through r.reader() (uncached in-cluster) so we always see the freshly
+// minted Secret. Returns an error when the Secret isn't present yet or carries no token, so the best-effort
+// caller can retry rather than fall back to an unauthenticated request.
+func (r *OramaZettaClusterReconciler) zettaAdminToken(ctx context.Context, z *oramav1alpha1.OramaZettaCluster) (string, error) {
+	var sec corev1.Secret
+	if err := r.reader().Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: z.Name + "-zetta-admin"}, &sec); err != nil {
+		return "", err
+	}
+	token := string(sec.Data["token"])
+	if token == "" {
+		return "", fmt.Errorf("admin token Secret %s-zetta-admin has no token yet", z.Name)
+	}
+	return token, nil
+}
+
+// zettaSQL runs one statement against the node's GET /v1/sql, authenticated with the seeded admin bearer
+// (auth is always enforced — zetta#799). Short timeout; returns an error on any non-ok reply so the caller
+// can retry.
+func zettaSQL(ctx context.Context, base, token, database, statement string) error {
 	u := base + "/v1/sql?statement=" + url.QueryEscape(statement)
 	if database != "" {
 		u += "&database=" + url.QueryEscape(database)
@@ -162,6 +188,9 @@ func zettaSQL(ctx context.Context, base, database, statement string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	resp, err := httpClient.Do(req)
