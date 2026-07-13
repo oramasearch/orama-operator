@@ -105,6 +105,15 @@ curl -s -X POST "$B/mcp" \
 
 (For a public cluster use the `spec.host` URL instead of the port-forward.)
 
+Or via the CLI (add `--scope user` to make it global across projects):
+
+```bash
+claude mcp add --transport http zetta https://<spec.host>/mcp \
+  --header "Authorization: Bearer $(kubectl get secret <name>-zetta-admin -n <ns> -o jsonpath='{.data.token}' | base64 -d)"
+```
+
+Then `/mcp` in a running session to reconnect (a live session won't hot-load a new server).
+
 ## 3. Self-describing pages — `mcp.md` + `llms.txt`
 
 The node generates its own connection + capability docs live from the registry, so they're
