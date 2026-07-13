@@ -126,6 +126,61 @@ func TestZettaStatefulSetPerNodeAdvertise(t *testing.T) {
 	}
 }
 
+// TestZettaStatefulSetRendersReachabilityAndNodeType asserts the operator drives the engine's node:<id>
+// CRDT seed (zetta#803/#810): --dial-out-only iff the slice's effective reachability is dial-out-only, and
+// --node-type ephemeral|permanent from spec.ephemeral. Without these the engine defaults every node to
+// permanent/wan-accessible and system.nodes mislabels dial-out-only slices (the reachability-aware dialer
+// stays dormant). reachability + node_type are INDEPENDENT axes; ephemeral additionally forces dial-out-only.
+func TestZettaStatefulSetRendersReachabilityAndNodeType(t *testing.T) {
+	r := &OramaZettaClusterReconciler{Scheme: zettaTestScheme(t)}
+	entryFor := func(mutate func(*oramav1alpha1.OramaZettaCluster)) string {
+		z := newZettaTestCluster()
+		mutate(z)
+		sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
+		if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), "", nil); err != nil {
+			t.Fatalf("mutateZettaStatefulSet: %v", err)
+		}
+		c := sts.Spec.Template.Spec.Containers[0]
+		return c.Command[len(c.Command)-1]
+	}
+
+	// wan-accessible, not ephemeral → --node-type permanent, NO --dial-out-only.
+	wan := entryFor(func(z *oramav1alpha1.OramaZettaCluster) { z.Spec.Reachability = oramav1alpha1.ReachabilityWANAccessible })
+	if !strings.Contains(wan, "--node-type permanent") {
+		t.Error("wan slice: entrypoint should render --node-type permanent")
+	}
+	if strings.Contains(wan, "--dial-out-only") {
+		t.Error("wan slice: entrypoint must NOT render --dial-out-only")
+	}
+
+	// dial-out-only (explicit), not ephemeral → --node-type permanent + --dial-out-only.
+	dial := entryFor(func(z *oramav1alpha1.OramaZettaCluster) { z.Spec.Reachability = oramav1alpha1.ReachabilityDialOutOnly })
+	if !strings.Contains(dial, "--node-type permanent") || !strings.Contains(dial, "--dial-out-only") {
+		t.Errorf("dial-out slice: want --node-type permanent AND --dial-out-only, got %q", dial)
+	}
+
+	// unset reachability defaults to dial-out-only (a private node is the initiator).
+	def := entryFor(func(z *oramav1alpha1.OramaZettaCluster) {})
+	if !strings.Contains(def, "--dial-out-only") {
+		t.Error("unset reachability should default to --dial-out-only")
+	}
+
+	// ephemeral → --node-type ephemeral, and ephemeral forces dial-out-only regardless of reachability.
+	eph := entryFor(func(z *oramav1alpha1.OramaZettaCluster) {
+		z.Spec.Ephemeral = true
+		z.Spec.Reachability = oramav1alpha1.ReachabilityWANAccessible // overridden by ephemeral
+	})
+	if !strings.Contains(eph, "--node-type ephemeral") {
+		t.Error("ephemeral slice: entrypoint should render --node-type ephemeral")
+	}
+	if !strings.Contains(eph, "--dial-out-only") {
+		t.Error("ephemeral slice is always dial-out-only (must render --dial-out-only)")
+	}
+	if strings.Contains(eph, "--node-type permanent") {
+		t.Error("ephemeral slice must not also render --node-type permanent")
+	}
+}
+
 // TestZettaStatefulSetAlwaysSeedsAdminTokenNoRemovedFlags asserts the auth-companion behavior to zetta#799:
 // auth is MANDATORY and the flags --require-auth/--mcp-token/--cluster-plaintext were REMOVED (passing any
 // crashes the node). So the entrypoint must render --admin-token but NONE of the removed flags, and
