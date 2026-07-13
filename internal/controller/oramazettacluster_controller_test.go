@@ -15,10 +15,13 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
@@ -282,4 +285,78 @@ func TestReconcileZettaClusterTokenMintsOnce(t *testing.T) {
 	if got := string(sec.Data["token"]); got != first {
 		t.Errorf("token rotated across reconciles: %q -> %q (must be mint-once)", first, got)
 	}
+}
+
+// TestReconcileZettaIngressGate asserts spec.ingressEnabled is the explicit exposure gate: no Ingress
+// is created unless ingressEnabled is true AND host is set, and flipping the gate off tears the Ingress
+// back down even while host stays set (the field is the on/off switch, host merely names the endpoint).
+func TestReconcileZettaIngressGate(t *testing.T) {
+	scheme := zettaTestScheme(t)
+	ctx := context.Background()
+	ingKey := types.NamespacedName{Name: "z0-zetta", Namespace: "orama-system"}
+
+	reconcile := func(t *testing.T, z *oramav1alpha1.OramaZettaCluster, cl client.Client) {
+		t.Helper()
+		r := &OramaZettaClusterReconciler{Client: cl, Scheme: scheme}
+		if err := r.reconcileZettaIngress(ctx, z, "z0-zetta", zettaLabels(z)); err != nil {
+			t.Fatalf("reconcileZettaIngress: %v", err)
+		}
+	}
+	hasIngress := func(t *testing.T, cl client.Client) bool {
+		t.Helper()
+		var ing networkingv1.Ingress
+		err := cl.Get(ctx, ingKey, &ing)
+		if err == nil {
+			return true
+		}
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("get ingress: %v", err)
+		}
+		return false
+	}
+
+	t.Run("host set but gate off → no ingress", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+		z := newZettaTestCluster()
+		z.Spec.Host, z.Spec.IngressEnabled = "zetta.example.com", false
+		reconcile(t, z, cl)
+		if hasIngress(t, cl) {
+			t.Fatal("Ingress created while ingressEnabled=false")
+		}
+	})
+
+	t.Run("gate on but no host → no ingress", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+		z := newZettaTestCluster()
+		z.Spec.IngressEnabled = true // host left empty
+		reconcile(t, z, cl)
+		if hasIngress(t, cl) {
+			t.Fatal("Ingress created with empty host")
+		}
+	})
+
+	t.Run("gate on + host → ingress created, then gate off → torn down", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+		z := newZettaTestCluster()
+		z.Spec.Host, z.Spec.IngressEnabled = "zetta.example.com", true
+		reconcile(t, z, cl)
+
+		var ing networkingv1.Ingress
+		if err := cl.Get(ctx, ingKey, &ing); err != nil {
+			t.Fatalf("expected Ingress created: %v", err)
+		}
+		if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != "nginx" {
+			t.Errorf("ingressClassName = %v, want nginx", ing.Spec.IngressClassName)
+		}
+		if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != "zetta.example.com" {
+			t.Errorf("ingress host rule = %+v, want host zetta.example.com", ing.Spec.Rules)
+		}
+
+		// Flip the gate off while host stays set → the Ingress must be torn back down.
+		z.Spec.IngressEnabled = false
+		reconcile(t, z, cl)
+		if hasIngress(t, cl) {
+			t.Fatal("Ingress not torn down after ingressEnabled flipped to false")
+		}
+	})
 }
