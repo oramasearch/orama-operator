@@ -462,6 +462,11 @@ func envoySidecar() corev1.Container {
 	return corev1.Container{
 		Name:  "envoy",
 		Image: envoyImage,
+		// Run envoy directly, bypassing the image's /docker-entrypoint.sh. Under the non-root hardened
+		// securityContext (#18) that entrypoint's `chown /dev/stdout` fails ("Operation not permitted")
+		// and the container exits 1 (the reader then never reaches 2/2). envoy needs no root; -c points
+		// at the mounted bootstrap — the same argv the entrypoint would exec, just without the chown.
+		Command: []string{"envoy", "-c", "/etc/envoy/envoy.yaml"},
 		Ports: []corev1.ContainerPort{
 			{Name: "http", ContainerPort: envoyPort},
 			{Name: "admin", ContainerPort: envoyAdminPort},

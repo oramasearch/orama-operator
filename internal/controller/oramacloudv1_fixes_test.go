@@ -119,3 +119,14 @@ func TestDashboardDbMigrateGatedOnSchemaOwnership(t *testing.T) {
 		t.Error("external controlDB: dashboard SHOULD run its own db-migrate (operator manages no PostgresSchema)")
 	}
 }
+
+// TestEnvoySidecarBypassesEntrypointChown is the regression for the reader's second blocker: the
+// envoyproxy/envoy image's /docker-entrypoint.sh chowns /dev/stdout, which fails under the non-root
+// hardened securityContext (#18) and exits the container. The operator must run envoy directly (its
+// own Command) so the entrypoint's chown never runs.
+func TestEnvoySidecarBypassesEntrypointChown(t *testing.T) {
+	c := envoySidecar()
+	if len(c.Command) == 0 || c.Command[0] != "envoy" {
+		t.Errorf("envoy sidecar Command=%v, want it to exec `envoy` directly (bypass /docker-entrypoint.sh, whose chown fails as non-root)", c.Command)
+	}
+}
