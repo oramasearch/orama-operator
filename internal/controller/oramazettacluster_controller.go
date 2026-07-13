@@ -700,6 +700,23 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	// reconcileZettaAdminToken; every node) which seeds the owner. zetta#799 made auth MANDATORY and REMOVED
 	// `--require-auth`/`--mcp-token`/`--cluster-plaintext` — passing any of them is now an unknown-option
 	// error that crashes the node, so the entrypoint renders NONE of them (only `--admin-token`).
+	//
+	// Node-reachability + node-type flags (zetta#803/#810) — this is what makes the engine's CRDT node:<id>
+	// entry (and thus `system.nodes` + the reachability-aware dialer) reflect the slice's ACTUAL topology
+	// instead of the engine's permanent/wan-accessible DEFAULT. Without these, a dial-out-only slice would
+	// still advertise its bound pod IP and peers would dial it — the pod-CIDR-collision undercount #803 was
+	// built to fix. reachability and node_type are INDEPENDENT axes: `--dial-out-only` is rendered iff the
+	// slice's effective reachability is dial-out-only (zettaReachability — the single source of truth shared
+	// with status + topology); `--node-type ephemeral` iff spec.ephemeral, else `--node-type permanent`. These
+	// are FLAGS (not env), so — like `--admin-token` — they require the same auth-capable image generation the
+	// operator already mandates (post-#799 travels with #803/#810); an older image would crash on them.
+	nodeFlags := " --node-type permanent"
+	if z.Spec.Ephemeral {
+		nodeFlags = " --node-type ephemeral"
+	}
+	if zettaReachability(z) == oramav1alpha1.ReachabilityDialOutOnly {
+		nodeFlags += " --dial-out-only"
+	}
 	entry := fmt.Sprintf(`set -eu
 ORD="${POD_NAME##*-}"   # NOT $HOSTNAME — under hostNetwork that is the node's name, not the pod's
 PEER_PORT=%[2]d
@@ -714,7 +731,7 @@ if [ "${ZETTA_HOST_NETWORK:-0}" = "1" ] && [ "$ORD" != "0" ]; then
   API_PORT=$((%[3]d + ORD))
   SEED="${HOST_IP}:%[2]d"
 fi
-A="--headless --data-dir %[1]s --listen 0.0.0.0:$PEER_PORT --mcp-listen 0.0.0.0:$API_PORT"
+A="--headless --data-dir %[1]s --listen 0.0.0.0:$PEER_PORT --mcp-listen 0.0.0.0:$API_PORT%[6]s"
 if [ "$ORD" != "0" ]; then A="$A --peer $SEED"; fi
 A="$A%[5]s"
 # Per-node WAN advertise (operator#104, oramasearch/zetta#739): ZETTA_ADVERTISE_MAP is a positional
@@ -728,7 +745,7 @@ if [ -n "$ADV" ]; then
 fi
 echo "zetta node $POD_NAME (ordinal $ORD): zetta $A${ZETTA_CLUSTER_TOKEN:+ [join-token via env ****]}${ZETTA_ADMIN_TOKEN:+ --admin-token ****}"
 if [ -n "${ZETTA_ADMIN_TOKEN:-}" ]; then A="$A --admin-token $ZETTA_ADMIN_TOKEN"; fi
-exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers)
+exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeFlags)
 
 	zettaEnv := []corev1.EnvVar{
 		// The ordinal comes from the POD name — $HOSTNAME is the NODE's name under hostNetwork.

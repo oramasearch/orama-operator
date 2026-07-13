@@ -461,6 +461,19 @@ siblings copy `.status.wanAddress` into their `spec.externalPeers`, and the **Cl
 is populated from those addresses (HTTP origin at the same host `:4800`) — the documented wiring hook, not
 yet auto-populated here.
 
+**Reachability + node-type FLAGS into the engine** (`mutateZettaStatefulSet`,
+[zetta#803](https://github.com/oramasearch/zetta/issues/803)/[#810](https://github.com/oramasearch/zetta/issues/810)).
+Classifying the slice is not enough — the operator must tell the *engine* what each node is, or the engine
+seeds its CRDT `node:<id>` entry with its permanent/wan-accessible DEFAULT and `system.nodes` mislabels a
+private slice while the **reachability-aware dialer stays dormant** (nodes keep advertising bound pod IPs, so
+the pod-CIDR-collision undercount #803 fixes can recur). So the entrypoint now renders **`--dial-out-only`**
+iff `zettaReachability` (the single source of truth shared with status + topology) is `dial-out-only`, and
+**`--node-type ephemeral|permanent`** from `spec.ephemeral`. The two are **independent** axes (a private
+permanent home node is `dial-out-only` + `permanent`; burst capacity is `dial-out-only` + `ephemeral`).
+These are FLAGS, so — like `--admin-token` — they require the auth-capable image generation the operator
+already mandates (post-[#799](https://github.com/oramasearch/zetta/issues/799) travels with #803/#810); an
+older image would crash on the unknown flag. Verify with `SELECT reachability, node_type FROM system.nodes`.
+
 **Cross-cluster topology THROUGH Zetta** (`internal/controller/zetta_topology.go`,
 [operator#105](https://github.com/oramasearch/orama-cloud-v1-operator/issues/105)). Instead of an admin
 hand-copying `.status.wanAddress` into siblings' `spec.externalPeers`, the operator coordinates peering
