@@ -26,9 +26,9 @@ Reach `:4800` one of three ways:
   # everything below is then at http://127.0.0.1:4800
   ```
   Pin to one node instead of round-robin with `kubectl port-forward pod/e2e-zetta-0 …`.
-- **Public** — if the CR sets `spec.host`, the operator provisions an Ingress at that host:
-  `/` serves a landing placeholder; **every other path proxies to `:4800`**. With
-  `spec.dnsSecretRef` it also creates the Cloudflare DNS record.
+- **Public** — if the CR sets `spec.ingressEnabled: true` + `spec.host`, the operator provisions an
+  Ingress at that host: `/` serves a landing placeholder; **every other path proxies to `:4800`**.
+  With `spec.dnsSecretRef` it also creates the Cloudflare DNS record (an owned `CloudflareDNSRecord`).
 
 ## Authentication
 

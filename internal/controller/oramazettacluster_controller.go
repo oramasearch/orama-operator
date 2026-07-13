@@ -506,12 +506,13 @@ func (r *OramaZettaClusterReconciler) reconcileZettaClusterToken(ctx context.Con
 // to the Zetta HTTP API/UI (:4800). When spec.dnsSecretRef is also set it creates an OWNED
 // CloudflareDNSRecord (proxied A/CNAME → the ingress LoadBalancer), mirroring the OramaCloudV1
 // dashboard-DNS pattern (the child controller owns the CF API call + finalizer, so the operator
-// never mutates Cloudflare from the main loop). SAFE no-op unless spec.host is set.
+// never mutates Cloudflare from the main loop). SAFE no-op unless spec.ingressEnabled is true AND
+// spec.host is set — the bool is the explicit exposure gate, Host names the endpoint.
 func (r *OramaZettaClusterReconciler) reconcileZettaIngress(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, clientSvc string, lbls map[string]string) error {
 	ingName := z.Name + "-zetta"
 	landingName := z.Name + "-zetta-landing"
-	if z.Spec.Host == "" {
-		// No host → tear down the Ingress/DNS + landing placeholder we previously created.
+	if !z.Spec.IngressEnabled || z.Spec.Host == "" {
+		// Gate off (ingressEnabled false) or no host → tear down the Ingress/DNS + landing placeholder.
 		_ = deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: z.Namespace}})
 		_ = deleteIfExists(ctx, r.Client, &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: ingName + "-dns", Namespace: z.Namespace}})
 		_ = deleteIfExists(ctx, r.Client, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: landingName, Namespace: z.Namespace}})

@@ -46,7 +46,8 @@ spec:
   #   wanAddress: 20.242.132.125:7777              #   an explicit mesh-VPN / stable public address, OR
   #   exposePeerLoadBalancer: true                 #   a cloud LB public IP (wan-accessible ONLY)
 
-  host: zetta.oramadev.net                        # expose the API/UI (:4800) via an nginx Ingress
+  ingressEnabled: true                            # gate: create the nginx Ingress + landing + DNS below
+  host: zetta.oramadev.net                        # the domain the API/UI (:4800) is exposed at
   dnsSecretRef:                                   # + a proxied Cloudflare DNS record (host → ingress LB)
     name: cloudflare-api-token                    # Secret with keys: token / zoneID / accountID
   # capacity:                                      # opt-in elastic node capacity (operator#69/#72/#75)

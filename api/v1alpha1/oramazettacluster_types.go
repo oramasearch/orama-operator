@@ -60,8 +60,18 @@ type OramaZettaClusterSpec struct {
 	// (operator#92). There is no plaintext-peer option — an unencrypted `--cluster-plaintext` mode was
 	// removed as a security hole once real mTLS clustering worked. See docs/zetta-cluster-mtls.md.
 
-	// Host, if set, exposes the cluster's HTTP API (:4800 — MCP + REST + serving, the Zetta UI) via an
-	// Ingress at this hostname (e.g. zetta.oramadev.net). Requires an ingress controller.
+	// IngressEnabled gates external HTTP exposure of the cluster's API/UI (:4800). When true AND Host is
+	// set, the operator provisions an nginx Ingress at Host (root `/` → a "zetta" landing placeholder,
+	// every other path → the Zetta HTTP API/UI on :4800) and, if DNSSecretRef is also set, a proxied
+	// Cloudflare DNS record (Host → the ingress LoadBalancer). When false (the default) no Ingress,
+	// landing, or DNS record is created — and any previously created are torn down — even if Host is
+	// still set. Host names the endpoint; this bool is the explicit on/off switch.
+	// +kubebuilder:default=false
+	// +optional
+	IngressEnabled bool `json:"ingressEnabled,omitempty"`
+
+	// Host is the domain name the cluster's HTTP API/UI (:4800 — MCP + REST + serving) is exposed at
+	// (e.g. zetta.oramadev.net) when IngressEnabled is true. Requires an ingress controller.
 	// +optional
 	Host string `json:"host,omitempty"`
 
