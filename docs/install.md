@@ -105,9 +105,15 @@ per-image overrides (`oramacore` resolves to its published `:latest`, `embedding
 `:cpu-latest`/`:gpu-latest` from `writer.gpu` — the global `tag` applies only to the operator's
 own built images). First create the pull secret and build/push the images (§4).
 
+`sandbox.yaml` runs the **app tier only** (data stores off) for a one-small-node smoke test. For the
+**complete stack** — every component with all data stores in-cluster (control DB + analytics + cache +
+broker + search + pgAdmin; `Ready 22/22`, validated on AKS) — apply
+[`../config/samples/full-stack.yaml`](../config/samples/full-stack.yaml) instead (same prereqs; needs
+node capacity for the data stores).
+
 The full field reference is in [crd-reference.md](crd-reference.md); more samples in
-[`../config/samples/`](../config/samples/) (`sandbox.yaml` = single-node, `primary-us-east.yaml`
-= prod-like, `read-eu.yaml` = read tier).
+[`../config/samples/`](../config/samples/) (`sandbox.yaml` = single-node app tier, `full-stack.yaml`
+= all data stores in-cluster, `primary-us-east.yaml` = prod-like, `read-eu.yaml` = read tier).
 
 ## 4. Override the dummy secrets / images (for real use)
 
