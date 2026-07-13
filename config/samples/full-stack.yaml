@@ -1,0 +1,61 @@
+# Full v1 stack — every component enabled with all data stores IN-CLUSTER: the complete Orama Cloud v1
+# footprint (control DB + analytics + cache + broker + search + pgAdmin + the serving/app tier). This is
+# the counterpart to sandbox.yaml, which runs the app tier ONLY (data stores off) for a one-small-node
+# smoke test. Use full-stack.yaml when the node(s) have capacity for the data stores that
+# disco / ingestion / dashboard / search connect to at runtime — it brings up the full stack (Ready 22/22,
+# validated on AKS). Same single-CR shape as sandbox.yaml; only the component toggles differ.
+#
+# Prereqs (same as sandbox.yaml):
+#   - Build + push the images:  REGISTRY=oramasearch TAG=v1-sandbox <bridge>/build/images/build.sh --push
+#   - Create the pull secret:
+#       kubectl create secret docker-registry oramasearch-dockerhub -n orama-system \
+#         --docker-server=https://index.docker.io/v1/ \
+#         --docker-username=<user> --docker-password=<read-only-token>
+# The operator self-provisions each data store AND its credentials Secret (e.g. the CNPG
+# <name>-controldb-app secret, the RabbitMQ user) — no manual secret pre-creation.
+apiVersion: orama.cloud/v1alpha1
+kind: OramaCloudV1
+metadata:
+  name: v1
+  namespace: orama-system
+spec:
+  region:
+    name: us-east
+    role: primary
+  profile: light
+  idp:
+    provider: none
+  images:
+    registry: oramasearch
+    tag: v1-sandbox                    # applies to the operator's OWN built images only
+    pullSecretName: oramasearch-dockerhub
+  llm:
+    default: groq
+    providers:
+      - { name: groq, models: [llama-3.3-70b-versatile] }
+  cloudflare:
+    enabled: false                     # set true + provide apiTokenSecretRef (+ r2SecretRef) to manage CF DNS/LB/R2
+  demoSeed: false
+  components:
+    # --- serving / app tier ---
+    engine:
+      enabled: true
+      writer: { gpu: false }           # no GPU node on the sandbox -> CPU embeddings
+      reader: { replicas: 1 }
+      envoy: true
+    dashboard:          { enabled: true, host: app.sandbox.local }
+    docs:               { enabled: true, host: docs.sandbox.local }
+    disco:              { enabled: true }
+    workers:            { enabled: true, replicas: 1 }
+    searchWorkers:      { enabled: true }
+    ingestion:          { enabled: true, harvest: true }
+    analyticsProcessor: { enabled: true }
+    # --- data stores (all in-cluster; the operator provisions each + its credentials Secret) ---
+    controlDB: { enabled: true, mode: in-cluster, placement: local }   # CloudNativePG
+    analytics: { enabled: true, mode: in-cluster, placement: local }   # ClickHouse
+    cache:     { enabled: true, mode: in-cluster, placement: local }   # Redis
+    broker:    { enabled: true, mode: in-cluster, placement: local }   # RabbitMQ
+    search:    { enabled: true, mode: in-cluster, placement: local }   # Typesense
+    pgAdmin:   { enabled: true }
+    # legacy api.askorama.ai app — off by default
+    oramasearchApp: { enabled: false }
