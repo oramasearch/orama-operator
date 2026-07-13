@@ -136,6 +136,13 @@ type RabbitMQStream struct {
 	// MaxSegmentSizeBytes sets the stream's segment size in bytes. 0 = broker default (500 MB).
 	// +optional
 	MaxSegmentSizeBytes int64 `json:"maxSegmentSizeBytes,omitempty"`
+
+	// LeaderLocator sets x-queue-leader-locator (leader-placement strategy, e.g. "least-leaders").
+	// Empty = broker default. Like the other args it is fixed at declaration; the operator must set
+	// it to MATCH any native stream-protocol client that also declares the stream (OramaCore uses
+	// "least-leaders"), or RabbitMQ rejects the redeclare on the arg mismatch. See datastore.go.
+	// +optional
+	LeaderLocator string `json:"leaderLocator,omitempty"`
 }
 
 // RabbitMQTopologyStatus is the observed topology. Written to the status subresource ONLY on a

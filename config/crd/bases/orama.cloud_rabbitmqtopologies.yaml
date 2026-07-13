@@ -135,6 +135,13 @@ spec:
                   description: RabbitMQStream is a stream queue (x-queue-type=stream)
                     declared via the management API.
                   properties:
+                    leaderLocator:
+                      description: |-
+                        LeaderLocator sets x-queue-leader-locator (leader-placement strategy, e.g. "least-leaders").
+                        Empty = broker default. Like the other args it is fixed at declaration; the operator must set
+                        it to MATCH any native stream-protocol client that also declares the stream (OramaCore uses
+                        "least-leaders"), or RabbitMQ rejects the redeclare on the arg mismatch. See datastore.go.
+                      type: string
                     maxAge:
                       description: |-
                         MaxAge bounds retention by time using RabbitMQ's stream duration syntax (e.g. "7D", "12h").

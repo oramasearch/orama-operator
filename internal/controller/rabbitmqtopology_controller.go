@@ -196,6 +196,9 @@ func (r *RabbitMQTopologyReconciler) applyTopology(ctx context.Context, base, ad
 		if s.MaxSegmentSizeBytes > 0 {
 			args["x-stream-max-segment-size-bytes"] = s.MaxSegmentSizeBytes
 		}
+		if s.LeaderLocator != "" {
+			args["x-queue-leader-locator"] = s.LeaderLocator
+		}
 		body := map[string]interface{}{"durable": true, "auto_delete": false, "arguments": args}
 		path := "/api/queues/" + pesc(vh) + "/" + pesc(s.Name)
 		if err := rmqDo(ctx, base, adminUser, adminPass, http.MethodPut, path, body, nil); err != nil {
