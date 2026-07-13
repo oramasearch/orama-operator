@@ -199,12 +199,14 @@ const (
 	brokerAdminPassword = "dev-rabbitmq-password"
 	// The replication stream OramaCore's writer produces to and the reader consumes from (#41).
 	brokerOperationsStream = "oramacore-operations"
-	// x-max-length-bytes OramaCore sets when IT declares the stream on connect (its 5 GB retention
-	// cap). The operator MUST declare the stream with the SAME value — RabbitMQ rejects a redeclare
-	// whose args differ ("inequivalent arg 'x-max-length-bytes'"), which otherwise fails the whole
-	// RabbitMQTopology reconcile before it creates the reader/writer users, so the reader can never
-	// auth to the stream. Confirmed against a live AKS cluster (the follow-up the code below flagged).
-	brokerOperationsStreamMaxBytes = 5_000_000_000
+	// Stream args OramaCore sets when IT declares oramacore-operations on connect. The operator MUST
+	// declare the stream with the SAME args — RabbitMQ rejects a redeclare whose args differ
+	// ("inequivalent arg '<x>'"), which otherwise fails the whole RabbitMQTopology reconcile before it
+	// creates the reader/writer users, so the reader can never auth to the stream. Both confirmed
+	// against a live AKS cluster (`rabbitmqctl list_queues name arguments`): x-max-length-bytes (5 GB
+	// retention) + x-queue-leader-locator (least-leaders). x-queue-type=stream is added unconditionally.
+	brokerOperationsStreamMaxBytes      = 5_000_000_000
+	brokerOperationsStreamLeaderLocator = "least-leaders"
 )
 
 // rabbitmqConf renders the broker config (#41): enable the stream listener on 5552 and set
@@ -299,7 +301,7 @@ func (r *OramaCloudV1Reconciler) reconcileBrokerTopology(ctx context.Context, oc
 			// Create (x-max-length-bytes = 5 GB) — RabbitMQ rejects a redeclare whose properties differ,
 			// which would fail this reconcile before the reader/writer users are created (the reader then
 			// can't auth to the stream). Value confirmed against a live cluster. Bounds growth too (#8).
-			Streams: []oramav1alpha1.RabbitMQStream{{Name: brokerOperationsStream, VHost: "/", MaxLengthBytes: brokerOperationsStreamMaxBytes}},
+			Streams: []oramav1alpha1.RabbitMQStream{{Name: brokerOperationsStream, VHost: "/", MaxLengthBytes: brokerOperationsStreamMaxBytes, LeaderLocator: brokerOperationsStreamLeaderLocator}},
 		}
 		return controllerutil.SetControllerReference(oc, topo, r.Scheme)
 	})

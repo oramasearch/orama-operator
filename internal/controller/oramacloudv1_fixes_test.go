@@ -70,6 +70,10 @@ func TestBrokerTopologyStreamRetentionMatchesOramaCore(t *testing.T) {
 		t.Errorf("stream MaxLengthBytes=%d, want %d (must match OramaCore, else RabbitMQ 400s the redeclare and the reader can't auth)",
 			got, brokerOperationsStreamMaxBytes)
 	}
+	if got := topo.Spec.Streams[0].LeaderLocator; got != brokerOperationsStreamLeaderLocator {
+		t.Errorf("stream LeaderLocator=%q, want %q (OramaCore's second stream arg — a mismatch 400s the redeclare too)",
+			got, brokerOperationsStreamLeaderLocator)
+	}
 }
 
 // TestDashboardDbMigrateGatedOnSchemaOwnership is the regression for the dashboard crash-loop
