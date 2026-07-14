@@ -158,3 +158,7 @@ via port-forward you hit the node directly — either way `/` is the node's web 
 - [`zetta-datastore.md`](zetta-datastore.md) — how the **operator itself** connects to this
   cluster as its datastore (One Orama).
 - [`zetta-cluster-mtls.md`](zetta-cluster-mtls.md) — the peer (`:7777`) mTLS / join-token model.
+- The **`zetta` runtime skill** ([`.claude/skills/zetta/`](https://github.com/oramasearch/orama-bridge/blob/main/.claude/skills/zetta/SKILL.md)
+  in `orama-bridge`) — drives a connected cluster through its full capability registry
+  (SQL, search, AI-project lifecycle, model/index exposure, consent-gated cloud ops). The
+  runtime companion to this connection guide.
