@@ -136,6 +136,7 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - clerkapplications
   - cloudflarednsrecords
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
@@ -157,6 +158,7 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - clerkapplications/finalizers
   - cloudflarednsrecords/finalizers
   - cloudflarekvnamespaces/finalizers
   - cloudflareloadbalancers/finalizers
@@ -168,6 +170,7 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - clerkapplications/status
   - cloudflarednsrecords/status
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status

@@ -251,3 +251,29 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
+
+## `ClerkApplication` (separate CRD) — Clerk auth per environment
+
+Provisions a **Clerk application per environment** (dev/testing/staging/prod) via the Clerk
+**Platform API** (`POST /v1/platform/applications`), so Studio auth ([zetta#889](https://github.com/oramasearch/zetta/issues/889))
+gets its issuer + keys with no manual dashboard work. One CR per environment; the resulting
+publishable/secret keys + `CLERK_ISSUER` land in an owned Secret. Template: `CloudflareKVNamespace`.
+Design: [orama-bridge#116](https://github.com/oramasearch/orama-cloud-v1-operator/issues/116).
+
+| Field | Meaning |
+|---|---|
+| `spec.secretRef` | Secret holding the Clerk **Platform API token** (key `platformToken`). You create it by hand — the operator never sets or logs it. |
+| `spec.applicationName` | Clerk app display name; the **idempotency key** — the reconciler adopts an existing app of this name instead of creating a duplicate. |
+| `spec.environment` | `dev \| testing \| staging \| prod`. Informational + the default for `instanceType`. |
+| `spec.instanceType` | `development \| production`. Default: `prod` → production (needs `spec.domain`), else development (free `clerk.accounts.dev`). |
+| `spec.template` / `spec.domain` | optional Clerk template (`b2c-saas`…) / custom domain for a production instance. |
+| `spec.keysSecretName` | where keys + issuer are written. Default `<name>-clerk-keys` (owner-ref'd → GC'd on delete). Keys: `publishableKey`, `secretKey`, `issuer`. |
+| `spec.deletionPolicy` | `Retain` (default) orphans the Clerk app on CR delete — a user pool is **never destroyed by accident**; `Delete` removes it via the Platform API. |
+| `status.applicationID` / `.instanceID` | the Clerk `app_…` / `ins_…` ids. `kubectl get clerkapp`. |
+| `status.issuer` | the Frontend API URL → `CLERK_ISSUER` on the node (derived from the publishable key). |
+| `status.publishableKey` | non-secret, surfaced in status; the **secret key lives only in the keys Secret**, never in status or a log. |
+
+Wire the node: set `CLERK_ISSUER` on the `OramaZettaCluster` from the keys Secret's `issuer` — the
+node then verifies Clerk session JWTs via JWKS ([zetta#889](https://github.com/oramasearch/zetta/issues/889)),
+with the native bearer/session token still the on-prem fallback. A node with no `CLERK_ISSUER` is
+bearer-only.

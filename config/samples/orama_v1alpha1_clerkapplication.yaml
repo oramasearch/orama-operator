@@ -1,0 +1,30 @@
+# One Clerk application per environment (orama-bridge#116). The Platform API token is a
+# Secret you create by hand (never the agent): kubectl create secret generic clerk-platform \
+#   --from-literal=platformToken=<your-clerk-platform-api-token>
+# dev/testing/staging use a development instance (free clerk.accounts.dev domain); prod uses a
+# production instance (set spec.domain). deletionPolicy: Retain keeps the user pool safe.
+apiVersion: orama.cloud/v1alpha1
+kind: ClerkApplication
+metadata:
+  name: orama-studio-dev
+  namespace: orama-system
+spec:
+  secretRef: clerk-platform
+  applicationName: orama-studio-dev
+  environment: dev
+  template: b2c-saas
+  # instanceType defaults from environment (dev -> development)
+  # keysSecretName defaults to orama-studio-dev-clerk-keys
+  deletionPolicy: Retain
+---
+apiVersion: orama.cloud/v1alpha1
+kind: ClerkApplication
+metadata:
+  name: orama-studio-prod
+  namespace: orama-system
+spec:
+  secretRef: clerk-platform
+  applicationName: orama-studio-prod
+  environment: prod
+  domain: studio.orama.com
+  deletionPolicy: Retain

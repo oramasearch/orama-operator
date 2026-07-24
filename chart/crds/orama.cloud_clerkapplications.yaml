@@ -1,0 +1,161 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: clerkapplications.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: ClerkApplication
+    listKind: ClerkApplicationList
+    plural: clerkapplications
+    shortNames:
+    - clerkapp
+    singular: clerkapplication
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.environment
+      name: Env
+      type: string
+    - jsonPath: .status.applicationID
+      name: Application
+      type: string
+    - jsonPath: .status.issuer
+      name: Issuer
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ClerkApplication is a Clerk application the operator provisions via the Clerk Platform API,
+          one per environment (dev/testing/staging/prod). The reconciler adopts-by-name (idempotent),
+          writes the instance keys + issuer into an owned Secret, and — per deletionPolicy — retains
+          (default) or deletes the Clerk app on CR delete. Template: CloudflareKVNamespace.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ClerkApplicationSpec is the desired state of a Clerk application, one per environment
+              (orama-bridge#116). The Platform API token comes from the referenced Secret (key
+              `platformToken`) — never in the CR, never logged.
+            properties:
+              applicationName:
+                description: |-
+                  ApplicationName is the Clerk application display name (the idempotency key — the reconciler
+                  adopts an existing app with this name rather than creating a duplicate). e.g. orama-studio-dev.
+                type: string
+              deletionPolicy:
+                default: Retain
+                description: |-
+                  DeletionPolicy decides what happens to the real Clerk app when this CR is deleted.
+                  Retain (default) orphans the Clerk app — the user pool is NEVER destroyed by accident;
+                  only the CR + owned keys Secret go away. Delete removes the Clerk app via the Platform API.
+                enum:
+                - Retain
+                - Delete
+                type: string
+              domain:
+                description: Domain is the custom domain for a production instance
+                  (ignored for development).
+                type: string
+              environment:
+                description: Environment this app serves. Informational, and the default
+                  for instanceType.
+                enum:
+                - dev
+                - testing
+                - staging
+                - prod
+                type: string
+              instanceType:
+                description: |-
+                  InstanceType selects which Clerk instance the keys come from. Defaults from environment:
+                  prod -> production (needs a custom domain), everything else -> development (free
+                  clerk.accounts.dev domain).
+                enum:
+                - development
+                - production
+                type: string
+              keysSecretName:
+                description: |-
+                  KeysSecretName is the Secret the operator writes the provisioned keys + issuer into.
+                  Defaults to <cr-name>-clerk-keys. Keys: publishableKey, secretKey, issuer.
+                type: string
+              secretRef:
+                description: SecretRef names the Secret holding the Clerk Platform
+                  API access token (key `platformToken`).
+                type: string
+              template:
+                description: Template is an optional Clerk application template (e.g.
+                  b2c-saas, b2b-saas, waitlist).
+                type: string
+            required:
+            - applicationName
+            - environment
+            - secretRef
+            type: object
+          status:
+            description: ClerkApplicationStatus is the observed state — the provisioned
+              Clerk app + instance.
+            properties:
+              applicationID:
+                description: ApplicationID is the Clerk-assigned application id (app_...).
+                type: string
+              environmentType:
+                description: EnvironmentType is the Clerk instance environment_type
+                  actually used (development|production).
+                type: string
+              instanceID:
+                description: InstanceID is the Clerk-assigned instance id (ins_...)
+                  for the selected environment type.
+                type: string
+              issuer:
+                description: Issuer is the Frontend API URL (-> CLERK_ISSUER on the
+                  node), derived from the publishable key.
+                type: string
+              keysSecretRef:
+                description: KeysSecretRef is the Secret the keys + issuer were written
+                  into.
+                type: string
+              message:
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the spec generation last reconciled
+                  (anti-flap).
+                format: int64
+                type: integer
+              publishableKey:
+                description: |-
+                  PublishableKey is safe to surface (client-side, non-secret); the secret key lives only in the
+                  keys Secret, never in status.
+                type: string
+              ready:
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

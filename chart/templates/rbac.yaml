@@ -27,6 +27,7 @@ rules:
       - cloudflareloadbalancers
       - rabbitmqtopologies
       - postgresschemas
+      - clerkapplications
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -46,7 +47,9 @@ rules:
       - cloudflarekvnamespaces/finalizers
       - cloudflarer2buckets/finalizers
       - cloudflareloadbalancers/finalizers
-      - rabbitmqtopologies/finalizers
+      - postgresschemas/finalizers
+      - clerkapplications/status
+      - clerkapplications/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
