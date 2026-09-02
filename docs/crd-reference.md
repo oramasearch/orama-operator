@@ -251,3 +251,27 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
+
+## `Lake` (separate CRD, cluster-scoped) — the lake service
+
+Deploys **lake** — the hosted service behind `lake.live` (forge, drive, platform, identity, secrets,
+PKI, registry and search over one content-addressed store; specified in
+[`oramasearch/liquid`](https://github.com/oramasearch/liquid) `docs/features/18-lake-service.md`) — from
+one **cluster-scoped** CR. Hello-world stage: it creates the target **Namespace** (if missing; not
+owned, so deleting a Lake never takes a namespace with it), a **Deployment** (`lake-<name>`, running
+`spec.image`) and a ClusterIP **Service** (`lake-<name>`, port 80). With `spec.ingressEnabled` and
+`spec.host` it also fronts the host with an **nginx Ingress** (the whole host → the lake Service) and,
+when `spec.dnsSecretRef` is given, an **owned `CloudflareDNSRecord`** (proxied, host → the ingress
+LoadBalancer) — the same contract and child-controller path as `OramaZettaCluster`. Gating off tears
+the Ingress and the record down and leaves the workloads. Sample:
+[`../config/samples/orama_v1alpha1_lake.yaml`](../config/samples/orama_v1alpha1_lake.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.namespace` | Namespace the workloads land in (default `lake-dev`). Created if missing; never deleted by the operator. |
+| `spec.image` | The lake image. **Required, no default** — the sample points at `hashicorp/http-echo:1.0` until the lake image exists (the container args are the echo's `-listen`/`-text` for now). |
+| `spec.replicas` | Deployment replicas (default 1). |
+| `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. |
+| `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
+| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. |
+| `status.readyReplicas` / `.phase` | Mirrors the Deployment: `Progressing \| Ready \| Degraded`. Written only on a real transition (anti-flap). `kubectl get lakes` shows Namespace, Host, Ready, Phase. |
