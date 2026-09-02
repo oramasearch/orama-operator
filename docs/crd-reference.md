@@ -254,7 +254,7 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 
 ## `Lake` (separate CRD, cluster-scoped) — the lake service
 
-Deploys **lake** — the hosted service behind `lake.live` (forge, drive, platform, identity, secrets,
+Deploys **lake** — the hosted service behind `lake.live` (control plane on Postgres via CNPG, data plane on Zetta) (forge, drive, platform, identity, secrets,
 PKI, registry and search over one content-addressed store; specified in
 [`oramasearch/liquid`](https://github.com/oramasearch/liquid) `docs/features/18-lake-service.md`) — from
 one **cluster-scoped** CR. Hello-world stage: it creates the target **Namespace** (if missing; not
@@ -274,7 +274,9 @@ the Ingress and the record down and leaves the workloads. Sample:
 | `spec.port` | Container port the Service (port 80) targets; also the readiness probe (`GET /`). Default 4900, lake's `--listen` default. |
 | `spec.args` | Args for the image's entrypoint; empty runs the image as built (lake listens on `0.0.0.0:4900`). |
 | `spec.replicas` | Deployment replicas (default 1). |
+| `spec.postgres` | **lake's control plane**: a CloudNativePG `Cluster` named `lake-<name>-controldb` in `spec.namespace`, the same path `OramaCloudV1` uses for its control DB. `enabled` (default `true`; `false` tears it down, deleting its data), `instances` (default 1), `storageSize` (default `5Gi`), `storageClassName`. CNPG generates the `lake-<name>-controldb-app` Secret; the lake container gets `LAKE_CONTROL_DB_URI` and `LAKE_CONTROL_DB_PASSWORD` from it (optional refs, so the pod starts before the DB does). Requires the CNPG operator (helmfile). Zetta is the data plane, provisioned separately. |
 | `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. |
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
 | `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. |
-| `status.readyReplicas` / `.phase` | Mirrors the Deployment: `Progressing \| Ready \| Degraded`. Written only on a real transition (anti-flap). `kubectl get lakes` shows Namespace, Host, Ready, Phase. |
+| `status.readyReplicas` / `.phase` | Mirrors the Deployment: `Progressing \| Ready \| Degraded`. Written only on a real transition (anti-flap). `kubectl get lakes` shows Namespace, Host, Ready, DB, Phase. |
+| `status.postgresReady` / `.postgresInstances` | CNPG readiness, read best-effort (`readyInstances`/`instances`, e.g. `1/1`); the Lake requeues every 20s until ready. Empty when `spec.postgres.enabled` is false. |

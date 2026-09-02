@@ -24,6 +24,9 @@ spec:
     - jsonPath: .status.readyReplicas
       name: Ready
       type: integer
+    - jsonPath: .status.postgresInstances
+      name: DB
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -112,6 +115,37 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              postgres:
+                description: |-
+                  Postgres is lake's control plane: a CloudNativePG Cluster the operator provisions in
+                  spec.namespace, the same path OramaCloudV1 uses for its control DB (requires the
+                  CloudNativePG operator, see the helmfile). CNPG generates the `lake-<name>-controldb-app`
+                  Secret (owner credentials + connection URI); the lake pods receive it as
+                  LAKE_CONTROL_DB_URI. Zetta is the data plane and is provisioned separately.
+                properties:
+                  enabled:
+                    default: true
+                    description: |-
+                      Enabled provisions the CNPG Cluster. Default true. Setting it false tears the cluster
+                      down (disable is not "leave running"), which deletes its data.
+                    type: boolean
+                  instances:
+                    default: 1
+                    description: Instances is the CNPG instance count (1 = single
+                      primary; 2+ adds streaming replicas).
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  storageClassName:
+                    description: StorageClassName for the PVCs; empty = the cluster
+                      default.
+                    type: string
+                  storageSize:
+                    default: 5Gi
+                    description: StorageSize is the per-instance PVC size. Default
+                      5Gi.
+                    type: string
+                type: object
               pullSecretName:
                 description: |-
                   PullSecretName, if set, is attached to the lake pods as an imagePullSecret. Needed for a
@@ -133,6 +167,14 @@ spec:
                 description: 'Phase is a coarse summary in the operator''s vocabulary:
                   Progressing, Ready, Degraded.'
                 type: string
+              postgresInstances:
+                description: PostgresInstances is ready/desired for the CNPG Cluster,
+                  e.g. "1/1"; empty when disabled.
+                type: string
+              postgresReady:
+                description: PostgresReady is true once the control-plane CNPG Cluster
+                  has at least one ready instance.
+                type: boolean
               readyReplicas:
                 description: ReadyReplicas mirrors the Deployment's ready replicas.
                 format: int32

@@ -48,6 +48,14 @@ type LakeSpec struct {
 	// +optional
 	Args []string `json:"args,omitempty"`
 
+	// Postgres is lake's control plane: a CloudNativePG Cluster the operator provisions in
+	// spec.namespace, the same path OramaCloudV1 uses for its control DB (requires the
+	// CloudNativePG operator, see the helmfile). CNPG generates the `lake-<name>-controldb-app`
+	// Secret (owner credentials + connection URI); the lake pods receive it as
+	// LAKE_CONTROL_DB_URI. Zetta is the data plane and is provisioned separately.
+	// +optional
+	Postgres LakePostgresSpec `json:"postgres,omitempty"`
+
 	// IngressEnabled gates external HTTP exposure of the lake Service. When true AND Host is set, the
 	// operator provisions an nginx Ingress at Host (the whole host proxies to the lake Service) and,
 	// if DNSSecretRef is also set, a proxied Cloudflare DNS record (Host -> the ingress LoadBalancer).
@@ -72,11 +80,41 @@ type LakeSpec struct {
 	DNSSecretRef *corev1.LocalObjectReference `json:"dnsSecretRef,omitempty"`
 }
 
+// LakePostgresSpec describes the control-plane Postgres for a Lake.
+type LakePostgresSpec struct {
+	// Enabled provisions the CNPG Cluster. Default true. Setting it false tears the cluster
+	// down (disable is not "leave running"), which deletes its data.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Instances is the CNPG instance count (1 = single primary; 2+ adds streaming replicas).
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	Instances *int32 `json:"instances,omitempty"`
+
+	// StorageSize is the per-instance PVC size. Default 5Gi.
+	// +kubebuilder:default="5Gi"
+	// +optional
+	StorageSize string `json:"storageSize,omitempty"`
+
+	// StorageClassName for the PVCs; empty = the cluster default.
+	// +optional
+	StorageClassName string `json:"storageClassName,omitempty"`
+}
+
 // LakeStatus defines the observed state of Lake.
 type LakeStatus struct {
 	// ReadyReplicas mirrors the Deployment's ready replicas.
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+	// PostgresReady is true once the control-plane CNPG Cluster has at least one ready instance.
+	// +optional
+	PostgresReady bool `json:"postgresReady,omitempty"`
+	// PostgresInstances is ready/desired for the CNPG Cluster, e.g. "1/1"; empty when disabled.
+	// +optional
+	PostgresInstances string `json:"postgresInstances,omitempty"`
 	// Phase is a coarse summary in the operator's vocabulary: Progressing, Ready, Degraded.
 	// +optional
 	Phase string `json:"phase,omitempty"`
@@ -88,6 +126,7 @@ type LakeStatus struct {
 // +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.spec.namespace`
 // +kubebuilder:printcolumn:name="Host",type=string,JSONPath=`.spec.host`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
+// +kubebuilder:printcolumn:name="DB",type=string,JSONPath=`.status.postgresInstances`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 
 // Lake is the Schema for the lakes API

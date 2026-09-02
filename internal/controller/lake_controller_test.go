@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -181,5 +182,74 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &appsv1.Deployment{}); err != nil {
 		t.Errorf("deployment should survive the gate: %v", err)
+	}
+}
+
+func TestLakeReconcileControlDB(t *testing.T) {
+	s := newLakeScheme(t)
+	ctx := context.Background()
+	two := int32(2)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
+		Spec: oramav1alpha1.LakeSpec{Image: "oramasearch/lake:v1-sandbox",
+			Postgres: oramav1alpha1.LakePostgresSpec{Instances: &two, StorageSize: "20Gi", StorageClassName: "fast"}},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	r := &LakeReconciler{Client: c, Scheme: s}
+	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Error("expected a requeue while the control DB is not ready")
+	}
+	cluster := &unstructured.Unstructured{}
+	cluster.SetGroupVersionKind(cnpgClusterGVK)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-controldb"}, cluster); err != nil {
+		t.Fatalf("CNPG cluster not created: %v", err)
+	}
+	inst, _, _ := unstructured.NestedInt64(cluster.Object, "spec", "instances")
+	size, _, _ := unstructured.NestedString(cluster.Object, "spec", "storage", "size")
+	sc, _, _ := unstructured.NestedString(cluster.Object, "spec", "storage", "storageClass")
+	db, _, _ := unstructured.NestedString(cluster.Object, "spec", "bootstrap", "initdb", "database")
+	if inst != 2 || size != "20Gi" || sc != "fast" || db != "lake" {
+		t.Errorf("cluster spec = %+v", cluster.Object["spec"])
+	}
+	if refs := cluster.GetOwnerReferences(); len(refs) != 1 || refs[0].Name != "hello" {
+		t.Errorf("cluster owner refs = %+v", refs)
+	}
+	var d appsv1.Deployment
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
+		t.Fatal(err)
+	}
+	env := d.Spec.Template.Spec.Containers[0].Env
+	if len(env) != 2 || env[0].Name != "LAKE_CONTROL_DB_URI" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" ||
+		env[0].ValueFrom.SecretKeyRef.Key != "uri" || env[0].ValueFrom.SecretKeyRef.Optional == nil || !*env[0].ValueFrom.SecretKeyRef.Optional {
+		t.Errorf("env = %+v", env)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	if lake.Status.PostgresReady || lake.Status.PostgresInstances != "0/0" {
+		t.Errorf("status = %+v", lake.Status)
+	}
+
+	// Disable: the cluster is torn down and the env goes away.
+	off := false
+	lake.Spec.Postgres.Enabled = &off
+	if err := c.Update(ctx, lake); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-controldb"}, cluster); err == nil {
+		t.Error("CNPG cluster not torn down when postgres.enabled went false")
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Spec.Template.Spec.Containers[0].Env) != 0 {
+		t.Errorf("env should be empty when postgres is disabled: %+v", d.Spec.Template.Spec.Containers[0].Env)
 	}
 }
