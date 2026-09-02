@@ -33,7 +33,7 @@ type LakeReconciler struct {
 }
 
 const (
-	lakeEchoPort    = 5678 // hashicorp/http-echo's listen port
+	lakeDefaultPort = 4900 // lake's --listen default
 	lakeServicePort = 80
 )
 
@@ -67,6 +67,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if lake.Spec.Replicas != nil {
 		replicas = *lake.Spec.Replicas
 	}
+	port := int32(lakeDefaultPort)
+	if lake.Spec.Port != nil {
+		port = *lake.Spec.Port
+	}
 
 	// Namespace: create if missing. Not owner-ref'd — a namespace outliving the Lake
 	// is safer than a Lake deletion taking a namespace with it. A blind Create (AlreadyExists
@@ -96,9 +100,15 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		deploy.Spec.Template.Spec.Containers = []corev1.Container{{
 			Name:  "lake",
 			Image: image,
-			Args:  []string{"-listen=:5678", "-text=hello from lake " + lake.Name},
-			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: lakeEchoPort}},
+			Args:  lake.Spec.Args,
+			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{Path: "/", Port: intstr.FromString("http")}}},
 		}}
+		deploy.Spec.Template.Spec.ImagePullSecrets = nil
+		if lake.Spec.PullSecretName != "" {
+			deploy.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: lake.Spec.PullSecretName}}
+		}
 		return controllerutil.SetControllerReference(&lake, deploy, r.Scheme)
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile deployment: %w", err)
@@ -110,7 +120,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		svc.Labels = labels
 		svc.Spec.Selector = labels
 		svc.Spec.Ports = []corev1.ServicePort{{
-			Name: "http", Port: lakeServicePort, TargetPort: intstr.FromInt(lakeEchoPort),
+			Name: "http", Port: lakeServicePort, TargetPort: intstr.FromInt(int(port)),
 		}}
 		return controllerutil.SetControllerReference(&lake, svc, r.Scheme)
 	}); err != nil {

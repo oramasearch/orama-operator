@@ -4,9 +4,15 @@ metadata:
   name: hello
 spec:
   namespace: lake-dev
-  # Hello-world stage: an HTTP echo stands in until the lake image exists.
-  image: hashicorp/http-echo:1.0
+  # The lake image is private: pull it with a Secret that exists in spec.namespace.
+  image: oramasearch/lake:v1-sandbox
+  pullSecretName: oramasearch-dockerhub
   replicas: 1
+  # port defaults to 4900 (lake's --listen) and args to none: the image runs lake as built.
+  # Before the lake image existed the hello-world stand-in was:
+  #   image: hashicorp/http-echo:1.0
+  #   port: 5678
+  #   args: ["-listen=:5678", "-text=hello from lake hello"]
   # External exposure, same contract as OramaZettaCluster: ingressEnabled + host gives an nginx
   # Ingress; dnsSecretRef adds a proxied Cloudflare record. The Secret (keys: token, zoneID) must
   # live in spec.namespace and hold the zone of host: a lake.live host needs a lake.live-zone Secret.

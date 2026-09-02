@@ -46,7 +46,8 @@ func TestLakeReconcileCreatesWorkloads(t *testing.T) {
 	one := int32(1)
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
-		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake-dev", Image: "hashicorp/http-echo:1.0", Replicas: &one},
+		Spec: oramav1alpha1.LakeSpec{Namespace: "lake-dev", Image: "oramasearch/lake:v1-sandbox", Replicas: &one,
+			PullSecretName: "oramasearch-dockerhub", Args: []string{"--node", "hello"}},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
 
@@ -59,11 +60,20 @@ func TestLakeReconcileCreatesWorkloads(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
 		t.Fatalf("deployment not created: %v", err)
 	}
-	if got := d.Spec.Template.Spec.Containers[0].Image; got != "hashicorp/http-echo:1.0" {
+	if got := d.Spec.Template.Spec.Containers[0].Image; got != "oramasearch/lake:v1-sandbox" {
 		t.Errorf("image = %q", got)
 	}
 	if d.Spec.Replicas == nil || *d.Spec.Replicas != 1 {
 		t.Errorf("replicas = %v", d.Spec.Replicas)
+	}
+	if ps := d.Spec.Template.Spec.ImagePullSecrets; len(ps) != 1 || ps[0].Name != "oramasearch-dockerhub" {
+		t.Errorf("imagePullSecrets = %+v", ps)
+	}
+	if args := d.Spec.Template.Spec.Containers[0].Args; len(args) != 2 || args[0] != "--node" {
+		t.Errorf("args = %v", args)
+	}
+	if cp := d.Spec.Template.Spec.Containers[0].Ports; len(cp) != 1 || cp[0].ContainerPort != 4900 {
+		t.Errorf("container ports = %+v", cp)
 	}
 	if len(d.OwnerReferences) != 1 || d.OwnerReferences[0].Kind != "Lake" {
 		t.Errorf("deployment owner refs = %+v", d.OwnerReferences)
@@ -72,7 +82,7 @@ func TestLakeReconcileCreatesWorkloads(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &svc); err != nil {
 		t.Fatalf("service not created: %v", err)
 	}
-	if svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.IntValue() != 5678 {
+	if svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.IntValue() != 4900 {
 		t.Errorf("service ports = %+v", svc.Spec.Ports)
 	}
 }

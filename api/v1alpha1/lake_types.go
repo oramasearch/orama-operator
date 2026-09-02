@@ -31,6 +31,23 @@ type LakeSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// PullSecretName, if set, is attached to the lake pods as an imagePullSecret. Needed for a
+	// private spec.image (oramasearch/lake is private). The Secret must exist in spec.namespace.
+	// +optional
+	PullSecretName string `json:"pullSecretName,omitempty"`
+
+	// Port the container listens on; the Service exposes it on 80. Default 4900, lake's own
+	// default (--listen 0.0.0.0:4900). The hello-world echo stand-in overrides it to 5678.
+	// +kubebuilder:default=4900
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port *int32 `json:"port,omitempty"`
+
+	// Args passed to the image's entrypoint. Empty runs the image as built.
+	// +optional
+	Args []string `json:"args,omitempty"`
+
 	// IngressEnabled gates external HTTP exposure of the lake Service. When true AND Host is set, the
 	// operator provisions an nginx Ingress at Host (the whole host proxies to the lake Service) and,
 	// if DNSSecretRef is also set, a proxied Cloudflare DNS record (Host -> the ingress LoadBalancer).

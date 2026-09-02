@@ -269,7 +269,10 @@ the Ingress and the record down and leaves the workloads. Sample:
 | Field | Purpose |
 |---|---|
 | `spec.namespace` | Namespace the workloads land in (default `lake-dev`). Created if missing; never deleted by the operator. |
-| `spec.image` | The lake image. **Required, no default** — the sample points at `hashicorp/http-echo:1.0` until the lake image exists (the container args are the echo's `-listen`/`-text` for now). |
+| `spec.image` | The lake image, run as built. **Required, no default**; the sample uses the private `oramasearch/lake:v1-sandbox`. |
+| `spec.pullSecretName` | imagePullSecret attached to the pods, for a private `spec.image`. Must exist in `spec.namespace`. |
+| `spec.port` | Container port the Service (port 80) targets; also the readiness probe (`GET /`). Default 4900, lake's `--listen` default. |
+| `spec.args` | Args for the image's entrypoint; empty runs the image as built (lake listens on `0.0.0.0:4900`). |
 | `spec.replicas` | Deployment replicas (default 1). |
 | `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. |
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |

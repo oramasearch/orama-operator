@@ -52,6 +52,12 @@ spec:
           spec:
             description: spec defines the desired state of Lake
             properties:
+              args:
+                description: Args passed to the image's entrypoint. Empty runs the
+                  image as built.
+                items:
+                  type: string
+                type: array
               dnsSecretRef:
                 description: |-
                   DNSSecretRef, if set together with Host, creates a proxied Cloudflare DNS record (Host -> the
@@ -96,6 +102,20 @@ spec:
                 default: lake-dev
                 description: Namespace the lake workloads are deployed into. Created
                   if missing.
+                type: string
+              port:
+                default: 4900
+                description: |-
+                  Port the container listens on; the Service exposes it on 80. Default 4900, lake's own
+                  default (--listen 0.0.0.0:4900). The hello-world echo stand-in overrides it to 5678.
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              pullSecretName:
+                description: |-
+                  PullSecretName, if set, is attached to the lake pods as an imagePullSecret. Needed for a
+                  private spec.image (oramasearch/lake is private). The Secret must exist in spec.namespace.
                 type: string
               replicas:
                 default: 1
