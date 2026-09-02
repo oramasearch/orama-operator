@@ -44,7 +44,7 @@ kubectl -n orama-system get deploy orama-cloud-v1-operator
 kubectl get crd oramacloudv1s.orama.cloud
 ```
 
-> The chart uses the operator image `oramasearch/orama-cloud-v1-operator:latest`
+> The chart uses the operator image `oramasearch/orama-operator:latest` (Docker Hub repo renamed with the GitHub repo; the old `oramasearch/orama-cloud-v1-operator` repo keeps the pre-rename builds)
 > (override with `--set operator.image.tag=...`). Build/push it with
 > `make docker-build docker-push IMG=...` (see [development.md](development.md)).
 

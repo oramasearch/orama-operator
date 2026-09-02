@@ -4,7 +4,7 @@
 # an in-cluster deploy (the secret must exist in the release namespace).
 operator:
   image:
-    repository: oramasearch/orama-cloud-v1-operator
+    repository: oramasearch/orama-operator
     tag: v1-sandbox
     pullPolicy: IfNotPresent
   # Pull secret(s) for the PRIVATE manager image, e.g. [{ name: oramasearch-dockerhub }].

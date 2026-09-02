@@ -99,7 +99,7 @@ Docs are kept in lockstep with the source — see [`CLAUDE.md`](CLAUDE.md) and
 ```
 make manifests   # generate CRD + RBAC from the kubebuilder markers
 make build       # compile the manager
-make docker-build IMG=oramasearch/orama-cloud-v1-operator:0.1.0
+make docker-build IMG=oramasearch/orama-operator:0.1.0
 make helm-package # copy generated CRDs into the chart + package
 ```
 
