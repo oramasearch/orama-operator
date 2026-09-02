@@ -1,0 +1,9 @@
+apiVersion: orama.cloud/v1alpha1
+kind: Lake
+metadata:
+  labels:
+    app.kubernetes.io/name: orama-cloud-v1-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: lake-sample
+spec:
+  # TODO(user): Add fields here

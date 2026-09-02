@@ -140,6 +140,7 @@ rules:
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
+  - lakes
   - oramacloudv1e2etests
   - oramacloudv1s
   - oramazettaclusters
@@ -161,6 +162,7 @@ rules:
   - cloudflarekvnamespaces/finalizers
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
+  - lakes/finalizers
   - oramazettaclusters/finalizers
   - rabbitmqtopologies/finalizers
   verbs:
@@ -172,6 +174,7 @@ rules:
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
+  - lakes/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
   - oramazettaclusters/status

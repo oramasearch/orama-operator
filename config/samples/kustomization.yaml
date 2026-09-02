@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- orama_v1alpha1_lake.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
