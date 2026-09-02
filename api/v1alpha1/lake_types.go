@@ -94,8 +94,9 @@ type LakePostgresSpec struct {
 	// +optional
 	Instances *int32 `json:"instances,omitempty"`
 
-	// StorageSize is the per-instance PVC size. Default 5Gi.
-	// +kubebuilder:default="5Gi"
+	// StorageSize is the per-instance PVC size. Default 50Gi: a Lake is a production control plane,
+	// and CNPG grows a PVC in place when the StorageClass allows expansion, so start with headroom.
+	// +kubebuilder:default="50Gi"
 	// +optional
 	StorageSize string `json:"storageSize,omitempty"`
 

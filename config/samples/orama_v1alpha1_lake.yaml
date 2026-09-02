@@ -13,7 +13,7 @@ spec:
   # Secret. Zetta is the data plane and is provisioned separately.
   postgres:
     instances: 1
-    storageSize: 5Gi
+    storageSize: 50Gi
   # port defaults to 4900 (lake's --listen) and args to none: the image runs lake as built.
   # Before the lake image existed the hello-world stand-in was:
   #   image: hashicorp/http-echo:1.0

@@ -215,7 +215,7 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 	}
 	size := lake.Spec.Postgres.StorageSize
 	if size == "" {
-		size = "5Gi"
+		size = "50Gi"
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		cluster.SetLabels(lbls)

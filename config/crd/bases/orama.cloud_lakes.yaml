@@ -141,9 +141,10 @@ spec:
                       default.
                     type: string
                   storageSize:
-                    default: 5Gi
-                    description: StorageSize is the per-instance PVC size. Default
-                      5Gi.
+                    default: 50Gi
+                    description: |-
+                      StorageSize is the per-instance PVC size. Default 50Gi: a Lake is a production control plane,
+                      and CNPG grows a PVC in place when the StorageClass allows expansion, so start with headroom.
                     type: string
                 type: object
               pullSecretName:
