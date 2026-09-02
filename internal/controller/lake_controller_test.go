@@ -224,9 +224,24 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := d.Spec.Template.Spec.Containers[0].Env
-	if len(env) != 2 || env[0].Name != "LAKE_CONTROL_DB_URI" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" ||
-		env[0].ValueFrom.SecretKeyRef.Key != "uri" || env[0].ValueFrom.SecretKeyRef.Optional == nil || !*env[0].ValueFrom.SecretKeyRef.Optional {
+	if len(env) != 3 || env[0].Name != "LAKE_ADMIN_TOKEN" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" ||
+		env[1].Name != "LAKE_CONTROL_DB_URI" || env[1].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" ||
+		env[1].ValueFrom.SecretKeyRef.Key != "uri" || env[1].ValueFrom.SecretKeyRef.Optional == nil || !*env[1].ValueFrom.SecretKeyRef.Optional {
 		t.Errorf("env = %+v", env)
+	}
+	var admin corev1.Secret
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-admin"}, &admin); err != nil {
+		t.Fatalf("admin token Secret not created: %v", err)
+	}
+	if len(admin.Data["token"]) != 64 || len(admin.OwnerReferences) != 1 {
+		t.Errorf("admin token = %d chars, owners %d", len(admin.Data["token"]), len(admin.OwnerReferences))
+	}
+	first := string(admin.Data["token"])
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-admin"}, &admin); err != nil || string(admin.Data["token"]) != first {
+		t.Error("admin token must be minted once and preserved")
 	}
 	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
 		t.Fatal(err)
@@ -269,8 +284,8 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
 		t.Fatal(err)
 	}
-	if len(d.Spec.Template.Spec.Containers[0].Env) != 0 {
-		t.Errorf("env should be empty when postgres is disabled: %+v", d.Spec.Template.Spec.Containers[0].Env)
+	if e := d.Spec.Template.Spec.Containers[0].Env; len(e) != 1 || e[0].Name != "LAKE_ADMIN_TOKEN" {
+		t.Errorf("env should be only the admin token when postgres is disabled: %+v", e)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-controldb-schema"}, &ps); err == nil {
 		t.Error("PostgresSchema not torn down when postgres.enabled went false")

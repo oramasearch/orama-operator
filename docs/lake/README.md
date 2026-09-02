@@ -11,20 +11,23 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
 1. **Namespace** `spec.namespace` — created with a blind `Create` (AlreadyExists ignored), never
    owned, never deleted: the operator holds `namespaces: get, create` only (operator#106: no
    Namespace informer).
-2. **Deployment** `lake-<name>` — `spec.image` run as built, `spec.args`, port `spec.port`
+2. **Admin token** — Secret `lake-<name>-admin` (key `token`, 64 hex), minted once, owned;
+   injected as `LAKE_ADMIN_TOKEN`. lake's `/v1` capabilities and MCP tool calls require it as a
+   bearer.
+3. **Deployment** `lake-<name>` — `spec.image` run as built, `spec.args`, port `spec.port`
    (default 4900), readiness `GET /`, `spec.replicas`, `imagePullSecrets` from
    `spec.pullSecretName`; env `LAKE_CONTROL_DB_URI` / `LAKE_CONTROL_DB_PASSWORD` from the CNPG
    app Secret (optional refs).
-3. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
-4. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
+4. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
+5. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
    (`spec.postgres`: enabled by default, instances, storageSize 50Gi, storageClassName), the same
    unstructured path `OramaCloudV1` uses (`controldb.go`). Disabling tears it down **with its
    data**.
-5. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
+6. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
    `oramasearch/lake` `db/schema.sql`), guard table `customers`, version = content hash.
    Single-shot today; incremental migrations are #126.
-6. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
+7. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
    whole host and an owned `CloudflareDNSRecord`, the `OramaZettaCluster` contract; gating off
    tears both down.
 
@@ -35,7 +38,7 @@ ready and the schema Applied. `kubectl get lake` columns: Namespace, Host, Ready
 Phase.
 
 **Owned kinds** (`SetupWithManager`): Deployment, Service, Ingress, CloudflareDNSRecord,
-ConfigMap, PostgresSchema. Not owned: the Namespace, the CNPG Cluster (polled).
+ConfigMap, Secret, PostgresSchema. Not owned: the Namespace, the CNPG Cluster (polled).
 
 **RBAC.** The chart ClusterRole is hand-maintained (`chart/templates/rbac.yaml`); a Lake needs
 `lakes`, `lakes/status`, `lakes/finalizers`, `namespaces: create`, plus the shared grants for
