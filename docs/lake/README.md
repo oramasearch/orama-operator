@@ -25,8 +25,10 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    data**.
 6. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table `customers`, version = content hash.
-   Single-shot today; incremental migrations are #126.
+   `oramasearch/lake` `db/schema.sql`), guard table = the table the newest migration creates (`repositories`), version = content
+   hash. The file is idempotent, so a new migration = a new guard, and the next Job re-runs the
+   file adding only what is missing; on an existing Lake, delete the `PostgresSchema` (owned, it
+   is recreated) to trigger that Job. Proper incremental migrations are #126.
 7. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
    whole host and an owned `CloudflareDNSRecord`, the `OramaZettaCluster` contract; gating off
    tears both down.

@@ -323,9 +323,10 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 			ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: lakeControlDB(lake.Name) + "-app", Key: "uri"},
 			SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: cmName, Key: "schema.sql"},
 			Version:             schemaVersion(lakeSchemaSQL),
-			// customers is the last table the schema creates; with --single-transaction it exists
-			// iff the whole schema applied.
-			GuardTable: "customers",
+			// The guard is the table the NEWEST migration creates: with --single-transaction it
+			// exists iff the whole (idempotent) file applied, and a new migration = a new guard, so
+			// the next Job re-runs the file and adds only what is missing.
+			GuardTable: "repositories",
 			Image:      "postgres:18-alpine",
 		}
 		return controllerutil.SetControllerReference(lake, ps, r.Scheme)

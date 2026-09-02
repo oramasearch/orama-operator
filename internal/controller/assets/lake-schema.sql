@@ -75,3 +75,26 @@ DROP TRIGGER IF EXISTS customers_set_updated_at ON customers;
 CREATE TRIGGER customers_set_updated_at BEFORE UPDATE ON customers FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 INSERT INTO schema_migrations (version) VALUES ('0001_identity_and_customers') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Repositories (migration 0002): owned by a customer, the tenant, and named within it, so the
+-- address is <customer handle>/<name>. name is a slug in the handle format; UNIQUE (customer_id,
+-- name). visibility is private or public. Deleting the customer deletes its repositories.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS repositories (
+    id          uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id uuid         NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    name        varchar(256) NOT NULL,
+    description text         NOT NULL DEFAULT '',
+    visibility  text         NOT NULL DEFAULT 'private',
+    created_at  timestamptz  NOT NULL DEFAULT now(),
+    updated_at  timestamptz  NOT NULL DEFAULT now(),
+    CONSTRAINT repository_visibility_check CHECK (visibility IN ('private', 'public')),
+    CONSTRAINT repository_name_format CHECK (name ~ '^[a-z0-9]([a-z0-9-]{0,254}[a-z0-9])?$'),
+    CONSTRAINT repository_name_unique UNIQUE (customer_id, name)
+);
+CREATE INDEX IF NOT EXISTS repositories_customer_id_idx ON repositories (customer_id);
+DROP TRIGGER IF EXISTS repositories_set_updated_at ON repositories;
+CREATE TRIGGER repositories_set_updated_at BEFORE UPDATE ON repositories FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+INSERT INTO schema_migrations (version) VALUES ('0002_repositories') ON CONFLICT DO NOTHING;
