@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"time"
 
@@ -42,6 +43,12 @@ const (
 	lakeDBRequeue     = 20 * time.Second
 )
 
+// lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
+// this is a byte-identical vendored copy, applied per Lake through an owned PostgresSchema.
+//
+//go:embed assets/lake-schema.sql
+var lakeSchemaSQL string
+
 // lakeControlDB is the CNPG Cluster name for a Lake; CNPG derives `<name>-app` (the owner
 // credentials + URI Secret) and `<name>-rw` (the primary Service) from it.
 func lakeControlDB(name string) string { return "lake-" + name + "-controldb" }
@@ -59,6 +66,8 @@ func lakePostgresEnabled(lake *oramav1alpha1.Lake) bool {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=orama.cloud,resources=postgresschemas,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile brings the cluster to the state described by the Lake.
 func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -142,9 +151,12 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("reconcile service: %w", err)
 	}
 
-	// Control-plane Postgres (CNPG), on by default.
+	// Control-plane Postgres (CNPG), on by default, and its schema (PostgresSchema).
 	if err := r.reconcileLakeControlDB(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile control db: %w", err)
+	}
+	if err := r.reconcileLakeControlDBSchema(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile control db schema: %w", err)
 	}
 
 	// Ingress + DNS (opt-in, same contract as OramaZettaCluster).
@@ -162,18 +174,23 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		phase = "Degraded"
 	}
 	pgReady, pgDetail := r.lakeControlDBStatus(ctx, &lake, ns)
+	schemaPhase, schemaVersion := r.lakeSchemaStatus(ctx, &lake, ns)
 	if lake.Status.ReadyReplicas != deploy.Status.ReadyReplicas || lake.Status.Phase != phase ||
-		lake.Status.PostgresReady != pgReady || lake.Status.PostgresInstances != pgDetail {
+		lake.Status.PostgresReady != pgReady || lake.Status.PostgresInstances != pgDetail ||
+		lake.Status.SchemaPhase != schemaPhase || lake.Status.SchemaVersion != schemaVersion {
 		lake.Status.ReadyReplicas = deploy.Status.ReadyReplicas
 		lake.Status.Phase = phase
 		lake.Status.PostgresReady = pgReady
 		lake.Status.PostgresInstances = pgDetail
+		lake.Status.SchemaPhase = schemaPhase
+		lake.Status.SchemaVersion = schemaVersion
 		if err := r.Status().Update(ctx, &lake); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	// The CNPG Cluster is not watched (OramaCloudV1 does the same): poll until it is ready.
-	if lakePostgresEnabled(&lake) && !pgReady {
+	// The CNPG Cluster is not watched (OramaCloudV1 does the same): poll until the DB is ready and
+	// the schema applied (the PostgresSchema is owned, so its status changes re-queue us too).
+	if lakePostgresEnabled(&lake) && (!pgReady || schemaPhase != "Applied") {
 		return ctrl.Result{RequeueAfter: lakeDBRequeue}, nil
 	}
 	return ctrl.Result{}, nil
@@ -233,6 +250,60 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)
 	})
 	return err
+}
+
+// reconcileLakeControlDBSchema applies lake's control-plane schema the way OramaCloudV1 applies
+// the dashboard's (controldb.go): the SQL rendered into an owned ConfigMap and declared as an owned
+// PostgresSchema, whose controller runs the idempotent migration Job (wait for the DB, skip if the
+// guard table exists, apply in one transaction) and records the applied version. The version is a
+// content hash of the SQL, so it changes exactly when the vendored schema does. With Postgres
+// disabled both objects are torn down.
+func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake *oramav1alpha1.Lake, ns string, lbls map[string]string) error {
+	cmName := lakeControlDB(lake.Name) + "-migrations"
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: ns}}
+	ps := &oramav1alpha1.PostgresSchema{ObjectMeta: metav1.ObjectMeta{Name: lakeControlDB(lake.Name) + "-schema", Namespace: ns}}
+	if !lakePostgresEnabled(lake) {
+		if err := deleteIfExists(ctx, r.Client, ps); err != nil {
+			return err
+		}
+		return deleteIfExists(ctx, r.Client, cm)
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		cm.Labels = lbls
+		cm.Data = map[string]string{"schema.sql": lakeSchemaSQL}
+		return controllerutil.SetControllerReference(lake, cm, r.Scheme)
+	}); err != nil {
+		return err
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ps, func() error {
+		ps.Labels = lbls
+		ps.Spec = oramav1alpha1.PostgresSchemaSpec{
+			ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: lakeControlDB(lake.Name) + "-app", Key: "uri"},
+			SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: cmName, Key: "schema.sql"},
+			Version:             schemaVersion(lakeSchemaSQL),
+			// customers is the last table the schema creates; with --single-transaction it exists
+			// iff the whole schema applied.
+			GuardTable: "customers",
+			Image:      "postgres:18-alpine",
+		}
+		return controllerutil.SetControllerReference(lake, ps, r.Scheme)
+	})
+	return err
+}
+
+// lakeSchemaStatus mirrors the owned PostgresSchema's phase and applied version, best-effort.
+func (r *LakeReconciler) lakeSchemaStatus(ctx context.Context, lake *oramav1alpha1.Lake, ns string) (string, string) {
+	if !lakePostgresEnabled(lake) {
+		return "", ""
+	}
+	var ps oramav1alpha1.PostgresSchema
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: lakeControlDB(lake.Name) + "-schema"}, &ps); err != nil {
+		return "Pending", ""
+	}
+	if ps.Status.Phase == "" {
+		return "Pending", ps.Status.AppliedVersion
+	}
+	return ps.Status.Phase, ps.Status.AppliedVersion
 }
 
 // lakeControlDBStatus reads CNPG readiness best-effort; not-found (or no CNPG) counts as not ready.
@@ -322,6 +393,8 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&oramav1alpha1.PostgresSchema{}).
 		Named("lake").
 		Complete(r)
 }

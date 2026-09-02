@@ -116,6 +116,12 @@ type LakeStatus struct {
 	// PostgresInstances is ready/desired for the CNPG Cluster, e.g. "1/1"; empty when disabled.
 	// +optional
 	PostgresInstances string `json:"postgresInstances,omitempty"`
+	// SchemaPhase mirrors the owned PostgresSchema: Pending | Applying | Applied | Failed.
+	// +optional
+	SchemaPhase string `json:"schemaPhase,omitempty"`
+	// SchemaVersion is the applied schema's content hash (sha256:<12 hex>), from the PostgresSchema.
+	// +optional
+	SchemaVersion string `json:"schemaVersion,omitempty"`
 	// Phase is a coarse summary in the operator's vocabulary: Progressing, Ready, Degraded.
 	// +optional
 	Phase string `json:"phase,omitempty"`
@@ -128,6 +134,7 @@ type LakeStatus struct {
 // +kubebuilder:printcolumn:name="Host",type=string,JSONPath=`.spec.host`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="DB",type=string,JSONPath=`.status.postgresInstances`
+// +kubebuilder:printcolumn:name="Schema",type=string,JSONPath=`.status.schemaPhase`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 
 // Lake is the Schema for the lakes API

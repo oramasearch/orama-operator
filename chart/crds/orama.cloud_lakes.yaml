@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.postgresInstances
       name: DB
       type: string
+    - jsonPath: .status.schemaPhase
+      name: Schema
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -180,6 +183,14 @@ spec:
                 description: ReadyReplicas mirrors the Deployment's ready replicas.
                 format: int32
                 type: integer
+              schemaPhase:
+                description: 'SchemaPhase mirrors the owned PostgresSchema: Pending
+                  | Applying | Applied | Failed.'
+                type: string
+              schemaVersion:
+                description: SchemaVersion is the applied schema's content hash (sha256:<12
+                  hex>), from the PostgresSchema.
+                type: string
             type: object
         required:
         - spec

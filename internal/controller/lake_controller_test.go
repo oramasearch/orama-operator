@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -230,8 +231,27 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
 		t.Fatal(err)
 	}
-	if lake.Status.PostgresReady || lake.Status.PostgresInstances != "0/0" {
+	if lake.Status.PostgresReady || lake.Status.PostgresInstances != "0/0" || lake.Status.SchemaPhase != "Pending" {
 		t.Errorf("status = %+v", lake.Status)
+	}
+	var cm corev1.ConfigMap
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-controldb-migrations"}, &cm); err != nil {
+		t.Fatalf("migrations ConfigMap not created: %v", err)
+	}
+	if cm.Data["schema.sql"] != lakeSchemaSQL || len(lakeSchemaSQL) == 0 {
+		t.Error("migrations ConfigMap does not carry the embedded schema")
+	}
+	var ps oramav1alpha1.PostgresSchema
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-controldb-schema"}, &ps); err != nil {
+		t.Fatalf("PostgresSchema not created: %v", err)
+	}
+	if ps.Spec.ConnectionSecretRef.Name != "lake-hello-controldb-app" || ps.Spec.ConnectionSecretRef.Key != "uri" ||
+		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "customers" ||
+		ps.Spec.Version != schemaVersion(lakeSchemaSQL) {
+		t.Errorf("PostgresSchema spec = %+v", ps.Spec)
+	}
+	if refs := ps.OwnerReferences; len(refs) != 1 || refs[0].Name != "hello" {
+		t.Errorf("PostgresSchema owner refs = %+v", refs)
 	}
 
 	// Disable: the cluster is torn down and the env goes away.
@@ -251,5 +271,24 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	}
 	if len(d.Spec.Template.Spec.Containers[0].Env) != 0 {
 		t.Errorf("env should be empty when postgres is disabled: %+v", d.Spec.Template.Spec.Containers[0].Env)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-controldb-schema"}, &ps); err == nil {
+		t.Error("PostgresSchema not torn down when postgres.enabled went false")
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-controldb-migrations"}, &cm); err == nil {
+		t.Error("migrations ConfigMap not torn down when postgres.enabled went false")
+	}
+}
+
+func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
+	// The schema's source of truth is oramasearch/lake db/schema.sql; the embedded copy must say so.
+	if !strings.Contains(lakeSchemaSQL, "SOURCE OF TRUTH: oramasearch/lake, db/schema.sql") {
+		t.Error("assets/lake-schema.sql must be the vendored copy of lake's db/schema.sql")
+	}
+	for _, tbl := range []string{"CREATE TABLE IF NOT EXISTS users", "CREATE TABLE IF NOT EXISTS organizations",
+		"CREATE TABLE IF NOT EXISTS customers", "customer_type_check", "customer_name_unique", "customer_name_format"} {
+		if !strings.Contains(lakeSchemaSQL, tbl) {
+			t.Errorf("schema lacks %q", tbl)
+		}
 	}
 }
