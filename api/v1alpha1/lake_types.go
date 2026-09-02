@@ -6,6 +6,7 @@ Licensed under the Apache License, Version 2.0.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -29,6 +30,29 @@ type LakeSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// IngressEnabled gates external HTTP exposure of the lake Service. When true AND Host is set, the
+	// operator provisions an nginx Ingress at Host (the whole host proxies to the lake Service) and,
+	// if DNSSecretRef is also set, a proxied Cloudflare DNS record (Host -> the ingress LoadBalancer).
+	// When false (the default) no Ingress or DNS record is created, and any previously created are
+	// torn down, even if Host is still set. Host names the endpoint; this bool is the on/off switch.
+	// Same contract as OramaZettaCluster.
+	// +kubebuilder:default=false
+	// +optional
+	IngressEnabled bool `json:"ingressEnabled,omitempty"`
+
+	// Host is the domain name the lake is exposed at (e.g. hello.lake.live) when IngressEnabled is
+	// true. Requires an ingress controller (class nginx).
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// DNSSecretRef, if set together with Host, creates a proxied Cloudflare DNS record (Host -> the
+	// ingress LoadBalancer) using the Cloudflare credentials (keys `token`, `zoneID`) in the named
+	// Secret. The Secret must live in spec.namespace (the CloudflareDNSRecord is created there) and
+	// hold the zone ID of Host's zone: a lake.live host needs a lake.live-zone Secret, not the
+	// oramadev.net one the Zetta clusters use.
+	// +optional
+	DNSSecretRef *corev1.LocalObjectReference `json:"dnsSecretRef,omitempty"`
 }
 
 // LakeStatus defines the observed state of Lake.
@@ -45,6 +69,7 @@ type LakeStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.spec.namespace`
+// +kubebuilder:printcolumn:name="Host",type=string,JSONPath=`.spec.host`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 

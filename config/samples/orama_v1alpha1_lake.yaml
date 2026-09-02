@@ -7,3 +7,10 @@ spec:
   # Hello-world stage: an HTTP echo stands in until the lake image exists.
   image: hashicorp/http-echo:1.0
   replicas: 1
+  # External exposure, same contract as OramaZettaCluster: ingressEnabled + host gives an nginx
+  # Ingress; dnsSecretRef adds a proxied Cloudflare record. The Secret (keys: token, zoneID) must
+  # live in spec.namespace and hold the zone of host: a lake.live host needs a lake.live-zone Secret.
+  # ingressEnabled: true
+  # host: hello.lake.live
+  # dnsSecretRef:
+  #   name: cloudflare-api-token

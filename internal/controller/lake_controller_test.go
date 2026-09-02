@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -24,7 +25,7 @@ import (
 func newLakeScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, oramav1alpha1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, networkingv1.AddToScheme, oramav1alpha1.AddToScheme} {
 		if err := add(s); err != nil {
 			t.Fatalf("scheme: %v", err)
 		}
@@ -99,5 +100,76 @@ func TestLakeReconcileRequiresImage(t *testing.T) {
 	r := &LakeReconciler{Client: c, Scheme: s}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "noimage"}}); err == nil {
 		t.Fatal("expected an error when spec.image is empty")
+	}
+}
+
+func TestLakeReconcileIngressAndDNS(t *testing.T) {
+	s := newLakeScheme(t)
+	ctx := context.Background()
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
+		Spec: oramav1alpha1.LakeSpec{
+			Image: "hashicorp/http-echo:1.0", IngressEnabled: true, Host: "hello.lake.live",
+			DNSSecretRef: &corev1.LocalObjectReference{Name: "cloudflare-api-token"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &networkingv1.Ingress{}).Build()
+
+	// 1. Ingress appears; the DNS record waits for an address.
+	reconcileLake(t, c, s, "hello")
+	var ing networkingv1.Ingress
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &ing); err != nil {
+		t.Fatalf("ingress not created: %v", err)
+	}
+	if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != "nginx" {
+		t.Errorf("ingress class = %v", ing.Spec.IngressClassName)
+	}
+	if len(ing.Spec.Rules) != 1 || ing.Spec.Rules[0].Host != "hello.lake.live" {
+		t.Errorf("ingress rules = %+v", ing.Spec.Rules)
+	}
+	if b := ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service; b == nil || b.Name != "lake-hello" || b.Port.Number != lakeServicePort {
+		t.Errorf("ingress backend = %+v", b)
+	}
+	if len(ing.OwnerReferences) != 1 || ing.OwnerReferences[0].Name != "hello" {
+		t.Errorf("ingress owner refs = %+v", ing.OwnerReferences)
+	}
+	var rec oramav1alpha1.CloudflareDNSRecord
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-dns"}, &rec); err == nil {
+		t.Fatal("DNS record created before the ingress had an address")
+	}
+
+	// 2. The ingress controller assigns an address: the DNS record follows.
+	ing.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{IP: "172.212.70.79"}}
+	if err := c.Status().Update(ctx, &ing); err != nil {
+		t.Fatalf("set ingress address: %v", err)
+	}
+	reconcileLake(t, c, s, "hello")
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-dns"}, &rec); err != nil {
+		t.Fatalf("DNS record not created: %v", err)
+	}
+	if rec.Spec.Name != "hello.lake.live" || rec.Spec.Content != "172.212.70.79" || !rec.Spec.Proxied || rec.Spec.SecretRef != "cloudflare-api-token" {
+		t.Errorf("DNS record spec = %+v", rec.Spec)
+	}
+	if len(rec.OwnerReferences) != 1 || rec.OwnerReferences[0].Name != "hello" {
+		t.Errorf("DNS record owner refs = %+v", rec.OwnerReferences)
+	}
+
+	// 3. Gate off: both are torn down, the workloads stay.
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	lake.Spec.IngressEnabled = false
+	if err := c.Update(ctx, lake); err != nil {
+		t.Fatal(err)
+	}
+	reconcileLake(t, c, s, "hello")
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &ing); err == nil {
+		t.Error("ingress not torn down when ingressEnabled went false")
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-dns"}, &rec); err == nil {
+		t.Error("DNS record not torn down when ingressEnabled went false")
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &appsv1.Deployment{}); err != nil {
+		t.Errorf("deployment should survive the gate: %v", err)
 	}
 }
