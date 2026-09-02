@@ -1,9 +1,9 @@
 apiVersion: orama.cloud/v1alpha1
 kind: Lake
 metadata:
-  labels:
-    app.kubernetes.io/name: orama-cloud-v1-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: lake-sample
+  name: hello
 spec:
-  # TODO(user): Add fields here
+  namespace: lake-dev
+  # Hello-world stage: an HTTP echo stands in until the lake image exists.
+  image: hashicorp/http-echo:1.0
+  replicas: 1

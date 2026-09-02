@@ -32,7 +32,7 @@ type LakeReconciler struct {
 }
 
 const (
-	lakeEchoPort   = 5678 // hashicorp/http-echo's listen port
+	lakeEchoPort    = 5678 // hashicorp/http-echo's listen port
 	lakeServicePort = 80
 )
 
@@ -58,7 +58,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 	image := lake.Spec.Image
 	if image == "" {
-		image = "hashicorp/http-echo:1.0"
+		return ctrl.Result{}, fmt.Errorf("lake %q: spec.image is required", lake.Name)
 	}
 	replicas := int32(1)
 	if lake.Spec.Replicas != nil {
@@ -114,10 +114,14 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("reconcile service: %w", err)
 	}
 
-	// Status: mirror the Deployment, and only write when it changed (anti-flap).
-	phase := "Pending"
-	if deploy.Status.ReadyReplicas >= replicas && replicas > 0 {
+	// Status: mirror the Deployment, and only write on a real transition (anti-flap,
+	// operator principle #7). Vocabulary: Progressing | Ready | Degraded.
+	phase := "Progressing"
+	switch {
+	case replicas > 0 && deploy.Status.ReadyReplicas >= replicas:
 		phase = "Ready"
+	case deploy.Status.UnavailableReplicas > 0 && deploy.Status.ReadyReplicas > 0:
+		phase = "Degraded"
 	}
 	if lake.Status.ReadyReplicas != deploy.Status.ReadyReplicas || lake.Status.Phase != phase {
 		lake.Status.ReadyReplicas = deploy.Status.ReadyReplicas

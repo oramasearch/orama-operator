@@ -50,10 +50,10 @@ spec:
             description: spec defines the desired state of Lake
             properties:
               image:
-                default: hashicorp/http-echo:1.0
                 description: |-
-                  Image for the lake binary. Until the lake binary exists this defaults to a
-                  hello-world HTTP echo so the reconcile loop and network path can be proven.
+                  Image for the lake binary. Required: there is no production default. The
+                  sample CR points at an HTTP echo until the lake image exists.
+                minLength: 1
                 type: string
               namespace:
                 default: lake-dev
@@ -66,12 +66,15 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+            required:
+            - image
             type: object
           status:
             description: status defines the observed state of Lake
             properties:
               phase:
-                description: 'Phase is a coarse summary: Pending, Ready.'
+                description: 'Phase is a coarse summary in the operator''s vocabulary:
+                  Progressing, Ready, Degraded.'
                 type: string
               readyReplicas:
                 description: ReadyReplicas mirrors the Deployment's ready replicas.

@@ -19,11 +19,10 @@ type LakeSpec struct {
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
-	// Image for the lake binary. Until the lake binary exists this defaults to a
-	// hello-world HTTP echo so the reconcile loop and network path can be proven.
-	// +kubebuilder:default="hashicorp/http-echo:1.0"
-	// +optional
-	Image string `json:"image,omitempty"`
+	// Image for the lake binary. Required: there is no production default. The
+	// sample CR points at an HTTP echo until the lake image exists.
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
 
 	// Replicas of the lake Deployment.
 	// +kubebuilder:default=1
@@ -37,7 +36,7 @@ type LakeStatus struct {
 	// ReadyReplicas mirrors the Deployment's ready replicas.
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
-	// Phase is a coarse summary: Pending, Ready.
+	// Phase is a coarse summary in the operator's vocabulary: Progressing, Ready, Degraded.
 	// +optional
 	Phase string `json:"phase,omitempty"`
 }

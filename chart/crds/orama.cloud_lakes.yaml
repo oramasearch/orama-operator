@@ -1,0 +1,90 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: lakes.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: Lake
+    listKind: LakeList
+    plural: lakes
+    singular: lake
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.namespace
+      name: Namespace
+      type: string
+    - jsonPath: .status.readyReplicas
+      name: Ready
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Lake is the Schema for the lakes API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of Lake
+            properties:
+              image:
+                description: |-
+                  Image for the lake binary. Required: there is no production default. The
+                  sample CR points at an HTTP echo until the lake image exists.
+                minLength: 1
+                type: string
+              namespace:
+                default: lake-dev
+                description: Namespace the lake workloads are deployed into. Created
+                  if missing.
+                type: string
+              replicas:
+                default: 1
+                description: Replicas of the lake Deployment.
+                format: int32
+                minimum: 0
+                type: integer
+            required:
+            - image
+            type: object
+          status:
+            description: status defines the observed state of Lake
+            properties:
+              phase:
+                description: 'Phase is a coarse summary in the operator''s vocabulary:
+                  Progressing, Ready, Degraded.'
+                type: string
+              readyReplicas:
+                description: ReadyReplicas mirrors the Deployment's ready replicas.
+                format: int32
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
