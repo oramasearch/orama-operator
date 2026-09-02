@@ -140,6 +140,13 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "PostgresSchema")
 		os.Exit(1)
 	}
+	if err = (&controller.LakeReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Lake")
+		os.Exit(1)
+	}
 
 	utilruntime.Must(mgr.AddHealthzCheck("healthz", healthz.Ping))
 	utilruntime.Must(mgr.AddReadyzCheck("readyz", healthz.Ping))
