@@ -27,6 +27,7 @@ rules:
       - cloudflareloadbalancers
       - rabbitmqtopologies
       - postgresschemas
+      - lakes
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -40,6 +41,7 @@ rules:
       - cloudflareloadbalancers/status
       - rabbitmqtopologies/status
       - postgresschemas/status
+      - lakes/status
       - oramacloudv1s/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
@@ -47,6 +49,7 @@ rules:
       - cloudflarer2buckets/finalizers
       - cloudflareloadbalancers/finalizers
       - rabbitmqtopologies/finalizers
+      - lakes/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
@@ -62,10 +65,11 @@ rules:
     resources: ["pods/log"]
     verbs: ["get"]
   # ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace UID — `get` only,
-  # never list/watch, so the operator holds no cluster-wide Namespace informer.
+  # never list/watch, so the operator holds no cluster-wide Namespace informer. `create` is for the
+  # Lake controller, which makes its target namespace with a blind Create (AlreadyExists ignored).
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get"]
+    verbs: ["get", "create"]
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters"]
     verbs: ["*"]

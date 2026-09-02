@@ -40,7 +40,7 @@ const (
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
@@ -69,14 +69,14 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	// Namespace: create if missing. Not owner-ref'd — a namespace outliving the Lake
-	// is safer than a Lake deletion taking a namespace with it.
-	if err := r.Get(ctx, client.ObjectKey{Name: ns}, &corev1.Namespace{}); apierrors.IsNotFound(err) {
-		if err := r.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil && !apierrors.IsAlreadyExists(err) {
-			return ctrl.Result{}, fmt.Errorf("create namespace %q: %w", ns, err)
-		}
+	// is safer than a Lake deletion taking a namespace with it. A blind Create (AlreadyExists
+	// ignored) rather than Get-then-Create: a cached Get would start a cluster-wide Namespace
+	// informer, which the operator deliberately dropped (operator#106) — the manager holds
+	// only `namespaces: get, create`, no list/watch.
+	if err := r.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err == nil {
 		log.Info("created namespace", "namespace", ns)
-	} else if err != nil {
-		return ctrl.Result{}, err
+	} else if !apierrors.IsAlreadyExists(err) {
+		return ctrl.Result{}, fmt.Errorf("create namespace %q: %w", ns, err)
 	}
 
 	labels := map[string]string{
