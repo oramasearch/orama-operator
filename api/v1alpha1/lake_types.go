@@ -12,44 +12,42 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// LakeSpec defines the desired state of Lake
+// LakeSpec defines the desired state of Lake.
 type LakeSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of Lake. Edit lake_types.go to remove/update
+	// Namespace the lake workloads are deployed into. Created if missing.
+	// +kubebuilder:default=lake-dev
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+
+	// Image for the lake binary. Until the lake binary exists this defaults to a
+	// hello-world HTTP echo so the reconcile loop and network path can be proven.
+	// +kubebuilder:default="hashicorp/http-echo:1.0"
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Replicas of the lake Deployment.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
 }
 
 // LakeStatus defines the observed state of Lake.
 type LakeStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the Lake resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
-	// +listType=map
-	// +listMapKey=type
+	// ReadyReplicas mirrors the Deployment's ready replicas.
 	// +optional
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+	// Phase is a coarse summary: Pending, Ready.
+	// +optional
+	Phase string `json:"phase,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.spec.namespace`
+// +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 
 // Lake is the Schema for the lakes API
 type Lake struct {
