@@ -7,70 +7,97 @@ package controller
 
 import (
 	"context"
+	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
 
-var _ = Describe("Lake Controller", func() {
-	Context("When reconciling a resource", func() {
-		const (
-			resourceName      = "test-resource"
-			resourceNamespace = "default"
-		)
-
-		ctx := context.Background()
-
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: resourceNamespace,
+func newLakeScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, oramav1alpha1.AddToScheme} {
+		if err := add(s); err != nil {
+			t.Fatalf("scheme: %v", err)
 		}
-		lake := &oramav1alpha1.Lake{}
+	}
+	return s
+}
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind Lake")
-			err := k8sClient.Get(ctx, typeNamespacedName, lake)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &oramav1alpha1.Lake{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: resourceNamespace,
-					},
-					// TODO(user): Specify other spec details if needed.
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
-		})
+func reconcileLake(t *testing.T, c client.Client, s *runtime.Scheme, name string) {
+	t.Helper()
+	r := &LakeReconciler{Client: c, Scheme: s}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: name}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+}
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &oramav1alpha1.Lake{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+func TestLakeReconcileCreatesWorkloads(t *testing.T) {
+	s := newLakeScheme(t)
+	one := int32(1)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
+		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake-dev", Image: "hashicorp/http-echo:1.0", Replicas: &one},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
 
-			By("Cleanup the specific resource instance Lake")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &LakeReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+	reconcileLake(t, c, s, "hello")
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
-		})
-	})
-})
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "lake-dev"}, &corev1.Namespace{}); err != nil {
+		t.Fatalf("namespace not created: %v", err)
+	}
+	var d appsv1.Deployment
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
+		t.Fatalf("deployment not created: %v", err)
+	}
+	if got := d.Spec.Template.Spec.Containers[0].Image; got != "hashicorp/http-echo:1.0" {
+		t.Errorf("image = %q", got)
+	}
+	if d.Spec.Replicas == nil || *d.Spec.Replicas != 1 {
+		t.Errorf("replicas = %v", d.Spec.Replicas)
+	}
+	if len(d.OwnerReferences) != 1 || d.OwnerReferences[0].Kind != "Lake" {
+		t.Errorf("deployment owner refs = %+v", d.OwnerReferences)
+	}
+	var svc corev1.Service
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &svc); err != nil {
+		t.Fatalf("service not created: %v", err)
+	}
+	if svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.IntValue() != 5678 {
+		t.Errorf("service ports = %+v", svc.Spec.Ports)
+	}
+}
+
+func TestLakeReconcileIsIdempotent(t *testing.T) {
+	s := newLakeScheme(t)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
+		Spec:       oramav1alpha1.LakeSpec{Image: "hashicorp/http-echo:1.0"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	reconcileLake(t, c, s, "hello")
+	reconcileLake(t, c, s, "hello") // second pass must not error or duplicate
+
+	var ds appsv1.DeploymentList
+	if err := c.List(context.Background(), &ds, client.InNamespace("lake-dev")); err != nil || len(ds.Items) != 1 {
+		t.Fatalf("deployments after two reconciles = %d (err %v)", len(ds.Items), err)
+	}
+}
+
+func TestLakeReconcileRequiresImage(t *testing.T) {
+	s := newLakeScheme(t)
+	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "noimage"}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	r := &LakeReconciler{Client: c, Scheme: s}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "noimage"}}); err == nil {
+		t.Fatal("expected an error when spec.image is empty")
+	}
+}
