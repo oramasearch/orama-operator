@@ -27,6 +27,7 @@ reconciler lands.
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
 | **zetta-capacity** | `internal/controller/zetta_capacity.go` | Karpenter `NodePool` (unstructured, cluster-scoped) + a `PodDisruptionBudget`; pins the Zetta pods onto the pool (taint/toleration + nodeSelector + `do-not-disrupt`) | 🟡 **implemented** (opt-in, [#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69) first slice; not yet live-tested — needs an EKS/AKS-NAP cluster) |
 | **zetta-capacity-install** | `internal/controller/zetta_capacity_install.go` | Operator-owned **Karpenter install** (cloud-gated): server-side-applies the pinned upstream controller (Deployment + ServiceAccount + RBAC) + Karpenter CRDs, as `unstructured` | 🟡 **implemented** (opt-in `install: true`, [#75](https://github.com/oramasearch/orama-cloud-v1-operator/issues/75); EKS self-install, no-op on AKS-NAP/bare-metal; not yet live-tested) |
+| **lake** (liquid project) | `internal/controller/lake_controller.go` | from one cluster-scoped `Lake` CR: Namespace, admin-token Secret, `Deployment` + Service, CNPG control-plane `Cluster` + owned `PostgresSchema` (lake's schema), opt-in Ingress + `CloudflareDNSRecord` | ✅ **done** (`Lake/prod` live on AKS; PR [#118](https://github.com/oramasearch/orama-operator/pull/118)) — see [`lake/README.md`](lake/README.md) |
 
 ## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 
