@@ -120,6 +120,16 @@ ops truth for the *production* system being modeled lives in
 [`techops-docs`](https://github.com/oramasearch/techops-docs) — keep this repo's docs
 about the **operator**, not a copy of prod docs.
 
+### The `Lake` CR (lake, liquid project)
+
+`Lake` deploys the lake service: namespace, admin-token Secret, Deployment, Service, a CNPG
+control-plane Postgres with lake's schema applied through `PostgresSchema`, opt-in Ingress + Cloudflare DNS.
+Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
+production instance) and the `Lake` section of [`docs/crd-reference.md`](docs/crd-reference.md) before touching
+`internal/controller/lake_controller.go`. The schema's source of truth is `oramasearch/lake` `db/schema.sql`;
+`assets/lake-schema.sql` is a byte-identical vendored copy (a test checks the header). The chart ClusterRole is
+hand-maintained: a new owned kind needs its entry there or the manager CrashLoops on cache sync.
+
 ## Build / codegen flow
 
 Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH)/bin:$PATH"`).
