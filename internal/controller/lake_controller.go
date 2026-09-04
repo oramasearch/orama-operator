@@ -326,7 +326,7 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 			// The guard is the table the NEWEST migration creates: with --single-transaction it
 			// exists iff the whole (idempotent) file applied, and a new migration = a new guard, so
 			// the next Job re-runs the file and adds only what is missing.
-			GuardTable: "repositories",
+			GuardTable: "repository_lifecycle_events",
 			Image:      "postgres:18-alpine",
 		}
 		return controllerutil.SetControllerReference(lake, ps, r.Scheme)
