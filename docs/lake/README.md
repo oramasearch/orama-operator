@@ -25,7 +25,7 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    data**.
 6. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = the table the newest migration creates (`repositories`), version = content
+   `oramasearch/lake` `db/schema.sql`), guard table = the table the newest migration creates (`repository_lifecycle_events` after `0006_repository_lifecycle`), version = content
    hash. The file is idempotent, so a new migration = a new guard, and the next Job re-runs the
    file adding only what is missing; on an existing Lake, delete the `PostgresSchema` (owned, it
    is recreated) to trigger that Job. Proper incremental migrations are #126.
