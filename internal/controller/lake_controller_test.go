@@ -224,9 +224,11 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := d.Spec.Template.Spec.Containers[0].Env
-	if len(env) != 3 || env[0].Name != "LAKE_ADMIN_TOKEN" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" ||
-		env[1].Name != "LAKE_CONTROL_DB_URI" || env[1].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" ||
-		env[1].ValueFrom.SecretKeyRef.Key != "uri" || env[1].ValueFrom.SecretKeyRef.Optional == nil || !*env[1].ValueFrom.SecretKeyRef.Optional {
+	if len(env) != 4 || env[0].Name != "LAKE_ADMIN_TOKEN" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" ||
+		env[1].Name != "LAKE_INSTANCE_KEK" || env[1].ValueFrom.SecretKeyRef.Name != "lake-hello-instance-kek" ||
+		env[1].ValueFrom.SecretKeyRef.Key != "key" || env[2].Name != "LAKE_CONTROL_DB_URI" ||
+		env[2].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" || env[2].ValueFrom.SecretKeyRef.Key != "uri" ||
+		env[2].ValueFrom.SecretKeyRef.Optional == nil || !*env[2].ValueFrom.SecretKeyRef.Optional {
 		t.Errorf("env = %+v", env)
 	}
 	var admin corev1.Secret
@@ -237,11 +239,22 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Errorf("admin token = %d chars, owners %d", len(admin.Data["token"]), len(admin.OwnerReferences))
 	}
 	first := string(admin.Data["token"])
+	var instanceKek corev1.Secret
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-instance-kek"}, &instanceKek); err != nil {
+		t.Fatalf("instance KEK Secret not created: %v", err)
+	}
+	if len(instanceKek.Data["key"]) != 64 || len(instanceKek.OwnerReferences) != 1 {
+		t.Errorf("instance KEK = %d chars, owners %d", len(instanceKek.Data["key"]), len(instanceKek.OwnerReferences))
+	}
+	firstKek := string(instanceKek.Data["key"])
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-admin"}, &admin); err != nil || string(admin.Data["token"]) != first {
 		t.Error("admin token must be minted once and preserved")
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-instance-kek"}, &instanceKek); err != nil || string(instanceKek.Data["key"]) != firstKek {
+		t.Error("instance KEK must be minted once and preserved")
 	}
 	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
 		t.Fatal(err)
@@ -261,7 +274,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatalf("PostgresSchema not created: %v", err)
 	}
 	if ps.Spec.ConnectionSecretRef.Name != "lake-hello-controldb-app" || ps.Spec.ConnectionSecretRef.Key != "uri" ||
-		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "repositories" ||
+		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "secrets_guard" ||
 		ps.Spec.Version != schemaVersion(lakeSchemaSQL) {
 		t.Errorf("PostgresSchema spec = %+v", ps.Spec)
 	}
@@ -287,6 +300,9 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if e := d.Spec.Template.Spec.Containers[0].Env; len(e) != 1 || e[0].Name != "LAKE_ADMIN_TOKEN" {
 		t.Errorf("env should be only the admin token when postgres is disabled: %+v", e)
 	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-instance-kek"}, &instanceKek); err == nil {
+		t.Error("instance KEK must be removed with the disabled database")
+	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-controldb-schema"}, &ps); err == nil {
 		t.Error("PostgresSchema not torn down when postgres.enabled went false")
 	}
@@ -301,7 +317,11 @@ func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
 		t.Error("assets/lake-schema.sql must be the vendored copy of lake's db/schema.sql")
 	}
 	for _, tbl := range []string{"CREATE TABLE IF NOT EXISTS users", "CREATE TABLE IF NOT EXISTS organizations",
-		"CREATE TABLE IF NOT EXISTS customers", "CREATE TABLE IF NOT EXISTS repositories", "customer_type_check", "customer_name_unique", "customer_name_format"} {
+		"CREATE TABLE IF NOT EXISTS customers", "CREATE TABLE IF NOT EXISTS repositories", "customer_type_check",
+		"customer_name_unique", "customer_name_format", "CREATE TABLE IF NOT EXISTS secrets_mounts",
+		"CREATE TABLE IF NOT EXISTS secrets_versions", "CREATE TABLE IF NOT EXISTS secrets_encryption_keys",
+		"CREATE TABLE IF NOT EXISTS secrets_data_keys", "CREATE TABLE IF NOT EXISTS secrets_guard",
+		"0009_secrets"} {
 		if !strings.Contains(lakeSchemaSQL, tbl) {
 			t.Errorf("schema lacks %q", tbl)
 		}

@@ -57,6 +57,10 @@ func lakeControlDB(name string) string { return "lake-" + name + "-controldb" }
 // injected as LAKE_ADMIN_TOKEN — the same pattern as OramaZettaCluster's `<name>-zetta-admin`.
 func lakeAdminSecret(name string) string { return "lake-" + name + "-admin" }
 
+// lakeInstanceKekSecret holds the root wrapping key for lake's persisted identity and
+// per-customer KEKs. It is distinct from the bearer token and is never exposed by the API.
+func lakeInstanceKekSecret(name string) string { return "lake-" + name + "-instance-kek" }
+
 func lakePostgresEnabled(lake *oramav1alpha1.Lake) bool {
 	return lake.Spec.Postgres.Enabled == nil || *lake.Spec.Postgres.Enabled
 }
@@ -121,6 +125,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// Admin token: minted once, before the Deployment so its secretKeyRef resolves.
 	if err := r.reconcileLakeAdminToken(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile admin token: %w", err)
+	}
+	if err := r.reconcileLakeInstanceKek(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile instance KEK: %w", err)
 	}
 
 	// Deployment.
@@ -215,6 +222,13 @@ func lakeEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
 	if !lakePostgresEnabled(lake) {
 		return env
 	}
+	env = append(env, corev1.EnvVar{
+		Name: "LAKE_INSTANCE_KEK",
+		ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: lakeInstanceKekSecret(lake.Name)},
+			Key:                  "key",
+		}},
+	})
 	optional := true
 	secret := lakeControlDB(lake.Name) + "-app"
 	ref := func(key string) *corev1.EnvVarSource {
@@ -225,6 +239,35 @@ func lakeEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
 		corev1.EnvVar{Name: "LAKE_CONTROL_DB_URI", ValueFrom: ref("uri")},
 		corev1.EnvVar{Name: "LAKE_CONTROL_DB_PASSWORD", ValueFrom: ref("password")},
 	)
+}
+
+// reconcileLakeInstanceKek mints the non-exported 32-byte root wrapping key once. Disabling the
+// owned Postgres removes it with the database; re-enabling creates a new database and key.
+func (r *LakeReconciler) reconcileLakeInstanceKek(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	ns string,
+	lbls map[string]string,
+) error {
+	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeInstanceKekSecret(lake.Name), Namespace: ns}}
+	if !lakePostgresEnabled(lake) {
+		return deleteIfExists(ctx, r.Client, sec)
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sec, func() error {
+		sec.Labels = lbls
+		if len(sec.Data["key"]) == 0 {
+			key, generateErr := randHex(32)
+			if generateErr != nil {
+				return generateErr
+			}
+			if sec.Data == nil {
+				sec.Data = map[string][]byte{}
+			}
+			sec.Data["key"] = []byte(key)
+		}
+		return controllerutil.SetControllerReference(lake, sec, r.Scheme)
+	})
+	return err
 }
 
 // reconcileLakeAdminToken ensures the Secret holding the Lake's admin bearer token exists: 32
@@ -326,7 +369,7 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 			// The guard is the table the NEWEST migration creates: with --single-transaction it
 			// exists iff the whole (idempotent) file applied, and a new migration = a new guard, so
 			// the next Job re-runs the file and adds only what is missing.
-			GuardTable: "repositories",
+			GuardTable: "secrets_guard",
 			Image:      "postgres:18-alpine",
 		}
 		return controllerutil.SetControllerReference(lake, ps, r.Scheme)
