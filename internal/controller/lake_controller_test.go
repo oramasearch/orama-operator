@@ -9,6 +9,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -293,6 +294,189 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-controldb-migrations"}, &cm); err == nil {
 		t.Error("migrations ConfigMap not torn down when postgres.enabled went false")
 	}
+}
+
+func TestLakeReconcileControlDBBackups(t *testing.T) {
+	s := newLakeScheme(t)
+	ctx := context.Background()
+	enabled := true
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
+		Spec: oramav1alpha1.LakeSpec{
+			Image: "oramasearch/lake:v1-sandbox",
+			Postgres: oramav1alpha1.LakePostgresSpec{Backup: oramav1alpha1.LakePostgresBackupSpec{
+				Enabled: &enabled,
+				Destination: oramav1alpha1.LakePostgresBackupDestination{
+					Bucket: "lake-backups",
+				},
+				SecretRef: corev1.LocalObjectReference{Name: "r2"},
+			}},
+		},
+	}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "r2", Namespace: "lake-dev"}, Data: map[string][]byte{
+		"s3ApiEndpoint":   []byte("https://account.r2.cloudflarestorage.com"),
+		"accessKeyId":     []byte("access-key"),
+		"secretAccessKey": []byte("secret-key"),
+	}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, secret).WithStatusSubresource(lake).Build()
+	r := &LakeReconciler{Client: c, Scheme: s}
+	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if res.RequeueAfter != lakeDBRequeue {
+		t.Errorf("requeueAfter = %s, want %s", res.RequeueAfter, lakeDBRequeue)
+	}
+
+	cluster := &unstructured.Unstructured{}
+	cluster.SetGroupVersionKind(cnpgClusterGVK)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: lakeControlDB("hello")}, cluster); err != nil {
+		t.Fatalf("CNPG cluster not created: %v", err)
+	}
+	destination, _, _ := unstructured.NestedString(cluster.Object, "spec", "backup", "barmanObjectStore", "destinationPath")
+	endpoint, _, _ := unstructured.NestedString(cluster.Object, "spec", "backup", "barmanObjectStore", "endpointURL")
+	retention, _, _ := unstructured.NestedString(cluster.Object, "spec", "backup", "retentionPolicy")
+	compression, _, _ := unstructured.NestedString(cluster.Object, "spec", "backup", "barmanObjectStore", "wal", "compression")
+	accessKeySecret, _, _ := unstructured.NestedString(cluster.Object, "spec", "backup", "barmanObjectStore", "s3Credentials", "accessKeyId", "name")
+	if destination != "s3://lake-backups/lake-hello/controldb" || endpoint != "https://account.r2.cloudflarestorage.com" ||
+		retention != "30d" || compression != "gzip" || accessKeySecret != "r2" {
+		t.Errorf("cluster backup spec = %+v", cluster.Object["spec"])
+	}
+
+	scheduledBackup := newCNPGScheduledBackup(lake, "lake-dev")
+	if err := c.Get(ctx, client.ObjectKeyFromObject(scheduledBackup), scheduledBackup); err != nil {
+		t.Fatalf("ScheduledBackup not created: %v", err)
+	}
+	schedule, _, _ := unstructured.NestedString(scheduledBackup.Object, "spec", "schedule")
+	owner, _, _ := unstructured.NestedString(scheduledBackup.Object, "spec", "backupOwnerReference")
+	clusterName, _, _ := unstructured.NestedString(scheduledBackup.Object, "spec", "cluster", "name")
+	immediate, _, _ := unstructured.NestedBool(scheduledBackup.Object, "spec", "immediate")
+	if schedule != "0 0 3 * * *" || owner != "self" || clusterName != lakeControlDB("hello") || !immediate {
+		t.Errorf("ScheduledBackup spec = %+v", scheduledBackup.Object["spec"])
+	}
+	if refs := scheduledBackup.GetOwnerReferences(); len(refs) != 1 || refs[0].Name != "hello" {
+		t.Errorf("ScheduledBackup owner refs = %+v", refs)
+	}
+
+	backupTime := time.Date(2026, 9, 3, 3, 1, 0, 0, time.UTC)
+	backup := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "postgresql.cnpg.io/v1",
+		"kind":       "Backup",
+		"metadata": map[string]interface{}{
+			"name":              "lake-hello-controldb-backup-1",
+			"namespace":         "lake-dev",
+			"creationTimestamp": backupTime.Add(-time.Minute).Format(time.RFC3339),
+			"labels":            map[string]interface{}{"cnpg.io/cluster": lakeControlDB("hello")},
+		},
+		"status": map[string]interface{}{"phase": "completed", "stoppedAt": backupTime.Format(time.RFC3339)},
+	}}
+	backup.SetGroupVersionKind(cnpgBackupGVK)
+	if err := c.Create(ctx, backup); err != nil {
+		t.Fatalf("create completed Backup: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}}); err != nil {
+		t.Fatalf("reconcile completed Backup: %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	if !lake.Status.BackupReady || lake.Status.LastBackupTime == nil || !lake.Status.LastBackupTime.Time.Equal(backupTime) || lakeConditionStatus(lake.Status.Conditions, "BackupReady") != metav1.ConditionTrue {
+		t.Errorf("backup status = %+v", lake.Status)
+	}
+
+	runningBackup := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "postgresql.cnpg.io/v1",
+		"kind":       "Backup",
+		"metadata": map[string]interface{}{
+			"name":              "lake-hello-controldb-backup-2",
+			"namespace":         "lake-dev",
+			"creationTimestamp": backupTime.Add(time.Minute).Format(time.RFC3339),
+			"labels":            map[string]interface{}{"cnpg.io/cluster": lakeControlDB("hello")},
+		},
+		"status": map[string]interface{}{"phase": "running"},
+	}}
+	runningBackup.SetGroupVersionKind(cnpgBackupGVK)
+	if err := c.Create(ctx, runningBackup); err != nil {
+		t.Fatalf("create running Backup: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}}); err != nil {
+		t.Fatalf("reconcile running Backup: %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	if lake.Status.BackupReady || lake.Status.LastBackupTime != nil || lakeConditionReason(lake.Status.Conditions, "BackupReady") != "BackupNotCompleted" {
+		t.Errorf("newest Backup was not reflected in status: %+v", lake.Status)
+	}
+
+	disabled := false
+	lake.Spec.Postgres.Backup.Enabled = &disabled
+	if err := c.Update(ctx, lake); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}}); err != nil {
+		t.Fatalf("reconcile disabled Backup: %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(scheduledBackup), scheduledBackup); err == nil {
+		t.Error("ScheduledBackup not deleted when backups were disabled")
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: lakeControlDB("hello")}, cluster); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := unstructured.NestedMap(cluster.Object, "spec", "backup"); err != nil || found {
+		t.Errorf("cluster backup block = %+v, found=%t, err=%v", cluster.Object["spec"], found, err)
+	}
+}
+
+func TestLakeReconcileRejectsInvalidBackupConfigInStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		backup oramav1alpha1.LakePostgresBackupSpec
+		reason string
+	}{
+		{name: "missing bucket", backup: oramav1alpha1.LakePostgresBackupSpec{}, reason: "BackupBucketRequired"},
+		{name: "missing Secret reference", backup: oramav1alpha1.LakePostgresBackupSpec{
+			Destination: oramav1alpha1.LakePostgresBackupDestination{Bucket: "lake-backups"},
+		}, reason: "BackupSecretRequired"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newLakeScheme(t)
+			enabled := true
+			tc.backup.Enabled = &enabled
+			lake := &oramav1alpha1.Lake{
+				ObjectMeta: metav1.ObjectMeta{Name: "invalid-backup"},
+				Spec: oramav1alpha1.LakeSpec{Image: "oramasearch/lake:v1-sandbox",
+					Postgres: oramav1alpha1.LakePostgresSpec{Backup: tc.backup}},
+			}
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+			reconcileLake(t, c, s, "invalid-backup")
+			if err := c.Get(context.Background(), types.NamespacedName{Name: "invalid-backup"}, lake); err != nil {
+				t.Fatal(err)
+			}
+			if lake.Status.Phase != "Degraded" || lake.Status.BackupReady || lakeConditionStatus(lake.Status.Conditions, "BackupReady") != metav1.ConditionFalse ||
+				lakeConditionReason(lake.Status.Conditions, "BackupReady") != tc.reason {
+				t.Errorf("invalid backup status = %+v", lake.Status)
+			}
+		})
+	}
+}
+
+func lakeConditionStatus(conditions []metav1.Condition, typ string) metav1.ConditionStatus {
+	for _, condition := range conditions {
+		if condition.Type == typ {
+			return condition.Status
+		}
+	}
+	return metav1.ConditionUnknown
+}
+
+func lakeConditionReason(conditions []metav1.Condition, typ string) string {
+	for _, condition := range conditions {
+		if condition.Type == typ {
+			return condition.Reason
+		}
+	}
+	return ""
 }
 
 func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
