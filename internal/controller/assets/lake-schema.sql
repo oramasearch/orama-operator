@@ -98,3 +98,55 @@ DROP TRIGGER IF EXISTS repositories_set_updated_at ON repositories;
 CREATE TRIGGER repositories_set_updated_at BEFORE UPDATE ON repositories FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 INSERT INTO schema_migrations (version) VALUES ('0002_repositories') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Repository lifecycle (migration 0006): names and owners can change, deletion is a tombstone
+-- retained before collection, and organization visibility sits between private and public.
+-- repository_lifecycle_events is the migration guard for the operator. audit_events has the
+-- shared shape Phase 6 uses until the audit capability adds signing and digest chaining.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS retention_until timestamptz;
+ALTER TABLE repositories DROP CONSTRAINT IF EXISTS repository_visibility_check;
+ALTER TABLE repositories ADD CONSTRAINT repository_visibility_check
+    CHECK (visibility IN ('private', 'organization', 'public'));
+
+CREATE INDEX IF NOT EXISTS repositories_live_customer_id_idx
+    ON repositories (customer_id) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS repository_refs (
+    repository_id uuid        NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    name          varchar(256) NOT NULL,
+    head          text        NOT NULL,
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (repository_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS repository_lifecycle_events (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    repository_id uuid        NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    actor         text        NOT NULL,
+    action        text        NOT NULL,
+    detail        text        NOT NULL DEFAULT '',
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS repository_lifecycle_events_repository_id_idx
+    ON repository_lifecycle_events (repository_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor         text        NOT NULL,
+    object_type   text        NOT NULL,
+    object_id     uuid        NOT NULL,
+    action        text        NOT NULL,
+    outcome       text        NOT NULL,
+    detail        text        NOT NULL DEFAULT '',
+    request_id    text        NOT NULL DEFAULT '',
+    signature     bytea,
+    previous_hash bytea,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS audit_events_object_id_created_at_idx
+    ON audit_events (object_id, created_at DESC);
+
+INSERT INTO schema_migrations (version) VALUES ('0006_repository_lifecycle') ON CONFLICT DO NOTHING;
