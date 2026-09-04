@@ -136,7 +136,8 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
 
 - After editing `api/v1alpha1/*.go`: `make generate` (DeepCopy) + `make manifests`
   (CRD + RBAC) + `cp config/crd/bases/*.yaml chart/crds/`. The generated
-  `zz_generated.deepcopy.go` and CRDs **are committed**.
+  `zz_generated.deepcopy.go` and CRDs **are committed**. `Makefile` pins
+  controller-gen to `v0.21.0`; do not use `@latest`, which can restamp unrelated CRDs.
 - `go build ./...` + `go vet ./...` must stay green.
 - `helm lint chart` must pass; the chart carries the generated CRD in `chart/crds/`.
 
