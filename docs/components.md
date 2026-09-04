@@ -505,7 +505,7 @@ and reuses this operator's CNPG, PostgresSchema and Cloudflare DNS paths.
 | Deployment | `lake-<name>` | yes | `spec.image` as built, `spec.args`, port `spec.port` (4900), readiness `GET /`, env `LAKE_ADMIN_TOKEN`, `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD` |
 | Service | `lake-<name>` | yes | ClusterIP 80 → `spec.port` |
 | CNPG `Cluster` | `lake-<name>-controldb` | yes (unstructured) | `spec.postgres`: instances, storageSize (50Gi), storageClassName; disable tears down **with data** |
-| ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; guard = the newest migration's table |
+| ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; newest guard = `offline_recovery_guard` (`0011_offline_recovery`) |
 | Ingress + `CloudflareDNSRecord` | `lake-<name>`, `-dns` | yes | opt-in via `ingressEnabled` + `host` + `dnsSecretRef`, the `OramaZettaCluster` contract |
 
 Status mirrors the Deployment, the CNPG cluster (polled every 20 s, not watched) and the

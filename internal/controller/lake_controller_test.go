@@ -261,7 +261,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatalf("PostgresSchema not created: %v", err)
 	}
 	if ps.Spec.ConnectionSecretRef.Name != "lake-hello-controldb-app" || ps.Spec.ConnectionSecretRef.Key != "uri" ||
-		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "repositories" ||
+		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "offline_recovery_guard" ||
 		ps.Spec.Version != schemaVersion(lakeSchemaSQL) {
 		t.Errorf("PostgresSchema spec = %+v", ps.Spec)
 	}
@@ -301,7 +301,10 @@ func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
 		t.Error("assets/lake-schema.sql must be the vendored copy of lake's db/schema.sql")
 	}
 	for _, tbl := range []string{"CREATE TABLE IF NOT EXISTS users", "CREATE TABLE IF NOT EXISTS organizations",
-		"CREATE TABLE IF NOT EXISTS customers", "CREATE TABLE IF NOT EXISTS repositories", "customer_type_check", "customer_name_unique", "customer_name_format"} {
+		"CREATE TABLE IF NOT EXISTS customers", "CREATE TABLE IF NOT EXISTS repositories", "customer_type_check",
+		"customer_name_unique", "customer_name_format", "CREATE TABLE IF NOT EXISTS offline_recovery_grants",
+		"CREATE TABLE IF NOT EXISTS offline_recovery_attempts", "CREATE TABLE IF NOT EXISTS offline_recovery_contacts",
+		"CREATE TABLE IF NOT EXISTS offline_recovery_guard", "0011_offline_recovery"} {
 		if !strings.Contains(lakeSchemaSQL, tbl) {
 			t.Errorf("schema lacks %q", tbl)
 		}

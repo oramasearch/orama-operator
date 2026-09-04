@@ -2,7 +2,8 @@
 --
 -- SOURCE OF TRUTH: oramasearch/lake, db/schema.sql. The operator vendors a byte-identical copy at
 -- internal/controller/assets/lake-schema.sql and applies it to each Lake's Postgres through a
--- PostgresSchema (one transaction, guarded on the `customers` table, versioned by content hash).
+-- PostgresSchema (one transaction, guarded on the `offline_recovery_guard` table, versioned by
+-- content hash).
 -- Keep the two files identical; the operator's version string changes exactly when this does.
 --
 -- Postgres 18. Applied with `psql --single-transaction`: no BEGIN/COMMIT here. Idempotent.
@@ -98,3 +99,666 @@ DROP TRIGGER IF EXISTS repositories_set_updated_at ON repositories;
 CREATE TRIGGER repositories_set_updated_at BEFORE UPDATE ON repositories FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 INSERT INTO schema_migrations (version) VALUES ('0002_repositories') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Organizations and policy (migration 0004): teams and attested membership, invitations, and
+-- one object graph whose attestation-backed grants are evaluated by the policy engine. Migration
+-- numbering reflects parallel delivery; identity core follows repository lifecycle as 0007.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS objects (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    object_type text        NOT NULL,
+    external_id text        NOT NULL,
+    parent_id   uuid        REFERENCES objects(id) ON DELETE CASCADE,
+    inherit     boolean     NOT NULL DEFAULT true,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT objects_type_check CHECK (object_type IN (
+        'customer', 'organization', 'team', 'member', 'repository', 'path', 'environment',
+        'secret_mount', 'secret')),
+    CONSTRAINT objects_not_own_parent CHECK (parent_id IS NULL OR parent_id <> id),
+    CONSTRAINT objects_type_external_unique UNIQUE (object_type, external_id)
+);
+CREATE INDEX IF NOT EXISTS objects_parent_id_idx ON objects (parent_id);
+DROP TRIGGER IF EXISTS objects_set_updated_at ON objects;
+CREATE TRIGGER objects_set_updated_at BEFORE UPDATE ON objects FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+INSERT INTO objects (object_type, external_id)
+SELECT 'customer', id::text FROM customers
+ON CONFLICT (object_type, external_id) DO NOTHING;
+
+INSERT INTO objects (object_type, external_id, parent_id)
+SELECT 'organization', organizations.id::text, customer_objects.id
+FROM organizations
+LEFT JOIN customers ON customers.organization_id = organizations.id
+LEFT JOIN objects AS customer_objects
+    ON customer_objects.object_type = 'customer'
+    AND customer_objects.external_id = customers.id::text
+ON CONFLICT (object_type, external_id) DO NOTHING;
+
+INSERT INTO objects (object_type, external_id, parent_id)
+SELECT 'repository', repositories.id::text, customer_objects.id
+FROM repositories
+JOIN objects AS customer_objects
+    ON customer_objects.object_type = 'customer'
+    AND customer_objects.external_id = repositories.customer_id::text
+ON CONFLICT (object_type, external_id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS teams (
+    id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id uuid         NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name            varchar(256) NOT NULL,
+    display_name    text         NOT NULL DEFAULT '',
+    created_at      timestamptz  NOT NULL DEFAULT now(),
+    updated_at      timestamptz  NOT NULL DEFAULT now(),
+    CONSTRAINT teams_name_format CHECK (name ~ '^[a-z0-9]([a-z0-9-]{0,254}[a-z0-9])?$'),
+    CONSTRAINT teams_organization_name_unique UNIQUE (organization_id, name)
+);
+CREATE INDEX IF NOT EXISTS teams_organization_id_idx ON teams (organization_id);
+DROP TRIGGER IF EXISTS teams_set_updated_at ON teams;
+CREATE TRIGGER teams_set_updated_at BEFORE UPDATE ON teams FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS memberships (
+    id                    uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id       uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    team_id               uuid        REFERENCES teams(id) ON DELETE CASCADE,
+    principal_type        text        NOT NULL,
+    principal_id          text        NOT NULL,
+    principal_taap_id     text        NOT NULL,
+    role                  text        NOT NULL,
+    attestation_digest    text        NOT NULL,
+    granted_by_taap_id    text        NOT NULL,
+    created_at            timestamptz NOT NULL DEFAULT now(),
+    updated_at            timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT memberships_principal_type_check CHECK (principal_type IN ('user', 'workload')),
+    CONSTRAINT memberships_role_check CHECK (role IN ('owner', 'admin', 'member')),
+    CONSTRAINT memberships_attestation_check CHECK (
+        length(attestation_digest) > 0 AND length(granted_by_taap_id) > 0)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS memberships_scope_principal_unique
+ON memberships (
+    organization_id,
+    coalesce(team_id, '00000000-0000-0000-0000-000000000000'::uuid),
+    principal_type,
+    principal_id
+);
+CREATE INDEX IF NOT EXISTS memberships_organization_id_idx ON memberships (organization_id);
+CREATE INDEX IF NOT EXISTS memberships_team_id_idx ON memberships (team_id) WHERE team_id IS NOT NULL;
+DROP TRIGGER IF EXISTS memberships_set_updated_at ON memberships;
+CREATE TRIGGER memberships_set_updated_at BEFORE UPDATE ON memberships FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS grants (
+    id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    principal_taap_id   text        NOT NULL,
+    object_id           uuid        NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+    role                text        NOT NULL,
+    attestation_digest  text        NOT NULL,
+    granted_by_taap_id  text        NOT NULL,
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT grants_role_check CHECK (role IN ('read', 'write', 'admin', 'deploy', 'review', 'share')),
+    CONSTRAINT grants_attestation_check CHECK (
+        length(attestation_digest) > 0 AND length(granted_by_taap_id) > 0),
+    CONSTRAINT grants_principal_object_role_unique UNIQUE (principal_taap_id, object_id, role)
+);
+CREATE INDEX IF NOT EXISTS grants_object_id_idx ON grants (object_id);
+CREATE INDEX IF NOT EXISTS grants_principal_taap_id_idx ON grants (principal_taap_id);
+DROP TRIGGER IF EXISTS grants_set_updated_at ON grants;
+CREATE TRIGGER grants_set_updated_at BEFORE UPDATE ON grants FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS invitations (
+    id                     uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id        uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    team_id                uuid        REFERENCES teams(id) ON DELETE CASCADE,
+    invitee_type           text        NOT NULL,
+    invitee                text        NOT NULL,
+    role                   text        NOT NULL,
+    expires_at             timestamptz NOT NULL,
+    status                 text        NOT NULL DEFAULT 'pending',
+    accepted_membership_id uuid        REFERENCES memberships(id) ON DELETE SET NULL,
+    created_by_taap_id     text        NOT NULL,
+    created_at             timestamptz NOT NULL DEFAULT now(),
+    updated_at             timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT invitations_invitee_type_check CHECK (invitee_type IN ('email', 'handle')),
+    CONSTRAINT invitations_role_check CHECK (role IN ('owner', 'admin', 'member')),
+    CONSTRAINT invitations_status_check CHECK (status IN ('pending', 'accepted', 'expired', 'revoked')),
+    CONSTRAINT invitations_expiry_check CHECK (expires_at > created_at)
+);
+CREATE INDEX IF NOT EXISTS invitations_organization_id_idx ON invitations (organization_id);
+CREATE INDEX IF NOT EXISTS invitations_team_id_idx ON invitations (team_id) WHERE team_id IS NOT NULL;
+DROP TRIGGER IF EXISTS invitations_set_updated_at ON invitations;
+CREATE TRIGGER invitations_set_updated_at BEFORE UPDATE ON invitations FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+INSERT INTO schema_migrations (version) VALUES ('0004_organizations_policy') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Audit (migration 0005): a signed, hash-linked instance stream. sequence is ordering only; the
+-- signed predecessor digest makes a gap or reordered row detectable. The append-only trigger
+-- protects against application-level rewrites. lake_identity stores all instance identities so
+-- events signed before a rotation remain verifiable. A generated identity's wrapped_seed is
+-- AES-256-GCM ciphertext under the customer-independent instance KEK; private seed material is
+-- never returned by lake. Every capability call, authentication and session event is one row;
+-- the store methods of migration 0004 no longer write their own provisional rows.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS lake_identity (
+    id                uuid        PRIMARY KEY,
+    taap_id           text        NOT NULL UNIQUE,
+    public_key        text        NOT NULL,
+    wrapped_seed      text        NOT NULL,
+    created_at        timestamptz NOT NULL,
+    rotation_document jsonb,
+    current           boolean     NOT NULL DEFAULT true
+);
+CREATE UNIQUE INDEX IF NOT EXISTS lake_identity_one_current_idx ON lake_identity (current) WHERE current;
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    sequence        bigserial    PRIMARY KEY,
+    id              uuid         NOT NULL UNIQUE,
+    occurred_at     timestamptz  NOT NULL,
+    customer_id     uuid         REFERENCES customers(id) ON DELETE RESTRICT,
+    kind            text         NOT NULL,
+    principal       text         NOT NULL,
+    object          text         NOT NULL,
+    action          text         NOT NULL,
+    outcome         text         NOT NULL,
+    request_id      text         NOT NULL,
+    method          text,
+    device          text,
+    details         jsonb        NOT NULL DEFAULT '{}'::jsonb,
+    previous_digest text,
+    signer          text         NOT NULL REFERENCES lake_identity(taap_id) ON DELETE RESTRICT,
+    signature       text         NOT NULL,
+    digest          text         NOT NULL UNIQUE,
+    CONSTRAINT audit_events_outcome_check CHECK (outcome IN ('success', 'failure', 'denied', 'revoked')),
+    CONSTRAINT audit_events_digest_format CHECK (digest ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT audit_events_predecessor_format CHECK (previous_digest IS NULL OR previous_digest ~ '^[0-9a-f]{64}$')
+);
+CREATE INDEX IF NOT EXISTS audit_events_principal_occurred_at_idx ON audit_events (principal, occurred_at);
+CREATE INDEX IF NOT EXISTS audit_events_object_occurred_at_idx ON audit_events (object, occurred_at);
+CREATE INDEX IF NOT EXISTS audit_events_outcome_occurred_at_idx ON audit_events (outcome, occurred_at);
+CREATE INDEX IF NOT EXISTS audit_events_customer_occurred_at_idx ON audit_events (customer_id, occurred_at);
+
+CREATE OR REPLACE FUNCTION reject_audit_event_rewrite() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'audit_events is append-only';
+END $$;
+DROP TRIGGER IF EXISTS audit_events_reject_update ON audit_events;
+CREATE TRIGGER audit_events_reject_update BEFORE UPDATE ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_audit_event_rewrite();
+DROP TRIGGER IF EXISTS audit_events_reject_delete ON audit_events;
+CREATE TRIGGER audit_events_reject_delete BEFORE DELETE ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_audit_event_rewrite();
+
+CREATE TABLE IF NOT EXISTS audit_retention (
+    customer_id    uuid        PRIMARY KEY REFERENCES customers(id) ON DELETE CASCADE,
+    retention_days integer     NOT NULL,
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT audit_retention_floor_check CHECK (retention_days >= 400)
+);
+DROP TRIGGER IF EXISTS audit_retention_set_updated_at ON audit_retention;
+CREATE TRIGGER audit_retention_set_updated_at BEFORE UPDATE ON audit_retention FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+INSERT INTO schema_migrations (version) VALUES ('0005_audit') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Repository lifecycle (migration 0006): names and owners can change, deletion is a tombstone
+-- retained before collection, and organization visibility sits between private and public.
+-- repository_refs is the migration guard for the operator. Lifecycle operations are recorded by
+-- the signed audit stream above through the capability registry.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS retention_until timestamptz;
+ALTER TABLE repositories DROP CONSTRAINT IF EXISTS repository_visibility_check;
+ALTER TABLE repositories ADD CONSTRAINT repository_visibility_check
+    CHECK (visibility IN ('private', 'organization', 'public'));
+
+CREATE INDEX IF NOT EXISTS repositories_live_customer_id_idx
+    ON repositories (customer_id) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS repository_refs (
+    repository_id uuid         NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    name          varchar(256) NOT NULL,
+    head          text         NOT NULL,
+    updated_at    timestamptz  NOT NULL DEFAULT now(),
+    PRIMARY KEY (repository_id, name)
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0006_repository_lifecycle') ON CONFLICT DO NOTHING;
+-- Identity core (migration 0007): credentials prove control of a user's durable TAAP identity;
+-- sessions are row-resolved bearer credentials, so revocation is effective on the next request.
+-- Each migration ends in a guard table. The operator uses the newest one until its incremental
+-- migration work (orama-operator #126) lands.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS identity_documents (
+    user_id       uuid        PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    document      jsonb       NOT NULL,
+    document_hash text        NOT NULL UNIQUE,
+    verified_at   timestamptz NOT NULL DEFAULT now(),
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+DROP TRIGGER IF EXISTS identity_documents_set_updated_at ON identity_documents;
+CREATE TRIGGER identity_documents_set_updated_at BEFORE UPDATE ON identity_documents FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS devices (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         text        NOT NULL,
+    revoked_at   timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS devices_user_id_idx ON devices (user_id, created_at DESC);
+DROP TRIGGER IF EXISTS devices_set_updated_at ON devices;
+CREATE TRIGGER devices_set_updated_at BEFORE UPDATE ON devices FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS credentials (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    pool_id      text        NOT NULL DEFAULT 'lake',
+    kind         text        NOT NULL,
+    subject      text        NOT NULL,
+    secret_hash  text,
+    public_data  jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    revoked_at   timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT credentials_kind_check CHECK (kind IN ('password', 'totp', 'passkey', 'oauth', 'admin')),
+    CONSTRAINT credentials_subject_unique UNIQUE (pool_id, kind, subject)
+);
+CREATE INDEX IF NOT EXISTS credentials_user_id_idx ON credentials (user_id, created_at DESC);
+DROP TRIGGER IF EXISTS credentials_set_updated_at ON credentials;
+CREATE TRIGGER credentials_set_updated_at BEFORE UPDATE ON credentials FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      uuid        REFERENCES users(id) ON DELETE CASCADE,
+    device_id    uuid        REFERENCES devices(id) ON DELETE SET NULL,
+    pool_id      text        NOT NULL DEFAULT 'lake',
+    kind         text        NOT NULL DEFAULT 'browser',
+    name         text        NOT NULL DEFAULT '',
+    secret_hash  text        NOT NULL UNIQUE,
+    scopes       text[]      NOT NULL DEFAULT ARRAY[]::text[],
+    reason       text        NOT NULL DEFAULT '',
+    expires_at   timestamptz,
+    revoked_at   timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    last_used_at timestamptz,
+    CONSTRAINT sessions_kind_check CHECK (kind IN ('browser', 'api_token', 'static', 'admin')),
+    CONSTRAINT static_session_reason_check CHECK (kind <> 'static' OR length(reason) > 0)
+);
+CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS sessions_device_id_idx ON sessions (device_id) WHERE device_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS keystore (
+    purpose     text        PRIMARY KEY,
+    wrapped_key bytea       NOT NULL,
+    version     integer     NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+DROP TRIGGER IF EXISTS keystore_set_updated_at ON keystore;
+CREATE TRIGGER keystore_set_updated_at BEFORE UPDATE ON keystore FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS oauth_providers (
+    pool_id               text        NOT NULL,
+    provider              text        NOT NULL,
+    issuer                text        NOT NULL,
+    client_id             text        NOT NULL,
+    encrypted_client_secret bytea     NOT NULL,
+    scopes                text[]      NOT NULL,
+    created_at            timestamptz NOT NULL DEFAULT now(),
+    updated_at            timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (pool_id, provider)
+);
+DROP TRIGGER IF EXISTS oauth_providers_set_updated_at ON oauth_providers;
+CREATE TRIGGER oauth_providers_set_updated_at BEFORE UPDATE ON oauth_providers FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS identity_oauth_flows (
+    id                      uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    pool_id                 text        NOT NULL,
+    provider                text        NOT NULL,
+    state_hash              text        NOT NULL UNIQUE,
+    encrypted_code_verifier bytea       NOT NULL,
+    nonce                   text        NOT NULL,
+    device_name             text        NOT NULL,
+    identity_document       text        NOT NULL DEFAULT '',
+    expires_at              timestamptz NOT NULL,
+    used_at                 timestamptz,
+    created_at              timestamptz NOT NULL DEFAULT now(),
+    FOREIGN KEY (pool_id, provider) REFERENCES oauth_providers(pool_id, provider) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS identity_oauth_flows_lookup_idx ON identity_oauth_flows (state_hash, expires_at) WHERE used_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS identity_webauthn_challenges (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     uuid        REFERENCES users(id) ON DELETE CASCADE,
+    pool_id     text        NOT NULL,
+    ceremony    text        NOT NULL,
+    challenge   text        NOT NULL UNIQUE,
+    rp_id       text        NOT NULL,
+    origin      text        NOT NULL,
+    expires_at  timestamptz NOT NULL,
+    used_at     timestamptz,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT identity_webauthn_challenges_ceremony_check CHECK (ceremony IN ('registration', 'assertion'))
+);
+ALTER TABLE identity_webauthn_challenges ADD COLUMN IF NOT EXISTS rp_id text NOT NULL DEFAULT '';
+ALTER TABLE identity_webauthn_challenges ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT '';
+ALTER TABLE identity_webauthn_challenges ALTER COLUMN rp_id DROP DEFAULT;
+ALTER TABLE identity_webauthn_challenges ALTER COLUMN origin DROP DEFAULT;
+CREATE INDEX IF NOT EXISTS identity_webauthn_challenges_lookup_idx ON identity_webauthn_challenges (challenge, expires_at) WHERE used_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS identity_core_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0007_identity_core') ON CONFLICT DO NOTHING;
+
+-- MFA recovery (migration 0008): recovery codes are password-grade hashes, used once and revoked.
+ALTER TABLE credentials DROP CONSTRAINT IF EXISTS credentials_kind_check;
+ALTER TABLE credentials ADD CONSTRAINT credentials_kind_check
+    CHECK (kind IN ('password', 'totp', 'recovery', 'passkey', 'oauth', 'admin'));
+
+CREATE TABLE IF NOT EXISTS identity_mfa_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0008_mfa_recovery') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Secrets and encryption (migration 0009): organization mounts in a customer namespace,
+-- versioned static values, and named encryption keys. The existing keystore gains one row per
+-- customer KEK; that KEK wraps every mount and transit data key in secrets_data_keys. Rotating a
+-- customer KEK updates only wrapped data keys, never stored secret ciphertext.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE keystore ADD COLUMN IF NOT EXISTS customer_id uuid REFERENCES customers(id) ON DELETE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS keystore_customer_id_unique
+    ON keystore (customer_id) WHERE customer_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS secrets_mounts (
+    id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id     uuid         NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    organization_id uuid         NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name            varchar(256) NOT NULL,
+    description     text         NOT NULL DEFAULT '',
+    created_at      timestamptz  NOT NULL DEFAULT now(),
+    updated_at      timestamptz  NOT NULL DEFAULT now(),
+    CONSTRAINT secrets_mounts_name_format
+        CHECK (name ~ '^[a-z0-9]([a-z0-9-]{0,254}[a-z0-9])?$'),
+    CONSTRAINT secrets_mounts_scope_name_unique UNIQUE (customer_id, organization_id, name)
+);
+CREATE INDEX IF NOT EXISTS secrets_mounts_organization_id_idx
+    ON secrets_mounts (organization_id, created_at DESC);
+DROP TRIGGER IF EXISTS secrets_mounts_set_updated_at ON secrets_mounts;
+CREATE TRIGGER secrets_mounts_set_updated_at BEFORE UPDATE ON secrets_mounts
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS secrets_entries (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    mount_id        uuid        NOT NULL REFERENCES secrets_mounts(id) ON DELETE CASCADE,
+    name            text        NOT NULL,
+    current_version bigint      NOT NULL DEFAULT 0,
+    custom_metadata jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT secrets_entries_name_check CHECK (length(name) BETWEEN 1 AND 1024),
+    CONSTRAINT secrets_entries_mount_name_unique UNIQUE (mount_id, name)
+);
+CREATE INDEX IF NOT EXISTS secrets_entries_mount_id_idx
+    ON secrets_entries (mount_id, created_at DESC);
+DROP TRIGGER IF EXISTS secrets_entries_set_updated_at ON secrets_entries;
+CREATE TRIGGER secrets_entries_set_updated_at BEFORE UPDATE ON secrets_entries
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS secrets_versions (
+    entry_id     uuid        NOT NULL REFERENCES secrets_entries(id) ON DELETE CASCADE,
+    version      bigint      NOT NULL,
+    ciphertext   text,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    deleted_at   timestamptz,
+    destroyed_at timestamptz,
+    PRIMARY KEY (entry_id, version),
+    CONSTRAINT secrets_versions_number_check CHECK (version > 0),
+    CONSTRAINT secrets_versions_destroyed_check
+        CHECK (destroyed_at IS NULL OR (ciphertext IS NULL AND deleted_at IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS secrets_encryption_keys (
+    id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
+    mount_id        uuid         NOT NULL REFERENCES secrets_mounts(id) ON DELETE CASCADE,
+    name            varchar(256) NOT NULL,
+    derived_from_id uuid         REFERENCES secrets_encryption_keys(id) ON DELETE RESTRICT,
+    current_version bigint       NOT NULL DEFAULT 1,
+    created_at      timestamptz  NOT NULL DEFAULT now(),
+    updated_at      timestamptz  NOT NULL DEFAULT now(),
+    CONSTRAINT secrets_encryption_keys_name_format
+        CHECK (name ~ '^[a-z0-9]([a-z0-9-]{0,254}[a-z0-9])?$'),
+    CONSTRAINT secrets_encryption_keys_version_check CHECK (current_version > 0),
+    CONSTRAINT secrets_encryption_keys_mount_name_unique UNIQUE (mount_id, name)
+);
+CREATE INDEX IF NOT EXISTS secrets_encryption_keys_mount_id_idx
+    ON secrets_encryption_keys (mount_id, created_at DESC);
+DROP TRIGGER IF EXISTS secrets_encryption_keys_set_updated_at ON secrets_encryption_keys;
+CREATE TRIGGER secrets_encryption_keys_set_updated_at BEFORE UPDATE ON secrets_encryption_keys
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS secrets_data_keys (
+    customer_id uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    owner_kind  text        NOT NULL,
+    owner_id    uuid        NOT NULL,
+    key_version bigint      NOT NULL,
+    wrapped_key text        NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (owner_kind, owner_id, key_version),
+    CONSTRAINT secrets_data_keys_owner_kind_check CHECK (owner_kind IN ('mount', 'encryption')),
+    CONSTRAINT secrets_data_keys_version_check CHECK (key_version > 0)
+);
+CREATE INDEX IF NOT EXISTS secrets_data_keys_customer_id_idx ON secrets_data_keys (customer_id);
+
+CREATE TABLE IF NOT EXISTS secrets_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0009_secrets') ON CONFLICT DO NOTHING;
+
+-- SSO and federation (migration 0010): enterprise identity providers, SCIM resources, and the
+-- organization policy that names which issuer may assert each claim. The provider records only
+-- encrypted client secrets and SCIM bearer-token hashes. Deactivating a SCIM user revokes every
+-- one of that user's sessions in the same transaction.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE credentials DROP CONSTRAINT IF EXISTS credentials_kind_check;
+ALTER TABLE credentials ADD CONSTRAINT credentials_kind_check
+    CHECK (kind IN ('password', 'totp', 'recovery', 'passkey', 'oauth', 'saml', 'oidc', 'admin'));
+
+CREATE TABLE IF NOT EXISTS sso_providers (
+    id                      uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id         uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    pool_id                 text        NOT NULL DEFAULT 'lake',
+    name                    varchar(256) NOT NULL,
+    protocol                text        NOT NULL,
+    issuer                  text        NOT NULL,
+    metadata                text        NOT NULL DEFAULT '',
+    signing_certificate     text        NOT NULL DEFAULT '',
+    client_id               text        NOT NULL DEFAULT '',
+    encrypted_client_secret bytea,
+    scim_token_hash         text        NOT NULL,
+    attribute_mapping       jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    jit_provisioning        boolean     NOT NULL DEFAULT false,
+    enabled                 boolean     NOT NULL DEFAULT true,
+    tested_at               timestamptz,
+    created_at              timestamptz NOT NULL DEFAULT now(),
+    updated_at              timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT sso_providers_protocol_check CHECK (protocol IN ('saml', 'oidc')),
+    CONSTRAINT sso_providers_name_unique UNIQUE (organization_id, name),
+    CONSTRAINT sso_providers_issuer_unique UNIQUE (organization_id, issuer)
+);
+CREATE INDEX IF NOT EXISTS sso_providers_organization_id_idx
+    ON sso_providers (organization_id, created_at DESC);
+DROP TRIGGER IF EXISTS sso_providers_set_updated_at ON sso_providers;
+CREATE TRIGGER sso_providers_set_updated_at BEFORE UPDATE ON sso_providers
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS federation_issuers (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    issuer          text        NOT NULL,
+    claim           varchar(256) NOT NULL,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT federation_issuers_claim_check CHECK (length(claim) > 0),
+    CONSTRAINT federation_issuers_unique UNIQUE (organization_id, issuer, claim)
+);
+CREATE INDEX IF NOT EXISTS federation_issuers_lookup_idx
+    ON federation_issuers (organization_id, issuer, claim);
+
+CREATE TABLE IF NOT EXISTS scim_users (
+    provider_id  uuid        NOT NULL REFERENCES sso_providers(id) ON DELETE CASCADE,
+    external_id  text        NOT NULL,
+    user_id      uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    active       boolean     NOT NULL DEFAULT true,
+    attributes   jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (provider_id, external_id),
+    CONSTRAINT scim_users_provider_user_unique UNIQUE (provider_id, user_id)
+);
+DROP TRIGGER IF EXISTS scim_users_set_updated_at ON scim_users;
+CREATE TRIGGER scim_users_set_updated_at BEFORE UPDATE ON scim_users
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS scim_groups (
+    provider_id  uuid        NOT NULL REFERENCES sso_providers(id) ON DELETE CASCADE,
+    external_id  text        NOT NULL,
+    team_id      uuid        NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    display_name text        NOT NULL,
+    attributes   jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (provider_id, external_id),
+    CONSTRAINT scim_groups_provider_team_unique UNIQUE (provider_id, team_id)
+);
+DROP TRIGGER IF EXISTS scim_groups_set_updated_at ON scim_groups;
+CREATE TRIGGER scim_groups_set_updated_at BEFORE UPDATE ON scim_groups
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS scim_group_members (
+    provider_id       uuid        NOT NULL,
+    group_external_id text        NOT NULL,
+    user_external_id  text        NOT NULL,
+    membership_id     uuid        NOT NULL REFERENCES memberships(id) ON DELETE CASCADE,
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (provider_id, group_external_id, user_external_id),
+    FOREIGN KEY (provider_id, group_external_id)
+        REFERENCES scim_groups(provider_id, external_id) ON DELETE CASCADE,
+    FOREIGN KEY (provider_id, user_external_id)
+        REFERENCES scim_users(provider_id, external_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sso_provisioning_logs (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider_id  uuid        NOT NULL REFERENCES sso_providers(id) ON DELETE CASCADE,
+    resource     text        NOT NULL,
+    operation    text        NOT NULL,
+    external_id  text        NOT NULL DEFAULT '',
+    outcome      text        NOT NULL,
+    details      jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT sso_provisioning_logs_resource_check CHECK (resource IN ('user', 'group')),
+    CONSTRAINT sso_provisioning_logs_operation_check CHECK (operation IN ('create', 'update', 'deactivate')),
+    CONSTRAINT sso_provisioning_logs_outcome_check CHECK (outcome IN ('success', 'failure'))
+);
+CREATE INDEX IF NOT EXISTS sso_provisioning_logs_provider_id_idx
+    ON sso_provisioning_logs (provider_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sso_federation_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0010_sso_federation') ON CONFLICT DO NOTHING;
+
+-- Offline grants and account recovery (migration 0011): signed, bounded cached-read grants;
+-- one-use recovery paths; device notification; two-administrator organization recovery; and
+-- client-wrapped repository key custody. Prefix every table for parallel wave ownership.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS offline_recovery_grants (
+    id                uuid        PRIMARY KEY,
+    user_id           uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    principal_taap_id text        NOT NULL,
+    device_id         uuid        NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    scopes            text[]      NOT NULL,
+    credential        jsonb       NOT NULL,
+    issued_at         timestamptz NOT NULL DEFAULT now(),
+    expires_at        timestamptz NOT NULL,
+    revoked_at        timestamptz,
+    CONSTRAINT offline_recovery_grants_scope_check CHECK (cardinality(scopes) > 0),
+    CONSTRAINT offline_recovery_grants_expiry_check CHECK (expires_at > issued_at)
+);
+CREATE INDEX IF NOT EXISTS offline_recovery_grants_user_id_idx
+    ON offline_recovery_grants (user_id, issued_at DESC);
+
+CREATE TABLE IF NOT EXISTS offline_recovery_attempts (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    organization_id uuid        REFERENCES organizations(id) ON DELETE CASCADE,
+    method          text        NOT NULL,
+    status          text        NOT NULL,
+    token_hash      text,
+    ready_at        timestamptz NOT NULL,
+    expires_at      timestamptz NOT NULL,
+    completed_at    timestamptz,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT offline_recovery_attempts_method_check CHECK (method IN ('email', 'admin')),
+    CONSTRAINT offline_recovery_attempts_status_check
+        CHECK (status IN ('cooling', 'pending_approval', 'approved', 'completed')),
+    CONSTRAINT offline_recovery_attempts_expiry_check CHECK (expires_at > ready_at)
+);
+CREATE INDEX IF NOT EXISTS offline_recovery_attempts_user_id_idx
+    ON offline_recovery_attempts (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS offline_recovery_admin_approvals (
+    recovery_id      uuid        NOT NULL REFERENCES offline_recovery_attempts(id) ON DELETE CASCADE,
+    approver_taap_id text        NOT NULL,
+    approved_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (recovery_id, approver_taap_id)
+);
+
+CREATE TABLE IF NOT EXISTS offline_recovery_deliveries (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    recovery_id  uuid        NOT NULL REFERENCES offline_recovery_attempts(id) ON DELETE CASCADE,
+    email        text        NOT NULL,
+    token        text,
+    kind         text        NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    delivered_at timestamptz,
+    CONSTRAINT offline_recovery_deliveries_kind_check
+        CHECK (kind IN ('email_recovery_started', 'admin_recovery_approved'))
+);
+CREATE INDEX IF NOT EXISTS offline_recovery_deliveries_pending_idx
+    ON offline_recovery_deliveries (created_at) WHERE delivered_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS offline_recovery_notifications (
+    id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    recovery_id uuid        NOT NULL REFERENCES offline_recovery_attempts(id) ON DELETE CASCADE,
+    user_id     uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id   uuid        NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    kind        text        NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS offline_recovery_notifications_user_id_idx
+    ON offline_recovery_notifications (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS offline_recovery_contacts (
+    repository_id   uuid        PRIMARY KEY REFERENCES repositories(id) ON DELETE CASCADE,
+    contact_taap_id text        NOT NULL,
+    wrapped_key     text        NOT NULL,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT offline_recovery_contacts_key_check CHECK (length(wrapped_key) > 0)
+);
+DROP TRIGGER IF EXISTS offline_recovery_contacts_set_updated_at ON offline_recovery_contacts;
+CREATE TRIGGER offline_recovery_contacts_set_updated_at BEFORE UPDATE ON offline_recovery_contacts
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS offline_recovery_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0011_offline_recovery') ON CONFLICT DO NOTHING;
