@@ -30,6 +30,9 @@ spec:
     - jsonPath: .status.schemaPhase
       name: Schema
       type: string
+    - jsonPath: .status.store.claimName
+      name: Store
+      type: string
     - jsonPath: .status.lastBackupTime
       name: Backup
       type: date
@@ -86,6 +89,126 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              env:
+                description: |-
+                  Env appends lake-specific environment variables after the operator-managed variables.
+                  Operator-managed names take precedence and conflicting entries are ignored.
+                items:
+                  description: EnvVar represents an environment variable present in
+                    a Container.
+                  properties:
+                    name:
+                      description: Name of the environment variable. Must be a C_IDENTIFIER.
+                      type: string
+                    value:
+                      description: |-
+                        Variable references $(VAR_NAME) are expanded
+                        using the previously defined environment variables in the container and
+                        any service environment variables. If a variable cannot be resolved,
+                        the reference in the input string will be unchanged. Double $$ are reduced
+                        to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e.
+                        "$$(VAR_NAME)" will produce the string literal "$(VAR_NAME)".
+                        Escaped references will never be expanded, regardless of whether the variable
+                        exists or not.
+                        Defaults to "".
+                      type: string
+                    valueFrom:
+                      description: Source for the environment variable's value. Cannot
+                        be used if value is not empty.
+                      properties:
+                        configMapKeyRef:
+                          description: Selects a key of a ConfigMap.
+                          properties:
+                            key:
+                              description: The key to select.
+                              type: string
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                            optional:
+                              description: Specify whether the ConfigMap or its key
+                                must be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        fieldRef:
+                          description: |-
+                            Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,
+                            spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.
+                          properties:
+                            apiVersion:
+                              description: Version of the schema the FieldPath is
+                                written in terms of, defaults to "v1".
+                              type: string
+                            fieldPath:
+                              description: Path of the field to select in the specified
+                                API version.
+                              type: string
+                          required:
+                          - fieldPath
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        resourceFieldRef:
+                          description: |-
+                            Selects a resource of the container: only resources limits and requests
+                            (limits.cpu, limits.memory, limits.ephemeral-storage, requests.cpu, requests.memory and requests.ephemeral-storage) are currently supported.
+                          properties:
+                            containerName:
+                              description: 'Container name: required for volumes,
+                                optional for env vars'
+                              type: string
+                            divisor:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              description: Specifies the output format of the exposed
+                                resources, defaults to "1"
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            resource:
+                              description: 'Required: resource to select'
+                              type: string
+                          required:
+                          - resource
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        secretKeyRef:
+                          description: Selects a key of a secret in the pod's namespace
+                          properties:
+                            key:
+                              description: The key of the secret to select from.  Must
+                                be a valid secret key.
+                              type: string
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                            optional:
+                              description: Specify whether the Secret or its key must
+                                be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                          x-kubernetes-map-type: atomic
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
               host:
                 description: |-
                   Host is the domain name the lake is exposed at (e.g. hello.lake.live) when IngressEnabled is
@@ -214,6 +337,45 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              store:
+                description: |-
+                  Store configures the persistent root shared by all lake replicas. When ExistingClaim is
+                  empty, the operator creates lake-<name>-store once from Size, StorageClassName, and
+                  AccessModes. Later spec changes never replace or delete that claim. ReadWriteOnce requires
+                  Replicas=1; multiple replicas need storage that supports ReadWriteMany.
+                properties:
+                  accessModes:
+                    default:
+                    - ReadWriteMany
+                    description: |-
+                      AccessModes for an operator-created claim. The default is ReadWriteMany because every
+                      Deployment replica mounts the same store root. ReadWriteOnce requires spec.replicas=1.
+                      It is used only when the claim is first created.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  existingClaim:
+                    description: |-
+                      ExistingClaim names a PersistentVolumeClaim in spec.namespace to mount instead of creating
+                      lake-<name>-store. The operator does not adopt, modify, or delete this claim.
+                    type: string
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 100Gi
+                    description: |-
+                      Size requested for an operator-created claim. It is used only when the claim is first
+                      created; later changes do not replace or resize the data volume.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  storageClassName:
+                    description: |-
+                      StorageClassName for an operator-created claim. Empty uses the cluster default.
+                      It is used only when the claim is first created.
+                    type: string
+                type: object
             required:
             - image
             type: object
@@ -225,8 +387,8 @@ spec:
                   the newest CNPG Backup completed.
                 type: boolean
               conditions:
-                description: Conditions includes BackupReady, including invalid backup
-                  configuration details.
+                description: Conditions includes StoreReady and BackupReady, including
+                  invalid configuration details.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -311,6 +473,27 @@ spec:
                 description: SchemaVersion is the applied schema's content hash (sha256:<12
                   hex>), from the PostgresSchema.
                 type: string
+              store:
+                description: Store reports the selected claim and its observed binding
+                  state.
+                properties:
+                  capacity:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Capacity is the bound storage capacity reported by
+                      the claim.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  claimName:
+                    description: ClaimName is the selected existing or operator-created
+                      PersistentVolumeClaim.
+                    type: string
+                  phase:
+                    description: Phase is the PersistentVolumeClaim phase, such as
+                      Pending, Bound, or Lost.
+                    type: string
+                type: object
             type: object
         required:
         - spec

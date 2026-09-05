@@ -69,6 +69,14 @@ Samples: [`config/samples/primary-us-east.yaml`](config/samples/primary-us-east.
 (primary region) and [`config/samples/read-eu.yaml`](config/samples/read-eu.yaml)
 (a read tier pointing at the primary).
 
+## The `Lake` CR
+
+The cluster-scoped `Lake` CR deploys the Lake service with its control-plane Postgres and a shared
+persistent libliquid store. The operator creates a `100Gi` RWX store claim by default or mounts
+`spec.store.existingClaim`, sets `LAKE_STORE_ROOT=/var/lib/lake/store`, and accepts additional Lake
+runtime configuration through `spec.env`. See the [Lake operator guide](docs/lake/README.md) and
+the [CRD reference](docs/crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service).
+
 ## Multi-region
 
 Install one release + one CR per cluster (`us-east` = `primary`, `eu`/`ap` = `read`).

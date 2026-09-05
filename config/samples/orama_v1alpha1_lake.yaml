@@ -8,6 +8,18 @@ spec:
   image: oramasearch/lake:v1-sandbox
   pullSecretName: oramasearch-dockerhub
   replicas: 1
+  # Every lake pod mounts one shared customer-store root. The generated claim defaults to 100Gi
+  # ReadWriteMany. ReadWriteOnce requires replicas: 1. Set existingClaim to mount a claim without
+  # the operator adopting or changing it.
+  store:
+    size: 100Gi
+    accessModes: [ReadWriteMany]
+    # existingClaim: lake-data
+  # Lake runtime configuration not modeled as dedicated CR fields. Operator-managed environment
+  # names, including LAKE_STORE_ROOT, cannot be overridden here.
+  env:
+    - name: LAKE_LOG_MODE
+      value: air-gapped
   # Control plane: a CloudNativePG Postgres in spec.namespace, on by default (requires the CNPG
   # operator). The lake pods get LAKE_CONTROL_DB_URI from the generated lake-<name>-controldb-app
   # Secret. Zetta is the data plane and is provisioned separately.
