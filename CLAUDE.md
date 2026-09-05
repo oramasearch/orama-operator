@@ -123,7 +123,8 @@ about the **operator**, not a copy of prod docs.
 ### The `Lake` CR (lake, liquid project)
 
 `Lake` deploys the lake service: namespace, admin-token and instance-KEK Secrets, Deployment, Service, a CNPG
-control-plane Postgres with lake's schema applied through `PostgresSchema`, opt-in Ingress + Cloudflare DNS.
+control-plane Postgres with lake's schema applied through `PostgresSchema`, opt-in scheduled R2/S3
+backup through CNPG Barman, opt-in Ingress + Cloudflare DNS.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
 production instance) and the `Lake` section of [`docs/crd-reference.md`](docs/crd-reference.md) before touching
 `internal/controller/lake_controller.go`. The schema's source of truth is `oramasearch/lake` `db/schema.sql`;
@@ -136,7 +137,8 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
 
 - After editing `api/v1alpha1/*.go`: `make generate` (DeepCopy) + `make manifests`
   (CRD + RBAC) + `cp config/crd/bases/*.yaml chart/crds/`. The generated
-  `zz_generated.deepcopy.go` and CRDs **are committed**.
+  `zz_generated.deepcopy.go` and CRDs **are committed**. `Makefile` pins
+  controller-gen to `v0.21.0`; do not use `@latest`, which can restamp unrelated CRDs.
 - `go build ./...` + `go vet ./...` must stay green.
 - `helm lint chart` must pass; the chart carries the generated CRD in `chart/crds/`.
 

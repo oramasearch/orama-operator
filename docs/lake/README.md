@@ -30,27 +30,34 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
 7. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
    `oramasearch/lake` `db/schema.sql`), guard table = the table the newest migration creates
-   (`secrets_guard` for `0009_secrets`), version = content
+   (`agent_guard` for `0017_agent_sessions`), version = content
    hash. The file is idempotent, so a new migration = a new guard, and the next Job re-runs the
    file adding only what is missing; on an existing Lake, delete the `PostgresSchema` (owned, it
    is recreated) to trigger that Job. Proper incremental migrations are #126.
-8. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
+8. **Control-plane backup** (opt-in: `spec.postgres.backup.enabled`) — CNPG Barman object-store
+   configuration on `lake-<name>-controldb` plus an owned `ScheduledBackup`
+   `lake-<name>-controldb-backup`. The R2/S3 Secret lives in `spec.namespace`; CNPG owns the
+   individual `Backup` resources. See [backups.md](backups.md) for R2 setup, verification,
+   changing the schedule or retention, and recovery into a new Cluster.
+9. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
    whole host and an owned `CloudflareDNSRecord`, the `OramaZettaCluster` contract; gating off
    tears both down.
 
 **Status** mirrors the Deployment (`readyReplicas`, `phase`), the CNPG cluster (`postgresReady`,
-`postgresInstances`) and the PostgresSchema (`schemaPhase`, `schemaVersion`); written only on a
-real transition. The CNPG cluster is not watched: the Lake **requeues every 20 s** until the DB is
-ready and the schema Applied. `kubectl get lake` columns: Namespace, Host, Ready, DB, Schema,
-Phase.
+`postgresInstances`), the PostgresSchema (`schemaPhase`, `schemaVersion`), and the backup
+(`backupReady`, `lastBackupTime`, `BackupReady` condition); written only on a real transition. The
+Lake polls CNPG every 20 s until the DB is ready and the schema Applied, and while enabled backups
+observe new CNPG `Backup` resources. `kubectl get lake` columns: Namespace, Host, Ready, DB,
+Schema, Backup, Phase.
 
 **Owned kinds** (`SetupWithManager`): Deployment, Service, Ingress, CloudflareDNSRecord,
-ConfigMap, Secret, PostgresSchema. Not owned: the Namespace, the CNPG Cluster (polled).
+ConfigMap, Secret, PostgresSchema, CNPG ScheduledBackup. Not owned: the Namespace, the CNPG
+Cluster (polled), and CNPG Backup resources (observed by cluster label).
 
 **RBAC.** The chart ClusterRole is hand-maintained (`chart/templates/rbac.yaml`); a Lake needs
 `lakes`, `lakes/status`, `lakes/finalizers`, `namespaces: create`, plus the shared grants for
 deployments, services, configmaps, ingresses, cloudflarednsrecords, postgresschemas and
-`postgresql.cnpg.io/clusters`. Keep it in sync with `config/rbac/role.yaml` or the manager
+`postgresql.cnpg.io/clusters`, `scheduledbackups`, and `backups`. Keep it in sync with `config/rbac/role.yaml` or the manager
 CrashLoops on cache sync.
 
 ## Deploying the operator with Lake support
