@@ -501,8 +501,10 @@ func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
 		t.Error("assets/lake-schema.sql must be the vendored copy of lake's db/schema.sql")
 	}
 	for _, tbl := range []string{"CREATE TABLE IF NOT EXISTS users", "CREATE TABLE IF NOT EXISTS organizations",
-		"CREATE TABLE IF NOT EXISTS customers", "CREATE TABLE IF NOT EXISTS repositories", "customer_type_check",
-		"customer_name_unique", "customer_name_format", "CREATE TABLE IF NOT EXISTS secrets_mounts",
+		"CREATE TABLE IF NOT EXISTS customers", "CREATE TABLE IF NOT EXISTS repositories", "CREATE TABLE IF NOT EXISTS objects",
+		"CREATE TABLE IF NOT EXISTS teams", "CREATE TABLE IF NOT EXISTS memberships", "CREATE TABLE IF NOT EXISTS grants",
+		"CREATE TABLE IF NOT EXISTS audit_events", "CREATE TABLE IF NOT EXISTS invitations", "customer_type_check",
+		"customer_name_unique", "customer_name_format", "0004_organizations_policy", "CREATE TABLE IF NOT EXISTS secrets_mounts",
 		"CREATE TABLE IF NOT EXISTS secrets_versions", "CREATE TABLE IF NOT EXISTS secrets_encryption_keys",
 		"CREATE TABLE IF NOT EXISTS secrets_data_keys", "CREATE TABLE IF NOT EXISTS secrets_guard",
 		"0009_secrets", "CREATE TABLE IF NOT EXISTS sso_providers", "CREATE TABLE IF NOT EXISTS sso_federation_guard",
