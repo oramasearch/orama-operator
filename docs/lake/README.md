@@ -21,7 +21,8 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
 4. **Store claim** — either `spec.store.existingClaim` or an owned PVC
    `lake-<name>-store`, created once with `spec.store.size` (default `100Gi`),
    `storageClassName`, and `accessModes` (default `ReadWriteMany`). The selected claim is mounted
-   read-write at `/var/lib/lake/store` in every pod. Operator-created claims are never replaced,
+   read-write at `/var/lib/lake/store` in every pod. The pod runs with `fsGroup: 10001` (lake's
+   uid/gid in the image) so a freshly provisioned volume is writable by lake on first mount. Operator-created claims are never replaced,
    resized, or deleted because the store spec changes.
 5. **Deployment** `lake-<name>` — `spec.image` run as built, `spec.args`, port `spec.port`
    (default 4900), readiness `GET /`, `spec.replicas`, `imagePullSecrets` from
