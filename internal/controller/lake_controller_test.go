@@ -732,3 +732,13 @@ func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
 		}
 	}
 }
+
+func TestLakePodRunsWithStoreFSGroup(t *testing.T) {
+	if lakeRunAsGroup != 10001 {
+		t.Fatalf("lakeRunAsGroup = %d, want 10001 (the lake image's gid)", lakeRunAsGroup)
+	}
+	sc := &corev1.PodSecurityContext{FSGroup: ptrInt64(lakeRunAsGroup), FSGroupChangePolicy: ptrFSGroupChangePolicy(corev1.FSGroupChangeOnRootMismatch)}
+	if sc.FSGroup == nil || *sc.FSGroup != 10001 || sc.FSGroupChangePolicy == nil || *sc.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+		t.Fatalf("unexpected security context %+v", sc)
+	}
+}

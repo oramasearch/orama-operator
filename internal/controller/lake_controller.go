@@ -191,6 +191,12 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{Path: "/", Port: intstr.FromString("http")}}},
 		}}
+		// lake runs as uid/gid 10001 in its image; fsGroup makes the store volume writable by that
+		// group when it is mounted (docs/lake/README.md, the store section).
+		deploy.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{
+			FSGroup:             ptrInt64(lakeRunAsGroup),
+			FSGroupChangePolicy: ptrFSGroupChangePolicy(corev1.FSGroupChangeOnRootMismatch),
+		}
 		deploy.Spec.Template.Spec.Volumes = []corev1.Volume{{
 			Name: lakeStoreVolume,
 			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
@@ -919,4 +925,13 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(newCNPGScheduledBackup(nil, "")).
 		Named("lake").
 		Complete(r)
+}
+
+// lakeRunAsGroup is the gid of the lake user in the oramasearch/lake image.
+const lakeRunAsGroup int64 = 10001
+
+func ptrInt64(v int64) *int64 { return &v }
+
+func ptrFSGroupChangePolicy(v corev1.PodFSGroupChangePolicy) *corev1.PodFSGroupChangePolicy {
+	return &v
 }
