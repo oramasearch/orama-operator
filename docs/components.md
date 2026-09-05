@@ -27,7 +27,7 @@ reconciler lands.
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
 | **zetta-capacity** | `internal/controller/zetta_capacity.go` | Karpenter `NodePool` (unstructured, cluster-scoped) + a `PodDisruptionBudget`; pins the Zetta pods onto the pool (taint/toleration + nodeSelector + `do-not-disrupt`) | 🟡 **implemented** (opt-in, [#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69) first slice; not yet live-tested — needs an EKS/AKS-NAP cluster) |
 | **zetta-capacity-install** | `internal/controller/zetta_capacity_install.go` | Operator-owned **Karpenter install** (cloud-gated): server-side-applies the pinned upstream controller (Deployment + ServiceAccount + RBAC) + Karpenter CRDs, as `unstructured` | 🟡 **implemented** (opt-in `install: true`, [#75](https://github.com/oramasearch/orama-cloud-v1-operator/issues/75); EKS self-install, no-op on AKS-NAP/bare-metal; not yet live-tested) |
-| **lake** (liquid project) | `internal/controller/lake_controller.go` | from one cluster-scoped `Lake` CR: Namespace, admin-token Secret, `Deployment` + Service, CNPG control-plane `Cluster` + owned `PostgresSchema` (lake's schema), opt-in Ingress + `CloudflareDNSRecord` | ✅ **done** (`Lake/prod` live on AKS; PR [#118](https://github.com/oramasearch/orama-operator/pull/118)) — see [`lake/README.md`](lake/README.md) |
+| **lake** (liquid project) | `internal/controller/lake_controller.go` | from one cluster-scoped `Lake` CR: Namespace, admin-token Secret, `Deployment` + Service, CNPG control-plane `Cluster` + owned `PostgresSchema` (lake's schema), opt-in Barman R2/S3 `ScheduledBackup`, opt-in Ingress + `CloudflareDNSRecord` | ✅ **done** (`Lake/prod` live on AKS; control-plane backups require its R2 Secret) — see [`lake/README.md`](lake/README.md) and [`lake/backups.md`](lake/backups.md) |
 
 ## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 
@@ -505,8 +505,10 @@ and reuses this operator's CNPG, PostgresSchema and Cloudflare DNS paths.
 | Deployment | `lake-<name>` | yes | `spec.image` as built, `spec.args`, port `spec.port` (4900), readiness `GET /`, env `LAKE_ADMIN_TOKEN`, `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD` |
 | Service | `lake-<name>` | yes | ClusterIP 80 → `spec.port` |
 | CNPG `Cluster` | `lake-<name>-controldb` | yes (unstructured) | `spec.postgres`: instances, storageSize (50Gi), storageClassName; disable tears down **with data** |
-| ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; newest guard = `offline_recovery_guard` (`0011_offline_recovery`) |
+| ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; guard = the newest migration's table (`agent_guard`, `0017_agent_sessions`) |
+| CNPG `ScheduledBackup` | `lake-<name>-controldb-backup` | yes (unstructured) | opt-in Barman R2/S3 backup; CNPG `Backup` resources are observed by `cnpg.io/cluster` label |
 | Ingress + `CloudflareDNSRecord` | `lake-<name>`, `-dns` | yes | opt-in via `ingressEnabled` + `host` + `dnsSecretRef`, the `OramaZettaCluster` contract |
 
-Status mirrors the Deployment, the CNPG cluster (polled every 20 s, not watched) and the
-PostgresSchema. Production: `Lake/prod` in namespace `lake` on AKS.
+Status mirrors the Deployment, the CNPG cluster (polled every 20 s, not watched), the
+PostgresSchema, and enabled backup completion. Production: `Lake/prod` in namespace `lake` on
+AKS; R2 backup credentials must exist before its backup is enabled.

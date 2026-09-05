@@ -2,7 +2,7 @@
 --
 -- SOURCE OF TRUTH: oramasearch/lake, db/schema.sql. The operator vendors a byte-identical copy at
 -- internal/controller/assets/lake-schema.sql and applies it to each Lake's Postgres through a
--- PostgresSchema (one transaction, guarded on the `offline_recovery_guard` table, versioned by
+-- PostgresSchema (one transaction, guarded on the `auth_app_guard` table, versioned by
 -- content hash).
 -- Keep the two files identical; the operator's version string changes exactly when this does.
 --
@@ -762,3 +762,356 @@ CREATE TABLE IF NOT EXISTS offline_recovery_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0011_offline_recovery') ON CONFLICT DO NOTHING;
+
+-- Forge, export, and GitHub import (migration 0012): a versioned value per
+-- durable forge fact. Review anchors remain values so libliquid map_anchor can
+-- replace the temporary line mapping without changing persistent columns.
+CREATE TABLE IF NOT EXISTS forge_records (
+    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    repository_id uuid        NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    kind          text        NOT NULL,
+    value         jsonb       NOT NULL,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT forge_records_kind_check CHECK (kind IN (
+        'issue', 'issue_comment', 'review', 'review_comment', 'release',
+        'webhook', 'webhook_delivery', 'branch_protection', 'export', 'github_import'
+    )),
+    CONSTRAINT forge_records_value_check CHECK (jsonb_typeof(value) = 'object')
+);
+CREATE INDEX IF NOT EXISTS forge_records_repository_kind_created_idx
+    ON forge_records (repository_id, kind, created_at DESC);
+DROP TRIGGER IF EXISTS forge_records_set_updated_at ON forge_records;
+CREATE TRIGGER forge_records_set_updated_at BEFORE UPDATE ON forge_records
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS forge_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0012_forge_export_import') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- PKI, caller attestation, and break-glass recovery (migration 0013). CA private material is
+-- envelope-encrypted before persistence; certificate and recovery records retain only public
+-- values and audit references.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pki_authorities (
+    id                      uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id             uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    root_key_ciphertext     text        NOT NULL,
+    intermediate_ciphertext text        NOT NULL,
+    root_certificate_pem    text        NOT NULL,
+    intermediate_chain_pem  text        NOT NULL,
+    created_at              timestamptz NOT NULL DEFAULT now(),
+    updated_at              timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT pki_authorities_customer_unique UNIQUE (customer_id)
+);
+DROP TRIGGER IF EXISTS pki_authorities_set_updated_at ON pki_authorities;
+CREATE TRIGGER pki_authorities_set_updated_at BEFORE UPDATE ON pki_authorities
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS pki_certificates (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    authority_id    uuid        NOT NULL REFERENCES pki_authorities(id) ON DELETE CASCADE,
+    customer_id     uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    profile         text        NOT NULL,
+    subject         text        NOT NULL,
+    serial          text        NOT NULL,
+    public_value    text        NOT NULL,
+    expires_at      timestamptz NOT NULL,
+    issued_at       timestamptz NOT NULL DEFAULT now(),
+    renewed_from_id uuid        REFERENCES pki_certificates(id) ON DELETE SET NULL,
+    CONSTRAINT pki_certificates_profile_check
+        CHECK (profile IN ('x509_svid', 'jwt_svid', 'acme', 'ssh', 'client', 'device')),
+    CONSTRAINT pki_certificates_authority_serial_unique UNIQUE (authority_id, serial)
+);
+CREATE INDEX IF NOT EXISTS pki_certificates_customer_id_idx
+    ON pki_certificates (customer_id, issued_at DESC);
+
+CREATE TABLE IF NOT EXISTS pki_acme_orders (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id     uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    certificate_id  uuid        REFERENCES pki_certificates(id) ON DELETE SET NULL,
+    identifiers     jsonb       NOT NULL,
+    account_key     text        NOT NULL,
+    status          text        NOT NULL DEFAULT 'pending',
+    expires_at      timestamptz NOT NULL,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT pki_acme_orders_status_check
+        CHECK (status IN ('pending', 'ready', 'valid', 'invalid'))
+);
+DROP TRIGGER IF EXISTS pki_acme_orders_set_updated_at ON pki_acme_orders;
+CREATE TRIGGER pki_acme_orders_set_updated_at BEFORE UPDATE ON pki_acme_orders
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS pki_callers (
+    id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id         uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    workload_taap_id    text        NOT NULL,
+    attestation_type    text        NOT NULL,
+    issuer              text        NOT NULL DEFAULT '',
+    subject             text        NOT NULL DEFAULT '',
+    attributes          jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    expires_at          timestamptz NOT NULL,
+    issued_at           timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT pki_callers_attestation_type_check
+        CHECK (attestation_type IN ('kubernetes', 'oidc', 'jwt', 'aws', 'azure'))
+);
+CREATE INDEX IF NOT EXISTS pki_callers_customer_id_idx
+    ON pki_callers (customer_id, issued_at DESC);
+
+CREATE TABLE IF NOT EXISTS pki_recovery_ceremonies (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id     uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    authority_id    uuid        NOT NULL REFERENCES pki_authorities(id) ON DELETE CASCADE,
+    threshold       integer     NOT NULL,
+    share_count     integer     NOT NULL,
+    recovered_at    timestamptz,
+    expires_at      timestamptz NOT NULL,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT pki_recovery_ceremonies_threshold_check
+        CHECK (threshold > 1 AND share_count >= threshold)
+);
+
+CREATE TABLE IF NOT EXISTS pki_recovery_shares (
+    ceremony_id     uuid        NOT NULL REFERENCES pki_recovery_ceremonies(id) ON DELETE CASCADE,
+    share_index     integer     NOT NULL,
+    share_digest    text        NOT NULL,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (ceremony_id, share_index),
+    CONSTRAINT pki_recovery_shares_index_check CHECK (share_index > 0)
+);
+
+CREATE TABLE IF NOT EXISTS pki_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0013_pki') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Metering (migration 0014): hourly customer usage and an idempotency ledger for build compute.
+-- Stored bytes are a gauge; transfer and compute values are counters.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS metering_usage (
+    customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    hour               timestamptz NOT NULL,
+    stored_bytes       bigint      NOT NULL DEFAULT 0 CHECK (stored_bytes >= 0),
+    transfer_in_bytes  bigint      NOT NULL DEFAULT 0 CHECK (transfer_in_bytes >= 0),
+    transfer_out_bytes bigint      NOT NULL DEFAULT 0 CHECK (transfer_out_bytes >= 0),
+    compute_seconds    bigint      NOT NULL DEFAULT 0 CHECK (compute_seconds >= 0),
+    PRIMARY KEY (customer_id, hour),
+    CONSTRAINT metering_usage_hour_check CHECK (hour = date_trunc('hour', hour))
+);
+
+CREATE TABLE IF NOT EXISTS metering_build_records (
+    customer_id     uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    result_id       text        NOT NULL,
+    hour            timestamptz NOT NULL,
+    compute_seconds bigint     NOT NULL CHECK (compute_seconds >= 0),
+    PRIMARY KEY (customer_id, result_id),
+    CONSTRAINT metering_build_records_hour_check CHECK (hour = date_trunc('hour', hour))
+);
+
+CREATE TABLE IF NOT EXISTS metering_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0014_metering') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Drive sharing (migration 0015): expiring, scoped link capabilities over path policy objects.
+-- Direct recipient shares remain ordinary grants on the same objects.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS drive_share_links (
+    id                    uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    repository_id         uuid        NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    object_id             uuid        NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+    node_id               text        NOT NULL,
+    path                  text        NOT NULL,
+    role                  text        NOT NULL,
+    token_hash            text        NOT NULL UNIQUE,
+    expires_at            timestamptz NOT NULL,
+    revoked_at            timestamptz,
+    created_by_taap_id    text        NOT NULL,
+    created_at            timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT drive_share_links_role_check CHECK (role IN ('read', 'write')),
+    CONSTRAINT drive_share_links_node_check CHECK (length(node_id) = 32),
+    CONSTRAINT drive_share_links_expiry_check CHECK (expires_at > created_at)
+);
+CREATE INDEX IF NOT EXISTS drive_share_links_repository_object_idx
+    ON drive_share_links (repository_id, object_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS drive_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0015_drive') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Application authentication service (migration 0016): isolated user pools, hosted identity
+-- configuration, per-application signing keys, lifecycle webhooks, and operator-managed users.
+-- Private signing seeds and webhook secrets are encrypted through application-specific keystore
+-- purposes before they enter these tables.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE objects DROP CONSTRAINT IF EXISTS objects_type_check;
+ALTER TABLE objects ADD CONSTRAINT objects_type_check CHECK (object_type IN (
+    'customer', 'organization', 'team', 'member', 'repository', 'path', 'environment',
+    'secret_mount', 'secret', 'application'));
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pool_id text NOT NULL DEFAULT 'lake';
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_taap_id_key;
+DROP INDEX IF EXISTS users_email_lower_key;
+CREATE UNIQUE INDEX IF NOT EXISTS auth_app_users_pool_taap_unique
+    ON users (pool_id, taap_id) WHERE taap_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS auth_app_users_pool_email_unique
+    ON users (pool_id, lower(email)) WHERE email IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS auth_applications (
+    id                    uuid        PRIMARY KEY,
+    customer_id           uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    pool_id               text        NOT NULL UNIQUE,
+    name                  text        NOT NULL,
+    allowed_origins       jsonb       NOT NULL,
+    redirect_uris         jsonb       NOT NULL DEFAULT '[]'::jsonb,
+    custom_sign_in_domain text,
+    theme                 jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    created_at            timestamptz NOT NULL DEFAULT now(),
+    updated_at            timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT auth_applications_name_check CHECK (length(name) BETWEEN 1 AND 256),
+    CONSTRAINT auth_applications_origins_check CHECK (
+        jsonb_typeof(allowed_origins) = 'array' AND jsonb_array_length(allowed_origins) > 0),
+    CONSTRAINT auth_applications_redirects_check CHECK (jsonb_typeof(redirect_uris) = 'array'),
+    CONSTRAINT auth_applications_theme_check CHECK (jsonb_typeof(theme) = 'object')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS auth_applications_custom_domain_unique
+    ON auth_applications (lower(custom_sign_in_domain))
+    WHERE custom_sign_in_domain IS NOT NULL;
+CREATE INDEX IF NOT EXISTS auth_applications_customer_idx
+    ON auth_applications (customer_id, created_at DESC);
+DROP TRIGGER IF EXISTS auth_applications_set_updated_at ON auth_applications;
+CREATE TRIGGER auth_applications_set_updated_at BEFORE UPDATE ON auth_applications
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS auth_app_signing_keys (
+    application_id uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
+    kid            text        NOT NULL UNIQUE,
+    version        integer     NOT NULL CHECK (version > 0),
+    encrypted_seed text        NOT NULL,
+    public_key     text        NOT NULL,
+    current        boolean     NOT NULL DEFAULT true,
+    retired_at     timestamptz,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (application_id, version)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS auth_app_signing_keys_current_unique
+    ON auth_app_signing_keys (application_id) WHERE current;
+
+CREATE TABLE IF NOT EXISTS auth_app_users (
+    application_id uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
+    user_id        uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status         text        NOT NULL DEFAULT 'active',
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (application_id, user_id),
+    CONSTRAINT auth_app_users_status_check CHECK (status IN ('active', 'suspended'))
+);
+CREATE INDEX IF NOT EXISTS auth_app_users_status_idx
+    ON auth_app_users (application_id, status, created_at DESC);
+DROP TRIGGER IF EXISTS auth_app_users_set_updated_at ON auth_app_users;
+CREATE TRIGGER auth_app_users_set_updated_at BEFORE UPDATE ON auth_app_users
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS auth_app_organizations (
+    id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    application_id uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
+    taap_id        text        NOT NULL,
+    name           text        NOT NULL,
+    metadata       jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT auth_app_organizations_taap_unique UNIQUE (application_id, taap_id),
+    CONSTRAINT auth_app_organizations_name_unique UNIQUE (application_id, name),
+    CONSTRAINT auth_app_organizations_metadata_check CHECK (jsonb_typeof(metadata) = 'object')
+);
+DROP TRIGGER IF EXISTS auth_app_organizations_set_updated_at ON auth_app_organizations;
+CREATE TRIGGER auth_app_organizations_set_updated_at BEFORE UPDATE ON auth_app_organizations
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS auth_app_webhooks (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    application_id   uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
+    url              text        NOT NULL,
+    events           text[]      NOT NULL,
+    encrypted_secret text        NOT NULL,
+    enabled          boolean     NOT NULL DEFAULT true,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT auth_app_webhooks_events_check CHECK (cardinality(events) > 0)
+);
+CREATE INDEX IF NOT EXISTS auth_app_webhooks_application_idx
+    ON auth_app_webhooks (application_id, created_at DESC);
+DROP TRIGGER IF EXISTS auth_app_webhooks_set_updated_at ON auth_app_webhooks;
+CREATE TRIGGER auth_app_webhooks_set_updated_at BEFORE UPDATE ON auth_app_webhooks
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS auth_app_webhook_events (
+    id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    application_id uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
+    event          text        NOT NULL,
+    payload        jsonb       NOT NULL,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT auth_app_webhook_events_payload_check CHECK (jsonb_typeof(payload) = 'object')
+);
+CREATE INDEX IF NOT EXISTS auth_app_webhook_events_application_idx
+    ON auth_app_webhook_events (application_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS auth_app_webhook_deliveries (
+    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id   uuid        NOT NULL REFERENCES auth_app_webhook_events(id) ON DELETE CASCADE,
+    webhook_id uuid        NOT NULL REFERENCES auth_app_webhooks(id) ON DELETE CASCADE,
+    attempt    integer     NOT NULL CHECK (attempt > 0),
+    status     integer     NOT NULL DEFAULT 0,
+    signature  text        NOT NULL,
+    error      text        NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT auth_app_webhook_deliveries_attempt_unique UNIQUE (event_id, webhook_id, attempt)
+);
+CREATE INDEX IF NOT EXISTS auth_app_webhook_deliveries_event_idx
+    ON auth_app_webhook_deliveries (event_id, created_at);
+
+CREATE TABLE IF NOT EXISTS auth_app_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0016_auth_apps') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Agent sessions (migration 0017): short-lived per-session signing identities delegated to a
+-- durable agent identity. Private key material is returned once and never enters this table.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id                       uuid        PRIMARY KEY,
+    customer_id              uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    durable_agent_taap_id    text        NOT NULL,
+    dispatcher_taap_id       text        NOT NULL,
+    session_taap_id          text        NOT NULL UNIQUE,
+    public_key               text        NOT NULL,
+    scopes                   text[]      NOT NULL,
+    attestation              text        NOT NULL,
+    transparency_index       bigint      NOT NULL CHECK (transparency_index >= 0),
+    transparency_root        text        NOT NULL,
+    issued_at                timestamptz NOT NULL,
+    expires_at               timestamptz NOT NULL,
+    CONSTRAINT agent_sessions_scopes_check CHECK (cardinality(scopes) > 0),
+    CONSTRAINT agent_sessions_expiry_check CHECK (expires_at > issued_at)
+);
+CREATE INDEX IF NOT EXISTS agent_sessions_customer_agent_idx
+    ON agent_sessions (customer_id, durable_agent_taap_id, issued_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0017_agent_sessions') ON CONFLICT DO NOTHING;
