@@ -15,8 +15,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -25,7 +27,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
 )
@@ -43,7 +47,9 @@ const (
 	lakeDefaultPort   = 4900 // lake's --listen default
 	lakeServicePort   = 80
 	lakeControlDBName = "lake" // CNPG bootstrap database + owner
-	lakeDBRequeue     = 20 * time.Second
+	lakeStatusRequeue = 20 * time.Second
+	lakeStorePath     = "/var/lib/lake/store"
+	lakeStoreVolume   = "store"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
@@ -98,6 +104,7 @@ type lakeBackupConfig struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
@@ -151,6 +158,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		"app.kubernetes.io/managed-by": "orama-operator",
 	}
 	name := "lake-" + lake.Name
+	claimName, err := r.reconcileLakeStore(ctx, &lake, ns, labels)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile store: %w", err)
+	}
 
 	// Admin token: minted once, before the Deployment so its secretKeyRef resolves.
 	if err := r.reconcileLakeAdminToken(ctx, &lake, ns, labels); err != nil {
@@ -173,8 +184,18 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			Args:  lake.Spec.Args,
 			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
 			Env:   lakeEnv(&lake),
+			VolumeMounts: []corev1.VolumeMount{{
+				Name:      lakeStoreVolume,
+				MountPath: lakeStorePath,
+			}},
 			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{Path: "/", Port: intstr.FromString("http")}}},
+		}}
+		deploy.Spec.Template.Spec.Volumes = []corev1.Volume{{
+			Name: lakeStoreVolume,
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: claimName,
+			}},
 		}}
 		deploy.Spec.Template.Spec.ImagePullSecrets = nil
 		if lake.Spec.PullSecretName != "" {
@@ -225,6 +246,13 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	case deploy.Status.UnavailableReplicas > 0 && deploy.Status.ReadyReplicas > 0:
 		phase = "Degraded"
 	}
+	storeStatus, storeCondition, storeReady, err := r.lakeStoreStatus(ctx, &lake, ns, claimName)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("read store status: %w", err)
+	}
+	if !storeReady && phase == "Ready" {
+		phase = "Progressing"
+	}
 	pgReady, pgDetail := r.lakeControlDBStatus(ctx, &lake, ns)
 	schemaPhase, schemaVersion := r.lakeSchemaStatus(ctx, &lake, ns)
 	backupReady, lastBackupTime, backupCondition, err := r.lakeBackupStatus(ctx, &lake, ns, backup)
@@ -236,10 +264,14 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 	desiredConditions := lake.Status.Conditions
 	conditionsChanged := apimeta.SetStatusCondition(&desiredConditions, backupCondition)
+	if apimeta.SetStatusCondition(&desiredConditions, storeCondition) {
+		conditionsChanged = true
+	}
 	if lake.Status.ReadyReplicas != deploy.Status.ReadyReplicas || lake.Status.Phase != phase ||
 		lake.Status.PostgresReady != pgReady || lake.Status.PostgresInstances != pgDetail ||
 		lake.Status.SchemaPhase != schemaPhase || lake.Status.SchemaVersion != schemaVersion ||
 		lake.Status.BackupReady != backupReady || !lakeBackupTimesEqual(lake.Status.LastBackupTime, lastBackupTime) ||
+		!apiequality.Semantic.DeepEqual(lake.Status.Store, storeStatus) ||
 		conditionsChanged {
 		lake.Status.ReadyReplicas = deploy.Status.ReadyReplicas
 		lake.Status.Phase = phase
@@ -249,6 +281,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.SchemaVersion = schemaVersion
 		lake.Status.BackupReady = backupReady
 		lake.Status.LastBackupTime = lastBackupTime
+		lake.Status.Store = storeStatus
 		lake.Status.Conditions = desiredConditions
 		if err := r.Status().Update(ctx, &lake); err != nil {
 			return ctrl.Result{}, err
@@ -257,42 +290,181 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// The CNPG Cluster is not watched (OramaCloudV1 does the same): poll until the DB is ready and
 	// the schema applied (the PostgresSchema is owned, so its status changes re-queue us too).
 	if lakePostgresEnabled(&lake) && (!pgReady || schemaPhase != "Applied") {
-		return ctrl.Result{RequeueAfter: lakeDBRequeue}, nil
+		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
 	// CNPG creates Backup objects outside Lake ownership. Polling captures future runs while the
 	// anti-flap status guard avoids writes when the observed state is unchanged.
 	if lakePostgresEnabled(&lake) && backup.Enabled {
-		return ctrl.Result{RequeueAfter: lakeDBRequeue}, nil
+		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
+	}
+	if !storeReady {
+		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+func lakeStoreClaimName(lake *oramav1alpha1.Lake) string {
+	if lake.Spec.Store.ExistingClaim != "" {
+		return lake.Spec.Store.ExistingClaim
+	}
+	return "lake-" + lake.Name + "-store"
+}
+
+// reconcileLakeStore creates the managed claim once. Its storage fields are deliberately not
+// reconciled afterward because access mode and storage class are immutable and replacement would
+// destroy the data boundary. An existingClaim is mounted without adoption or mutation.
+func (r *LakeReconciler) reconcileLakeStore(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	ns string,
+	lbls map[string]string,
+) (string, error) {
+	claimName := lakeStoreClaimName(lake)
+	if lake.Spec.Store.ExistingClaim != "" {
+		return claimName, nil
+	}
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	key := client.ObjectKey{Namespace: ns, Name: claimName}
+	if err := r.Get(ctx, key, pvc); err == nil {
+		if !metav1.IsControlledBy(pvc, lake) {
+			return "", fmt.Errorf(
+				"persistent volume claim %s/%s already exists and is not controlled by Lake %s; set spec.store.existingClaim to use it",
+				ns,
+				claimName,
+				lake.Name,
+			)
+		}
+		return claimName, nil
+	} else if !apierrors.IsNotFound(err) {
+		return "", err
+	}
+
+	size := lake.Spec.Store.Size.DeepCopy()
+	if size.IsZero() {
+		size = resource.MustParse("100Gi")
+	}
+	accessModes := append([]corev1.PersistentVolumeAccessMode(nil), lake.Spec.Store.AccessModes...)
+	if len(accessModes) == 0 {
+		accessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}
+	}
+	pvc = &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      claimName,
+			Namespace: ns,
+			Labels:    lbls,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: accessModes,
+			Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{
+				corev1.ResourceStorage: size,
+			}},
+		},
+	}
+	if lake.Spec.Store.StorageClassName != "" {
+		pvc.Spec.StorageClassName = &lake.Spec.Store.StorageClassName
+	}
+	if err := controllerutil.SetControllerReference(lake, pvc, r.Scheme); err != nil {
+		return "", err
+	}
+	if err := r.Create(ctx, pvc); err != nil {
+		return "", err
+	}
+	return claimName, nil
+}
+
+func (r *LakeReconciler) lakeStoreStatus(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	ns string,
+	claimName string,
+) (*oramav1alpha1.LakeStoreStatus, metav1.Condition, bool, error) {
+	status := &oramav1alpha1.LakeStoreStatus{ClaimName: claimName}
+	condition := metav1.Condition{
+		Type:               "StoreReady",
+		ObservedGeneration: lake.Generation,
+	}
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: claimName}, pvc); err != nil {
+		if apierrors.IsNotFound(err) {
+			condition.Status = metav1.ConditionFalse
+			condition.Reason = "StoreClaimNotFound"
+			condition.Message = fmt.Sprintf("waiting for PersistentVolumeClaim %s/%s", ns, claimName)
+			return status, condition, false, nil
+		}
+		return nil, condition, false, err
+	}
+
+	status.Phase = pvc.Status.Phase
+	if capacity, ok := pvc.Status.Capacity[corev1.ResourceStorage]; ok {
+		copy := capacity.DeepCopy()
+		status.Capacity = &copy
+	}
+	if pvc.Status.Phase == corev1.ClaimBound {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "StoreBound"
+		condition.Message = fmt.Sprintf("PersistentVolumeClaim %s/%s is bound", ns, claimName)
+		return status, condition, true, nil
+	}
+	condition.Status = metav1.ConditionFalse
+	condition.Reason = "StoreUnbound"
+	condition.Message = fmt.Sprintf(
+		"PersistentVolumeClaim %s/%s is not bound (phase %q)",
+		ns,
+		claimName,
+		pvc.Status.Phase,
+	)
+	return status, condition, false, nil
 }
 
 // lakeEnv is what the lake container learns from the operator. The control-DB Secret is
 // generated by CNPG after the Cluster bootstraps, so the reference is optional: the pod starts
 // before the database exists and picks the value up on its next restart.
 func lakeEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
-	env := []corev1.EnvVar{{Name: "LAKE_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-		LocalObjectReference: corev1.LocalObjectReference{Name: lakeAdminSecret(lake.Name)}, Key: "token"}}}}
-	if !lakePostgresEnabled(lake) {
-		return env
+	reserved := map[string]struct{}{
+		"LAKE_ADMIN_TOKEN":         {},
+		"LAKE_CONTROL_DB_PASSWORD": {},
+		"LAKE_CONTROL_DB_URI":      {},
+		"LAKE_INSTANCE_KEK":        {},
+		"LAKE_STORE_ROOT":          {},
 	}
-	env = append(env, corev1.EnvVar{
-		Name: "LAKE_INSTANCE_KEK",
-		ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: lakeInstanceKekSecret(lake.Name)},
-			Key:                  "key",
-		}},
-	})
-	optional := true
-	secret := lakeControlDB(lake.Name) + "-app"
-	ref := func(key string) *corev1.EnvVarSource {
-		return &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: key, Optional: &optional}}
+	env := []corev1.EnvVar{
+		{Name: "LAKE_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: lakeAdminSecret(lake.Name)},
+			Key:                  "token",
+		}}},
+		{Name: "LAKE_STORE_ROOT", Value: lakeStorePath},
 	}
-	return append(env,
-		corev1.EnvVar{Name: "LAKE_CONTROL_DB_URI", ValueFrom: ref("uri")},
-		corev1.EnvVar{Name: "LAKE_CONTROL_DB_PASSWORD", ValueFrom: ref("password")},
-	)
+	if lakePostgresEnabled(lake) {
+		env = append(env, corev1.EnvVar{
+			Name: "LAKE_INSTANCE_KEK",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: lakeInstanceKekSecret(lake.Name)},
+				Key:                  "key",
+			}},
+		})
+		optional := true
+		secret := lakeControlDB(lake.Name) + "-app"
+		ref := func(key string) *corev1.EnvVarSource {
+			return &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secret},
+				Key:                  key,
+				Optional:             &optional,
+			}}
+		}
+		env = append(
+			env,
+			corev1.EnvVar{Name: "LAKE_CONTROL_DB_URI", ValueFrom: ref("uri")},
+			corev1.EnvVar{Name: "LAKE_CONTROL_DB_PASSWORD", ValueFrom: ref("password")},
+		)
+	}
+	for _, custom := range lake.Spec.Env {
+		if _, found := reserved[custom.Name]; found {
+			continue
+		}
+		env = append(env, custom)
+	}
+	return env
 }
 
 // reconcileLakeInstanceKek mints the non-exported 32-byte root wrapping key once. Disabling the
@@ -699,12 +871,46 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	return err
 }
 
+// lakeRequestsForStoreClaim maps both managed and existing claim changes back to cluster-scoped
+// Lakes. Listing uses the manager cache, so a steady claim creates no polling traffic.
+func (r *LakeReconciler) lakeRequestsForStoreClaim(
+	ctx context.Context,
+	object client.Object,
+) []reconcile.Request {
+	pvc, ok := object.(*corev1.PersistentVolumeClaim)
+	if !ok {
+		return nil
+	}
+	var lakes oramav1alpha1.LakeList
+	if err := r.List(ctx, &lakes); err != nil {
+		logf.FromContext(ctx).Error(err, "list Lakes for store claim", "claim", client.ObjectKeyFromObject(pvc))
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(lakes.Items))
+	for i := range lakes.Items {
+		lake := &lakes.Items[i]
+		ns := lake.Spec.Namespace
+		if ns == "" {
+			ns = "lake-dev"
+		}
+		if ns != pvc.Namespace || lakeStoreClaimName(lake) != pvc.Name {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: lake.Name}})
+	}
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.Lake{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Watches(
+			&corev1.PersistentVolumeClaim{},
+			handler.EnqueueRequestsFromMapFunc(r.lakeRequestsForStoreClaim),
+		).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Owns(&corev1.ConfigMap{}).

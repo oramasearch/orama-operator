@@ -7,6 +7,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -48,6 +49,18 @@ type LakeSpec struct {
 	// +optional
 	Args []string `json:"args,omitempty"`
 
+	// Store configures the persistent root shared by all lake replicas. When ExistingClaim is
+	// empty, the operator creates lake-<name>-store once from Size, StorageClassName, and
+	// AccessModes. Later spec changes never replace or delete that claim. ReadWriteOnce requires
+	// Replicas=1; multiple replicas need storage that supports ReadWriteMany.
+	// +optional
+	Store LakeStoreSpec `json:"store,omitempty"`
+
+	// Env appends lake-specific environment variables after the operator-managed variables.
+	// Operator-managed names take precedence and conflicting entries are ignored.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
 	// Postgres is lake's control plane: a CloudNativePG Cluster the operator provisions in
 	// spec.namespace, the same path OramaCloudV1 uses for its control DB (requires the
 	// CloudNativePG operator, see the helmfile). CNPG generates the `lake-<name>-controldb-app`
@@ -78,6 +91,33 @@ type LakeSpec struct {
 	// oramadev.net one the Zetta clusters use.
 	// +optional
 	DNSSecretRef *corev1.LocalObjectReference `json:"dnsSecretRef,omitempty"`
+}
+
+// LakeStoreSpec describes the persistent libliquid store root for a Lake.
+type LakeStoreSpec struct {
+	// Size requested for an operator-created claim. It is used only when the claim is first
+	// created; later changes do not replace or resize the data volume.
+	// +kubebuilder:default="100Gi"
+	// +optional
+	Size resource.Quantity `json:"size,omitempty"`
+
+	// StorageClassName for an operator-created claim. Empty uses the cluster default.
+	// It is used only when the claim is first created.
+	// +optional
+	StorageClassName string `json:"storageClassName,omitempty"`
+
+	// AccessModes for an operator-created claim. The default is ReadWriteMany because every
+	// Deployment replica mounts the same store root. ReadWriteOnce requires spec.replicas=1.
+	// It is used only when the claim is first created.
+	// +kubebuilder:default={ReadWriteMany}
+	// +kubebuilder:validation:MinItems=1
+	// +optional
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
+
+	// ExistingClaim names a PersistentVolumeClaim in spec.namespace to mount instead of creating
+	// lake-<name>-store. The operator does not adopt, modify, or delete this claim.
+	// +optional
+	ExistingClaim string `json:"existingClaim,omitempty"`
 }
 
 // LakePostgresSpec describes the control-plane Postgres for a Lake.
@@ -176,12 +216,30 @@ type LakeStatus struct {
 	// LastBackupTime is the completion time reported by the newest CNPG Backup.
 	// +optional
 	LastBackupTime *metav1.Time `json:"lastBackupTime,omitempty"`
-	// Conditions includes BackupReady, including invalid backup configuration details.
+	// Store reports the selected claim and its observed binding state.
+	// +optional
+	Store *LakeStoreStatus `json:"store,omitempty"`
+	// Conditions includes StoreReady and BackupReady, including invalid configuration details.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// Phase is a coarse summary in the operator's vocabulary: Progressing, Ready, Degraded.
 	// +optional
 	Phase string `json:"phase,omitempty"`
+}
+
+// LakeStoreStatus is the observed state of the claim mounted at LAKE_STORE_ROOT.
+type LakeStoreStatus struct {
+	// ClaimName is the selected existing or operator-created PersistentVolumeClaim.
+	// +optional
+	ClaimName string `json:"claimName,omitempty"`
+
+	// Phase is the PersistentVolumeClaim phase, such as Pending, Bound, or Lost.
+	// +optional
+	Phase corev1.PersistentVolumeClaimPhase `json:"phase,omitempty"`
+
+	// Capacity is the bound storage capacity reported by the claim.
+	// +optional
+	Capacity *resource.Quantity `json:"capacity,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -192,6 +250,7 @@ type LakeStatus struct {
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="DB",type=string,JSONPath=`.status.postgresInstances`
 // +kubebuilder:printcolumn:name="Schema",type=string,JSONPath=`.status.schemaPhase`
+// +kubebuilder:printcolumn:name="Store",type=string,JSONPath=`.status.store.claimName`
 // +kubebuilder:printcolumn:name="Backup",type=date,JSONPath=`.status.lastBackupTime`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 

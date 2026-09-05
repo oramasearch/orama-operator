@@ -14,6 +14,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -87,6 +88,215 @@ func TestLakeReconcileCreatesWorkloads(t *testing.T) {
 	}
 	if svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.IntValue() != 4900 {
 		t.Errorf("service ports = %+v", svc.Spec.Ports)
+	}
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-store"}, pvc); err != nil {
+		t.Fatalf("default store PVC not created: %v", err)
+	}
+	requested := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if requested.Cmp(resource.MustParse("100Gi")) != 0 || len(pvc.Spec.AccessModes) != 1 ||
+		pvc.Spec.AccessModes[0] != corev1.ReadWriteMany {
+		t.Errorf("default store PVC = %+v", pvc.Spec)
+	}
+}
+
+func TestLakeReconcileCreatesStorePVC(t *testing.T) {
+	s := newLakeScheme(t)
+	size := resource.MustParse("250Gi")
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "store"},
+		Spec: oramav1alpha1.LakeSpec{
+			Image: "oramasearch/lake:20260905a",
+			Store: oramav1alpha1.LakeStoreSpec{
+				Size:             size,
+				StorageClassName: "azurefile-csi-premium",
+				AccessModes: []corev1.PersistentVolumeAccessMode{
+					corev1.ReadWriteMany,
+					corev1.ReadOnlyMany,
+				},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	reconcileLake(t, c, s, "store")
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	key := types.NamespacedName{Namespace: "lake-dev", Name: "lake-store-store"}
+	if err := c.Get(context.Background(), key, pvc); err != nil {
+		t.Fatalf("store PVC not created: %v", err)
+	}
+	requested := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if requested.Cmp(size) != 0 {
+		t.Errorf("storage request = %s, want %s", requested.String(), size.String())
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "azurefile-csi-premium" {
+		t.Errorf("storageClassName = %v", pvc.Spec.StorageClassName)
+	}
+	if len(pvc.Spec.AccessModes) != 2 || pvc.Spec.AccessModes[0] != corev1.ReadWriteMany ||
+		pvc.Spec.AccessModes[1] != corev1.ReadOnlyMany {
+		t.Errorf("accessModes = %v", pvc.Spec.AccessModes)
+	}
+	if refs := pvc.OwnerReferences; len(refs) != 1 || refs[0].Name != "store" || refs[0].Kind != "Lake" {
+		t.Errorf("owner refs = %+v", refs)
+	}
+
+	current := &oramav1alpha1.Lake{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "store"}, current); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.Store.Size = resource.MustParse("500Gi")
+	current.Spec.Store.StorageClassName = "different-class"
+	current.Spec.Store.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+	if err := c.Update(context.Background(), current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileLake(t, c, s, "store")
+	if err := c.Get(context.Background(), key, pvc); err != nil {
+		t.Fatal(err)
+	}
+	requested = pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	if requested.Cmp(size) != 0 || *pvc.Spec.StorageClassName != "azurefile-csi-premium" ||
+		len(pvc.Spec.AccessModes) != 2 {
+		t.Errorf("created PVC changed after spec update: %+v", pvc.Spec)
+	}
+	external := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "external-store", Namespace: "lake-dev"},
+	}
+	if err := c.Create(context.Background(), external); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "store"}, current); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.Store.ExistingClaim = "external-store"
+	if err := c.Update(context.Background(), current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileLake(t, c, s, "store")
+	if err := c.Get(context.Background(), key, pvc); err != nil {
+		t.Errorf("managed store PVC was deleted after existingClaim changed: %v", err)
+	}
+}
+
+func TestLakeReconcileUsesExistingStorePVC(t *testing.T) {
+	s := newLakeScheme(t)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "existing"},
+		Spec: oramav1alpha1.LakeSpec{
+			Image: "oramasearch/lake:20260905a",
+			Store: oramav1alpha1.LakeStoreSpec{ExistingClaim: "lake-data"},
+		},
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "lake-data", Namespace: "lake-dev"},
+		Status:     corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, pvc).WithStatusSubresource(lake).Build()
+	reconcileLake(t, c, s, "existing")
+
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-existing-store"}, &corev1.PersistentVolumeClaim{}); err == nil {
+		t.Fatal("managed store PVC created when existingClaim was set")
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-data"}, pvc); err != nil {
+		t.Fatal(err)
+	}
+	if len(pvc.OwnerReferences) != 0 {
+		t.Errorf("existing claim was adopted: %+v", pvc.OwnerReferences)
+	}
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-existing"}, deployment); err != nil {
+		t.Fatal(err)
+	}
+	volumes := deployment.Spec.Template.Spec.Volumes
+	mounts := deployment.Spec.Template.Spec.Containers[0].VolumeMounts
+	if len(volumes) != 1 || volumes[0].PersistentVolumeClaim == nil ||
+		volumes[0].PersistentVolumeClaim.ClaimName != "lake-data" {
+		t.Errorf("store volume = %+v", volumes)
+	}
+	if len(mounts) != 1 || mounts[0].Name != lakeStoreVolume || mounts[0].MountPath != lakeStorePath {
+		t.Errorf("store mount = %+v", mounts)
+	}
+}
+
+func TestLakeReconcileAppendsCustomEnvWithOperatorPrecedence(t *testing.T) {
+	s := newLakeScheme(t)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "env"},
+		Spec: oramav1alpha1.LakeSpec{
+			Image: "oramasearch/lake:20260905a",
+			Env: []corev1.EnvVar{
+				{Name: "LAKE_LOG_MODE", Value: "air-gapped"},
+				{Name: "LAKE_STORE_ROOT", Value: "/tmp/wrong"},
+				{Name: "LAKE_PUBLIC_HOST", Value: "lake.example.com"},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	reconcileLake(t, c, s, "env")
+
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-env"}, deployment); err != nil {
+		t.Fatal(err)
+	}
+	env := deployment.Spec.Template.Spec.Containers[0].Env
+	if len(env) != 7 {
+		t.Fatalf("env = %+v", env)
+	}
+	if env[0].Name != "LAKE_ADMIN_TOKEN" || env[1].Name != "LAKE_STORE_ROOT" ||
+		env[1].Value != lakeStorePath || env[5].Name != "LAKE_LOG_MODE" ||
+		env[5].Value != "air-gapped" || env[6].Name != "LAKE_PUBLIC_HOST" {
+		t.Errorf("env order or values = %+v", env)
+	}
+	for i, variable := range env {
+		if variable.Name == "LAKE_STORE_ROOT" && i != 1 {
+			t.Errorf("custom LAKE_STORE_ROOT overrode operator value: %+v", env)
+		}
+	}
+}
+
+func TestLakeStoreStatusTracksClaimBinding(t *testing.T) {
+	s := newLakeScheme(t)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "status"},
+		Spec: oramav1alpha1.LakeSpec{
+			Image: "oramasearch/lake:20260905a",
+			Store: oramav1alpha1.LakeStoreSpec{ExistingClaim: "lake-data"},
+		},
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "lake-data", Namespace: "lake-dev"},
+		Status:     corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, pvc).
+		WithStatusSubresource(lake, &corev1.PersistentVolumeClaim{}).
+		Build()
+	reconcileLake(t, c, s, "status")
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "status"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	if lake.Status.Store == nil || lake.Status.Store.ClaimName != "lake-data" ||
+		lake.Status.Store.Phase != corev1.ClaimPending ||
+		lakeConditionStatus(lake.Status.Conditions, "StoreReady") != metav1.ConditionFalse ||
+		lakeConditionReason(lake.Status.Conditions, "StoreReady") != "StoreUnbound" {
+		t.Errorf("pending store status = %+v", lake.Status)
+	}
+
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-data"}, pvc); err != nil {
+		t.Fatal(err)
+	}
+	pvc.Status.Phase = corev1.ClaimBound
+	pvc.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("200Gi")}
+	if err := c.Status().Update(context.Background(), pvc); err != nil {
+		t.Fatal(err)
+	}
+	reconcileLake(t, c, s, "status")
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "status"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	if lake.Status.Store == nil || lake.Status.Store.Phase != corev1.ClaimBound ||
+		lake.Status.Store.Capacity == nil || lake.Status.Store.Capacity.Cmp(resource.MustParse("200Gi")) != 0 ||
+		lakeConditionStatus(lake.Status.Conditions, "StoreReady") != metav1.ConditionTrue {
+		t.Errorf("bound store status = %+v", lake.Status)
 	}
 }
 
@@ -225,11 +435,12 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := d.Spec.Template.Spec.Containers[0].Env
-	if len(env) != 4 || env[0].Name != "LAKE_ADMIN_TOKEN" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" ||
-		env[1].Name != "LAKE_INSTANCE_KEK" || env[1].ValueFrom.SecretKeyRef.Name != "lake-hello-instance-kek" ||
-		env[1].ValueFrom.SecretKeyRef.Key != "key" || env[2].Name != "LAKE_CONTROL_DB_URI" ||
-		env[2].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" || env[2].ValueFrom.SecretKeyRef.Key != "uri" ||
-		env[2].ValueFrom.SecretKeyRef.Optional == nil || !*env[2].ValueFrom.SecretKeyRef.Optional {
+	if len(env) != 5 || env[0].Name != "LAKE_ADMIN_TOKEN" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" ||
+		env[1].Name != "LAKE_STORE_ROOT" || env[1].Value != lakeStorePath ||
+		env[2].Name != "LAKE_INSTANCE_KEK" || env[2].ValueFrom.SecretKeyRef.Name != "lake-hello-instance-kek" ||
+		env[2].ValueFrom.SecretKeyRef.Key != "key" || env[3].Name != "LAKE_CONTROL_DB_URI" ||
+		env[3].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" || env[3].ValueFrom.SecretKeyRef.Key != "uri" ||
+		env[3].ValueFrom.SecretKeyRef.Optional == nil || !*env[3].ValueFrom.SecretKeyRef.Optional {
 		t.Errorf("env = %+v", env)
 	}
 	var admin corev1.Secret
@@ -298,8 +509,9 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
 		t.Fatal(err)
 	}
-	if e := d.Spec.Template.Spec.Containers[0].Env; len(e) != 1 || e[0].Name != "LAKE_ADMIN_TOKEN" {
-		t.Errorf("env should be only the admin token when postgres is disabled: %+v", e)
+	if e := d.Spec.Template.Spec.Containers[0].Env; len(e) != 2 || e[0].Name != "LAKE_ADMIN_TOKEN" ||
+		e[1].Name != "LAKE_STORE_ROOT" {
+		t.Errorf("operator env when postgres is disabled = %+v", e)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-instance-kek"}, &instanceKek); err == nil {
 		t.Error("instance KEK must be removed with the disabled database")
@@ -340,8 +552,8 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if res.RequeueAfter != lakeDBRequeue {
-		t.Errorf("requeueAfter = %s, want %s", res.RequeueAfter, lakeDBRequeue)
+	if res.RequeueAfter != lakeStatusRequeue {
+		t.Errorf("requeueAfter = %s, want %s", res.RequeueAfter, lakeStatusRequeue)
 	}
 
 	cluster := &unstructured.Unstructured{}
@@ -511,6 +723,7 @@ func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS offline_recovery_grants", "CREATE TABLE IF NOT EXISTS offline_recovery_attempts",
 		"CREATE TABLE IF NOT EXISTS offline_recovery_contacts", "CREATE TABLE IF NOT EXISTS offline_recovery_guard",
 		"0011_offline_recovery", "CREATE TABLE IF NOT EXISTS forge_guard", "CREATE TABLE IF NOT EXISTS pki_guard",
+		"CREATE TABLE IF NOT EXISTS repository_refs", "0006_repository_lifecycle",
 		"CREATE TABLE IF NOT EXISTS metering_guard", "CREATE TABLE IF NOT EXISTS drive_guard",
 		"CREATE TABLE IF NOT EXISTS auth_app_guard", "CREATE TABLE IF NOT EXISTS agent_sessions",
 		"CREATE TABLE IF NOT EXISTS agent_guard", "0017_agent_sessions"} {
