@@ -3,7 +3,7 @@
 # controller-gen is fetched on demand by `make generate`/`make manifests`.
 
 IMG ?= oramasearch/orama-operator:latest
-CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0
 
 .PHONY: manifests generate fmt vet build run docker-build helm-package test
 

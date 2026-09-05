@@ -103,6 +103,54 @@ type LakePostgresSpec struct {
 	// StorageClassName for the PVCs; empty = the cluster default.
 	// +optional
 	StorageClassName string `json:"storageClassName,omitempty"`
+
+	// Backup configures scheduled Barman object-store backups of the control-plane Cluster.
+	// +optional
+	Backup LakePostgresBackupSpec `json:"backup,omitempty"`
+}
+
+// LakePostgresBackupSpec describes scheduled object-store backups for a Lake control-plane
+// Postgres cluster. The Secret is in spec.namespace and has the same R2/S3 shape as
+// OramaCloudV1's r2SecretRef: s3ApiEndpoint, accessKeyId, and secretAccessKey.
+type LakePostgresBackupSpec struct {
+	// Enabled turns on the CNPG Barman object store and ScheduledBackup. Default false.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Schedule is a six-field CNPG cron expression.
+	// +kubebuilder:default="0 0 3 * * *"
+	// +optional
+	Schedule string `json:"schedule,omitempty"`
+
+	// Retention is the Barman retentionPolicy.
+	// +kubebuilder:default="30d"
+	// +optional
+	Retention string `json:"retention,omitempty"`
+
+	// Destination identifies the object-store location. Bucket is required when Enabled is true.
+	// +optional
+	Destination LakePostgresBackupDestination `json:"destination,omitempty"`
+
+	// SecretRef names the R2/S3 credentials Secret in spec.namespace. It is required when
+	// Enabled is true and must contain s3ApiEndpoint, accessKeyId, and secretAccessKey.
+	// +optional
+	SecretRef corev1.LocalObjectReference `json:"secretRef,omitempty"`
+}
+
+// LakePostgresBackupDestination identifies the Barman object-store location.
+type LakePostgresBackupDestination struct {
+	// Bucket is the object-store bucket name. Required when backups are enabled.
+	// +optional
+	Bucket string `json:"bucket,omitempty"`
+
+	// Path is the bucket prefix. Empty defaults to lake-<name>/controldb.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// EndpointURL overrides the Secret's s3ApiEndpoint.
+	// +optional
+	EndpointURL string `json:"endpointURL,omitempty"`
 }
 
 // LakeStatus defines the observed state of Lake.
@@ -122,6 +170,15 @@ type LakeStatus struct {
 	// SchemaVersion is the applied schema's content hash (sha256:<12 hex>), from the PostgresSchema.
 	// +optional
 	SchemaVersion string `json:"schemaVersion,omitempty"`
+	// BackupReady is true when the ScheduledBackup exists and the newest CNPG Backup completed.
+	// +optional
+	BackupReady bool `json:"backupReady,omitempty"`
+	// LastBackupTime is the completion time reported by the newest CNPG Backup.
+	// +optional
+	LastBackupTime *metav1.Time `json:"lastBackupTime,omitempty"`
+	// Conditions includes BackupReady, including invalid backup configuration details.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// Phase is a coarse summary in the operator's vocabulary: Progressing, Ready, Degraded.
 	// +optional
 	Phase string `json:"phase,omitempty"`
@@ -135,6 +192,7 @@ type LakeStatus struct {
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="DB",type=string,JSONPath=`.status.postgresInstances`
 // +kubebuilder:printcolumn:name="Schema",type=string,JSONPath=`.status.schemaPhase`
+// +kubebuilder:printcolumn:name="Backup",type=date,JSONPath=`.status.lastBackupTime`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 
 // Lake is the Schema for the lakes API

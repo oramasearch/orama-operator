@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: lakes.orama.cloud
 spec:
   group: orama.cloud
@@ -30,6 +30,9 @@ spec:
     - jsonPath: .status.schemaPhase
       name: Schema
       type: string
+    - jsonPath: .status.lastBackupTime
+      name: Backup
+      type: date
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -126,6 +129,56 @@ spec:
                   Secret (owner credentials + connection URI); the lake pods receive it as
                   LAKE_CONTROL_DB_URI. Zetta is the data plane and is provisioned separately.
                 properties:
+                  backup:
+                    description: Backup configures scheduled Barman object-store backups
+                      of the control-plane Cluster.
+                    properties:
+                      destination:
+                        description: Destination identifies the object-store location.
+                          Bucket is required when Enabled is true.
+                        properties:
+                          bucket:
+                            description: Bucket is the object-store bucket name. Required
+                              when backups are enabled.
+                            type: string
+                          endpointURL:
+                            description: EndpointURL overrides the Secret's s3ApiEndpoint.
+                            type: string
+                          path:
+                            description: Path is the bucket prefix. Empty defaults
+                              to lake-<name>/controldb.
+                            type: string
+                        type: object
+                      enabled:
+                        default: false
+                        description: Enabled turns on the CNPG Barman object store
+                          and ScheduledBackup. Default false.
+                        type: boolean
+                      retention:
+                        default: 30d
+                        description: Retention is the Barman retentionPolicy.
+                        type: string
+                      schedule:
+                        default: 0 0 3 * * *
+                        description: Schedule is a six-field CNPG cron expression.
+                        type: string
+                      secretRef:
+                        description: |-
+                          SecretRef names the R2/S3 credentials Secret in spec.namespace. It is required when
+                          Enabled is true and must contain s3ApiEndpoint, accessKeyId, and secretAccessKey.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                    type: object
                   enabled:
                     default: true
                     description: |-
@@ -167,6 +220,73 @@ spec:
           status:
             description: status defines the observed state of Lake
             properties:
+              backupReady:
+                description: BackupReady is true when the ScheduledBackup exists and
+                  the newest CNPG Backup completed.
+                type: boolean
+              conditions:
+                description: Conditions includes BackupReady, including invalid backup
+                  configuration details.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastBackupTime:
+                description: LastBackupTime is the completion time reported by the
+                  newest CNPG Backup.
+                format: date-time
+                type: string
               phase:
                 description: 'Phase is a coarse summary in the operator''s vocabulary:
                   Progressing, Ready, Degraded.'
