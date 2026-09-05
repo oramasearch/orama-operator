@@ -14,22 +14,27 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
 2. **Admin token** — Secret `lake-<name>-admin` (key `token`, 64 hex), minted once, owned;
    injected as `LAKE_ADMIN_TOKEN`. lake's `/v1` capabilities and MCP tool calls require it as a
    bearer.
-3. **Deployment** `lake-<name>` — `spec.image` run as built, `spec.args`, port `spec.port`
+3. **Instance KEK** — Secret `lake-<name>-instance-kek` (key `key`, 64 hex), minted once and owned
+   while Postgres is enabled; injected as `LAKE_INSTANCE_KEK`. It wraps lake's persisted identity
+   key and the per-customer KEKs used by static secrets and encryption. It is distinct from the
+   admin bearer and is never sent to clients.
+4. **Deployment** `lake-<name>` — `spec.image` run as built, `spec.args`, port `spec.port`
    (default 4900), readiness `GET /`, `spec.replicas`, `imagePullSecrets` from
    `spec.pullSecretName`; env `LAKE_CONTROL_DB_URI` / `LAKE_CONTROL_DB_PASSWORD` from the CNPG
    app Secret (optional refs).
-4. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
-5. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
+5. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
+6. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
    (`spec.postgres`: enabled by default, instances, storageSize 50Gi, storageClassName), the same
    unstructured path `OramaCloudV1` uses (`controldb.go`). Disabling tears it down **with its
    data**.
-6. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
+7. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = the table the newest migration creates (`repositories`), version = content
+   `oramasearch/lake` `db/schema.sql`), guard table = the table the newest migration creates
+   (`secrets_guard` for `0009_secrets`), version = content
    hash. The file is idempotent, so a new migration = a new guard, and the next Job re-runs the
    file adding only what is missing; on an existing Lake, delete the `PostgresSchema` (owned, it
    is recreated) to trigger that Job. Proper incremental migrations are #126.
-7. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
+8. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
    whole host and an owned `CloudflareDNSRecord`, the `OramaZettaCluster` contract; gating off
    tears both down.
 

@@ -122,7 +122,7 @@ about the **operator**, not a copy of prod docs.
 
 ### The `Lake` CR (lake, liquid project)
 
-`Lake` deploys the lake service: namespace, admin-token Secret, Deployment, Service, a CNPG
+`Lake` deploys the lake service: namespace, admin-token and instance-KEK Secrets, Deployment, Service, a CNPG
 control-plane Postgres with lake's schema applied through `PostgresSchema`, opt-in Ingress + Cloudflare DNS.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
 production instance) and the `Lake` section of [`docs/crd-reference.md`](docs/crd-reference.md) before touching
