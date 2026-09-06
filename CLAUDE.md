@@ -115,7 +115,8 @@ behavior updates documentation in the **same change**:
   [`docs/components.md`](docs/components.md) (what it creates + how it maps to prod).
 - Change the build/test/deploy flow → update [`docs/development.md`](docs/development.md).
 - A decision changes → update [`DESIGN.md`](DESIGN.md)'s decision table.
-- Anything user-facing → update [`README.md`](README.md).
+- Anything user-facing → update the page under `docs/` that owns it (the README is a front door only:
+  what the operator is, build and test, pointers; never append feature sections to it).
 
 A PR/commit that changes behavior without the matching doc update is incomplete. The
 ops truth for the *production* system being modeled lives in
