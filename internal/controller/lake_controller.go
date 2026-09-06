@@ -17,6 +17,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -38,8 +39,7 @@ import (
 
 // LakeReconciler reconciles a Lake object into a Namespace, a Deployment, a Service, a
 // control-plane Postgres (CloudNativePG Cluster, on by default) and, opt-in, an Ingress plus a
-// Cloudflare DNS record. Zetta is lake's data plane and is provisioned separately. Hello-world stage: the Deployment runs whatever spec.image says, which
-// defaults to an HTTP echo until the lake binary exists.
+// Cloudflare DNS record. Zetta is lake's data plane and is provisioned separately.
 type LakeReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -109,6 +109,7 @@ type lakeBackupConfig struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
@@ -177,45 +178,12 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("reconcile sealing key: %w", err)
 	}
 
-	// Deployment.
-	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
-		deploy.Labels = labels
-		deploy.Spec.Replicas = &replicas
-		deploy.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
-		deploy.Spec.Template.ObjectMeta.Labels = labels
-		deploy.Spec.Template.Spec.Containers = []corev1.Container{{
-			Name:  "lake",
-			Image: image,
-			Args:  lake.Spec.Args,
-			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
-			Env:   lakeEnv(&lake, sealing),
-			VolumeMounts: []corev1.VolumeMount{{
-				Name:      lakeStoreVolume,
-				MountPath: lakeStorePath,
-			}},
-			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{Path: "/", Port: intstr.FromString("http")}}},
-		}}
-		// lake runs as uid/gid 10001 in its image; fsGroup makes the store volume writable by that
-		// group when it is mounted (docs/lake/README.md, the store section).
-		deploy.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{
-			FSGroup:             ptrInt64(lakeRunAsGroup),
-			FSGroupChangePolicy: ptrFSGroupChangePolicy(corev1.FSGroupChangeOnRootMismatch),
-		}
-		deploy.Spec.Template.Spec.Volumes = []corev1.Volume{{
-			Name: lakeStoreVolume,
-			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: claimName,
-			}},
-		}}
-		deploy.Spec.Template.Spec.ImagePullSecrets = nil
-		if lake.Spec.PullSecretName != "" {
-			deploy.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: lake.Spec.PullSecretName}}
-		}
-		return controllerutil.SetControllerReference(&lake, deploy, r.Scheme)
-	}); err != nil {
+	deploy, err := r.reconcileLakeDeployment(ctx, &lake, ns, name, image, claimName, labels, replicas, port, sealing)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile deployment: %w", err)
+	}
+	if err := r.reconcileLakePDB(ctx, &lake, ns, name, labels, replicas); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile pod disruption budget: %w", err)
 	}
 
 	// Service.
@@ -320,6 +288,148 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+func (r *LakeReconciler) reconcileLakeDeployment(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	namespace string,
+	name string,
+	image string,
+	claimName string,
+	labels map[string]string,
+	replicas int32,
+	port int32,
+	sealing lakeSealingMaterial,
+) (*appsv1.Deployment, error) {
+	maxUnavailable := intstr.FromInt(0)
+	maxSurge := intstr.FromInt(1)
+	terminationGracePeriodSeconds := int64(30)
+	resources := resourceReqs("128Mi", "50m", "512Mi")
+	if lake.Spec.Resources != nil {
+		resources = lake.Spec.Resources.DeepCopy()
+	}
+
+	containerSecurityContext := hardenedSecurityContext()
+	containerSecurityContext.RunAsNonRoot = boolPtr(true)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
+		deployment.Labels = labels
+		deployment.Spec.Replicas = &replicas
+		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
+		deployment.Spec.Strategy = appsv1.DeploymentStrategy{
+			Type: appsv1.RollingUpdateDeploymentStrategyType,
+			RollingUpdate: &appsv1.RollingUpdateDeployment{
+				MaxUnavailable: &maxUnavailable,
+				MaxSurge:       &maxSurge,
+			},
+		}
+		deployment.Spec.Template.ObjectMeta.Labels = labels
+		deployment.Spec.Template.Spec = corev1.PodSpec{
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsNonRoot:        boolPtr(true),
+				RunAsUser:           ptrInt64(lakeRunAsUser),
+				RunAsGroup:          ptrInt64(lakeRunAsGroup),
+				FSGroup:             ptrInt64(lakeRunAsGroup),
+				FSGroupChangePolicy: ptrFSGroupChangePolicy(corev1.FSGroupChangeOnRootMismatch),
+			},
+			TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
+			TopologySpreadConstraints:     lakeTopologySpreadConstraints(lake, replicas, labels),
+			Containers: []corev1.Container{{
+				Name:            "lake",
+				Image:           image,
+				Args:            lake.Spec.Args,
+				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
+				Env:             lakeEnv(lake, sealing),
+				Resources:       *resources,
+				SecurityContext: containerSecurityContext,
+				Lifecycle:       drainPreStop(),
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      lakeStoreVolume,
+					MountPath: lakeStorePath,
+				}},
+				ReadinessProbe: lakeHTTPProbe("/readyz", 10, 2, 3),
+				LivenessProbe:  lakeHTTPProbe("/healthz", 20, 3, 3),
+			}},
+			Volumes: []corev1.Volume{{
+				Name: lakeStoreVolume,
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: claimName,
+					},
+				},
+			}},
+		}
+		if lake.Spec.PullSecretName != "" {
+			deployment.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{
+				Name: lake.Spec.PullSecretName,
+			}}
+		}
+		return controllerutil.SetControllerReference(lake, deployment, r.Scheme)
+	})
+	return deployment, err
+}
+
+func lakeHTTPProbe(path string, periodSeconds, timeoutSeconds, failureThreshold int32) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: path,
+				Port: intstr.FromString("http"),
+			},
+		},
+		PeriodSeconds:    periodSeconds,
+		TimeoutSeconds:   timeoutSeconds,
+		FailureThreshold: failureThreshold,
+	}
+}
+
+func lakeTopologySpreadConstraints(
+	lake *oramav1alpha1.Lake,
+	replicas int32,
+	labels map[string]string,
+) []corev1.TopologySpreadConstraint {
+	if lake.Spec.TopologySpreadConstraints != nil {
+		return append([]corev1.TopologySpreadConstraint(nil), lake.Spec.TopologySpreadConstraints...)
+	}
+	if replicas <= 1 {
+		return nil
+	}
+	return spreadConstraints(labels)
+}
+
+func (r *LakeReconciler) reconcileLakePDB(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	namespace string,
+	name string,
+	labels map[string]string,
+	replicas int32,
+) error {
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+	if replicas <= 1 {
+		return deleteIfExists(ctx, r.Client, pdb)
+	}
+
+	maxUnavailable := intstr.FromInt(1)
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, pdb, func() error {
+		pdb.Labels = labels
+		pdb.Spec.MaxUnavailable = &maxUnavailable
+		pdb.Spec.MinAvailable = nil
+		pdb.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
+		return controllerutil.SetControllerReference(lake, pdb, r.Scheme)
+	})
+	return err
 }
 
 func lakeDataServiceStatus(lake *oramav1alpha1.Lake) ([]oramav1alpha1.LakeDataServiceStatus, string) {
@@ -950,6 +1060,7 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
 		ing.Labels = lbls
+		ing.Annotations = lakeIngressAnnotations(lake.Spec.TLS.SecretName != "")
 		ing.Spec.IngressClassName = strPtr("nginx")
 		ing.Spec.Rules = []networkingv1.IngressRule{{
 			Host: lake.Spec.Host,
@@ -961,6 +1072,13 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 				}},
 			}},
 		}}
+		ing.Spec.TLS = nil
+		if lake.Spec.TLS.SecretName != "" {
+			ing.Spec.TLS = []networkingv1.IngressTLS{{
+				Hosts:      []string{lake.Spec.Host},
+				SecretName: lake.Spec.TLS.SecretName,
+			}}
+		}
 		return controllerutil.SetControllerReference(lake, ing, r.Scheme)
 	}); err != nil {
 		return err
@@ -1009,6 +1127,18 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		return controllerutil.SetControllerReference(lake, preview, r.Scheme)
 	})
 	return err
+}
+
+func lakeIngressAnnotations(tlsEnabled bool) map[string]string {
+	annotations := map[string]string{
+		"nginx.ingress.kubernetes.io/proxy-body-size":         "64m",
+		"nginx.ingress.kubernetes.io/proxy-buffering":         "off",
+		"nginx.ingress.kubernetes.io/proxy-request-buffering": "off",
+	}
+	if tlsEnabled {
+		annotations["nginx.ingress.kubernetes.io/ssl-redirect"] = "true"
+	}
+	return annotations
 }
 
 func lakePreviewDNSRecordName(serviceName, wildcard string) string {
@@ -1071,6 +1201,7 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&oramav1alpha1.Lake{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&policyv1.PodDisruptionBudget{}).
 		Watches(
 			&corev1.PersistentVolumeClaim{},
 			handler.EnqueueRequestsFromMapFunc(r.lakeRequestsForStoreClaim),
@@ -1086,8 +1217,11 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// lakeRunAsGroup is the gid of the lake user in the oramasearch/lake image.
-const lakeRunAsGroup int64 = 10001
+// lakeRunAsUser and lakeRunAsGroup are the uid and gid in the oramasearch/lake image.
+const (
+	lakeRunAsUser  int64 = 10001
+	lakeRunAsGroup int64 = 10001
+)
 
 func ptrInt64(v int64) *int64 { return &v }
 
