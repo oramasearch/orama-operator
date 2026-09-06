@@ -3,7 +3,7 @@
 Deep docs for the operator. Kept in lockstep with the source (see the repo
 [`CLAUDE.md`](../CLAUDE.md) → *Docs discipline*).
 
-- [`../README.md`](../README.md) — overview + quickstart.
+- [`../README.md`](../README.md) — the front door: what the operator is, status, build and test, and pointers into these docs.
 - [`../DESIGN.md`](../DESIGN.md) — architecture + the decision log from the design grill.
 - [`install.md`](install.md) — **install the operator + deploy a v1 stack** (prereqs, helm/helmfile, the CR, multi-region, uninstall).
 - [`development.md`](development.md) — build, codegen, run, and the AKS smoke test.

@@ -8,6 +8,21 @@
   ```
 - `controller-gen` is fetched on demand by the Makefile at the pinned `v0.21.0` version.
 
+## Repository layout
+
+```
+api/v1alpha1/        # the CRD Go types (OramaCloudV1, OramaZettaCluster, Lake, …): the design artifact
+internal/controller/ # the reconcilers, one file per component or CRD (status: docs/components.md)
+cmd/main.go          # the manager entrypoint
+config/crd|samples/  # generated CRDs + example CRs (generated and committed)
+chart/               # the install Helm chart (operator + CRDs + RBAC; the ClusterRole is hand-maintained)
+helmfile.yaml        # composition: platform operators + this chart
+docs/                # this guide, the CRD reference, the component reconcilers, the Lake CR
+DESIGN.md            # architecture + decision log + open questions
+CLAUDE.md            # working rules (incl. docs discipline)
+Makefile             # standard kubebuilder targets (manifests/build/docker/helm)
+```
+
 ## Codegen (after editing `api/v1alpha1/*.go`)
 
 ```sh
@@ -33,6 +48,15 @@ go test ./...
 
 Without `KUBEBUILDER_ASSETS`, that case reports a skip while the handler, contract-digest, auth,
 audit, secret-reference, REST, and MCP tests still run.
+
+## Build targets
+
+```sh
+make manifests      # generate CRD + RBAC from the kubebuilder markers
+make build          # generate + fmt + vet + compile the manager to bin/manager
+make docker-build IMG=oramasearch/orama-operator:<tag>
+make helm-package   # copy generated CRDs into the chart + package
+```
 
 ## Run locally (dev loop)
 

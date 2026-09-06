@@ -2,7 +2,11 @@
 
 One umbrella CR per cluster describes an entire regional v1 deployment. Source of
 truth: [`../api/v1alpha1/oramacloudv1_types.go`](../api/v1alpha1/oramacloudv1_types.go)
-(regenerate this doc's tables when the types change).
+(regenerate this doc's tables when the types change). Samples:
+[`../config/samples/primary-us-east.yaml`](../config/samples/primary-us-east.yaml) (a primary
+region) and [`../config/samples/read-eu.yaml`](../config/samples/read-eu.yaml) (a read tier
+pointing at the primary); the full sample list is in
+[install.md](install.md#3-deploy-a-v1-stack-single-cluster-quickstart).
 
 ## Top-level `spec`
 
@@ -38,6 +42,9 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 | `search` | data-store | Typesense hosted-search |
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
+
+`engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
+L40S). `workers` bundles all ported CF workers into one image → one Deployment.
 
 ## `OramaCloudV1E2ETest` (separate CRD)
 
