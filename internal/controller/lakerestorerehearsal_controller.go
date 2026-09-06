@@ -822,6 +822,9 @@ func rehearsalSecretKey(name string, key string) *corev1.EnvVarSource {
 
 const postgresVerificationQuery = `
 SELECT 'agent_guard=' || count(*) FROM agent_guard
+UNION ALL SELECT 'settings_guard=' || count(*) FROM settings_guard
+UNION ALL SELECT 'platform_guard=' || count(*) FROM platform_guard
+UNION ALL SELECT 'identity_exit_guard=' || count(*) FROM identity_exit_guard
 UNION ALL SELECT 'auth_app_guard=' || count(*) FROM auth_app_guard
 UNION ALL SELECT 'drive_guard=' || count(*) FROM drive_guard
 UNION ALL SELECT 'forge_guard=' || count(*) FROM forge_guard
