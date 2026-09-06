@@ -27,8 +27,10 @@ reconciler lands.
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
 | **zetta-capacity** | `internal/controller/zetta_capacity.go` | Karpenter `NodePool` (unstructured, cluster-scoped) + a `PodDisruptionBudget`; pins the Zetta pods onto the pool (taint/toleration + nodeSelector + `do-not-disrupt`) | 🟡 **implemented** (opt-in, [#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69) first slice; not yet live-tested — needs an EKS/AKS-NAP cluster) |
 | **zetta-capacity-install** | `internal/controller/zetta_capacity_install.go` | Operator-owned **Karpenter install** (cloud-gated): server-side-applies the pinned upstream controller (Deployment + ServiceAccount + RBAC) + Karpenter CRDs, as `unstructured` | 🟡 **implemented** (opt-in `install: true`, [#75](https://github.com/oramasearch/orama-cloud-v1-operator/issues/75); EKS self-install, no-op on AKS-NAP/bare-metal; not yet live-tested) |
-| **lake** (liquid project) | `internal/controller/lake_controller.go` | from one cluster-scoped `Lake` CR: Namespace, owned or referenced store PVC, admin-token Secret, `Deployment` + Service, CNPG control-plane `Cluster` + owned `PostgresSchema` (lake's schema), opt-in Barman R2/S3 `ScheduledBackup`, opt-in Ingress + `CloudflareDNSRecord` | ✅ **done** (`Lake/prod` live on AKS; control-plane backups require its R2 Secret) — see [`lake/README.md`](lake/README.md) and [`lake/backups.md`](lake/backups.md) |
+| **lake** (liquid project) | `internal/controller/lake_controller.go` | from one cluster-scoped `Lake` CR: Namespace, owned or referenced store PVC, admin-token, instance-KEK and sealing-key Secrets, `Deployment` + Service, CNPG control-plane `Cluster` + owned `PostgresSchema` (lake's schema), opt-in Barman R2/S3 `ScheduledBackup`, opt-in Ingress + `CloudflareDNSRecord`, Lake-owned environments, and per-data-service lifecycle evidence | ✅ **done** (`Lake/prod` live on AKS; data services remain unmanaged until their required rehearsals pass) — see [`lake/README.md`](lake/README.md), [`lake/backups.md`](lake/backups.md), [`lake/data-services/README.md`](lake/data-services/README.md), and [`lake/sealed-secrets.md`](lake/sealed-secrets.md) |
 | **lake-environment** | `internal/controller/lakeenvironment_controller.go`, `internal/controller/zetta_deployments.go` | materializes append-only Zetta deployment events into Lake-owned `LakeEnvironment` CRs; each creates a PSS-restricted Namespace, default-deny and access NetworkPolicies, ResourceQuota, LimitRange, `untrusted` runtime Deployment, Service, optional Ingress and named-environment DNS | 🟡 **implemented** ([#124](https://github.com/oramasearch/orama-cloud-v1-operator/issues/124)); fake-client/Zetta-double verified, real liquid→k0s change-page proof deferred — see [`lake/environments.md`](lake/environments.md) |
+| **lake Postgres rehearsals** | `internal/controller/lakerestorerehearsal_controller.go` | from one cluster-scoped `LakeRestoreRehearsal`: isolated CNPG backup recovery and data verification for restore; scratch image update then verification for upgrade; CNPG primary switchover then application-Secret connection verification for failover; terminal cleanup and Lake evidence update | ✅ **implemented** — see [`lake/data-services/postgres.md`](lake/data-services/postgres.md) |
+| **lake sealed-secret delivery** | `internal/controller/lakesealedsecret_controller.go` | from one namespaced `LakeSealedSecret`: an owned, cluster-bound Kubernetes Secret labelled `lake.orama.cloud/sealed: "true"`; literal ciphertext opens locally, while lake and dynamic references call lake's mint capability with projected service-account attestation | 🟡 **implemented**; literal delivery is complete, lake/dynamic delivery awaits lake's `mint_sealed_secret` leaf, and environment consumption awaits #124 |
 
 ## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 
@@ -503,15 +505,23 @@ and reuses this operator's CNPG, PostgresSchema and Cloudflare DNS paths.
 |---|---|---|---|
 | Namespace | `spec.namespace` | no | blind Create, AlreadyExists ignored; never deleted |
 | Secret | `lake-<name>-admin` | yes | admin bearer token, 64 hex, minted once |
+| Secret | `lake-<name>-instance-kek` | yes | root wrapping key for lake's customer KEKs, minted once while Postgres is enabled |
+| Secret | `lake-<name>-sealing-key` | yes | active and retained X25519 private keys; public recipient is published in Lake status and injected into lake |
 | PersistentVolumeClaim | `spec.store.existingClaim` or `lake-<name>-store` | only the generated claim | generated once from size/class/modes and preserved across store spec changes; mounted at `/var/lib/lake/store` |
 | Deployment | `lake-<name>` | yes | `spec.image` as built, `spec.args`, port `spec.port` (4900), readiness `GET /`; store mount and `LAKE_STORE_ROOT`; operator env followed by non-conflicting `spec.env` |
 | Service | `lake-<name>` | yes | ClusterIP 80 → `spec.port` |
 | CNPG `Cluster` | `lake-<name>-controldb` | yes (unstructured) | `spec.postgres`: instances, storageSize (50Gi), storageClassName; disable tears down **with data** |
 | ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; guard = the newest migration's table (`agent_guard`, `0017_agent_sessions`) |
 | CNPG `ScheduledBackup` | `lake-<name>-controldb-backup` | yes (unstructured) | opt-in Barman R2/S3 backup; CNPG `Backup` resources are observed by `cnpg.io/cluster` label |
+| `LakeRestoreRehearsal` scratch resources | `lake-rehearsal-<name>-<hash>` | yes | temporary Namespace containing a recovered CNPG Cluster, copied credentials, and a verification Job; all are deleted after a terminal result |
 | Ingress + `CloudflareDNSRecord` | `lake-<name>`, `-dns` | yes | opt-in via `ingressEnabled` + `host` + `dnsSecretRef`, the `OramaZettaCluster` contract |
 
-Status mirrors the Deployment, selected store claim (claim, phase, capacity, and `StoreReady`),
+The `LakeSealedSecret` reconciler opens literal canonical-CBOR envelopes or requests sealed static
+and dynamic values from lake, then owns an output Secret labelled `lake.orama.cloud/sealed: "true"`.
+It rejects an unrelated Secret at the requested name. See [`lake/sealed-secrets.md`](lake/sealed-secrets.md).
+
+Status mirrors the Deployment, publishes the active sealing recipient and retained-key counts,
+selected store claim (claim, phase, capacity, and `StoreReady`),
 the CNPG cluster (polled every 20 s, not watched), the PostgresSchema, and enabled backup
 completion. An unbound store cannot report the Lake as Ready. Production: `Lake/prod` in namespace
 `lake` on AKS; R2 backup credentials must exist before its backup is enabled.

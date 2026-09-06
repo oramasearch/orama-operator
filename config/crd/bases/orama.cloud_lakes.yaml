@@ -36,6 +36,9 @@ spec:
     - jsonPath: .status.lastBackupTime
       name: Backup
       type: date
+    - jsonPath: .status.dataServicesSummary
+      name: Data
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -355,6 +358,20 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              sealing:
+                description: |-
+                  Sealing configures the X25519 cluster delivery key. The operator mints generation 1 when
+                  omitted. Increasing Generation rotates the public key while retaining private keys still
+                  needed by LakeSealedSecret resources.
+                properties:
+                  generation:
+                    default: 1
+                    description: Generation rotates the sealing key when increased.
+                      It cannot be decreased.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                type: object
               store:
                 description: |-
                   Store configures the persistent root shared by all lake replicas. When ExistingClaim is
@@ -462,6 +479,82 @@ spec:
                   - type
                   type: object
                 type: array
+              dataServices:
+                description: |-
+                  DataServices reports the operational evidence for every data service associated with the
+                  Lake. Managed is true only when every applicable procedure has a successful rehearsal.
+                items:
+                  description: LakeDataServiceStatus reports whether a Lake data service
+                    has proven lifecycle procedures.
+                  properties:
+                    backup:
+                      description: Backup is tested, untested, or none.
+                      enum:
+                      - tested
+                      - untested
+                      - none
+                      type: string
+                    failover:
+                      description: Failover is tested, untested, or none.
+                      enum:
+                      - tested
+                      - untested
+                      - none
+                      type: string
+                    kind:
+                      description: Kind identifies the service implementation.
+                      enum:
+                      - postgres
+                      - zetta
+                      type: string
+                    lastVerified:
+                      description: LastVerified is the completion time of the newest
+                        rehearsal for this service.
+                      format: date-time
+                      type: string
+                    managed:
+                      description: Managed is true only when every procedure required
+                        by the current configuration is tested.
+                      type: boolean
+                    name:
+                      description: Name is the stable service identifier within the
+                        Lake.
+                      type: string
+                    notes:
+                      description: Notes explains an unmanaged label, an unavailable
+                        procedure, or the last failed rehearsal.
+                      type: string
+                    restore:
+                      description: Restore is tested, untested, or none.
+                      enum:
+                      - tested
+                      - untested
+                      - none
+                      type: string
+                    upgrade:
+                      description: Upgrade is tested, untested, or none.
+                      enum:
+                      - tested
+                      - untested
+                      - none
+                      type: string
+                  required:
+                  - backup
+                  - failover
+                  - kind
+                  - managed
+                  - name
+                  - restore
+                  - upgrade
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              dataServicesSummary:
+                description: DataServicesSummary is the managed/unmanaged count displayed
+                  by kubectl get lakes.
+                type: string
               lastBackupTime:
                 description: LastBackupTime is the completion time reported by the
                   newest CNPG Backup.
@@ -491,6 +584,57 @@ spec:
                 description: SchemaVersion is the applied schema's content hash (sha256:<12
                   hex>), from the PostgresSchema.
                 type: string
+              sealing:
+                description: Sealing publishes the cluster-bound recipient used by
+                  authoring tools and lake.
+                properties:
+                  cluster:
+                    description: Cluster is the AAD cluster value. It is derived from
+                      the Lake UID.
+                    type: string
+                  generation:
+                    description: Generation is the active key generation.
+                    format: int64
+                    type: integer
+                  kid:
+                    description: KID identifies the active public key.
+                    type: string
+                  previousKeys:
+                    description: PreviousKeys reports retained private keys and records
+                      that still require each one.
+                    items:
+                      description: LakeSealingPreviousKeyStatus reports why an old
+                        private key remains available.
+                      properties:
+                        kid:
+                          description: KID identifies the retained key.
+                          type: string
+                        remaining:
+                          description: Remaining is the number of sealed records that
+                            still name this key.
+                          format: int32
+                          type: integer
+                      required:
+                      - kid
+                      - remaining
+                      type: object
+                    type: array
+                  publicKey:
+                    description: PublicKey is the raw 32-byte X25519 public key encoded
+                      as unpadded base64url.
+                    type: string
+                  unresolvedRecords:
+                    description: |-
+                      UnresolvedRecords counts malformed records whose KID cannot be established. Old keys are
+                      retained while this is nonzero.
+                    format: int32
+                    type: integer
+                required:
+                - cluster
+                - generation
+                - kid
+                - publicKey
+                type: object
               store:
                 description: Store reports the selected claim and its observed binding
                   state.

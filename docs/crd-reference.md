@@ -277,10 +277,12 @@ the Ingress and the record down and leaves the workloads. Sample:
 | `spec.store` | Persistent libliquid customer store mounted read-write at `/var/lib/lake/store`, with `LAKE_STORE_ROOT` fixed to that path. Without `existingClaim`, the operator creates and owns `lake-<name>-store` once. Later store spec changes never mutate, replace, or delete it. |
 | `spec.store.size` / `.storageClassName` / `.accessModes` | Creation-time settings for the generated claim: quantity `100Gi` by default, cluster-default storage class, and `[ReadWriteMany]`. RWX is the multi-replica default; `ReadWriteOnce` requires `spec.replicas: 1`. |
 | `spec.store.existingClaim` | PVC in `spec.namespace` to mount instead of creating one. It is referenced without adoption, mutation, or deletion. |
-| `spec.env[]` | Kubernetes `EnvVar` entries appended after operator env. `value` and `valueFrom` are supported. Conflicts with `LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`, `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`, or `LAKE_STORE_ROOT` are ignored so operator values win. Use it for Lake runtime settings such as `LAKE_LOG_MODE`, `LAKE_LOG_WITNESSES`, and `LAKE_PUBLIC_HOST`. |
+| `spec.env[]` | Kubernetes `EnvVar` entries appended after operator env. `value` and `valueFrom` are supported. Conflicts with `LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`, `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`, `LAKE_SEALING_PUBLIC_KEY`, `LAKE_SEALING_KID`, or `LAKE_STORE_ROOT` are ignored so operator values win. Use it for Lake runtime settings such as `LAKE_LOG_MODE`, `LAKE_LOG_WITNESSES`, and `LAKE_PUBLIC_HOST`. |
+| `spec.sealing.generation` | Desired X25519 sealing-key generation (default 1). Increasing it rotates; decreasing it is refused. Old private keys remain while any `LakeSealedSecret` record names them. |
 | `spec.postgres` | **lake's control plane**: a CloudNativePG `Cluster` named `lake-<name>-controldb` in `spec.namespace`, the same path `OramaCloudV1` uses for its control DB. `enabled` (default `true`; `false` tears it down, deleting its data), `instances` (default 1), `storageSize` (default `50Gi`; CNPG grows the PVC in place when the StorageClass allows expansion), `storageClassName`. CNPG generates the `lake-<name>-controldb-app` Secret; the lake container gets `LAKE_CONTROL_DB_URI` and `LAKE_CONTROL_DB_PASSWORD` from it (optional refs, so the pod starts before the DB does). Requires the CNPG operator (helmfile). Zetta is the data plane, provisioned separately. |
 | `spec.postgres.backup` | Opt-in (`enabled`, default `false`) CNPG Barman object-store backup. `schedule` defaults to six-field `0 0 3 * * *`; `retention` defaults to `30d`; `destination.bucket` and `secretRef.name` are required when enabled. `destination.path` defaults to `lake-<name>/controldb`; `endpointURL` defaults to the Secret's `s3ApiEndpoint`. The Secret must be in `spec.namespace` and contain `s3ApiEndpoint`, `accessKeyId`, and `secretAccessKey`. The operator configures gzip WAL compression and creates owned `lake-<name>-controldb-backup` `ScheduledBackup` resources. See [`lake/backups.md`](lake/backups.md). |
 | _(admin token — automatic)_ | Secret **`lake-<name>-admin`** (key `token`, 64 hex), minted once and preserved, owned by the Lake; injected as `LAKE_ADMIN_TOKEN`. lake requires it as `Authorization: Bearer` on every `/v1` capability except `server_info` and on MCP tool calls. Retrieve: `kubectl get secret lake-<name>-admin -n <ns> -o jsonpath='{.data.token}' \| base64 -d`. |
+| _(sealing key — automatic)_ | Secret **`lake-<name>-sealing-key`** holds the current and still-needed prior X25519 private keys. Only the active public key and `kid` are injected into lake. See [`lake/sealed-secrets.md`](lake/sealed-secrets.md). |
 | _(schema — automatic)_ | With Postgres on, the Lake owns a `lake-<name>-controldb-migrations` ConfigMap holding lake's control-plane schema (vendored byte-identical from `oramasearch/lake` `db/schema.sql`) and a `lake-<name>-controldb-schema` **`PostgresSchema`** that applies it in one transaction, guarded on the newest migration table (`agent_guard` for `0017_agent_sessions`) and versioned by content hash. Incremental migrations are the PostgresSchema follow-up. |
 | `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. |
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
@@ -292,6 +294,8 @@ the Ingress and the record down and leaves the workloads. Sample:
 | `status.schemaPhase` / `.schemaVersion` | Mirrors the owned PostgresSchema: `Pending \| Applying \| Applied \| Failed` and the applied `sha256:<12>`. The Lake requeues until `Applied`. |
 | `status.postgresReady` / `.postgresInstances` | CNPG readiness, read best-effort (`readyInstances`/`instances`, e.g. `1/1`); the Lake requeues every 20s until ready. Empty when `spec.postgres.enabled` is false. |
 | `status.backupReady` / `.lastBackupTime` | True only when the ScheduledBackup exists and the newest CNPG Backup labelled `cnpg.io/cluster=lake-<name>-controldb` is `completed`; completion time comes from that Backup. The `Backup` print column shows `lastBackupTime`. Invalid enabled configuration reports `BackupReady=False` with a condition and `Phase=Degraded`. |
+| `status.dataServices[]` | One row per associated data service: `name`, `kind` (`postgres \| zetta`), `managed`, and `backup`, `restore`, `upgrade`, `failover` evidence (`tested \| untested \| none`), plus optional `lastVerified` and `notes`. `managed` is true only when all operations required by the current configuration are tested. Single-instance Postgres reports `failover: none`; Zetta is explicitly unmanaged pending #125. The `Data` print column uses `dataServicesSummary` to show managed/unmanaged counts. |
+| `status.sealing` | Active `{cluster, generation, kid, publicKey}` recipient plus `previousKeys[] {kid, remaining}` and `unresolvedRecords`. `cluster` is the Lake UID and is part of envelope AAD. `remaining` counts records still requiring an old private key; malformed records retain all old keys until corrected. |
 
 ## `LakeEnvironment` (separate CRD, namespaced) — one desired deployment
 
@@ -311,9 +315,56 @@ verification. Sample:
 | `spec.image` | Required immutable OCI digest reference (`...@sha256:<64 hex>`). Rollback is another deployment event naming an older change and image. |
 | `spec.replicas` / `.port` | Deployment replicas (default `1`) and required container port exposed by Service port 80. |
 | `spec.env[]` | Literal `{name,value}` workload environment variables. |
-| `spec.secretRefs[]` | Names of future `LakeSealedSecret` resources. Operator #129 owns delivery; until it lands a non-empty list is reported as `Degraded` and the workload is not started. |
+| `spec.secretRefs[]` | Names of `LakeSealedSecret` resources. Delivery consumption is deferred to a follow-up; a non-empty list is reported as `Degraded` and the workload is not started. |
 | `spec.host` | Exact hostname for a named environment. Preview hosts are derived from the Lake's `previewWildcard`. |
 | `status.phase` | `Progressing \| Ready \| Degraded \| TornDown`, written only on a real transition. |
 | `status.url` / `.readyReplicas` | Public URL when ingress is configured, and observed Deployment readiness. |
 | `status.deploymentId` | Stable deployment-event identity copied from the `orama.cloud/deployment-id` annotation. |
 | `status.conditions[]` | Standard `Ready` condition with transition reason and message. |
+
+## `LakeRestoreRehearsal` (separate CRD, cluster-scoped)
+
+Runs and records a Lake data-service lifecycle rehearsal. The spec is immutable. Restore and
+upgrade recover a selected CNPG object-store backup into an isolated scratch namespace, compare
+guard-table row counts and the newest schema migration with the live database, and delete every
+scratch object after success or failure. Upgrade changes the scratch Cluster image before
+verification. Failover requests a CNPG switchover on the live replicated control DB and verifies
+the existing application Secret still connects through the write Service.
+
+| Field | Purpose |
+|---|---|
+| `spec.lakeRef` | Name of the cluster-scoped `Lake`. |
+| `spec.service` | `postgres` in this version. |
+| `spec.operation` | `restore \| upgrade \| failover`. |
+| `spec.from` | `latest` by default, or the name of a completed CNPG `Backup`. Restore and upgrade pin its Barman `status.backupId`. |
+| `spec.targetImage` | Required for `upgrade`: the CloudNativePG-compatible PostgreSQL operand image tested on the scratch clone. |
+| `status.phase` / `.message` | `Pending \| Running \| Succeeded \| Failed` and the current or terminal explanation. |
+| `status.scratchNamespace` / `.selectedBackup` | Deterministic scratch location and the pinned CNPG Backup object for restore and upgrade. |
+| `status.previousPrimary` / `.targetPrimary` | The primary transition selected by a failover rehearsal. |
+| `status.startedAt` / `.completedAt` / `.observedGeneration` | Durable audit timestamps and the represented immutable spec generation. |
+
+`kubectl get lrr` shows Lake, Service, Operation, Phase, and completion time. Detailed procedures:
+[`lake/data-services/postgres.md`](lake/data-services/postgres.md).
+
+## `LakeSealedSecret` (separate CRD, namespaced) — one-way Secret delivery
+
+Produces one owned Kubernetes Secret from authored ciphertext or a lake reference. The referenced
+cluster-scoped Lake owns the `LakeSealedSecret`; the resource owns the produced Secret. Literal
+records open only with the target Lake's private key and require exact AAD for the Lake UID,
+resource namespace, and `spec.template.name`. The output is labelled
+`lake.orama.cloud/sealed: "true"`. Complete envelope and rotation rules:
+[`lake/sealed-secrets.md`](lake/sealed-secrets.md). Sample:
+[`../config/samples/lake-sealed-secret.yaml`](../config/samples/lake-sealed-secret.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.lakeRef.name` | Cluster-scoped `Lake` that owns the recipient key and lake service endpoint. |
+| `spec.template.name` / `.type` | Produced Secret name and optional Kubernetes Secret type (`Opaque` when omitted). The name is bound into envelope AAD. |
+| `spec.data` | Map of Secret keys to standard-base64 canonical-CBOR records. Required only for `literal`. All entries must use one `kid`. |
+| `spec.source.type` | `literal \| lake \| dynamic`. |
+| `spec.source.lake` | Static lake reference `{mount, name, version?}`. It contains no value. |
+| `spec.source.dynamic` | Dynamic request `{engine, role, ttl}`. It contains no credential. |
+| `status.phase` | `Pending \| Ready \| Error`. Written only on a real transition. |
+| `status.unsealedAt` / `.kid` | Last successful produced-Secret update and the key that opened its record set. |
+| `status.lease` | Dynamic lease `{id, expiresAt, renewAt}`; no credential value. |
+| `status.conditions[Ready]` | `Delivered` or a stable refusal reason such as `UnsealFailed`, `SecretOwnershipConflict`, or `MintFailed`. |

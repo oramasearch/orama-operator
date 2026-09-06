@@ -4,6 +4,8 @@
 resources:
 - bases/orama.cloud_lakes.yaml
 - bases/orama.cloud_lakeenvironments.yaml
+- bases/orama.cloud_lakerestorerehearsals.yaml
+- bases/orama.cloud_lakesealedsecrets.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

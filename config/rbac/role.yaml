@@ -153,7 +153,9 @@ rules:
   - cloudflareloadbalancers
   - cloudflarer2buckets
   - lakeenvironments
+  - lakerestorerehearsals
   - lakes
+  - lakesealedsecrets
   - oramacloudv1e2etests
   - oramacloudv1s
   - oramazettaclusters
@@ -177,6 +179,7 @@ rules:
   - cloudflarer2buckets/finalizers
   - lakeenvironments/finalizers
   - lakes/finalizers
+  - lakesealedsecrets/finalizers
   - oramazettaclusters/finalizers
   - rabbitmqtopologies/finalizers
   verbs:
@@ -189,7 +192,9 @@ rules:
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
   - lakeenvironments/status
+  - lakerestorerehearsals/status
   - lakes/status
+  - lakesealedsecrets/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
   - oramazettaclusters/status
@@ -226,6 +231,14 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - postgresql.cnpg.io
+  resources:
+  - clusters/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:

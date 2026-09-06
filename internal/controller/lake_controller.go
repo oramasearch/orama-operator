@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -171,6 +172,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeInstanceKek(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile instance KEK: %w", err)
 	}
+	sealing, err := r.reconcileLakeSealingKey(ctx, &lake, ns, labels)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile sealing key: %w", err)
+	}
 
 	// Deployment.
 	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
@@ -184,7 +189,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			Image: image,
 			Args:  lake.Spec.Args,
 			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
-			Env:   lakeEnv(&lake),
+			Env:   lakeEnv(&lake, sealing),
 			VolumeMounts: []corev1.VolumeMount{{
 				Name:      lakeStoreVolume,
 				MountPath: lakeStorePath,
@@ -269,6 +274,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if backup.Enabled && !backup.Valid {
 		phase = "Degraded"
 	}
+	dataServices, dataServicesSummary := lakeDataServiceStatus(&lake)
 	desiredConditions := lake.Status.Conditions
 	conditionsChanged := apimeta.SetStatusCondition(&desiredConditions, backupCondition)
 	if apimeta.SetStatusCondition(&desiredConditions, storeCondition) {
@@ -278,7 +284,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.PostgresReady != pgReady || lake.Status.PostgresInstances != pgDetail ||
 		lake.Status.SchemaPhase != schemaPhase || lake.Status.SchemaVersion != schemaVersion ||
 		lake.Status.BackupReady != backupReady || !lakeBackupTimesEqual(lake.Status.LastBackupTime, lastBackupTime) ||
+		!apiequality.Semantic.DeepEqual(lake.Status.DataServices, dataServices) ||
+		lake.Status.DataServicesSummary != dataServicesSummary ||
 		!apiequality.Semantic.DeepEqual(lake.Status.Store, storeStatus) ||
+		!apiequality.Semantic.DeepEqual(lake.Status.Sealing, sealing.Status) ||
 		conditionsChanged {
 		lake.Status.ReadyReplicas = deploy.Status.ReadyReplicas
 		lake.Status.Phase = phase
@@ -288,7 +297,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.SchemaVersion = schemaVersion
 		lake.Status.BackupReady = backupReady
 		lake.Status.LastBackupTime = lastBackupTime
+		lake.Status.DataServices = dataServices
+		lake.Status.DataServicesSummary = dataServicesSummary
 		lake.Status.Store = storeStatus
+		lake.Status.Sealing = sealing.Status
 		lake.Status.Conditions = desiredConditions
 		if err := r.Status().Update(ctx, &lake); err != nil {
 			return ctrl.Result{}, err
@@ -308,6 +320,100 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+func lakeDataServiceStatus(lake *oramav1alpha1.Lake) ([]oramav1alpha1.LakeDataServiceStatus, string) {
+	previous := make(map[string]oramav1alpha1.LakeDataServiceStatus, len(lake.Status.DataServices))
+	for _, service := range lake.Status.DataServices {
+		previous[service.Name] = service
+	}
+
+	postgres := previous["postgres"]
+	postgres.Name = "postgres"
+	postgres.Kind = "postgres"
+	postgres.Backup = untestedUnlessTested(postgres.Backup)
+	postgres.Restore = untestedUnlessTested(postgres.Restore)
+	postgres.Upgrade = untestedUnlessTested(postgres.Upgrade)
+	postgres.Failover = untestedUnlessTested(postgres.Failover)
+	if !lakePostgresEnabled(lake) {
+		postgres.Backup = "none"
+		postgres.Restore = "none"
+		postgres.Upgrade = "none"
+		postgres.Failover = "none"
+		postgres.Notes = "control-plane Postgres is disabled"
+	} else if !lakePostgresBackupEnabled(lake) {
+		postgres.Backup = "none"
+		postgres.Restore = "none"
+	}
+	instances := int32(1)
+	if lake.Spec.Postgres.Instances != nil {
+		instances = *lake.Spec.Postgres.Instances
+	}
+	if lakePostgresEnabled(lake) && instances < 2 {
+		postgres.Failover = "none"
+		if postgres.Notes == "" || postgres.Notes == postgresLifecycleGapNote {
+			postgres.Notes = postgresSingleInstanceNote
+		} else if !strings.Contains(postgres.Notes, postgresSingleInstanceNote) {
+			postgres.Notes += "; " + postgresSingleInstanceNote
+		}
+	} else {
+		postgres.Notes = removeDataServiceNote(postgres.Notes, postgresSingleInstanceNote)
+	}
+	postgres.Managed = postgresDataServiceManaged(&postgres, lake)
+	if !postgres.Managed && postgres.Notes == "" {
+		postgres.Notes = postgresLifecycleGapNote
+	} else if postgres.Managed && postgres.Notes == postgresLifecycleGapNote {
+		postgres.Notes = ""
+	}
+
+	zetta := oramav1alpha1.LakeDataServiceStatus{
+		Name:     "zetta",
+		Kind:     "zetta",
+		Managed:  false,
+		Backup:   "none",
+		Restore:  "none",
+		Upgrade:  "none",
+		Failover: "none",
+		Notes:    "the Zetta data plane and its lifecycle procedures are pending #125",
+	}
+	services := []oramav1alpha1.LakeDataServiceStatus{postgres, zetta}
+	return services, dataServiceSummary(services)
+}
+
+func postgresDataServiceManaged(service *oramav1alpha1.LakeDataServiceStatus, lake *oramav1alpha1.Lake) bool {
+	return lakePostgresEnabled(lake) &&
+		service.Backup == "tested" &&
+		service.Restore == "tested" &&
+		service.Upgrade == "tested" &&
+		(service.Failover == "tested" || service.Failover == "none")
+}
+
+func dataServiceSummary(services []oramav1alpha1.LakeDataServiceStatus) string {
+	managed := 0
+	for _, service := range services {
+		if service.Managed {
+			managed++
+		}
+	}
+	return fmt.Sprintf("%d managed, %d unmanaged", managed, len(services)-managed)
+}
+
+func removeDataServiceNote(notes string, remove string) string {
+	parts := strings.Split(notes, "; ")
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" && part != remove {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, "; ")
+}
+
+func untestedUnlessTested(value string) string {
+	if value == "tested" {
+		return value
+	}
+	return "untested"
 }
 
 func lakeStoreClaimName(lake *oramav1alpha1.Lake) string {
@@ -427,12 +533,14 @@ func (r *LakeReconciler) lakeStoreStatus(
 // lakeEnv is what the lake container learns from the operator. The control-DB Secret is
 // generated by CNPG after the Cluster bootstraps, so the reference is optional: the pod starts
 // before the database exists and picks the value up on its next restart.
-func lakeEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
+func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.EnvVar {
 	reserved := map[string]struct{}{
 		"LAKE_ADMIN_TOKEN":         {},
 		"LAKE_CONTROL_DB_PASSWORD": {},
 		"LAKE_CONTROL_DB_URI":      {},
 		"LAKE_INSTANCE_KEK":        {},
+		"LAKE_SEALING_KID":         {},
+		"LAKE_SEALING_PUBLIC_KEY":  {},
 		"LAKE_STORE_ROOT":          {},
 	}
 	env := []corev1.EnvVar{
@@ -441,6 +549,8 @@ func lakeEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
 			Key:                  "token",
 		}}},
 		{Name: "LAKE_STORE_ROOT", Value: lakeStorePath},
+		{Name: "LAKE_SEALING_PUBLIC_KEY", Value: base64.RawURLEncoding.EncodeToString(sealing.PublicKey)},
+		{Name: "LAKE_SEALING_KID", Value: sealing.KID},
 	}
 	if lakePostgresEnabled(lake) {
 		env = append(env, corev1.EnvVar{
@@ -969,6 +1079,7 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
+		Owns(&oramav1alpha1.LakeSealedSecret{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
 		Owns(newCNPGScheduledBackup(nil, "")).
 		Named("lake").

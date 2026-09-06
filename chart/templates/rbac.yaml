@@ -29,6 +29,8 @@ rules:
       - postgresschemas
       - lakes
       - lakeenvironments
+      - lakerestorerehearsals
+      - lakesealedsecrets
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -44,6 +46,8 @@ rules:
       - postgresschemas/status
       - lakes/status
       - lakeenvironments/status
+      - lakerestorerehearsals/status
+      - lakesealedsecrets/status
       - oramacloudv1s/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
@@ -53,6 +57,7 @@ rules:
       - rabbitmqtopologies/finalizers
       - lakes/finalizers
       - lakeenvironments/finalizers
+      - lakesealedsecrets/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
@@ -69,7 +74,7 @@ rules:
     verbs: ["get"]
   # ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace UID — `get` only,
   # never list/watch, so the operator holds no cluster-wide Namespace informer. `create` is for the
-  # Lake controller and per-deployment environment namespaces. LakeEnvironment update/delete is
+  # Lake controllers create their Lake and rehearsal namespaces. LakeEnvironment update/delete is
   # guarded in code by the exact ownership annotation; foreign namespaces are never changed.
   - apiGroups: [""]
     resources: ["namespaces"]
@@ -77,6 +82,9 @@ rules:
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters", "scheduledbackups", "backups"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters/status"]
+    verbs: ["get", "update", "patch"]
   - apiGroups: ["clickhouse.altinity.com"]
     resources: ["clickhouseinstallations"]
     verbs: ["*"]

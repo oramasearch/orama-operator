@@ -21,60 +21,79 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    while Postgres is enabled; injected as `LAKE_INSTANCE_KEK`. It wraps lake's persisted identity
    key and the per-customer KEKs used by static secrets and encryption. It is distinct from the
    admin bearer and is never sent to clients.
-4. **Store claim** — either `spec.store.existingClaim` or an owned PVC
+4. **Cluster sealing key** — Secret `lake-<name>-sealing-key`, an X25519 keypair minted once and
+   owned. The public key and `kid` are published in `status.sealing` and injected into lake as
+   `LAKE_SEALING_PUBLIC_KEY` / `LAKE_SEALING_KID`; the private key remains in the operator-owned
+   Secret. An explicit `spec.sealing.generation` increase rotates it while records still using old
+   keys keep those private keys available. See [sealed-secrets.md](sealed-secrets.md).
+5. **Store claim** — either `spec.store.existingClaim` or an owned PVC
    `lake-<name>-store`, created once with `spec.store.size` (default `100Gi`),
    `storageClassName`, and `accessModes` (default `ReadWriteMany`). The selected claim is mounted
    read-write at `/var/lib/lake/store` in every pod. The pod runs with `fsGroup: 10001` (lake's
    uid/gid in the image) so a freshly provisioned volume is writable by lake on first mount. Operator-created claims are never replaced,
    resized, or deleted because the store spec changes.
-5. **Deployment** `lake-<name>` — `spec.image` run as built, `spec.args`, port `spec.port`
+6. **Deployment** `lake-<name>` — `spec.image` run as built, `spec.args`, port `spec.port`
    (default 4900), readiness `GET /`, `spec.replicas`, `imagePullSecrets` from
    `spec.pullSecretName`; operator env including `LAKE_STORE_ROOT=/var/lib/lake/store` plus
    `spec.env` entries whose names do not conflict with operator-owned variables.
-6. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
-7. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
+7. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
+8. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
    (`spec.postgres`: enabled by default, instances, storageSize 50Gi, storageClassName), the same
    unstructured path `OramaCloudV1` uses (`controldb.go`). Disabling tears it down **with its
    data**.
-8. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
+9. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
    `oramasearch/lake` `db/schema.sql`), guard table = the table the newest migration creates
    (`agent_guard` for `0017_agent_sessions`), version = content
    hash. The file is idempotent, so a new migration = a new guard, and the next Job re-runs the
    file adding only what is missing; on an existing Lake, delete the `PostgresSchema` (owned, it
    is recreated) to trigger that Job. Proper incremental migrations are #126.
-9. **Control-plane backup** (opt-in: `spec.postgres.backup.enabled`) — CNPG Barman object-store
+10. **Control-plane backup** (opt-in: `spec.postgres.backup.enabled`) — CNPG Barman object-store
    configuration on `lake-<name>-controldb` plus an owned `ScheduledBackup`
    `lake-<name>-controldb-backup`. The R2/S3 Secret lives in `spec.namespace`; CNPG owns the
    individual `Backup` resources. See [backups.md](backups.md) for R2 setup, verification,
    changing the schedule or retention, and recovery into a new Cluster.
-10. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
+11. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
    whole host and an owned `CloudflareDNSRecord`, the `OramaZettaCluster` contract; gating off
    tears both down. When `previewWildcard` is set, the Lake also owns one wildcard record against
    the same ingress address; individual previews do not create Cloudflare records.
-11. **Deployment environments** — desired rows in the operator's Zetta
+12. **Deployment environments** — desired rows in the operator's Zetta
    `orama_control.deployments` table become Lake-owned `LakeEnvironment` CRs in this namespace.
    Each CR owns its profiled workload Namespace through a verified finalizer. See
    [`environments.md`](environments.md).
+13. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,
+    restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`
+    controller runs Postgres procedures and updates the row; see
+    [data services](data-services/README.md).
 
-**Status** mirrors the Deployment (`readyReplicas`, `phase`), selected store claim
+**Status** mirrors the Deployment (`readyReplicas`, `phase`), publishes the active sealing
+recipient and old-key record counts (`sealing`), selected store claim
 (`store.claimName`, `store.phase`, `store.capacity`, `StoreReady` condition), the CNPG cluster
 (`postgresReady`, `postgresInstances`), the PostgresSchema (`schemaPhase`, `schemaVersion`), and
-the backup (`backupReady`, `lastBackupTime`, `BackupReady` condition); written only on a real
+the backup (`backupReady`, `lastBackupTime`, `BackupReady` condition), and lifecycle evidence for
+Postgres and the pending Zetta data plane (`dataServices`); written only on a real
 transition. An unbound store keeps the Lake out of `Ready`. The Lake polls the claim and CNPG every
 20 s until both storage and the DB are ready and the schema is Applied, and while enabled backups
 observe new CNPG `Backup` resources. `kubectl get lake` columns: Namespace, Host, Ready, DB,
-Schema, Store, Backup, Phase.
+Schema, Store, Backup, Data, Phase. The Data column shows managed and unmanaged service counts;
+see [data services](data-services/README.md) for the operation-level labels and customer boundary.
 
 **Owned kinds** (`SetupWithManager`): PersistentVolumeClaim (only the operator-created store
-claim), Deployment, Service, Ingress, CloudflareDNSRecord, ConfigMap, Secret, PostgresSchema, CNPG
+claim), Deployment, Service, Ingress, CloudflareDNSRecord, ConfigMap, Secret, LakeEnvironment, LakeSealedSecret,
+PostgresSchema, CNPG
 ScheduledBackup. Not owned: an existing store claim, the Namespace, the CNPG Cluster (polled), and
-CNPG Backup resources (observed by cluster label).
+CNPG Backup resources (observed by cluster label). A `LakeRestoreRehearsal` temporarily owns a
+scratch Namespace, CNPG Cluster, copied Secrets, and verification Job; terminal cleanup deletes
+them explicitly.
 
 **RBAC.** The chart ClusterRole is hand-maintained (`chart/templates/rbac.yaml`); a Lake needs
 `lakes`, `lakes/status`, `lakes/finalizers`, `namespaces: create`, plus the shared grants for
-deployments, persistentvolumeclaims, services, configmaps, ingresses, cloudflarednsrecords, postgresschemas and
-`postgresql.cnpg.io/clusters`, `scheduledbackups`, and `backups`. Keep it in sync with `config/rbac/role.yaml` or the manager
+deployments, persistentvolumeclaims, services, configmaps, ingresses, cloudflarednsrecords,
+postgresschemas, lakerestorerehearsals, `lakesealedsecrets` (including status and finalizers),
+namespace-wide Secrets and `postgresql.cnpg.io/clusters`, `clusters/status`, `scheduledbackups`, and
+`backups`. Scratch Namespace ownership is checked through the direct API reader, so Namespace RBAC
+remains `get`, `create`, and `delete` without a cluster-wide informer. Keep it in sync with
+`config/rbac/role.yaml` or the manager
 CrashLoops on cache sync.
 
 The `LakeEnvironment` controller additionally needs `lakeenvironments` (including status and
@@ -125,8 +144,9 @@ Lake opens one libliquid store per customer below
 
 `spec.env` accepts Kubernetes `EnvVar` entries, including `valueFrom` references. Entries follow
 the operator's variables in the container spec. The operator ignores custom entries named
-`LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`, `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`, or
-`LAKE_STORE_ROOT`, so the reconciled Secret and volume contracts always win.
+`LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`, `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`,
+`LAKE_SEALING_PUBLIC_KEY`, `LAKE_SEALING_KID`, or `LAKE_STORE_ROOT`, so the reconciled Secret and
+volume contracts always win.
 
 Lake reads these configurable variables:
 
@@ -140,7 +160,8 @@ Lake reads these configurable variables:
 | `LAKE_PRICE_CURRENCY`, `LAKE_STORAGE_QUOTA_BYTES`, `LAKE_PRICE_STORAGE_GIB_HOUR_MICROS`, `LAKE_PRICE_TRANSFER_IN_GIB_MICROS`, `LAKE_PRICE_TRANSFER_OUT_GIB_MICROS`, `LAKE_PRICE_COMPUTE_SECOND_MICROS` | Metering currency, storage quota, and unit prices. |
 
 The operator additionally supplies `LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`,
-`LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`, and `LAKE_STORE_ROOT` from managed resources.
+`LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`, `LAKE_SEALING_PUBLIC_KEY`,
+`LAKE_SEALING_KID`, and `LAKE_STORE_ROOT` from managed resources.
 
 ```sh
 kubectl create namespace lake
