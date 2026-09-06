@@ -6,6 +6,7 @@ Deep docs for the operator. Kept in lockstep with the source (see the repo
 - [`../README.md`](../README.md) — the front door: what the operator is, status, build and test, and pointers into these docs.
 - [`../DESIGN.md`](../DESIGN.md) — architecture + the decision log from the design grill.
 - [`install.md`](install.md) — **install the operator + deploy a v1 stack** (prereqs, helm/helmfile, the CR, multi-region, uninstall).
+- [`install/k0s.md`](install/k0s.md) — **install a private Lake on the liquid k0s distribution**, including the fresh-machine, single-node storage, pull-secret, Ready, and air-gapped paths.
 - [`development.md`](development.md) — build, codegen, run, and the AKS smoke test.
 - [`crd-reference.md`](crd-reference.md) — the `OramaCloudV1` field reference.
 - [`components.md`](components.md) — what each component reconciler creates, and its status.

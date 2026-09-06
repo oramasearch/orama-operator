@@ -49,7 +49,8 @@ your current kube-context, the envtest setup, and the AKS smoke test, is in
 [`docs/install.md`](docs/install.md) covers the platform operators, installing the chart,
 applying a CR, overriding the dummy secrets and images, multi-region, and uninstall.
 [`docs/lake/README.md`](docs/lake/README.md) covers deploying the operator with Lake support
-and running a Lake. Those steps are not repeated here.
+and running a Lake. [`docs/install/k0s.md`](docs/install/k0s.md) is the connected and air-gapped
+on-premises path for the liquid k0s distribution. Those steps are not repeated here.
 Existing AKS installations that use the former release name must follow the scheduled
 [`rename cutover runbook`](docs/operations/rename-cutover.md).
 
@@ -59,6 +60,7 @@ Existing AKS installations that use the former release name must follow the sche
 - [`DESIGN.md`](DESIGN.md): architecture and the decision log.
 - [`docs/crd-reference.md`](docs/crd-reference.md): the field reference for every CRD.
 - [`docs/components.md`](docs/components.md): what each reconciler creates, and its status.
+- [`docs/install/k0s.md`](docs/install/k0s.md): install one Lake on connected or air-gapped liquid k0s.
 - [`docs/lake/README.md`](docs/lake/README.md): the `Lake` CR, with
   [`environments.md`](docs/lake/environments.md),
   [`sealed-secrets.md`](docs/lake/sealed-secrets.md), [`backups.md`](docs/lake/backups.md)
