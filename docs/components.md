@@ -3,6 +3,16 @@
 What the operator creates per component, and reconciler status. Update this as each
 reconciler lands.
 
+**Status summary.** All component reconcilers are implemented and validated on AKS: every
+component (engine, control-plane Postgres, the four data stores, ingestion, workers, dashboard,
+DISCO, IdP, demoSeed) reconciles into the right topology and owner-GCs on delete. The Cloudflare
+DNS reconciler is implemented but not yet live-tested. Component images are built from source by
+the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
+tooling and pushed to **private Docker Hub**; set `spec.images.tag` + `spec.images.pullSecretName`
+([install §4](install.md#4-override-the-dummy-secrets--images-for-real-use)). Remaining `OramaCloudV1`
+work is **hardening**: full config/secrets, HPA, Cloudflare LB, the workers-bundle in-cluster
+wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows below.
+
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |

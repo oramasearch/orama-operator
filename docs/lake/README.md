@@ -4,8 +4,27 @@ What the operator does for a `Lake`, how it is deployed, and how to run it. Fiel
 [`../crd-reference.md`](../crd-reference.md) (`Lake` section). lake's own docs (server, schema,
 deployment state): https://github.com/oramasearch/lake/tree/main/docs.
 
-Per-deployment preview and named environments are documented in
-[`environments.md`](environments.md).
+## At a glance
+
+The cluster-scoped `Lake` CR deploys the lake service with its control-plane Postgres and a
+shared persistent libliquid store. The operator creates a `100Gi` RWX store claim by default or
+mounts `spec.store.existingClaim`, sets `LAKE_STORE_ROOT=/var/lib/lake/store`, and accepts
+additional lake runtime configuration through `spec.env`. Each Lake also owns an X25519 sealing
+key and publishes its recipient in status; namespaced `LakeSealedSecret` resources turn
+cluster-bound ciphertext into owned, labelled Kubernetes Secrets without putting plaintext in the
+authored resource ([sealed-secrets.md](sealed-secrets.md)). `kubectl get lake` reports managed and
+unmanaged data-service counts, and operation-level status never implies untested protection;
+`LakeRestoreRehearsal` automates Postgres restore, scratch upgrade and replicated failover proof
+([data-services/README.md](data-services/README.md),
+[data-services/postgres.md](data-services/postgres.md)).
+
+Desired deployment events in the operator's Zetta control plane become Lake-owned
+`LakeEnvironment` CRs: one restricted, quota-bound `untrusted` runtime namespace per named or
+per-change environment, with anti-flap status returned to Zetta, wildcard DNS for previews, and
+delivered `LakeSealedSecret` values copied into the isolated workload namespace before startup
+([environments.md](environments.md)). Liquid reaches that intake through the operator's
+authenticated REST `/v1` and MCP deployment surface; the contract, credentials, rollback, audit
+and connection details are in the [deployment control-plane guide](../control-plane/README.md).
 
 ## What a Lake reconciles into
 
