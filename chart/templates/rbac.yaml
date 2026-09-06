@@ -28,6 +28,7 @@ rules:
       - rabbitmqtopologies
       - postgresschemas
       - lakes
+      - lakeenvironments
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -42,6 +43,7 @@ rules:
       - rabbitmqtopologies/status
       - postgresschemas/status
       - lakes/status
+      - lakeenvironments/status
       - oramacloudv1s/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
@@ -50,12 +52,13 @@ rules:
       - cloudflareloadbalancers/finalizers
       - rabbitmqtopologies/finalizers
       - lakes/finalizers
+      - lakeenvironments/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
     verbs: ["*"]
   - apiGroups: [""]
-    resources: ["services", "configmaps", "secrets", "persistentvolumeclaims", "serviceaccounts"]
+    resources: ["services", "configmaps", "secrets", "persistentvolumeclaims", "serviceaccounts", "resourcequotas", "limitranges"]
     verbs: ["*"]
   # Read the Zetta e2e Job's pod logs to parse pass/fail/skip counts into ZettaClusterE2ETest status.
   - apiGroups: [""]
@@ -66,10 +69,11 @@ rules:
     verbs: ["get"]
   # ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace UID — `get` only,
   # never list/watch, so the operator holds no cluster-wide Namespace informer. `create` is for the
-  # Lake controller, which makes its target namespace with a blind Create (AlreadyExists ignored).
+  # Lake controller and per-deployment environment namespaces. LakeEnvironment update/delete is
+  # guarded in code by the exact ownership annotation; foreign namespaces are never changed.
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "create"]
+    verbs: ["get", "create", "update", "patch", "delete"]
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters", "scheduledbackups", "backups"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -80,7 +84,7 @@ rules:
     resources: ["rabbitmqclusters"]
     verbs: ["*"]
   - apiGroups: ["networking.k8s.io"]
-    resources: ["ingresses"]
+    resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]

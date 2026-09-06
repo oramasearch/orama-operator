@@ -91,6 +91,26 @@ type LakeSpec struct {
 	// oramadev.net one the Zetta clusters use.
 	// +optional
 	DNSSecretRef *corev1.LocalObjectReference `json:"dnsSecretRef,omitempty"`
+
+	// PreviewWildcard is the DNS suffix used for per-change preview environments. For example,
+	// preview.example.com yields <change-short>.preview.example.com. When Lake ingress and DNS are
+	// enabled, the operator maintains *.preview.example.com against the ingress load balancer so
+	// individual preview environments do not create Cloudflare records.
+	// +optional
+	PreviewWildcard string `json:"previewWildcard,omitempty"`
+
+	// DeploySync configures how frequently this operator materializes desired deployment rows from
+	// its Zetta orama_control database into LakeEnvironment resources.
+	// +optional
+	DeploySync LakeDeploySyncSpec `json:"deploySync,omitempty"`
+}
+
+// LakeDeploySyncSpec configures deployment-row polling for a Lake.
+type LakeDeploySyncSpec struct {
+	// Interval is the deployment polling interval. Empty defaults to 15 seconds.
+	// +kubebuilder:default="15s"
+	// +optional
+	Interval metav1.Duration `json:"interval,omitempty"`
 }
 
 // LakeStoreSpec describes the persistent libliquid store root for a Lake.

@@ -4,6 +4,9 @@ What the operator does for a `Lake`, how it is deployed, and how to run it. Fiel
 [`../crd-reference.md`](../crd-reference.md) (`Lake` section). lake's own docs (server, schema,
 deployment state): https://github.com/oramasearch/lake/tree/main/docs.
 
+Per-deployment preview and named environments are documented in
+[`environments.md`](environments.md).
+
 ## What a Lake reconciles into
 
 In order, every reconcile (`internal/controller/lake_controller.go`):
@@ -47,7 +50,12 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    changing the schedule or retention, and recovery into a new Cluster.
 10. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
    whole host and an owned `CloudflareDNSRecord`, the `OramaZettaCluster` contract; gating off
-   tears both down.
+   tears both down. When `previewWildcard` is set, the Lake also owns one wildcard record against
+   the same ingress address; individual previews do not create Cloudflare records.
+11. **Deployment environments** — desired rows in the operator's Zetta
+   `orama_control.deployments` table become Lake-owned `LakeEnvironment` CRs in this namespace.
+   Each CR owns its profiled workload Namespace through a verified finalizer. See
+   [`environments.md`](environments.md).
 
 **Status** mirrors the Deployment (`readyReplicas`, `phase`), selected store claim
 (`store.claimName`, `store.phase`, `store.capacity`, `StoreReady` condition), the CNPG cluster
@@ -68,6 +76,12 @@ CNPG Backup resources (observed by cluster label).
 deployments, persistentvolumeclaims, services, configmaps, ingresses, cloudflarednsrecords, postgresschemas and
 `postgresql.cnpg.io/clusters`, `scheduledbackups`, and `backups`. Keep it in sync with `config/rbac/role.yaml` or the manager
 CrashLoops on cache sync.
+
+The `LakeEnvironment` controller additionally needs `lakeenvironments` (including status and
+finalizers), verified Namespace update/delete, and Deployments, Services, Ingresses,
+NetworkPolicies, ResourceQuotas and LimitRanges across environment namespaces. The chart grants
+these cluster-wide, while the controller deletes only a Namespace bearing its exact ownership
+annotation.
 
 ## Deploying the operator with Lake support
 
@@ -152,6 +166,8 @@ spec:
   postgres: { instances: 1, storageSize: 50Gi }
   ingressEnabled: true
   host: lake.oramadev.net
+  previewWildcard: preview.lake.oramadev.net
+  deploySync: { interval: 15s }
   dnsSecretRef: { name: cloudflare-api-token }
 Y
 kubectl wait lake/prod --for=jsonpath='{.status.schemaPhase}'=Applied --timeout=600s

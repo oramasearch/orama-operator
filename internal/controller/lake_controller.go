@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"fmt"
 	"strings"
@@ -830,7 +831,10 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		if err := deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}); err != nil {
 			return err
 		}
-		return deleteIfExists(ctx, r.Client, dnsRecord())
+		if err := deleteIfExists(ctx, r.Client, dnsRecord()); err != nil {
+			return err
+		}
+		return r.deleteLakePreviewDNSRecords(ctx, lake, ns, "")
 	}
 	prefix := networkingv1.PathTypePrefix
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}
@@ -852,29 +856,73 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		return err
 	}
 	if lake.Spec.DNSSecretRef == nil || lake.Spec.DNSSecretRef.Name == "" {
-		return deleteIfExists(ctx, r.Client, dnsRecord())
-	}
-	target := ""
-	for _, lb := range ing.Status.LoadBalancer.Ingress {
-		if lb.Hostname != "" {
-			target = lb.Hostname
-			break
+		if err := deleteIfExists(ctx, r.Client, dnsRecord()); err != nil {
+			return err
 		}
-		if lb.IP != "" {
-			target = lb.IP
-			break
-		}
+		return r.deleteLakePreviewDNSRecords(ctx, lake, ns, "")
 	}
+	previewDNSName := ""
+	if lake.Spec.PreviewWildcard == "" {
+		previewDNSName = ""
+	} else {
+		previewDNSName = lakePreviewDNSRecordName(svcName, lake.Spec.PreviewWildcard)
+	}
+	if err := r.deleteLakePreviewDNSRecords(ctx, lake, ns, previewDNSName); err != nil {
+		return err
+	}
+	target := ingressLoadBalancerTarget(ing)
 	if target == "" {
 		return nil // address still pending; the Ingress status update re-queues us
 	}
 	rec := dnsRecord()
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, rec, func() error {
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rec, func() error {
 		rec.Labels = lbls
 		rec.Spec.SecretRef, rec.Spec.Name, rec.Spec.Content, rec.Spec.Proxied = lake.Spec.DNSSecretRef.Name, lake.Spec.Host, target, true
 		return controllerutil.SetControllerReference(lake, rec, r.Scheme)
+	}); err != nil {
+		return err
+	}
+	if lake.Spec.PreviewWildcard == "" {
+		return nil
+	}
+	preview := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: previewDNSName, Namespace: ns}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, preview, func() error {
+		preview.Labels = make(map[string]string, len(lbls)+1)
+		for key, value := range lbls {
+			preview.Labels[key] = value
+		}
+		preview.Labels["orama.cloud/dns-purpose"] = "preview-wildcard"
+		preview.Spec.SecretRef = lake.Spec.DNSSecretRef.Name
+		preview.Spec.Name = "*." + strings.TrimPrefix(lake.Spec.PreviewWildcard, "*.")
+		preview.Spec.Content = target
+		preview.Spec.Proxied = true
+		return controllerutil.SetControllerReference(lake, preview, r.Scheme)
 	})
 	return err
+}
+
+func lakePreviewDNSRecordName(serviceName, wildcard string) string {
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimPrefix(wildcard, "*."))))[:8]
+	return serviceName + "-preview-" + hash
+}
+
+func (r *LakeReconciler) deleteLakePreviewDNSRecords(ctx context.Context, lake *oramav1alpha1.Lake, namespace, keepName string) error {
+	var records oramav1alpha1.CloudflareDNSRecordList
+	if err := r.List(ctx, &records, client.InNamespace(namespace), client.MatchingLabels{
+		"app.kubernetes.io/instance": lake.Name,
+		"orama.cloud/dns-purpose":    "preview-wildcard",
+	}); err != nil {
+		return err
+	}
+	for i := range records.Items {
+		if records.Items[i].Name == keepName {
+			continue
+		}
+		if err := r.Delete(ctx, &records.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // lakeRequestsForStoreClaim maps both managed and existing claim changes back to cluster-scoped

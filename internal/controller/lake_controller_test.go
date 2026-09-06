@@ -333,7 +333,8 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
 		Spec: oramav1alpha1.LakeSpec{
 			Image: "hashicorp/http-echo:1.0", IngressEnabled: true, Host: "hello.lake.live",
-			DNSSecretRef: &corev1.LocalObjectReference{Name: "cloudflare-api-token"},
+			DNSSecretRef:    &corev1.LocalObjectReference{Name: "cloudflare-api-token"},
+			PreviewWildcard: "preview.lake.live",
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &networkingv1.Ingress{}).Build()
@@ -376,6 +377,14 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	if len(rec.OwnerReferences) != 1 || rec.OwnerReferences[0].Name != "hello" {
 		t.Errorf("DNS record owner refs = %+v", rec.OwnerReferences)
 	}
+	var previewRec oramav1alpha1.CloudflareDNSRecord
+	previewName := lakePreviewDNSRecordName("lake-hello", "preview.lake.live")
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: previewName}, &previewRec); err != nil {
+		t.Fatalf("preview wildcard DNS record not created: %v", err)
+	}
+	if previewRec.Spec.Name != "*.preview.lake.live" || previewRec.Spec.Content != "172.212.70.79" {
+		t.Errorf("preview wildcard DNS spec = %+v", previewRec.Spec)
+	}
 
 	// 3. Gate off: both are torn down, the workloads stay.
 	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
@@ -391,6 +400,9 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-dns"}, &rec); err == nil {
 		t.Error("DNS record not torn down when ingressEnabled went false")
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: previewName}, &previewRec); err == nil {
+		t.Error("preview wildcard DNS record not torn down when ingressEnabled went false")
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &appsv1.Deployment{}); err != nil {
 		t.Errorf("deployment should survive the gate: %v", err)

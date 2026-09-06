@@ -70,6 +70,17 @@ spec:
                 items:
                   type: string
                 type: array
+              deploySync:
+                description: |-
+                  DeploySync configures how frequently this operator materializes desired deployment rows from
+                  its Zetta orama_control database into LakeEnvironment resources.
+                properties:
+                  interval:
+                    default: 15s
+                    description: Interval is the deployment polling interval. Empty
+                      defaults to 15 seconds.
+                    type: string
+                type: object
               dnsSecretRef:
                 description: |-
                   DNSSecretRef, if set together with Host, creates a proxied Cloudflare DNS record (Host -> the
@@ -326,6 +337,13 @@ spec:
                       and CNPG grows a PVC in place when the StorageClass allows expansion, so start with headroom.
                     type: string
                 type: object
+              previewWildcard:
+                description: |-
+                  PreviewWildcard is the DNS suffix used for per-change preview environments. For example,
+                  preview.example.com yields <change-short>.preview.example.com. When Lake ingress and DNS are
+                  enabled, the operator maintains *.preview.example.com against the ingress load balancer so
+                  individual preview environments do not create Cloudflare records.
+                type: string
               pullSecretName:
                 description: |-
                   PullSecretName, if set, is attached to the lake pods as an imagePullSecret. Needed for a

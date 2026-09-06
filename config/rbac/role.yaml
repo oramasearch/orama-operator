@@ -8,7 +8,9 @@ rules:
   - ""
   resources:
   - configmaps
+  - limitranges
   - persistentvolumeclaims
+  - resourcequotas
   - secrets
   - serviceaccounts
   - services
@@ -26,7 +28,10 @@ rules:
   - namespaces
   verbs:
   - create
+  - delete
   - get
+  - patch
+  - update
 - apiGroups:
   - ""
   resources:
@@ -131,6 +136,7 @@ rules:
   - networking.k8s.io
   resources:
   - ingresses
+  - networkpolicies
   verbs:
   - create
   - delete
@@ -146,6 +152,7 @@ rules:
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
+  - lakeenvironments
   - lakes
   - oramacloudv1e2etests
   - oramacloudv1s
@@ -168,6 +175,7 @@ rules:
   - cloudflarekvnamespaces/finalizers
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
+  - lakeenvironments/finalizers
   - lakes/finalizers
   - oramazettaclusters/finalizers
   - rabbitmqtopologies/finalizers
@@ -180,6 +188,7 @@ rules:
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
+  - lakeenvironments/status
   - lakes/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
