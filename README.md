@@ -77,7 +77,9 @@ persistent libliquid store. The operator creates a `100Gi` RWX store claim by de
 runtime configuration through `spec.env`. See the [Lake operator guide](docs/lake/README.md) and
 the [data-service lifecycle labels](docs/lake/data-services/README.md). `kubectl get lake` reports
 managed and unmanaged service counts; operation-level status never implies untested protection.
-See also the [CRD reference](docs/crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service).
+`LakeRestoreRehearsal` automates Postgres restore, scratch upgrade, and replicated failover proof.
+See the [Postgres procedure](docs/lake/data-services/postgres.md) and
+[CRD reference](docs/crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service).
 
 ## Multi-region
 

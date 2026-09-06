@@ -48,6 +48,10 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
 10. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
    whole host and an owned `CloudflareDNSRecord`, the `OramaZettaCluster` contract; gating off
    tears both down.
+11. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,
+    restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`
+    controller runs Postgres procedures and updates the row; see
+    [data services](data-services/README.md).
 
 **Status** mirrors the Deployment (`readyReplicas`, `phase`), selected store claim
 (`store.claimName`, `store.phase`, `store.capacity`, `StoreReady` condition), the CNPG cluster
@@ -63,12 +67,17 @@ see [data services](data-services/README.md) for the operation-level labels and 
 **Owned kinds** (`SetupWithManager`): PersistentVolumeClaim (only the operator-created store
 claim), Deployment, Service, Ingress, CloudflareDNSRecord, ConfigMap, Secret, PostgresSchema, CNPG
 ScheduledBackup. Not owned: an existing store claim, the Namespace, the CNPG Cluster (polled), and
-CNPG Backup resources (observed by cluster label).
+CNPG Backup resources (observed by cluster label). A `LakeRestoreRehearsal` temporarily owns a
+scratch Namespace, CNPG Cluster, copied Secrets, and verification Job; terminal cleanup deletes
+them explicitly.
 
 **RBAC.** The chart ClusterRole is hand-maintained (`chart/templates/rbac.yaml`); a Lake needs
 `lakes`, `lakes/status`, `lakes/finalizers`, `namespaces: create`, plus the shared grants for
-deployments, persistentvolumeclaims, services, configmaps, ingresses, cloudflarednsrecords, postgresschemas and
-`postgresql.cnpg.io/clusters`, `scheduledbackups`, and `backups`. Keep it in sync with `config/rbac/role.yaml` or the manager
+deployments, persistentvolumeclaims, services, configmaps, ingresses, cloudflarednsrecords,
+postgresschemas, lakerestorerehearsals, and `postgresql.cnpg.io/clusters`, `clusters/status`,
+`scheduledbackups`, and `backups`. Scratch Namespace ownership is checked through the direct API
+reader, so Namespace RBAC remains `get`, `create`, and `delete` without a cluster-wide informer. Keep it in
+sync with `config/rbac/role.yaml` or the manager
 CrashLoops on cache sync.
 
 ## Deploying the operator with Lake support

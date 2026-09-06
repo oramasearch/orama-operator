@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -700,10 +701,12 @@ func TestLakeDataServiceStatusRequiresFailoverForReplicatedPostgres(t *testing.T
 			Restore:  "tested",
 			Upgrade:  "tested",
 			Failover: "tested",
+			Notes:    postgresSingleInstanceNote,
 		}}},
 	}
 	services, summary := lakeDataServiceStatus(lake)
-	if !services[0].Managed || services[0].Failover != "tested" || summary != "1 managed, 1 unmanaged" {
+	if !services[0].Managed || services[0].Failover != "tested" || services[0].Notes != "" ||
+		summary != "1 managed, 1 unmanaged" {
 		t.Fatalf("data services = %+v, summary = %q", services, summary)
 	}
 	lake.Status.DataServices[0].Failover = "untested"
@@ -786,6 +789,12 @@ func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS agent_guard", "0017_agent_sessions"} {
 		if !strings.Contains(lakeSchemaSQL, tbl) {
 			t.Errorf("schema lacks %q", tbl)
+		}
+	}
+	guardPattern := regexp.MustCompile(`CREATE TABLE IF NOT EXISTS ([a-z_]+_guard)`)
+	for _, match := range guardPattern.FindAllStringSubmatch(lakeSchemaSQL, -1) {
+		if !strings.Contains(postgresVerificationQuery, match[1]) {
+			t.Errorf("Postgres rehearsal query lacks guard table %q", match[1])
 		}
 	}
 }

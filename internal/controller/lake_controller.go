@@ -343,15 +343,19 @@ func lakeDataServiceStatus(lake *oramav1alpha1.Lake) ([]oramav1alpha1.LakeDataSe
 	}
 	if lakePostgresEnabled(lake) && instances < 2 {
 		postgres.Failover = "none"
-		postgres.Notes = "failover is unavailable for a single-instance cluster"
+		if postgres.Notes == "" || postgres.Notes == postgresLifecycleGapNote {
+			postgres.Notes = postgresSingleInstanceNote
+		} else if !strings.Contains(postgres.Notes, postgresSingleInstanceNote) {
+			postgres.Notes += "; " + postgresSingleInstanceNote
+		}
+	} else {
+		postgres.Notes = removeDataServiceNote(postgres.Notes, postgresSingleInstanceNote)
 	}
-	postgres.Managed = lakePostgresEnabled(lake) &&
-		postgres.Backup == "tested" &&
-		postgres.Restore == "tested" &&
-		postgres.Upgrade == "tested" &&
-		(postgres.Failover == "tested" || postgres.Failover == "none")
+	postgres.Managed = postgresDataServiceManaged(&postgres, lake)
 	if !postgres.Managed && postgres.Notes == "" {
-		postgres.Notes = "one or more lifecycle procedures have not been tested"
+		postgres.Notes = postgresLifecycleGapNote
+	} else if postgres.Managed && postgres.Notes == postgresLifecycleGapNote {
+		postgres.Notes = ""
 	}
 
 	zetta := oramav1alpha1.LakeDataServiceStatus{
@@ -365,13 +369,36 @@ func lakeDataServiceStatus(lake *oramav1alpha1.Lake) ([]oramav1alpha1.LakeDataSe
 		Notes:    "the Zetta data plane and its lifecycle procedures are pending #125",
 	}
 	services := []oramav1alpha1.LakeDataServiceStatus{postgres, zetta}
+	return services, dataServiceSummary(services)
+}
+
+func postgresDataServiceManaged(service *oramav1alpha1.LakeDataServiceStatus, lake *oramav1alpha1.Lake) bool {
+	return lakePostgresEnabled(lake) &&
+		service.Backup == "tested" &&
+		service.Restore == "tested" &&
+		service.Upgrade == "tested" &&
+		(service.Failover == "tested" || service.Failover == "none")
+}
+
+func dataServiceSummary(services []oramav1alpha1.LakeDataServiceStatus) string {
 	managed := 0
 	for _, service := range services {
 		if service.Managed {
 			managed++
 		}
 	}
-	return services, fmt.Sprintf("%d managed, %d unmanaged", managed, len(services)-managed)
+	return fmt.Sprintf("%d managed, %d unmanaged", managed, len(services)-managed)
+}
+
+func removeDataServiceNote(notes string, remove string) string {
+	parts := strings.Split(notes, "; ")
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" && part != remove {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, "; ")
 }
 
 func untestedUnlessTested(value string) string {

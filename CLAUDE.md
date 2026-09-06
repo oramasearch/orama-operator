@@ -124,7 +124,8 @@ about the **operator**, not a copy of prod docs.
 
 `Lake` deploys the lake service: namespace, admin-token and instance-KEK Secrets, Deployment, Service, a CNPG
 control-plane Postgres with lake's schema applied through `PostgresSchema`, opt-in scheduled R2/S3
-backup through CNPG Barman, opt-in Ingress + Cloudflare DNS.
+backup through CNPG Barman, cluster-scoped `LakeRestoreRehearsal` restore/upgrade/failover proof,
+and opt-in Ingress + Cloudflare DNS.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
 production instance) and the `Lake` section of [`docs/crd-reference.md`](docs/crd-reference.md) before touching
 `internal/controller/lake_controller.go`. The schema's source of truth is `oramasearch/lake` `db/schema.sql`;

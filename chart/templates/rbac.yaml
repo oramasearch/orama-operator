@@ -28,6 +28,7 @@ rules:
       - rabbitmqtopologies
       - postgresschemas
       - lakes
+      - lakerestorerehearsals
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -42,6 +43,7 @@ rules:
       - rabbitmqtopologies/status
       - postgresschemas/status
       - lakes/status
+      - lakerestorerehearsals/status
       - oramacloudv1s/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
@@ -66,13 +68,17 @@ rules:
     verbs: ["get"]
   # ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace UID — `get` only,
   # never list/watch, so the operator holds no cluster-wide Namespace informer. `create` is for the
-  # Lake controller, which makes its target namespace with a blind Create (AlreadyExists ignored).
+  # Lake controller, which makes its target namespace with a blind Create (AlreadyExists ignored),
+  # and delete lets a LakeRestoreRehearsal remove its deterministic scratch namespace.
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "create"]
+    verbs: ["get", "create", "delete"]
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters", "scheduledbackups", "backups"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters/status"]
+    verbs: ["get", "update", "patch"]
   - apiGroups: ["clickhouse.altinity.com"]
     resources: ["clickhouseinstallations"]
     verbs: ["*"]
