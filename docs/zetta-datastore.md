@@ -16,7 +16,7 @@ Provisioned automatically when `spec.provisionOperatorSchema` is `true` (the def
 
 | database | table | purpose |
 |---|---|---|
-| `orama_control` | `components` | the operator's registry — one row per managed component (`name, kind, image, status, node, updated_at`). |
+| `orama_control` | `components` | the operator's registry — one row per observed transition (`operator, name, kind, owner, status, detail, updated_at`). |
 | `orama_control` | `reconcile_events` | an audit of operator actions (`ts, cluster, action, detail`). |
 | `orama_control` | `topology` | the cross-cluster Zetta node topology ([operator#105](https://github.com/oramasearch/orama-operator/issues/105)) — one row per wan-accessible node (`operator, cluster, node, address, reachability, node_type, status, updated_at`). Each operator WRITES its slice's wan endpoints; Zetta CRDT-syncs the table; each operator READS it back to derive cross-cluster peering. See [Cross-cluster topology through Zetta](#cross-cluster-topology-through-zetta). |
 | `orama_control` | `deployments` | append-only desired deployment and observed status events ([operator#124](https://github.com/oramasearch/orama-operator/issues/124)). A desired event becomes a Lake-owned `LakeEnvironment`; status events carry phase, URL and message only on transition. See [Lake deployment environments](lake/environments.md). |
@@ -87,8 +87,8 @@ curl -sG -H "Authorization: Bearer $TOKEN" http://<name>-zetta:4800/v1/sql \
 Example row (`orama_control.components`):
 
 ```json
-{"image":"oramasearch/zetta:headless-v1-sandbox","kind":"OramaZettaCluster",
- "name":"zetta-0","status":"Ready","updated_at":"2026-07-09"}
+{"operator":"cluster-uid","owner":"prod","kind":"Lake","name":"prod","status":"Ready",
+ "detail":"{\"desiredReplicas\":3,\"status\":{...}}","updated_at":"2026-09-06T19:00:00Z"}
 ```
 
 ## Source of truth: desired vs observed (what actually lives here)
@@ -105,14 +105,23 @@ Two different kinds of state, two homes — this is the key design point:
   SQL-queryable, replicated record independent of etcd. That is the real symbiosis.
 
 The operator **continuously syncs** its observed state (`zetta_statesync.go`): on each reconcile it reads
-the coarse, component-granular CR statuses it already maintains (`OramaCloudV1.status.components[]` +
-each `OramaZettaCluster` phase) and writes the **changed** rows to `orama_control.components` — **same
-anti-flap discipline as the status subresource** (a steady stack produces zero Zetta writes). The
-deployed engine is append-only (no `UPDATE` yet — [zetta#735](https://github.com/oramasearch/zetta/issues/735)),
-so a change **appends** a row; read **latest-wins** by `updated_at`. Best-effort: the flaky node
-([zetta#731](https://github.com/oramasearch/zetta/issues/731)) just retries next reconcile. A 60 s
-idle requeue keeps it tracking the rest of the operator's CRs; when the namespace has Lakes, their
-shortest deployment-sync interval drives the same reconcile loop.
+the coarse, component-granular CR statuses it already maintains (`OramaCloudV1.status.components[]`,
+each `OramaZettaCluster` phase, and each Lake whose effective workload namespace matches the datastore
+namespace) and writes the **changed** rows to `orama_control.components`. A Lake row uses its phase as
+`status`; deterministic JSON in `detail` carries the desired replica count and complete `Lake.status`.
+This is the **same anti-flap discipline as the status subresource**: a steady stack produces zero Zetta
+writes.
+
+Every changed component row is paired with an `orama_control.reconcile_events` append whose action is
+`component.state_changed`, whose `cluster` is the operator identity, and whose JSON detail identifies
+the component and its new state. The deployed engine is append-only (no `UPDATE` yet —
+[zetta#735](https://github.com/oramasearch/zetta/issues/735)), so a change appends rows and readers use
+latest-wins by `updated_at`. Both writes are authenticated and best-effort. A component append that
+succeeds before its event fails is remembered, so the next reconcile retries only the missing event;
+the completed fingerprint is cached only after both writes succeed. The flaky node
+([zetta#731](https://github.com/oramasearch/zetta/issues/731)) therefore cannot fail the resource
+reconcile. A 60 s idle requeue keeps the projection current; when the namespace has Lakes, their
+shortest deployment-sync interval drives the same loop.
 
 Deployment events use the same append-only constraint but keep `desired` and `status` event streams
 separate under one `deployment_id`, so a status append cannot erase configuration. The operator polls

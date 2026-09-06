@@ -505,6 +505,14 @@ removing a departed node from Zetta's own **membership CRDT** node-list is not p
 and has no engine API yet — the `gone` marker affects only the derived `--peer` set, not the engine node-list
 (see [`zetta-datastore.md`](zetta-datastore.md)).
 
+**Observed-state projection** (`internal/controller/zetta_statesync.go`). The same enabled datastore
+loop writes changed `OramaCloudV1`, `OramaZettaCluster`, and namespace-matched cluster-scoped `Lake`
+status into `orama_control.components`, with a paired `component.state_changed` row in
+`reconcile_events`. Both authenticated appends are best-effort and fingerprinted; a steady status writes
+nothing, and a partial component/event pair retries only the missing append. Lake's full status is stored
+as deterministic JSON in the component detail. See [Zetta as the operator datastore](zetta-datastore.md)
+and the [Lake observed-state contract](lake/README.md#observed-state-in-zetta).
+
 ## `Lake` — the lake service (liquid project)
 
 Reconciler: `internal/controller/lake_controller.go`. Full page: [`lake/README.md`](lake/README.md);

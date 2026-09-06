@@ -48,7 +48,8 @@ type OramaZettaClusterReconciler struct {
 	// nil under `make run`/tests — reader() then falls back to the cached client.
 	APIReader client.Reader
 	// stateCache is the anti-flap memory for the operator-state sync into Zetta: component key →
-	// last-synced fingerprint, so a steady stack produces zero Zetta writes (see zetta_statesync.go).
+	// last-synced fingerprint or a partial component/event append, so a steady stack produces zero
+	// Zetta writes and a partial failure retries only the missing append (see zetta_statesync.go).
 	stateCache sync.Map
 	// topologyCache is the anti-flap memory for the cross-cluster topology sync (operator#105): topology
 	// node key → last-written fingerprint, so a steady wan slice appends no new orama_control.topology rows
