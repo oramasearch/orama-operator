@@ -28,8 +28,9 @@ import (
 // The operator continuously mirrors its OBSERVED state (the CR statuses it already computes) into the
 // Zetta `orama_control.components` table, at the SAME granularity + anti-flap discipline as the k8s
 // status subresource (operator principle #7): one row per managed component, written ONLY when its
-// status/detail actually changes. Kubernetes remains the source of truth for DESIRED state (the CRs);
-// this is the durable, SQL-queryable projection of what's running.
+// status/detail actually changes. Every changed component row has a matching reconcile event. Kubernetes
+// remains the source of truth for DESIRED state (the CRs); this is the durable, SQL-queryable projection
+// of what's running.
 //
 // The deployed Zetta SQL engine is append-only (no UPDATE yet — oramasearch/zetta#735), so a change
 // APPENDS a row (latest-wins on read by updated_at). Anti-flap keeps that append rate low. Best-effort:
@@ -40,6 +41,13 @@ import (
 // all writing to the same store, so every row is namespaced by operator to keep their states distinct.
 type componentRow struct {
 	operator, name, kind, owner, status, detail string
+}
+
+// stateSyncProgress records a component append that succeeded before its matching reconcile-event
+// append failed. The next reconcile retries only the missing event, avoiding duplicate component rows.
+type stateSyncProgress struct {
+	fingerprint      string
+	componentWritten bool
 }
 
 // key identifies the component across reconciles (for the anti-flap cache), namespaced by operator.
@@ -74,22 +82,57 @@ func (r *OramaZettaClusterReconciler) reconcileOperatorStateSync(ctx context.Con
 	rows := r.gatherOperatorState(ctx, z.Namespace, r.operatorID(ctx))
 	base := r.zettaBaseURL(z, clientSvc)
 	now := time.Now().UTC().Format(time.RFC3339)
-	synced := 0
-	for _, row := range rows {
-		if prev, ok := r.stateCache.Load(row.key()); ok && prev == row.fingerprint() {
-			continue // unchanged — anti-flap (no write, no control-plane churn)
-		}
-		if err := zettaSQL(ctx, base, token, "orama_control", insertComponentSQL(row, now)); err != nil {
-			// Flaky node / unreachable: leave the cache untouched so we retry next reconcile.
-			log.V(1).Info("zetta state sync deferred", "component", row.key(), "err", err.Error())
-			continue
-		}
-		r.stateCache.Store(row.key(), row.fingerprint())
-		synced++
-	}
+	synced := r.syncOperatorState(ctx, base, token, rows, now)
 	if synced > 0 {
 		log.Info("synced operator state into zetta", "database", "orama_control", "rowsChanged", synced)
 	}
+}
+
+// syncOperatorState appends each changed component and its audit event. A transition is complete only
+// after both writes succeed; failures remain retryable without blocking any other component.
+func (r *OramaZettaClusterReconciler) syncOperatorState(
+	ctx context.Context,
+	base string,
+	token string,
+	rows []componentRow,
+	now string,
+) int {
+	log := logf.FromContext(ctx)
+	synced := 0
+	for _, row := range rows {
+		fingerprint := row.fingerprint()
+		componentWritten := false
+		if previous, ok := r.stateCache.Load(row.key()); ok {
+			switch value := previous.(type) {
+			case string:
+				if value == fingerprint {
+					continue
+				}
+			case stateSyncProgress:
+				if value.fingerprint == fingerprint {
+					componentWritten = value.componentWritten
+				}
+			}
+		}
+		if !componentWritten {
+			if err := zettaSQL(ctx, base, token, "orama_control", insertComponentSQL(row, now)); err != nil {
+				log.V(1).Info("zetta state sync deferred", "component", row.key(), "err", err.Error())
+				continue
+			}
+			componentWritten = true
+			r.stateCache.Store(row.key(), stateSyncProgress{
+				fingerprint:      fingerprint,
+				componentWritten: true,
+			})
+		}
+		if err := zettaSQL(ctx, base, token, "orama_control", insertReconcileEventSQL(row, now)); err != nil {
+			log.V(1).Info("zetta reconcile event deferred", "component", row.key(), "err", err.Error())
+			continue
+		}
+		r.stateCache.Store(row.key(), fingerprint)
+		synced++
+	}
+	return synced
 }
 
 // gatherOperatorState reads the coarse component state from every managed CR — the same
@@ -122,6 +165,45 @@ func (r *OramaZettaClusterReconciler) gatherOperatorState(ctx context.Context, n
 				operator: operator, name: zc.Name, kind: "OramaZettaCluster", owner: zc.Name,
 				status: orDefault(zc.Status.Phase, "Unknown"),
 				detail: fmt.Sprintf("%d/%d", zc.Status.ReadyNodes, zc.Status.TotalNodes),
+			})
+		}
+	}
+
+	// Lake is cluster-scoped, so list every Lake and select the ones whose workloads live beside this
+	// Zetta datastore. Its status is already anti-flapped by LakeReconciler; serializing that status into
+	// detail preserves every coarse transition without deriving a second view of readiness here.
+	var lakes oramav1alpha1.LakeList
+	if err := r.List(ctx, &lakes); err == nil {
+		for i := range lakes.Items {
+			lake := &lakes.Items[i]
+			lakeNamespace := lake.Spec.Namespace
+			if lakeNamespace == "" {
+				lakeNamespace = "lake-dev"
+			}
+			if lakeNamespace != ns {
+				continue
+			}
+			desiredReplicas := int32(1)
+			if lake.Spec.Replicas != nil {
+				desiredReplicas = *lake.Spec.Replicas
+			}
+			detail, err := json.Marshal(struct {
+				DesiredReplicas int32                    `json:"desiredReplicas"`
+				Status          oramav1alpha1.LakeStatus `json:"status"`
+			}{
+				DesiredReplicas: desiredReplicas,
+				Status:          lake.Status,
+			})
+			if err != nil {
+				continue
+			}
+			rows = append(rows, componentRow{
+				operator: operator,
+				name:     lake.Name,
+				kind:     "Lake",
+				owner:    lake.Name,
+				status:   orDefault(lake.Status.Phase, "Unknown"),
+				detail:   string(detail),
 			})
 		}
 	}
@@ -159,6 +241,32 @@ func insertComponentSQL(row componentRow, now string) string {
 		"INSERT INTO components (operator, name, kind, owner, status, detail, updated_at) "+
 			"VALUES (%s, %s, %s, %s, %s, %s, %s)",
 		q(row.operator), q(row.name), q(row.kind), q(row.owner), q(row.status), q(row.detail), q(now))
+}
+
+// insertReconcileEventSQL builds the audit append paired with a changed component row. The cluster
+// column carries the operator identity because one Zetta store can be shared by many k8s clusters.
+func insertReconcileEventSQL(row componentRow, now string) string {
+	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	detail, _ := json.Marshal(struct {
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		Owner  string `json:"owner"`
+		Status string `json:"status"`
+		Detail string `json:"detail"`
+	}{
+		Name:   row.name,
+		Kind:   row.kind,
+		Owner:  row.owner,
+		Status: row.status,
+		Detail: row.detail,
+	})
+	return fmt.Sprintf(
+		"INSERT INTO reconcile_events (ts, cluster, action, detail) VALUES (%s, %s, %s, %s)",
+		q(now),
+		q(row.operator),
+		q("component.state_changed"),
+		q(string(detail)),
+	)
 }
 
 // zettaAdminToken reads the seeded admin bearer (Secret `<name>-zetta-admin`, key `token`) that the

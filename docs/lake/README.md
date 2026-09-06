@@ -118,6 +118,28 @@ remains `get`, `create`, and `delete` without a cluster-wide informer. Keep it i
 `config/rbac/role.yaml` or the manager
 CrashLoops on cache sync.
 
+## Observed state in Zetta
+
+When an `OramaZettaCluster` with `spec.provisionOperatorSchema` enabled runs in the Lake's
+`spec.namespace`, the existing operator state-sync loop projects the cluster-scoped Lake into
+`orama_control.components`. The row is keyed by the operator identity, Lake owner, `kind=Lake`, and
+Lake name. Its `status` is the Lake phase; `detail` is deterministic JSON containing the desired
+replica count and the complete anti-flapped `Lake.status`, including store, Postgres, schema, backup,
+data-service, sealing, and condition observations.
+
+Each changed row also appends an `orama_control.reconcile_events` entry with action
+`component.state_changed`. The event's `cluster` is the operator identity and its JSON detail names
+the row and new state. The component append and event use the same authenticated, best-effort retry
+path as every other operator state row. A successful pair is fingerprinted, so an unchanged Lake
+writes nothing. If the component append succeeds but the event fails, the next Zetta reconcile
+retries only the event.
+
+Lake is cluster-scoped, so association is explicit: a datastore observes only Lakes whose effective
+workload namespace matches its namespace (`lake-dev` when `spec.namespace` is empty). The deployment
+REST/MCP contract does not read this projection; it continues to use the separate append-only
+`deployments` and `deployment_records` tables described in the
+[deployment control-plane guide](../control-plane/README.md).
+
 The `LakeEnvironment` controller additionally needs `lakeenvironments` (including status and
 finalizers), verified Namespace update/delete, and Deployments, Services, Ingresses,
 NetworkPolicies, ResourceQuotas and LimitRanges across environment namespaces. The chart grants
