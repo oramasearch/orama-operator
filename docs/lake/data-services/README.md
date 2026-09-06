@@ -8,7 +8,7 @@ has no successful result, while `none` means the current configuration cannot pr
 | Service | Initial label | Customer responsibility | What managed requires |
 |---|---|---|---|
 | Control-plane Postgres | Unmanaged until rehearsed | Enable object-store backups and run the restore and upgrade rehearsals. For two or more instances, also run failover. | Successful backup/restore and upgrade rehearsals; successful failover for a replicated cluster. A single instance reports `failover: none` explicitly. |
-| Zetta data plane | Unmanaged | Provision, protect, recover, upgrade, and fail over Zetta outside this `Lake` until #125 and its lifecycle procedures land. | Operator-owned provisioning plus tested backup, restore, upgrade, and failover procedures. |
+| Zetta data plane | Unmanaged until rehearsed | The Lake owns provisioning and ordered teardown; backup, restore, upgrade, and failover procedures still need rehearsal support. | Tested backup, restore, upgrade, and failover procedures for the owned cluster. |
 
 Postgres rehearsals are cluster-scoped `LakeRestoreRehearsal` objects. Restore and upgrade require
 enabled backups and create an isolated, deterministically named namespace. The controller copies

@@ -84,9 +84,15 @@ type LakeSpec struct {
 	// spec.namespace, the same path OramaCloudV1 uses for its control DB (requires the
 	// CloudNativePG operator, see the helmfile). CNPG generates the `lake-<name>-controldb-app`
 	// Secret (owner credentials + connection URI); the lake pods receive it as
-	// LAKE_CONTROL_DB_URI. Zetta is the data plane and is provisioned separately.
+	// LAKE_CONTROL_DB_URI. The Zetta field below configures lake's owned data plane.
 	// +optional
 	Postgres LakePostgresSpec `json:"postgres,omitempty"`
+
+	// Zetta is lake's data plane: an owned OramaZettaCluster in spec.namespace. Its client
+	// Service and seeded admin token are injected into lake as LAKE_DATA_PLANE_URL and
+	// LAKE_DATA_PLANE_TOKEN. The child is deleted before the Lake finalizer is released.
+	// +optional
+	Zetta LakeZettaSpec `json:"zetta,omitempty"`
 
 	// IngressEnabled gates external HTTP exposure of the lake Service. When true AND Host is set, the
 	// operator provisions an nginx Ingress at Host (the whole host proxies to the lake Service) and,
@@ -210,6 +216,35 @@ type LakePostgresSpec struct {
 	Backup LakePostgresBackupSpec `json:"backup,omitempty"`
 }
 
+// LakeZettaSpec describes the owned Zetta data plane for a Lake.
+type LakeZettaSpec struct {
+	// Enabled provisions the OramaZettaCluster. Default true. Setting it false tears the cluster
+	// down, including its per-node data volumes.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Image is the Zetta image. Empty uses the OramaZettaCluster default.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Replicas is the number of equal-peer Zetta nodes.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Storage configures each Zetta node's persistent data volume.
+	// +optional
+	Storage OramaZettaStorage `json:"storage,omitempty"`
+
+	// Reachability declares whether this data-plane slice is dial-out-only or wan-accessible.
+	// Empty defaults to dial-out-only.
+	// +kubebuilder:validation:Enum=dial-out-only;wan-accessible
+	// +optional
+	Reachability string `json:"reachability,omitempty"`
+}
+
 // LakePostgresBackupSpec describes scheduled object-store backups for a Lake control-plane
 // Postgres cluster. The Secret is in spec.namespace and has the same R2/S3 shape as
 // OramaCloudV1's r2SecretRef: s3ApiEndpoint, accessKeyId, and secretAccessKey.
@@ -265,6 +300,9 @@ type LakeStatus struct {
 	// PostgresInstances is ready/desired for the CNPG Cluster, e.g. "1/1"; empty when disabled.
 	// +optional
 	PostgresInstances string `json:"postgresInstances,omitempty"`
+	// ZettaReady is true once every desired node in the owned data-plane cluster is ready.
+	// +optional
+	ZettaReady bool `json:"zettaReady,omitempty"`
 	// SchemaPhase mirrors the owned PostgresSchema: Pending | Applying | Applied | Failed.
 	// +optional
 	SchemaPhase string `json:"schemaPhase,omitempty"`
@@ -292,7 +330,8 @@ type LakeStatus struct {
 	// Sealing publishes the cluster-bound recipient used by authoring tools and lake.
 	// +optional
 	Sealing *LakeSealingStatus `json:"sealing,omitempty"`
-	// Conditions includes StoreReady and BackupReady, including invalid configuration details.
+	// Conditions includes StoreReady, BackupReady, and ZettaReady, including invalid
+	// configuration details.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// Phase is a coarse summary in the operator's vocabulary: Progressing, Ready, Degraded.
@@ -378,6 +417,7 @@ type LakeStoreStatus struct {
 // +kubebuilder:printcolumn:name="Host",type=string,JSONPath=`.spec.host`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="DB",type=string,JSONPath=`.status.postgresInstances`
+// +kubebuilder:printcolumn:name="Zetta",type=boolean,JSONPath=`.status.zettaReady`
 // +kubebuilder:printcolumn:name="Schema",type=string,JSONPath=`.status.schemaPhase`
 // +kubebuilder:printcolumn:name="Store",type=string,JSONPath=`.status.store.claimName`
 // +kubebuilder:printcolumn:name="Backup",type=date,JSONPath=`.status.lastBackupTime`

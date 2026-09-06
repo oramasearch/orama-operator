@@ -36,7 +36,7 @@ spec:
       value: air-gapped
   # Control plane: a CloudNativePG Postgres in spec.namespace, on by default (requires the CNPG
   # operator). The lake pods get LAKE_CONTROL_DB_URI from the generated lake-<name>-controldb-app
-  # Secret. Zetta is the data plane and is provisioned separately.
+  # Secret.
   postgres:
     instances: 1
     storageSize: 50Gi
@@ -52,6 +52,16 @@ spec:
     #     path: lake-hello/controldb
     #   secretRef:
     #     name: lake-hello-backups-r2
+  # Data plane: an owned OramaZettaCluster in this namespace, on by default. The child inherits
+  # pullSecretName. Lake receives its client Service and seeded admin token through
+  # LAKE_DATA_PLANE_URL and LAKE_DATA_PLANE_TOKEN.
+  zetta:
+    # Pin an auth-capable image built after oramasearch/zetta#799.
+    image: oramasearch/zetta:<auth-capable-tag>
+    replicas: 1
+    storage:
+      size: 10Gi
+    reachability: dial-out-only
   # port defaults to 4900 (lake's --listen) and args to none: the image runs lake as built.
   # Before the lake image existed the hello-world stand-in was:
   #   image: hashicorp/http-echo:1.0

@@ -5,8 +5,8 @@ install Helm chart, and it reconciles a small set of custom resources in the `or
 into running systems:
 
 - `OramaZettaCluster`: an Orama Zetta cluster. Zetta is the operator's control plane (its
-  datastore for observed state and the intake for desired deployments) and the data plane a
-  Lake will own (#125). Every node forms one mTLS cluster from a shared join token.
+  datastore for observed state and the intake for desired deployments) and the owned data plane
+  provisioned for each Lake. Every node forms one mTLS cluster from a shared join token.
 - `Lake`: the hosted lake service for the liquid project, with its control-plane Postgres, a
   shared libliquid store, sealed-secret delivery, per-change `LakeEnvironment` namespaces, and
   an authenticated REST `/v1` and MCP deployment surface that liquid drives.

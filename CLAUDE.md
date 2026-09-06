@@ -126,7 +126,7 @@ about the **operator**, not a copy of prod docs.
 ### The `Lake` CR (lake, liquid project)
 
 `Lake` deploys the lake service: namespace, admin-token, instance-KEK and cluster-sealing-key Secrets, Deployment, Service, a CNPG
-control-plane Postgres with lake's schema applied through `PostgresSchema`, opt-in scheduled R2/S3
+control-plane Postgres with lake's schema applied through `PostgresSchema`, an owned `OramaZettaCluster` data plane, opt-in scheduled R2/S3
 backup through CNPG Barman, cluster-scoped `LakeRestoreRehearsal` restore/upgrade/failover proof,
 opt-in Ingress + Cloudflare DNS, and Lake-owned `LakeEnvironment` CRs materialized from the
 operator's Zetta deployment table. `LakeSealedSecret` delivers cluster-bound ciphertext into
