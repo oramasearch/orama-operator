@@ -6,7 +6,7 @@
   ```sh
   export PATH="/opt/homebrew/bin:$(go env GOPATH)/bin:$PATH"
   ```
-- `controller-gen` is fetched on demand by the Makefile (`go run sigs.k8s.io/controller-tools/cmd/controller-gen@latest`).
+- `controller-gen` is fetched on demand by the Makefile at the pinned `v0.21.0` version.
 
 ## Codegen (after editing `api/v1alpha1/*.go`)
 
@@ -19,8 +19,20 @@ The generated DeepCopy + CRDs are committed. Then:
 
 ```sh
 go build ./... && go vet ./...
+go test ./...
 helm lint chart
 ```
+
+The deployment control-plane suite includes an envtest case for create, list, rollback, and status.
+Install the matching Kubernetes binaries and export their directory before `go test ./...`:
+
+```sh
+export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)"
+go test ./...
+```
+
+Without `KUBEBUILDER_ASSETS`, that case reports a skip while the handler, contract-digest, auth,
+audit, secret-reference, REST, and MCP tests still run.
 
 ## Run locally (dev loop)
 
@@ -31,8 +43,9 @@ using your kubeconfig creds (no in-cluster deploy needed to iterate):
 make run           # = go run ./cmd/main.go
 ```
 
-**Run only ONE manager at a time.** The metrics server binds `:8080`; a second manager
-(or a stale/wedged one left running) fails with `bind: address already in use`, and two
+**Run only ONE manager at a time.** The metrics server binds `:8080` and the deployment control plane
+binds `:8090`; a second manager (or a stale/wedged one left running) fails with
+`bind: address already in use`, and two
 managers reconciling the same CR will fight. If startup errors on `:8080`, an old manager
 is still alive — find and stop it, then re-run:
 
@@ -44,7 +57,7 @@ kill <pid>                            # killing the manager does NOT delete depl
 A wedged manager shows up as the CR's `.status.observedGeneration` lagging
 `.metadata.generation` (it stopped reconciling) — restart it to catch up. To run a second
 manager deliberately (e.g. debugging), override the ports:
-`go run ./cmd/main.go --metrics-bind-address=:8090 --health-probe-bind-address=:8091`.
+`go run ./cmd/main.go --metrics-bind-address=:8180 --health-probe-bind-address=:8181 --control-plane-bind-address=:8190`.
 
 ## AKS smoke test
 

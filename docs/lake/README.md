@@ -62,7 +62,8 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    Each CR owns its profiled workload Namespace through a verified finalizer. Referenced
    `LakeSealedSecret` resources must be current and Ready; their produced Secrets are copied into the
    isolated Namespace before the workload starts. See
-   [`environments.md`](environments.md).
+   [`environments.md`](environments.md). Liquid creates, lists, rolls back, and reads these deployments
+   through the operator's authenticated [deployment control plane](../control-plane/README.md).
 13. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,
     restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`
     controller runs Postgres procedures and updates the row; see

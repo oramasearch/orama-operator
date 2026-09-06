@@ -18,5 +18,9 @@ operator:
 serviceAccount:
   name: orama-cloud-v1-operator
 
+controlPlane:
+  service:
+    port: 8090
+
 # Helm applies CRDs from chart/crds before templates (generate them with make manifests).
 installCRDs: true

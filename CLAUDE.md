@@ -133,7 +133,9 @@ owned Kubernetes Secrets; see `docs/lake/sealed-secrets.md`.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
 production instance) and the `Lake` section of [`docs/crd-reference.md`](docs/crd-reference.md) before touching
 `internal/controller/lake_controller.go`. The schema's source of truth is `oramasearch/lake` `db/schema.sql`;
-`assets/lake-schema.sql` is a byte-identical vendored copy (a test checks the header). The chart ClusterRole is
+`assets/lake-schema.sql` is a byte-identical vendored copy (a test checks the header). The operator serves
+liquid's authenticated deployment REST/MCP contract from its manager Service; see
+`docs/control-plane/README.md`. The chart ClusterRole is
 hand-maintained: a new owned kind needs its entry there or the manager CrashLoops on cache sync.
 
 ## Build / codegen flow

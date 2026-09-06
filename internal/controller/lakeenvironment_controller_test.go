@@ -7,6 +7,9 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -38,6 +41,33 @@ func newLakeEnvironmentScheme(t *testing.T) *runtime.Scheme {
 		}
 	}
 	return scheme
+}
+
+func TestLakeEnvironmentNamespacePreservesLegacyOwnership(t *testing.T) {
+	spec := oramav1alpha1.LakeEnvironmentSpec{
+		LakeRef:     "prod",
+		Repository:  "repo-1",
+		Environment: "production",
+	}
+	legacy := &oramav1alpha1.LakeEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "production-legacy",
+			Namespace:   "lake",
+			Annotations: map[string]string{deploymentIDAnnotation: "deploy-1"},
+		},
+		Spec: spec,
+	}
+	stable := legacy.DeepCopy()
+	stable.Name = lakeEnvironmentResourceName(spec.LakeRef, spec.Repository, spec.Environment)
+	legacyNamespace := lakeEnvironmentNamespace(legacy)
+	stableNamespace := lakeEnvironmentNamespace(stable)
+	if legacyNamespace == stableNamespace {
+		t.Fatalf("legacy and stable resources share namespace %q", stableNamespace)
+	}
+	legacyDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("deploy-1")))[:10]
+	if !strings.HasSuffix(legacyNamespace, legacyDigest) {
+		t.Errorf("legacy namespace = %q, want deployment digest suffix %q", legacyNamespace, legacyDigest)
+	}
 }
 
 func TestLakeEnvironmentCopiesDeliveredSealedSecrets(t *testing.T) {

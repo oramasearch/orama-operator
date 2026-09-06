@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -85,15 +86,39 @@ func (r *OramaZettaClusterReconciler) reconcileZettaDeployments(ctx context.Cont
 
 func (r *OramaZettaClusterReconciler) materializeZettaDeploymentRows(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, base, token string, rows []map[string]string) {
 	log := logf.FromContext(ctx)
-	states := reduceDeploymentRows(rows)
-	for deploymentID, state := range states {
-		if state.Desired == nil {
-			continue
-		}
+	for _, state := range latestDeploymentEnvironmentStates(reduceDeploymentRows(rows)) {
+		deploymentID := state.Desired.DeploymentID
 		if err := r.reconcileZettaDeployment(ctx, z, base, token, deploymentID, state); err != nil {
 			log.Error(err, "deployment sync deferred", "deploymentId", deploymentID)
 		}
 	}
+}
+
+func latestDeploymentEnvironmentStates(states map[string]*zettaDeploymentState) []*zettaDeploymentState {
+	latest := make(map[string]*zettaDeploymentState)
+	for deploymentID, state := range states {
+		if state.Desired == nil {
+			continue
+		}
+		key := strings.Join([]string{state.Desired.Lake, state.Desired.Repository, state.Desired.Environment}, "\n")
+		if state.Desired.Lake == "" || state.Desired.Repository == "" || state.Desired.Environment == "" {
+			key = "invalid\n" + deploymentID
+		}
+		current := latest[key]
+		if current == nil || deploymentEventIsNewer(current.Desired, state.Desired) {
+			latest[key] = state
+		}
+	}
+	keys := make([]string, 0, len(latest))
+	for key := range latest {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]*zettaDeploymentState, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, latest[key])
+	}
+	return result
 }
 
 func deploymentSelectSQL(lake string) string {
@@ -263,16 +288,38 @@ func (r *OramaZettaClusterReconciler) reconcileZettaDeployment(ctx context.Conte
 	}
 	name := deploymentEnvironmentName(desired)
 	key := client.ObjectKey{Namespace: lakeNamespace, Name: name}
+	if err := r.deleteSupersededLakeEnvironments(ctx, &lake, desired, lakeNamespace, name); err != nil {
+		return err
+	}
 	if deploymentShouldTearDown(desired) {
+		var environment oramav1alpha1.LakeEnvironment
+		exists := true
+		if err := r.Get(ctx, key, &environment); apierrors.IsNotFound(err) {
+			exists = false
+		} else if err != nil {
+			return err
+		} else if !metav1.IsControlledBy(&environment, &lake) {
+			return fmt.Errorf("refusing to delete LakeEnvironment %s/%s not owned by Lake %s", key.Namespace, key.Name, lake.Name)
+		}
 		message := deploymentTeardownMessage(desired)
 		if err := r.writeDeploymentTransition(ctx, base, token, deploymentID, desired.Lake, state.Status, oramav1alpha1.LakeEnvironmentPhaseTornDown, "", message); err != nil {
 			return err
 		}
-		environment := &oramav1alpha1.LakeEnvironment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lakeNamespace}}
-		if err := r.Delete(ctx, environment); err != nil && !apierrors.IsNotFound(err) {
+		if !exists {
+			return nil
+		}
+		if err := r.Delete(ctx, &environment); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 		return nil
+	}
+	var existing oramav1alpha1.LakeEnvironment
+	if err := r.Get(ctx, key, &existing); err == nil {
+		if !metav1.IsControlledBy(&existing, &lake) {
+			return fmt.Errorf("LakeEnvironment %s/%s is not owned by Lake %s", key.Namespace, key.Name, lake.Name)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return err
 	}
 
 	environment := &oramav1alpha1.LakeEnvironment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lakeNamespace}}
@@ -305,10 +352,37 @@ func (r *OramaZettaClusterReconciler) reconcileZettaDeployment(ctx context.Conte
 	if err := r.Get(ctx, key, environment); err != nil {
 		return err
 	}
-	if environment.Status.Phase == "" {
+	if environment.Status.Phase == "" || environment.Status.DeploymentID != deploymentID {
 		return nil
 	}
 	return r.writeDeploymentTransition(ctx, base, token, deploymentID, desired.Lake, state.Status, environment.Status.Phase, environment.Status.URL, lakeEnvironmentStatusMessage(environment))
+}
+
+func (r *OramaZettaClusterReconciler) deleteSupersededLakeEnvironments(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	desired *zettaDeploymentEvent,
+	namespace string,
+	keepName string,
+) error {
+	var environments oramav1alpha1.LakeEnvironmentList
+	if err := r.List(ctx, &environments, client.InNamespace(namespace)); err != nil {
+		return err
+	}
+	for i := range environments.Items {
+		environment := &environments.Items[i]
+		if environment.Name == keepName ||
+			!metav1.IsControlledBy(environment, lake) ||
+			environment.Spec.LakeRef != desired.Lake ||
+			environment.Spec.Repository != desired.Repository ||
+			environment.Spec.Environment != desired.Environment {
+			continue
+		}
+		if err := r.Delete(ctx, environment); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func deploymentShouldTearDown(event *zettaDeploymentEvent) bool {
@@ -323,8 +397,13 @@ func deploymentTeardownMessage(event *zettaDeploymentEvent) string {
 }
 
 func deploymentEnvironmentName(event *zettaDeploymentEvent) string {
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(event.DeploymentID)))[:10]
-	prefix := dnsLabel(event.Environment)
+	return lakeEnvironmentResourceName(event.Lake, event.Repository, event.Environment)
+}
+
+func lakeEnvironmentResourceName(lake, repository, environment string) string {
+	identity := strings.Join([]string{lake, repository, environment}, "\n")
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))[:10]
+	prefix := dnsLabel(environment)
 	maxPrefixLength := 63 - len(hash) - 1
 	if len(prefix) > maxPrefixLength {
 		prefix = strings.Trim(prefix[:maxPrefixLength], "-")

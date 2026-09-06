@@ -89,6 +89,9 @@ Desired deployment events in the operator's Zetta control plane become Lake-owne
 per-change environment, with anti-flap status returned to Zetta, wildcard DNS for previews, and
 delivered `LakeSealedSecret` values copied into the isolated workload namespace before startup.
 See [Lake deployment environments](docs/lake/environments.md).
+Liquid reaches that intake through the operator's authenticated REST `/v1` and MCP deployment surface;
+the authoritative contract, credential, rollback, audit, and connection details are in the
+[deployment control-plane guide](docs/control-plane/README.md).
 
 ## Multi-region
 

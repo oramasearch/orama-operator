@@ -145,8 +145,11 @@ func (r *LakeEnvironmentReconciler) reader() client.Reader {
 }
 
 func lakeEnvironmentNamespace(environment *oramav1alpha1.LakeEnvironment) string {
-	id := environment.Annotations[deploymentIDAnnotation]
-	if id == "" {
+	id := strings.Join([]string{environment.Spec.LakeRef, environment.Spec.Repository, environment.Spec.Environment}, "\n")
+	stableName := lakeEnvironmentResourceName(environment.Spec.LakeRef, environment.Spec.Repository, environment.Spec.Environment)
+	if environment.Name != stableName && environment.Annotations[deploymentIDAnnotation] != "" {
+		id = environment.Annotations[deploymentIDAnnotation]
+	} else if environment.Spec.LakeRef == "" || environment.Spec.Repository == "" || environment.Spec.Environment == "" {
 		id = environment.Namespace + "/" + environment.Name
 	}
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(id)))[:10]
