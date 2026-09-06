@@ -59,7 +59,9 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    the same ingress address; individual previews do not create Cloudflare records.
 12. **Deployment environments** — desired rows in the operator's Zetta
    `orama_control.deployments` table become Lake-owned `LakeEnvironment` CRs in this namespace.
-   Each CR owns its profiled workload Namespace through a verified finalizer. See
+   Each CR owns its profiled workload Namespace through a verified finalizer. Referenced
+   `LakeSealedSecret` resources must be current and Ready; their produced Secrets are copied into the
+   isolated Namespace before the workload starts. See
    [`environments.md`](environments.md).
 13. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,
     restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`

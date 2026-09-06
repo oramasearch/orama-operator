@@ -59,9 +59,10 @@ type LakeEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakeenvironments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakeenvironments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=orama.cloud,resources=lakesealedsecrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=services;resourcequotas;limitranges,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services;secrets;resourcequotas;limitranges,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses;networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
@@ -105,13 +106,20 @@ func (r *LakeEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	host := lakeEnvironmentHost(&lake, &environment)
-	if len(environment.Spec.SecretRefs) > 0 {
+	secretNames, reason, message, err := r.reconcileEnvironmentSecrets(ctx, &environment, workloadNamespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if reason != "" {
+		if err := r.deleteStaleEnvironmentSecrets(ctx, &environment, workloadNamespace, nil); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.teardownEnvironmentWorkload(ctx, &environment, workloadNamespace); err != nil {
 			return ctrl.Result{}, err
 		}
-		return r.finishEnvironmentStatus(ctx, &environment, nil, host, oramav1alpha1.LakeEnvironmentPhaseDegraded, "SecretDeliveryUnavailable", "secretRefs require LakeSealedSecret support from operator #129")
+		return r.finishEnvironmentStatus(ctx, &environment, nil, host, oramav1alpha1.LakeEnvironmentPhaseDegraded, reason, message)
 	}
-	if err := r.reconcileEnvironmentWorkload(ctx, &environment, workloadNamespace); err != nil {
+	if err := r.reconcileEnvironmentWorkload(ctx, &environment, workloadNamespace, secretNames); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.reconcileEnvironmentIngress(ctx, &lake, &environment, workloadNamespace, host); err != nil {
@@ -364,7 +372,12 @@ func environmentContainerSecurityContext() *corev1.SecurityContext {
 	}
 }
 
-func (r *LakeEnvironmentReconciler) reconcileEnvironmentWorkload(ctx context.Context, environment *oramav1alpha1.LakeEnvironment, namespace string) error {
+func (r *LakeEnvironmentReconciler) reconcileEnvironmentWorkload(
+	ctx context.Context,
+	environment *oramav1alpha1.LakeEnvironment,
+	namespace string,
+	secretNames []string,
+) error {
 	labels := environmentLabels(environment)
 	name := environmentWorkloadName(environment)
 	replicas := environment.Spec.Replicas
@@ -375,6 +388,14 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentWorkload(ctx context.Con
 	env := make([]corev1.EnvVar, 0, len(environment.Spec.Env))
 	for _, variable := range environment.Spec.Env {
 		env = append(env, corev1.EnvVar{Name: variable.Name, Value: variable.Value})
+	}
+	envFrom := make([]corev1.EnvFromSource, 0, len(secretNames))
+	for _, secretName := range secretNames {
+		envFrom = append(envFrom, corev1.EnvFromSource{
+			SecretRef: &corev1.SecretEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			},
+		})
 	}
 
 	deployment := &appsv1.Deployment{ObjectMeta: environmentObjectMeta(environment, name, namespace)}
@@ -392,6 +413,7 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentWorkload(ctx context.Con
 			Image:           environment.Spec.Image,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			Env:             env,
+			EnvFrom:         envFrom,
 			Ports: []corev1.ContainerPort{{
 				Name:          "http",
 				ContainerPort: environment.Spec.Port,
@@ -438,6 +460,124 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentWorkload(ctx context.Con
 		return nil
 	}); err != nil {
 		return fmt.Errorf("reconcile environment Service: %w", err)
+	}
+	return nil
+}
+
+func sealedSecretReferenceName(reference string) (string, error) {
+	name := reference
+	if strings.HasPrefix(reference, "secret://") {
+		name = strings.TrimPrefix(reference, "secret://")
+	}
+	if name == "" || strings.Contains(name, "/") {
+		return "", fmt.Errorf("sealed-secret reference %q must be a resource name or secret://<name>", reference)
+	}
+	return name, nil
+}
+
+func (r *LakeEnvironmentReconciler) reconcileEnvironmentSecrets(
+	ctx context.Context,
+	environment *oramav1alpha1.LakeEnvironment,
+	workloadNamespace string,
+) ([]string, string, string, error) {
+	keep := make(map[string]struct{}, len(environment.Spec.SecretRefs))
+	secretNames := make([]string, 0, len(environment.Spec.SecretRefs))
+	for _, reference := range environment.Spec.SecretRefs {
+		resourceName, err := sealedSecretReferenceName(reference)
+		if err != nil {
+			return nil, "SecretReferenceInvalid", err.Error(), nil
+		}
+		var sealed oramav1alpha1.LakeSealedSecret
+		key := client.ObjectKey{Namespace: environment.Namespace, Name: resourceName}
+		if err := r.Get(ctx, key, &sealed); err != nil {
+			if apierrors.IsNotFound(err) {
+				message := fmt.Sprintf("sealed-secret reference %q was not found", reference)
+				return nil, "SecretReferenceNotFound", message, nil
+			}
+			return nil, "", "", err
+		}
+		if sealed.Spec.LakeRef.Name != environment.Spec.LakeRef {
+			message := fmt.Sprintf("sealed-secret reference %q belongs to Lake %q", reference, sealed.Spec.LakeRef.Name)
+			return nil, "SecretReferenceWrongLake", message, nil
+		}
+		ready := apimeta.FindStatusCondition(sealed.Status.Conditions, "Ready")
+		if sealed.Status.Phase != "Ready" || sealed.Status.ObservedGeneration != sealed.Generation || ready == nil || ready.Status != metav1.ConditionTrue {
+			message := fmt.Sprintf("sealed-secret reference %q is not ready", reference)
+			return nil, "SecretReferencePending", message, nil
+		}
+		var source corev1.Secret
+		sourceKey := client.ObjectKey{Namespace: sealed.Namespace, Name: sealed.Spec.Template.Name}
+		if err := r.Get(ctx, sourceKey, &source); err != nil {
+			if apierrors.IsNotFound(err) {
+				message := fmt.Sprintf("sealed-secret reference %q has no delivered Secret", reference)
+				return nil, "SecretReferencePending", message, nil
+			}
+			return nil, "", "", err
+		}
+		if !metav1.IsControlledBy(&source, &sealed) {
+			message := fmt.Sprintf("sealed-secret reference %q does not own its delivered Secret", reference)
+			return nil, "SecretReferenceConflict", message, nil
+		}
+		if _, duplicate := keep[source.Name]; duplicate {
+			message := fmt.Sprintf("sealed-secret references produce duplicate Secret %q", source.Name)
+			return nil, "SecretReferenceConflict", message, nil
+		}
+		keep[source.Name] = struct{}{}
+		secretNames = append(secretNames, source.Name)
+		if err := r.copyEnvironmentSecret(ctx, environment, workloadNamespace, &source); err != nil {
+			return nil, "", "", err
+		}
+	}
+	if err := r.deleteStaleEnvironmentSecrets(ctx, environment, workloadNamespace, keep); err != nil {
+		return nil, "", "", err
+	}
+	return secretNames, "", "", nil
+}
+
+func (r *LakeEnvironmentReconciler) copyEnvironmentSecret(
+	ctx context.Context,
+	environment *oramav1alpha1.LakeEnvironment,
+	workloadNamespace string,
+	source *corev1.Secret,
+) error {
+	destination := &corev1.Secret{ObjectMeta: environmentObjectMeta(environment, source.Name, workloadNamespace)}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, destination, func() error {
+		destination.Labels = environmentLabels(environment)
+		destination.Annotations = map[string]string{environmentOwnerAnnotation: environmentOwner(environment)}
+		destination.Type = source.Type
+		destination.Immutable = nil
+		destination.Data = make(map[string][]byte, len(source.Data))
+		for key, value := range source.Data {
+			destination.Data[key] = append([]byte(nil), value...)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("copy delivered Secret %q: %w", source.Name, err)
+	}
+	return nil
+}
+
+func (r *LakeEnvironmentReconciler) deleteStaleEnvironmentSecrets(
+	ctx context.Context,
+	environment *oramav1alpha1.LakeEnvironment,
+	workloadNamespace string,
+	keep map[string]struct{},
+) error {
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.InNamespace(workloadNamespace), client.MatchingLabels(environmentLabels(environment))); err != nil {
+		return err
+	}
+	for i := range secrets.Items {
+		secret := &secrets.Items[i]
+		if secret.Annotations[environmentOwnerAnnotation] != environmentOwner(environment) {
+			continue
+		}
+		if _, found := keep[secret.Name]; found {
+			continue
+		}
+		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
 	}
 	return nil
 }
@@ -711,14 +851,39 @@ func (r *LakeEnvironmentReconciler) requestsForLake(ctx context.Context, object 
 	return requests
 }
 
+func (r *LakeEnvironmentReconciler) requestsForSealedSecret(ctx context.Context, object client.Object) []reconcile.Request {
+	sealed, ok := object.(*oramav1alpha1.LakeSealedSecret)
+	if !ok {
+		return nil
+	}
+	var environments oramav1alpha1.LakeEnvironmentList
+	if err := r.List(ctx, &environments, client.InNamespace(sealed.Namespace)); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0)
+	for i := range environments.Items {
+		environment := &environments.Items[i]
+		for _, reference := range environment.Spec.SecretRefs {
+			name, err := sealedSecretReferenceName(reference)
+			if err == nil && name == sealed.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(environment)})
+				break
+			}
+		}
+	}
+	return requests
+}
+
 // SetupWithManager sets up watches for the CR and cross-namespace child status changes.
 func (r *LakeEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	mapObject := handler.EnqueueRequestsFromMapFunc(r.requestsForEnvironmentObject)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.LakeEnvironment{}).
 		Watches(&oramav1alpha1.Lake{}, handler.EnqueueRequestsFromMapFunc(r.requestsForLake)).
+		Watches(&oramav1alpha1.LakeSealedSecret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForSealedSecret)).
 		Watches(&appsv1.Deployment{}, mapObject).
 		Watches(&corev1.Service{}, mapObject).
+		Watches(&corev1.Secret{}, mapObject).
 		Watches(&networkingv1.Ingress{}, mapObject).
 		Watches(&networkingv1.NetworkPolicy{}, mapObject).
 		Watches(&corev1.ResourceQuota{}, mapObject).

@@ -80,12 +80,26 @@ Ingress is enabled only when the referenced Lake has `spec.ingressEnabled: true`
 
 The status URL is present while the host is configured, including while replicas are still progressing.
 
+## Sealed secrets
+
+`spec.secretRefs` accepts a `LakeSealedSecret` resource name or the equivalent
+`secret://<resource-name>` reference emitted by liquid repository configuration. Before creating the
+workload, the controller verifies that every referenced resource exists in the Lake namespace, belongs
+to the same Lake, reports `Ready` for its current generation, and owns its produced Secret. An unknown,
+foreign, stale, or undelivered reference keeps the environment `Degraded` with a specific reason and
+removes its workload so it cannot start without the requested credential.
+
+Each delivered Secret is copied into the isolated workload namespace without changing its name or
+contents. The application container imports the copies with `envFrom`. Copies carry the environment's
+ownership annotation, are repaired on drift, and are deleted when the reference is removed or becomes
+invalid. Deleting the environment Namespace removes every copy without changing the source
+`LakeSealedSecret` or its Secret in the Lake namespace.
+
 ## Status and teardown
 
 `LakeEnvironment.status` is written only when phase, URL, ready replicas, deployment ID or the `Ready`
 condition changes. `Ready` comes from Deployment readiness; a Deployment replica failure reports
-`Degraded`. A non-empty `secretRefs` list reports `Degraded` and does not start the workload until
-`LakeSealedSecret` delivery lands in operator #129.
+`Degraded`. An unresolved `secretRefs` entry reports `Degraded` and does not start the workload.
 
 Workload and profile objects are watched for drift, Lake changes fan out to their environments, and a
 steady Ready environment periodically rechecks its Namespace labels. These paths repair drift without
@@ -108,6 +122,7 @@ kubectl get lakeenvironment -n <lake-namespace> <name> -o yaml
 kubectl get namespace -l app.kubernetes.io/managed-by=orama-operator
 kubectl get deployment,service,ingress,networkpolicy,resourcequota,limitrange \
   -n lake-<lake>-env-<deployment-hash>
+kubectl get secret -n lake-<lake>-env-<deployment-hash>
 kubectl get cloudflarednsrecord -n <lake-namespace>
 ```
 

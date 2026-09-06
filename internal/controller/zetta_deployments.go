@@ -32,7 +32,7 @@ const (
 	deploymentRecordLabel         = "orama.cloud/deployment-id"
 )
 
-var digestReferencePattern = regexp.MustCompile(`^.+@sha256:[a-f0-9]{64}$`)
+var digestReferencePattern = regexp.MustCompile(`^.+@sha256:[a-fA-F0-9]{64}$`)
 
 type zettaDeploymentEvent struct {
 	DeploymentID string

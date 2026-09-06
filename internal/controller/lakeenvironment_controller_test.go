@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,6 +38,128 @@ func newLakeEnvironmentScheme(t *testing.T) *runtime.Scheme {
 		}
 	}
 	return scheme
+}
+
+func TestLakeEnvironmentCopiesDeliveredSealedSecrets(t *testing.T) {
+	ctx := context.Background()
+	scheme := newLakeEnvironmentScheme(t)
+	controller := true
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: "lake-uid"},
+		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake", Image: "oramasearch/lake:test"},
+	}
+	environment := &oramav1alpha1.LakeEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "production",
+			Namespace: "lake",
+			UID:       "environment-uid",
+			Annotations: map[string]string{
+				deploymentIDAnnotation: "deploy-secret",
+			},
+		},
+		Spec: oramav1alpha1.LakeEnvironmentSpec{
+			LakeRef:     "prod",
+			Repository:  "repo-1",
+			Environment: "production",
+			Kind:        oramav1alpha1.LakeEnvironmentKindNamed,
+			Change:      "release-1",
+			Image:       testEnvironmentImage,
+			Replicas:    1,
+			Port:        8080,
+			SecretRefs:  []string{"secret://database"},
+		},
+	}
+	sealed := &oramav1alpha1.LakeSealedSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "database",
+			Namespace:  "lake",
+			UID:        "sealed-uid",
+			Generation: 2,
+		},
+		Spec: oramav1alpha1.LakeSealedSecretSpec{
+			LakeRef:  corev1.LocalObjectReference{Name: "prod"},
+			Template: oramav1alpha1.LakeSealedSecretTemplate{Name: "application-database"},
+			Source:   oramav1alpha1.LakeSealedSecretSource{Type: "literal"},
+		},
+		Status: oramav1alpha1.LakeSealedSecretStatus{
+			Phase:              "Ready",
+			ObservedGeneration: 2,
+			Conditions: []metav1.Condition{{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				Reason:             "Delivered",
+				ObservedGeneration: 2,
+			}},
+		},
+	}
+	produced := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "application-database",
+			Namespace: "lake",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: oramav1alpha1.GroupVersion.String(),
+				Kind:       "LakeSealedSecret",
+				Name:       sealed.Name,
+				UID:        sealed.UID,
+				Controller: &controller,
+			}},
+		},
+		Data: map[string][]byte{"DATABASE_URL": []byte("postgresql://application")},
+	}
+	kubeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(lake, environment, sealed, produced).
+		WithStatusSubresource(environment, sealed, &appsv1.Deployment{}).
+		Build()
+	reconciler := &LakeEnvironmentReconciler{Client: kubeClient, Scheme: scheme}
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "lake", Name: environment.Name}}
+	if _, err := reconciler.Reconcile(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := kubeClient.Get(ctx, request.NamespacedName, environment); err != nil {
+		t.Fatal(err)
+	}
+	workloadNamespace := lakeEnvironmentNamespace(environment)
+	var copied corev1.Secret
+	key := types.NamespacedName{Namespace: workloadNamespace, Name: produced.Name}
+	if err := kubeClient.Get(ctx, key, &copied); err != nil {
+		t.Fatalf("copied Secret: %v", err)
+	}
+	if string(copied.Data["DATABASE_URL"]) != "postgresql://application" {
+		t.Errorf("copied data = %#v", copied.Data)
+	}
+	var deployment appsv1.Deployment
+	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: workloadNamespace, Name: "environment"}, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	envFrom := deployment.Spec.Template.Spec.Containers[0].EnvFrom
+	if len(envFrom) != 1 || envFrom[0].SecretRef == nil || envFrom[0].SecretRef.Name != produced.Name {
+		t.Errorf("envFrom = %+v", envFrom)
+	}
+
+	if err := kubeClient.Get(ctx, request.NamespacedName, environment); err != nil {
+		t.Fatal(err)
+	}
+	environment.Spec.SecretRefs = []string{"secret://unknown"}
+	if err := kubeClient.Update(ctx, environment); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := kubeClient.Get(ctx, request.NamespacedName, environment); err != nil {
+		t.Fatal(err)
+	}
+	if environment.Status.Phase != oramav1alpha1.LakeEnvironmentPhaseDegraded ||
+		environment.Status.Conditions[0].Reason != "SecretReferenceNotFound" {
+		t.Errorf("unknown reference status = %+v", environment.Status)
+	}
+	if err := kubeClient.Get(ctx, key, &copied); !apierrors.IsNotFound(err) {
+		t.Errorf("stale copied Secret remains: %v", err)
+	}
+	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: workloadNamespace, Name: "environment"}, &deployment); !apierrors.IsNotFound(err) {
+		t.Errorf("workload remains with an unresolved secret: %v", err)
+	}
 }
 
 func TestLakeEnvironmentReconcileCreatesProfiledPreview(t *testing.T) {
