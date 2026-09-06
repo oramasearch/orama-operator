@@ -5,6 +5,8 @@
 or mints a value, and in the target cluster's produced Secret. The authored custom resource never
 contains a live value.
 
+The API server validates that `spec.lakeRef.name` is non-empty before the controller sees a resource.
+
 The format is lake-native. It does not implement Bitnami Sealed Secrets or `kubeseal`.
 
 ## Cluster recipient
