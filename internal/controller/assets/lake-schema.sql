@@ -2,7 +2,7 @@
 --
 -- SOURCE OF TRUTH: oramasearch/lake, db/schema.sql. The operator vendors a byte-identical copy at
 -- internal/controller/assets/lake-schema.sql and applies it to each Lake's Postgres through a
--- PostgresSchema (one transaction, guarded on the `auth_app_guard` table, versioned by
+-- PostgresSchema (one transaction, guarded on the `platform_guard` table, versioned by
 -- content hash).
 -- Keep the two files identical; the operator's version string changes exactly when this does.
 --
@@ -382,7 +382,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     revoked_at   timestamptz,
     created_at   timestamptz NOT NULL DEFAULT now(),
     last_used_at timestamptz,
-    CONSTRAINT sessions_kind_check CHECK (kind IN ('browser', 'api_token', 'static', 'admin')),
+    CONSTRAINT sessions_kind_check
+        CHECK (kind IN ('browser', 'api_token', 'static', 'admin', 'taap')),
     CONSTRAINT static_session_reason_check CHECK (kind <> 'static' OR length(reason) > 0)
 );
 CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id, created_at DESC);
@@ -822,8 +823,9 @@ CREATE TABLE IF NOT EXISTS pki_certificates (
     expires_at      timestamptz NOT NULL,
     issued_at       timestamptz NOT NULL DEFAULT now(),
     renewed_from_id uuid        REFERENCES pki_certificates(id) ON DELETE SET NULL,
+    revoked_at      timestamptz,
     CONSTRAINT pki_certificates_profile_check
-        CHECK (profile IN ('x509_svid', 'jwt_svid', 'acme', 'ssh', 'client', 'device')),
+        CHECK (profile IN ('x509_svid', 'jwt_svid', 'acme', 'ssh', 'client', 'device', 'agent')),
     CONSTRAINT pki_certificates_authority_serial_unique UNIQUE (authority_id, serial)
 );
 CREATE INDEX IF NOT EXISTS pki_certificates_customer_id_idx
@@ -1115,3 +1117,106 @@ CREATE TABLE IF NOT EXISTS agent_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0017_agent_sessions') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Settings mutations (migration 0018): customer-specific storage quota overrides.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS customer_storage_quotas (
+    customer_id uuid        PRIMARY KEY REFERENCES customers(id) ON DELETE CASCADE,
+    quota_bytes bigint      NOT NULL CHECK (quota_bytes >= 0),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS settings_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0018_settings_surface') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Platform mirror (migration 0019): repository environments and the last operator-control rows
+-- Lake observed. Zetta remains the append-only deployment authority; this mirror keeps pages
+-- available during an operator-control outage.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS platform_environments (
+    id            uuid        PRIMARY KEY,
+    repository_id uuid        NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    name          text        NOT NULL,
+    object_id     uuid        NOT NULL UNIQUE REFERENCES objects(id) ON DELETE CASCADE,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT platform_environments_repository_name_unique UNIQUE (repository_id, name),
+    CONSTRAINT platform_environments_name_check CHECK (length(name) BETWEEN 1 AND 256)
+);
+CREATE INDEX IF NOT EXISTS platform_environments_repository_idx
+    ON platform_environments (repository_id, name);
+
+CREATE TABLE IF NOT EXISTS platform_mirror (
+    kind    text        NOT NULL,
+    key     text        NOT NULL,
+    value   jsonb       NOT NULL,
+    seen_at timestamptz NOT NULL,
+    PRIMARY KEY (kind, key),
+    CONSTRAINT platform_mirror_kind_check
+        CHECK (kind IN ('deployment', 'environment_env', 'domain')),
+    CONSTRAINT platform_mirror_value_check CHECK (jsonb_typeof(value) = 'object')
+);
+
+CREATE TABLE IF NOT EXISTS platform_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0019_platform') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Identity, PKI, and dynamic-secret exit scenario (migration 0020): replay-resistant TAAP
+-- sign-in assertions, one-use OIDC authorization codes, certificate status, and renewable leases.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS identity_taap_assertions (
+    assertion_id text        PRIMARY KEY,
+    user_id      uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    pool_id      text        NOT NULL,
+    used_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS auth_app_authorization_codes (
+    code_hash      text        PRIMARY KEY,
+    application_id uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
+    user_id        uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    redirect_uri   text        NOT NULL,
+    code_challenge text        NOT NULL,
+    nonce          text        NOT NULL,
+    expires_at     timestamptz NOT NULL DEFAULT now() + interval '5 minutes',
+    used_at        timestamptz
+);
+CREATE INDEX IF NOT EXISTS auth_app_authorization_codes_live_idx
+    ON auth_app_authorization_codes (application_id, expires_at) WHERE used_at IS NULL;
+
+ALTER TABLE pki_certificates ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
+ALTER TABLE pki_certificates DROP CONSTRAINT IF EXISTS pki_certificates_profile_check;
+ALTER TABLE pki_certificates ADD CONSTRAINT pki_certificates_profile_check
+    CHECK (profile IN ('x509_svid', 'jwt_svid', 'acme', 'ssh', 'client', 'device', 'agent'));
+ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_kind_check;
+ALTER TABLE sessions ADD CONSTRAINT sessions_kind_check
+    CHECK (kind IN ('browser', 'api_token', 'static', 'admin', 'taap'));
+
+CREATE TABLE IF NOT EXISTS secrets_dynamic_leases (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    mount_id        uuid        NOT NULL REFERENCES secrets_mounts(id) ON DELETE CASCADE,
+    role            text        NOT NULL,
+    encrypted_value text        NOT NULL,
+    expires_at      timestamptz NOT NULL,
+    revoked_at      timestamptz,
+    renewals        integer     NOT NULL DEFAULT 0,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT secrets_dynamic_leases_role_check CHECK (length(role) BETWEEN 1 AND 256),
+    CONSTRAINT secrets_dynamic_leases_expiry_check CHECK (expires_at > created_at),
+    CONSTRAINT secrets_dynamic_leases_renewals_check CHECK (renewals >= 0)
+);
+CREATE INDEX IF NOT EXISTS secrets_dynamic_leases_mount_idx
+    ON secrets_dynamic_leases (mount_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS identity_exit_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0020_identity_exit') ON CONFLICT DO NOTHING;
