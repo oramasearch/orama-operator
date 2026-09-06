@@ -83,6 +83,21 @@ func TestLakeReconcileCreatesWorkloads(t *testing.T) {
 	if len(d.OwnerReferences) != 1 || d.OwnerReferences[0].Kind != "Lake" {
 		t.Errorf("deployment owner refs = %+v", d.OwnerReferences)
 	}
+	sealingKey := &corev1.Secret{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-sealing-key"}, sealingKey); err != nil {
+		t.Fatalf("sealing key Secret not created: %v", err)
+	}
+	activeKID := string(sealingKey.Data[sealingActiveKIDKey])
+	if len(sealingKey.Data[sealingPrivatePrefix+activeKID]) != 32 ||
+		len(sealingKey.Data[sealingPublicPrefix+activeKID]) != 32 || len(sealingKey.OwnerReferences) != 1 {
+		t.Errorf("sealing key Secret = data keys %v owners %v", sealingKey.Data, sealingKey.OwnerReferences)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	if lake.Status.Sealing == nil || lake.Status.Sealing.KID != activeKID || lake.Status.Sealing.PublicKey == "" {
+		t.Errorf("sealing status = %+v", lake.Status.Sealing)
+	}
 	var svc corev1.Service
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &svc); err != nil {
 		t.Fatalf("service not created: %v", err)
@@ -228,6 +243,7 @@ func TestLakeReconcileAppendsCustomEnvWithOperatorPrecedence(t *testing.T) {
 			Env: []corev1.EnvVar{
 				{Name: "LAKE_LOG_MODE", Value: "air-gapped"},
 				{Name: "LAKE_STORE_ROOT", Value: "/tmp/wrong"},
+				{Name: "LAKE_SEALING_KID", Value: "wrong"},
 				{Name: "LAKE_PUBLIC_HOST", Value: "lake.example.com"},
 			},
 		},
@@ -240,12 +256,14 @@ func TestLakeReconcileAppendsCustomEnvWithOperatorPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := deployment.Spec.Template.Spec.Containers[0].Env
-	if len(env) != 7 {
+	if len(env) != 9 {
 		t.Fatalf("env = %+v", env)
 	}
 	if env[0].Name != "LAKE_ADMIN_TOKEN" || env[1].Name != "LAKE_STORE_ROOT" ||
-		env[1].Value != lakeStorePath || env[5].Name != "LAKE_LOG_MODE" ||
-		env[5].Value != "air-gapped" || env[6].Name != "LAKE_PUBLIC_HOST" {
+		env[1].Value != lakeStorePath || env[2].Name != "LAKE_SEALING_PUBLIC_KEY" ||
+		env[2].Value == "" || env[3].Name != "LAKE_SEALING_KID" || env[3].Value == "" ||
+		env[7].Name != "LAKE_LOG_MODE" || env[7].Value != "air-gapped" ||
+		env[8].Name != "LAKE_PUBLIC_HOST" {
 		t.Errorf("env order or values = %+v", env)
 	}
 	for i, variable := range env {
@@ -436,12 +454,14 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := d.Spec.Template.Spec.Containers[0].Env
-	if len(env) != 5 || env[0].Name != "LAKE_ADMIN_TOKEN" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" ||
+	if len(env) != 7 || env[0].Name != "LAKE_ADMIN_TOKEN" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" ||
 		env[1].Name != "LAKE_STORE_ROOT" || env[1].Value != lakeStorePath ||
-		env[2].Name != "LAKE_INSTANCE_KEK" || env[2].ValueFrom.SecretKeyRef.Name != "lake-hello-instance-kek" ||
-		env[2].ValueFrom.SecretKeyRef.Key != "key" || env[3].Name != "LAKE_CONTROL_DB_URI" ||
-		env[3].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" || env[3].ValueFrom.SecretKeyRef.Key != "uri" ||
-		env[3].ValueFrom.SecretKeyRef.Optional == nil || !*env[3].ValueFrom.SecretKeyRef.Optional {
+		env[2].Name != "LAKE_SEALING_PUBLIC_KEY" || env[2].Value == "" ||
+		env[3].Name != "LAKE_SEALING_KID" || env[3].Value == "" ||
+		env[4].Name != "LAKE_INSTANCE_KEK" || env[4].ValueFrom.SecretKeyRef.Name != "lake-hello-instance-kek" ||
+		env[4].ValueFrom.SecretKeyRef.Key != "key" || env[5].Name != "LAKE_CONTROL_DB_URI" ||
+		env[5].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" || env[5].ValueFrom.SecretKeyRef.Key != "uri" ||
+		env[5].ValueFrom.SecretKeyRef.Optional == nil || !*env[5].ValueFrom.SecretKeyRef.Optional {
 		t.Errorf("env = %+v", env)
 	}
 	var admin corev1.Secret
@@ -510,8 +530,9 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
 		t.Fatal(err)
 	}
-	if e := d.Spec.Template.Spec.Containers[0].Env; len(e) != 2 || e[0].Name != "LAKE_ADMIN_TOKEN" ||
-		e[1].Name != "LAKE_STORE_ROOT" {
+	if e := d.Spec.Template.Spec.Containers[0].Env; len(e) != 4 || e[0].Name != "LAKE_ADMIN_TOKEN" ||
+		e[1].Name != "LAKE_STORE_ROOT" || e[2].Name != "LAKE_SEALING_PUBLIC_KEY" ||
+		e[3].Name != "LAKE_SEALING_KID" {
 		t.Errorf("operator env when postgres is disabled = %+v", e)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-instance-kek"}, &instanceKek); err == nil {

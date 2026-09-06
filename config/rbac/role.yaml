@@ -149,6 +149,7 @@ rules:
   - cloudflarer2buckets
   - lakerestorerehearsals
   - lakes
+  - lakesealedsecrets
   - oramacloudv1e2etests
   - oramacloudv1s
   - oramazettaclusters
@@ -171,6 +172,7 @@ rules:
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
   - lakes/finalizers
+  - lakesealedsecrets/finalizers
   - oramazettaclusters/finalizers
   - rabbitmqtopologies/finalizers
   verbs:
@@ -184,6 +186,7 @@ rules:
   - cloudflarer2buckets/status
   - lakerestorerehearsals/status
   - lakes/status
+  - lakesealedsecrets/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
   - oramazettaclusters/status

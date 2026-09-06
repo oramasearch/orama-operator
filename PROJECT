@@ -24,4 +24,12 @@ resources:
   kind: Lake
   path: github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: cloud
+  group: orama
+  kind: LakeSealedSecret
+  path: github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"
