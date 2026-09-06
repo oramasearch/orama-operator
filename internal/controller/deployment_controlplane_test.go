@@ -29,8 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
-	controlplanecontract "github.com/oramasearch/orama-cloud-v1-operator/docs/control-plane"
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
+	controlplanecontract "github.com/oramasearch/orama-operator/docs/control-plane"
 )
 
 const liquidOpenAPISHA256 = "96dee72f3085489ef586a8c3108fa4922d14e61a9f869c9e851580236d2e7b2e"

@@ -1,4 +1,4 @@
-module github.com/oramasearch/orama-cloud-v1-operator
+module github.com/oramasearch/orama-operator
 
 go 1.23
 

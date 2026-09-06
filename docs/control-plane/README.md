@@ -10,7 +10,7 @@ operations are available as MCP tools at `POST /mcp`:
 - `deployment_status`
 
 The chart exposes the manager on the ClusterIP Service
-`orama-cloud-v1-operator-control-plane:8090`. `--control-plane-bind-address` changes the listener;
+`orama-operator-control-plane:8090`. `--control-plane-bind-address` changes the listener;
 an empty value disables it. The chart does not create public routing for this Service.
 
 ## Authentication and scope
@@ -30,7 +30,7 @@ Retrieve the environment credential without printing it into a shell history:
 ```sh
 TOKEN="$(kubectl get secret lake-prod-admin -n lake -o jsonpath='{.data.token}' | base64 -d)"
 curl -s -H "Authorization: Bearer $TOKEN" \
-  http://orama-cloud-v1-operator-control-plane.orama-system.svc.cluster.local:8090/v1/list_deployments?repository=<repository-id>
+  http://orama-operator-control-plane.orama-system.svc.cluster.local:8090/v1/list_deployments?repository=<repository-id>
 ```
 
 ## Storage and reconciliation

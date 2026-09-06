@@ -1,5 +1,5 @@
 apiVersion: v2
-name: orama-cloud-v1-operator
+name: orama-operator
 description: Installs the Orama Cloud v1 operator (+ CRDs, RBAC). The operator then reconciles one OramaCloudV1 CR into the full in-cluster v1 stack. Platform operators (Knative, External Secrets, CloudNativePG, ClickHouse, RabbitMQ) are composed via the repo's helmfile.yaml, not as subchart dependencies.
 type: application
 version: 0.1.0

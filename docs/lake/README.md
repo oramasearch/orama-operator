@@ -126,18 +126,22 @@ annotation.
 
 ## Deploying the operator with Lake support
 
-The Lake CR lives on PR #118 (branch `feat/lake-crd`) until merged; production AKS runs that
-branch's image. Build, push, refresh CRDs, upgrade:
+The Lake CR is on `main`. Build and publish an immutable operator image, refresh changed CRDs,
+then upgrade the current release:
 
 ```sh
 docker buildx build --platform linux/amd64 -t oramasearch/orama-operator:lake-crd-<sha> --load .
 docker push oramasearch/orama-operator:lake-crd-<sha>
 kubectl apply -f config/crd/bases/orama.cloud_lakes.yaml        # helm never upgrades crds/
-helm upgrade orama-cloud-v1-operator ./chart -n orama-system \
+helm upgrade orama-operator ./chart -n orama-system \
   --set operator.image.repository=oramasearch/orama-operator \
   --set operator.image.tag=lake-crd-<sha> \
   --set 'operator.imagePullSecrets[0].name=oramasearch-dockerhub'
 ```
+
+An AKS installation still using the former Helm release must first follow the scheduled
+[rename cutover runbook](../operations/rename-cutover.md). Do not change the release name with an
+ordinary in-place upgrade.
 
 Use immutable tags (the `v1-sandbox` + `IfNotPresent` stale-cache failure is documented in
 [`../install.md`](../install.md)). The first upgrade after a `kubectl set image` digest pin needs
@@ -230,4 +234,3 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 - #125 Zetta data plane (owned `OramaZettaCluster` per Lake).
 - #126 incremental migrations in `PostgresSchema`.
 - #122 hardening: resources, liveness, PDB, TLS.
-- #119 land PR #118; #120 module/chart/release rename.

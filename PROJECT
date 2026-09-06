@@ -5,8 +5,8 @@
 domain: cloud
 layout:
 - go.kubebuilder.io/v4
-projectName: orama-cloud-v1-operator
-repo: github.com/oramasearch/orama-cloud-v1-operator
+projectName: orama-operator
+repo: github.com/oramasearch/orama-operator
 resources:
 - api:
     crdVersion: v1
@@ -14,7 +14,7 @@ resources:
   domain: cloud
   group: orama
   kind: OramaCloudV1
-  path: github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1
+  path: github.com/oramasearch/orama-operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -22,7 +22,7 @@ resources:
   domain: cloud
   group: orama
   kind: Lake
-  path: github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1
+  path: github.com/oramasearch/orama-operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -30,6 +30,6 @@ resources:
   domain: cloud
   group: orama
   kind: LakeSealedSecret
-  path: github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1
+  path: github.com/oramasearch/orama-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

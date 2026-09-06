@@ -11,8 +11,8 @@ import (
 
 // PostgresSchemaSpec is the desired schema state of a Postgres database — a versioned SQL schema
 // the operator applies once and tracks. It supersedes the bare idempotent migration Job
-// ([#34](https://github.com/oramasearch/orama-cloud-v1-operator/issues/34)) with a reconciled,
-// auditable CRD ([#40](https://github.com/oramasearch/orama-cloud-v1-operator/issues/40)) that
+// ([#34](https://github.com/oramasearch/orama-operator/issues/34)) with a reconciled,
+// auditable CRD ([#40](https://github.com/oramasearch/orama-operator/issues/40)) that
 // records the applied version in `.status` and feeds the readiness roll-up (#37). The controller
 // owns the migration Job; the applied version is read back from the Job so it stays honest even if
 // the desired `version` is bumped without re-running.

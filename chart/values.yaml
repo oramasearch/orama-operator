@@ -16,7 +16,7 @@ operator:
     limits:   { cpu: 500m, memory: 256Mi }
 
 serviceAccount:
-  name: orama-cloud-v1-operator
+  name: orama-operator
 
 controlPlane:
   service:

@@ -7,7 +7,7 @@ How to install the operator and stand up an Orama Cloud v1 stack in a cluster.
 ```sh
 helmfile apply                                          # platform operators + this operator
 # ...or just the operator if the platform bits already exist:
-helm install orama-cloud-v1-operator ./chart -n orama-system --create-namespace
+helm install orama-operator ./chart -n orama-system --create-namespace
 kubectl apply -f config/samples/primary-us-east.yaml   # one OramaCloudV1 per cluster
 kubectl get ocv1 -A -w                                  # the operator reconciles the whole stack
 ```
@@ -58,18 +58,22 @@ as a single-node StatefulSet without it. See [components.md](components.md).)*
 
 ## 2. Install the operator
 
+For a new installation, use the current release name. An AKS installation still running the
+former release must use the [rename cutover runbook](operations/rename-cutover.md) instead of
+installing over it.
+
 ```sh
-helm install orama-cloud-v1-operator ./chart -n orama-system --create-namespace
+helm install orama-operator ./chart -n orama-system --create-namespace
 ```
 
 This installs the **CRD**, **RBAC**, and the **operator Deployment**. Confirm it's up:
 
 ```sh
-kubectl -n orama-system get deploy orama-cloud-v1-operator
+kubectl -n orama-system get deploy orama-operator
 kubectl get crd oramacloudv1s.orama.cloud
 ```
 
-> The chart uses the operator image `oramasearch/orama-operator:latest` (Docker Hub repo renamed with the GitHub repo; the old `oramasearch/orama-cloud-v1-operator` repo keeps the pre-rename builds)
+> The chart uses the operator image `oramasearch/orama-operator:latest`
 > (override with `--set operator.image.tag=...`). Build/push it with
 > `make docker-build docker-push IMG=...` (see [development.md](development.md)).
 
@@ -82,7 +86,7 @@ kubectl get crd oramacloudv1s.orama.cloud
   mandatory / still accepted the now-removed `--require-auth`/`--mcp-token` flags). Since #799, auth is
   enforced and the operator seeds + injects the admin token; the target's image MUST be an auth-capable
   build. **Pin by digest** to force the exact build:
-  `kubectl -n orama-system set image deploy/orama-cloud-v1-operator '*=<repo>@sha256:…'` and the OZC
+  `kubectl -n orama-system set image deploy/orama-operator '*=<repo>@sha256:…'` and the OZC
   `spec.image: <repo>@sha256:…`; **verify the running pod's `imageID` after any rebuild.**
   `imagePullPolicy: Always` is the real fix.
 - **CRDs already present → `helm install` conflict.** If the CRDs were already `kubectl`-applied, use
@@ -194,7 +198,7 @@ cluster's ingress — set `spec.cloudflare.apiTokenSecretRef` to a Secret holdin
 ```sh
 kubectl delete ocv1 v1 -n orama-system        # cascade-deletes the stack (PVCs RETAINED)
 kubectl -n orama-system delete pvc -l app.kubernetes.io/managed-by=orama-cloud-v1-operator  # optional: drop the data
-helm uninstall orama-cloud-v1-operator -n orama-system
+helm uninstall orama-operator -n orama-system
 ```
 
 > **PVCs are retained on CR delete** (the data-safe default). Delete them explicitly
