@@ -28,6 +28,7 @@ rules:
       - rabbitmqtopologies
       - postgresschemas
       - lakes
+      - lakee2etests
       - lakeenvironments
       - lakerestorerehearsals
       - lakesealedsecrets
@@ -45,6 +46,7 @@ rules:
       - rabbitmqtopologies/status
       - postgresschemas/status
       - lakes/status
+      - lakee2etests/status
       - lakeenvironments/status
       - lakerestorerehearsals/status
       - lakesealedsecrets/status

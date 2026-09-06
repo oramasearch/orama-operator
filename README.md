@@ -14,7 +14,7 @@ into running systems:
   control-plane DB, analytics, cache, broker, ingestion, workers), one CR per cluster.
 - The supporting CRDs those own: `PostgresSchema`, `RabbitMQTopology`, `CloudflareDNSRecord`,
   `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `LakeSealedSecret`,
-  `LakeRestoreRehearsal`, and the two e2e test CRDs.
+  `LakeRestoreRehearsal`, and the three e2e test CRDs, including `LakeE2ETest`.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
