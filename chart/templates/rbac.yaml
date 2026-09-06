@@ -27,6 +27,10 @@ rules:
       - cloudflareloadbalancers
       - rabbitmqtopologies
       - postgresschemas
+      - lakes
+      - lakeenvironments
+      - lakerestorerehearsals
+      - lakesealedsecrets
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -40,6 +44,10 @@ rules:
       - cloudflareloadbalancers/status
       - rabbitmqtopologies/status
       - postgresschemas/status
+      - lakes/status
+      - lakeenvironments/status
+      - lakerestorerehearsals/status
+      - lakesealedsecrets/status
       - oramacloudv1s/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
@@ -47,12 +55,15 @@ rules:
       - cloudflarer2buckets/finalizers
       - cloudflareloadbalancers/finalizers
       - rabbitmqtopologies/finalizers
+      - lakes/finalizers
+      - lakeenvironments/finalizers
+      - lakesealedsecrets/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
     verbs: ["*"]
   - apiGroups: [""]
-    resources: ["services", "configmaps", "secrets", "persistentvolumeclaims", "serviceaccounts"]
+    resources: ["services", "configmaps", "secrets", "persistentvolumeclaims", "serviceaccounts", "resourcequotas", "limitranges"]
     verbs: ["*"]
   # Read the Zetta e2e Job's pod logs to parse pass/fail/skip counts into ZettaClusterE2ETest status.
   - apiGroups: [""]
@@ -62,13 +73,18 @@ rules:
     resources: ["pods/log"]
     verbs: ["get"]
   # ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace UID — `get` only,
-  # never list/watch, so the operator holds no cluster-wide Namespace informer.
+  # never list/watch, so the operator holds no cluster-wide Namespace informer. `create` is for the
+  # Lake controllers create their Lake and rehearsal namespaces. LakeEnvironment update/delete is
+  # guarded in code by the exact ownership annotation; foreign namespaces are never changed.
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get"]
+    verbs: ["get", "create", "update", "patch", "delete"]
   - apiGroups: ["postgresql.cnpg.io"]
-    resources: ["clusters"]
-    verbs: ["*"]
+    resources: ["clusters", "scheduledbackups", "backups"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters/status"]
+    verbs: ["get", "update", "patch"]
   - apiGroups: ["clickhouse.altinity.com"]
     resources: ["clickhouseinstallations"]
     verbs: ["*"]
@@ -76,7 +92,7 @@ rules:
     resources: ["rabbitmqclusters"]
     verbs: ["*"]
   - apiGroups: ["networking.k8s.io"]
-    resources: ["ingresses"]
+    resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]

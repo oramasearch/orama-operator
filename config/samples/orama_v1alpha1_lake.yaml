@@ -1,0 +1,56 @@
+apiVersion: orama.cloud/v1alpha1
+kind: Lake
+metadata:
+  name: hello
+spec:
+  namespace: lake-dev
+  # The lake image is private: pull it with a Secret that exists in spec.namespace.
+  image: oramasearch/lake:v1-sandbox
+  pullSecretName: oramasearch-dockerhub
+  replicas: 1
+  # Every lake pod mounts one shared customer-store root. The generated claim defaults to 100Gi
+  # ReadWriteMany. ReadWriteOnce requires replicas: 1. Set existingClaim to mount a claim without
+  # the operator adopting or changing it.
+  store:
+    size: 100Gi
+    accessModes: [ReadWriteMany]
+    # existingClaim: lake-data
+  # Lake runtime configuration not modeled as dedicated CR fields. Operator-managed environment
+  # names, including LAKE_STORE_ROOT, cannot be overridden here.
+  env:
+    - name: LAKE_LOG_MODE
+      value: air-gapped
+  # Control plane: a CloudNativePG Postgres in spec.namespace, on by default (requires the CNPG
+  # operator). The lake pods get LAKE_CONTROL_DB_URI from the generated lake-<name>-controldb-app
+  # Secret. Zetta is the data plane and is provisioned separately.
+  postgres:
+    instances: 1
+    storageSize: 50Gi
+    # Control-plane backup to an R2/S3 Barman object store. The Secret must exist in
+    # spec.namespace and contain s3ApiEndpoint, accessKeyId, and secretAccessKey.
+    # backup:
+    #   enabled: true
+    #   schedule: "0 0 3 * * *"
+    #   retention: 30d
+    #   destination:
+    #     bucket: lake-hello-backups
+    #     # path defaults to lake-<name>/controldb; endpointURL defaults to the Secret endpoint.
+    #     path: lake-hello/controldb
+    #   secretRef:
+    #     name: lake-hello-backups-r2
+  # port defaults to 4900 (lake's --listen) and args to none: the image runs lake as built.
+  # Before the lake image existed the hello-world stand-in was:
+  #   image: hashicorp/http-echo:1.0
+  #   port: 5678
+  #   args: ["-listen=:5678", "-text=hello from lake hello"]
+  # External exposure, same contract as OramaZettaCluster: ingressEnabled + host gives an nginx
+  # Ingress; dnsSecretRef adds a proxied Cloudflare record. The Secret (keys: token, zoneID) must
+  # live in spec.namespace and hold the zone of host: a lake.live host needs a lake.live-zone Secret.
+  # ingressEnabled: true
+  # host: hello.lake.live
+  # dnsSecretRef:
+  #   name: cloudflare-api-token
+  # Per-change previews use one wildcard record instead of one Cloudflare record per change.
+  # previewWildcard: preview.lake.live
+  # deploySync:
+  #   interval: 15s

@@ -71,10 +71,12 @@ Beyond deploying v1, this operator is becoming **symbiotic with Orama Zetta** (O
 [orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)). Know the model — see
 [`docs/zetta-datastore.md`](docs/zetta-datastore.md):
 
-- **k8s (etcd) is the source of truth for DESIRED state** (the CRs). **Zetta holds OBSERVED state** —
-  the operator continuously syncs its coarse, component-granular status into `orama_control.components`
-  (`zetta_statesync.go`), with the **same anti-flap discipline as the status subresource** (steady stack
-  ⇒ zero Zetta writes).
+- **k8s (etcd) is the source of truth for reconciled DESIRED state** (the CRs). **Zetta normally holds
+  OBSERVED state**, including the coarse component projection in `orama_control.components`. The one
+  explicit intake exception is `orama_control.deployments`: liquid appends an external desired event,
+  the operator materializes it into a Lake-owned `LakeEnvironment` CR, and that CR is authoritative from
+  then on. Status returns as append-only events only on a real transition. Both paths use the same
+  anti-flap discipline (steady stack ⇒ zero Zetta writes).
 - **One Zetta cluster can span many k8s clusters** (equal CRDT peers on :7777 — not bound to one
   cluster). So the topology is **N k8s clusters → 1 operator each → 1 shared Zetta.** Every synced row is
   namespaced by an **operator identity** (`ORAMA_OPERATOR_ID`, default the `kube-system` Namespace UID)
@@ -120,13 +122,30 @@ ops truth for the *production* system being modeled lives in
 [`techops-docs`](https://github.com/oramasearch/techops-docs) — keep this repo's docs
 about the **operator**, not a copy of prod docs.
 
+### The `Lake` CR (lake, liquid project)
+
+`Lake` deploys the lake service: namespace, admin-token, instance-KEK and cluster-sealing-key Secrets, Deployment, Service, a CNPG
+control-plane Postgres with lake's schema applied through `PostgresSchema`, opt-in scheduled R2/S3
+backup through CNPG Barman, cluster-scoped `LakeRestoreRehearsal` restore/upgrade/failover proof,
+opt-in Ingress + Cloudflare DNS, and Lake-owned `LakeEnvironment` CRs materialized from the
+operator's Zetta deployment table. `LakeSealedSecret` delivers cluster-bound ciphertext into
+owned Kubernetes Secrets; see `docs/lake/sealed-secrets.md`.
+Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
+production instance) and the `Lake` section of [`docs/crd-reference.md`](docs/crd-reference.md) before touching
+`internal/controller/lake_controller.go`. The schema's source of truth is `oramasearch/lake` `db/schema.sql`;
+`assets/lake-schema.sql` is a byte-identical vendored copy (a test checks the header). The operator serves
+liquid's authenticated deployment REST/MCP contract from its manager Service; see
+`docs/control-plane/README.md`. The chart ClusterRole is
+hand-maintained: a new owned kind needs its entry there or the manager CrashLoops on cache sync.
+
 ## Build / codegen flow
 
 Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH)/bin:$PATH"`).
 
 - After editing `api/v1alpha1/*.go`: `make generate` (DeepCopy) + `make manifests`
   (CRD + RBAC) + `cp config/crd/bases/*.yaml chart/crds/`. The generated
-  `zz_generated.deepcopy.go` and CRDs **are committed**.
+  `zz_generated.deepcopy.go` and CRDs **are committed**. `Makefile` pins
+  controller-gen to `v0.21.0`; do not use `@latest`, which can restamp unrelated CRDs.
 - `go build ./...` + `go vet ./...` must stay green.
 - `helm lint chart` must pass; the chart carries the generated CRD in `chart/crds/`.
 

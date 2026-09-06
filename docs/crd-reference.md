@@ -93,7 +93,7 @@ service. Sample: [`../config/samples/oramazettacluster.yaml`](../config/samples/
 | `spec.wanAddress` | For a `wan-accessible` slice, the routable address (`host` or `host:port`; `:7777` assumed) siblings use — a mesh-VPN address, a stable public IP, or a DNS name. **Authoritative** when set (advertised verbatim as `.status.wanAddress`); when empty the operator derives it from `spec.hostNetwork` (node host IP) or `spec.exposePeerLoadBalancer` (cloud LB IP). Ignored unless `wan-accessible`. |
 | `spec.hostNetwork` | **Default `false`.** Run node pods on the host network so `:7777`/`:4800` are reachable at the k8s node's own address — the simplest routable address for a **wan-accessible** slice (esp. single-node). Packs ordinals onto per-ordinal ports when `replicas>1`. |
 | `spec.exposePeerLoadBalancer` | **Default `false`.** A cloud `LoadBalancer` fronting the peer port `:7777`. **Valid ONLY for a `wan-accessible` slice** — on a `dial-out-only`/ephemeral slice it is **ignored** (a warning is logged, any existing LB torn down) because a private node must dial OUT, not accept inbound (the [zetta#739](https://github.com/oramasearch/zetta/issues/739) anti-pattern). Even for wan-accessible it's only one option (a host with a public IP or a `wanAddress` needs none). Peer traffic is **mTLS** on the wire (the shared cluster join token derives the CA, [operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92)), so keep the `<name>-zetta-cluster` Secret protected. |
-| `spec.provisionOperatorSchema` | **Default `true`.** Makes this cluster the operator's own datastore (One Orama symbiosis v0): once the node is up, an in-cluster Job applies the operator's schema via Zetta's `/v1/sql` — the **`orama_control`** database (`components`, `reconcile_events`) and the **`orama_data`** database (`documents`, the app-data landing zone). Idempotent (tolerates "already exists"; Zetta has no `IF NOT EXISTS`). Edit `operatorZettaSchema` + delete the `<name>-zetta-schema` Job to re-apply. Set `false` to opt out. |
+| `spec.provisionOperatorSchema` | **Default `true`.** Makes this cluster the operator's own datastore (One Orama symbiosis v0): once the node is up, an in-cluster Job applies the operator's schema via Zetta's `/v1/sql` — the **`orama_control`** database (`components`, `reconcile_events`, `topology`, `deployments`) and the **`orama_data`** database (`documents`, the app-data landing zone). Idempotent (tolerates "already exists"; Zetta has no `IF NOT EXISTS`). A rendered-schema hash automatically replaces the immutable Job when `operatorZettaSchema` changes. Set `false` to opt out. |
 | _(readiness probe — disabled)_ | The pod's readiness probe is **off** ([operator#68](https://github.com/oramasearch/orama-cloud-v1-operator/issues/68)) because the node's flaky HTTP server ([zetta#731](https://github.com/oramasearch/zetta/issues/731)) made it flap out of the Service. Liveness + startup (peer port) remain. Restore `GET /mcp.md` readiness once zetta#731 lands. |
 | `spec.mcpTokenAuth` | **DEPRECATED / no-op** as of [zetta#799](https://github.com/oramasearch/zetta/issues/799). The engine made auth **mandatory** and removed the `--mcp-token` flag (passing it now crashes the node), so the operator no longer renders it or provisions a `<name>-zetta-mcp` Secret. Auth is enforced with the seeded admin token instead (see `spec.requireAuth`). Retained for API compatibility; setting it has no effect. |
 | `spec.requireAuth` | **DEPRECATED / no-op** as of [zetta#799](https://github.com/oramasearch/zetta/issues/799). The engine made auth **mandatory** and removed `--require-auth` — every node ALWAYS gates its HTTP/MCP/SQL surface on a bearer that resolves to a user; there is no unauthenticated/plaintext/legacy-shared-secret mode. The operator now **ALWAYS** mints a 64-hex admin token into Secret `<name>-zetta-admin` (key `token`, mint-once), injects it as env `ZETTA_ADMIN_TOKEN` → `--admin-token` on every node (redacted to `****` in the pod log) to seed the owner, authenticates its **own** Zetta SQL client + schema-provisioning Job with it, and the `ZettaClusterE2ETest` always runs its authz assertions (`ZETTA_E2E_REQUIRE_AUTH=1`). **Image requirement:** the target's image MUST be an **auth-capable build** ([zetta#799](https://github.com/oramasearch/zetta/issues/799)) — the pre-#799 sandbox image rejects it. The field is retained for API compatibility; setting it has no effect (auth is enforced regardless). Sample: [`../config/samples/zetta-require-auth.yaml`](../config/samples/zetta-require-auth.yaml). |
@@ -251,3 +251,120 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
+
+## `Lake` (separate CRD, cluster-scoped) — the lake service
+
+Deploys **lake** — the hosted service behind `lake.live` (control plane on Postgres via CNPG, data plane on Zetta) (forge, drive, platform, identity, secrets,
+PKI, registry and search over one content-addressed store; specified in
+[`oramasearch/liquid`](https://github.com/oramasearch/liquid) `docs/features/18-lake-service.md`) — from
+one **cluster-scoped** CR. Hello-world stage: it creates the target **Namespace** (if missing; not
+owned, so deleting a Lake never takes a namespace with it), a **Deployment** (`lake-<name>`, running
+`spec.image`) and a ClusterIP **Service** (`lake-<name>`, port 80). With `spec.ingressEnabled` and
+`spec.host` it also fronts the host with an **nginx Ingress** (the whole host → the lake Service) and,
+when `spec.dnsSecretRef` is given, an **owned `CloudflareDNSRecord`** (proxied, host → the ingress
+LoadBalancer) — the same contract and child-controller path as `OramaZettaCluster`. Gating off tears
+the Ingress and the record down and leaves the workloads. Sample:
+[`../config/samples/orama_v1alpha1_lake.yaml`](../config/samples/orama_v1alpha1_lake.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.namespace` | Namespace the workloads land in (default `lake-dev`). Created if missing; never deleted by the operator. |
+| `spec.image` | The lake image, run as built. **Required, no default**; the sample uses the private `oramasearch/lake:v1-sandbox`. |
+| `spec.pullSecretName` | imagePullSecret attached to the pods, for a private `spec.image`. Must exist in `spec.namespace`. |
+| `spec.port` | Container port the Service (port 80) targets; also the readiness probe (`GET /`). Default 4900, lake's `--listen` default. |
+| `spec.args` | Args for the image's entrypoint; empty runs the image as built (lake listens on `0.0.0.0:4900`). |
+| `spec.replicas` | Deployment replicas (default 1). |
+| `spec.store` | Persistent libliquid customer store mounted read-write at `/var/lib/lake/store`, with `LAKE_STORE_ROOT` fixed to that path. Without `existingClaim`, the operator creates and owns `lake-<name>-store` once. Later store spec changes never mutate, replace, or delete it. |
+| `spec.store.size` / `.storageClassName` / `.accessModes` | Creation-time settings for the generated claim: quantity `100Gi` by default, cluster-default storage class, and `[ReadWriteMany]`. RWX is the multi-replica default; `ReadWriteOnce` requires `spec.replicas: 1`. |
+| `spec.store.existingClaim` | PVC in `spec.namespace` to mount instead of creating one. It is referenced without adoption, mutation, or deletion. |
+| `spec.env[]` | Kubernetes `EnvVar` entries appended after operator env. `value` and `valueFrom` are supported. Conflicts with `LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`, `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`, `LAKE_SEALING_PUBLIC_KEY`, `LAKE_SEALING_KID`, or `LAKE_STORE_ROOT` are ignored so operator values win. Use it for Lake runtime settings such as `LAKE_LOG_MODE`, `LAKE_LOG_WITNESSES`, and `LAKE_PUBLIC_HOST`. |
+| `spec.sealing.generation` | Desired X25519 sealing-key generation (default 1). Increasing it rotates; decreasing it is refused. Old private keys remain while any `LakeSealedSecret` record names them. |
+| `spec.postgres` | **lake's control plane**: a CloudNativePG `Cluster` named `lake-<name>-controldb` in `spec.namespace`, the same path `OramaCloudV1` uses for its control DB. `enabled` (default `true`; `false` tears it down, deleting its data), `instances` (default 1), `storageSize` (default `50Gi`; CNPG grows the PVC in place when the StorageClass allows expansion), `storageClassName`. CNPG generates the `lake-<name>-controldb-app` Secret; the lake container gets `LAKE_CONTROL_DB_URI` and `LAKE_CONTROL_DB_PASSWORD` from it (optional refs, so the pod starts before the DB does). Requires the CNPG operator (helmfile). Zetta is the data plane, provisioned separately. |
+| `spec.postgres.backup` | Opt-in (`enabled`, default `false`) CNPG Barman object-store backup. `schedule` defaults to six-field `0 0 3 * * *`; `retention` defaults to `30d`; `destination.bucket` and `secretRef.name` are required when enabled. `destination.path` defaults to `lake-<name>/controldb`; `endpointURL` defaults to the Secret's `s3ApiEndpoint`. The Secret must be in `spec.namespace` and contain `s3ApiEndpoint`, `accessKeyId`, and `secretAccessKey`. The operator configures gzip WAL compression and creates owned `lake-<name>-controldb-backup` `ScheduledBackup` resources. See [`lake/backups.md`](lake/backups.md). |
+| _(admin token — automatic)_ | Secret **`lake-<name>-admin`** (key `token`, 64 hex), minted once and preserved, owned by the Lake; injected as `LAKE_ADMIN_TOKEN`. lake requires it as `Authorization: Bearer` on every `/v1` capability except `server_info` and on MCP tool calls. Retrieve: `kubectl get secret lake-<name>-admin -n <ns> -o jsonpath='{.data.token}' \| base64 -d`. |
+| _(sealing key — automatic)_ | Secret **`lake-<name>-sealing-key`** holds the current and still-needed prior X25519 private keys. Only the active public key and `kid` are injected into lake. See [`lake/sealed-secrets.md`](lake/sealed-secrets.md). |
+| _(schema — automatic)_ | With Postgres on, the Lake owns a `lake-<name>-controldb-migrations` ConfigMap holding lake's control-plane schema (vendored byte-identical from `oramasearch/lake` `db/schema.sql`) and a `lake-<name>-controldb-schema` **`PostgresSchema`** that applies it in one transaction, guarded on the newest migration table (`agent_guard` for `0017_agent_sessions`) and versioned by content hash. Incremental migrations are the PostgresSchema follow-up. |
+| `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. |
+| `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
+| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. |
+| `spec.previewWildcard` | DNS suffix for preview environments. `preview.example.com` yields `<change-short>.preview.example.com`; with Lake ingress and DNS enabled, the Lake owns one `*.preview.example.com` Cloudflare record and previews do not create records per change. |
+| `spec.deploySync.interval` | How often the operator reads desired deployment events from its Zetta `orama_control.deployments` table. Default `15s`; positive values below `1s` are clamped to `1s`. |
+| `status.readyReplicas` / `.phase` | Mirrors the Deployment: `Progressing \| Ready \| Degraded`. Written only on a real transition (anti-flap). `kubectl get lakes` shows Namespace, Host, Ready, DB, Schema, Store, Backup, Phase. |
+| `status.store` / `conditions[StoreReady]` | Selected `claimName`, PVC `phase`, and bound `capacity`. `StoreReady=False` reports a missing or unbound claim; an unbound store keeps the overall phase out of `Ready`. |
+| `status.schemaPhase` / `.schemaVersion` | Mirrors the owned PostgresSchema: `Pending \| Applying \| Applied \| Failed` and the applied `sha256:<12>`. The Lake requeues until `Applied`. |
+| `status.postgresReady` / `.postgresInstances` | CNPG readiness, read best-effort (`readyInstances`/`instances`, e.g. `1/1`); the Lake requeues every 20s until ready. Empty when `spec.postgres.enabled` is false. |
+| `status.backupReady` / `.lastBackupTime` | True only when the ScheduledBackup exists and the newest CNPG Backup labelled `cnpg.io/cluster=lake-<name>-controldb` is `completed`; completion time comes from that Backup. The `Backup` print column shows `lastBackupTime`. Invalid enabled configuration reports `BackupReady=False` with a condition and `Phase=Degraded`. |
+| `status.dataServices[]` | One row per associated data service: `name`, `kind` (`postgres \| zetta`), `managed`, and `backup`, `restore`, `upgrade`, `failover` evidence (`tested \| untested \| none`), plus optional `lastVerified` and `notes`. `managed` is true only when all operations required by the current configuration are tested. Single-instance Postgres reports `failover: none`; Zetta is explicitly unmanaged pending #125. The `Data` print column uses `dataServicesSummary` to show managed/unmanaged counts. |
+| `status.sealing` | Active `{cluster, generation, kid, publicKey}` recipient plus `previousKeys[] {kid, remaining}` and `unresolvedRecords`. `cluster` is the Lake UID and is part of envelope AAD. `remaining` counts records still requiring an old private key; malformed records retain all old keys until corrected. |
+
+## `LakeEnvironment` (separate CRD, namespaced) — one desired deployment
+
+A `LakeEnvironment` is the Kubernetes desired-state record materialized from one deployment in the
+operator's Zetta control plane. It lives in the referenced Lake's `spec.namespace` and is owned by the
+cluster-scoped `Lake`. The controller gives it a dedicated profiled Namespace, Deployment, Service and
+optional Ingress. See [`lake/environments.md`](lake/environments.md) for the event model, lifecycle and
+verification. Sample:
+[`../config/samples/orama_v1alpha1_lakeenvironment.yaml`](../config/samples/orama_v1alpha1_lakeenvironment.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.lakeRef` | Name of the cluster-scoped `Lake`; the `LakeEnvironment` must live in that Lake's `spec.namespace`. |
+| `spec.repository` / `.environment` | Stable Lake repository identifier and human-facing environment name. |
+| `spec.kind` | `named` or `preview`. Preview lifecycle also ends when its change is closed. |
+| `spec.change` | Immutable liquid change identifier. The DNS-safe short form prefixes a preview hostname. |
+| `spec.image` | Required immutable OCI digest reference (`...@sha256:<64 hex>`). Rollback is another deployment event naming an older change and image. |
+| `spec.replicas` / `.port` | Deployment replicas (default `1`) and required container port exposed by Service port 80. |
+| `spec.env[]` | Literal `{name,value}` workload environment variables. |
+| `spec.secretRefs[]` | Names or `secret://<name>` references for `LakeSealedSecret` resources in the Lake namespace. Every reference must belong to the same Lake and have delivered its current generation. The produced Secrets are copied into the isolated workload namespace and imported with `envFrom`; unresolved references report `Degraded` and remove the workload. |
+| `spec.host` | Exact hostname for a named environment. Preview hosts are derived from the Lake's `previewWildcard`. |
+| `status.phase` | `Progressing \| Ready \| Degraded \| TornDown`, written only on a real transition. |
+| `status.url` / `.readyReplicas` | Public URL when ingress is configured, and observed Deployment readiness. |
+| `status.deploymentId` | Stable deployment-event identity copied from the `orama.cloud/deployment-id` annotation. |
+| `status.conditions[]` | Standard `Ready` condition with transition reason and message. |
+
+## `LakeRestoreRehearsal` (separate CRD, cluster-scoped)
+
+Runs and records a Lake data-service lifecycle rehearsal. The spec is immutable. Restore and
+upgrade recover a selected CNPG object-store backup into an isolated scratch namespace, compare
+guard-table row counts and the newest schema migration with the live database, and delete every
+scratch object after success or failure. Upgrade changes the scratch Cluster image before
+verification. Failover requests a CNPG switchover on the live replicated control DB and verifies
+the existing application Secret still connects through the write Service.
+
+| Field | Purpose |
+|---|---|
+| `spec.lakeRef` | Name of the cluster-scoped `Lake`. |
+| `spec.service` | `postgres` in this version. |
+| `spec.operation` | `restore \| upgrade \| failover`. |
+| `spec.from` | `latest` by default, or the name of a completed CNPG `Backup`. Restore and upgrade pin its Barman `status.backupId`. |
+| `spec.targetImage` | Required for `upgrade`: the CloudNativePG-compatible PostgreSQL operand image tested on the scratch clone. |
+| `status.phase` / `.message` | `Pending \| Running \| Succeeded \| Failed` and the current or terminal explanation. |
+| `status.scratchNamespace` / `.selectedBackup` | Deterministic scratch location and the pinned CNPG Backup object for restore and upgrade. |
+| `status.previousPrimary` / `.targetPrimary` | The primary transition selected by a failover rehearsal. |
+| `status.startedAt` / `.completedAt` / `.observedGeneration` | Durable audit timestamps and the represented immutable spec generation. |
+
+`kubectl get lrr` shows Lake, Service, Operation, Phase, and completion time. Detailed procedures:
+[`lake/data-services/postgres.md`](lake/data-services/postgres.md).
+
+## `LakeSealedSecret` (separate CRD, namespaced) — one-way Secret delivery
+
+Produces one owned Kubernetes Secret from authored ciphertext or a lake reference. The referenced
+cluster-scoped Lake owns the `LakeSealedSecret`; the resource owns the produced Secret. Literal
+records open only with the target Lake's private key and require exact AAD for the Lake UID,
+resource namespace, and `spec.template.name`. The output is labelled
+`lake.orama.cloud/sealed: "true"`. Complete envelope and rotation rules:
+[`lake/sealed-secrets.md`](lake/sealed-secrets.md). Sample:
+[`../config/samples/lake-sealed-secret.yaml`](../config/samples/lake-sealed-secret.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.lakeRef.name` | Cluster-scoped `Lake` that owns the recipient key and lake service endpoint. |
+| `spec.template.name` / `.type` | Produced Secret name and optional Kubernetes Secret type (`Opaque` when omitted). The name is bound into envelope AAD. |
+| `spec.data` | Map of Secret keys to standard-base64 canonical-CBOR records. Required only for `literal`. All entries must use one `kid`. |
+| `spec.source.type` | `literal \| lake \| dynamic`. |
+| `spec.source.lake` | Static lake reference `{mount, name, version?}`. It contains no value. |
+| `spec.source.dynamic` | Dynamic request `{engine, role, ttl}`. It contains no credential. |
+| `status.phase` | `Pending \| Ready \| Error`. Written only on a real transition. |
+| `status.unsealedAt` / `.kid` | Last successful produced-Secret update and the key that opened its record set. |
+| `status.lease` | Dynamic lease `{id, expiresAt, renewAt}`; no credential value. |
+| `status.conditions[Ready]` | `Delivered` or a stable refusal reason such as `UnsealFailed`, `SecretOwnershipConflict`, or `MintFailed`. |

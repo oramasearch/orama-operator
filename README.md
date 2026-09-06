@@ -69,6 +69,30 @@ Samples: [`config/samples/primary-us-east.yaml`](config/samples/primary-us-east.
 (primary region) and [`config/samples/read-eu.yaml`](config/samples/read-eu.yaml)
 (a read tier pointing at the primary).
 
+## The `Lake` CR
+
+The cluster-scoped `Lake` CR deploys the Lake service with its control-plane Postgres and a shared
+persistent libliquid store. The operator creates a `100Gi` RWX store claim by default or mounts
+`spec.store.existingClaim`, sets `LAKE_STORE_ROOT=/var/lib/lake/store`, and accepts additional Lake
+runtime configuration through `spec.env`. Each Lake also owns an X25519 sealing key and publishes
+its recipient in status; namespaced `LakeSealedSecret` resources turn cluster-bound ciphertext into
+owned, labelled Kubernetes Secrets without putting plaintext in the authored resource. See the
+[sealed-secret guide](docs/lake/sealed-secrets.md), the [Lake operator guide](docs/lake/README.md), and
+the [CRD reference](docs/crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service).
+`kubectl get lake` reports managed and unmanaged service counts; operation-level status never
+implies untested protection. `LakeRestoreRehearsal` automates Postgres restore, scratch upgrade,
+and replicated failover proof. See the [data-service lifecycle labels](docs/lake/data-services/README.md)
+and [Postgres procedure](docs/lake/data-services/postgres.md).
+
+Desired deployment events in the operator's Zetta control plane become Lake-owned
+`LakeEnvironment` CRs: one restricted, quota-bound `untrusted` runtime namespace per named or
+per-change environment, with anti-flap status returned to Zetta, wildcard DNS for previews, and
+delivered `LakeSealedSecret` values copied into the isolated workload namespace before startup.
+See [Lake deployment environments](docs/lake/environments.md).
+Liquid reaches that intake through the operator's authenticated REST `/v1` and MCP deployment surface;
+the authoritative contract, credential, rollback, audit, and connection details are in the
+[deployment control-plane guide](docs/control-plane/README.md).
+
 ## Multi-region
 
 Install one release + one CR per cluster (`us-east` = `primary`, `eu`/`ap` = `read`).
@@ -99,7 +123,7 @@ Docs are kept in lockstep with the source — see [`CLAUDE.md`](CLAUDE.md) and
 ```
 make manifests   # generate CRD + RBAC from the kubebuilder markers
 make build       # compile the manager
-make docker-build IMG=oramasearch/orama-cloud-v1-operator:0.1.0
+make docker-build IMG=oramasearch/orama-operator:0.1.0
 make helm-package # copy generated CRDs into the chart + package
 ```
 

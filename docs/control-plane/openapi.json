@@ -1,0 +1,28 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Orama operator deployment control plane", "version": "0.1.0", "description": "Provisional contract for liquid #84; the orama-operator owns publication."},
+  "paths": {
+    "/v1/create_deployment": {"post": {"operationId": "createDeployment", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeployRequest"}}}}, "responses": {"200": {"$ref": "#/components/responses/Deployment"}, "403": {"$ref": "#/components/responses/Error"}}}},
+    "/v1/list_deployments": {"get": {"operationId": "listDeployments", "parameters": [{"name": "repository", "in": "query", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Records in reverse creation order", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeploymentListEnvelope"}}}}}}},
+    "/v1/rollback_deployment": {"post": {"operationId": "rollbackDeployment", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RollbackRequest"}}}}, "responses": {"200": {"$ref": "#/components/responses/Deployment"}}}},
+    "/v1/deployment_status": {"get": {"operationId": "deploymentStatus", "parameters": [{"name": "repository", "in": "query", "required": true, "schema": {"type": "string"}}, {"name": "environment", "in": "query", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Observed operator state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StatusEnvelope"}}}}}}}
+  },
+  "components": {
+    "schemas": {
+      "Digest": {"type": "string", "pattern": "^[a-z0-9_+-]+:[0-9a-f]{64}$"},
+      "Image": {"type": "string", "pattern": ".+@sha256:[0-9a-fA-F]{64}$"},
+      "DeployRequest": {"type": "object", "required": ["repository", "environment", "change", "image"], "properties": {"repository": {"type": "string"}, "environment": {"type": "string"}, "change": {"$ref": "#/components/schemas/Digest"}, "image": {"$ref": "#/components/schemas/Image"}, "result": {"$ref": "#/components/schemas/Digest"}, "secrets": {"type": "array", "items": {"type": "string"}, "description": "Opaque sealed-secret references."}}},
+      "RollbackRequest": {"type": "object", "required": ["repository", "environment", "to"], "properties": {"repository": {"type": "string"}, "environment": {"type": "string"}, "to": {"type": "string", "description": "Prior deployment ID or change digest."}}},
+      "Deployment": {"type": "object", "required": ["id", "repository", "environment", "change", "image"], "properties": {"id": {"type": "string"}, "repository": {"type": "string"}, "environment": {"type": "string"}, "change": {"$ref": "#/components/schemas/Digest"}, "image": {"$ref": "#/components/schemas/Image"}, "result": {"$ref": "#/components/schemas/Digest"}, "rollback_of": {"type": "string"}}},
+      "EnvironmentStatus": {"type": "object", "required": ["phase", "ready", "message"], "properties": {"phase": {"type": "string"}, "url": {"type": "string"}, "ready": {"type": "boolean"}, "message": {"type": "string"}}},
+      "DeploymentEnvelope": {"type": "object", "required": ["ok", "value"], "properties": {"ok": {"const": true}, "value": {"$ref": "#/components/schemas/Deployment"}}},
+      "DeploymentListEnvelope": {"type": "object", "required": ["ok", "value"], "properties": {"ok": {"const": true}, "value": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Deployment"}}}}}},
+      "StatusEnvelope": {"type": "object", "required": ["ok", "value"], "properties": {"ok": {"const": true}, "value": {"$ref": "#/components/schemas/EnvironmentStatus"}}},
+      "Error": {"type": "object", "required": ["ok", "error"], "properties": {"ok": {"const": false}, "error": {"type": "object", "required": ["code", "message"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}, "path": {"type": "string"}}}}}
+    },
+    "responses": {
+      "Deployment": {"description": "Capability envelope containing a deployment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeploymentEnvelope"}}}},
+      "Error": {"description": "Capability error envelope", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+    }
+  }
+}
