@@ -52,11 +52,13 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
 **Status** mirrors the Deployment (`readyReplicas`, `phase`), selected store claim
 (`store.claimName`, `store.phase`, `store.capacity`, `StoreReady` condition), the CNPG cluster
 (`postgresReady`, `postgresInstances`), the PostgresSchema (`schemaPhase`, `schemaVersion`), and
-the backup (`backupReady`, `lastBackupTime`, `BackupReady` condition); written only on a real
+the backup (`backupReady`, `lastBackupTime`, `BackupReady` condition), and lifecycle evidence for
+Postgres and the pending Zetta data plane (`dataServices`); written only on a real
 transition. An unbound store keeps the Lake out of `Ready`. The Lake polls the claim and CNPG every
 20 s until both storage and the DB are ready and the schema is Applied, and while enabled backups
 observe new CNPG `Backup` resources. `kubectl get lake` columns: Namespace, Host, Ready, DB,
-Schema, Store, Backup, Phase.
+Schema, Store, Backup, Data, Phase. The Data column shows managed and unmanaged service counts;
+see [data services](data-services/README.md) for the operation-level labels and customer boundary.
 
 **Owned kinds** (`SetupWithManager`): PersistentVolumeClaim (only the operator-created store
 claim), Deployment, Service, Ingress, CloudflareDNSRecord, ConfigMap, Secret, PostgresSchema, CNPG

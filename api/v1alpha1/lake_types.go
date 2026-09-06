@@ -216,6 +216,15 @@ type LakeStatus struct {
 	// LastBackupTime is the completion time reported by the newest CNPG Backup.
 	// +optional
 	LastBackupTime *metav1.Time `json:"lastBackupTime,omitempty"`
+	// DataServices reports the operational evidence for every data service associated with the
+	// Lake. Managed is true only when every applicable procedure has a successful rehearsal.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	DataServices []LakeDataServiceStatus `json:"dataServices,omitempty"`
+	// DataServicesSummary is the managed/unmanaged count displayed by kubectl get lakes.
+	// +optional
+	DataServicesSummary string `json:"dataServicesSummary,omitempty"`
 	// Store reports the selected claim and its observed binding state.
 	// +optional
 	Store *LakeStoreStatus `json:"store,omitempty"`
@@ -225,6 +234,35 @@ type LakeStatus struct {
 	// Phase is a coarse summary in the operator's vocabulary: Progressing, Ready, Degraded.
 	// +optional
 	Phase string `json:"phase,omitempty"`
+}
+
+// LakeDataServiceStatus reports whether a Lake data service has proven lifecycle procedures.
+type LakeDataServiceStatus struct {
+	// Name is the stable service identifier within the Lake.
+	Name string `json:"name"`
+	// Kind identifies the service implementation.
+	// +kubebuilder:validation:Enum=postgres;zetta
+	Kind string `json:"kind"`
+	// Managed is true only when every procedure required by the current configuration is tested.
+	Managed bool `json:"managed"`
+	// Backup is tested, untested, or none.
+	// +kubebuilder:validation:Enum=tested;untested;none
+	Backup string `json:"backup"`
+	// Restore is tested, untested, or none.
+	// +kubebuilder:validation:Enum=tested;untested;none
+	Restore string `json:"restore"`
+	// Upgrade is tested, untested, or none.
+	// +kubebuilder:validation:Enum=tested;untested;none
+	Upgrade string `json:"upgrade"`
+	// Failover is tested, untested, or none.
+	// +kubebuilder:validation:Enum=tested;untested;none
+	Failover string `json:"failover"`
+	// LastVerified is the completion time of the newest rehearsal for this service.
+	// +optional
+	LastVerified *metav1.Time `json:"lastVerified,omitempty"`
+	// Notes explains an unmanaged label, an unavailable procedure, or the last failed rehearsal.
+	// +optional
+	Notes string `json:"notes,omitempty"`
 }
 
 // LakeStoreStatus is the observed state of the claim mounted at LAKE_STORE_ROOT.
@@ -252,6 +290,7 @@ type LakeStoreStatus struct {
 // +kubebuilder:printcolumn:name="Schema",type=string,JSONPath=`.status.schemaPhase`
 // +kubebuilder:printcolumn:name="Store",type=string,JSONPath=`.status.store.claimName`
 // +kubebuilder:printcolumn:name="Backup",type=date,JSONPath=`.status.lastBackupTime`
+// +kubebuilder:printcolumn:name="Data",type=string,JSONPath=`.status.dataServicesSummary`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 
 // Lake is the Schema for the lakes API

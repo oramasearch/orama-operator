@@ -555,6 +555,10 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 	if res.RequeueAfter != lakeStatusRequeue {
 		t.Errorf("requeueAfter = %s, want %s", res.RequeueAfter, lakeStatusRequeue)
 	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	assertInitialLakeDataServices(t, lake.Status)
 
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
@@ -653,6 +657,59 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 	}
 	if _, found, err := unstructured.NestedMap(cluster.Object, "spec", "backup"); err != nil || found {
 		t.Errorf("cluster backup block = %+v, found=%t, err=%v", cluster.Object["spec"], found, err)
+	}
+}
+
+func assertInitialLakeDataServices(t *testing.T, status oramav1alpha1.LakeStatus) {
+	t.Helper()
+	if status.DataServicesSummary != "0 managed, 2 unmanaged" {
+		t.Errorf("data services summary = %q", status.DataServicesSummary)
+	}
+	if len(status.DataServices) != 2 {
+		t.Fatalf("data services = %+v", status.DataServices)
+	}
+	postgres := status.DataServices[0]
+	if postgres.Name != "postgres" || postgres.Kind != "postgres" || postgres.Managed ||
+		postgres.Backup != "untested" || postgres.Restore != "untested" ||
+		postgres.Upgrade != "untested" || postgres.Failover != "none" || postgres.Notes == "" {
+		t.Errorf("postgres data service = %+v", postgres)
+	}
+	zetta := status.DataServices[1]
+	if zetta.Name != "zetta" || zetta.Kind != "zetta" || zetta.Managed ||
+		zetta.Backup != "none" || zetta.Restore != "none" || zetta.Upgrade != "none" ||
+		zetta.Failover != "none" || zetta.Notes == "" {
+		t.Errorf("zetta data service = %+v", zetta)
+	}
+}
+
+func TestLakeDataServiceStatusRequiresFailoverForReplicatedPostgres(t *testing.T) {
+	two := int32(2)
+	enabled := true
+	lake := &oramav1alpha1.Lake{
+		Spec: oramav1alpha1.LakeSpec{
+			Postgres: oramav1alpha1.LakePostgresSpec{
+				Instances: &two,
+				Backup: oramav1alpha1.LakePostgresBackupSpec{
+					Enabled: &enabled,
+				},
+			},
+		},
+		Status: oramav1alpha1.LakeStatus{DataServices: []oramav1alpha1.LakeDataServiceStatus{{
+			Name:     "postgres",
+			Backup:   "tested",
+			Restore:  "tested",
+			Upgrade:  "tested",
+			Failover: "tested",
+		}}},
+	}
+	services, summary := lakeDataServiceStatus(lake)
+	if !services[0].Managed || services[0].Failover != "tested" || summary != "1 managed, 1 unmanaged" {
+		t.Fatalf("data services = %+v, summary = %q", services, summary)
+	}
+	lake.Status.DataServices[0].Failover = "untested"
+	services, summary = lakeDataServiceStatus(lake)
+	if services[0].Managed || services[0].Failover != "untested" || summary != "0 managed, 2 unmanaged" {
+		t.Fatalf("data services = %+v, summary = %q", services, summary)
 	}
 }
 

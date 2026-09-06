@@ -268,6 +268,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if backup.Enabled && !backup.Valid {
 		phase = "Degraded"
 	}
+	dataServices, dataServicesSummary := lakeDataServiceStatus(&lake)
 	desiredConditions := lake.Status.Conditions
 	conditionsChanged := apimeta.SetStatusCondition(&desiredConditions, backupCondition)
 	if apimeta.SetStatusCondition(&desiredConditions, storeCondition) {
@@ -277,6 +278,8 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.PostgresReady != pgReady || lake.Status.PostgresInstances != pgDetail ||
 		lake.Status.SchemaPhase != schemaPhase || lake.Status.SchemaVersion != schemaVersion ||
 		lake.Status.BackupReady != backupReady || !lakeBackupTimesEqual(lake.Status.LastBackupTime, lastBackupTime) ||
+		!apiequality.Semantic.DeepEqual(lake.Status.DataServices, dataServices) ||
+		lake.Status.DataServicesSummary != dataServicesSummary ||
 		!apiequality.Semantic.DeepEqual(lake.Status.Store, storeStatus) ||
 		conditionsChanged {
 		lake.Status.ReadyReplicas = deploy.Status.ReadyReplicas
@@ -287,6 +290,8 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.SchemaVersion = schemaVersion
 		lake.Status.BackupReady = backupReady
 		lake.Status.LastBackupTime = lastBackupTime
+		lake.Status.DataServices = dataServices
+		lake.Status.DataServicesSummary = dataServicesSummary
 		lake.Status.Store = storeStatus
 		lake.Status.Conditions = desiredConditions
 		if err := r.Status().Update(ctx, &lake); err != nil {
@@ -307,6 +312,73 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+func lakeDataServiceStatus(lake *oramav1alpha1.Lake) ([]oramav1alpha1.LakeDataServiceStatus, string) {
+	previous := make(map[string]oramav1alpha1.LakeDataServiceStatus, len(lake.Status.DataServices))
+	for _, service := range lake.Status.DataServices {
+		previous[service.Name] = service
+	}
+
+	postgres := previous["postgres"]
+	postgres.Name = "postgres"
+	postgres.Kind = "postgres"
+	postgres.Backup = untestedUnlessTested(postgres.Backup)
+	postgres.Restore = untestedUnlessTested(postgres.Restore)
+	postgres.Upgrade = untestedUnlessTested(postgres.Upgrade)
+	postgres.Failover = untestedUnlessTested(postgres.Failover)
+	if !lakePostgresEnabled(lake) {
+		postgres.Backup = "none"
+		postgres.Restore = "none"
+		postgres.Upgrade = "none"
+		postgres.Failover = "none"
+		postgres.Notes = "control-plane Postgres is disabled"
+	} else if !lakePostgresBackupEnabled(lake) {
+		postgres.Backup = "none"
+		postgres.Restore = "none"
+	}
+	instances := int32(1)
+	if lake.Spec.Postgres.Instances != nil {
+		instances = *lake.Spec.Postgres.Instances
+	}
+	if lakePostgresEnabled(lake) && instances < 2 {
+		postgres.Failover = "none"
+		postgres.Notes = "failover is unavailable for a single-instance cluster"
+	}
+	postgres.Managed = lakePostgresEnabled(lake) &&
+		postgres.Backup == "tested" &&
+		postgres.Restore == "tested" &&
+		postgres.Upgrade == "tested" &&
+		(postgres.Failover == "tested" || postgres.Failover == "none")
+	if !postgres.Managed && postgres.Notes == "" {
+		postgres.Notes = "one or more lifecycle procedures have not been tested"
+	}
+
+	zetta := oramav1alpha1.LakeDataServiceStatus{
+		Name:     "zetta",
+		Kind:     "zetta",
+		Managed:  false,
+		Backup:   "none",
+		Restore:  "none",
+		Upgrade:  "none",
+		Failover: "none",
+		Notes:    "the Zetta data plane and its lifecycle procedures are pending #125",
+	}
+	services := []oramav1alpha1.LakeDataServiceStatus{postgres, zetta}
+	managed := 0
+	for _, service := range services {
+		if service.Managed {
+			managed++
+		}
+	}
+	return services, fmt.Sprintf("%d managed, %d unmanaged", managed, len(services)-managed)
+}
+
+func untestedUnlessTested(value string) string {
+	if value == "tested" {
+		return value
+	}
+	return "untested"
 }
 
 func lakeStoreClaimName(lake *oramav1alpha1.Lake) string {
