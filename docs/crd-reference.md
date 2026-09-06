@@ -264,13 +264,14 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 Deploys **lake** — the hosted service behind `lake.live` (control plane on Postgres via CNPG, data plane on Zetta) (forge, drive, platform, identity, secrets,
 PKI, registry and search over one content-addressed store; specified in
 [`oramasearch/liquid`](https://github.com/oramasearch/liquid) `docs/features/18-lake-service.md`) — from
-one **cluster-scoped** CR. Hello-world stage: it creates the target **Namespace** (if missing; not
-owned, so deleting a Lake never takes a namespace with it), a **Deployment** (`lake-<name>`, running
-`spec.image`) and a ClusterIP **Service** (`lake-<name>`, port 80). With `spec.ingressEnabled` and
-`spec.host` it also fronts the host with an **nginx Ingress** (the whole host → the lake Service) and,
-when `spec.dnsSecretRef` is given, an **owned `CloudflareDNSRecord`** (proxied, host → the ingress
-LoadBalancer) — the same contract and child-controller path as `OramaZettaCluster`. Gating off tears
-the Ingress and the record down and leaves the workloads. Sample:
+one **cluster-scoped** CR. It creates the target **Namespace** (if missing; not owned, so deleting a
+Lake never takes a namespace with it), a hardened **Deployment** (`lake-<name>`, running
+`spec.image`) and a ClusterIP **Service** (`lake-<name>`, port 80). Replicated workloads also get a
+PodDisruptionBudget and topology spread. With `spec.ingressEnabled` and `spec.host` it fronts the
+host with an **nginx Ingress** (the whole host → the lake Service), optional origin TLS, and, when
+`spec.dnsSecretRef` is given, an **owned `CloudflareDNSRecord`** (proxied, host → the ingress
+LoadBalancer) — the same contract and child-controller path as `OramaZettaCluster`. Gating off
+tears the Ingress and the record down and leaves the workloads. Sample:
 [`../config/samples/orama_v1alpha1_lake.yaml`](../config/samples/orama_v1alpha1_lake.yaml).
 
 | Field | Purpose |
@@ -278,9 +279,12 @@ the Ingress and the record down and leaves the workloads. Sample:
 | `spec.namespace` | Namespace the workloads land in (default `lake-dev`). Created if missing; never deleted by the operator. |
 | `spec.image` | The lake image, run as built. **Required, no default**; the sample uses the private `oramasearch/lake:v1-sandbox`. |
 | `spec.pullSecretName` | imagePullSecret attached to the pods, for a private `spec.image`. Must exist in `spec.namespace`. |
-| `spec.port` | Container port the Service (port 80) targets; also the readiness probe (`GET /`). Default 4900, lake's `--listen` default. |
+| `spec.port` | Container port the Service (port 80) and probes target. Default 4900, lake's `--listen` default. Readiness is `GET /readyz`; liveness is `GET /healthz`. |
 | `spec.args` | Args for the image's entrypoint; empty runs the image as built (lake listens on `0.0.0.0:4900`). |
 | `spec.replicas` | Deployment replicas (default 1). |
+| `spec.resources` | Complete Kubernetes container resource override. Default requests: CPU `50m`, memory `128Mi`; default limit: memory `512Mi`, with no CPU limit. |
+| `spec.topologySpreadConstraints[]` | Complete pod topology-spread override. When omitted with more than one replica, defaults to `maxSkew: 1`, `topologyKey: kubernetes.io/hostname`, `whenUnsatisfiable: ScheduleAnyway`, selecting this Lake's pods. An explicit empty list disables the default. At one replica no default is rendered. |
+| _(workload hardening — automatic)_ | The pod and container require non-root uid/gid 10001, disallow privilege escalation, drop all Linux capabilities, and use `RuntimeDefault` seccomp. The container gets a five-second pre-stop drain and the pod gets a 30-second termination grace period. Rolling updates use `maxUnavailable: 0`, `maxSurge: 1`. More than one replica creates `PodDisruptionBudget lake-<name>` with `maxUnavailable: 1`; scaling to one deletes it. |
 | `spec.store` | Persistent libliquid customer store mounted read-write at `/var/lib/lake/store`, with `LAKE_STORE_ROOT` fixed to that path. Without `existingClaim`, the operator creates and owns `lake-<name>-store` once. Later store spec changes never mutate, replace, or delete it. |
 | `spec.store.size` / `.storageClassName` / `.accessModes` | Creation-time settings for the generated claim: quantity `100Gi` by default, cluster-default storage class, and `[ReadWriteMany]`. RWX is the multi-replica default; `ReadWriteOnce` requires `spec.replicas: 1`. |
 | `spec.store.existingClaim` | PVC in `spec.namespace` to mount instead of creating one. It is referenced without adoption, mutation, or deletion. |
@@ -291,7 +295,8 @@ the Ingress and the record down and leaves the workloads. Sample:
 | _(admin token — automatic)_ | Secret **`lake-<name>-admin`** (key `token`, 64 hex), minted once and preserved, owned by the Lake; injected as `LAKE_ADMIN_TOKEN`. lake requires it as `Authorization: Bearer` on every `/v1` capability except `server_info` and on MCP tool calls. Retrieve: `kubectl get secret lake-<name>-admin -n <ns> -o jsonpath='{.data.token}' \| base64 -d`. |
 | _(sealing key — automatic)_ | Secret **`lake-<name>-sealing-key`** holds the current and still-needed prior X25519 private keys. Only the active public key and `kid` are injected into lake. See [`lake/sealed-secrets.md`](lake/sealed-secrets.md). |
 | _(schema — automatic)_ | With Postgres on, the Lake owns a `lake-<name>-controldb-migrations` ConfigMap holding lake's control-plane schema (vendored byte-identical from `oramasearch/lake` `db/schema.sql`) and a `lake-<name>-controldb-schema` **`PostgresSchema`** that applies it in one transaction, guarded on the newest migration table (`agent_guard` for `0017_agent_sessions`) and versioned by content hash. Incremental migrations are the PostgresSchema follow-up. |
-| `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. |
+| `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. The Ingress permits `64m` request bodies and disables request/response buffering for Lake's streaming transfers. |
+| `spec.tls.secretName` | Optional `kubernetes.io/tls` Secret in `spec.namespace`. With ingress enabled and a host set, renders the Ingress TLS host and enables nginx HTTPS redirect. Empty is the backward-compatible HTTP-only default. |
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
 | `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. |
 | `spec.previewWildcard` | DNS suffix for preview environments. `preview.example.com` yields `<change-short>.preview.example.com`; with Lake ingress and DNS enabled, the Lake owns one `*.preview.example.com` Cloudflare record and previews do not create records per change. |

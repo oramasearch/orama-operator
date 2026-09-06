@@ -9,7 +9,9 @@ deployment state): https://github.com/oramasearch/lake/tree/main/docs.
 The cluster-scoped `Lake` CR deploys the lake service with its control-plane Postgres and a
 shared persistent libliquid store. The operator creates a `100Gi` RWX store claim by default or
 mounts `spec.store.existingClaim`, sets `LAKE_STORE_ROOT=/var/lib/lake/store`, and accepts
-additional lake runtime configuration through `spec.env`. Each Lake also owns an X25519 sealing
+additional lake runtime configuration through `spec.env`. The workload has resource bounds,
+Lake-native health probes, non-root execution, safe rolling-update settings, and replicated-pod
+disruption and placement controls. Each Lake also owns an X25519 sealing
 key and publishes its recipient in status; namespaced `LakeSealedSecret` resources turn
 cluster-bound ciphertext into owned, labelled Kubernetes Secrets without putting plaintext in the
 authored resource ([sealed-secrets.md](sealed-secrets.md)). `kubectl get lake` reports managed and
@@ -51,10 +53,14 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    read-write at `/var/lib/lake/store` in every pod. The pod runs with `fsGroup: 10001` (lake's
    uid/gid in the image) so a freshly provisioned volume is writable by lake on first mount. Operator-created claims are never replaced,
    resized, or deleted because the store spec changes.
-6. **Deployment** `lake-<name>` — `spec.image` run as built, `spec.args`, port `spec.port`
-   (default 4900), readiness `GET /`, `spec.replicas`, `imagePullSecrets` from
-   `spec.pullSecretName`; operator env including `LAKE_STORE_ROOT=/var/lib/lake/store` plus
-   `spec.env` entries whose names do not conflict with operator-owned variables.
+6. **Deployment + disruption budget** `lake-<name>` — `spec.image` run as built, `spec.args`, port
+   `spec.port` (default 4900), readiness `GET /readyz`, liveness `GET /healthz`,
+   `spec.replicas`, resource defaults or `spec.resources`, `imagePullSecrets` from
+   `spec.pullSecretName`, and operator env including `LAKE_STORE_ROOT=/var/lib/lake/store` plus
+   `spec.env` entries whose names do not conflict with operator-owned variables. Pods run as
+   uid/gid 10001 with the restricted container baseline. Replicated Deployments get a
+   `maxUnavailable: 1` PodDisruptionBudget and the default soft hostname spread, or
+   `spec.topologySpreadConstraints` when supplied. Scaling to one replica removes the budget.
 7. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
 8. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
    (`spec.postgres`: enabled by default, instances, storageSize 50Gi, storageClassName), the same
@@ -72,10 +78,13 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    `lake-<name>-controldb-backup`. The R2/S3 Secret lives in `spec.namespace`; CNPG owns the
    individual `Backup` resources. See [backups.md](backups.md) for R2 setup, verification,
    changing the schedule or retention, and recovery into a new Cluster.
-11. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
-   whole host and an owned `CloudflareDNSRecord`, the `OramaZettaCluster` contract; gating off
-   tears both down. When `previewWildcard` is set, the Lake also owns one wildcard record against
-   the same ingress address; individual previews do not create Cloudflare records.
+11. **Ingress + TLS + DNS** (opt-in: `ingressEnabled` + `host`, `tls.secretName`,
+   `dnsSecretRef`) — nginx Ingress for the whole host and an owned `CloudflareDNSRecord`, the
+   `OramaZettaCluster` contract; gating off tears both down. The Ingress accepts Lake's 64 MiB
+   request bodies without buffering streaming requests or responses. `tls.secretName` adds the
+   host certificate and HTTPS redirect. When `previewWildcard` is set, the Lake also owns one
+   wildcard record against the same ingress address; individual previews do not create
+   Cloudflare records.
 12. **Deployment environments** — desired rows in the operator's Zetta
    `orama_control.deployments` table become Lake-owned `LakeEnvironment` CRs in this namespace.
    Each CR owns its profiled workload Namespace through a verified finalizer. Referenced
@@ -101,7 +110,7 @@ Schema, Store, Backup, Data, Phase. The Data column shows managed and unmanaged 
 see [data services](data-services/README.md) for the operation-level labels and customer boundary.
 
 **Owned kinds** (`SetupWithManager`): PersistentVolumeClaim (only the operator-created store
-claim), Deployment, Service, Ingress, CloudflareDNSRecord, ConfigMap, Secret, LakeEnvironment, LakeSealedSecret,
+claim), Deployment, PodDisruptionBudget, Service, Ingress, CloudflareDNSRecord, ConfigMap, Secret, LakeEnvironment, LakeSealedSecret,
 PostgresSchema, CNPG
 ScheduledBackup. Not owned: an existing store claim, the Namespace, the CNPG Cluster (polled), and
 CNPG Backup resources (observed by cluster label). A `LakeRestoreRehearsal` temporarily owns a
@@ -110,7 +119,7 @@ them explicitly.
 
 **RBAC.** The chart ClusterRole is hand-maintained (`chart/templates/rbac.yaml`); a Lake needs
 `lakes`, `lakes/status`, `lakes/finalizers`, `namespaces: create`, plus the shared grants for
-deployments, persistentvolumeclaims, services, configmaps, ingresses, cloudflarednsrecords,
+deployments, poddisruptionbudgets, persistentvolumeclaims, services, configmaps, ingresses, cloudflarednsrecords,
 postgresschemas, lakerestorerehearsals, `lakesealedsecrets` (including status and finalizers),
 namespace-wide Secrets and `postgresql.cnpg.io/clusters`, `clusters/status`, `scheduledbackups`, and
 `backups`. Scratch Namespace ownership is checked through the direct API reader, so Namespace RBAC
@@ -202,6 +211,9 @@ spec:
   pullSecretName: oramasearch-dockerhub
   args: ["--listen", "0.0.0.0:4900", "--node", "prod"]
   replicas: 3
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 2Gi }
   store:
     size: 100Gi
     accessModes: [ReadWriteMany]
@@ -213,6 +225,7 @@ spec:
   postgres: { instances: 1, storageSize: 50Gi }
   ingressEnabled: true
   host: lake.oramadev.net
+  tls: { secretName: lake-origin-tls }
   previewWildcard: preview.lake.oramadev.net
   deploySync: { interval: 15s }
   dnsSecretRef: { name: cloudflare-api-token }
@@ -222,6 +235,72 @@ kubectl get lake prod
 ```
 
 `kubectl delete lake <name>` removes everything owned, including the database.
+
+## Workload hardening
+
+The Lake Deployment defaults to CPU and memory requests of `50m` and `128Mi`, with a `512Mi`
+memory limit. Set `spec.resources` to replace that complete Kubernetes resource block for a
+production size. The default intentionally leaves the CPU limit unset so bursts are not throttled;
+the scheduler still reserves CPU through the request.
+
+Lake's unauthenticated operational routes drive distinct probes: `GET /healthz` is liveness and
+`GET /readyz` is readiness, including control-store availability. The pod and container require
+non-root uid/gid 10001, disable privilege escalation, drop every Linux capability, and use the
+runtime-default seccomp profile. A five-second pre-stop drain, 30-second termination grace period,
+and rolling strategy of `maxUnavailable: 0`, `maxSurge: 1` keep a ready endpoint serving while a
+replacement becomes ready.
+
+When `spec.replicas` is greater than one, the operator creates `PodDisruptionBudget lake-<name>`
+with `maxUnavailable: 1`. It also defaults `spec.topologySpreadConstraints` to a soft
+`kubernetes.io/hostname` spread. Supply the field to replace that list; an explicit empty list
+disables the default. At one replica the operator removes the PDB and renders no default spread.
+
+The nginx Ingress always sets `proxy-body-size: 64m` and disables request and response buffering
+for Lake's bounded streaming transfers. Set `spec.tls.secretName` to a `kubernetes.io/tls` Secret
+in the Lake namespace to render `spec.tls`, enable HTTPS redirect, and terminate origin TLS at
+nginx. For Cloudflare Origin CA, switch the zone to Full (strict) only after the origin certificate
+is present and the Ingress answers HTTPS.
+
+### Rollout-restart check
+
+Run this after deploying the CRD and controller change to AKS. The Lake must have at least two
+ready replicas, its shared store must support the placement, and the public hostname must already
+be healthy.
+
+```sh
+kubectl get deployment,poddisruptionbudget -n <namespace> lake-<name>
+kubectl get pods -n <namespace> -l app.kubernetes.io/name=lake -o wide
+```
+
+In one terminal, probe continuously and retain a failure count:
+
+```sh
+requests=0
+failures=0
+trap 'echo "requests=$requests failures=$failures"; exit' INT TERM
+while true; do
+  requests=$((requests + 1))
+  if ! curl -fsS https://<host>/readyz >/dev/null; then
+    failures=$((failures + 1))
+    echo "request $requests failed"
+  fi
+  sleep 0.1
+done
+```
+
+In another terminal, restart and wait for the Deployment:
+
+```sh
+kubectl rollout restart deployment/lake-<name> -n <namespace>
+kubectl rollout status deployment/lake-<name> -n <namespace>
+kubectl get pods -n <namespace> -l app.kubernetes.io/name=lake
+```
+
+Stop the probe with Ctrl-C. The check passes only when `failures=0`, every replacement pod is
+Ready, and the PDB still has `maxUnavailable: 1`.
+
+AKS rollout-restart evidence for issue #122 is deferred because this host is not authorized to
+change the cluster.
 
 ## Current production instance
 
@@ -233,4 +312,3 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 
 - #125 Zetta data plane (owned `OramaZettaCluster` per Lake).
 - #126 incremental migrations in `PostgresSchema`.
-- #122 hardening: resources, liveness, PDB, TLS.
