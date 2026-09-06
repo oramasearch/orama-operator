@@ -4,6 +4,9 @@ What the operator does for a `Lake`, how it is deployed, and how to run it. Fiel
 [`../crd-reference.md`](../crd-reference.md) (`Lake` section). lake's own docs (server, schema,
 deployment state): https://github.com/oramasearch/lake/tree/main/docs.
 
+Per-deployment preview and named environments are documented in
+[`environments.md`](environments.md).
+
 ## What a Lake reconciles into
 
 In order, every reconcile (`internal/controller/lake_controller.go`):
@@ -52,8 +55,13 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    changing the schedule or retention, and recovery into a new Cluster.
 11. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
    whole host and an owned `CloudflareDNSRecord`, the `OramaZettaCluster` contract; gating off
-   tears both down.
-12. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,
+   tears both down. When `previewWildcard` is set, the Lake also owns one wildcard record against
+   the same ingress address; individual previews do not create Cloudflare records.
+12. **Deployment environments** — desired rows in the operator's Zetta
+   `orama_control.deployments` table become Lake-owned `LakeEnvironment` CRs in this namespace.
+   Each CR owns its profiled workload Namespace through a verified finalizer. See
+   [`environments.md`](environments.md).
+13. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,
     restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`
     controller runs Postgres procedures and updates the row; see
     [data services](data-services/README.md).
@@ -71,7 +79,7 @@ Schema, Store, Backup, Data, Phase. The Data column shows managed and unmanaged 
 see [data services](data-services/README.md) for the operation-level labels and customer boundary.
 
 **Owned kinds** (`SetupWithManager`): PersistentVolumeClaim (only the operator-created store
-claim), Deployment, Service, Ingress, CloudflareDNSRecord, ConfigMap, Secret, LakeSealedSecret,
+claim), Deployment, Service, Ingress, CloudflareDNSRecord, ConfigMap, Secret, LakeEnvironment, LakeSealedSecret,
 PostgresSchema, CNPG
 ScheduledBackup. Not owned: an existing store claim, the Namespace, the CNPG Cluster (polled), and
 CNPG Backup resources (observed by cluster label). A `LakeRestoreRehearsal` temporarily owns a
@@ -87,6 +95,12 @@ namespace-wide Secrets and `postgresql.cnpg.io/clusters`, `clusters/status`, `sc
 remains `get`, `create`, and `delete` without a cluster-wide informer. Keep it in sync with
 `config/rbac/role.yaml` or the manager
 CrashLoops on cache sync.
+
+The `LakeEnvironment` controller additionally needs `lakeenvironments` (including status and
+finalizers), verified Namespace update/delete, and Deployments, Services, Ingresses,
+NetworkPolicies, ResourceQuotas and LimitRanges across environment namespaces. The chart grants
+these cluster-wide, while the controller deletes only a Namespace bearing its exact ownership
+annotation.
 
 ## Deploying the operator with Lake support
 
@@ -173,6 +187,8 @@ spec:
   postgres: { instances: 1, storageSize: 50Gi }
   ingressEnabled: true
   host: lake.oramadev.net
+  previewWildcard: preview.lake.oramadev.net
+  deploySync: { interval: 15s }
   dnsSecretRef: { name: cloudflare-api-token }
 Y
 kubectl wait lake/prod --for=jsonpath='{.status.schemaPhase}'=Applied --timeout=600s

@@ -50,3 +50,7 @@ spec:
   # host: hello.lake.live
   # dnsSecretRef:
   #   name: cloudflare-api-token
+  # Per-change previews use one wildcard record instead of one Cloudflare record per change.
+  # previewWildcard: preview.lake.live
+  # deploySync:
+  #   interval: 15s

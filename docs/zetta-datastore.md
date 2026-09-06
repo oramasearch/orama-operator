@@ -19,6 +19,7 @@ Provisioned automatically when `spec.provisionOperatorSchema` is `true` (the def
 | `orama_control` | `components` | the operator's registry — one row per managed component (`name, kind, image, status, node, updated_at`). |
 | `orama_control` | `reconcile_events` | an audit of operator actions (`ts, cluster, action, detail`). |
 | `orama_control` | `topology` | the cross-cluster Zetta node topology ([operator#105](https://github.com/oramasearch/orama-cloud-v1-operator/issues/105)) — one row per wan-accessible node (`operator, cluster, node, address, reachability, node_type, status, updated_at`). Each operator WRITES its slice's wan endpoints; Zetta CRDT-syncs the table; each operator READS it back to derive cross-cluster peering. See [Cross-cluster topology through Zetta](#cross-cluster-topology-through-zetta). |
+| `orama_control` | `deployments` | append-only desired deployment and observed status events ([operator#124](https://github.com/oramasearch/orama-cloud-v1-operator/issues/124)). A desired event becomes a Lake-owned `LakeEnvironment`; status events carry phase, URL and message only on transition. See [Lake deployment environments](lake/environments.md). |
 | `orama_data` | `documents` | the application-data landing zone (`id, collection, body, updated_at`) — where v1's served data migrates to. |
 
 The definitive list is `operatorZettaSchema` in
@@ -34,8 +35,9 @@ an **in-cluster Job** (`<name>-zetta-schema`, a `curl` image) that
 2. applies each statement idempotently to **`GET /v1/sql`** (see [Zetta SQL notes](#zetta-sql-notes)),
 3. completes.
 
-The Job is owner-ref'd to the `OramaZettaCluster` (GC'd with it) and is created once — **to re-apply an
-edited schema, `kubectl delete job <name>-zetta-schema`** and the operator recreates it.
+The Job is owner-ref'd to the `OramaZettaCluster` (GC'd with it) and carries a content hash of the
+rendered schema. When `operatorZettaSchema` changes, the controller deletes the immutable old Job and
+recreates it automatically; existing tables return "already exists" and only new statements apply.
 
 ```
 OramaZettaCluster ──owns──▶ StatefulSet (zetta node, :4800 /v1/sql)
@@ -92,9 +94,11 @@ Example row (`orama_control.components`):
 
 Two different kinds of state, two homes — this is the key design point:
 
-- **Desired state = the CRs** (`OramaCloudV1`, `OramaZettaCluster`, …). For a kubebuilder operator,
-  **Kubernetes (etcd) is necessarily the source of truth** — the CRs *are* the reconcile API. This does
-  **not** move to Zetta while the operator is a k8s operator; a reconcile always derives from the CRs.
+- **Reconciled desired state = the CRs** (`OramaCloudV1`, `OramaZettaCluster`, `LakeEnvironment`, …).
+  Kubernetes remains the reconcile API and source of truth after materialization. Deployment intake is
+  the explicit exception from liquid-bridge decision 22: liquid appends an external desired event to
+  `orama_control.deployments`, and the operator deterministically creates or updates the corresponding
+  `LakeEnvironment` CR. All subsequent workload reconciliation derives from that CR.
 - **Observed / derived state** — what is actually running, per-component status, reconcile history,
   config snapshots. **This is what belongs in Zetta and should stay in sync**, giving a durable,
   SQL-queryable, replicated record independent of etcd. That is the real symbiosis.
@@ -106,7 +110,14 @@ anti-flap discipline as the status subresource** (a steady stack produces zero Z
 deployed engine is append-only (no `UPDATE` yet — [zetta#735](https://github.com/oramasearch/zetta/issues/735)),
 so a change **appends** a row; read **latest-wins** by `updated_at`. Best-effort: the flaky node
 ([zetta#731](https://github.com/oramasearch/zetta/issues/731)) just retries next reconcile. A 60 s
-requeue keeps it tracking the rest of the operator's CRs.
+idle requeue keeps it tracking the rest of the operator's CRs; when the namespace has Lakes, their
+shortest deployment-sync interval drives the same reconcile loop.
+
+Deployment events use the same append-only constraint but keep `desired` and `status` event streams
+separate under one `deployment_id`, so a status append cannot erase configuration. The operator polls
+at the shortest Lake `spec.deploySync.interval` in the Zetta namespace (default `15s`), processes only
+rows naming a local Lake in that namespace, and appends status only when phase, URL or message changes.
+See [`docs/lake/environments.md`](lake/environments.md) for the complete row contract and lifecycle.
 
 ## Many operators, one Zetta (multi-cluster)
 
@@ -227,8 +238,8 @@ even though no sibling dials it.
 
 1. Edit `operatorZettaSchema` in [`zetta_controlplane.go`](../internal/controller/zetta_controlplane.go).
 2. Rebuild + restart the operator.
-3. `kubectl delete job <name>-zetta-schema` — the operator recreates it and re-applies (existing objects
-   are skipped via "already exists").
+3. The operator detects the changed schema hash, replaces the immutable `<name>-zetta-schema` Job and
+   re-applies it (existing objects are skipped via "already exists").
 
 There is no `DROP` in the reconcile path — tearing the schema down is a deliberate, separate action, so a
 reconcile can never destroy data. Turning `spec.provisionOperatorSchema` off removes the Job + ConfigMap

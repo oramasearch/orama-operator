@@ -84,6 +84,11 @@ implies untested protection. `LakeRestoreRehearsal` automates Postgres restore, 
 and replicated failover proof. See the [data-service lifecycle labels](docs/lake/data-services/README.md)
 and [Postgres procedure](docs/lake/data-services/postgres.md).
 
+Desired deployment events in the operator's Zetta control plane become Lake-owned
+`LakeEnvironment` CRs: one restricted, quota-bound `untrusted` runtime namespace per named or
+per-change environment, with anti-flap status returned to Zetta and wildcard DNS for previews.
+See [Lake deployment environments](docs/lake/environments.md).
+
 ## Multi-region
 
 Install one release + one CR per cluster (`us-east` = `primary`, `eu`/`ap` = `read`).

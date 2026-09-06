@@ -7,12 +7,15 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
@@ -21,11 +24,14 @@ import (
 // zettaSchemaStmt is one DDL statement + the database it applies to (empty db = a CREATE DATABASE).
 type zettaSchemaStmt struct{ db, sql string }
 
+const zettaSchemaVersionAnnotation = "orama.cloud/operator-schema-version"
+
 // operatorZettaSchema is the operator's OWN control-plane + data-plane schema, applied to the Zetta
 // node that backs the operator (One Orama symbiosis v0 — Zetta as the operator's datastore). Zetta SQL
 // is a Postgres subset with **no `IF NOT EXISTS`** and one statement per call, so each is applied
 // individually and an "already exists" reply is treated as success. Evolve the schema by editing this
-// list, then delete the `<name>-zetta-schema` Job to re-apply (Jobs are immutable).
+// list. A content hash on the immutable Job makes the reconciler delete and recreate it when this
+// schema changes, so an existing cluster applies new statements without an out-of-band step.
 var operatorZettaSchema = []zettaSchemaStmt{
 	// Control plane — the operator's own coordination state.
 	{"", "CREATE DATABASE orama_control"},
@@ -38,6 +44,10 @@ var operatorZettaSchema = []zettaSchemaStmt{
 	// IF NOT EXISTS (zetta#735): a departed node is expressed with a `status='gone'` marker row, never a
 	// DELETE. See zetta_topology.go + docs/zetta-datastore.md.
 	{"orama_control", "CREATE TABLE topology (operator TEXT, cluster TEXT, node TEXT, address TEXT, reachability TEXT, node_type TEXT, status TEXT, updated_at TEXT)"},
+	// Desired deployments and their observed transitions (operator#124). Zetta is append-only, so
+	// liquid writes record_type='desired' events and the operator appends record_type='status' events.
+	// Readers reduce each stream latest-wins by deployment_id + updated_at.
+	{"orama_control", "CREATE TABLE deployments (deployment_id TEXT, record_type TEXT, lake TEXT, repository TEXT, environment TEXT, kind TEXT, change_id TEXT, image TEXT, replicas TEXT, port TEXT, env_json TEXT, secret_refs_json TEXT, host TEXT, withdrawn TEXT, change_closed TEXT, phase TEXT, url TEXT, message TEXT, updated_at TEXT)"},
 	// Data plane — the application-data landing zone (destined to replace v1's Typesense/ClickHouse/PG).
 	{"", "CREATE DATABASE orama_data"},
 	{"orama_data", "CREATE TABLE documents (id TEXT, collection TEXT, body TEXT, updated_at TEXT)"},
@@ -87,20 +97,33 @@ func (r *OramaZettaClusterReconciler) reconcileZettaControlPlane(ctx context.Con
 	}
 	b.WriteString("echo 'zetta control-plane: schema applied'\n")
 	script := b.String()
+	schemaSum := sha256.Sum256([]byte(script))
+	schemaVersion := fmt.Sprintf("sha256:%x", schemaSum[:6])
 
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		cm.Labels = lbls
+		cm.Annotations = map[string]string{zettaSchemaVersionAnnotation: schemaVersion}
 		cm.Data = map[string]string{"apply.sh": script}
 		return controllerutil.SetControllerReference(z, cm, r.Scheme)
 	}); err != nil {
 		return err
 	}
 
+	var current batchv1.Job
+	if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: name}, &current); err == nil {
+		if current.Annotations[zettaSchemaVersionAnnotation] != schemaVersion {
+			return r.Delete(ctx, &current)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, job, func() error {
+		job.Labels = lbls
+		job.Annotations = map[string]string{zettaSchemaVersionAnnotation: schemaVersion}
 		if job.CreationTimestamp.IsZero() { // Jobs are immutable — set the spec once; delete to re-apply
-			job.Labels = lbls
 			job.Spec = batchv1.JobSpec{
 				BackoffLimit: int32Ptr(20), // retry while the (flaky) node comes up
 				Template: corev1.PodTemplateSpec{

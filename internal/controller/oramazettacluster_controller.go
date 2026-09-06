@@ -11,7 +11,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -65,6 +64,8 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s,verbs=get;list;watch
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s/status,verbs=get
+//+kubebuilder:rbac:groups=orama.cloud,resources=lakes,verbs=get;list;watch
+//+kubebuilder:rbac:groups=orama.cloud,resources=lakeenvironments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -401,6 +402,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			return ctrl.Result{}, err
 		}
 		r.reconcileOperatorStateSync(ctx, &z, clientName) // best-effort; never fails the reconcile
+		r.reconcileZettaDeployments(ctx, &z, clientName)  // best-effort; the periodic poll retries
 	} else if err := r.teardownZettaControlPlane(ctx, &z); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -411,10 +413,10 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, provisionedNodes, reachability, wanAddress); err != nil {
 		return ctrl.Result{}, err
 	}
-	// When acting as the datastore, requeue periodically so the coarse state sync tracks the rest of
-	// the operator's CRs even without a Zetta-cluster event (anti-flap keeps the Zetta writes rare).
+	// When acting as the datastore, poll at the shortest Lake deploySync interval in this namespace.
+	// The same tick keeps coarse state sync current; both write paths are anti-flapped.
 	if syncEnabled {
-		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: r.deploymentSyncInterval(ctx, z.Namespace)}, nil
 	}
 	return ctrl.Result{}, nil
 }

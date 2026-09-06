@@ -1,0 +1,19 @@
+apiVersion: orama.cloud/v1alpha1
+kind: LakeEnvironment
+metadata:
+  name: checkout-preview-7ac4c59b
+  namespace: lake-dev
+  annotations:
+    orama.cloud/deployment-id: deploy-01k4cx2x8wx0m0v9x7g8d19qwb
+spec:
+  lakeRef: hello
+  repository: repo-01k4cwzqbcvtj1wz7kqmy8sp2q
+  environment: checkout-preview
+  kind: preview
+  change: 7ac4c59b92e46235a6f2
+  image: registry.example.com/checkout@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  replicas: 1
+  port: 8080
+  env:
+    - name: APP_ENV
+      value: preview
