@@ -28,6 +28,7 @@ rules:
       - rabbitmqtopologies
       - postgresschemas
       - lakes
+      - lakesealedsecrets
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -42,6 +43,7 @@ rules:
       - rabbitmqtopologies/status
       - postgresschemas/status
       - lakes/status
+      - lakesealedsecrets/status
       - oramacloudv1s/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
@@ -50,6 +52,7 @@ rules:
       - cloudflareloadbalancers/finalizers
       - rabbitmqtopologies/finalizers
       - lakes/finalizers
+      - lakesealedsecrets/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
