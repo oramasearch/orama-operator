@@ -17,8 +17,8 @@ into running systems:
   `LakeRestoreRehearsal`, and the two e2e test CRDs.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
-zero writes. The repository was renamed from `orama-cloud-v1-operator`; the Go module path, image
-name and chart name keep the old name until that rename is done as its own deliberate step.
+zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
+are all named `orama-operator`.
 
 ## Status
 
@@ -50,6 +50,8 @@ your current kube-context, the envtest setup, and the AKS smoke test, is in
 applying a CR, overriding the dummy secrets and images, multi-region, and uninstall.
 [`docs/lake/README.md`](docs/lake/README.md) covers deploying the operator with Lake support
 and running a Lake. Those steps are not repeated here.
+Existing AKS installations that use the former release name must follow the scheduled
+[`rename cutover runbook`](docs/operations/rename-cutover.md).
 
 ## Documentation
 
@@ -68,6 +70,8 @@ and running a Lake. Those steps are not repeated here.
   shared cluster join token.
 - [`docs/connecting.md`](docs/connecting.md): reaching a deployed `OramaZettaCluster`.
 - [`docs/provisioning-runbook.md`](docs/provisioning-runbook.md): the external dependencies.
+- [`docs/operations/rename-cutover.md`](docs/operations/rename-cutover.md): the one-time AKS Helm
+  release handoff that preserves CRDs and the leader-election Lease.
 - [`CLAUDE.md`](CLAUDE.md): the working rules.
 
 The production v1 system this operator models is documented in

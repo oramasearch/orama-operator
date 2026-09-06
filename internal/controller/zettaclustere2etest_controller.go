@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
 // zettaE2ERunnerImage is the default runner: the oramasearch/zetta-e2e image that BAKES the suite

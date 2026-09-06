@@ -15,7 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
 const appName = "orama-cloud-v1"

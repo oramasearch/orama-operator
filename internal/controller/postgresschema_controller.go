@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
 // pgSchemaVersionAnnotation records, on the migration Job, the schema version it was created to

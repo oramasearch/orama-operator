@@ -3,8 +3,8 @@
 When you set `OramaZettaCluster.spec.capacity.karpenter.install: true`, the operator **owns the Karpenter
 install** — it server-side-applies the pinned upstream Karpenter controller (Deployment + ServiceAccount
 + RBAC) and the Karpenter CRDs (`NodePool` / `NodeClaim` / `EC2NodeClass`) as owned resources
-([operator#75](https://github.com/oramasearch/orama-cloud-v1-operator/issues/75), extending the NodePool
-work in [operator#72](https://github.com/oramasearch/orama-cloud-v1-operator/pull/72)).
+([operator#75](https://github.com/oramasearch/orama-operator/issues/75), extending the NodePool
+work in [operator#72](https://github.com/oramasearch/orama-operator/pull/72)).
 
 There is **one thing the operator cannot do for you**: mint Karpenter's **cloud identity**. Karpenter's
 controller must be permitted to *create and terminate VMs* in your cloud account, and the nodes it

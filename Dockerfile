@@ -1,4 +1,4 @@
-# orama-cloud-v1-operator — the kubebuilder manager image (the pod that reconciles the
+# orama-operator — the kubebuilder manager image (the pod that reconciles the
 # OramaCloudV1 CRs). Standard kubebuilder multi-stage build: compile the Go binary in the
 # toolchain image, ship it on distroless/static:nonroot (no shell, runs as nonroot UID 65532).
 # CGO is disabled → a fully static binary that runs on `static`. Base images are digest-pinned

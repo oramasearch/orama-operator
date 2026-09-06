@@ -1,6 +1,6 @@
 # Auth-enforcement profile for the Zetta e2e — a 3-replica OramaZettaCluster plus a ZettaClusterE2ETest
 # that exercises the authz-enforcement assertions against it. Regression harness for the zetta auth work;
-# see https://github.com/oramasearch/orama-cloud-v1-operator/issues/88.
+# see https://github.com/oramasearch/orama-operator/issues/88.
 #
 # Auth is MANDATORY (oramasearch/zetta#799) — the engine gates every HTTP/MCP/SQL call on a bearer that
 # resolves to a user, and the `--require-auth`/`--mcp-token`/`--cluster-plaintext` flags were REMOVED. So

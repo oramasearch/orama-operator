@@ -85,7 +85,7 @@ namespace ID by hand. Inspect:
 `kubectl get cloudflarednsrecord,cloudflarekvnamespace,cloudflarer2bucket -n orama-system`.
 
 > Geo load-balancer + worker-route CRDs are still to come
-> ([operator#31](https://github.com/oramasearch/orama-cloud-v1-operator/issues/31)); until
+> ([operator#31](https://github.com/oramasearch/orama-operator/issues/31)); until
 > then `manageLoadBalancers`/`manageWorkerRoutes` are inline no-ops.
 
 ---
@@ -105,7 +105,7 @@ that already exists, so **set these before first reconcile or delete+recreate to
 | **Apify** | index-builder (crawler) | `APIFY_TOKEN` | console.apify.com → integrations |
 | **Ably** | harvest, index-builder (live progress) | `ABLY_API_KEY` | ably.com → app → API keys |
 | **AWS S3** | harvest (crawl exports) | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | IAM user w/ a scoped bucket policy |
-| **Firebase** | dashboard, oramasearch-app (auth) | `FIREBASE_SERVICE_ACCOUNT` (+ the app's `NEXT_PUBLIC_FIREBASE_*` at build) | Firebase console → service accounts. **Temporary** — see the auth-provider decision ([operator#19](https://github.com/oramasearch/orama-cloud-v1-operator/issues/19)). |
+| **Firebase** | dashboard, oramasearch-app (auth) | `FIREBASE_SERVICE_ACCOUNT` (+ the app's `NEXT_PUBLIC_FIREBASE_*` at build) | Firebase console → service accounts. **Temporary** — see the auth-provider decision ([operator#19](https://github.com/oramasearch/orama-operator/issues/19)). |
 | **Stripe** | dashboard (billing) | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | dashboard.stripe.com → API keys / webhooks |
 | **Resend** | dashboard (transactional email) | `RESEND_API_KEY` | resend.com → API keys |
 | **Slack** | dashboard (ops alerts) | `SLACK_TOKEN` | api.slack.com → your app |
@@ -143,7 +143,7 @@ for a prod-grade deployment.
   > the dashboard (`POSTGRES_PASSWORD` ← `.password`), and index-builder (`DATABASE_URL` ← `.uri`).
   > **Redis** is passwordless everywhere (the `REDIS_PASSWORD` secret key was dropped; client URLs
   > omit it). Enforcing `requirepass` is a hardening follow-up
-  > ([operator#18](https://github.com/oramasearch/orama-cloud-v1-operator/issues/18)).
+  > ([operator#18](https://github.com/oramasearch/orama-operator/issues/18)).
 - **In-cluster endpoints** (no external service): `ORAMACORE_WRITER_URL`/`READER_URL`,
   `DISCO_URL`, `EMBEDDINGS_URL` (→ ai-server `:50051`), `HARVEST_MASTER_ENDPOINT` (→ the
   harvest-master service), `DECRYPTER_BASE_URL` (→ the `openai-decrypter` worker),
@@ -173,7 +173,7 @@ Per component: its external deps and the tier. `[CF]` operator-provisions on Clo
 
 ## Verification
 
-- **Cloudflare:** `kubectl logs deploy/orama-cloud-v1-operator -n orama-system | grep -i cloudflare` shows DNS/LB/KV reconcile; the index-builder pod should have non-empty `CLOUDFLARE_*_KV_NAMESPACE_ID`.
+- **Cloudflare:** `kubectl logs deploy/orama-operator -n orama-system | grep -i cloudflare` shows DNS/LB/KV reconcile; the index-builder pod should have non-empty `CLOUDFLARE_*_KV_NAMESPACE_ID`.
 - **Per component:** `kubectl get pods -n orama-system` all `Running`/ready; then exercise the path — dashboard login (Firebase), a crawl (Apify→harvest→index-builder→Typesense), a RAG query (engine+workers+LLM).
 - **A dummy still in place** surfaces as an auth/401 or connection error in that component's logs — grep for the provider name.
 
@@ -188,7 +188,7 @@ make specific *paths* function (tracked as issues):
 
 1. **harvest worker-spawning** — the master runs, but it spawns crawl workers via **Podman**
    (`WORKER_IMAGE`); that needs a port to **k8s Jobs** to actually crawl in-cluster
-   ([operator#12](https://github.com/oramasearch/orama-cloud-v1-operator/issues/12)).
+   ([operator#12](https://github.com/oramasearch/orama-operator/issues/12)).
 2. **✅ Datastore credentials (operator#32, resolved)** — Postgres clients now source the
    CNPG-generated password/URI from `<cr>-controldb-app` (dashboard `POSTGRES_PASSWORD`,
    index-builder `DATABASE_URL`, analytics-processor `PG_PASSWORD`); Redis is passwordless
@@ -197,12 +197,12 @@ make specific *paths* function (tracked as issues):
    index-builder REST-API JWT key is separate; see the provisioning steps above.)_
 3. **Cloudflare LB + Worker-Route CRDs** — DNS/KV/R2 are done as owned CRDs; load-balancer +
    worker-route CRDs are the remaining epic items
-   ([operator#31](https://github.com/oramasearch/orama-cloud-v1-operator/issues/31)).
+   ([operator#31](https://github.com/oramasearch/orama-operator/issues/31)).
 4. **Teardown-on-disable** — delete a component's children when its toggle flips off (today
    owner-GC only fires on CR deletion)
-   ([operator#23](https://github.com/oramasearch/orama-cloud-v1-operator/issues/23)).
+   ([operator#23](https://github.com/oramasearch/orama-operator/issues/23)).
 5. **Real external functionality** — crawling needs a real Apify token (or the HARVEST
-   consolidation, [operator#29](https://github.com/oramasearch/orama-cloud-v1-operator/issues/29));
+   consolidation, [operator#29](https://github.com/oramasearch/orama-operator/issues/29));
    live progress needs a real Ably key (or an in-cluster replacement,
-   [operator#28](https://github.com/oramasearch/orama-cloud-v1-operator/issues/28)); auth needs
-   the Firebase replacement ([operator#19](https://github.com/oramasearch/orama-cloud-v1-operator/issues/19)).
+   [operator#28](https://github.com/oramasearch/orama-operator/issues/28)); auth needs
+   the Firebase replacement ([operator#19](https://github.com/oramasearch/orama-operator/issues/19)).

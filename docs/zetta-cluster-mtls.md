@@ -2,7 +2,7 @@
 
 > Source: [`internal/controller/oramazettacluster_controller.go`](../internal/controller/oramazettacluster_controller.go)
 > (`reconcileZettaClusterToken`, `mutateZettaStatefulSet`). Tracks
-> [operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92).
+> [operator#92](https://github.com/oramasearch/orama-operator/issues/92).
 
 Every `OramaZettaCluster` node talks to its peers over **mutual-TLS** on the peer port (`:7777`).
 There is **no plaintext-peer mode** — inter-node replication, the signal plane, and blob transfer are
@@ -25,7 +25,7 @@ to validate its peers'. The consequence is simple and unforgiving:
 
 If each node picks its own token, each derives a **different** CA and rejects every peer's certificate —
 so **every node forms its own cluster-of-one**. That was the bug in
-[operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92): the operator wired the
+[operator#92](https://github.com/oramasearch/orama-operator/issues/92): the operator wired the
 MCP and admin tokens but never a cluster join token, so a 4-node StatefulSet reported `cluster: 1 node`
 on every node indefinitely.
 
@@ -107,7 +107,7 @@ both `10.244.0.x`), the dial reaches the wrong node and membership undercounts (
 and full membership rides the CRDT node-list ([zetta#800](https://github.com/oramasearch/zetta/issues/800)).
 The reachability model — which node advertises what — lives in [`zetta-datastore.md`](zetta-datastore.md)
 ("Peering across clusters"); the operator already knows each slice's `spec.reachability` and passes each
-wan-accessible node its own `--advertise` address ([operator#104](https://github.com/oramasearch/orama-cloud-v1-operator/issues/104)).
+wan-accessible node its own `--advertise` address ([operator#104](https://github.com/oramasearch/orama-operator/issues/104)).
 
 ## Related
 

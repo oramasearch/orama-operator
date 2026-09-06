@@ -18,11 +18,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
-	"github.com/oramasearch/orama-cloud-v1-operator/internal/controller"
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
+	"github.com/oramasearch/orama-operator/internal/controller"
 )
 
 var scheme = runtime.NewScheme()
+
+// Keep the pre-rename ID so the old and new Helm releases contend for the same production Lease
+// during the scheduled handoff. Changing this ID would allow both managers to reconcile at once.
+const leaderElectionID = "orama-cloud-v1-operator.orama.cloud"
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -47,7 +51,7 @@ func main() {
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "orama-cloud-v1-operator.orama.cloud",
+		LeaderElectionID:       leaderElectionID,
 	}
 	// WATCH_NAMESPACE scopes the manager's cache to one namespace — lets an operator run against a
 	// SHARED cluster (e.g. a locally-run controller reconciling only a demo namespace) without touching

@@ -1,4 +1,4 @@
-# orama-cloud-v1-operator — working rules
+# orama-operator — working rules
 
 A **kubebuilder operator** (Go) + an **install Helm chart / helmfile** that deploys an
 entire self-contained **Orama Cloud v1** stack in-cluster from one `OramaCloudV1` CR.
@@ -26,7 +26,7 @@ against production-readiness, not "does a pod start."
    Cluster/Topology operators were NOT** — their images 404'd (`ErrImagePull`, deprecated catalog),
    so we **dropped them** and model the broker's streams/topology with our **own** small
    `RabbitMQTopology` CRD reconciling the plain RabbitMQ StatefulSet via its management API
-   ([#41](https://github.com/oramasearch/orama-cloud-v1-operator/issues/41); design +
+   ([#41](https://github.com/oramasearch/orama-operator/issues/41); design +
    the datastore-state-as-CRDs epic in [`docs/datastore-crds.md`](docs/datastore-crds.md)).
    A purpose-built CRD you control beats an unstable vendor dependency: faster to build, and it
    can't rot out from under you. This holds for **off-cluster infra too** (Cloudflare DNS/KV/R2 are
@@ -39,7 +39,7 @@ against production-readiness, not "does a pod start."
 5. **Determinism.** The same `OramaCloudV1` (+ its child CRs) must produce the same stack every
    time. Idempotent reconcile, pinned versions, no hidden/implicit state, ordered dependencies.
 6. **Disaster recovery is first-class.** Backup / restore / config-snapshot are CRDs, scheduled,
-   and tested (see [operator#33](https://github.com/oramasearch/orama-cloud-v1-operator/issues/33)).
+   and tested (see [operator#33](https://github.com/oramasearch/orama-operator/issues/33)).
    "Can we rebuild this from nothing, and recover data after a loss?" must always be **yes**.
 7. **Status is accurate, component-level observability — and anti-flap.** Every CRD's `.status`
    reflects real child readiness at **component granularity** — one entry per deployable component
@@ -57,7 +57,7 @@ against production-readiness, not "does a pod start."
    `vm_memory_high_watermark`; JVM `-Xmx`/`MaxRAMPercentage`; Node `--max-old-space-size`; Mongo
    wiredTiger cache. Derive the binary limits from the **same numbers** as the k8s limits. Mount
    config overlays via **`subPath`** so you add to (not replace + hide) the image's config dir.
-   ([#42](https://github.com/oramasearch/orama-cloud-v1-operator/issues/42))
+   ([#42](https://github.com/oramasearch/orama-operator/issues/42))
 9. **e2e is the forcing function, not the target.** The e2e suite progresses **only** as the
    operator matures to encapsulate this complexity (real writer→reader replication, real schema,
    real creds, …). **Never hack the test green** — make the operator correct and e2e follows.
@@ -86,11 +86,11 @@ Beyond deploying v1, this operator is becoming **symbiotic with Orama Zetta** (O
   `<name>-zetta-cluster`, minted once/never rotated) and injects it into **every** node as
   `ZETTA_CLUSTER_TOKEN` — else each node derives its own CA and forms a cluster-of-one. There is **no
   plaintext-peer mode** (removed as a security hole). See
-  [`docs/zetta-cluster-mtls.md`](docs/zetta-cluster-mtls.md) ([operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92));
+  [`docs/zetta-cluster-mtls.md`](docs/zetta-cluster-mtls.md) ([operator#92](https://github.com/oramasearch/orama-operator/issues/92));
   multi-node convergence also needs [zetta#785](https://github.com/oramasearch/zetta/issues/785)/[#786](https://github.com/oramasearch/zetta/issues/786).
 - **Elastic capacity (planned):** Zetta signals the operator, the operator drives the cluster's node
   autoscaler (Karpenter/NAP), and more Zetta nodes schedule onto the new nodes —
-  [operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69).
+  [operator#69](https://github.com/oramasearch/orama-operator/issues/69).
 - **Zetta SQL is a Postgres subset** (append-only on the deployed engine — no `UPDATE`/`DELETE` until
   [zetta#735](https://github.com/oramasearch/zetta/issues/735) ships); the node HTTP server is flaky
   ([zetta#731](https://github.com/oramasearch/zetta/issues/731)) so all Zetta writes are best-effort +
@@ -165,7 +165,7 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
   hooks, merchandising, MCP, analytics, answer/RAG). **~70 assertions; must stay `fail=0`.** Editing
   the script requires re-running the operator (the script is embedded at compile time). Coverage +
   the per-subsystem backlog are tracked under
-  [operator#44](https://github.com/oramasearch/orama-cloud-v1-operator/issues/44). Per principle #9,
+  [operator#44](https://github.com/oramasearch/orama-operator/issues/44). Per principle #9,
   extend the operator to make an assertion pass — never soften the assertion.
 - **Zetta e2e (`ZettaClusterE2ETest`):** runs the **live-cluster zetta suite** as a Job against a
   deployed `OramaZettaCluster`. Unlike the v1 suite (embedded via `go:embed`), the Zetta script lives in
@@ -178,7 +178,7 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
   operator (CRD). **Authz coverage (always on):** auth is **mandatory** ([zetta#799](https://github.com/oramasearch/zetta/issues/799)),
   so the e2e ALWAYS sets `ZETTA_E2E_REQUIRE_AUTH=1` + `ZETTA_E2E_TOKEN` (the seeded admin token, Secret
   `<name>-zetta-admin`) to exercise authz enforcement — the regression harness for the zetta auth work
-  ([operator#88](https://github.com/oramasearch/orama-cloud-v1-operator/issues/88),
+  ([operator#88](https://github.com/oramasearch/orama-operator/issues/88),
   [zetta#799](https://github.com/oramasearch/zetta/issues/799)). The target's image MUST be an auth-capable
   build (post-#799). `spec.requireAuth`/`spec.mcpTokenAuth` are deprecated no-ops. The test's status also
   carries best-effort `pass`/`fail`/`skip` counts parsed from the Job's pod logs (RBAC `pods/log get`).

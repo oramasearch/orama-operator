@@ -18,8 +18,8 @@ Provisioned automatically when `spec.provisionOperatorSchema` is `true` (the def
 |---|---|---|
 | `orama_control` | `components` | the operator's registry — one row per managed component (`name, kind, image, status, node, updated_at`). |
 | `orama_control` | `reconcile_events` | an audit of operator actions (`ts, cluster, action, detail`). |
-| `orama_control` | `topology` | the cross-cluster Zetta node topology ([operator#105](https://github.com/oramasearch/orama-cloud-v1-operator/issues/105)) — one row per wan-accessible node (`operator, cluster, node, address, reachability, node_type, status, updated_at`). Each operator WRITES its slice's wan endpoints; Zetta CRDT-syncs the table; each operator READS it back to derive cross-cluster peering. See [Cross-cluster topology through Zetta](#cross-cluster-topology-through-zetta). |
-| `orama_control` | `deployments` | append-only desired deployment and observed status events ([operator#124](https://github.com/oramasearch/orama-cloud-v1-operator/issues/124)). A desired event becomes a Lake-owned `LakeEnvironment`; status events carry phase, URL and message only on transition. See [Lake deployment environments](lake/environments.md). |
+| `orama_control` | `topology` | the cross-cluster Zetta node topology ([operator#105](https://github.com/oramasearch/orama-operator/issues/105)) — one row per wan-accessible node (`operator, cluster, node, address, reachability, node_type, status, updated_at`). Each operator WRITES its slice's wan endpoints; Zetta CRDT-syncs the table; each operator READS it back to derive cross-cluster peering. See [Cross-cluster topology through Zetta](#cross-cluster-topology-through-zetta). |
+| `orama_control` | `deployments` | append-only desired deployment and observed status events ([operator#124](https://github.com/oramasearch/orama-operator/issues/124)). A desired event becomes a Lake-owned `LakeEnvironment`; status events carry phase, URL and message only on transition. See [Lake deployment environments](lake/environments.md). |
 | `orama_control` | `deployment_records` | immutable records for liquid's public create/list/rollback/status contract, including result, rollback origin and sealed-secret references. Kept separate so existing append-only `deployments` tables need no unsupported column migration. See the [deployment control plane](control-plane/README.md). |
 | `orama_data` | `documents` | the application-data landing zone (`id, collection, body, updated_at`) — where v1's served data migrates to. |
 
@@ -137,17 +137,17 @@ long as they can reach each other's peer port. So the target topology is **N k8s
 - **Peering across clusters** is the networking piece, and it follows the **node-reachability model**
   (see the Zetta [`docs/cluster/cluster.md`](https://github.com/oramasearch/zetta/blob/dev/docs/cluster/cluster.md)
   "Node reachability + the route table"), **not** an inbound endpoint on every node:
-  - **Each slice DECLARES its reachability type** (`spec.reachability`, [operator#74](https://github.com/oramasearch/orama-cloud-v1-operator/issues/74)):
+  - **Each slice DECLARES its reachability type** (`spec.reachability`, [operator#74](https://github.com/oramasearch/orama-operator/issues/74)):
     - **`wan-accessible`** — a routable address (a rendezvous others dial **out** to). The operator
       advertises that address as **`.status.wanAddress`** — derived from `spec.wanAddress` (a mesh-VPN /
       stable public IP / DNS name), else `spec.hostNetwork` (the node's host IP), else the
       `spec.exposePeerLoadBalancer` cloud-LB IP.
     - **`dial-out-only`** (the **default**) — behind NAT or a private VNet (a home node, an AKS pod on a
       private IP). It dials **outbound** only and accepts **no inbound**; `.status.wanAddress` is empty.
-    - **`spec.ephemeral`** — burst/autoscaled capacity ([operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69))
+    - **`spec.ephemeral`** — burst/autoscaled capacity ([operator#69](https://github.com/oramasearch/orama-operator/issues/69))
       expected to churn; **always forced to dial-out-only** (its address would flap, so it is never a
       rendezvous) and its membership blips are not treated as a fault.
-  - **The mesh self-forms — coordinated THROUGH Zetta** ([operator#105](https://github.com/oramasearch/orama-cloud-v1-operator/issues/105)):
+  - **The mesh self-forms — coordinated THROUGH Zetta** ([operator#105](https://github.com/oramasearch/orama-operator/issues/105)):
     each operator writes its slice's wan endpoints into `orama_control.topology`, Zetta CRDT-syncs the
     table, and each operator reads it back to **derive** its siblings' `--peer` set automatically — no
     admin hand-copies `.status.wanAddress` into `spec.externalPeers` anymore (though setting
@@ -155,7 +155,7 @@ long as they can reach each other's peer port. So the target topology is **N k8s
     out to the derived wan rendezvous; Zetta relays transitively + computes the route table
     ([zetta#739](https://github.com/oramasearch/zetta/issues/739)). A private node is **always the
     initiator**. The same wan-accessible set feeds the **Cloudflare LB origin pool**
-    ([operator#73](https://github.com/oramasearch/orama-cloud-v1-operator/issues/73) — HTTP origin at the
+    ([operator#73](https://github.com/oramasearch/orama-operator/issues/73) — HTTP origin at the
     same host `:4800`). Full mechanism: [Cross-cluster topology through Zetta](#cross-cluster-topology-through-zetta).
   - **Anti-pattern — do NOT** provision an inbound `LoadBalancer` (or, worse, one source-locked to a
     specific peer's IP) to "reach" a `dial-out-only` node — that **inverts** the model. The operator
@@ -166,7 +166,7 @@ long as they can reach each other's peer port. So the target topology is **N k8s
   - **Advertised address vs bound address:** Zetta now has `--advertise HOST:PORT[,…]`, and the operator
     gives each **wan-accessible** node its OWN routable address via `--advertise` — a **per-node peer LB**
     per permanent node, so every node advertises its own IP and cross-cluster load spreads across all their
-    uplinks (aggregate bandwidth, [operator#104](https://github.com/oramasearch/orama-cloud-v1-operator/issues/104)).
+    uplinks (aggregate bandwidth, [operator#104](https://github.com/oramasearch/orama-operator/issues/104)).
     `.status.wanAddress` is the joined per-node list a sibling copies into `spec.externalPeers`.
   - **A `dial-out-only` node must advertise NO dialable address, and peers must never dial it**
     ([zetta#803](https://github.com/oramasearch/zetta/issues/803)): it has no routable address, so
@@ -178,7 +178,7 @@ long as they can reach each other's peer port. So the target topology is **N k8s
     to the node so a dial-out slice never advertises its pod IP.
   - Inter-node peer traffic is **always mTLS**: the operator mints one shared cluster join token per
     cluster (Secret `<name>-zetta-cluster`) and injects it into every node as `ZETTA_CLUSTER_TOKEN`, so
-    all nodes derive the same cluster CA and form one cluster ([operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92),
+    all nodes derive the same cluster CA and form one cluster ([operator#92](https://github.com/oramasearch/orama-operator/issues/92),
     see [`zetta-cluster-mtls.md`](zetta-cluster-mtls.md)). The earlier `clusterPlaintext` escape hatch was
     **removed** as a security hole once real mTLS clustering worked. NOTE: a *multi-node* cluster only
     fully converges once the engine's DNS-dial + mTLS-sync fixes land ([zetta#785](https://github.com/oramasearch/zetta/issues/785),
@@ -187,7 +187,7 @@ long as they can reach each other's peer port. So the target topology is **N k8s
 
 ## Cross-cluster topology through Zetta
 
-Cross-cluster peering ([operator#105](https://github.com/oramasearch/orama-cloud-v1-operator/issues/105))
+Cross-cluster peering ([operator#105](https://github.com/oramasearch/orama-operator/issues/105))
 used to be hand-wired: an admin copied each slice's `.status.wanAddress` into its siblings'
 `spec.externalPeers`. It is now **coordinated through Zetta itself** — the operator uses its own datastore
 (`orama_control.topology`) as the rendezvous directory, and the mesh self-forms. The loop, per reconcile
@@ -250,7 +250,7 @@ but **leaves the databases intact**.
 
 - **Node HTTP is flaky** — the node drops ~⅔ of back-to-back requests
   ([zetta#731](https://github.com/oramasearch/zetta/issues/731)); the schema Job retries hard, and the
-  pod's **readiness probe is disabled** ([operator#68](https://github.com/oramasearch/orama-cloud-v1-operator/issues/68))
+  pod's **readiness probe is disabled** ([operator#68](https://github.com/oramasearch/orama-operator/issues/68))
   so it doesn't flap out of the Service.
 - **Auth** — the engine's auth is **mandatory** ([zetta#799](https://github.com/oramasearch/zetta/issues/799)):
   every HTTP/MCP/SQL call must carry a bearer that resolves to a user. The operator ALWAYS seeds a known

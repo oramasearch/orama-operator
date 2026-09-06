@@ -33,7 +33,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
 // LakeReconciler reconciles a Lake object into a Namespace, a Deployment, a Service, a
