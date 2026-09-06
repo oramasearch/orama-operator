@@ -18,7 +18,6 @@ const (
 )
 
 // LakeEnvironmentVariable is a literal environment variable supplied by a deployment record.
-// Secrets use SecretRefs and are delivered by LakeSealedSecret once operator #129 lands.
 type LakeEnvironmentVariable struct {
 	// Name is the environment variable name.
 	// +kubebuilder:validation:MinLength=1
@@ -51,7 +50,7 @@ type LakeEnvironmentSpec struct {
 	Change string `json:"change"`
 
 	// Image is an immutable OCI digest reference.
-	// +kubebuilder:validation:Pattern=`^.+@sha256:[a-f0-9]{64}$`
+	// +kubebuilder:validation:Pattern=`^.+@sha256:[a-fA-F0-9]{64}$`
 	Image string `json:"image"`
 
 	// Replicas is the desired workload replica count.
@@ -69,8 +68,8 @@ type LakeEnvironmentSpec struct {
 	// +optional
 	Env []LakeEnvironmentVariable `json:"env,omitempty"`
 
-	// SecretRefs names LakeSealedSecret resources in this resource's namespace. Delivery is
-	// intentionally deferred to operator #129; a non-empty list keeps status Degraded until then.
+	// SecretRefs names LakeSealedSecret resources in this resource's namespace. Each delivered
+	// Secret is copied into the isolated workload namespace and exposed through envFrom.
 	// +optional
 	SecretRefs []string `json:"secretRefs,omitempty"`
 

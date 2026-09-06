@@ -11,7 +11,7 @@ import (
 )
 
 // LakeSealedSecretSpec defines one-way secret delivery into a Kubernetes Secret.
-// +kubebuilder:validation:XValidation:rule="self.lakeRef.name != ”",message="lakeRef.name is required"
+// +kubebuilder:validation:XValidation:rule="size(self.lakeRef.name) > 0",message="lakeRef.name is required"
 // +kubebuilder:validation:XValidation:rule="self.source.type != 'literal' || (has(self.data) && size(self.data) > 0)",message="literal sources require sealed data"
 // +kubebuilder:validation:XValidation:rule="self.source.type == 'literal' || !has(self.data) || size(self.data) == 0",message="only literal sources may include data"
 // +kubebuilder:validation:XValidation:rule="self.source.type != 'lake' || has(self.source.lake)",message="lake sources require source.lake"

@@ -48,6 +48,9 @@ var operatorZettaSchema = []zettaSchemaStmt{
 	// liquid writes record_type='desired' events and the operator appends record_type='status' events.
 	// Readers reduce each stream latest-wins by deployment_id + updated_at.
 	{"orama_control", "CREATE TABLE deployments (deployment_id TEXT, record_type TEXT, lake TEXT, repository TEXT, environment TEXT, kind TEXT, change_id TEXT, image TEXT, replicas TEXT, port TEXT, env_json TEXT, secret_refs_json TEXT, host TEXT, withdrawn TEXT, change_closed TEXT, phase TEXT, url TEXT, message TEXT, updated_at TEXT)"},
+	// The public deployment contract preserves response/history fields separately from the desired and
+	// status event stream. A separate table upgrades existing clusters without ALTER TABLE support.
+	{"orama_control", "CREATE TABLE deployment_records (deployment_id TEXT, lake TEXT, repository TEXT, environment TEXT, change_id TEXT, image TEXT, result_id TEXT, rollback_of TEXT, secret_refs_json TEXT, created_at TEXT)"},
 	// Data plane — the application-data landing zone (destined to replace v1's Typesense/ClickHouse/PG).
 	{"", "CREATE DATABASE orama_data"},
 	{"orama_data", "CREATE TABLE documents (id TEXT, collection TEXT, body TEXT, updated_at TEXT)"},

@@ -66,9 +66,8 @@ spec:
               env:
                 description: Env contains literal environment variables for the workload.
                 items:
-                  description: |-
-                    LakeEnvironmentVariable is a literal environment variable supplied by a deployment record.
-                    Secrets use SecretRefs and are delivered by LakeSealedSecret once operator #129 lands.
+                  description: LakeEnvironmentVariable is a literal environment variable
+                    supplied by a deployment record.
                   properties:
                     name:
                       description: Name is the environment variable name.
@@ -93,7 +92,7 @@ spec:
                 type: string
               image:
                 description: Image is an immutable OCI digest reference.
-                pattern: ^.+@sha256:[a-f0-9]{64}$
+                pattern: ^.+@sha256:[a-fA-F0-9]{64}$
                 type: string
               kind:
                 description: Kind selects a durable named environment or a per-change
@@ -126,8 +125,8 @@ spec:
                 type: string
               secretRefs:
                 description: |-
-                  SecretRefs names LakeSealedSecret resources in this resource's namespace. Delivery is
-                  intentionally deferred to operator #129; a non-empty list keeps status Degraded until then.
+                  SecretRefs names LakeSealedSecret resources in this resource's namespace. Each delivered
+                  Secret is copied into the isolated workload namespace and exposed through envFrom.
                 items:
                   type: string
                 type: array

@@ -30,10 +30,11 @@ func init() {
 }
 
 func main() {
-	var metricsAddr, probeAddr string
+	var metricsAddr, probeAddr, controlPlaneAddr string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
+	flag.StringVar(&controlPlaneAddr, "control-plane-bind-address", ":8090", "deployment control-plane endpoint")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "enable leader election")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -169,6 +170,17 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeSealedSecret")
 		os.Exit(1)
+	}
+	if controlPlaneAddr != "" {
+		if err = mgr.Add(&controller.DeploymentControlPlane{
+			Client:      mgr.GetClient(),
+			APIReader:   mgr.GetAPIReader(),
+			BindAddress: controlPlaneAddr,
+			Log:         ctrl.Log.WithName("deployment-control-plane"),
+		}); err != nil {
+			setupLog.Error(err, "unable to create deployment control plane")
+			os.Exit(1)
+		}
 	}
 
 	utilruntime.Must(mgr.AddHealthzCheck("healthz", healthz.Ping))

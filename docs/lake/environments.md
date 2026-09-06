@@ -19,8 +19,12 @@ The operator processes a row only when both of these are true:
 - that Lake's `spec.namespace` is the same namespace as the `OramaZettaCluster` being polled.
 
 This locality rule prevents a Zetta peer in another namespace from creating a second copy. The
-deployment ID deterministically names the `LakeEnvironment`, so polling the same desired event again
-does not create or update anything.
+Lake/repository/environment identity deterministically names the `LakeEnvironment`, so polling the same
+desired event again does not create or update anything. A later deployment for that identity updates the
+same resource; older resources from the deployment-ID naming scheme are deleted through their verified
+finalizers. A legacy-named CR retains deployment-ID Namespace derivation during teardown, so its
+finalizer can delete only the Namespace it originally owned. The materializer refuses to overwrite or
+delete a stable-name collision that is not controlled by the referenced Lake.
 
 Zetta is append-only on the deployed engine. The table is therefore an event stream:
 
@@ -48,7 +52,7 @@ busy poll loop.
 ## What one `LakeEnvironment` creates
 
 The CR lives in the Lake's namespace and carries an owner reference to the cluster-scoped Lake. It
-creates a dedicated Namespace named `lake-<lake>-env-<deployment-hash>`. A namespaced CR cannot own a
+creates a dedicated Namespace named `lake-<lake>-env-<environment-hash>`. A namespaced CR cannot own a
 cluster-scoped Namespace or objects in another namespace through Kubernetes owner references, so every
 object carries `orama.cloud/lake-environment=<cr-namespace>/<cr-name>` and teardown is guarded by a
 finalizer that verifies that exact annotation before deleting the Namespace.
@@ -64,9 +68,14 @@ The Namespace profile matches k0s decision 31:
 - `LimitRange`: 100m / 128Mi default request and 1 CPU / 1Gi default limit.
 
 The workload is a Deployment plus ClusterIP Service. Every pod uses `runtimeClassName: untrusted`, the
-k0s Kata/Firecracker contract, and the restricted container security context. The Deployment retains
-ten ReplicaSet revisions so rollback is a normal new desired event naming an older change and immutable
-image digest. Readiness, liveness and startup probes use the declared TCP port.
+k0s Kata/Firecracker contract, and the restricted container security context. The Deployment retains ten
+ReplicaSet revisions so rollback is a normal spec update from a new desired event naming an older change
+and immutable image digest. Readiness, liveness and startup probes use the declared TCP port.
+
+Liquid's public deployment contract is served by the operator; see
+[`../control-plane/README.md`](../control-plane/README.md). Contract-created environments default to one
+replica and port `8080`. They are named environments unless the environment name exactly equals the
+change digest, which selects a preview.
 
 ## Hosts and DNS
 
@@ -80,12 +89,26 @@ Ingress is enabled only when the referenced Lake has `spec.ingressEnabled: true`
 
 The status URL is present while the host is configured, including while replicas are still progressing.
 
+## Sealed secrets
+
+`spec.secretRefs` accepts a `LakeSealedSecret` resource name or the equivalent
+`secret://<resource-name>` reference emitted by liquid repository configuration. Before creating the
+workload, the controller verifies that every referenced resource exists in the Lake namespace, belongs
+to the same Lake, reports `Ready` for its current generation, and owns its produced Secret. An unknown,
+foreign, stale, or undelivered reference keeps the environment `Degraded` with a specific reason and
+removes its workload so it cannot start without the requested credential.
+
+Each delivered Secret is copied into the isolated workload namespace without changing its name or
+contents. The application container imports the copies with `envFrom`. Copies carry the environment's
+ownership annotation, are repaired on drift, and are deleted when the reference is removed or becomes
+invalid. Deleting the environment Namespace removes every copy without changing the source
+`LakeSealedSecret` or its Secret in the Lake namespace.
+
 ## Status and teardown
 
 `LakeEnvironment.status` is written only when phase, URL, ready replicas, deployment ID or the `Ready`
 condition changes. `Ready` comes from Deployment readiness; a Deployment replica failure reports
-`Degraded`. A non-empty `secretRefs` list reports `Degraded` and does not start the workload until
-`LakeSealedSecret` delivery lands in operator #129.
+`Degraded`. An unresolved `secretRefs` entry reports `Degraded` and does not start the workload.
 
 Workload and profile objects are watched for drift, Lake changes fan out to their environments, and a
 steady Ready environment periodically rechecks its Namespace labels. These paths repair drift without
@@ -107,7 +130,8 @@ kubectl get lakeenvironment -A
 kubectl get lakeenvironment -n <lake-namespace> <name> -o yaml
 kubectl get namespace -l app.kubernetes.io/managed-by=orama-operator
 kubectl get deployment,service,ingress,networkpolicy,resourcequota,limitrange \
-  -n lake-<lake>-env-<deployment-hash>
+  -n lake-<lake>-env-<environment-hash>
+kubectl get secret -n lake-<lake>-env-<environment-hash>
 kubectl get cloudflarednsrecord -n <lake-namespace>
 ```
 

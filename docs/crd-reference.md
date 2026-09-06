@@ -315,7 +315,7 @@ verification. Sample:
 | `spec.image` | Required immutable OCI digest reference (`...@sha256:<64 hex>`). Rollback is another deployment event naming an older change and image. |
 | `spec.replicas` / `.port` | Deployment replicas (default `1`) and required container port exposed by Service port 80. |
 | `spec.env[]` | Literal `{name,value}` workload environment variables. |
-| `spec.secretRefs[]` | Names of `LakeSealedSecret` resources. Delivery consumption is deferred to a follow-up; a non-empty list is reported as `Degraded` and the workload is not started. |
+| `spec.secretRefs[]` | Names or `secret://<name>` references for `LakeSealedSecret` resources in the Lake namespace. Every reference must belong to the same Lake and have delivered its current generation. The produced Secrets are copied into the isolated workload namespace and imported with `envFrom`; unresolved references report `Degraded` and remove the workload. |
 | `spec.host` | Exact hostname for a named environment. Preview hosts are derived from the Lake's `previewWildcard`. |
 | `status.phase` | `Progressing \| Ready \| Degraded \| TornDown`, written only on a real transition. |
 | `status.url` / `.readyReplicas` | Public URL when ingress is configured, and observed Deployment readiness. |
