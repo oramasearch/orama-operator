@@ -21,8 +21,7 @@ type LakeSpec struct {
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
-	// Image for the lake binary. Required: there is no production default. The
-	// sample CR points at an HTTP echo until the lake image exists.
+	// Image for the lake binary. Required: there is no production default.
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
@@ -48,6 +47,20 @@ type LakeSpec struct {
 	// Args passed to the image's entrypoint. Empty runs the image as built.
 	// +optional
 	Args []string `json:"args,omitempty"`
+
+	// Resources configures the lake container's CPU and memory requests and limits. When omitted,
+	// the operator requests 50m CPU and 128Mi memory and limits memory to 512Mi.
+	// +kubebuilder:default={requests:{cpu:"50m",memory:"128Mi"},limits:{memory:"512Mi"}}
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// TopologySpreadConstraints overrides the default pod placement constraints. When omitted and
+	// Replicas is greater than one, the operator spreads replicas across kubernetes.io/hostname
+	// with ScheduleAnyway so a single-node cluster can still schedule the Deployment.
+	// +listType=map
+	// +listMapKey=topologyKey
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 
 	// Store configures the persistent root shared by all lake replicas. When ExistingClaim is
 	// empty, the operator creates lake-<name>-store once from Size, StorageClassName, and
@@ -85,6 +98,11 @@ type LakeSpec struct {
 	// +optional
 	IngressEnabled bool `json:"ingressEnabled,omitempty"`
 
+	// TLS terminates HTTPS at the nginx Ingress. It has no effect unless IngressEnabled and Host
+	// are also set. The referenced kubernetes.io/tls Secret must exist in spec.namespace.
+	// +optional
+	TLS LakeTLSSpec `json:"tls,omitempty"`
+
 	// Host is the domain name the lake is exposed at (e.g. hello.lake.live) when IngressEnabled is
 	// true. Requires an ingress controller (class nginx).
 	// +optional
@@ -109,6 +127,14 @@ type LakeSpec struct {
 	// its Zetta orama_control database into LakeEnvironment resources.
 	// +optional
 	DeploySync LakeDeploySyncSpec `json:"deploySync,omitempty"`
+}
+
+// LakeTLSSpec configures HTTPS termination for a Lake Ingress.
+type LakeTLSSpec struct {
+	// SecretName names a kubernetes.io/tls Secret in spec.namespace. Empty leaves the Ingress on
+	// HTTP only for backward compatibility.
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
 }
 
 // LakeDeploySyncSpec configures deployment-row polling for a Lake.

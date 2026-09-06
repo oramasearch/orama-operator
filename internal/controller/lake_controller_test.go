@@ -15,6 +15,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -30,7 +31,13 @@ import (
 func newLakeScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, networkingv1.AddToScheme, oramav1alpha1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{
+		corev1.AddToScheme,
+		appsv1.AddToScheme,
+		networkingv1.AddToScheme,
+		policyv1.AddToScheme,
+		oramav1alpha1.AddToScheme,
+	} {
 		if err := add(s); err != nil {
 			t.Fatalf("scheme: %v", err)
 		}
@@ -113,6 +120,182 @@ func TestLakeReconcileCreatesWorkloads(t *testing.T) {
 	if requested.Cmp(resource.MustParse("100Gi")) != 0 || len(pvc.Spec.AccessModes) != 1 ||
 		pvc.Spec.AccessModes[0] != corev1.ReadWriteMany {
 		t.Errorf("default store PVC = %+v", pvc.Spec)
+	}
+	if len(d.Spec.Template.Spec.TopologySpreadConstraints) != 0 {
+		t.Errorf("single-replica topology spread = %+v", d.Spec.Template.Spec.TopologySpreadConstraints)
+	}
+	if err := c.Get(
+		context.Background(),
+		types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"},
+		&policyv1.PodDisruptionBudget{},
+	); err == nil {
+		t.Error("PodDisruptionBudget created for one replica")
+	}
+}
+
+func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
+	s := newLakeScheme(t)
+	two := int32(2)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "hardened"},
+		Spec: oramav1alpha1.LakeSpec{
+			Image:    "oramasearch/lake:20260906a",
+			Replicas: &two,
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	reconcileLake(t, c, s, "hardened")
+
+	deployment := &appsv1.Deployment{}
+	key := types.NamespacedName{Namespace: "lake-dev", Name: "lake-hardened"}
+	if err := c.Get(context.Background(), key, deployment); err != nil {
+		t.Fatal(err)
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if container.Resources.Requests.Cpu().Cmp(resource.MustParse("50m")) != 0 ||
+		container.Resources.Requests.Memory().Cmp(resource.MustParse("128Mi")) != 0 ||
+		container.Resources.Limits.Memory().Cmp(resource.MustParse("512Mi")) != 0 {
+		t.Errorf("default resources = %+v", container.Resources)
+	}
+	if _, found := container.Resources.Limits[corev1.ResourceCPU]; found {
+		t.Errorf("default CPU limit should be unset: %+v", container.Resources.Limits)
+	}
+	if container.ReadinessProbe == nil || container.ReadinessProbe.HTTPGet == nil ||
+		container.ReadinessProbe.HTTPGet.Path != "/readyz" ||
+		container.ReadinessProbe.HTTPGet.Port.StrVal != "http" ||
+		container.ReadinessProbe.PeriodSeconds != 10 ||
+		container.ReadinessProbe.TimeoutSeconds != 2 ||
+		container.ReadinessProbe.FailureThreshold != 3 {
+		t.Errorf("readiness probe = %+v", container.ReadinessProbe)
+	}
+	if container.LivenessProbe == nil || container.LivenessProbe.HTTPGet == nil ||
+		container.LivenessProbe.HTTPGet.Path != "/healthz" ||
+		container.LivenessProbe.HTTPGet.Port.StrVal != "http" ||
+		container.LivenessProbe.PeriodSeconds != 20 ||
+		container.LivenessProbe.TimeoutSeconds != 3 ||
+		container.LivenessProbe.FailureThreshold != 3 {
+		t.Errorf("liveness probe = %+v", container.LivenessProbe)
+	}
+	podSecurityContext := deployment.Spec.Template.Spec.SecurityContext
+	if podSecurityContext == nil || podSecurityContext.RunAsNonRoot == nil ||
+		!*podSecurityContext.RunAsNonRoot || podSecurityContext.RunAsUser == nil ||
+		*podSecurityContext.RunAsUser != lakeRunAsUser || podSecurityContext.RunAsGroup == nil ||
+		*podSecurityContext.RunAsGroup != lakeRunAsGroup || podSecurityContext.FSGroup == nil ||
+		*podSecurityContext.FSGroup != lakeRunAsGroup {
+		t.Errorf("pod security context = %+v", podSecurityContext)
+	}
+	if container.SecurityContext == nil || container.SecurityContext.RunAsNonRoot == nil ||
+		!*container.SecurityContext.RunAsNonRoot ||
+		container.SecurityContext.AllowPrivilegeEscalation == nil ||
+		*container.SecurityContext.AllowPrivilegeEscalation ||
+		container.SecurityContext.Capabilities == nil ||
+		len(container.SecurityContext.Capabilities.Drop) != 1 ||
+		container.SecurityContext.Capabilities.Drop[0] != "ALL" {
+		t.Errorf("container security context = %+v", container.SecurityContext)
+	}
+	if container.Lifecycle == nil || container.Lifecycle.PreStop == nil ||
+		container.Lifecycle.PreStop.Exec == nil ||
+		strings.Join(container.Lifecycle.PreStop.Exec.Command, " ") != "sh -c sleep 5" {
+		t.Errorf("preStop lifecycle = %+v", container.Lifecycle)
+	}
+	if deployment.Spec.Strategy.RollingUpdate == nil ||
+		deployment.Spec.Strategy.RollingUpdate.MaxUnavailable == nil ||
+		deployment.Spec.Strategy.RollingUpdate.MaxUnavailable.IntValue() != 0 ||
+		deployment.Spec.Strategy.RollingUpdate.MaxSurge == nil ||
+		deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntValue() != 1 {
+		t.Errorf("rolling update strategy = %+v", deployment.Spec.Strategy)
+	}
+	constraints := deployment.Spec.Template.Spec.TopologySpreadConstraints
+	if len(constraints) != 1 || constraints[0].MaxSkew != 1 ||
+		constraints[0].TopologyKey != "kubernetes.io/hostname" ||
+		constraints[0].WhenUnsatisfiable != corev1.ScheduleAnyway ||
+		constraints[0].LabelSelector == nil ||
+		constraints[0].LabelSelector.MatchLabels["app.kubernetes.io/instance"] != "hardened" {
+		t.Errorf("default topology spread = %+v", constraints)
+	}
+	pdb := &policyv1.PodDisruptionBudget{}
+	if err := c.Get(context.Background(), key, pdb); err != nil {
+		t.Fatal(err)
+	}
+	if pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.IntValue() != 1 ||
+		pdb.Spec.Selector == nil ||
+		pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"] != "hardened" {
+		t.Errorf("PodDisruptionBudget = %+v", pdb.Spec)
+	}
+}
+
+func TestLakeReconcileRendersResourceAndTopologyOverrides(t *testing.T) {
+	s := newLakeScheme(t)
+	three := int32(3)
+	resources := &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("750m"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("2"),
+			corev1.ResourceMemory: resource.MustParse("4Gi"),
+		},
+	}
+	constraints := []corev1.TopologySpreadConstraint{{
+		MaxSkew:           2,
+		TopologyKey:       "topology.kubernetes.io/zone",
+		WhenUnsatisfiable: corev1.DoNotSchedule,
+		LabelSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{"placement": "lake"},
+		},
+	}}
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "overrides"},
+		Spec: oramav1alpha1.LakeSpec{
+			Image:                     "oramasearch/lake:20260906a",
+			Replicas:                  &three,
+			Resources:                 resources,
+			TopologySpreadConstraints: constraints,
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	reconcileLake(t, c, s, "overrides")
+
+	deployment := &appsv1.Deployment{}
+	key := types.NamespacedName{Namespace: "lake-dev", Name: "lake-overrides"}
+	if err := c.Get(context.Background(), key, deployment); err != nil {
+		t.Fatal(err)
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if container.Resources.Requests.Cpu().Cmp(resource.MustParse("750m")) != 0 ||
+		container.Resources.Requests.Memory().Cmp(resource.MustParse("2Gi")) != 0 ||
+		container.Resources.Limits.Cpu().Cmp(resource.MustParse("2")) != 0 ||
+		container.Resources.Limits.Memory().Cmp(resource.MustParse("4Gi")) != 0 {
+		t.Errorf("resource override = %+v", container.Resources)
+	}
+	gotConstraints := deployment.Spec.Template.Spec.TopologySpreadConstraints
+	if len(gotConstraints) != 1 || gotConstraints[0].MaxSkew != 2 ||
+		gotConstraints[0].TopologyKey != "topology.kubernetes.io/zone" ||
+		gotConstraints[0].WhenUnsatisfiable != corev1.DoNotSchedule ||
+		gotConstraints[0].LabelSelector == nil ||
+		gotConstraints[0].LabelSelector.MatchLabels["placement"] != "lake" {
+		t.Errorf("topology spread override = %+v", gotConstraints)
+	}
+
+	one := int32(1)
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "overrides"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	lake.Spec.Replicas = &one
+	lake.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{}
+	if err := c.Update(context.Background(), lake); err != nil {
+		t.Fatal(err)
+	}
+	reconcileLake(t, c, s, "overrides")
+	if err := c.Get(context.Background(), key, deployment); err != nil {
+		t.Fatal(err)
+	}
+	if len(deployment.Spec.Template.Spec.TopologySpreadConstraints) != 0 {
+		t.Errorf("explicit empty topology spread = %+v", deployment.Spec.Template.Spec.TopologySpreadConstraints)
+	}
+	if err := c.Get(context.Background(), key, &policyv1.PodDisruptionBudget{}); err == nil {
+		t.Error("PodDisruptionBudget was not removed after scaling to one replica")
 	}
 }
 
@@ -376,12 +559,42 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	if len(ing.OwnerReferences) != 1 || ing.OwnerReferences[0].Name != "hello" {
 		t.Errorf("ingress owner refs = %+v", ing.OwnerReferences)
 	}
+	if len(ing.Spec.TLS) != 0 {
+		t.Errorf("default ingress TLS = %+v", ing.Spec.TLS)
+	}
+	if ing.Annotations["nginx.ingress.kubernetes.io/proxy-body-size"] != "64m" ||
+		ing.Annotations["nginx.ingress.kubernetes.io/proxy-buffering"] != "off" ||
+		ing.Annotations["nginx.ingress.kubernetes.io/proxy-request-buffering"] != "off" {
+		t.Errorf("lake ingress annotations = %+v", ing.Annotations)
+	}
+	if _, found := ing.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"]; found {
+		t.Errorf("ssl redirect enabled without TLS: %+v", ing.Annotations)
+	}
 	var rec oramav1alpha1.CloudflareDNSRecord
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-dns"}, &rec); err == nil {
 		t.Fatal("DNS record created before the ingress had an address")
 	}
 
-	// 2. The ingress controller assigns an address: the DNS record follows.
+	// 2. TLS adds the certificate host and HTTPS redirect without changing the route.
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	lake.Spec.TLS.SecretName = "lake-origin-tls"
+	if err := c.Update(ctx, lake); err != nil {
+		t.Fatal(err)
+	}
+	reconcileLake(t, c, s, "hello")
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &ing); err != nil {
+		t.Fatal(err)
+	}
+	if len(ing.Spec.TLS) != 1 || len(ing.Spec.TLS[0].Hosts) != 1 ||
+		ing.Spec.TLS[0].Hosts[0] != "hello.lake.live" ||
+		ing.Spec.TLS[0].SecretName != "lake-origin-tls" ||
+		ing.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"] != "true" {
+		t.Errorf("TLS ingress = spec %+v annotations %+v", ing.Spec.TLS, ing.Annotations)
+	}
+
+	// 3. The ingress controller assigns an address: the DNS record follows.
 	ing.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{IP: "172.212.70.79"}}
 	if err := c.Status().Update(ctx, &ing); err != nil {
 		t.Fatalf("set ingress address: %v", err)
@@ -405,7 +618,26 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 		t.Errorf("preview wildcard DNS spec = %+v", previewRec.Spec)
 	}
 
-	// 3. Gate off: both are torn down, the workloads stay.
+	// 4. Removing the TLS reference removes the certificate and redirect.
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	lake.Spec.TLS.SecretName = ""
+	if err := c.Update(ctx, lake); err != nil {
+		t.Fatal(err)
+	}
+	reconcileLake(t, c, s, "hello")
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &ing); err != nil {
+		t.Fatal(err)
+	}
+	if len(ing.Spec.TLS) != 0 {
+		t.Errorf("TLS was not removed from ingress: %+v", ing.Spec.TLS)
+	}
+	if _, found := ing.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"]; found {
+		t.Errorf("ssl redirect was not removed with TLS: %+v", ing.Annotations)
+	}
+
+	// 5. Gate off: both are torn down, the workloads stay.
 	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
 		t.Fatal(err)
 	}

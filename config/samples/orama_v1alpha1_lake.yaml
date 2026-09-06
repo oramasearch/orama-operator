@@ -7,7 +7,21 @@ spec:
   # The lake image is private: pull it with a Secret that exists in spec.namespace.
   image: oramasearch/lake:v1-sandbox
   pullSecretName: oramasearch-dockerhub
-  replicas: 1
+  replicas: 2
+  # Defaults are requests 50m CPU / 128Mi memory and a 512Mi memory limit. Production can replace
+  # the complete block. CPU limits are intentionally opt-in.
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 2Gi }
+  # Replicated Lakes default to a soft hostname spread. Set this list to replace that policy; set
+  # it to [] to disable the default.
+  # topologySpreadConstraints:
+  #   - maxSkew: 1
+  #     topologyKey: topology.kubernetes.io/zone
+  #     whenUnsatisfiable: DoNotSchedule
+  #     labelSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/instance: hello
   # Every lake pod mounts one shared customer-store root. The generated claim defaults to 100Gi
   # ReadWriteMany. ReadWriteOnce requires replicas: 1. Set existingClaim to mount a claim without
   # the operator adopting or changing it.
@@ -48,6 +62,10 @@ spec:
   # live in spec.namespace and hold the zone of host: a lake.live host needs a lake.live-zone Secret.
   # ingressEnabled: true
   # host: hello.lake.live
+  # TLS terminates at nginx and enables HTTPS redirect. The kubernetes.io/tls Secret must exist in
+  # spec.namespace before this is enabled.
+  # tls:
+  #   secretName: lake-origin-tls
   # dnsSecretRef:
   #   name: cloudflare-api-token
   # Per-change previews use one wildcard record instead of one Cloudflare record per change.
