@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -576,6 +577,10 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 	if res.RequeueAfter != lakeStatusRequeue {
 		t.Errorf("requeueAfter = %s, want %s", res.RequeueAfter, lakeStatusRequeue)
 	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	assertInitialLakeDataServices(t, lake.Status)
 
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
@@ -677,6 +682,61 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 	}
 }
 
+func assertInitialLakeDataServices(t *testing.T, status oramav1alpha1.LakeStatus) {
+	t.Helper()
+	if status.DataServicesSummary != "0 managed, 2 unmanaged" {
+		t.Errorf("data services summary = %q", status.DataServicesSummary)
+	}
+	if len(status.DataServices) != 2 {
+		t.Fatalf("data services = %+v", status.DataServices)
+	}
+	postgres := status.DataServices[0]
+	if postgres.Name != "postgres" || postgres.Kind != "postgres" || postgres.Managed ||
+		postgres.Backup != "untested" || postgres.Restore != "untested" ||
+		postgres.Upgrade != "untested" || postgres.Failover != "none" || postgres.Notes == "" {
+		t.Errorf("postgres data service = %+v", postgres)
+	}
+	zetta := status.DataServices[1]
+	if zetta.Name != "zetta" || zetta.Kind != "zetta" || zetta.Managed ||
+		zetta.Backup != "none" || zetta.Restore != "none" || zetta.Upgrade != "none" ||
+		zetta.Failover != "none" || zetta.Notes == "" {
+		t.Errorf("zetta data service = %+v", zetta)
+	}
+}
+
+func TestLakeDataServiceStatusRequiresFailoverForReplicatedPostgres(t *testing.T) {
+	two := int32(2)
+	enabled := true
+	lake := &oramav1alpha1.Lake{
+		Spec: oramav1alpha1.LakeSpec{
+			Postgres: oramav1alpha1.LakePostgresSpec{
+				Instances: &two,
+				Backup: oramav1alpha1.LakePostgresBackupSpec{
+					Enabled: &enabled,
+				},
+			},
+		},
+		Status: oramav1alpha1.LakeStatus{DataServices: []oramav1alpha1.LakeDataServiceStatus{{
+			Name:     "postgres",
+			Backup:   "tested",
+			Restore:  "tested",
+			Upgrade:  "tested",
+			Failover: "tested",
+			Notes:    postgresSingleInstanceNote,
+		}}},
+	}
+	services, summary := lakeDataServiceStatus(lake)
+	if !services[0].Managed || services[0].Failover != "tested" || services[0].Notes != "" ||
+		summary != "1 managed, 1 unmanaged" {
+		t.Fatalf("data services = %+v, summary = %q", services, summary)
+	}
+	lake.Status.DataServices[0].Failover = "untested"
+	services, summary = lakeDataServiceStatus(lake)
+	if services[0].Managed || services[0].Failover != "untested" || summary != "0 managed, 2 unmanaged" {
+		t.Fatalf("data services = %+v, summary = %q", services, summary)
+	}
+}
+
 func TestLakeReconcileRejectsInvalidBackupConfigInStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -750,6 +810,12 @@ func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS agent_guard", "0017_agent_sessions"} {
 		if !strings.Contains(lakeSchemaSQL, tbl) {
 			t.Errorf("schema lacks %q", tbl)
+		}
+	}
+	guardPattern := regexp.MustCompile(`CREATE TABLE IF NOT EXISTS ([a-z_]+_guard)`)
+	for _, match := range guardPattern.FindAllStringSubmatch(lakeSchemaSQL, -1) {
+		if !strings.Contains(postgresVerificationQuery, match[1]) {
+			t.Errorf("Postgres rehearsal query lacks guard table %q", match[1])
 		}
 	}
 }

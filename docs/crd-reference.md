@@ -292,7 +292,32 @@ the Ingress and the record down and leaves the workloads. Sample:
 | `status.schemaPhase` / `.schemaVersion` | Mirrors the owned PostgresSchema: `Pending \| Applying \| Applied \| Failed` and the applied `sha256:<12>`. The Lake requeues until `Applied`. |
 | `status.postgresReady` / `.postgresInstances` | CNPG readiness, read best-effort (`readyInstances`/`instances`, e.g. `1/1`); the Lake requeues every 20s until ready. Empty when `spec.postgres.enabled` is false. |
 | `status.backupReady` / `.lastBackupTime` | True only when the ScheduledBackup exists and the newest CNPG Backup labelled `cnpg.io/cluster=lake-<name>-controldb` is `completed`; completion time comes from that Backup. The `Backup` print column shows `lastBackupTime`. Invalid enabled configuration reports `BackupReady=False` with a condition and `Phase=Degraded`. |
+| `status.dataServices[]` | One row per associated data service: `name`, `kind` (`postgres \| zetta`), `managed`, and `backup`, `restore`, `upgrade`, `failover` evidence (`tested \| untested \| none`), plus optional `lastVerified` and `notes`. `managed` is true only when all operations required by the current configuration are tested. Single-instance Postgres reports `failover: none`; Zetta is explicitly unmanaged pending #125. The `Data` print column uses `dataServicesSummary` to show managed/unmanaged counts. |
 | `status.sealing` | Active `{cluster, generation, kid, publicKey}` recipient plus `previousKeys[] {kid, remaining}` and `unresolvedRecords`. `cluster` is the Lake UID and is part of envelope AAD. `remaining` counts records still requiring an old private key; malformed records retain all old keys until corrected. |
+
+## `LakeRestoreRehearsal` (separate CRD, cluster-scoped)
+
+Runs and records a Lake data-service lifecycle rehearsal. The spec is immutable. Restore and
+upgrade recover a selected CNPG object-store backup into an isolated scratch namespace, compare
+guard-table row counts and the newest schema migration with the live database, and delete every
+scratch object after success or failure. Upgrade changes the scratch Cluster image before
+verification. Failover requests a CNPG switchover on the live replicated control DB and verifies
+the existing application Secret still connects through the write Service.
+
+| Field | Purpose |
+|---|---|
+| `spec.lakeRef` | Name of the cluster-scoped `Lake`. |
+| `spec.service` | `postgres` in this version. |
+| `spec.operation` | `restore \| upgrade \| failover`. |
+| `spec.from` | `latest` by default, or the name of a completed CNPG `Backup`. Restore and upgrade pin its Barman `status.backupId`. |
+| `spec.targetImage` | Required for `upgrade`: the CloudNativePG-compatible PostgreSQL operand image tested on the scratch clone. |
+| `status.phase` / `.message` | `Pending \| Running \| Succeeded \| Failed` and the current or terminal explanation. |
+| `status.scratchNamespace` / `.selectedBackup` | Deterministic scratch location and the pinned CNPG Backup object for restore and upgrade. |
+| `status.previousPrimary` / `.targetPrimary` | The primary transition selected by a failover rehearsal. |
+| `status.startedAt` / `.completedAt` / `.observedGeneration` | Durable audit timestamps and the represented immutable spec generation. |
+
+`kubectl get lrr` shows Lake, Service, Operation, Phase, and completion time. Detailed procedures:
+[`lake/data-services/postgres.md`](lake/data-services/postgres.md).
 
 ## `LakeSealedSecret` (separate CRD, namespaced) — one-way Secret delivery
 

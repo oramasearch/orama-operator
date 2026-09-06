@@ -53,28 +53,39 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
 11. **Ingress + DNS** (opt-in: `ingressEnabled` + `host`, `dnsSecretRef`) — nginx Ingress for the
    whole host and an owned `CloudflareDNSRecord`, the `OramaZettaCluster` contract; gating off
    tears both down.
+12. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,
+    restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`
+    controller runs Postgres procedures and updates the row; see
+    [data services](data-services/README.md).
 
 **Status** mirrors the Deployment (`readyReplicas`, `phase`), publishes the active sealing
 recipient and old-key record counts (`sealing`), selected store claim
 (`store.claimName`, `store.phase`, `store.capacity`, `StoreReady` condition), the CNPG cluster
 (`postgresReady`, `postgresInstances`), the PostgresSchema (`schemaPhase`, `schemaVersion`), and
-the backup (`backupReady`, `lastBackupTime`, `BackupReady` condition); written only on a real
+the backup (`backupReady`, `lastBackupTime`, `BackupReady` condition), and lifecycle evidence for
+Postgres and the pending Zetta data plane (`dataServices`); written only on a real
 transition. An unbound store keeps the Lake out of `Ready`. The Lake polls the claim and CNPG every
 20 s until both storage and the DB are ready and the schema is Applied, and while enabled backups
 observe new CNPG `Backup` resources. `kubectl get lake` columns: Namespace, Host, Ready, DB,
-Schema, Store, Backup, Phase.
+Schema, Store, Backup, Data, Phase. The Data column shows managed and unmanaged service counts;
+see [data services](data-services/README.md) for the operation-level labels and customer boundary.
 
 **Owned kinds** (`SetupWithManager`): PersistentVolumeClaim (only the operator-created store
 claim), Deployment, Service, Ingress, CloudflareDNSRecord, ConfigMap, Secret, LakeSealedSecret,
 PostgresSchema, CNPG
 ScheduledBackup. Not owned: an existing store claim, the Namespace, the CNPG Cluster (polled), and
-CNPG Backup resources (observed by cluster label).
+CNPG Backup resources (observed by cluster label). A `LakeRestoreRehearsal` temporarily owns a
+scratch Namespace, CNPG Cluster, copied Secrets, and verification Job; terminal cleanup deletes
+them explicitly.
 
 **RBAC.** The chart ClusterRole is hand-maintained (`chart/templates/rbac.yaml`); a Lake needs
 `lakes`, `lakes/status`, `lakes/finalizers`, `namespaces: create`, plus the shared grants for
 deployments, persistentvolumeclaims, services, configmaps, ingresses, cloudflarednsrecords,
-postgresschemas, `lakesealedsecrets` (including status and finalizers), namespace-wide Secrets and
-`postgresql.cnpg.io/clusters`, `scheduledbackups`, and `backups`. Keep it in sync with `config/rbac/role.yaml` or the manager
+postgresschemas, lakerestorerehearsals, `lakesealedsecrets` (including status and finalizers),
+namespace-wide Secrets and `postgresql.cnpg.io/clusters`, `clusters/status`, `scheduledbackups`, and
+`backups`. Scratch Namespace ownership is checked through the direct API reader, so Namespace RBAC
+remains `get`, `create`, and `delete` without a cluster-wide informer. Keep it in sync with
+`config/rbac/role.yaml` or the manager
 CrashLoops on cache sync.
 
 ## Deploying the operator with Lake support

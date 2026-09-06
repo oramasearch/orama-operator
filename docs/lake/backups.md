@@ -68,51 +68,36 @@ of the three required keys, the operator reports `BackupReady=False` with the ca
 condition and sets the Lake phase to `Degraded`. It does not create a ScheduledBackup or configure
 the object store until the configuration is corrected.
 
-## Recover into a new CNPG Cluster
+## Rehearse recovery
 
-There is deliberately no restore CRD. Recover into a new Cluster first; do not point the running
-Lake at it or replace `lake-prod-controldb` during an investigation. Use the same R2 Secret and
-the exact bucket/prefix from the Lake backup configuration.
+Use a `LakeRestoreRehearsal`; do not point the running Lake at a recovered Cluster or replace
+`lake-prod-controldb` during an investigation. The controller uses the same R2 Secret and exact
+bucket/prefix from the Lake backup configuration in an isolated scratch namespace.
 
 ```yaml
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
+apiVersion: orama.cloud/v1alpha1
+kind: LakeRestoreRehearsal
 metadata:
-  name: lake-prod-controldb-restore
-  namespace: lake
+  name: prod-postgres-restore-20260905
 spec:
-  instances: 1
-  storage:
-    size: 50Gi
-  bootstrap:
-    recovery:
-      source: lake-prod-backup
-  externalClusters:
-    - name: lake-prod-backup
-      barmanObjectStore:
-        destinationPath: s3://lake-prod-backups/lake-prod/controldb
-        endpointURL: https://<ACCOUNT_ID>.r2.cloudflarestorage.com
-        s3Credentials:
-          accessKeyId:
-            name: lake-prod-backups-r2
-            key: accessKeyId
-          secretAccessKey:
-            name: lake-prod-backups-r2
-            key: secretAccessKey
+  lakeRef: prod
+  service: postgres
+  operation: restore
+  from: latest
 ```
 
-Save that manifest outside the repository with real account and bucket values, then apply it and
-wait for the recovered Cluster:
+Apply it and inspect the durable result:
 
 ```sh
-kubectl apply -f lake-prod-controldb-restore.yaml
-kubectl get clusters,backups -n lake -w
+kubectl apply -f lake-prod-restore-rehearsal.yaml
+kubectl get lrr prod-postgres-restore-20260905 -w
+kubectl get lake prod -o jsonpath='{.status.dataServices}' | jq
 ```
 
-After CNPG reports the recovered Cluster ready, inspect its generated
-`lake-prod-controldb-restore-app` Secret and connect with its `uri` to verify the expected lake
-tables and rows. Delete the recovery Cluster when the rehearsal is complete; it is independent of
-the production Cluster.
+The controller pins the selected Barman backup ID, recovers it, compares guard-table counts and the
+schema version with the live database, records success or failure, and deletes the scratch
+resources. See [Postgres data-service rehearsals](data-services/postgres.md) for restore, upgrade,
+and failover details.
 
-The live recovery rehearsal is deferred until `lake-prod-backups-r2` exists. No AKS resource is
-created by this change.
+The live recovery rehearsal remains deferred until `lake-prod-backups-r2` is available. Do not run
+it on AKS `Lake/prod` as part of an operator code change.

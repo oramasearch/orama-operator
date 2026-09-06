@@ -26,6 +26,7 @@ rules:
   - namespaces
   verbs:
   - create
+  - delete
   - get
 - apiGroups:
   - ""
@@ -146,6 +147,7 @@ rules:
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
+  - lakerestorerehearsals
   - lakes
   - lakesealedsecrets
   - oramacloudv1e2etests
@@ -182,6 +184,7 @@ rules:
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
+  - lakerestorerehearsals/status
   - lakes/status
   - lakesealedsecrets/status
   - oramacloudv1e2etests/status
@@ -220,6 +223,14 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - postgresql.cnpg.io
+  resources:
+  - clusters/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:

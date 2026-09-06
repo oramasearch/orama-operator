@@ -79,6 +79,10 @@ its recipient in status; namespaced `LakeSealedSecret` resources turn cluster-bo
 owned, labelled Kubernetes Secrets without putting plaintext in the authored resource. See the
 [sealed-secret guide](docs/lake/sealed-secrets.md), the [Lake operator guide](docs/lake/README.md), and
 the [CRD reference](docs/crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service).
+`kubectl get lake` reports managed and unmanaged service counts; operation-level status never
+implies untested protection. `LakeRestoreRehearsal` automates Postgres restore, scratch upgrade,
+and replicated failover proof. See the [data-service lifecycle labels](docs/lake/data-services/README.md)
+and [Postgres procedure](docs/lake/data-services/postgres.md).
 
 ## Multi-region
 
