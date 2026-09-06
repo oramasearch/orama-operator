@@ -77,6 +77,11 @@ persistent libliquid store. The operator creates a `100Gi` RWX store claim by de
 runtime configuration through `spec.env`. See the [Lake operator guide](docs/lake/README.md) and
 the [CRD reference](docs/crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service).
 
+Desired deployment events in the operator's Zetta control plane become Lake-owned
+`LakeEnvironment` CRs: one restricted, quota-bound `untrusted` runtime namespace per named or
+per-change environment, with anti-flap status returned to Zetta and wildcard DNS for previews.
+See [Lake deployment environments](docs/lake/environments.md).
+
 ## Multi-region
 
 Install one release + one CR per cluster (`us-east` = `primary`, `eu`/`ap` = `read`).

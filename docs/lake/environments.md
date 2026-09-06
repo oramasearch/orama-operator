@@ -10,6 +10,8 @@ Liquid-bridge decision 22 makes Zetta, not Lake's HTTP API, the deployment intak
 `OramaZettaCluster` with `spec.provisionOperatorSchema` enabled creates the append-only
 `orama_control.deployments` table. A client writes one event with `record_type=desired`; the operator
 reads it over Zetta's authenticated `/v1/sql` capability and creates or updates a `LakeEnvironment`.
+The pull/status implementation is `internal/controller/zetta_deployments.go`; it runs from the existing
+`OramaZettaCluster` reconcile loop after operator-schema provisioning.
 
 The operator processes a row only when both of these are true:
 
