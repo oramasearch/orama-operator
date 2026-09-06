@@ -6,8 +6,8 @@ deployment state): https://github.com/oramasearch/lake/tree/main/docs.
 
 ## At a glance
 
-The cluster-scoped `Lake` CR deploys the lake service with its control-plane Postgres and a
-shared persistent libliquid store. The operator creates a `100Gi` RWX store claim by default or
+The cluster-scoped `Lake` CR deploys the lake service with its control-plane Postgres, an owned
+Zetta data plane, and a shared persistent libliquid store. The operator creates a `100Gi` RWX store claim by default or
 mounts `spec.store.existingClaim`, sets `LAKE_STORE_ROOT=/var/lib/lake/store`, and accepts
 additional lake runtime configuration through `spec.env`. The workload has resource bounds,
 Lake-native health probes, non-root execution, safe rolling-update settings, and replicated-pod
@@ -62,37 +62,44 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    `maxUnavailable: 1` PodDisruptionBudget and the default soft hostname spread, or
    `spec.topologySpreadConstraints` when supplied. Scaling to one replica removes the budget.
 7. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
-8. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
+8. **Zetta data plane** — owned `OramaZettaCluster` `lake-<name>-zetta` in the Lake namespace,
+   configured from `spec.zetta` (enabled, image, replicas, per-node storage, and reachability).
+   It inherits `spec.pullSecretName` and has operator-schema provisioning disabled because it is
+   Lake's data store, not the operator's control store. Its client Service and seeded admin-token
+   Secret reach the lake pod as `LAKE_DATA_PLANE_URL` and `LAKE_DATA_PLANE_TOKEN`. Deleting the
+   Lake starts deletion of this child and waits for its finalizers before releasing the Lake
+   finalizer; disabling `spec.zetta` tears the child down with its per-node volumes.
+9. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
    (`spec.postgres`: enabled by default, instances, storageSize 50Gi, storageClassName), the same
    unstructured path `OramaCloudV1` uses (`controldb.go`). Disabling tears it down **with its
    data**.
-9. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
+10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
    `oramasearch/lake` `db/schema.sql`), guard table = the table the newest migration creates
    (`agent_guard` for `0017_agent_sessions`), version = content
    hash. The file is idempotent, so a new migration = a new guard, and the next Job re-runs the
    file adding only what is missing; on an existing Lake, delete the `PostgresSchema` (owned, it
    is recreated) to trigger that Job. Proper incremental migrations are #126.
-10. **Control-plane backup** (opt-in: `spec.postgres.backup.enabled`) — CNPG Barman object-store
+11. **Control-plane backup** (opt-in: `spec.postgres.backup.enabled`) — CNPG Barman object-store
    configuration on `lake-<name>-controldb` plus an owned `ScheduledBackup`
    `lake-<name>-controldb-backup`. The R2/S3 Secret lives in `spec.namespace`; CNPG owns the
    individual `Backup` resources. See [backups.md](backups.md) for R2 setup, verification,
    changing the schedule or retention, and recovery into a new Cluster.
-11. **Ingress + TLS + DNS** (opt-in: `ingressEnabled` + `host`, `tls.secretName`,
+12. **Ingress + TLS + DNS** (opt-in: `ingressEnabled` + `host`, `tls.secretName`,
    `dnsSecretRef`) — nginx Ingress for the whole host and an owned `CloudflareDNSRecord`, the
    `OramaZettaCluster` contract; gating off tears both down. The Ingress accepts Lake's 64 MiB
    request bodies without buffering streaming requests or responses. `tls.secretName` adds the
    host certificate and HTTPS redirect. When `previewWildcard` is set, the Lake also owns one
    wildcard record against the same ingress address; individual previews do not create
    Cloudflare records.
-12. **Deployment environments** — desired rows in the operator's Zetta
+13. **Deployment environments** — desired rows in the operator's Zetta
    `orama_control.deployments` table become Lake-owned `LakeEnvironment` CRs in this namespace.
    Each CR owns its profiled workload Namespace through a verified finalizer. Referenced
    `LakeSealedSecret` resources must be current and Ready; their produced Secrets are copied into the
    isolated Namespace before the workload starts. See
    [`environments.md`](environments.md). Liquid creates, lists, rolls back, and reads these deployments
    through the operator's authenticated [deployment control plane](../control-plane/README.md).
-13. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,
+14. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,
     restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`
     controller runs Postgres procedures and updates the row; see
     [data services](data-services/README.md).
@@ -102,15 +109,16 @@ recipient and old-key record counts (`sealing`), selected store claim
 (`store.claimName`, `store.phase`, `store.capacity`, `StoreReady` condition), the CNPG cluster
 (`postgresReady`, `postgresInstances`), the PostgresSchema (`schemaPhase`, `schemaVersion`), and
 the backup (`backupReady`, `lastBackupTime`, `BackupReady` condition), and lifecycle evidence for
-Postgres and the pending Zetta data plane (`dataServices`); written only on a real
-transition. An unbound store keeps the Lake out of `Ready`. The Lake polls the claim and CNPG every
-20 s until both storage and the DB are ready and the schema is Applied, and while enabled backups
-observe new CNPG `Backup` resources. `kubectl get lake` columns: Namespace, Host, Ready, DB,
-Schema, Store, Backup, Data, Phase. The Data column shows managed and unmanaged service counts;
+Postgres and Zetta (`dataServices`), plus owned-cluster readiness (`zettaReady`, `ZettaReady`);
+written only on a real transition. An unbound store or enabled but unready Zetta cluster keeps the
+Lake out of `Ready`; a degraded Zetta child makes the Lake `Degraded`. The Lake polls the claim,
+CNPG, and an unready Zetta data plane every 20 s until storage, Postgres, schema, and Zetta are
+ready, and while enabled backups observe new CNPG `Backup` resources. `kubectl get lake` columns:
+Namespace, Host, Ready, DB, Zetta, Schema, Store, Backup, Data, Phase. The Data column shows managed and unmanaged service counts;
 see [data services](data-services/README.md) for the operation-level labels and customer boundary.
 
 **Owned kinds** (`SetupWithManager`): PersistentVolumeClaim (only the operator-created store
-claim), Deployment, PodDisruptionBudget, Service, Ingress, CloudflareDNSRecord, ConfigMap, Secret, LakeEnvironment, LakeSealedSecret,
+claim), Deployment, PodDisruptionBudget, Service, OramaZettaCluster, Ingress, CloudflareDNSRecord, ConfigMap, Secret, LakeEnvironment, LakeSealedSecret,
 PostgresSchema, CNPG
 ScheduledBackup. Not owned: an existing store claim, the Namespace, the CNPG Cluster (polled), and
 CNPG Backup resources (observed by cluster label). A `LakeRestoreRehearsal` temporarily owns a
@@ -118,7 +126,7 @@ scratch Namespace, CNPG Cluster, copied Secrets, and verification Job; terminal 
 them explicitly.
 
 **RBAC.** The chart ClusterRole is hand-maintained (`chart/templates/rbac.yaml`); a Lake needs
-`lakes`, `lakes/status`, `lakes/finalizers`, `namespaces: create`, plus the shared grants for
+`lakes`, `lakes/status`, `lakes/finalizers`, `oramazettaclusters`, `namespaces: create`, plus the shared grants for
 deployments, poddisruptionbudgets, persistentvolumeclaims, services, configmaps, ingresses, cloudflarednsrecords,
 postgresschemas, lakerestorerehearsals, `lakesealedsecrets` (including status and finalizers),
 namespace-wide Secrets and `postgresql.cnpg.io/clusters`, `clusters/status`, `scheduledbackups`, and
@@ -202,7 +210,7 @@ Lake opens one libliquid store per customer below
 `spec.env` accepts Kubernetes `EnvVar` entries, including `valueFrom` references. Entries follow
 the operator's variables in the container spec. The operator ignores custom entries named
 `LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`, `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`,
-`LAKE_SEALING_PUBLIC_KEY`, `LAKE_SEALING_KID`, or `LAKE_STORE_ROOT`, so the reconciled Secret and
+`LAKE_DATA_PLANE_URL`, `LAKE_DATA_PLANE_TOKEN`, `LAKE_SEALING_PUBLIC_KEY`, `LAKE_SEALING_KID`, or `LAKE_STORE_ROOT`, so the reconciled Secret and
 volume contracts always win.
 
 Lake reads these configurable variables:
@@ -217,7 +225,8 @@ Lake reads these configurable variables:
 | `LAKE_PRICE_CURRENCY`, `LAKE_STORAGE_QUOTA_BYTES`, `LAKE_PRICE_STORAGE_GIB_HOUR_MICROS`, `LAKE_PRICE_TRANSFER_IN_GIB_MICROS`, `LAKE_PRICE_TRANSFER_OUT_GIB_MICROS`, `LAKE_PRICE_COMPUTE_SECOND_MICROS` | Metering currency, storage quota, and unit prices. |
 
 The operator additionally supplies `LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`,
-`LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`, `LAKE_SEALING_PUBLIC_KEY`,
+`LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`, `LAKE_DATA_PLANE_URL`,
+`LAKE_DATA_PLANE_TOKEN`, `LAKE_SEALING_PUBLIC_KEY`,
 `LAKE_SEALING_KID`, and `LAKE_STORE_ROOT` from managed resources.
 
 ```sh
@@ -245,6 +254,11 @@ spec:
     - name: LAKE_PUBLIC_HOST
       value: lake.oramadev.net
   postgres: { instances: 1, storageSize: 50Gi }
+  zetta:
+    replicas: 1
+    image: oramasearch/zetta:<tag>
+    storage: { size: 10Gi }
+    reachability: dial-out-only
   ingressEnabled: true
   host: lake.oramadev.net
   tls: { secretName: lake-origin-tls }
@@ -256,7 +270,36 @@ kubectl wait lake/prod --for=jsonpath='{.status.schemaPhase}'=Applied --timeout=
 kubectl get lake prod
 ```
 
-`kubectl delete lake <name>` removes everything owned, including the database.
+`kubectl delete lake <name>` removes everything owned, including both databases. The Lake
+finalizer waits for the Zetta child controller to finish its ordered cleanup before the parent is
+released.
+
+### AKS Zetta data-plane verification
+
+After deploying the CRD and controller change, verify `Lake/hello` has both its Postgres control
+plane and live Zetta data plane:
+
+```sh
+kubectl wait lake/hello --for=jsonpath='{.status.schemaPhase}'=Applied --timeout=600s
+kubectl wait lake/hello --for=jsonpath='{.status.zettaReady}'=true --timeout=600s
+kubectl get lake hello
+kubectl get oramazettacluster lake-hello-zetta -n lake-dev
+kubectl get cluster lake-hello-controldb -n lake-dev
+kubectl exec -n lake-dev deploy/lake-hello -- sh -c \
+  'test "$LAKE_DATA_PLANE_URL" = "http://lake-hello-zetta-zetta.lake-dev.svc.cluster.local:4800" && test -n "$LAKE_DATA_PLANE_TOKEN"'
+kubectl port-forward -n lake-dev service/lake-hello-zetta-zetta 4800:4800
+```
+
+In another shell, authenticate a Zetta server-info request with the owned cluster's seeded token:
+
+```sh
+ZETTA_TOKEN=$(kubectl get secret lake-hello-zetta-zetta-admin -n lake-dev -o jsonpath='{.data.token}' | base64 -d)
+curl --fail --silent --show-error -H "Authorization: Bearer $ZETTA_TOKEN" \
+  http://127.0.0.1:4800/v1/server_info | jq
+```
+
+The AKS `Lake/hello` verification for issue #125 is deferred because this work order forbids
+cluster changes.
 
 ## Workload hardening
 
@@ -332,5 +375,4 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 
 ## Open
 
-- #125 Zetta data plane (owned `OramaZettaCluster` per Lake).
 - #126 incremental migrations in `PostgresSchema`.

@@ -38,20 +38,21 @@ import (
 )
 
 // LakeReconciler reconciles a Lake object into a Namespace, a Deployment, a Service, a
-// control-plane Postgres (CloudNativePG Cluster, on by default) and, opt-in, an Ingress plus a
-// Cloudflare DNS record. Zetta is lake's data plane and is provisioned separately.
+// control-plane Postgres (CloudNativePG Cluster, on by default), an owned Zetta data plane and,
+// opt-in, an Ingress plus a Cloudflare DNS record.
 type LakeReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
 const (
-	lakeDefaultPort   = 4900 // lake's --listen default
-	lakeServicePort   = 80
-	lakeControlDBName = "lake" // CNPG bootstrap database + owner
-	lakeStatusRequeue = 20 * time.Second
-	lakeStorePath     = "/var/lib/lake/store"
-	lakeStoreVolume   = "store"
+	lakeDefaultPort    = 4900 // lake's --listen default
+	lakeServicePort    = 80
+	lakeControlDBName  = "lake" // CNPG bootstrap database + owner
+	lakeStatusRequeue  = 20 * time.Second
+	lakeStorePath      = "/var/lib/lake/store"
+	lakeStoreVolume    = "store"
+	lakeZettaFinalizer = "orama.cloud/lake-zetta"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
@@ -88,6 +89,22 @@ func lakePostgresBackupEnabled(lake *oramav1alpha1.Lake) bool {
 	return lake.Spec.Postgres.Backup.Enabled != nil && *lake.Spec.Postgres.Backup.Enabled
 }
 
+func lakeZettaEnabled(lake *oramav1alpha1.Lake) bool {
+	return lake.Spec.Zetta.Enabled == nil || *lake.Spec.Zetta.Enabled
+}
+
+func lakeZettaName(name string) string {
+	return "lake-" + name + "-zetta"
+}
+
+func lakeZettaClientService(name string) string {
+	return lakeZettaName(name) + "-zetta"
+}
+
+func lakeZettaAdminSecret(name string) string {
+	return lakeZettaName(name) + "-zetta-admin"
+}
+
 type lakeBackupConfig struct {
 	Enabled    bool
 	Valid      bool
@@ -115,6 +132,7 @@ type lakeBackupConfig struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=postgresschemas,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=scheduledbackups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=backups,verbs=get;list;watch;create;update;patch;delete
 
@@ -127,9 +145,15 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	ns := lake.Spec.Namespace
-	if ns == "" {
-		ns = "lake-dev"
+	ns := lakeNamespace(&lake)
+	if !lake.DeletionTimestamp.IsZero() {
+		return r.finalizeLakeZetta(ctx, &lake)
+	}
+	if !controllerutil.ContainsFinalizer(&lake, lakeZettaFinalizer) {
+		controllerutil.AddFinalizer(&lake, lakeZettaFinalizer)
+		if err := r.Update(ctx, &lake); err != nil {
+			return ctrl.Result{}, fmt.Errorf("add Zetta finalizer: %w", err)
+		}
 	}
 	image := lake.Spec.Image
 	if image == "" {
@@ -161,6 +185,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		"app.kubernetes.io/managed-by": "orama-operator",
 	}
 	name := "lake-" + lake.Name
+	zetta, err := r.reconcileLakeZetta(ctx, &lake, ns, labels)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile Zetta data plane: %w", err)
+	}
 	claimName, err := r.reconcileLakeStore(ctx, &lake, ns, labels)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile store: %w", err)
@@ -234,6 +262,13 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		phase = "Progressing"
 	}
 	pgReady, pgDetail := r.lakeControlDBStatus(ctx, &lake, ns)
+	zettaReady, zettaCondition := lakeZettaStatus(&lake, zetta)
+	if lakeZettaEnabled(&lake) && !zettaReady && phase == "Ready" {
+		phase = "Progressing"
+	}
+	if zetta != nil && zetta.Status.Phase == "Degraded" {
+		phase = "Degraded"
+	}
 	schemaPhase, schemaVersion := r.lakeSchemaStatus(ctx, &lake, ns)
 	backupReady, lastBackupTime, backupCondition, err := r.lakeBackupStatus(ctx, &lake, ns, backup)
 	if err != nil {
@@ -248,8 +283,12 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if apimeta.SetStatusCondition(&desiredConditions, storeCondition) {
 		conditionsChanged = true
 	}
+	if apimeta.SetStatusCondition(&desiredConditions, zettaCondition) {
+		conditionsChanged = true
+	}
 	if lake.Status.ReadyReplicas != deploy.Status.ReadyReplicas || lake.Status.Phase != phase ||
 		lake.Status.PostgresReady != pgReady || lake.Status.PostgresInstances != pgDetail ||
+		lake.Status.ZettaReady != zettaReady ||
 		lake.Status.SchemaPhase != schemaPhase || lake.Status.SchemaVersion != schemaVersion ||
 		lake.Status.BackupReady != backupReady || !lakeBackupTimesEqual(lake.Status.LastBackupTime, lastBackupTime) ||
 		!apiequality.Semantic.DeepEqual(lake.Status.DataServices, dataServices) ||
@@ -261,6 +300,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		lake.Status.Phase = phase
 		lake.Status.PostgresReady = pgReady
 		lake.Status.PostgresInstances = pgDetail
+		lake.Status.ZettaReady = zettaReady
 		lake.Status.SchemaPhase = schemaPhase
 		lake.Status.SchemaVersion = schemaVersion
 		lake.Status.BackupReady = backupReady
@@ -284,10 +324,162 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if lakePostgresEnabled(&lake) && backup.Enabled {
 		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
+	if lakeZettaEnabled(&lake) && !zettaReady {
+		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
+	}
 	if !storeReady {
 		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+func (r *LakeReconciler) finalizeLakeZetta(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(lake, lakeZettaFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	children, err := r.lakeZettaChildren(ctx, lake)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("list Zetta data planes during finalization: %w", err)
+	}
+	for i := range children {
+		if children[i].DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, &children[i]); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("delete Zetta data plane: %w", err)
+			}
+		}
+	}
+	if len(children) > 0 {
+		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
+	}
+
+	controllerutil.RemoveFinalizer(lake, lakeZettaFinalizer)
+	if err := r.Update(ctx, lake); err != nil {
+		return ctrl.Result{}, fmt.Errorf("remove Zetta finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *LakeReconciler) reconcileLakeZetta(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	namespace string,
+	labels map[string]string,
+) (*oramav1alpha1.OramaZettaCluster, error) {
+	children, err := r.lakeZettaChildren(ctx, lake)
+	if err != nil {
+		return nil, err
+	}
+	key := client.ObjectKey{Namespace: namespace, Name: lakeZettaName(lake.Name)}
+	for i := range children {
+		if client.ObjectKeyFromObject(&children[i]) == key && lakeZettaEnabled(lake) {
+			continue
+		}
+		if err := r.Delete(ctx, &children[i]); err != nil && !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+	}
+	if !lakeZettaEnabled(lake) {
+		return nil, nil
+	}
+
+	zetta := &oramav1alpha1.OramaZettaCluster{}
+	if err := r.Get(ctx, key, zetta); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		zetta = &oramav1alpha1.OramaZettaCluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      key.Name,
+				Namespace: key.Namespace,
+			},
+		}
+	} else if !metav1.IsControlledBy(zetta, lake) {
+		return nil, fmt.Errorf(
+			"OramaZettaCluster %s already exists and is not controlled by Lake %s",
+			key,
+			lake.Name,
+		)
+	}
+
+	replicas := int32(1)
+	if lake.Spec.Zetta.Replicas != nil {
+		replicas = *lake.Spec.Zetta.Replicas
+	}
+	operatorSchema := false
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, zetta, func() error {
+		zetta.Labels = labels
+		zetta.Spec = oramav1alpha1.OramaZettaClusterSpec{
+			Replicas:                replicas,
+			Image:                   lake.Spec.Zetta.Image,
+			PullSecretName:          lake.Spec.PullSecretName,
+			Storage:                 lake.Spec.Zetta.Storage,
+			Reachability:            lake.Spec.Zetta.Reachability,
+			ProvisionOperatorSchema: &operatorSchema,
+		}
+		return controllerutil.SetControllerReference(lake, zetta, r.Scheme)
+	})
+	return zetta, err
+}
+
+func (r *LakeReconciler) lakeZettaChildren(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+) ([]oramav1alpha1.OramaZettaCluster, error) {
+	var clusters oramav1alpha1.OramaZettaClusterList
+	if err := r.List(ctx, &clusters); err != nil {
+		return nil, err
+	}
+	children := make([]oramav1alpha1.OramaZettaCluster, 0, len(clusters.Items))
+	for i := range clusters.Items {
+		if metav1.IsControlledBy(&clusters.Items[i], lake) {
+			children = append(children, clusters.Items[i])
+		}
+	}
+	return children, nil
+}
+
+func lakeZettaStatus(
+	lake *oramav1alpha1.Lake,
+	zetta *oramav1alpha1.OramaZettaCluster,
+) (bool, metav1.Condition) {
+	condition := metav1.Condition{
+		Type:               "ZettaReady",
+		ObservedGeneration: lake.Generation,
+	}
+	if !lakeZettaEnabled(lake) {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "ZettaDisabled"
+		condition.Message = "Zetta data plane is disabled"
+		return false, condition
+	}
+	if zetta == nil {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "ZettaNotFound"
+		condition.Message = "waiting for the owned OramaZettaCluster"
+		return false, condition
+	}
+
+	desired := zetta.Spec.Replicas
+	if desired < 1 {
+		desired = 1
+	}
+	ready := zetta.Status.Phase == "Ready" && zetta.Status.ReadyNodes >= desired
+	condition.Status = metav1.ConditionFalse
+	condition.Reason = "ZettaProgressing"
+	condition.Message = fmt.Sprintf("%d/%d Zetta nodes ready", zetta.Status.ReadyNodes, desired)
+	if zetta.Status.Phase == "Degraded" {
+		condition.Reason = "ZettaDegraded"
+	}
+	if ready {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "ZettaReady"
+		condition.Message = fmt.Sprintf("all %d Zetta nodes ready", desired)
+	}
+	return ready, condition
 }
 
 func (r *LakeReconciler) reconcileLakeDeployment(
@@ -484,7 +676,7 @@ func lakeDataServiceStatus(lake *oramav1alpha1.Lake) ([]oramav1alpha1.LakeDataSe
 		Restore:  "none",
 		Upgrade:  "none",
 		Failover: "none",
-		Notes:    "the Zetta data plane and its lifecycle procedures are pending #125",
+		Notes:    "Zetta lifecycle procedures have not been rehearsed",
 	}
 	services := []oramav1alpha1.LakeDataServiceStatus{postgres, zetta}
 	return services, dataServiceSummary(services)
@@ -642,12 +834,16 @@ func (r *LakeReconciler) lakeStoreStatus(
 
 // lakeEnv is what the lake container learns from the operator. The control-DB Secret is
 // generated by CNPG after the Cluster bootstraps, so the reference is optional: the pod starts
-// before the database exists and picks the value up on its next restart.
+// before the database exists and picks the value up on its next restart. The Zetta token is a
+// required Secret reference, so kubelet waits for the child controller to mint it before starting
+// lake with an incomplete data-plane configuration.
 func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.EnvVar {
 	reserved := map[string]struct{}{
 		"LAKE_ADMIN_TOKEN":         {},
 		"LAKE_CONTROL_DB_PASSWORD": {},
 		"LAKE_CONTROL_DB_URI":      {},
+		"LAKE_DATA_PLANE_TOKEN":    {},
+		"LAKE_DATA_PLANE_URL":      {},
 		"LAKE_INSTANCE_KEK":        {},
 		"LAKE_SEALING_KID":         {},
 		"LAKE_SEALING_PUBLIC_KEY":  {},
@@ -683,6 +879,31 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 			env,
 			corev1.EnvVar{Name: "LAKE_CONTROL_DB_URI", ValueFrom: ref("uri")},
 			corev1.EnvVar{Name: "LAKE_CONTROL_DB_PASSWORD", ValueFrom: ref("password")},
+		)
+	}
+	if lakeZettaEnabled(lake) {
+		env = append(
+			env,
+			corev1.EnvVar{
+				Name: "LAKE_DATA_PLANE_URL",
+				Value: fmt.Sprintf(
+					"http://%s.%s.svc.cluster.local:%d",
+					lakeZettaClientService(lake.Name),
+					lakeNamespace(lake),
+					zettaAPIPort,
+				),
+			},
+			corev1.EnvVar{
+				Name: "LAKE_DATA_PLANE_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: lakeZettaAdminSecret(lake.Name),
+						},
+						Key: "token",
+					},
+				},
+			},
 		)
 	}
 	for _, custom := range lake.Spec.Env {
@@ -1211,6 +1432,7 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
 		Owns(&oramav1alpha1.LakeSealedSecret{}).
+		Owns(&oramav1alpha1.OramaZettaCluster{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
 		Owns(newCNPGScheduledBackup(nil, "")).
 		Named("lake").
