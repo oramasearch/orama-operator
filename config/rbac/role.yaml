@@ -152,6 +152,7 @@ rules:
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
+  - lakee2etests
   - lakeenvironments
   - lakerestorerehearsals
   - lakes
@@ -191,6 +192,7 @@ rules:
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
+  - lakee2etests/status
   - lakeenvironments/status
   - lakerestorerehearsals/status
   - lakes/status

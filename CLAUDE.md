@@ -183,6 +183,14 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
   [zetta#799](https://github.com/oramasearch/zetta/issues/799)). The target's image MUST be an auth-capable
   build (post-#799). `spec.requireAuth`/`spec.mcpTokenAuth` are deprecated no-ops. The test's status also
   carries best-effort `pass`/`fail`/`skip` counts parsed from the Job's pod logs (RBAC `pods/log get`).
+- **Lake e2e (`LakeE2ETest`):** runs a lake/liquid-owned runner image as a Job in the target
+  cluster-scoped `Lake` resource's namespace. The controller waits for the Lake Deployment,
+  control-plane Postgres, and schema, then supplies `LAKE_E2E_BASE_URL` and a unique
+  `LAKE_E2E_RUN_ID`. The image entrypoint signs up a fresh user, creates a repository, pushes and
+  pulls it through liquid's sync protocol, and verifies the pulled bytes. The runner image is
+  required and should use an immutable published tag; the operator does not embed a copy of the
+  cross-repository suite. Watch `kubectl get lakee2e`; logs are on Job `<name>-e2e` in the Lake
+  namespace.
 
 ## Conventions
 

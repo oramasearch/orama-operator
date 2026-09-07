@@ -313,6 +313,28 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `status.dataServices[]` | One row per associated data service: `name`, `kind` (`postgres \| zetta`), `managed`, and `backup`, `restore`, `upgrade`, `failover` evidence (`tested \| untested \| none`), plus optional `lastVerified` and `notes`. `managed` is true only when all operations required by the current configuration are tested. Single-instance Postgres reports `failover: none`; owned Zetta remains unmanaged until its lifecycle procedures are rehearsed. The `Data` print column uses `dataServicesSummary` to show managed/unmanaged counts. |
 | `status.sealing` | Active `{cluster, generation, kid, publicKey}` recipient plus `previousKeys[] {kid, remaining}` and `unresolvedRecords`. `cluster` is the Lake UID and is part of envelope AAD. `remaining` counts records still requiring an old private key; malformed records retain all old keys until corrected. |
 
+## `LakeE2ETest` (separate CRD, cluster-scoped)
+
+Runs the lake service exit suite as a Job against a cluster-scoped `Lake`. The suite remains in a
+dedicated image so its signup and liquid protocol coverage evolves with lake and liquid; the
+operator schedules it and reports the Job result. The controller waits until the target reports a
+ready replica, ready control-plane Postgres, and an applied schema. It then creates `<name>-e2e` in
+the Lake namespace with service-account token mounting disabled. Sample:
+[`../config/samples/lake-e2e-test.yaml`](../config/samples/lake-e2e-test.yaml).
+
+| Field | Purpose |
+|---|---|
+| `spec.targetRef` | Name of the cluster-scoped `Lake`. Required. The Job runs in that Lake's `spec.namespace`, or `lake-dev` when omitted. |
+| `spec.image` | Required runner image. Its entrypoint signs up a fresh user, creates a repository, uses the real liquid client to push and pull through the Lake sync routes, and verifies the pulled file bytes. Use an immutable published tag. |
+| `spec.pullSecretName` | Optional runner image pull Secret in the Lake namespace. Empty reuses the target Lake's `spec.pullSecretName`. |
+| `status.phase` | `Pending \| Running \| Succeeded \| Failed`, written only when the phase, message, or Job name changes. `Pending` creates no Job while the target is absent or not ready. |
+| `status.message` / `.jobName` | Current explanation and the retained Job name. Logs are available with `kubectl logs -n <lake-namespace> job/<name>-e2e`. |
+
+The runner receives exactly two values from the controller: `LAKE_E2E_BASE_URL` is
+`http://lake-<target>.<namespace>.svc.cluster.local`, and `LAKE_E2E_RUN_ID` is the test resource UID
+for collision-free account and repository names. Authentication begins with the suite's public
+signup path; the operator does not inject the Lake admin bearer.
+
 ## `LakeEnvironment` (separate CRD, namespaced) — one desired deployment
 
 A `LakeEnvironment` is the Kubernetes desired-state record materialized from one deployment in the

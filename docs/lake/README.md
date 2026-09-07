@@ -163,6 +163,30 @@ NetworkPolicies, ResourceQuotas and LimitRanges across environment namespaces. T
 these cluster-wide, while the controller deletes only a Namespace bearing its exact ownership
 annotation.
 
+## Service e2e
+
+`LakeE2ETest` is a cluster-scoped, explicit test trigger; ordinary Lake reconciliation never runs
+the suite. It waits for the target Lake to have a ready replica, ready control-plane Postgres, and
+an applied schema, then creates Job `<test-name>-e2e` in `Lake.spec.namespace`. The required runner
+image owns the cross-repository workflow: sign up a fresh user, create a repository, invoke the real
+liquid client to push it through Lake's sync endpoint, pull into an empty checkout, and compare the
+file bytes. The operator supplies only the in-cluster base URL and resource UID as
+`LAKE_E2E_BASE_URL` and `LAKE_E2E_RUN_ID`; it does not give the suite the Lake admin bearer.
+
+Apply [`../../config/samples/lake-e2e-test.yaml`](../../config/samples/lake-e2e-test.yaml) after
+replacing its runner image placeholder with an immutable published tag. `spec.pullSecretName`
+overrides image authentication for the Job; when omitted, the controller reuses the target Lake's
+pull Secret. Inspect it with:
+
+```sh
+kubectl get lakee2e hello
+kubectl logs -n lake-dev job/hello-e2e
+```
+
+Deleting and recreating the test resource starts a new run with a new UID and garbage-collects the
+old Job. The k0s and air-gapped cluster executions for issue #123 remain deferred; the controller's
+resource wiring and status transitions are covered with the fake client.
+
 ## Deploying the operator with Lake support
 
 The Lake CR is on `main`. Build and publish an immutable operator image, refresh changed CRDs,
