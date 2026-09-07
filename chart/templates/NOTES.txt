@@ -1,4 +1,4 @@
-orama-cloud-v1-operator installed into namespace {{ .Release.Namespace }}.
+orama-operator installed into namespace {{ .Release.Namespace }}.
 
 Next: apply one OramaCloudV1 per cluster. Examples in the repo:
   kubectl apply -f config/samples/primary-us-east.yaml   # the primary region

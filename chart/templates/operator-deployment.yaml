@@ -23,7 +23,13 @@ spec:
         - name: manager
           image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
-          args: ["--leader-elect"]
+          args:
+            - --leader-elect
+            - --control-plane-bind-address=:{{ .Values.controlPlane.service.port }}
+          ports:
+            - name: control-plane
+              containerPort: {{ .Values.controlPlane.service.port }}
+              protocol: TCP
           resources: {{- toYaml .Values.operator.resources | nindent 12 }}
           securityContext:
             runAsNonRoot: true

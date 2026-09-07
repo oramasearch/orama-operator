@@ -1,0 +1,98 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: lakee2etests.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: LakeE2ETest
+    listKind: LakeE2ETestList
+    plural: lakee2etests
+    shortNames:
+    - lakee2e
+    singular: lakee2etest
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef
+      name: Target
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.jobName
+      name: Job
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          LakeE2ETest runs lake's live service suite as a Kubernetes Job against a deployed Lake.
+          The runner image owns the signup and liquid sync workflow; this resource supplies the target
+          address, schedules the Job only after the Lake is ready, and reports its terminal result.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired test run.
+            properties:
+              image:
+                description: |-
+                  Image is the runner image whose entrypoint signs up a fresh user, creates a repository,
+                  pushes it through liquid sync, pulls it into an empty checkout, and verifies the file bytes.
+                  The image is required because the suite evolves with lake and liquid, outside this operator.
+                minLength: 1
+                type: string
+              pullSecretName:
+                description: |-
+                  PullSecretName authenticates the runner image pull. When empty, the controller reuses the
+                  target Lake's spec.pullSecretName. The Secret must exist in the Lake namespace.
+                type: string
+              targetRef:
+                description: |-
+                  TargetRef is the name of the cluster-scoped Lake to test. The controller runs the test Job
+                  in that Lake's spec.namespace and points it at the Lake's in-cluster Service.
+                minLength: 1
+                type: string
+            required:
+            - image
+            - targetRef
+            type: object
+          status:
+            description: status defines the observed test run.
+            properties:
+              jobName:
+                description: JobName is the namespaced Job running the suite.
+                type: string
+              message:
+                description: Message explains the current phase.
+                type: string
+              phase:
+                description: Phase is Pending, Running, Succeeded, or Failed.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

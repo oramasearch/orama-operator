@@ -2,6 +2,31 @@
 
 How to install the operator and stand up an Orama Cloud v1 stack in a cluster.
 
+## At a glance
+
+```sh
+helmfile apply                                          # platform operators + this operator
+# ...or just the operator if the platform bits already exist:
+helm install orama-operator ./chart -n orama-system --create-namespace
+kubectl apply -f config/samples/primary-us-east.yaml   # one OramaCloudV1 per cluster
+kubectl get ocv1 -A -w                                  # the operator reconciles the whole stack
+```
+
+Three layers, each with one job:
+
+- **`helmfile.yaml`** composes the upstream **platform operators** the stack builds on
+  (CloudNativePG, RabbitMQ operator, …) plus this operator's chart, each toggleable so you skip
+  whatever your cluster already has.
+- The **chart** installs only the **operator + CRDs + RBAC** (self-contained); it does not deploy
+  the app.
+- The **operator** reconciles one `OramaCloudV1` CR into every child workload
+  (Deployments / StatefulSets / Secrets / dependency CRs) **and** the Cloudflare DNS + Load
+  Balancing via the CF API.
+
+Provisioning the external dependencies (the Cloudflare token the operator uses for DNS/LB/KV, the
+real SaaS tokens you supply, and what is generated in-cluster) is walked through in
+[provisioning-runbook.md](provisioning-runbook.md), so the stack *works*, not just boots.
+
 ## Prerequisites
 
 - A Kubernetes cluster (1.29+) and `kubectl` context pointing at it.
@@ -33,18 +58,22 @@ as a single-node StatefulSet without it. See [components.md](components.md).)*
 
 ## 2. Install the operator
 
+For a new installation, use the current release name. An AKS installation still running the
+former release must use the [rename cutover runbook](operations/rename-cutover.md) instead of
+installing over it.
+
 ```sh
-helm install orama-cloud-v1-operator ./chart -n orama-system --create-namespace
+helm install orama-operator ./chart -n orama-system --create-namespace
 ```
 
 This installs the **CRD**, **RBAC**, and the **operator Deployment**. Confirm it's up:
 
 ```sh
-kubectl -n orama-system get deploy orama-cloud-v1-operator
+kubectl -n orama-system get deploy orama-operator
 kubectl get crd oramacloudv1s.orama.cloud
 ```
 
-> The chart uses the operator image `oramasearch/orama-cloud-v1-operator:latest`
+> The chart uses the operator image `oramasearch/orama-operator:latest`
 > (override with `--set operator.image.tag=...`). Build/push it with
 > `make docker-build docker-push IMG=...` (see [development.md](development.md)).
 
@@ -57,7 +86,7 @@ kubectl get crd oramacloudv1s.orama.cloud
   mandatory / still accepted the now-removed `--require-auth`/`--mcp-token` flags). Since #799, auth is
   enforced and the operator seeds + injects the admin token; the target's image MUST be an auth-capable
   build. **Pin by digest** to force the exact build:
-  `kubectl -n orama-system set image deploy/orama-cloud-v1-operator '*=<repo>@sha256:…'` and the OZC
+  `kubectl -n orama-system set image deploy/orama-operator '*=<repo>@sha256:…'` and the OZC
   `spec.image: <repo>@sha256:…`; **verify the running pod's `imageID` after any rebuild.**
   `imagePullPolicy: Always` is the real fix.
 - **CRDs already present → `helm install` conflict.** If the CRDs were already `kubectl`-applied, use
@@ -156,10 +185,12 @@ The full field reference is in [crd-reference.md](crd-reference.md); more sample
 
 ## 5. Multi-region
 
-Install the operator + apply one CR **per cluster**. Make one region `primary` and the
-others `read`, and give the read tiers the primary's endpoints via `spec.peers`.
-Cloudflare provides the geo-LB — set `spec.cloudflare.apiTokenSecretRef` to a Secret
-holding a **real** CF token (key `token`); the operator upserts the DNS record. See
+Install one release + apply one CR **per cluster** (`us-east` = `primary`, `eu`/`ap` = `read`).
+Make one region `primary` and the others `read`, and give the read tiers the primary's endpoints
+via `spec.peers`: they reach the primary's writer + Postgres over public ingress + mTLS (**no
+service mesh** for now). Cloudflare provides the geo load-balancing (DNS steering) in front of each
+cluster's ingress — set `spec.cloudflare.apiTokenSecretRef` to a Secret holding a **real** CF token
+(key `token`); the operator upserts the DNS record. See
 [`../config/samples/read-eu.yaml`](../config/samples/read-eu.yaml).
 
 ## Uninstall
@@ -167,7 +198,7 @@ holding a **real** CF token (key `token`); the operator upserts the DNS record. 
 ```sh
 kubectl delete ocv1 v1 -n orama-system        # cascade-deletes the stack (PVCs RETAINED)
 kubectl -n orama-system delete pvc -l app.kubernetes.io/managed-by=orama-cloud-v1-operator  # optional: drop the data
-helm uninstall orama-cloud-v1-operator -n orama-system
+helm uninstall orama-operator -n orama-system
 ```
 
 > **PVCs are retained on CR delete** (the data-safe default). Delete them explicitly

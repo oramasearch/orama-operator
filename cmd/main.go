@@ -18,11 +18,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
-	"github.com/oramasearch/orama-cloud-v1-operator/internal/controller"
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
+	"github.com/oramasearch/orama-operator/internal/controller"
 )
 
 var scheme = runtime.NewScheme()
+
+// Keep the pre-rename ID so the old and new Helm releases contend for the same production Lease
+// during the scheduled handoff. Changing this ID would allow both managers to reconcile at once.
+const leaderElectionID = "orama-cloud-v1-operator.orama.cloud"
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -30,10 +34,11 @@ func init() {
 }
 
 func main() {
-	var metricsAddr, probeAddr string
+	var metricsAddr, probeAddr, controlPlaneAddr string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
+	flag.StringVar(&controlPlaneAddr, "control-plane-bind-address", ":8090", "deployment control-plane endpoint")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "enable leader election")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -46,7 +51,7 @@ func main() {
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "orama-cloud-v1-operator.orama.cloud",
+		LeaderElectionID:       leaderElectionID,
 	}
 	// WATCH_NAMESPACE scopes the manager's cache to one namespace — lets an operator run against a
 	// SHARED cluster (e.g. a locally-run controller reconciling only a demo namespace) without touching
@@ -146,6 +151,54 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PostgresSchema")
 		os.Exit(1)
+	}
+	if err = (&controller.LakeReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Lake")
+		os.Exit(1)
+	}
+	if err = (&controller.LakeE2ETestReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeE2ETest")
+		os.Exit(1)
+	}
+	if err = (&controller.LakeEnvironmentReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeEnvironment")
+		os.Exit(1)
+	}
+	if err = (&controller.LakeRestoreRehearsalReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeRestoreRehearsal")
+		os.Exit(1)
+	}
+	if err = (&controller.LakeSealedSecretReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeSealedSecret")
+		os.Exit(1)
+	}
+	if controlPlaneAddr != "" {
+		if err = mgr.Add(&controller.DeploymentControlPlane{
+			Client:      mgr.GetClient(),
+			APIReader:   mgr.GetAPIReader(),
+			BindAddress: controlPlaneAddr,
+			Log:         ctrl.Log.WithName("deployment-control-plane"),
+		}); err != nil {
+			setupLog.Error(err, "unable to create deployment control plane")
+			os.Exit(1)
+		}
 	}
 
 	utilruntime.Must(mgr.AddHealthzCheck("healthz", healthz.Ping))

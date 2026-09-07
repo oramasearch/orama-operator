@@ -4,7 +4,7 @@
 # an in-cluster deploy (the secret must exist in the release namespace).
 operator:
   image:
-    repository: oramasearch/orama-cloud-v1-operator
+    repository: oramasearch/orama-operator
     tag: v1-sandbox
     pullPolicy: IfNotPresent
   # Pull secret(s) for the PRIVATE manager image, e.g. [{ name: oramasearch-dockerhub }].
@@ -16,7 +16,11 @@ operator:
     limits:   { cpu: 500m, memory: 256Mi }
 
 serviceAccount:
-  name: orama-cloud-v1-operator
+  name: orama-operator
+
+controlPlane:
+  service:
+    port: 8090
 
 # Helm applies CRDs from chart/crds before templates (generate them with make manifests).
 installCRDs: true

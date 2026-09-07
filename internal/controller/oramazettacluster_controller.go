@@ -11,7 +11,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -28,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
 // Zetta headless ports (source-verified — see docs/projects/one-orama/zetta-headless-reference.md).
@@ -49,7 +48,8 @@ type OramaZettaClusterReconciler struct {
 	// nil under `make run`/tests — reader() then falls back to the cached client.
 	APIReader client.Reader
 	// stateCache is the anti-flap memory for the operator-state sync into Zetta: component key →
-	// last-synced fingerprint, so a steady stack produces zero Zetta writes (see zetta_statesync.go).
+	// last-synced fingerprint or a partial component/event append, so a steady stack produces zero
+	// Zetta writes and a partial failure retries only the missing append (see zetta_statesync.go).
 	stateCache sync.Map
 	// topologyCache is the anti-flap memory for the cross-cluster topology sync (operator#105): topology
 	// node key → last-written fingerprint, so a steady wan slice appends no new orama_control.topology rows
@@ -65,6 +65,8 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s,verbs=get;list;watch
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s/status,verbs=get
+//+kubebuilder:rbac:groups=orama.cloud,resources=lakes,verbs=get;list;watch
+//+kubebuilder:rbac:groups=orama.cloud,resources=lakeenvironments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -401,6 +403,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			return ctrl.Result{}, err
 		}
 		r.reconcileOperatorStateSync(ctx, &z, clientName) // best-effort; never fails the reconcile
+		r.reconcileZettaDeployments(ctx, &z, clientName)  // best-effort; the periodic poll retries
 	} else if err := r.teardownZettaControlPlane(ctx, &z); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -411,10 +414,10 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, provisionedNodes, reachability, wanAddress); err != nil {
 		return ctrl.Result{}, err
 	}
-	// When acting as the datastore, requeue periodically so the coarse state sync tracks the rest of
-	// the operator's CRs even without a Zetta-cluster event (anti-flap keeps the Zetta writes rare).
+	// When acting as the datastore, poll at the shortest Lake deploySync interval in this namespace.
+	// The same tick keeps coarse state sync current; both write paths are anti-flapped.
 	if syncEnabled {
-		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: r.deploymentSyncInterval(ctx, z.Namespace)}, nil
 	}
 	return ctrl.Result{}, nil
 }

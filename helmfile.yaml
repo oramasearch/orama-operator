@@ -1,6 +1,6 @@
 # Composition layer: platform operators (upstream OSS charts) + the v1 operator.
 # Usage: helmfile apply    (installs everything in order)
-#        helmfile -l app=orama-cloud-v1-operator apply   (just our operator)
+#        helmfile -l app=orama-operator apply   (just our operator)
 #
 # Platform operators we depend on:
 #   - CloudNativePG  — REQUIRED. The control DB is a CNPG `Cluster` CR + managed roles +
@@ -59,9 +59,9 @@ releases:
   # Carries the CRDs in chart/crds/ (OramaCloudV1 + OramaCloudV1E2ETest + the Cloudflare
   # DNS/KV/R2 resource CRDs). helm applies crds/ on INSTALL only — after adding/altering a
   # CRD, run `kubectl apply -f chart/crds/` to update an existing install.
-  - name: orama-cloud-v1-operator
+  - name: orama-operator
     namespace: orama-system
     createNamespace: true
     chart: ./chart
     labels:
-      app: orama-cloud-v1-operator
+      app: orama-operator

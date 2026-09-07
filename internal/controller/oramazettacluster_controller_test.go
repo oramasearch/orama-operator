@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	oramav1alpha1 "github.com/oramasearch/orama-cloud-v1-operator/api/v1alpha1"
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
 func zettaTestScheme(t *testing.T) *runtime.Scheme {
@@ -148,7 +148,9 @@ func TestZettaStatefulSetRendersReachabilityAndNodeType(t *testing.T) {
 	}
 
 	// wan-accessible, not ephemeral → --node-type permanent, NO --dial-out-only.
-	wan := entryFor(func(z *oramav1alpha1.OramaZettaCluster) { z.Spec.Reachability = oramav1alpha1.ReachabilityWANAccessible })
+	wan := entryFor(func(z *oramav1alpha1.OramaZettaCluster) {
+		z.Spec.Reachability = oramav1alpha1.ReachabilityWANAccessible
+	})
 	if !strings.Contains(wan, "--node-type permanent") {
 		t.Error("wan slice: entrypoint should render --node-type permanent")
 	}

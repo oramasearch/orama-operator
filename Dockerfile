@@ -1,4 +1,4 @@
-# orama-cloud-v1-operator — the kubebuilder manager image (the pod that reconciles the
+# orama-operator — the kubebuilder manager image (the pod that reconciles the
 # OramaCloudV1 CRs). Standard kubebuilder multi-stage build: compile the Go binary in the
 # toolchain image, ship it on distroless/static:nonroot (no shell, runs as nonroot UID 65532).
 # CGO is disabled → a fully static binary that runs on `static`. Base images are digest-pinned
@@ -17,6 +17,8 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
+# docs/control-plane is a Go package (the embedded deployment contract from #142).
+COPY docs/control-plane/ docs/control-plane/
 # Static build (no CGO) so the binary runs on distroless/static. -a rebuilds all packages.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 

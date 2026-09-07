@@ -1,0 +1,20 @@
+# Run lake's service e2e suite against the cluster-scoped Lake/hello. The required runner image
+# owns the cross-repository workflow: sign up a fresh user, create a repository, use the real liquid
+# client to push and pull it through Lake's sync routes, and verify the pulled file bytes.
+#
+# The controller waits for the Lake Deployment, Postgres, and schema, then creates Job
+# hello-e2e in the Lake's spec.namespace. It passes:
+#   LAKE_E2E_BASE_URL  http://lake-hello.<namespace>.svc.cluster.local
+#   LAKE_E2E_RUN_ID    the LakeE2ETest UID, for collision-free account and repository names
+#
+# Watch:  kubectl get lakee2e hello
+# Logs:   kubectl logs -n lake-dev job/hello-e2e
+# Re-run: kubectl delete lakee2e hello && kubectl apply -f config/samples/lake-e2e-test.yaml
+apiVersion: orama.cloud/v1alpha1
+kind: LakeE2ETest
+metadata:
+  name: hello
+spec:
+  targetRef: hello
+  image: registry.example.com/oramasearch/lake-e2e:replace-me
+  # pullSecretName: oramasearch-dockerhub  # optional; defaults to Lake.spec.pullSecretName

@@ -1,6 +1,6 @@
 # Datastore state as declarative, owned CRDs
 
-**Epic:** [operator#40](https://github.com/oramasearch/orama-cloud-v1-operator/issues/40).
+**Epic:** [operator#40](https://github.com/oramasearch/orama-operator/issues/40).
 
 Per the production-migration principle ([CLAUDE.md](../CLAUDE.md) #3–#4), each datastore's
 schema/topology must be modelled as its **own owned, reconciled CRD** — deterministic, idempotent,
@@ -35,7 +35,7 @@ Topology operators**. Those were evaluated and **dropped** (principle #3): their
 (`ErrImagePull`, deprecated catalog). So the broker runs as a plain `rabbitmq:3.13-management`
 StatefulSet (`reconcileBroker`), and the operator models its topology with **its own** small CRD
 reconciled via the broker's **management HTTP API** (`:15672`) — a purpose-built CRD we control beats
-an unstable vendor dependency ([#41](https://github.com/oramasearch/orama-cloud-v1-operator/issues/41)).
+an unstable vendor dependency ([#41](https://github.com/oramasearch/orama-operator/issues/41)).
 
 ### What it reconciles
 
@@ -96,7 +96,7 @@ reconciles.
 `internal/controller/postgresschema_controller.go`.
 
 The control-plane Postgres schema (the dashboard's vendored Drizzle migrations) was applied by a bare
-idempotent psql **Job** ([#34](https://github.com/oramasearch/orama-cloud-v1-operator/issues/34)). That
+idempotent psql **Job** ([#34](https://github.com/oramasearch/orama-operator/issues/34)). That
 Job worked but was an imperative one-shot with **no applied-version tracking** — exactly what the epic
 supersedes. It is now a reconciled `PostgresSchema` CRD:
 
@@ -124,15 +124,15 @@ refinement + principle #4) is also a separate slice.
 ## Deferred / tracked separately
 
 - **`ClickHouseSchema` + `Typesense`/`Mongo` schema CRDs**
-  ([#97](https://github.com/oramasearch/orama-cloud-v1-operator/issues/97)) — the analytics tables are
+  ([#97](https://github.com/oramasearch/orama-operator/issues/97)) — the analytics tables are
   currently auto-created by analytics-processor (`create_tables: true`); declaring them needs the
   authoritative DDL (owned by the app, not this repo), so we don't pin analytics to a guessed schema.
-- **Least-privilege adoption** ([#99](https://github.com/oramasearch/orama-cloud-v1-operator/issues/99))
+- **Least-privilege adoption** ([#99](https://github.com/oramasearch/orama-operator/issues/99))
   — wire the engine to the per-service broker users (they're declared but unused today), bound the
   `oramacore-operations` stream's retention (needs OramaCore's exact create args), and model CNPG
   `managed.roles` per service instead of the shared owner (principle #4, revisits #32).
-- **Pin every image** ([#98](https://github.com/oramasearch/orama-cloud-v1-operator/issues/98)) —
+- **Pin every image** ([#98](https://github.com/oramasearch/orama-operator/issues/98)) —
   determinism cross-cutting (no `:latest`); needs the intended production tags for the
   oramacore/ai-server/selenium images.
 - **DR (backup / restore / snapshot CRDs)** — its own epic
-  ([#33](https://github.com/oramasearch/orama-cloud-v1-operator/issues/33)).
+  ([#33](https://github.com/oramasearch/orama-operator/issues/33)).
