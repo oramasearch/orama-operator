@@ -27,6 +27,7 @@ rules:
       - cloudflareloadbalancers
       - rabbitmqtopologies
       - postgresschemas
+      - clerkapplications
       - lakes
       - lakee2etests
       - lakeenvironments
@@ -56,6 +57,9 @@ rules:
       - cloudflarekvnamespaces/finalizers
       - cloudflarer2buckets/finalizers
       - cloudflareloadbalancers/finalizers
+      - postgresschemas/finalizers
+      - clerkapplications/status
+      - clerkapplications/finalizers
       - rabbitmqtopologies/finalizers
       - lakes/finalizers
       - lakeenvironments/finalizers
