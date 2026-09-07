@@ -439,14 +439,14 @@ func TestLakeReconcileAppendsCustomEnvWithOperatorPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := deployment.Spec.Template.Spec.Containers[0].Env
-	if len(env) != 9 {
+	if len(env) != 11 {
 		t.Fatalf("env = %+v", env)
 	}
 	if env[0].Name != "LAKE_ADMIN_TOKEN" || env[1].Name != "LAKE_STORE_ROOT" ||
 		env[1].Value != lakeStorePath || env[2].Name != "LAKE_SEALING_PUBLIC_KEY" ||
 		env[2].Value == "" || env[3].Name != "LAKE_SEALING_KID" || env[3].Value == "" ||
-		env[7].Name != "LAKE_LOG_MODE" || env[7].Value != "air-gapped" ||
-		env[8].Name != "LAKE_PUBLIC_HOST" {
+		env[9].Name != "LAKE_LOG_MODE" || env[9].Value != "air-gapped" ||
+		env[10].Name != "LAKE_PUBLIC_HOST" {
 		t.Errorf("env order or values = %+v", env)
 	}
 	for i, variable := range env {
@@ -660,6 +660,182 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	}
 }
 
+func TestLakeReconcileZettaDataPlane(t *testing.T) {
+	s := newLakeScheme(t)
+	ctx := context.Background()
+	two := int32(2)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
+		Spec: oramav1alpha1.LakeSpec{
+			Image:          "oramasearch/lake:v1-sandbox",
+			PullSecretName: "oramasearch-dockerhub",
+			Zetta: oramav1alpha1.LakeZettaSpec{
+				Image:        "oramasearch/zetta:20260906",
+				Replicas:     &two,
+				Storage:      oramav1alpha1.OramaZettaStorage{Size: "40Gi", StorageClassName: "fast"},
+				Reachability: oramav1alpha1.ReachabilityWANAccessible,
+			},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(lake).
+		WithStatusSubresource(lake, &oramav1alpha1.OramaZettaCluster{}).
+		Build()
+	r := &LakeReconciler{Client: c, Scheme: s}
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if result.RequeueAfter != lakeStatusRequeue {
+		t.Errorf("requeueAfter = %s, want %s", result.RequeueAfter, lakeStatusRequeue)
+	}
+
+	zetta := &oramav1alpha1.OramaZettaCluster{}
+	zettaKey := types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-zetta"}
+	if err := c.Get(ctx, zettaKey, zetta); err != nil {
+		t.Fatalf("OramaZettaCluster not created: %v", err)
+	}
+	if zetta.Spec.Image != "oramasearch/zetta:20260906" || zetta.Spec.Replicas != 2 ||
+		zetta.Spec.Storage.Size != "40Gi" || zetta.Spec.Storage.StorageClassName != "fast" ||
+		zetta.Spec.Reachability != oramav1alpha1.ReachabilityWANAccessible ||
+		zetta.Spec.PullSecretName != "oramasearch-dockerhub" ||
+		zetta.Spec.ProvisionOperatorSchema == nil || *zetta.Spec.ProvisionOperatorSchema {
+		t.Errorf("Zetta spec = %+v", zetta.Spec)
+	}
+	if refs := zetta.OwnerReferences; len(refs) != 1 || refs[0].Name != "hello" || refs[0].Kind != "Lake" {
+		t.Errorf("Zetta owner refs = %+v", refs)
+	}
+
+	deployment := &appsv1.Deployment{}
+	deploymentKey := types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}
+	if err := c.Get(ctx, deploymentKey, deployment); err != nil {
+		t.Fatal(err)
+	}
+	url := findEnv(deployment.Spec.Template.Spec.Containers[0].Env, "LAKE_DATA_PLANE_URL")
+	token := findEnv(deployment.Spec.Template.Spec.Containers[0].Env, "LAKE_DATA_PLANE_TOKEN")
+	if url == nil || url.Value != "http://lake-hello-zetta-zetta.lake-dev.svc.cluster.local:4800" {
+		t.Errorf("LAKE_DATA_PLANE_URL = %+v", url)
+	}
+	if token == nil || token.ValueFrom == nil || token.ValueFrom.SecretKeyRef == nil ||
+		token.ValueFrom.SecretKeyRef.Name != "lake-hello-zetta-zetta-admin" ||
+		token.ValueFrom.SecretKeyRef.Key != "token" || token.ValueFrom.SecretKeyRef.Optional != nil {
+		t.Errorf("LAKE_DATA_PLANE_TOKEN = %+v", token)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	if lake.Status.ZettaReady || lakeConditionReason(lake.Status.Conditions, "ZettaReady") != "ZettaProgressing" {
+		t.Errorf("initial Zetta status = %+v", lake.Status)
+	}
+
+	zetta.Status.Phase = "Ready"
+	zetta.Status.ReadyNodes = 2
+	zetta.Status.TotalNodes = 2
+	if err := c.Status().Update(ctx, zetta); err != nil {
+		t.Fatalf("set Zetta status: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}}); err != nil {
+		t.Fatalf("reconcile ready Zetta: %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	if !lake.Status.ZettaReady || lakeConditionStatus(lake.Status.Conditions, "ZettaReady") != metav1.ConditionTrue {
+		t.Errorf("ready Zetta status = %+v", lake.Status)
+	}
+
+	disabled := false
+	lake.Spec.Zetta.Enabled = &disabled
+	if err := c.Update(ctx, lake); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}}); err != nil {
+		t.Fatalf("reconcile disabled Zetta: %v", err)
+	}
+	if err := c.Get(ctx, zettaKey, zetta); err == nil {
+		t.Error("OramaZettaCluster not torn down when zetta.enabled went false")
+	}
+	if err := c.Get(ctx, deploymentKey, deployment); err != nil {
+		t.Fatal(err)
+	}
+	if findEnv(deployment.Spec.Template.Spec.Containers[0].Env, "LAKE_DATA_PLANE_URL") != nil ||
+		findEnv(deployment.Spec.Template.Spec.Containers[0].Env, "LAKE_DATA_PLANE_TOKEN") != nil {
+		t.Errorf("data-plane env remains after disable: %+v", deployment.Spec.Template.Spec.Containers[0].Env)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	if lake.Status.ZettaReady || lakeConditionReason(lake.Status.Conditions, "ZettaReady") != "ZettaDisabled" {
+		t.Errorf("disabled Zetta status = %+v", lake.Status)
+	}
+}
+
+func TestLakeDeletionWaitsForZettaFinalizers(t *testing.T) {
+	s := newLakeScheme(t)
+	ctx := context.Background()
+	now := metav1.Now()
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "hello",
+			UID:               types.UID("lake-uid"),
+			Finalizers:        []string{lakeZettaFinalizer},
+			DeletionTimestamp: &now,
+		},
+		Spec: oramav1alpha1.LakeSpec{Image: "oramasearch/lake:v1-sandbox"},
+	}
+	zetta := &oramav1alpha1.OramaZettaCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "lake-hello-zetta",
+			Namespace:  "lake-dev",
+			Finalizers: []string{"orama.cloud/zetta-capacity"},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "orama.cloud/v1alpha1",
+				Kind:       "Lake",
+				Name:       "hello",
+				UID:        types.UID("lake-uid"),
+				Controller: boolPtr(true),
+			}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, zetta).Build()
+	r := &LakeReconciler{Client: c, Scheme: s}
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}})
+	if err != nil {
+		t.Fatalf("reconcile deletion: %v", err)
+	}
+	if result.RequeueAfter != lakeStatusRequeue {
+		t.Errorf("requeueAfter = %s, want %s", result.RequeueAfter, lakeStatusRequeue)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
+		t.Fatal(err)
+	}
+	if len(lake.Finalizers) != 1 || lake.Finalizers[0] != lakeZettaFinalizer {
+		t.Errorf("Lake finalizer released before Zetta cleanup: %v", lake.Finalizers)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-zetta"}, zetta); err != nil {
+		t.Fatal(err)
+	}
+	if zetta.DeletionTimestamp.IsZero() {
+		t.Error("Zetta deletion was not started before Lake finalization")
+	}
+
+	zetta.Finalizers = nil
+	if err := c.Update(ctx, zetta); err != nil {
+		t.Fatalf("finish Zetta finalization: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}}); err != nil {
+		t.Fatalf("release Lake finalizer: %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err == nil {
+		for _, finalizer := range lake.Finalizers {
+			if finalizer == lakeZettaFinalizer {
+				t.Errorf("Lake Zetta finalizer was not released: %v", lake.Finalizers)
+			}
+		}
+	}
+}
+
 func TestLakeReconcileControlDB(t *testing.T) {
 	s := newLakeScheme(t)
 	ctx := context.Background()
@@ -698,14 +874,15 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := d.Spec.Template.Spec.Containers[0].Env
-	if len(env) != 7 || env[0].Name != "LAKE_ADMIN_TOKEN" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" ||
+	if len(env) != 9 || env[0].Name != "LAKE_ADMIN_TOKEN" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" ||
 		env[1].Name != "LAKE_STORE_ROOT" || env[1].Value != lakeStorePath ||
 		env[2].Name != "LAKE_SEALING_PUBLIC_KEY" || env[2].Value == "" ||
 		env[3].Name != "LAKE_SEALING_KID" || env[3].Value == "" ||
 		env[4].Name != "LAKE_INSTANCE_KEK" || env[4].ValueFrom.SecretKeyRef.Name != "lake-hello-instance-kek" ||
 		env[4].ValueFrom.SecretKeyRef.Key != "key" || env[5].Name != "LAKE_CONTROL_DB_URI" ||
 		env[5].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" || env[5].ValueFrom.SecretKeyRef.Key != "uri" ||
-		env[5].ValueFrom.SecretKeyRef.Optional == nil || !*env[5].ValueFrom.SecretKeyRef.Optional {
+		env[5].ValueFrom.SecretKeyRef.Optional == nil || !*env[5].ValueFrom.SecretKeyRef.Optional ||
+		env[7].Name != "LAKE_DATA_PLANE_URL" || env[8].Name != "LAKE_DATA_PLANE_TOKEN" {
 		t.Errorf("env = %+v", env)
 	}
 	var admin corev1.Secret
@@ -774,9 +951,10 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
 		t.Fatal(err)
 	}
-	if e := d.Spec.Template.Spec.Containers[0].Env; len(e) != 4 || e[0].Name != "LAKE_ADMIN_TOKEN" ||
+	if e := d.Spec.Template.Spec.Containers[0].Env; len(e) != 6 || e[0].Name != "LAKE_ADMIN_TOKEN" ||
 		e[1].Name != "LAKE_STORE_ROOT" || e[2].Name != "LAKE_SEALING_PUBLIC_KEY" ||
-		e[3].Name != "LAKE_SEALING_KID" {
+		e[3].Name != "LAKE_SEALING_KID" || e[4].Name != "LAKE_DATA_PLANE_URL" ||
+		e[5].Name != "LAKE_DATA_PLANE_TOKEN" {
 		t.Errorf("operator env when postgres is disabled = %+v", e)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-instance-kek"}, &instanceKek); err == nil {

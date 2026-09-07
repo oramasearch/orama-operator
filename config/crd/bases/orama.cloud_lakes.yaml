@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.postgresInstances
       name: DB
       type: string
+    - jsonPath: .status.zettaReady
+      name: Zetta
+      type: boolean
     - jsonPath: .status.schemaPhase
       name: Schema
       type: string
@@ -263,7 +266,7 @@ spec:
                   spec.namespace, the same path OramaCloudV1 uses for its control DB (requires the
                   CloudNativePG operator, see the helmfile). CNPG generates the `lake-<name>-controldb-app`
                   Secret (owner credentials + connection URI); the lake pods receive it as
-                  LAKE_CONTROL_DB_URI. Zetta is the data plane and is provisioned separately.
+                  LAKE_CONTROL_DB_URI. The Zetta field below configures lake's owned data plane.
                 properties:
                   backup:
                     description: Backup configures scheduled Barman object-store backups
@@ -664,6 +667,50 @@ spec:
                 x-kubernetes-list-map-keys:
                 - topologyKey
                 x-kubernetes-list-type: map
+              zetta:
+                description: |-
+                  Zetta is lake's data plane: an owned OramaZettaCluster in spec.namespace. Its client
+                  Service and seeded admin token are injected into lake as LAKE_DATA_PLANE_URL and
+                  LAKE_DATA_PLANE_TOKEN. The child is deleted before the Lake finalizer is released.
+                properties:
+                  enabled:
+                    default: true
+                    description: |-
+                      Enabled provisions the OramaZettaCluster. Default true. Setting it false tears the cluster
+                      down, including its per-node data volumes.
+                    type: boolean
+                  image:
+                    description: Image is the Zetta image. Empty uses the OramaZettaCluster
+                      default.
+                    type: string
+                  reachability:
+                    description: |-
+                      Reachability declares whether this data-plane slice is dial-out-only or wan-accessible.
+                      Empty defaults to dial-out-only.
+                    enum:
+                    - dial-out-only
+                    - wan-accessible
+                    type: string
+                  replicas:
+                    default: 1
+                    description: Replicas is the number of equal-peer Zetta nodes.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  storage:
+                    description: Storage configures each Zetta node's persistent data
+                      volume.
+                    properties:
+                      size:
+                        default: 10Gi
+                        description: Size of the per-node PVC (e.g. "10Gi").
+                        type: string
+                      storageClassName:
+                        description: StorageClassName for the per-node PVCs (empty
+                          = the cluster default StorageClass).
+                        type: string
+                    type: object
+                type: object
             required:
             - image
             type: object
@@ -675,8 +722,9 @@ spec:
                   the newest CNPG Backup completed.
                 type: boolean
               conditions:
-                description: Conditions includes StoreReady and BackupReady, including
-                  invalid configuration details.
+                description: |-
+                  Conditions includes StoreReady, BackupReady, and ZettaReady, including invalid
+                  configuration details.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -909,6 +957,10 @@ spec:
                       Pending, Bound, or Lost.
                     type: string
                 type: object
+              zettaReady:
+                description: ZettaReady is true once every desired node in the owned
+                  data-plane cluster is ready.
+                type: boolean
             type: object
         required:
         - spec
