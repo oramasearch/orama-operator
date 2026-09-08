@@ -245,41 +245,45 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("reconcile ingress: %w", err)
 	}
 
-	// Status: mirror the Deployment, and only write on a real transition (anti-flap,
-	// operator principle #7). Vocabulary: Progressing | Ready | Degraded.
-	phase := "Progressing"
-	switch {
-	case replicas > 0 && deploy.Status.ReadyReplicas >= replicas:
-		phase = "Ready"
-	case deploy.Status.UnavailableReplicas > 0 && deploy.Status.ReadyReplicas > 0:
-		phase = "Degraded"
-	}
+	// Aggregate readiness before writing status, preserving stable conditions between polls.
+	readiness := []lakeComponentReadiness{lakeDeploymentReadiness(deploy, replicas)}
 	storeStatus, storeCondition, storeReady, err := r.lakeStoreStatus(ctx, &lake, ns, claimName)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("read store status: %w", err)
 	}
-	if !storeReady && phase == "Ready" {
-		phase = "Progressing"
+	if !storeReady {
+		readiness = append(readiness, lakeComponentReadiness{"Progressing", storeCondition.Reason, storeCondition.Message})
 	}
 	pgReady, pgDetail := r.lakeControlDBStatus(ctx, &lake, ns)
+	if lakePostgresEnabled(&lake) && !pgReady {
+		readiness = append(readiness, lakeComponentReadiness{
+			"Progressing", "PostgresNotReady", "waiting for all configured Postgres instances to be ready (observed " + pgDetail + ")",
+		})
+	}
+	schemaPhase, schemaVersion, schemaReadiness := r.lakeSchemaStatus(ctx, &lake, ns)
+	readiness = append(readiness, schemaReadiness)
 	zettaReady, zettaCondition := lakeZettaStatus(&lake, zetta)
-	if lakeZettaEnabled(&lake) && !zettaReady && phase == "Ready" {
-		phase = "Progressing"
+	if lakeZettaEnabled(&lake) && !zettaReady {
+		zettaPhase := "Progressing"
+		if zetta != nil && zetta.Status.Phase == "Degraded" {
+			zettaPhase = "Degraded"
+		}
+		readiness = append(readiness, lakeComponentReadiness{zettaPhase, zettaCondition.Reason, zettaCondition.Message})
 	}
-	if zetta != nil && zetta.Status.Phase == "Degraded" {
-		phase = "Degraded"
-	}
-	schemaPhase, schemaVersion := r.lakeSchemaStatus(ctx, &lake, ns)
 	backupReady, lastBackupTime, backupCondition, err := r.lakeBackupStatus(ctx, &lake, ns, backup)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("read control DB backup status: %w", err)
 	}
 	if backup.Enabled && !backup.Valid {
-		phase = "Degraded"
+		readiness = append(readiness, lakeComponentReadiness{"Degraded", backupCondition.Reason, backupCondition.Message})
 	}
+	phase, readyCondition := lakeAggregateReadiness(&lake, readiness)
 	dataServices, dataServicesSummary := lakeDataServiceStatus(&lake)
 	desiredConditions := lake.Status.Conditions
-	conditionsChanged := apimeta.SetStatusCondition(&desiredConditions, backupCondition)
+	conditionsChanged := apimeta.SetStatusCondition(&desiredConditions, readyCondition)
+	if apimeta.SetStatusCondition(&desiredConditions, backupCondition) {
+		conditionsChanged = true
+	}
 	if apimeta.SetStatusCondition(&desiredConditions, storeCondition) {
 		conditionsChanged = true
 	}
@@ -314,14 +318,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			return ctrl.Result{}, err
 		}
 	}
-	// The CNPG Cluster is not watched (OramaCloudV1 does the same): poll until the DB is ready and
-	// the schema applied (the PostgresSchema is owned, so its status changes re-queue us too).
-	if lakePostgresEnabled(&lake) && (!pgReady || schemaPhase != "Applied") {
-		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
-	}
-	// CNPG creates Backup objects outside Lake ownership. Polling captures future runs while the
-	// anti-flap status guard avoids writes when the observed state is unchanged.
-	if lakePostgresEnabled(&lake) && backup.Enabled {
+	// CNPG Cluster and Backup resources are not watched. Keep polling after success so
+	// readiness loss and future backups are observed; unchanged polls write no status.
+	if lakePostgresEnabled(&lake) {
 		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
 	if lakeZettaEnabled(&lake) && !zettaReady {
@@ -1225,21 +1224,6 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 	return err
 }
 
-// lakeSchemaStatus mirrors the owned PostgresSchema's phase and applied version, best-effort.
-func (r *LakeReconciler) lakeSchemaStatus(ctx context.Context, lake *oramav1alpha1.Lake, ns string) (string, string) {
-	if !lakePostgresEnabled(lake) {
-		return "", ""
-	}
-	var ps oramav1alpha1.PostgresSchema
-	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: lakeControlDB(lake.Name) + "-schema"}, &ps); err != nil {
-		return "Pending", ""
-	}
-	if ps.Status.Phase == "" {
-		return "Pending", ps.Status.AppliedVersion
-	}
-	return ps.Status.Phase, ps.Status.AppliedVersion
-}
-
 // lakeControlDBStatus reads CNPG readiness best-effort; not-found (or no CNPG) counts as not ready.
 func (r *LakeReconciler) lakeControlDBStatus(ctx context.Context, lake *oramav1alpha1.Lake, ns string) (bool, string) {
 	if !lakePostgresEnabled(lake) {
@@ -1252,7 +1236,11 @@ func (r *LakeReconciler) lakeControlDBStatus(ctx context.Context, lake *oramav1a
 	}
 	ri, _, _ := unstructured.NestedInt64(cluster.Object, "status", "readyInstances")
 	inst, _, _ := unstructured.NestedInt64(cluster.Object, "status", "instances")
-	return ri >= 1, fmt.Sprintf("%d/%d", ri, inst)
+	desired := int64(1)
+	if lake.Spec.Postgres.Instances != nil {
+		desired = int64(*lake.Spec.Postgres.Instances)
+	}
+	return desired > 0 && ri >= desired, fmt.Sprintf("%d/%d", ri, inst)
 }
 
 // reconcileLakeIngress exposes the lake at spec.host via an nginx Ingress that proxies the whole host

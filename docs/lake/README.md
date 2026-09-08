@@ -104,18 +104,39 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
     controller runs Postgres procedures and updates the row; see
     [data services](data-services/README.md).
 
-**Status** mirrors the Deployment (`readyReplicas`, `phase`), publishes the active sealing
-recipient and old-key record counts (`sealing`), selected store claim
-(`store.claimName`, `store.phase`, `store.capacity`, `StoreReady` condition), the CNPG cluster
-(`postgresReady`, `postgresInstances`), the PostgresSchema (`schemaPhase`, `schemaVersion`), and
-the backup (`backupReady`, `lastBackupTime`, `BackupReady` condition), and lifecycle evidence for
-Postgres and Zetta (`dataServices`), plus owned-cluster readiness (`zettaReady`, `ZettaReady`);
-written only on a real transition. An unbound store or enabled but unready Zetta cluster keeps the
-Lake out of `Ready`; a degraded Zetta child makes the Lake `Degraded`. The Lake polls the claim,
-CNPG, and an unready Zetta data plane every 20 s until storage, Postgres, schema, and Zetta are
-ready, and while enabled backups observe new CNPG `Backup` resources. `kubectl get lake` columns:
-Namespace, Host, Ready, DB, Zetta, Schema, Store, Backup, Data, Phase. The Data column shows managed and unmanaged service counts;
-see [data services](data-services/README.md) for the operation-level labels and customer boundary.
+**Status** reports overall service readiness through `phase` and `conditions[Ready]`, alongside
+Deployment replica counts, store binding, Postgres, schema, Zetta, backup, sealing, and data-service
+observations. `Ready=True` (`LakeReady`) requires all of the following:
+
+- The Deployment controller has observed its current generation, the desired replica count is
+  positive, and at least that many replicas are ready, updated, and available.
+- The selected store PVC is Bound.
+- When Postgres is enabled, CNPG reports at least `spec.postgres.instances` ready instances
+  (default 1), and the owned `PostgresSchema` reports `Applied` for its current generation with
+  `appliedVersion` matching the current vendored schema hash.
+- When Zetta is enabled, the owned cluster reports `Ready` with every desired node ready.
+- Enabled backup configuration is valid. Backup completion remains a separate `BackupReady`
+  observation.
+
+An unfinished rollout or dependency reports `Progressing` with an explanatory `Ready=False`
+condition. Schema failure, Deployment replica failure or an exceeded progress deadline, a degraded
+Zetta child, or invalid backup configuration reports `Degraded`. Failures take precedence over
+pending work. The condition records the Lake generation; unchanged observations preserve its
+transition time and produce zero status writes, including after an operator restart.
+
+CNPG is polled every 20 seconds for as long as Postgres is enabled, including after success and
+with backups disabled. Losing database readiness therefore removes `Ready` on the next poll;
+recovery restores it when every requirement is satisfied. Owned Deployment and PostgresSchema
+changes also enqueue reconciliation. Pending store and Zetta observations retain their existing
+20-second polls. `kubectl get lake` columns: Namespace, Host, Ready, DB, Zetta, Schema, Store,
+Backup, Data, Phase. The Ready column is a replica count; use `PHASE=Ready` or the `Ready=True`
+condition to confirm overall readiness. The Data column shows managed and unmanaged service
+counts; see [data services](data-services/README.md) for the operation-level labels and customer
+boundary.
+
+Native fake-client regression coverage in `internal/controller/lake_readiness_test.go` exercises
+failed schema with an unavailable database, old ready pods during rollout, recovery, later database
+readiness loss, stale schema versions/generations, and zero status writes in steady state.
 
 **Owned kinds** (`SetupWithManager`): PersistentVolumeClaim (only the operator-created store
 claim), Deployment, PodDisruptionBudget, Service, OramaZettaCluster, Ingress, CloudflareDNSRecord, ConfigMap, Secret, LakeEnvironment, LakeSealedSecret,
