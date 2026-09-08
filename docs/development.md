@@ -54,9 +54,62 @@ audit, secret-reference, REST, and MCP tests still run.
 ```sh
 make manifests      # generate CRD + RBAC from the kubebuilder markers
 make build          # generate + fmt + vet + compile the manager to bin/manager
-make docker-build IMG=oramasearch/orama-operator:<tag>
 make helm-package   # copy generated CRDs into the chart + package
 ```
+
+### Obtain or publish the operator image
+
+Installations need a **published immutable operator tag** compatible with this checkout's CRDs
+and RBAC, plus permission to pull its private repository. Obtain both from the Orama release
+maintainer before following [install.md](install.md). The chart's `v1-sandbox` default is mutable;
+it is not a release recommendation. This guide does not assert that any new tag is published.
+
+The development machine does not run Docker (bridge decision 33). Native build and verification:
+
+```sh
+go build ./...
+go vet ./...
+go test ./...
+```
+
+To publish an operator image, an authorized maintainer uses **cluster BuildKit through
+`buildctl`**. Obtain the existing remote builder's endpoint, its TLS client configuration, and
+a registry configuration with push permission from the build infrastructure owner. Set
+`BUILDKIT_HOST`, `BUILDKIT_TLS_DIR` (containing `ca.pem`, `cert.pem`, and `key.pem`), and
+`DOCKER_CONFIG` (the protected directory containing the registry `config.json`) to those supplied
+locations. The configuration file format does not require a local Docker daemon. Keep credentials
+outside the repository; the read-only installation token is not a publishing credential.
+
+From this repository root, set `OPERATOR_REPOSITORY` to the authorized destination and
+`OPERATOR_TAG` to a new immutable release tag approved by the maintainer. For Linux amd64 nodes:
+
+```sh
+: "${BUILDKIT_HOST:?Set the supplied remote BuildKit endpoint}"
+: "${BUILDKIT_TLS_DIR:?Set the supplied BuildKit TLS directory}"
+: "${DOCKER_CONFIG:?Set the protected registry configuration directory}"
+: "${OPERATOR_REPOSITORY:?Set the authorized image repository}"
+: "${OPERATOR_TAG:?Set a new immutable release tag}"
+export DOCKER_CONFIG
+buildctl --addr "$BUILDKIT_HOST" --tlsdir "$BUILDKIT_TLS_DIR" build \
+  --frontend dockerfile.v0 \
+  --local context=. \
+  --local dockerfile=. \
+  --opt platform=linux/amd64 \
+  --opt build-arg:TARGETOS=linux \
+  --opt build-arg:TARGETARCH=amd64 \
+  --output "type=image,name=${OPERATOR_REPOSITORY}:${OPERATOR_TAG},push=true"
+```
+
+For arm64 nodes, use `linux/arm64` and `TARGETARCH=arm64` with a builder that supports that
+platform. BuildKit uses this repo's `Dockerfile` on the remote builder and pushes directly to the
+registry. Record the successful push's digest and confirm the installation identity can pull it
+before distributing the tag. If builder or publishing access is unavailable, obtain the published
+image from the release maintainer instead; a native `go build` alone does not publish an image.
+Application component images are supplied by their owning projects, not built in this repository.
+
+The manager and application pull-secret settings are described separately in
+[install/credentials.md](install/credentials.md). No live build or cluster access is needed for
+the local chart and Go proof.
 
 ## Run locally (dev loop)
 
