@@ -546,9 +546,14 @@ It rejects an unrelated Secret at the requested name. See [`lake/sealed-secrets.
 Status mirrors the Deployment, publishes the active sealing recipient and retained-key counts,
 selected store claim (claim, phase, capacity, and `StoreReady`),
 the CNPG cluster (polled every 20 s, not watched), the PostgresSchema, the owned Zetta cluster
-(`zettaReady` and `ZettaReady`), and enabled backup completion. An unbound store or enabled but
-unready Zetta data plane cannot report the Lake as Ready. Production: `Lake/prod` in namespace
-`lake` on AKS; R2 backup credentials must exist before its backup is enabled.
+(`zettaReady` and `ZettaReady`), and enabled backup completion. Overall `Ready` requires the current
+Deployment generation with all desired ready, updated, and available replicas; a Bound store;
+all configured Postgres instances ready and the current schema Applied when Postgres is enabled;
+and the enabled Zetta child Ready. Failed schema or Deployment states report `Degraded`, while
+pending work reports `Progressing`; `conditions[Ready]` explains the blocker. CNPG polling continues
+after success even with backups disabled, so later readiness loss updates the phase. Unchanged
+polls write zero status updates. This contract is covered by native fake-client regressions.
+Production: `Lake/prod` in namespace `lake` on AKS; R2 backup credentials must exist before its backup is enabled.
 
 `LakeE2ETest` watches the cluster-scoped Lake independently of normal reconciliation. Target changes
 and a 15-second pending requeue release the test once the Deployment, Postgres, and schema are ready.

@@ -141,7 +141,7 @@ spec:
     storageClassName: local-path
 ```
 
-Save that object as `lake.yaml`, apply it, and wait for all three readiness surfaces:
+Save that object as `lake.yaml`, apply it, and wait for the components and overall Lake readiness:
 
 ```sh
 sudo k0s kubectl apply -f lake.yaml
@@ -152,11 +152,24 @@ sudo k0s kubectl rollout status -n lake-dev deployment/lake-hello --timeout=15m
 sudo k0s kubectl wait lake/hello \
   --for=jsonpath='{.status.schemaPhase}'=Applied \
   --timeout=15m
+sudo k0s kubectl wait lake/hello --for=condition=Ready --timeout=15m
 sudo k0s kubectl get lake hello
 ```
 
 Ready means the Lake row reports `READY=1`, `DB=1/1`, `SCHEMA=Applied`,
-`STORE=lake-hello-store`, and `PHASE=Ready`. Also inspect the namespaced objects:
+`STORE=lake-hello-store`, and `PHASE=Ready`, with `Ready=True`. The Deployment must have
+observed its current generation and have the required ready, updated, and available replicas;
+old ready pods during a rollout do not satisfy this check. The store must be Bound, all configured
+Postgres instances must be ready, and the schema must be Applied for its current generation and
+current version. The enabled Zetta data plane must also be Ready. Enabled backup configuration
+must be valid; backup completion is reported separately.
+
+Pending dependencies or rollout work report `Progressing`. A failed schema or Deployment, degraded
+Zetta, or invalid backup configuration reports `Degraded`; inspect `status.conditions[Ready]` for
+the explanation. CNPG remains polled every 20 seconds after success, so a later database readiness
+loss updates the Lake row even with backups disabled. Unchanged polls write no status. The full
+contract is in the [Lake reference](../crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service).
+Also inspect the namespaced objects:
 
 ```sh
 sudo k0s kubectl -n lake-dev get pods,pvc,service
