@@ -1,205 +1,259 @@
 # Install
 
-How to install the operator and stand up an Orama Cloud v1 stack in a cluster.
+Install the manager, then reconcile a CPU-only Orama Cloud v1 engine and its broker. Run the
+commands from this repository root, in order. The larger v1 samples are described in §4.
+For a Lake installation, use [install/k0s.md](install/k0s.md).
 
-## At a glance
+## Prerequisites — obtain these before installing
 
-```sh
-helmfile apply                                          # platform operators + this operator
-# ...or just the operator if the platform bits already exist:
-helm install orama-operator ./chart -n orama-system --create-namespace
-kubectl apply -f config/samples/primary-us-east.yaml   # one OramaCloudV1 per cluster
-kubectl get ocv1 -A -w                                  # the operator reconciles the whole stack
-```
+- A Kubernetes cluster (1.29+) and a `kubectl` context with permission to install CRDs, RBAC,
+  platform controllers, and namespaced workloads. Use a checkout of this repository compatible
+  with the operator image supplied below.
+- **Helm 3.x**, **helmfile**, and **kubectl**. These commands use Helmfile's `sync` command;
+  they do not require the Helm diff plugin.
+- A default **StorageClass** with `ReadWriteOnce`, capacity for the engine, embeddings service,
+  and broker, and node network access to the image registries and required model downloads.
+  The sample sets `components.engine.writer.gpu: false`; no GPU is required.
+- **Private registry access from the Orama release maintainer:** a Docker Hub username and a
+  read-only token authorized for `oramasearch/orama-operator` and the selected application images.
+  Neither the chart nor helmfile creates this credential. A clean node cannot rely on cached images.
+- **A published immutable operator tag** that the supplied identity can pull, built for the
+  cluster's Linux architecture and compatible with this checkout's CRDs and RBAC. Set
+  `OPERATOR_TAG` to that tag. This page does not supply or promise a published release tag;
+  `v1-sandbox` is the chart's mutable default, not the tag to use for this installation.
+- For the sample in §3, **compatible published immutable image references** for OramaCore and its
+  CPU ai-server from their release maintainer. Set `ORAMACORE_IMAGE` and `EMBEDDINGS_IMAGE` to
+  those full references (`repository:tag` or `repository@sha256:digest`). Obtain registry access
+  to both; the global application tag does not select these two images. If their model artifacts
+  require credentials, arrange those with the maintainer before applying the sample.
+
+If an image or access grant is missing, obtain it before continuing. Maintainers publish the
+operator through cluster BuildKit with `buildctl`; the native checks, remote build procedure, and
+published-image alternative are in [development.md](development.md#obtain-or-publish-the-operator-image).
+Application images come from their owning projects.
 
 Three layers, each with one job:
 
-- **`helmfile.yaml`** composes the upstream **platform operators** the stack builds on
-  (CloudNativePG, RabbitMQ operator, …) plus this operator's chart, each toggleable so you skip
-  whatever your cluster already has.
-- The **chart** installs only the **operator + CRDs + RBAC** (self-contained); it does not deploy
-  the app.
-- The **operator** reconciles one `OramaCloudV1` CR into every child workload
-  (Deployments / StatefulSets / Secrets / dependency CRs) **and** the Cloudflare DNS + Load
-  Balancing via the CF API.
+- **`helmfile.yaml`** composes **CloudNativePG and ingress-nginx** plus the operator chart.
+  Select the platform releases first, as below; a bare `helmfile apply` also installs the manager
+  using chart defaults without credentials.
+- The **chart** installs the **operator Deployment, CRDs, RBAC, ServiceAccount, and manager
+  control-plane Service**. It does not deploy the v1 application or create a registry Secret.
+- The **operator** reconciles `OramaCloudV1` into the selected workloads and dependency CRs.
+  RabbitMQ runs as a StatefulSet with an operator-owned `RabbitMQTopology` CR; there is no
+  upstream RabbitMQ operator to install. ClickHouse also runs as a StatefulSet.
 
-Provisioning the external dependencies (the Cloudflare token the operator uses for DNS/LB/KV, the
-real SaaS tokens you supply, and what is generated in-cluster) is walked through in
-[provisioning-runbook.md](provisioning-runbook.md), so the stack *works*, not just boots.
+## 1. Prepare registry access and platform controllers
 
-## Prerequisites
+Create the release namespace **before** its pull Secret. Enter the supplied credentials in a
+Bash session with tracing disabled; do not paste a real token into a manifest or shell history:
 
-- A Kubernetes cluster (1.29+) and `kubectl` context pointing at it.
-- **helm** 3.x (and **helmfile** if you want the one-shot platform install).
-- A default **StorageClass** with `ReadWriteOnce` (for the StatefulSet PVCs).
-- An **ingress controller** if you enable the dashboard (for its Ingress).
-- *(Optional)* a **GPU node pool** (`nvidia.com/gpu`) for the OramaCore writer's
-  built-in embeddings. **No GPU?** set `components.engine.writer.gpu: false` (CPU
-  embeddings) or the writer pod stays `Pending`.
-
-## 1. Platform operators
-
-The operator reconciles some components into upstream operators' CRs, so install those
-first. Easiest is the repo's **helmfile** (toggle off anything you already have):
-
-```sh
-helmfile apply        # CloudNativePG, RabbitMQ operator
+```bash
+set +x
+kubectl create namespace orama-system --dry-run=client -o yaml | kubectl apply -f -
+read -r -p 'Docker Hub username: ' ORAMA_DOCKERHUB_USERNAME
+read -r -s -p 'Read-only Docker Hub token: ' ORAMA_DOCKERHUB_TOKEN
+printf '\n'
+: "${ORAMA_DOCKERHUB_USERNAME:?Registry username is required}"
+: "${ORAMA_DOCKERHUB_TOKEN:?Registry token is required}"
+kubectl create secret docker-registry oramasearch-dockerhub -n orama-system \
+  --docker-server=https://index.docker.io/v1/ \
+  --docker-username="$ORAMA_DOCKERHUB_USERNAME" \
+  --docker-password="$ORAMA_DOCKERHUB_TOKEN"
+unset ORAMA_DOCKERHUB_TOKEN
 ```
 
-Or install just what you need directly, e.g. CloudNativePG (required for `controlDB`):
+For an existing installation, preserve its valid Secret. For an internal registry, use its
+server and supplied credentials and change the image repository below. Secrets are namespaced:
+this Secret serves pods in `orama-system`; another application namespace needs its own credential.
+
+Write the **non-secret manager values**, using the published tag obtained above:
 
 ```sh
-helm repo add cnpg https://cloudnative-pg.github.io/charts
-helm install cnpg cnpg/cloudnative-pg -n cnpg-system --create-namespace
+: "${OPERATOR_TAG:?Set the published immutable operator tag supplied by the maintainer}"
+cat > operator-values.yaml <<EOF_VALUES
+operator:
+  image:
+    repository: oramasearch/orama-operator
+    tag: "${OPERATOR_TAG}"
+  imagePullSecrets:
+    - name: oramasearch-dockerhub
+EOF_VALUES
 ```
 
-*(ClickHouse's Altinity operator isn't wired into the helmfile yet — `analytics` runs
-as a single-node StatefulSet without it. See [components.md](components.md).)*
+`operator.imagePullSecrets` reaches the manager's Pod spec. The application's
+`spec.images.pullSecretName` is a separate setting, used in §3. Setting one does not configure
+or create the other. See [install/credentials.md](install/credentials.md) for the mapping and
+failure diagnosis.
 
-## 2. Install the operator
+Install the platform controllers first, omitting a selector for any release already provided
+by the cluster. CloudNativePG must be available to the manager's CNPG watches even when this
+sample does not enable a control DB. ingress-nginx supplies external access for the larger
+samples; the minimal engine sample below does not expose an Ingress.
+
+```sh
+helmfile -l name=cloudnative-pg -l name=ingress-nginx sync --wait --concurrency 1
+```
+
+The selectors include **only** CloudNativePG and ingress-nginx. The manager is installed next.
+The platform chart versions are currently unpinned in `helmfile.yaml`; use your approved platform
+versions for production. See [components.md](components.md) for the component mapping.
+
+## 2. Render, install, and wait for the manager
 
 For a new installation, use the current release name. An AKS installation still running the
-former release must use the [rename cutover runbook](operations/rename-cutover.md) instead of
-installing over it.
+former release must follow the [rename cutover runbook](operations/rename-cutover.md).
+
+First check the manifest using exactly the values that will be installed:
 
 ```sh
-helm install orama-operator ./chart -n orama-system --create-namespace
+helm template orama-operator chart/ --namespace orama-system -f operator-values.yaml \
+  | grep -A3 -E "image:|imagePullSecrets"
 ```
 
-This installs the **CRD**, **RBAC**, and the **operator Deployment**. Confirm it's up:
+The manager Deployment must contain `imagePullSecrets: [{name: oramasearch-dockerhub}]` and
+`image: "oramasearch/orama-operator:<the supplied tag>"`. The pull policy remains `IfNotPresent`.
+Without the values file, the chart renders `oramasearch/orama-operator:v1-sandbox`,
+`IfNotPresent`, and **no `imagePullSecrets`**; it does not default to `latest`.
+Rendering proves the value wiring, not registry access or image publication.
 
 ```sh
-kubectl -n orama-system get deploy orama-operator
+helm install orama-operator ./chart -n orama-system \
+  -f operator-values.yaml --wait --timeout 10m
+kubectl -n orama-system rollout status deployment/orama-operator --timeout=10m
+kubectl -n orama-system get pods -l app.kubernetes.io/name=orama-operator
+kubectl -n orama-system logs deployment/orama-operator --tail=50
 kubectl get crd oramacloudv1s.orama.cloud
 ```
 
-> The chart uses the operator image `oramasearch/orama-operator:latest`
-> (override with `--set operator.image.tag=...`). Build/push it with
-> `make docker-build docker-push IMG=...` (see [development.md](development.md)).
-
-### Gotchas (dev sandbox)
-
-- **Stale mutable-tag image.** A mutable tag (e.g. `:v1-sandbox`) + the default `imagePullPolicy:
-  IfNotPresent` means a node that already cached the tag keeps running the **old** image after a
-  rebuild+push. This silently ran a pre-`#92` operator (still rendering `--cluster-plaintext`) and a
-  pre-[zetta#799](https://github.com/oramasearch/zetta/issues/799) Zetta binary (whose auth wasn't yet
-  mandatory / still accepted the now-removed `--require-auth`/`--mcp-token` flags). Since #799, auth is
-  enforced and the operator seeds + injects the admin token; the target's image MUST be an auth-capable
-  build. **Pin by digest** to force the exact build:
-  `kubectl -n orama-system set image deploy/orama-operator '*=<repo>@sha256:…'` and the OZC
-  `spec.image: <repo>@sha256:…`; **verify the running pod's `imageID` after any rebuild.**
-  `imagePullPolicy: Always` is the real fix.
-- **CRDs already present → `helm install` conflict.** If the CRDs were already `kubectl`-applied, use
-  `helm install --skip-crds` + `kubectl apply -f chart/crds/`. Helm never upgrades `crds/` on `helm
-  upgrade`, so after adding/altering a CRD, **`kubectl apply -f chart/crds/`** to the cluster.
-- **RBAC must match what the image watches.** The manager CrashLoops (*"failed to wait for `<kind>` caches
-  to sync"*) if the image watches a CRD/resource the ClusterRole doesn't grant. The `ORAMA_OPERATOR_ID`
-  read no longer needs a cluster-wide `namespaces` **watch** (operator#106): it is a single **uncached
-  GET** of the `kube-system` Namespace, so the grant is `namespaces: [get]` only — no list/watch informer.
-  The chart ClusterRole is hand-maintained; keep it in sync with the generated `config/rbac/role.yaml`.
-- **Multi-cluster:** each k8s cluster runs its **own** in-cluster operator; they share one Zetta and
-  coordinate through it. See [zetta-datastore.md](zetta-datastore.md) + [zetta-cluster-mtls.md](zetta-cluster-mtls.md).
-
-## 3. Deploy a v1 stack (single-cluster quickstart)
-
-Apply one `OramaCloudV1` — the operator stands up the whole stack, **self-bootstrapped
-with per-component dummy secrets** (no manual secret creation):
+Alternatively, install the **manager release only** through Helmfile with the same chart values:
 
 ```sh
-kubectl apply -n orama-system -f - <<'EOF'
+helmfile -l app=orama-operator sync --values "$PWD/operator-values.yaml" --wait
+```
+
+Run the same rollout and log checks after that alternative. `--values` passes chart values;
+`--state-values-file` configures Helmfile's own template state and is not a substitute here.
+
+**The manager becomes pullable at this installation step:** its Pod now references the existing
+Secret in `orama-system` and an image the supplied identity can access. Wait for a successful
+rollout, a running manager with no restarts, and logs without cache-sync or RBAC errors before
+applying a CR. The chart currently has no manager readiness probe, so rollout alone does not
+prove that all controllers have started. Pull failures and startup checks are covered in
+[install/credentials.md](install/credentials.md#diagnose-a-manager-that-does-not-start).
+
+## 3. Reconcile the CPU engine sample
+
+The minimal sample enables the writer, reader, shared CPU embeddings service, and RabbitMQ
+broker used by writer-to-reader replication. It leaves external Cloudflare operations and demo
+seeding disabled. It does not enable the dashboard, SaaS integrations, or the rest of the v1
+application tier. The operator seeds development component credentials; it does **not** generate
+the registry credential. Use an isolated installation for these development defaults.
+
+```sh
+: "${ORAMACORE_IMAGE:?Set the supplied immutable OramaCore image reference}"
+: "${EMBEDDINGS_IMAGE:?Set the supplied immutable CPU ai-server image reference}"
+kubectl apply -n orama-system -f - <<EOF_SAMPLE
 apiVersion: orama.cloud/v1alpha1
 kind: OramaCloudV1
 metadata:
   name: v1
+  namespace: orama-system
 spec:
-  region: { name: local, role: primary }
+  region:
+    name: local
+    role: primary
   profile: light
-  demoSeed: true
+  idp:
+    provider: none
+  images:
+    pullSecretName: oramasearch-dockerhub
+    overrides:
+      oramacore: "${ORAMACORE_IMAGE}"
+      embeddings: "${EMBEDDINGS_IMAGE}"
+  cloudflare:
+    enabled: false
+  demoSeed: false
   components:
-    engine: { enabled: true, writer: { gpu: false } }   # gpu:false on a non-GPU cluster
-EOF
+    engine:
+      enabled: true
+      writer:
+        gpu: false
+      reader:
+        replicas: 1
+      envoy: true
+    broker:
+      enabled: true
+      mode: in-cluster
+      placement: local
+EOF_SAMPLE
+kubectl -n orama-system wait --for=condition=Ready ocv1/v1 --timeout=15m
+kubectl -n orama-system get ocv1 v1
+kubectl -n orama-system get pods,statefulsets,deployments,svc,pvc
 ```
 
-Watch it reconcile:
+The `Ready` condition must be true and every entry in `.status.components` ready. If it does
+not converge, inspect `kubectl -n orama-system describe ocv1 v1`, workload events, and the manager
+logs. Check image access, bound PVCs, model downloads, broker readiness, and node capacity.
+The manager's successful rollout and the sample's Ready condition are separate checks.
 
-```sh
-kubectl get ocv1 -A -w
-kubectl -n orama-system get pods,statefulsets,deployments,svc
-```
+## 4. Deploy the larger v1 samples and real credentials
 
-To deploy from the **private component images** (built by `build/images`), use
-[`../config/samples/sandbox.yaml`](../config/samples/sandbox.yaml) — a light, CPU-only,
-single-node CR **validated on AKS**: it sets `images.{registry,tag,pullSecretName}` and needs no
-per-image overrides (`oramacore` resolves to its published `:latest`, `embeddings` to
-`:cpu-latest`/`:gpu-latest` from `writer.gpu` — the global `tag` applies only to the operator's
-own built images). First create the pull secret and build/push the images (§4).
+[`config/samples/full-stack.yaml`](../config/samples/full-stack.yaml) enables the application tier
+and all its in-cluster data stores, including the CNPG control DB. Before applying it, obtain the
+compatible published component images and registry grants, enough node/storage capacity, and any
+external SaaS credentials required by the enabled features. Copy it to a local manifest, replace
+its mutable `images.tag`, set immutable `images.overrides` where needed, and keep
+`images.pullSecretName: oramasearch-dockerhub` in the CR's namespace. Then apply that manifest and
+repeat §3's readiness checks. It replaces the minimal `v1` CR when applied in the same namespace.
 
-`sandbox.yaml` runs the **app tier only** (data stores off) for a one-small-node smoke test. For the
-**complete stack** — every component with all data stores in-cluster (control DB + analytics + cache +
-broker + search + pgAdmin; `Ready 22/22`, validated on AKS) — apply
-[`../config/samples/full-stack.yaml`](../config/samples/full-stack.yaml) instead (same prereqs; needs
-node capacity for the data stores).
+[`config/samples/sandbox.yaml`](../config/samples/sandbox.yaml) enables the app tier while disabling
+its data stores. It is a partial smoke-test configuration, not a self-contained stack with those
+dependencies running. [`primary-us-east.yaml`](../config/samples/primary-us-east.yaml) and
+[`read-eu.yaml`](../config/samples/read-eu.yaml) require the production and peer prerequisites.
 
-The full field reference is in [crd-reference.md](crd-reference.md); more samples in
-[`../config/samples/`](../config/samples/) (`sandbox.yaml` = single-node app tier, `full-stack.yaml`
-= all data stores in-cluster, `primary-us-east.yaml` = prod-like, `read-eu.yaml` = read tier).
+Image selection is independent of the manager chart values:
 
-## 4. Override the dummy secrets / images (for real use)
+- `spec.images.registry` and `tag` select the operator-specific application images supplied by the
+  owning projects, such as dashboard, workers, and ingestion. Obtain published builds first.
+- `oramacore` defaults to `oramasearch/oramacore:latest`; `embeddings` defaults to
+  `oramasearch/oramacore-ai-server:latest` on CPU, or `oramasearch/oramacore-ai-server-cuda:latest`
+  on GPU. They do not use the global `spec.images.tag`. §3 pins both through `overrides`.
+- `spec.images.overrides` maps component keys to full image references and wins over defaults.
+  The manager image is selected only by `operator.image.repository` and `operator.image.tag`.
 
-- **Secrets** — each component has its own `v1-<component>-secret` (e.g.
-  `v1-engine-secret`, `v1-dashboard-secret`) seeded with dummy values. Edit them in
-  place (the operator won't overwrite an existing secret), the operator
-  won't overwrite them once created.
-- **Images** — `oramacore` reuses its published image; the components with **no** published
-  image (`embeddings-server-py`, `dashboard`, `docs`, `orama-workers`, `harvest`, `disco`,
-  `index-builder`) are built from source by the bridge's
-  [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
-  tooling and pushed to **private Docker Hub** (`oramasearch/<name>:<tag>`). Build + push them
-  first — full procedure in the
-  [RUNBOOK](https://github.com/oramasearch/orama-cloud-v1-bridge/blob/main/build/images/RUNBOOK.md):
-  ```sh
-  REGISTRY=oramasearch TAG=v1-sandbox build/images/build.sh --push
-  ```
-  The images match the `oramasearch/<name>` default, so point the CR at them by **tag**, and —
-  because the repos are private — give it a pull secret:
-  ```sh
-  # create the pull secret once (read-only Docker Hub token)
-  kubectl create secret docker-registry oramasearch-dockerhub -n orama-system \
-    --docker-server=https://index.docker.io/v1/ \
-    --docker-username=<user> --docker-password=<read-only-token>
-  ```
-  ```yaml
-  spec:
-    images:
-      registry: oramasearch
-      tag: v1-sandbox
-      pullSecretName: oramasearch-dockerhub   # attached to every pod so it can pull the private images
-  ```
-  A per-component `overrides` entry still wins over `registry`/`tag`:
-  ```yaml
-  spec:
-    images:
-      overrides:
-        dashboard: myregistry/dashboard:v1.2.3
-  ```
+Component Secrets are named `v1-<component>-secret` (for example, `v1-engine-secret`). The
+operator seeds missing keys with development values while preserving existing values. Supply
+real values for enabled integrations and restart their consumers when required. The external
+Cloudflare and SaaS prerequisites are detailed in [provisioning-runbook.md](provisioning-runbook.md);
+the field reference is [crd-reference.md](crd-reference.md). These credentials do not grant
+registry access.
 
-## 5. Multi-region
+## Installation and upgrade gotchas
 
-Install one release + apply one CR **per cluster** (`us-east` = `primary`, `eu`/`ap` = `read`).
-Make one region `primary` and the others `read`, and give the read tiers the primary's endpoints
-via `spec.peers`: they reach the primary's writer + Postgres over public ingress + mTLS (**no
-service mesh** for now). Cloudflare provides the geo load-balancing (DNS steering) in front of each
-cluster's ingress — set `spec.cloudflare.apiTokenSecretRef` to a Secret holding a **real** CF token
-(key `token`); the operator upserts the DNS record. See
-[`../config/samples/read-eu.yaml`](../config/samples/read-eu.yaml).
+- **Mutable image tags:** the default `IfNotPresent` may reuse a cached tag. Use the immutable
+  published operator tag obtained in the prerequisites; inspect running pods' `imageID` after an
+  upgrade. Changing pull policy does not supply registry access. Mutable-tag behavior is tracked
+  separately in [#103](https://github.com/oramasearch/orama-operator/issues/103).
+- **Existing CRDs:** Helm installs files under `crds/` on first installation but does not upgrade
+  them. Apply `kubectl apply -f chart/crds/` before an upgrade that changes the CRDs. An installation
+  that already manages CRDs separately can use `--skip-crds`.
+- **RBAC and image compatibility:** the manager must watch only kinds installed by the matching
+  chart and allowed by its ClusterRole. Cache-sync failures in logs require checking those grants
+  and the CRDs; registry credentials cannot fix them.
+- **Multi-region:** install one operator and one v1 CR per cluster, with one primary and the
+  others using the read role. Supply `spec.peers` and the external connectivity, certificates,
+  ingress, and Cloudflare credentials appropriate to that deployment; use the read-tier sample
+  and [provisioning-runbook.md](provisioning-runbook.md). Shared Zetta behavior is described in
+  [zetta-datastore.md](zetta-datastore.md) and [zetta-cluster-mtls.md](zetta-cluster-mtls.md).
 
 ## Uninstall
 
 ```sh
-kubectl delete ocv1 v1 -n orama-system        # cascade-deletes the stack (PVCs RETAINED)
-kubectl -n orama-system delete pvc -l app.kubernetes.io/managed-by=orama-cloud-v1-operator  # optional: drop the data
+kubectl delete ocv1 v1 -n orama-system
 helm uninstall orama-operator -n orama-system
 ```
 
-> **PVCs are retained on CR delete** (the data-safe default). Delete them explicitly
-> to reclaim storage.
+Application PVCs are retained on CR deletion. Review retained storage before explicitly deleting
+any claim. The registry Secret created in §1 and the separately installed platform controllers
+also remain; remove them only when no remaining workloads need them.
