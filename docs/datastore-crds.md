@@ -115,9 +115,11 @@ supersedes. It is now a reconciled `PostgresSchema` CRD:
 - The pre-CRD `<cr>-controldb-migrate` Job is cleaned up on upgrade (the new Job runs under
   `<cr>-controldb-schema-migrate`).
 
-**Follow-up:** the schema is a single combined SQL applied once (guard-gated), so a `version` bump
-re-applies only after the prior Job is deleted — true incremental/versioned re-application needs
-incremental migration files, tracked separately. **Least-privilege Postgres roles** (CNPG
+**Version changes:** the controller foreground-deletes an obsolete migration Job, waits for its
+pods to stop, and creates a replacement. Status stays `Applying` during replacement and records
+`Applied` only for the completed desired Job. The combined SQL still uses a guard to skip an
+already-applied schema; Lake hashes both SQL and its latest migration guard
+([schema guide](lake/schema.md)). True incremental migrations remain #126. **Least-privilege Postgres roles** (CNPG
 `managed.roles`: one login role per service instead of the shared `oramacore` owner, per the #40
 refinement + principle #4) is also a separate slice.
 

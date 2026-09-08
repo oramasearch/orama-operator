@@ -46,6 +46,11 @@ export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)"
 go test ./...
 ```
 
+The Lake schema proof also needs local Postgres and `psql`, `createdb`, and `dropdb` on `PATH`.
+Set `LAKE_SCHEMA_TEST_POSTGRES=1` and `PGUSER` to your local role; the suite creates fresh databases
+on `127.0.0.1:5432` and drops only those it created. With this opt-in, missing envtest assets are
+a failure. See [the schema proof and vendoring commands](lake/schema.md#verification).
+
 The sealed-delivery admission suite also uses these assets and requires `helm` to render the
 operator's actual RBAC. It installs both pinned k0s policies and the tenant grant, then proves namespace
 selection, delivery, rotation/removal and authorization without using a live cluster. Run it with:
@@ -58,7 +63,8 @@ Fixture provenance and refresh instructions are in
 [`lake/admission-fixtures.md`](lake/admission-fixtures.md).
 
 Without `KUBEBUILDER_ASSETS`, the API-server cases report a skip while the handler, contract-digest, auth,
-audit, secret-reference, REST, and MCP tests still run.
+audit, secret-reference, REST, and MCP tests still run. The Lake schema proof fails rather than skips when
+`LAKE_SCHEMA_TEST_POSTGRES=1` is set without the assets.
 
 ## Build targets
 

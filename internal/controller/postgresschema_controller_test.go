@@ -134,3 +134,64 @@ func condStatus(conds []metav1.Condition, typ string) metav1.ConditionStatus {
 	}
 	return ""
 }
+
+func TestPostgresSchemaReplacesObsoleteRunningAndFailedJobs(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		name := "running"
+		if failed {
+			name = "failed"
+		}
+		t.Run(name, func(t *testing.T) {
+			scheme := rmqTestScheme(t)
+			ps := pgSchemaCR()
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: ps.Spec.ConnectionSecretRef.Name, Namespace: ps.Namespace},
+				Data:       map[string][]byte{"uri": []byte("postgresql://local/proof")},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ps, secret).
+				WithStatusSubresource(ps, &batchv1.Job{}).Build()
+			r := &PostgresSchemaReconciler{Client: c, Scheme: scheme}
+			ctx := context.Background()
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ps)}
+			if _, err := r.Reconcile(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+			var job batchv1.Job
+			jobKey := client.ObjectKey{Namespace: ps.Namespace, Name: ps.Name + "-migrate"}
+			if err := c.Get(ctx, jobKey, &job); err != nil {
+				t.Fatal(err)
+			}
+			if failed {
+				job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}}
+				if err := c.Status().Update(ctx, &job); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := c.Get(ctx, request.NamespacedName, ps); err != nil {
+				t.Fatal(err)
+			}
+			ps.Spec.Version = "sha256:new"
+			if err := c.Update(ctx, ps); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Reconcile(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(ctx, request.NamespacedName, ps); err != nil {
+				t.Fatal(err)
+			}
+			if ps.Status.Phase != "Applying" || condReason(ps.Status.Conditions, "Applied") != "ReplacingMigrationJob" {
+				t.Fatalf("replacement status = %+v", ps.Status)
+			}
+			if _, err := r.Reconcile(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(ctx, jobKey, &job); err != nil {
+				t.Fatal(err)
+			}
+			if job.Annotations[pgSchemaVersionAnnotation] != ps.Spec.Version || job.Status.Succeeded != 0 || jobFailed(&job) {
+				t.Fatalf("replacement Job did not start fresh: %+v", job)
+			}
+		})
+	}
+}

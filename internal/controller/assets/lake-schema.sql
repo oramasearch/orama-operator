@@ -2,7 +2,7 @@
 --
 -- SOURCE OF TRUTH: oramasearch/lake, db/schema.sql. The operator vendors a byte-identical copy at
 -- internal/controller/assets/lake-schema.sql and applies it to each Lake's Postgres through a
--- PostgresSchema (one transaction, guarded on the `platform_guard` table, versioned by
+-- PostgresSchema (one transaction, guarded on the `token_attenuation_guard` table, versioned by
 -- content hash).
 -- Keep the two files identical; the operator's version string changes exactly when this does.
 --
@@ -1220,3 +1220,17 @@ CREATE TABLE IF NOT EXISTS identity_exit_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0020_identity_exit') ON CONFLICT DO NOTHING;
+
+-- Token attenuation (migration 0021): retain issuing sessions and invalidate credentials
+-- whose ancestry predates this contract. Reapplying the schema does not revoke new tokens.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS parent_session_id uuid
+    REFERENCES sessions(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS sessions_parent_session_id_idx
+    ON sessions (parent_session_id) WHERE parent_session_id IS NOT NULL;
+UPDATE sessions SET revoked_at = now()
+    WHERE kind IN ('api_token', 'static') AND revoked_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0021_token_attenuation');
+CREATE TABLE IF NOT EXISTS token_attenuation_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0021_token_attenuation') ON CONFLICT DO NOTHING;

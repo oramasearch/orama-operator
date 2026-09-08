@@ -52,6 +52,8 @@ func newLakeReadinessFixture(t *testing.T) *lakeReadinessFixture {
 		reconciler: &LakeReconciler{Client: c, Scheme: scheme},
 	}
 	f.reconcile()
+	f.schema("Applied")
+	f.reconcile()
 	pvc := &corev1.PersistentVolumeClaim{}
 	f.get("lake-readiness-store", pvc)
 	pvc.Status.Phase = corev1.ClaimBound
@@ -117,6 +119,13 @@ func (f *lakeReadinessFixture) schema(phase string) {
 	schema.Status.ObservedGeneration = schema.Generation
 	if phase == "Applied" {
 		schema.Status.AppliedVersion = schema.Spec.Version
+		apimeta.SetStatusCondition(&schema.Status.Conditions, metav1.Condition{
+			Type:               "Applied",
+			Status:             metav1.ConditionTrue,
+			Reason:             "Applied",
+			Message:            "test migration completed",
+			ObservedGeneration: schema.Generation,
+		})
 	}
 	f.updateStatus(schema)
 }
@@ -331,7 +340,7 @@ func TestLakeReadinessCurrentSchema(t *testing.T) {
 		{"pending", "Pending", "", 2, "Progressing", "SchemaPending"},
 		{"applying", "Applying", "", 2, "Progressing", "SchemaPending"},
 		{"failed", "Failed", "", 2, "Degraded", "SchemaFailed"},
-		{"old generation", "Applied", schemaVersion(lakeSchemaSQL), 1, "Progressing", "SchemaNotCurrent"},
+		{"old generation", "Applied", lakeSchemaVersion(), 1, "Progressing", "SchemaNotCurrent"},
 		{"old version", "Applied", "sha256:old", 2, "Progressing", "SchemaNotCurrent"},
 		{"missing version", "Applied", "", 2, "Progressing", "SchemaNotCurrent"},
 	}

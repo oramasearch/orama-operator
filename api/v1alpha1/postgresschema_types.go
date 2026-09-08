@@ -15,7 +15,7 @@ import (
 // auditable CRD ([#40](https://github.com/oramasearch/orama-operator/issues/40)) that
 // records the applied version in `.status` and feeds the readiness roll-up (#37). The controller
 // owns the migration Job; the applied version is read back from the Job so it stays honest even if
-// the desired `version` is bumped without re-running.
+// the desired `version` changes while an obsolete Job is being replaced.
 type PostgresSchemaSpec struct {
 	// ConnectionSecretRef names the Secret + key holding the Postgres connection URI
 	// (postgresql://…). For the control DB this is the CNPG-generated `<cr>-controldb-app` Secret,
@@ -27,8 +27,8 @@ type PostgresSchemaSpec struct {
 	SchemaConfigMapRef PostgresConfigMapKeyRef `json:"schemaConfigMapRef"`
 
 	// Version identifies the schema being applied (e.g. a content hash of the SQL). Recorded in
-	// `.status.appliedVersion` once a migration Job applies it. Changing it (and deleting the prior
-	// Job) re-runs the migration.
+	// `.status.appliedVersion` once a migration Job applies it. Changing it automatically replaces
+	// the prior Job after its pods stop, then re-runs the guarded combined schema.
 	Version string `json:"version"`
 
 	// GuardTable is a `public` table whose existence means the schema is already applied — the
@@ -80,7 +80,7 @@ type PostgresSchemaStatus struct {
 	Message string `json:"message,omitempty"`
 
 	// Conditions carry the standard `Applied` condition. Reason distinguishes
-	// WaitingForDatabase, Applying, Applied, and MigrationFailed.
+	// WaitingForDatabase, ReplacingMigrationJob, Applying, Applied, and MigrationFailed.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

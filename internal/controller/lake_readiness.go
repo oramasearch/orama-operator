@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -70,7 +71,7 @@ func (r *LakeReconciler) lakeSchemaStatus(
 	}
 	state := lakeComponentReadiness{"Progressing", "SchemaPending", "waiting for PostgresSchema " + ps.Name + " to be Applied"}
 	switch {
-	case ps.Status.ObservedGeneration < ps.Generation:
+	case ps.Status.ObservedGeneration != ps.Generation:
 		state.reason = "SchemaNotCurrent"
 		state.message = "waiting for the schema controller to observe the latest PostgresSchema generation"
 	case phase == "Failed":
@@ -78,7 +79,9 @@ func (r *LakeReconciler) lakeSchemaStatus(
 		if ps.Status.Message != "" {
 			state.message += ": " + ps.Status.Message
 		}
-	case phase == "Applied" && ps.Status.AppliedVersion != schemaVersion(lakeSchemaSQL):
+	case phase == "Applied" && (ps.Status.AppliedVersion != lakeSchemaVersion() ||
+		ps.Status.AppliedVersion != ps.Spec.Version ||
+		!apimeta.IsStatusConditionTrue(ps.Status.Conditions, "Applied")):
 		state.reason = "SchemaNotCurrent"
 		state.message = "waiting for PostgresSchema " + ps.Name + " to apply the current schema version"
 	case phase == "Applied":

@@ -67,12 +67,17 @@ func (r *PostgresSchemaReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: pgSchemaWaitRequeue}, nil
 	}
 
-	// Ensure the migration Job (create-if-absent, annotated with the version it applies). A version
-	// bump re-applies only after the prior Job is deleted — matching the combined-schema apply-once
-	// model (incremental/versioned re-apply is a tracked follow-up).
+	// Replace an obsolete Job before applying the desired combined schema. Foreground deletion
+	// waits for its pods, so two versions cannot apply concurrently.
 	job, err := r.ensureMigrationJob(ctx, &ps)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+
+	if job == nil || !job.DeletionTimestamp.IsZero() || job.Annotations[pgSchemaVersionAnnotation] != ps.Spec.Version {
+		r.setStatus(ctx, &ps, "Applying", ps.Status.AppliedVersion, "ReplacingMigrationJob",
+			"waiting for the obsolete migration Job and its pods to be deleted", metav1.ConditionFalse)
+		return ctrl.Result{RequeueAfter: pgSchemaWaitRequeue}, nil
 	}
 
 	appliedVersion := job.Annotations[pgSchemaVersionAnnotation]
@@ -112,19 +117,40 @@ func (r *PostgresSchemaReconciler) connectionSecretPresent(ctx context.Context, 
 	return len(sec.Data[ref.Key]) > 0, nil
 }
 
-// ensureMigrationJob creates the migration Job if absent (its spec is immutable, so it is only set
-// on creation — matching the existing control-DB migrate Job), and returns the live Job.
+// ensureMigrationJob returns the current version's Job, or nil while an obsolete Job is deleting.
+// The immutable spec is set only on creation; foreground deletion prevents overlapping applies.
 func (r *PostgresSchemaReconciler) ensureMigrationJob(ctx context.Context, ps *oramav1alpha1.PostgresSchema) (*batchv1.Job, error) {
 	name := ps.Name + "-migrate"
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ps.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, job, func() error {
-		if job.CreationTimestamp.IsZero() {
-			job.Labels = map[string]string{"app.kubernetes.io/managed-by": "orama-cloud-v1-operator", "orama.cloud/postgresschema": ps.Name}
-			job.Annotations = map[string]string{pgSchemaVersionAnnotation: ps.Spec.Version}
-			job.Spec = pgMigrationJobSpec(ps)
+	if err := r.Get(ctx, client.ObjectKeyFromObject(job), job); err == nil {
+		if !metav1.IsControlledBy(job, ps) {
+			return nil, fmt.Errorf("migration Job %s is not controlled by PostgresSchema %s", name, ps.Name)
 		}
-		return controllerutil.SetControllerReference(ps, job, r.Scheme)
-	}); err != nil {
+		if !job.DeletionTimestamp.IsZero() {
+			return nil, nil
+		}
+		if job.Annotations[pgSchemaVersionAnnotation] != ps.Spec.Version {
+			policy := metav1.DeletePropagationForeground
+			options := &client.DeleteOptions{
+				PropagationPolicy: &policy,
+				Preconditions:     &metav1.Preconditions{UID: &job.UID, ResourceVersion: &job.ResourceVersion},
+			}
+			if err := r.Delete(ctx, job, options); client.IgnoreNotFound(err) != nil {
+				return nil, err
+			}
+			return nil, nil
+		}
+		return job, nil
+	} else if !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+	job.Labels = map[string]string{"app.kubernetes.io/managed-by": "orama-cloud-v1-operator", "orama.cloud/postgresschema": ps.Name}
+	job.Annotations = map[string]string{pgSchemaVersionAnnotation: ps.Spec.Version}
+	job.Spec = pgMigrationJobSpec(ps)
+	if err := controllerutil.SetControllerReference(ps, job, r.Scheme); err != nil {
+		return nil, err
+	}
+	if err := r.Create(ctx, job); err != nil {
 		return nil, err
 	}
 	return job, nil

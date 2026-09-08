@@ -533,11 +533,18 @@ and reuses this operator's CNPG, PostgresSchema and Cloudflare DNS paths.
 | Service | `lake-<name>` | yes | ClusterIP 80 → `spec.port` |
 | `OramaZettaCluster` | `lake-<name>-zetta` | yes | `spec.zetta`; data plane only, so operator-schema provisioning is off; deletion completes before the Lake finalizer is released |
 | CNPG `Cluster` | `lake-<name>-controldb` | yes (unstructured) | `spec.postgres`: instances, storageSize (50Gi), storageClassName; disable tears down **with data** |
-| ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; guard = the newest migration's table (`agent_guard`, `0017_agent_sessions`) |
+| ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; guard = the newest migration's table (`token_attenuation_guard`, `0021_token_attenuation`) |
 | CNPG `ScheduledBackup` | `lake-<name>-controldb-backup` | yes (unstructured) | opt-in Barman R2/S3 backup; CNPG `Backup` resources are observed by `cnpg.io/cluster` label |
 | `LakeRestoreRehearsal` scratch resources | `lake-rehearsal-<name>-<hash>` | yes | temporary Namespace containing a recovered CNPG Cluster, copied credentials, and a verification Job; all are deleted after a terminal result |
 | Ingress + `CloudflareDNSRecord` | `lake-<name>`, `-dns` | yes | opt-in via `ingressEnabled` + `host` + `dnsSecretRef`, optional `tls.secretName`, and Lake streaming annotations |
 | `LakeE2ETest` Job | `<test-name>-e2e` in the Lake namespace | yes, by the cluster-scoped test | starts only after Lake, Postgres, and schema readiness; the required image owns signup and liquid push/pull assertions |
+
+Lake creates or updates its Deployment and disruption budget only after the desired schema
+version is Applied. An existing Deployment stays unchanged while migration is pending or failed.
+Re-vendor by copying lake `db/schema.sql` unchanged, updating the pinned commit/SHA-256 and guard,
+and running the byte comparison and envtest proof in [`lake/schema.md`](lake/schema.md).
+The SQL-plus-guard hash replaces obsolete migration Jobs automatically, waiting for their pods
+before a replacement starts. Incremental migration files remain #126.
 
 The `LakeSealedSecret` reconciler opens literal canonical-CBOR envelopes or requests sealed static
 and dynamic values from lake, then owns an output Secret labelled `lake.orama.cloud/sealed: "true"`.
