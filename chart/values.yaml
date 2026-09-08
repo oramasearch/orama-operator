@@ -1,14 +1,13 @@
-# The operator manager image. Built from the operator repo root's Dockerfile via
-# build/images/build.sh (component: operator) and pushed to PRIVATE Docker Hub with the same
-# v1-sandbox tag as the workloads. Because it's private, set operator.imagePullSecrets below for
-# an in-cluster deploy (the secret must exist in the release namespace).
+# The private operator manager image. For a fresh install, obtain a published immutable tag
+# and registry access, then set operator.imagePullSecrets to a Secret in the release namespace.
+# See docs/install.md for prerequisites and docs/development.md for remote BuildKit publication.
 operator:
   image:
     repository: oramasearch/orama-operator
     tag: v1-sandbox
     pullPolicy: IfNotPresent
   # Pull secret(s) for the PRIVATE manager image, e.g. [{ name: oramasearch-dockerhub }].
-  # Empty = image is public / already present on the node.
+  # Empty emits no imagePullSecrets; fresh nodes need registry access for the private default.
   imagePullSecrets: []
   replicas: 1
   resources:

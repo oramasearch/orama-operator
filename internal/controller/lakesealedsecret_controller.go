@@ -48,6 +48,7 @@ const (
 type LakeSealedSecretReconciler struct {
 	client.Client
 	Scheme              *runtime.Scheme
+	APIReader           client.Reader
 	HTTPClient          *http.Client
 	LakeURL             string
 	ServiceAccountToken string
@@ -77,6 +78,9 @@ func (r *LakeSealedSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	owned, ownerResult, err := r.ensureLakeOwner(ctx, resource, lake)
 	if err != nil || !owned {
 		return ownerResult, err
+	}
+	if resource.Spec.Source.Type == "delivery" {
+		return r.reconcileEnvironmentDelivery(ctx, resource, lake)
 	}
 	if lake.Status.Sealing == nil || lake.Status.Sealing.KID == "" {
 		return ctrl.Result{}, errors.New("Lake sealing status is not published")
@@ -241,6 +245,9 @@ func validateLakeSealedSecret(resource *oramav1alpha1.LakeSealedSecret) (string,
 	if resource.Spec.Template.Name == "" {
 		return "SecretNameRequired", "spec.template.name is required"
 	}
+	if resource.Spec.Source.Type != "delivery" && resource.Spec.Source.Delivery != nil {
+		return "SourceInvalid", "only delivery sources may include delivery configuration"
+	}
 	switch resource.Spec.Source.Type {
 	case "literal":
 		if len(resource.Spec.Data) == 0 {
@@ -265,6 +272,14 @@ func validateLakeSealedSecret(resource *oramav1alpha1.LakeSealedSecret) (string,
 		}
 		if resource.Spec.Source.Lake != nil || len(resource.Spec.Data) > 0 {
 			return "SourceInvalid", "dynamic source cannot include data or lake configuration"
+		}
+	case "delivery":
+		delivery := resource.Spec.Source.Delivery
+		if delivery == nil || delivery.Environment == "" || delivery.Name == "" {
+			return "DeliverySourceRequired", "delivery sources require an environment and source name"
+		}
+		if resource.Spec.Source.Lake != nil || resource.Spec.Source.Dynamic != nil || len(resource.Spec.Data) > 0 {
+			return "SourceInvalid", "delivery source cannot include data, lake, or dynamic configuration"
 		}
 	default:
 		return "SourceTypeInvalid", fmt.Sprintf("unsupported source type %q", resource.Spec.Source.Type)
