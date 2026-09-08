@@ -61,8 +61,9 @@ func TestLakeReconcileCreatesWorkloads(t *testing.T) {
 		Spec: oramav1alpha1.LakeSpec{Namespace: "lake-dev", Image: "oramasearch/lake:v1-sandbox", Replicas: &one,
 			PullSecretName: "oramasearch-dockerhub", Args: []string{"--node", "hello"}},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}).Build()
 
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
 	reconcileLake(t, c, s, "hello")
 
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "lake-dev"}, &corev1.Namespace{}); err != nil {
@@ -143,7 +144,8 @@ func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
 			Replicas: &two,
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}).Build()
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
 	reconcileLake(t, c, s, "hardened")
 
 	deployment := &appsv1.Deployment{}
@@ -254,7 +256,8 @@ func TestLakeReconcileRendersResourceAndTopologyOverrides(t *testing.T) {
 			TopologySpreadConstraints: constraints,
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}).Build()
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
 	reconcileLake(t, c, s, "overrides")
 
 	deployment := &appsv1.Deployment{}
@@ -390,7 +393,8 @@ func TestLakeReconcileUsesExistingStorePVC(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "lake-data", Namespace: "lake-dev"},
 		Status:     corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, pvc).WithStatusSubresource(lake).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, pvc).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}).Build()
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
 	reconcileLake(t, c, s, "existing")
 
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-existing-store"}, &corev1.PersistentVolumeClaim{}); err == nil {
@@ -431,7 +435,8 @@ func TestLakeReconcileAppendsCustomEnvWithOperatorPrecedence(t *testing.T) {
 			},
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}).Build()
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
 	reconcileLake(t, c, s, "env")
 
 	deployment := &appsv1.Deployment{}
@@ -508,7 +513,8 @@ func TestLakeReconcileIsIdempotent(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
 		Spec:       oramav1alpha1.LakeSpec{Image: "hashicorp/http-echo:1.0"},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}).Build()
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
 	reconcileLake(t, c, s, "hello")
 	reconcileLake(t, c, s, "hello") // second pass must not error or duplicate
 
@@ -539,8 +545,9 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 			PreviewWildcard: "preview.lake.live",
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &networkingv1.Ingress{}).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}, &networkingv1.Ingress{}).Build()
 
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
 	// 1. Ingress appears; the DNS record waits for an address.
 	reconcileLake(t, c, s, "hello")
 	var ing networkingv1.Ingress
@@ -680,8 +687,9 @@ func TestLakeReconcileZettaDataPlane(t *testing.T) {
 	c := fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(lake).
-		WithStatusSubresource(lake, &oramav1alpha1.OramaZettaCluster{}).
+		WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}, &oramav1alpha1.OramaZettaCluster{}).
 		Build()
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
 	r := &LakeReconciler{Client: c, Scheme: s}
 	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}})
 	if err != nil {
@@ -845,7 +853,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		Spec: oramav1alpha1.LakeSpec{Image: "oramasearch/lake:v1-sandbox",
 			Postgres: oramav1alpha1.LakePostgresSpec{Instances: &two, StorageSize: "20Gi", StorageClassName: "fast"}},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}).Build()
 	r := &LakeReconciler{Client: c, Scheme: s}
 	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "hello"}})
 	if err != nil {
@@ -869,6 +877,11 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if refs := cluster.GetOwnerReferences(); len(refs) != 1 || refs[0].Name != "hello" {
 		t.Errorf("cluster owner refs = %+v", refs)
 	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &appsv1.Deployment{}); err == nil {
+		t.Fatal("Deployment created before schema applied")
+	}
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
+	reconcileLake(t, c, s, lake.Name)
 	var d appsv1.Deployment
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
 		t.Fatal(err)
@@ -913,7 +926,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
 		t.Fatal(err)
 	}
-	if lake.Status.PostgresReady || lake.Status.PostgresInstances != "0/0" || lake.Status.SchemaPhase != "Pending" {
+	if lake.Status.PostgresReady || lake.Status.PostgresInstances != "0/0" || lake.Status.SchemaPhase != "Applied" {
 		t.Errorf("status = %+v", lake.Status)
 	}
 	var cm corev1.ConfigMap
@@ -928,8 +941,8 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatalf("PostgresSchema not created: %v", err)
 	}
 	if ps.Spec.ConnectionSecretRef.Name != "lake-hello-controldb-app" || ps.Spec.ConnectionSecretRef.Key != "uri" ||
-		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "identity_exit_guard" ||
-		ps.Spec.Version != schemaVersion(lakeSchemaSQL) {
+		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "token_attenuation_guard" ||
+		ps.Spec.Version != lakeSchemaVersion() {
 		t.Errorf("PostgresSchema spec = %+v", ps.Spec)
 	}
 	if refs := ps.OwnerReferences; len(refs) != 1 || refs[0].Name != "hello" {

@@ -46,13 +46,14 @@ type LakeReconciler struct {
 }
 
 const (
-	lakeDefaultPort    = 4900 // lake's --listen default
-	lakeServicePort    = 80
-	lakeControlDBName  = "lake" // CNPG bootstrap database + owner
-	lakeStatusRequeue  = 20 * time.Second
-	lakeStorePath      = "/var/lib/lake/store"
-	lakeStoreVolume    = "store"
-	lakeZettaFinalizer = "orama.cloud/lake-zetta"
+	lakeDefaultPort      = 4900 // lake's --listen default
+	lakeServicePort      = 80
+	lakeControlDBName    = "lake" // CNPG bootstrap database + owner
+	lakeStatusRequeue    = 20 * time.Second
+	lakeStorePath        = "/var/lib/lake/store"
+	lakeStoreVolume      = "store"
+	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
+	lakeSchemaGuardTable = "token_attenuation_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
@@ -206,14 +207,6 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("reconcile sealing key: %w", err)
 	}
 
-	deploy, err := r.reconcileLakeDeployment(ctx, &lake, ns, name, image, claimName, labels, replicas, port, sealing)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile deployment: %w", err)
-	}
-	if err := r.reconcileLakePDB(ctx, &lake, ns, name, labels, replicas); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile pod disruption budget: %w", err)
-	}
-
 	// Service.
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
@@ -238,6 +231,23 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 	if err := r.reconcileLakeControlDBSchema(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile control db schema: %w", err)
+	}
+
+	// Hold both first startup and updates until the desired schema has finished applying.
+	// Keep an existing Deployment intact while the replacement migration Job runs.
+	schemaPhase, schemaVersion := r.lakeSchemaStatus(ctx, &lake, ns)
+	schemaReady := !lakePostgresEnabled(&lake) || schemaPhase == "Applied"
+	deploy := &appsv1.Deployment{}
+	if schemaReady {
+		deploy, err = r.reconcileLakeDeployment(ctx, &lake, ns, name, image, claimName, labels, replicas, port, sealing)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile deployment: %w", err)
+		}
+		if err := r.reconcileLakePDB(ctx, &lake, ns, name, labels, replicas); err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile pod disruption budget: %w", err)
+		}
+	} else if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, deploy); client.IgnoreNotFound(err) != nil {
+		return ctrl.Result{}, fmt.Errorf("read deployment while waiting for schema: %w", err)
 	}
 
 	// Ingress + DNS (opt-in, same contract as OramaZettaCluster).
@@ -269,7 +279,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if zetta != nil && zetta.Status.Phase == "Degraded" {
 		phase = "Degraded"
 	}
-	schemaPhase, schemaVersion := r.lakeSchemaStatus(ctx, &lake, ns)
+	if !schemaReady && phase == "Ready" {
+		phase = "Progressing"
+	}
 	backupReady, lastBackupTime, backupCondition, err := r.lakeBackupStatus(ctx, &lake, ns, backup)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("read control DB backup status: %w", err)
@@ -1189,7 +1201,7 @@ func lakeBackupTimesEqual(a, b *metav1.Time) bool {
 // the dashboard's (controldb.go): the SQL rendered into an owned ConfigMap and declared as an owned
 // PostgresSchema, whose controller runs the idempotent migration Job (wait for the DB, skip if the
 // guard table exists, apply in one transaction) and records the applied version. The version is a
-// content hash of the SQL, so it changes exactly when the vendored schema does. With Postgres
+// content hash of the SQL and guard, so changing either starts a new apply. With Postgres
 // disabled both objects are torn down.
 func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake *oramav1alpha1.Lake, ns string, lbls map[string]string) error {
 	cmName := lakeControlDB(lake.Name) + "-migrations"
@@ -1213,16 +1225,21 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 		ps.Spec = oramav1alpha1.PostgresSchemaSpec{
 			ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: lakeControlDB(lake.Name) + "-app", Key: "uri"},
 			SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: cmName, Key: "schema.sql"},
-			Version:             schemaVersion(lakeSchemaSQL),
+			Version:             lakeSchemaVersion(),
 			// The guard is the table the NEWEST migration creates: with --single-transaction it
 			// exists iff the whole (idempotent) file applied, and a new migration = a new guard, so
 			// the next Job re-runs the file and adds only what is missing.
-			GuardTable: "identity_exit_guard",
+			GuardTable: lakeSchemaGuardTable,
 			Image:      "postgres:18-alpine",
 		}
 		return controllerutil.SetControllerReference(lake, ps, r.Scheme)
 	})
 	return err
+}
+
+// lakeSchemaVersion binds the SQL bytes and idempotency guard to the same apply attempt.
+func lakeSchemaVersion() string {
+	return schemaVersion(lakeSchemaSQL + "\n" + lakeSchemaGuardTable)
 }
 
 // lakeSchemaStatus mirrors the owned PostgresSchema's phase and applied version, best-effort.
@@ -1234,7 +1251,9 @@ func (r *LakeReconciler) lakeSchemaStatus(ctx context.Context, lake *oramav1alph
 	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: lakeControlDB(lake.Name) + "-schema"}, &ps); err != nil {
 		return "Pending", ""
 	}
-	if ps.Status.Phase == "" {
+	if ps.Status.Phase == "" || ps.Status.ObservedGeneration != ps.Generation ||
+		(ps.Status.Phase == "Applied" && (ps.Status.AppliedVersion != lakeSchemaVersion() ||
+			ps.Status.AppliedVersion != ps.Spec.Version || !apimeta.IsStatusConditionTrue(ps.Status.Conditions, "Applied"))) {
 		return "Pending", ps.Status.AppliedVersion
 	}
 	return ps.Status.Phase, ps.Status.AppliedVersion

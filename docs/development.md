@@ -46,8 +46,13 @@ export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)"
 go test ./...
 ```
 
-Without `KUBEBUILDER_ASSETS`, that case reports a skip while the handler, contract-digest, auth,
-audit, secret-reference, REST, and MCP tests still run.
+The Lake schema proof also needs local Postgres and `psql`, `createdb`, and `dropdb` on `PATH`.
+Set `LAKE_SCHEMA_TEST_POSTGRES=1` and `PGUSER` to your local role; the suite creates fresh databases
+on `127.0.0.1:5432` and drops only those it created. With this opt-in, missing envtest assets are
+a failure. See [the schema proof and vendoring commands](lake/schema.md#verification).
+
+Without `KUBEBUILDER_ASSETS`, the deployment control-plane case reports a skip while the handler,
+contract-digest, auth, audit, secret-reference, REST, and MCP tests still run.
 
 ## Build targets
 

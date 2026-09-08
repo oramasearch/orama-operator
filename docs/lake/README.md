@@ -30,7 +30,8 @@ and connection details are in the [deployment control-plane guide](../control-pl
 
 ## What a Lake reconciles into
 
-In order, every reconcile (`internal/controller/lake_controller.go`):
+Every reconcile manages the following resources; the Deployment and disruption budget wait for
+step 10 to finish applying the desired schema (`internal/controller/lake_controller.go`):
 
 1. **Namespace** `spec.namespace` — created with a blind `Create` (AlreadyExists ignored), never
    owned, never deleted: the operator holds `namespaces: get, create` only (operator#106: no
@@ -75,11 +76,12 @@ In order, every reconcile (`internal/controller/lake_controller.go`):
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = the table the newest migration creates
-   (`agent_guard` for `0017_agent_sessions`), version = content
-   hash. The file is idempotent, so a new migration = a new guard, and the next Job re-runs the
-   file adding only what is missing; on an existing Lake, delete the `PostgresSchema` (owned, it
-   is recreated) to trigger that Job. Proper incremental migrations are #126.
+   `oramasearch/lake` `db/schema.sql`), guard table = `token_attenuation_guard` from
+   `0021_token_attenuation`, version = hash of the SQL plus guard. A changed hash automatically
+   replaces the obsolete migration Job, waiting for its pods to stop. Deployment creation and
+   updates wait for Applied at the desired version and generation; existing pods retain their
+   previous workload spec while the schema applies. Re-vendoring and native envtest proof are in
+   [schema.md](schema.md). Proper incremental migrations are #126.
 11. **Control-plane backup** (opt-in: `spec.postgres.backup.enabled`) — CNPG Barman object-store
    configuration on `lake-<name>-controldb` plus an owned `ScheduledBackup`
    `lake-<name>-controldb-backup`. The R2/S3 Secret lives in `spec.namespace`; CNPG owns the
