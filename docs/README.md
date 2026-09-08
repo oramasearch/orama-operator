@@ -18,6 +18,7 @@ Deep docs for the operator. Kept in lockstep with the source (see the repo
 - [`lake/README.md`](lake/README.md) — **the `Lake` CR**: what it reconciles (namespace, credentials, Deployment, Service, CNPG control-plane Postgres, the schema via `PostgresSchema`, Ingress + DNS), status, RBAC, how to deploy the operator with Lake support, how to run a Lake, the current production instance.
 - [`lake/backups.md`](lake/backups.md) — **Lake control-plane backups**: R2 credentials, scheduled CNPG Barman backups, verification, configuration changes, and recovery into a new Cluster.
 - [`lake/environments.md`](lake/environments.md) — **named and per-change Lake environments**: Zetta deployment events, `LakeEnvironment` materialization, the k0s namespace profile, ingress/DNS, anti-flap status and teardown.
+- [`lake/admission-fixtures.md`](lake/admission-fixtures.md) — pinned k0s admission policies and tenant RBAC used by the native environment delivery proof.
 - [`lake/data-services/README.md`](lake/data-services/README.md) — **Lake data-service labels**: per-operation evidence, the managed threshold, and the customer responsibility for explicitly unmanaged services.
 - [`lake/data-services/postgres.md`](lake/data-services/postgres.md) — **Lake Postgres rehearsals**: automated backup recovery, scratch upgrade, replicated failover, verification, cleanup, and status recording.
 - [`lake/sealed-secrets.md`](lake/sealed-secrets.md) — **one-way secret delivery**: the cluster sealing key, canonical CBOR envelope, AAD binding, rotation, source types, and verification.

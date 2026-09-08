@@ -32,18 +32,20 @@ import (
 )
 
 const (
-	lakeEnvironmentFinalizer           = "orama.cloud/lake-environment-cleanup"
-	deploymentIDAnnotation             = "orama.cloud/deployment-id"
-	environmentOwnerAnnotation         = "orama.cloud/lake-environment"
-	environmentIdentityLabel           = "orama.cloud/lake-environment-id"
-	environmentManagedByLabel          = "app.kubernetes.io/managed-by"
-	environmentManagedByValue          = "orama-operator"
-	environmentProfileName             = "tenant-defaults"
-	environmentDefaultDenyName         = "default-deny"
-	environmentNetworkAccessName       = "environment-access"
-	environmentServicePort       int32 = 80
-	environmentStatusRequeue           = 15 * time.Second
-	environmentDriftRequeue            = 5 * time.Minute
+	lakeEnvironmentFinalizer               = "orama.cloud/lake-environment-cleanup"
+	deploymentIDAnnotation                 = "orama.cloud/deployment-id"
+	environmentOwnerAnnotation             = "orama.cloud/lake-environment"
+	environmentAdmissionLabel              = "liquid.oramasearch.com/environment"
+	environmentSealedNamesAnnotation       = "liquid.oramasearch.com/sealed-secret-names"
+	environmentIdentityLabel               = "orama.cloud/lake-environment-id"
+	environmentManagedByLabel              = "app.kubernetes.io/managed-by"
+	environmentManagedByValue              = "orama-operator"
+	environmentProfileName                 = "tenant-defaults"
+	environmentDefaultDenyName             = "default-deny"
+	environmentNetworkAccessName           = "environment-access"
+	environmentServicePort           int32 = 80
+	environmentStatusRequeue               = 15 * time.Second
+	environmentDriftRequeue                = 5 * time.Minute
 )
 
 // LakeEnvironmentReconciler materializes a LakeEnvironment into an isolated k0s tenant profile.
@@ -201,6 +203,7 @@ func environmentObjectMeta(environment *oramav1alpha1.LakeEnvironment, name, nam
 
 func environmentNamespaceLabels(environment *oramav1alpha1.LakeEnvironment) map[string]string {
 	labels := environmentLabels(environment)
+	labels[environmentAdmissionLabel] = "true"
 	labels["pod-security.kubernetes.io/audit"] = "restricted"
 	labels["pod-security.kubernetes.io/audit-version"] = "latest"
 	labels["pod-security.kubernetes.io/enforce"] = "restricted"
@@ -410,6 +413,9 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentWorkload(
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		deployment.Spec.Template.ObjectMeta.Labels = labels
 		deployment.Spec.Template.ObjectMeta.Annotations = map[string]string{environmentOwnerAnnotation: environmentOwner(environment)}
+		if len(secretNames) > 0 {
+			deployment.Spec.Template.Annotations[environmentSealedNamesAnnotation] = strings.Join(secretNames, ",")
+		}
 		deployment.Spec.Template.Spec.RuntimeClassName = strPtr("untrusted")
 		deployment.Spec.Template.Spec.Containers = []corev1.Container{{
 			Name:            "application",
@@ -499,6 +505,9 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentSecrets(
 			}
 			return nil, "", "", err
 		}
+		if sealed.Spec.Source.Type == "delivery" {
+			return nil, "SecretReferenceConflict", "environment references must name an original sealed secret", nil
+		}
 		if sealed.Spec.LakeRef.Name != environment.Spec.LakeRef {
 			message := fmt.Sprintf("sealed-secret reference %q belongs to Lake %q", reference, sealed.Spec.LakeRef.Name)
 			return nil, "SecretReferenceWrongLake", message, nil
@@ -527,7 +536,7 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentSecrets(
 		}
 		keep[source.Name] = struct{}{}
 		secretNames = append(secretNames, source.Name)
-		if err := r.copyEnvironmentSecret(ctx, environment, workloadNamespace, &source); err != nil {
+		if err := r.copyEnvironmentSecret(ctx, environment, workloadNamespace, &sealed, &source); err != nil {
 			return nil, "", "", err
 		}
 	}
@@ -541,11 +550,23 @@ func (r *LakeEnvironmentReconciler) copyEnvironmentSecret(
 	ctx context.Context,
 	environment *oramav1alpha1.LakeEnvironment,
 	workloadNamespace string,
+	sealed *oramav1alpha1.LakeSealedSecret,
 	source *corev1.Secret,
 ) error {
+	owner, err := r.reconcileEnvironmentDeliveryOwner(ctx, environment, workloadNamespace, sealed)
+	if err != nil {
+		return err
+	}
 	destination := &corev1.Secret{ObjectMeta: environmentObjectMeta(environment, source.Name, workloadNamespace)}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, destination, func() error {
+	operation, err := controllerutil.CreateOrUpdate(ctx, r.Client, destination, func() error {
+		if destination.ResourceVersion != "" && destination.Annotations[environmentOwnerAnnotation] != environmentOwner(environment) {
+			return fmt.Errorf("Secret %q is not owned by this environment", destination.Name)
+		}
+		if err := controllerutil.SetControllerReference(owner, destination, r.Scheme); err != nil {
+			return err
+		}
 		destination.Labels = environmentLabels(environment)
+		destination.Labels[sealedSecretLabel] = "true"
 		destination.Annotations = map[string]string{environmentOwnerAnnotation: environmentOwner(environment)}
 		destination.Type = source.Type
 		destination.Immutable = nil
@@ -554,10 +575,12 @@ func (r *LakeEnvironmentReconciler) copyEnvironmentSecret(
 			destination.Data[key] = append([]byte(nil), value...)
 		}
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("copy delivered Secret %q: %w", source.Name, err)
 	}
-	return nil
+	statusWriter := &LakeSealedSecretReconciler{Client: r.Client, Scheme: r.Scheme}
+	return statusWriter.ready(ctx, owner, sealed.Status.KID, sealed.Status.Lease, operation != controllerutil.OperationResultNone, time.Now().UTC())
 }
 
 func (r *LakeEnvironmentReconciler) deleteStaleEnvironmentSecrets(
@@ -566,6 +589,9 @@ func (r *LakeEnvironmentReconciler) deleteStaleEnvironmentSecrets(
 	workloadNamespace string,
 	keep map[string]struct{},
 ) error {
+	if err := r.deleteStaleEnvironmentDeliveryOwners(ctx, environment, workloadNamespace, keep); err != nil {
+		return err
+	}
 	var secrets corev1.SecretList
 	if err := r.List(ctx, &secrets, client.InNamespace(workloadNamespace), client.MatchingLabels(environmentLabels(environment))); err != nil {
 		return err
@@ -858,6 +884,9 @@ func (r *LakeEnvironmentReconciler) requestsForSealedSecret(ctx context.Context,
 	sealed, ok := object.(*oramav1alpha1.LakeSealedSecret)
 	if !ok {
 		return nil
+	}
+	if sealed.Spec.Source.Type == "delivery" {
+		return r.requestsForEnvironmentObject(ctx, object)
 	}
 	var environments oramav1alpha1.LakeEnvironmentList
 	if err := r.List(ctx, &environments, client.InNamespace(sealed.Namespace)); err != nil {
