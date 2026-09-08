@@ -46,7 +46,18 @@ export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)"
 go test ./...
 ```
 
-Without `KUBEBUILDER_ASSETS`, that case reports a skip while the handler, contract-digest, auth,
+The sealed-delivery admission suite also uses these assets and requires `helm` to render the
+operator's actual RBAC. It installs both pinned k0s policies and the tenant grant, then proves namespace
+selection, delivery, rotation/removal and authorization without using a live cluster. Run it with:
+
+```sh
+go test -count=1 -v ./internal/controller -run '^TestLakeEnvironmentSealedDeliveryAdmission$'
+```
+
+Fixture provenance and refresh instructions are in
+[`lake/admission-fixtures.md`](lake/admission-fixtures.md).
+
+Without `KUBEBUILDER_ASSETS`, the API-server cases report a skip while the handler, contract-digest, auth,
 audit, secret-reference, REST, and MCP tests still run.
 
 ## Build targets

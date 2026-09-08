@@ -1,0 +1,109 @@
+# SPDX-FileCopyrightText: 2026 k0s authors
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: liquid-environment-secrets
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        liquid.oramasearch.com/environment: "true"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["secrets"]
+  validations:
+    - expression: >-
+        has(object.metadata.ownerReferences) &&
+        object.metadata.ownerReferences.exists(owner,
+          owner.apiVersion == 'orama.cloud/v1alpha1' &&
+          owner.kind == 'LakeSealedSecret' &&
+          owner.controller == true)
+      message: Secrets in a liquid environment must be owned by a LakeSealedSecret
+    - expression: >-
+        has(object.metadata.labels) &&
+        'lake.orama.cloud/sealed' in object.metadata.labels &&
+        object.metadata.labels['lake.orama.cloud/sealed'] == 'true'
+      message: Secrets in a liquid environment must carry the sealed delivery label
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: liquid-environment-secrets
+spec:
+  policyName: liquid-environment-secrets
+  validationActions: [Deny, Audit]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: liquid-environment-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        liquid.oramasearch.com/environment: "true"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    - name: sealedSecrets
+      expression: >-
+        has(object.metadata.annotations) &&
+        'liquid.oramasearch.com/sealed-secret-names' in object.metadata.annotations
+          ? ',' + object.metadata.annotations['liquid.oramasearch.com/sealed-secret-names'] + ','
+          : ','
+  validations:
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(volume,
+          !has(volume.secret) ||
+          variables.sealedSecrets.contains(',' + volume.secret.secretName + ','))
+      message: Pod Secret volumes must name a LakeSealedSecret delivery
+    - expression: >-
+        object.spec.containers.all(container,
+          (!has(container.envFrom) || container.envFrom.all(source,
+            !has(source.secretRef) ||
+            variables.sealedSecrets.contains(',' + source.secretRef.name + ','))) &&
+          (!has(container.env) || container.env.all(variable,
+            !has(variable.valueFrom) ||
+            !has(variable.valueFrom.secretKeyRef) ||
+            variables.sealedSecrets.contains(',' + variable.valueFrom.secretKeyRef.name + ','))))
+      message: Container Secret environment values must name a LakeSealedSecret delivery
+    - expression: >-
+        !has(object.spec.initContainers) ||
+        object.spec.initContainers.all(container,
+          (!has(container.envFrom) || container.envFrom.all(source,
+            !has(source.secretRef) ||
+            variables.sealedSecrets.contains(',' + source.secretRef.name + ','))) &&
+          (!has(container.env) || container.env.all(variable,
+            !has(variable.valueFrom) ||
+            !has(variable.valueFrom.secretKeyRef) ||
+            variables.sealedSecrets.contains(',' + variable.valueFrom.secretKeyRef.name + ','))))
+      message: Init container Secret environment values must name a LakeSealedSecret delivery
+    - expression: >-
+        !has(object.spec.ephemeralContainers) ||
+        object.spec.ephemeralContainers.all(container,
+          (!has(container.envFrom) || container.envFrom.all(source,
+            !has(source.secretRef) ||
+            variables.sealedSecrets.contains(',' + source.secretRef.name + ','))) &&
+          (!has(container.env) || container.env.all(variable,
+            !has(variable.valueFrom) ||
+            !has(variable.valueFrom.secretKeyRef) ||
+            variables.sealedSecrets.contains(',' + variable.valueFrom.secretKeyRef.name + ','))))
+      message: Ephemeral container Secret environment values must name a LakeSealedSecret delivery
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: liquid-environment-pods
+spec:
+  policyName: liquid-environment-pods
+  validationActions: [Deny, Audit]
