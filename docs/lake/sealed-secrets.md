@@ -149,6 +149,22 @@ of Secret keys to version-1 records. A dynamic response also has `value.lease` w
 `expires_at`, and optional `renew_at`. Plaintext and unsealed dynamic credentials must not appear in
 the response.
 
+## Environment delivery references
+
+The environment controller creates a local `LakeSealedSecret` beside each copied Secret with
+`source.type: delivery` and `source.delivery: {environment, name}`. Both fields name resources in the
+referenced Lake's namespace: the authorizing `LakeEnvironment` and the original `LakeSealedSecret`.
+This is an operator-managed source variant, not a user-authored credential. It contains no `data`,
+`lake`, or `dynamic` configuration. Its resource name equals its produced Secret name.
+
+The local resource is owned by the cluster-scoped Lake and owns the Secret in its own namespace.
+It uses the environment reconciliation path to verify the current reference, source readiness and
+ownership before copying. Source KID and lease metadata are reflected in its delivery status; ciphertext
+and its AAD stay at the source. Removal cleans up both copy and local owner. A missing, deleting,
+foreign, or no-longer-authorizing environment revokes its owned Secret and reports `DeliveryInvalid`.
+The generated CRD must be installed before upgrading the controller. The full ownership, admission,
+RBAC and upgrade contract is in [environments.md](environments.md#sealed-secrets).
+
 ## Reconciliation and ownership
 
 The referenced cluster-scoped `Lake` becomes the controller owner of the `LakeSealedSecret`. The

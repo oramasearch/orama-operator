@@ -59,6 +59,7 @@ finalizer that verifies that exact annotation before deleting the Namespace.
 
 The Namespace profile matches k0s decision 31:
 
+- `liquid.oramasearch.com/environment=true`, which selects both k0s environment admission policies;
 - Pod Security Standards `restricted` in enforce, audit and warn modes, all at `latest`;
 - default-deny ingress and egress `NetworkPolicy`;
 - one narrow policy admitting nginx ingress traffic to the application port and DNS traffic to
@@ -99,10 +100,55 @@ foreign, stale, or undelivered reference keeps the environment `Degraded` with a
 removes its workload so it cannot start without the requested credential.
 
 Each delivered Secret is copied into the isolated workload namespace without changing its name or
-contents. The application container imports the copies with `envFrom`. Copies carry the environment's
-ownership annotation, are repaired on drift, and are deleted when the reference is removed or becomes
-invalid. Deleting the environment Namespace removes every copy without changing the source
+contents. The application container imports the copies with `envFrom`. Its Pod template carries
+`liquid.oramasearch.com/sealed-secret-names`, a comma-separated list of the exact resolved Secret
+names in `envFrom` order. These can differ from the `LakeSealedSecret` reference names. Updates and
+removals rebuild the list; removing every reference removes the annotation.
+
+The copy carries `lake.orama.cloud/sealed=true`, the environment labels and ownership annotation,
+and a controller reference to a **local** `LakeSealedSecret`. This local resource has the same name as
+the copied Secret, its own UID, and a controller reference to the cluster-scoped Lake. Its
+`source.type: delivery` binds it to the `LakeEnvironment` and original sealed-secret name in the Lake
+namespace. It contains no plaintext or copied ciphertext: the source envelope's namespace-bound AAD
+is unchanged. Neither the Secret nor its owner has an invalid cross-namespace owner reference.
+
+Both controllers use the environment reconciliation path for these local deliveries, retaining the
+uncached Namespace reader so the operator needs no Namespace list/watch grant. It verifies the
+current environment authorization and original source, copies rotations into the existing Secret,
+and reports Ready only after delivery succeeds. A steady delivery does not rewrite Secret or owner
+status. An unauthorized local delivery removes only Secrets it controls and reports `DeliveryInvalid`.
+An unrelated local resource or Secret is never adopted. The earlier unowned copies carrying the
+matching environment annotation acquire their local owner on reconciliation.
+
+Copies and local delivery owners are deleted when a reference is removed or becomes invalid.
+Deleting the environment Namespace removes every copy and local owner without changing the source
 `LakeSealedSecret` or its Secret in the Lake namespace.
+
+### Admission and tenant access
+
+Both `liquid-environment-secrets` and `liquid-environment-pods` apply **only** to namespaces carrying
+`liquid.oramasearch.com/environment=true`. The operator adds this label on creation and repairs it
+on subsequent reconciliation, including existing environments. The Secret policy requires the sealed
+label and a `LakeSealedSecret` controller reference; the Pod policy requires the annotation for Secret
+volume and environment references. Neither policy validates owner existence, the referenced Secret,
+or the annotation's author.
+
+Under [liquid-bridge decision 38](https://github.com/oramasearch/liquid-bridge/blob/main/docs/decisions.md#38-who-may-write-secrets-in-a-liquid-environment--decided-steve-2026-09-07-rbac-is-the-control-admission-is-defence-in-depth),
+RBAC is authoritative and admission is defence in depth. The
+[k0s tenant contract at PR #41](https://github.com/oramasearch/k0s/blob/cc922054ad10fd1991ab1077bb8a2c3bf3eeeae2/docs/liquid/platform-surface.md#environment-policy)
+grants the `liquid:tenant:<namespace>` group workload lifecycle and selected reads, with **no Secret
+access**. The profile's RoleBinding must be the tenant's only grant there: RBAC is additive. The
+operator uses its separately installed service account permissions. Tenant RBAC remains the k0s
+profile's responsibility; this controller does not introduce a second tenant grant definition.
+
+### Upgrade order
+
+Install the updated `LakeSealedSecret` CRD from
+`chart/crds/orama.cloud_lakesealedsecrets.yaml` before rolling out the updated operator. Existing
+`literal`, `lake`, and `dynamic` resources remain compatible. Helm does not upgrade installed CRDs
+from `crds/` automatically; include the CRD update in the operator upgrade procedure. The controller
+then adds environment labels and local delivery owners during normal reconciliation. No source
+ciphertext or existing credentials need to be regenerated.
 
 ## Status and teardown
 

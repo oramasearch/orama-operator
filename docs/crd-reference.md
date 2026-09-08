@@ -424,9 +424,10 @@ resource namespace, and `spec.template.name`. The output is labelled
 | `spec.lakeRef.name` | Cluster-scoped `Lake` that owns the recipient key and lake service endpoint. |
 | `spec.template.name` / `.type` | Produced Secret name and optional Kubernetes Secret type (`Opaque` when omitted). The name is bound into envelope AAD. |
 | `spec.data` | Map of Secret keys to standard-base64 canonical-CBOR records. Required only for `literal`. All entries must use one `kid`. |
-| `spec.source.type` | `literal \| lake \| dynamic`. |
+| `spec.source.type` | `literal \| lake \| dynamic \| delivery`. `delivery` is created by the environment controller. |
 | `spec.source.lake` | Static lake reference `{mount, name, version?}`. It contains no value. |
 | `spec.source.dynamic` | Dynamic request `{engine, role, ttl}`. It contains no credential. |
+| `spec.source.delivery` | Operator-managed `{environment, name}` reference to a LakeEnvironment and original LakeSealedSecret in the Lake namespace. Owns the copied Secret in the workload namespace; contains no ciphertext. See [environment ownership and upgrade order](lake/environments.md#sealed-secrets). |
 | `status.phase` | `Pending \| Ready \| Error`. Written only on a real transition. |
 | `status.unsealedAt` / `.kid` | Last successful produced-Secret update and the key that opened its record set. |
 | `status.lease` | Dynamic lease `{id, expiresAt, renewAt}`; no credential value. |

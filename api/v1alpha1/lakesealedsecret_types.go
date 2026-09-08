@@ -16,6 +16,7 @@ import (
 // +kubebuilder:validation:XValidation:rule="self.source.type == 'literal' || !has(self.data) || size(self.data) == 0",message="only literal sources may include data"
 // +kubebuilder:validation:XValidation:rule="self.source.type != 'lake' || has(self.source.lake)",message="lake sources require source.lake"
 // +kubebuilder:validation:XValidation:rule="self.source.type != 'dynamic' || has(self.source.dynamic)",message="dynamic sources require source.dynamic"
+// +kubebuilder:validation:XValidation:rule="self.source.type != 'delivery' || has(self.source.delivery)",message="delivery sources require source.delivery"
 type LakeSealedSecretSpec struct {
 	// LakeRef names the cluster-scoped Lake that owns the sealing key and lake endpoint.
 	LakeRef corev1.LocalObjectReference `json:"lakeRef"`
@@ -28,7 +29,7 @@ type LakeSealedSecretSpec struct {
 	// +optional
 	Data map[string]string `json:"data,omitempty"`
 
-	// Source selects authored ciphertext, a lake static-secret reference, or a dynamic lease.
+	// Source selects ciphertext, a lake reference, a dynamic lease, or an environment delivery.
 	Source LakeSealedSecretSource `json:"source"`
 }
 
@@ -49,9 +50,10 @@ type LakeSealedSecretTemplate struct {
 // +kubebuilder:validation:XValidation:rule="self.type != 'literal' || (!has(self.lake) && !has(self.dynamic))",message="literal source cannot include lake or dynamic configuration"
 // +kubebuilder:validation:XValidation:rule="self.type != 'lake' || (has(self.lake) && !has(self.dynamic))",message="lake source requires only lake configuration"
 // +kubebuilder:validation:XValidation:rule="self.type != 'dynamic' || (has(self.dynamic) && !has(self.lake))",message="dynamic source requires only dynamic configuration"
+// +kubebuilder:validation:XValidation:rule="self.type == 'delivery' ? (has(self.delivery) && !has(self.lake) && !has(self.dynamic)) : !has(self.delivery)",message="only delivery sources may include delivery configuration"
 type LakeSealedSecretSource struct {
-	// Type selects literal, lake, or dynamic delivery.
-	// +kubebuilder:validation:Enum=literal;lake;dynamic
+	// Type selects literal, lake, dynamic, or operator-managed environment delivery.
+	// +kubebuilder:validation:Enum=literal;lake;dynamic;delivery
 	Type string `json:"type"`
 
 	// Lake references a static secret stored by lake.
@@ -61,6 +63,23 @@ type LakeSealedSecretSource struct {
 	// Dynamic asks lake to mint or renew a leased secret.
 	// +optional
 	Dynamic *LakeDynamicSecretSource `json:"dynamic,omitempty"`
+
+	// Delivery binds a namespace-local owner to an environment and its validated source.
+	// Only the environment controller creates these resources.
+	// +optional
+	Delivery *LakeEnvironmentSecretDeliverySource `json:"delivery,omitempty"`
+}
+
+// LakeEnvironmentSecretDeliverySource names resources in the referenced Lake namespace.
+// No ciphertext is copied across its namespace-bound AAD boundary.
+type LakeEnvironmentSecretDeliverySource struct {
+	// Environment names the LakeEnvironment that authorizes the delivery.
+	// +kubebuilder:validation:MinLength=1
+	Environment string `json:"environment"`
+
+	// Name names the original LakeSealedSecret in that environment's secretRefs.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
 }
 
 // LakeStaticSecretSource references one versioned lake secret.

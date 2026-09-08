@@ -136,9 +136,13 @@ func TestLakeEnvironmentCopiesDeliveredSealedSecrets(t *testing.T) {
 		},
 		Data: map[string][]byte{"DATABASE_URL": []byte("postgresql://application")},
 	}
+	legacy := &corev1.Secret{
+		ObjectMeta: environmentObjectMeta(environment, produced.Name, lakeEnvironmentNamespace(environment)),
+		Data:       map[string][]byte{"DATABASE_URL": []byte("legacy-copy")},
+	}
 	kubeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(lake, environment, sealed, produced).
+		WithObjects(lake, environment, sealed, produced, legacy).
 		WithStatusSubresource(environment, sealed, &appsv1.Deployment{}).
 		Build()
 	reconciler := &LakeEnvironmentReconciler{Client: kubeClient, Scheme: scheme}
@@ -158,9 +162,25 @@ func TestLakeEnvironmentCopiesDeliveredSealedSecrets(t *testing.T) {
 	if string(copied.Data["DATABASE_URL"]) != "postgresql://application" {
 		t.Errorf("copied data = %#v", copied.Data)
 	}
+	var delivery oramav1alpha1.LakeSealedSecret
+	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: workloadNamespace, Name: produced.Name}, &delivery); err != nil {
+		t.Fatal(err)
+	}
+	if copied.Labels[sealedSecretLabel] != "true" || !metav1.IsControlledBy(&copied, &delivery) {
+		t.Fatalf("copy lacks sealed label or local owner: %+v", copied.ObjectMeta)
+	}
+	if delivery.Spec.Source.Type != "delivery" || delivery.Spec.Source.Delivery.Environment != environment.Name || delivery.Spec.Source.Delivery.Name != sealed.Name {
+		t.Fatalf("unexpected local delivery: %+v", delivery.Spec)
+	}
+	if !metav1.IsControlledBy(&delivery, lake) || len(delivery.Spec.Data) != 0 {
+		t.Fatal("delivery must be Lake-owned and carry no source ciphertext")
+	}
 	var deployment appsv1.Deployment
 	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: workloadNamespace, Name: "environment"}, &deployment); err != nil {
 		t.Fatal(err)
+	}
+	if got := deployment.Spec.Template.Annotations[environmentSealedNamesAnnotation]; got != produced.Name {
+		t.Fatalf("sealed names = %q, want resolved name %q", got, produced.Name)
 	}
 	envFrom := deployment.Spec.Template.Spec.Containers[0].EnvFrom
 	if len(envFrom) != 1 || envFrom[0].SecretRef == nil || envFrom[0].SecretRef.Name != produced.Name {
@@ -183,6 +203,9 @@ func TestLakeEnvironmentCopiesDeliveredSealedSecrets(t *testing.T) {
 	if environment.Status.Phase != oramav1alpha1.LakeEnvironmentPhaseDegraded ||
 		environment.Status.Conditions[0].Reason != "SecretReferenceNotFound" {
 		t.Errorf("unknown reference status = %+v", environment.Status)
+	}
+	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: workloadNamespace, Name: produced.Name}, &delivery); !apierrors.IsNotFound(err) {
+		t.Errorf("stale delivery owner remains: %v", err)
 	}
 	if err := kubeClient.Get(ctx, key, &copied); !apierrors.IsNotFound(err) {
 		t.Errorf("stale copied Secret remains: %v", err)
