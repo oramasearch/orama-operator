@@ -191,3 +191,27 @@ curl -sG -H "Authorization: Bearer $TOKEN" https://<zetta-host>/v1/sql \
 
 The real repository-to-preview proof needs liquid's deploy writer, Lake's change page, and the k0s
 runtime. Cross-image chunk sharing is implemented and measured by k0s #14, not by this operator.
+
+### Native admission regression
+
+With Kubernetes 1.30.3 `KUBEBUILDER_ASSETS` set, run:
+
+```sh
+go test -count=1 -v ./internal/controller -run '^TestLakeEnvironmentSealedDeliveryAdmission$'
+```
+
+The test installs both exact k0s policies and bindings plus the tenant RBAC from commit
+`cc922054ad10fd1991ab1077bb8a2c3bf3eeeae2`. It renders the chart's operator RBAC and authenticates
+with a real operator service-account token. A tenant certificate uses the profile's group. The
+operator creates the namespace and delivers synthetic source values; the tenant submits Pods from
+the real Deployment template, just as a workload controller submits a child Pod. The chart does not
+grant direct Pod creation to the operator.
+
+The test proves missing metadata is refused, real delivery and rotation are admitted, local owner
+UIDs resolve in the workload namespace, reference changes/removal update annotations and delete
+copies/owners, steady reconciliation does not rewrite delivery state, and tenant plain/forged Secret
+writes are refused by RBAC. It asserts the operator-created namespace label, demonstrates the selector
+gap in the disposable server, and verifies label repair restores enforcement. Envtest has no workload,
+quota or service-account controllers, so the fixture initializes quota status and the default service
+account; it does not schedule workloads or run source decryption. The existing sealed-envelope suite
+covers decryption. No live cluster is used.
