@@ -265,7 +265,7 @@ Provisions a **Clerk application per environment** (dev/testing/staging/prod) vi
 **Platform API** (`POST /v1/platform/applications`), so Studio auth ([zetta#889](https://github.com/oramasearch/zetta/issues/889))
 gets its issuer + keys with no manual dashboard work. One CR per environment; the resulting
 publishable/secret keys + `CLERK_ISSUER` land in an owned Secret. Template: `CloudflareKVNamespace`.
-Design: [orama-bridge#116](https://github.com/oramasearch/orama-cloud-v1-operator/issues/116).
+Design: [orama-operator#116](https://github.com/oramasearch/orama-operator/issues/116).
 
 | Field | Meaning |
 |---|---|
