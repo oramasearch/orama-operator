@@ -14,7 +14,7 @@ The adjacent `lake-schema.source.json` records the repository, path, commit, and
 Migration `0021_token_attenuation` adds `sessions.parent_session_id`, its cascading foreign key,
 and `sessions_parent_session_id_idx`. It revokes existing API and static tokens once, using the
 `schema_migrations` record to preserve tokens issued after migration. Its completion table is
-`public.token_attenuation_guard`. Lake's PostgresSchema uses that table as its guard; the full
+`public.session_lookup_guard`. Lake's PostgresSchema uses that table as its guard; the full
 SQL runs in one transaction, so the table becomes visible only after successful commit.
 
 Lake sets `spec.version` to `schemaVersion(SQL + "\n" + guardTable)`. A SQL change or guard change
@@ -92,11 +92,11 @@ there are no Kubernetes pods in this native harness.
 `TestLakeSchemaGatesWorkloadRollout` uses the fake API client to check first startup, image-update
 ordering, failed/pending schema status, stale versions, stale generations, and a missing success
 condition. Additional Job tests cover replacing obsolete running and failed attempts. The version test shows the guard itself changes the hash for identical SQL:
-`identity_exit_guard` gives `sha256:c9d5b1949040`; `token_attenuation_guard` gives
+`identity_exit_guard` gives `sha256:c9d5b1949040`; `session_lookup_guard` gives
 `sha256:9aec095673cf` for this vendored file.
 
 The regression was run before the fix: the rendered command printed
 `schema already applied (identity_exit_guard present)`, status became Applied, and the test
 failed with `PostgresSchema reported Applied with parent_session_id missing (column count 0)`.
 The fixed tree applies the file before reporting Applied; the already-updated case prints
-`schema already applied (token_attenuation_guard present)` and preserves new tokens.
+`schema already applied (session_lookup_guard present)` and preserves new tokens.

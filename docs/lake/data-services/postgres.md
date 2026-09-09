@@ -41,7 +41,7 @@ Secrets into it, and creates a one-instance CNPG `Cluster` named `postgres`. Rec
 Lake's exact object-store destination, the original Barman server name, and the selected backup ID.
 After CNPG is healthy, a `postgres:18-alpine` Job queries all schema guard tables and the newest
 `schema_migrations` version in both live and recovered databases, including
-`token_attenuation_guard` from `0021_token_attenuation`. Success marks both `backup` and
+`session_lookup_guard` from `0022_session_lookup`. Success marks both `backup` and
 `restore` as `tested`. Either outcome removes every scratch object.
 
 ## Upgrade
