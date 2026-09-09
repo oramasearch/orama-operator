@@ -533,7 +533,7 @@ and reuses this operator's CNPG, PostgresSchema and Cloudflare DNS paths.
 | Service | `lake-<name>` | yes | ClusterIP 80 → `spec.port` |
 | `OramaZettaCluster` | `lake-<name>-zetta` | yes | `spec.zetta`; data plane only, so operator-schema provisioning is off; deletion completes before the Lake finalizer is released |
 | CNPG `Cluster` | `lake-<name>-controldb` | yes (unstructured) | `spec.postgres`: instances, storageSize (50Gi), storageClassName; disable tears down **with data** |
-| ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; guard = the newest migration's table (`token_attenuation_guard`, `0021_token_attenuation`) |
+| ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; guard = the newest migration's table (`session_lookup_guard`, `0022_session_lookup`) |
 | CNPG `ScheduledBackup` | `lake-<name>-controldb-backup` | yes (unstructured) | opt-in Barman R2/S3 backup; CNPG `Backup` resources are observed by `cnpg.io/cluster` label |
 | `LakeRestoreRehearsal` scratch resources | `lake-rehearsal-<name>-<hash>` | yes | temporary Namespace containing a recovered CNPG Cluster, copied credentials, and a verification Job; all are deleted after a terminal result |
 | Ingress + `CloudflareDNSRecord` | `lake-<name>`, `-dns` | yes | opt-in via `ingressEnabled` + `host` + `dnsSecretRef`, optional `tls.secretName`, and Lake streaming annotations |

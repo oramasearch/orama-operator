@@ -75,7 +75,7 @@ func TestLakeSchemaEnvtest(t *testing.T) {
 			proof.reconciler = &PostgresSchemaReconciler{Client: c, Scheme: scheme}
 			proof.reconcile("Applying")
 			output := proof.runJob()
-			if alreadyApplied != strings.Contains(output, "schema already applied (token_attenuation_guard present)") {
+			if alreadyApplied != strings.Contains(output, "schema already applied (session_lookup_guard present)") {
 				t.Fatalf("unexpected guard behavior: %s", output)
 			}
 			proof.reconcile("Applied")
@@ -297,7 +297,7 @@ func (p *lakeSchemaProof) verifyAttenuation(alreadyApplied bool) {
 	if got := p.sql("SELECT count(*) FROM pg_constraint WHERE conrelid = 'sessions'::regclass AND contype = 'f' AND conname = 'sessions_parent_session_id_fkey' AND confdeltype = 'c'"); got != "1" {
 		p.t.Fatalf("parent session cascading foreign key count = %s", got)
 	}
-	if got := p.sql("SELECT max(version) FROM schema_migrations"); got != "0021_token_attenuation" {
+	if got := p.sql("SELECT max(version) FROM schema_migrations"); got != "0022_session_lookup" {
 		p.t.Fatalf("newest migration = %s", got)
 	}
 	wantRevoked := "2"

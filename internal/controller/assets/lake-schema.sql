@@ -1234,3 +1234,22 @@ CREATE TABLE IF NOT EXISTS token_attenuation_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO schema_migrations (version) VALUES ('0021_token_attenuation') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Indexed session authentication (migration 0022). Legacy Argon2 credentials cannot be
+-- converted without their bearer. Revoke them once; users sign in and replace their tokens.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS lookup_id uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_lookup_id_idx ON sessions (lookup_id);
+
+UPDATE sessions SET revoked_at = now()
+WHERE lookup_id IS NULL AND revoked_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM schema_migrations WHERE version = '0022_session_lookup'
+  );
+
+CREATE TABLE IF NOT EXISTS session_lookup_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0022_session_lookup') ON CONFLICT DO NOTHING;
