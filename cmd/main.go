@@ -35,11 +35,18 @@ func init() {
 
 func main() {
 	var metricsAddr, probeAddr, controlPlaneAddr string
-	var enableLeaderElection bool
+	var enableLeaderElection, enableE2EControllers bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.StringVar(&controlPlaneAddr, "control-plane-bind-address", ":8090", "deployment control-plane endpoint")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "enable leader election")
+	// The e2e kinds are test fixtures. Production runs no e2e suites — that is what a testing
+	// environment is for — so their controllers stay unregistered unless a cluster asks, and their
+	// CRDs live outside the install chart (chart/e2e-crds). Off by default means the safe posture is
+	// the one you get by forgetting. See docs/operations/crd-rollout.md.
+	flag.BoolVar(&enableE2EControllers, "enable-e2e-controllers", false,
+		"reconcile the e2e test kinds (OramaCloudV1E2ETest, ZettaClusterE2ETest, LakeE2ETest); "+
+			"testing environments only, and the cluster needs the chart/e2e-crds CRDs")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -80,27 +87,12 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1")
 		os.Exit(1)
 	}
-	if err = (&controller.OramaCloudV1E2ETestReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1E2ETest")
-		os.Exit(1)
-	}
 	if err = (&controller.OramaZettaClusterReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		APIReader: mgr.GetAPIReader(), // uncached reader for the elastic-capacity node count (operator#69)
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OramaZettaCluster")
-		os.Exit(1)
-	}
-	if err = (&controller.ZettaClusterE2ETestReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Clientset: clientset,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ZettaClusterE2ETest")
 		os.Exit(1)
 	}
 	if err = (&controller.ClerkApplicationReconciler{
@@ -159,13 +151,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Lake")
 		os.Exit(1)
 	}
-	if err = (&controller.LakeE2ETestReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "LakeE2ETest")
-		os.Exit(1)
-	}
 	if err = (&controller.LakeEnvironmentReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
@@ -190,6 +175,34 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeSealedSecret")
 		os.Exit(1)
 	}
+	// e2e kinds — testing environments only. Production reconciles no e2e resources, so these
+	// controllers are not registered and their CRDs are not installed.
+	if enableE2EControllers {
+		setupLog.Info("e2e controllers enabled; this cluster needs the chart/e2e-crds CRDs installed")
+		if err = (&controller.OramaCloudV1E2ETestReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1E2ETest")
+			os.Exit(1)
+		}
+		if err = (&controller.ZettaClusterE2ETestReconciler{
+			Client:    mgr.GetClient(),
+			Scheme:    mgr.GetScheme(),
+			Clientset: clientset,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ZettaClusterE2ETest")
+			os.Exit(1)
+		}
+		if err = (&controller.LakeE2ETestReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "LakeE2ETest")
+			os.Exit(1)
+		}
+	}
+
 	if controlPlaneAddr != "" {
 		if err = mgr.Add(&controller.DeploymentControlPlane{
 			Client:      mgr.GetClient(),

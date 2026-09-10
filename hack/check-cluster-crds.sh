@@ -11,20 +11,34 @@
 # both accumulated un-applied, and the operator was down for ~12 hours. Run this BEFORE and AFTER
 # every helm upgrade.
 #
+# The e2e CRDs are NOT part of this check by default: production runs no e2e suites, so
+# chart/e2e-crds is installed only by testing environments (alongside --set e2e.enabled=true).
+# Pass --e2e to include them.
+#
 #   ./hack/check-cluster-crds.sh                              # current kube-context
 #   ./hack/check-cluster-crds.sh orama-production-cluster-01   # explicit context
 #   ./hack/check-cluster-crds.sh <context> --apply             # apply what is missing
+#   ./hack/check-cluster-crds.sh <context> --e2e               # a testing environment
 #
 # Requires: kubectl with access to the target cluster.
 set -euo pipefail
 
-CHART_CRDS="$(cd "$(dirname "$0")/.." && pwd)/chart/crds"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CHART_CRDS="${REPO_ROOT}/chart/crds"
+E2E_CRDS="${REPO_ROOT}/chart/e2e-crds"
 CONTEXT="${1:-}"
 APPLY=0
+WITH_E2E=0
 for arg in "$@"; do
   [ "$arg" = "--apply" ] && APPLY=1
+  [ "$arg" = "--e2e" ] && WITH_E2E=1
 done
-[ "$CONTEXT" = "--apply" ] && CONTEXT=""
+case "$CONTEXT" in --apply|--e2e) CONTEXT="" ;; esac
+
+DIRS=("$CHART_CRDS")
+if [ "$WITH_E2E" -eq 1 ]; then
+  DIRS+=("$E2E_CRDS")
+fi
 
 kube() {
   if [ -n "$CONTEXT" ]; then
@@ -34,11 +48,24 @@ kube() {
   fi
 }
 
-echo ">> chart CRDs: ${CHART_CRDS}"
+echo ">> chart CRDs: ${DIRS[*]}"
 echo ">> cluster:    $(kube config current-context 2>/dev/null || echo "${CONTEXT:-unknown}")"
 
 missing=()
-for file in "$CHART_CRDS"/*.yaml; do
+files=()
+for dir in "${DIRS[@]}"; do
+  for file in "$dir"/*.yaml; do
+    # A literal, unexpanded glob means the directory has no CRDs, which is itself wrong.
+    [ -e "$file" ] || { echo "!! no CRDs found in ${dir}" >&2; exit 2; }
+    files+=("$file")
+  done
+done
+if [ ${#files[@]} -eq 0 ]; then
+  echo "!! no CRDs to check" >&2
+  exit 2
+fi
+
+for file in "${files[@]}"; do
   # The CRD's own metadata.name, which is what kubectl get crd takes.
   name="$(awk '/^metadata:/{m=1;next} m&&/^  name: /{print $2;exit}' "$file")"
   if [ -z "$name" ]; then
@@ -48,7 +75,7 @@ for file in "$CHART_CRDS"/*.yaml; do
   if kube get crd "$name" >/dev/null 2>&1; then
     printf '   present  %s\n' "$name"
   else
-    printf '   MISSING  %s   (%s)\n' "$name" "${file#"$CHART_CRDS"/}"
+    printf '   MISSING  %s   (%s)\n' "$name" "${file#"$REPO_ROOT"/}"
     missing+=("$file")
   fi
 done
@@ -65,7 +92,7 @@ echo "!! Rolling the manager against it will crash-loop the whole operator, not 
 if [ "$APPLY" -eq 0 ]; then
   echo "!! Apply them, then re-run:"
   for file in "${missing[@]}"; do
-    echo "     kubectl ${CONTEXT:+--context $CONTEXT }apply -f ${file#"$(cd "$(dirname "$0")/.." && pwd)"/}"
+    echo "     kubectl ${CONTEXT:+--context $CONTEXT }apply -f ${file#"$REPO_ROOT"/}"
   done
   exit 1
 fi
@@ -75,4 +102,4 @@ for file in "${missing[@]}"; do
   kube apply -f "$file"
 done
 echo ">> re-checking"
-exec "$0" ${CONTEXT:+"$CONTEXT"}
+exec "$0" ${CONTEXT:+"$CONTEXT"} $([ "$WITH_E2E" -eq 1 ] && echo --e2e)

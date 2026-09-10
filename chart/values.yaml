@@ -23,3 +23,12 @@ controlPlane:
 
 # Helm applies CRDs from chart/crds before templates (generate them with make manifests).
 installCRDs: true
+
+# The e2e kinds (OramaCloudV1E2ETest, ZettaClusterE2ETest, LakeE2ETest) are test fixtures.
+# Production runs no e2e suites, so their controllers and RBAC are off and their CRDs are not
+# installed by this chart. A testing environment sets this true AND applies chart/e2e-crds:
+#   kubectl apply -f chart/e2e-crds/
+#   helm upgrade --install ... --set e2e.enabled=true
+# See docs/operations/crd-rollout.md.
+e2e:
+  enabled: false
