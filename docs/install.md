@@ -237,7 +237,10 @@ registry access.
   separately in [#103](https://github.com/oramasearch/orama-operator/issues/103).
 - **Existing CRDs:** Helm installs files under `crds/` on first installation but does not upgrade
   them. Apply `kubectl apply -f chart/crds/` before an upgrade that changes the CRDs. An installation
-  that already manages CRDs separately can use `--skip-crds`.
+  that already manages CRDs separately can use `--skip-crds` — but Helm applies `chart/crds` on
+  install only, so an upgrade never adds a new one. See
+  [`operations/crd-rollout.md`](operations/crd-rollout.md) and run
+  `hack/check-cluster-crds.sh` around every rollout.
 - **RBAC and image compatibility:** the manager must watch only kinds installed by the matching
   chart and allowed by its ClusterRole. Cache-sync failures in logs require checking those grants
   and the CRDs; registry credentials cannot fix them.

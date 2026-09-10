@@ -61,6 +61,16 @@ Review `operator-values.yaml`. It contains only explicit overrides from the form
 command below forces the renamed image repository, immutable tag, and ServiceAccount even if an
 old name was explicitly saved.
 
+`--skip-crds` means this install applies no CRDs at all. Helm would not apply them on an upgrade
+either, so confirm the cluster already has every CRD the chart ships — a missing one crash-loops the
+whole manager, not just that kind ([`crd-rollout.md`](crd-rollout.md)):
+
+```sh
+./hack/check-cluster-crds.sh "$CUTOVER_CONTEXT"
+```
+
+Stop if it reports anything missing; apply those CRDs first.
+
 ```sh
 helm upgrade --install "$CURRENT_RELEASE" ./chart \
   -n "$CUTOVER_NAMESPACE" \
@@ -71,6 +81,7 @@ helm upgrade --install "$CURRENT_RELEASE" ./chart \
   --set operator.image.repository=oramasearch/orama-operator \
   --set operator.image.tag="$OPERATOR_IMAGE_TAG" \
   --set serviceAccount.name=orama-operator
+./hack/check-cluster-crds.sh "$CUTOVER_CONTEXT"
 kubectl --context "$CUTOVER_CONTEXT" rollout status deployment/orama-operator -n "$CUTOVER_NAMESPACE"
 kubectl --context "$CUTOVER_CONTEXT" get lease orama-cloud-v1-operator.orama.cloud -n "$CUTOVER_NAMESPACE" -o wide
 kubectl --context "$CUTOVER_CONTEXT" get endpointslice -n "$CUTOVER_NAMESPACE" -l kubernetes.io/service-name=orama-operator-control-plane

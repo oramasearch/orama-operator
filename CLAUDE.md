@@ -140,6 +140,12 @@ see `docs/lake/schema.md`. The operator serves
 liquid's authenticated deployment REST/MCP contract from its manager Service; see
 `docs/control-plane/README.md`. The chart ClusterRole is
 hand-maintained: a new owned kind needs its entry there or the manager CrashLoops on cache sync.
+That, its CRD in `chart/crds`, and that CRD being present on the target cluster are all now
+**checked rather than remembered** — `go test ./cmd/...` covers the first two and
+`hack/check-cluster-crds.sh` the third. Read
+[`docs/operations/crd-rollout.md`](docs/operations/crd-rollout.md); it exists because forgetting two
+of them took production down for ~12 hours
+([#166](https://github.com/oramasearch/orama-operator/issues/166)).
 
 ## Build / codegen flow
 
@@ -201,5 +207,10 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
 - **Reuse published `oramasearch/*` images** — no build-from-source of the app
   components in this repo.
 - Conventional Commits (`feat:`/`fix:`/`docs:`/`chore:`).
-- Shipping: commit + push this repo → bump the pointer in `orama-cloud-v1-bridge` →
-  bump the pointer in the umbrella `orama-bridge` (fast-forward to `main`).
+- Shipping: commit + push this repo → bump the pointer in the umbrella `orama-bridge`
+  (fast-forward to `main`). This repo left `orama-cloud-v1-bridge` on 2026-09-09 when it was renamed
+  from `orama-cloud-v1-operator` and promoted to a top-level module — it is no longer v1-specific,
+  so there is no v1-bridge pointer in the chain any more.
+- Before any `helm upgrade`, run `make check-crds CONTEXT=<kube-context>`. Helm applies
+  `chart/crds` on install only, so an upgrade never adds a new CRD; see
+  [`docs/operations/crd-rollout.md`](docs/operations/crd-rollout.md).
