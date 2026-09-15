@@ -43,6 +43,12 @@ Three layers, each with one job:
   RabbitMQ runs as a StatefulSet with an operator-owned `RabbitMQTopology` CR; there is no
   upstream RabbitMQ operator to install. ClickHouse also runs as a StatefulSet.
 
+The chart also installs the three e2e CRDs and the manager registers their controllers. On a
+cluster shared by production and testing environments, create namespaced e2e CRs only in the
+testing namespace. The cluster-scoped `LakeE2ETest` must target a testing `Lake` whose
+`spec.namespace` is the testing namespace, never the production `Lake`. See
+[CRD rollout](operations/crd-rollout.md#e2e-runs-in-the-testing-environment-on-the-production-cluster).
+
 ## 1. Prepare registry access and platform controllers
 
 Create the release namespace **before** its pull Secret. Enter the supplied credentials in a

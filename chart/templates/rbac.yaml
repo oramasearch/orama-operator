@@ -19,10 +19,8 @@ rules:
     resources:
       - oramacloudv1s
       - oramazettaclusters
-      {{- if .Values.e2e.enabled }}
       - oramacloudv1e2etests
       - zettaclustere2etests
-      {{- end }}
       - cloudflarednsrecords
       - cloudflarekvnamespaces
       - cloudflarer2buckets
@@ -31,9 +29,7 @@ rules:
       - postgresschemas
       - clerkapplications
       - lakes
-      {{- if .Values.e2e.enabled }}
       - lakee2etests
-      {{- end }}
       - lakeenvironments
       - lakerestorerehearsals
       - lakesealedsecrets
@@ -42,10 +38,8 @@ rules:
     resources:
       - oramacloudv1s/status
       - oramazettaclusters/status
-      {{- if .Values.e2e.enabled }}
       - oramacloudv1e2etests/status
       - zettaclustere2etests/status
-      {{- end }}
       - cloudflarednsrecords/status
       - cloudflarekvnamespaces/status
       - cloudflarer2buckets/status
@@ -53,9 +47,7 @@ rules:
       - rabbitmqtopologies/status
       - postgresschemas/status
       - lakes/status
-      {{- if .Values.e2e.enabled }}
       - lakee2etests/status
-      {{- end }}
       - lakeenvironments/status
       - lakerestorerehearsals/status
       - lakesealedsecrets/status

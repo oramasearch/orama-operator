@@ -34,14 +34,6 @@ var (
 	rbacResourcePattern = regexp.MustCompile(`(?m)^\s+- ([a-z0-9]+)$`)
 )
 
-// e2e kinds are gated behind --enable-e2e-controllers and their CRDs live in chart/e2e-crds, not
-// chart/crds: production runs no e2e suites. Keep this list in step with the gated block in main.go.
-var e2eKinds = map[string]bool{
-	"OramaCloudV1E2ETest": true,
-	"ZettaClusterE2ETest": true,
-	"LakeE2ETest":         true,
-}
-
 func registeredKinds(t *testing.T) []string {
 	t.Helper()
 	source, err := os.ReadFile("main.go")
@@ -60,10 +52,6 @@ func registeredKinds(t *testing.T) []string {
 }
 
 func chartKinds(t *testing.T) []string { return kindsIn(t, filepath.Join("..", "chart", "crds")) }
-
-func e2eChartKinds(t *testing.T) []string {
-	return kindsIn(t, filepath.Join("..", "chart", "e2e-crds"))
-}
 
 func kindsIn(t *testing.T, dir string) []string {
 	t.Helper()
@@ -100,9 +88,6 @@ func TestEveryRegisteredControllerHasAChartCRD(t *testing.T) {
 	for _, kind := range chartKinds(t) {
 		chart[kind] = true
 	}
-	for _, kind := range e2eChartKinds(t) {
-		chart[kind] = true
-	}
 	var missing []string
 	for _, kind := range registeredKinds(t) {
 		if !chart[kind] {
@@ -126,7 +111,7 @@ func TestEveryChartCRDHasARegisteredController(t *testing.T) {
 		registered[kind] = true
 	}
 	var orphaned []string
-	for _, kind := range append(chartKinds(t), e2eChartKinds(t)...) {
+	for _, kind := range chartKinds(t) {
 		if !registered[kind] {
 			orphaned = append(orphaned, kind)
 		}
@@ -135,6 +120,28 @@ func TestEveryChartCRDHasARegisteredController(t *testing.T) {
 		t.Fatalf("chart/crds ships CRDs no controller reconciles: %s\n"+
 			"Either the controller was dropped and its CRD left behind, or the CRD should not be "+
 			"installed on every cluster.", strings.Join(orphaned, ", "))
+	}
+}
+
+// The production cluster also hosts the testing environment. These kinds must stay available on
+// that shared cluster even though their resources must never target the production environment.
+func TestE2EKindsRemainInstalledAndRegistered(t *testing.T) {
+	want := []string{"LakeE2ETest", "OramaCloudV1E2ETest", "ZettaClusterE2ETest"}
+	chart := make(map[string]bool)
+	for _, kind := range chartKinds(t) {
+		chart[kind] = true
+	}
+	registered := make(map[string]bool)
+	for _, kind := range registeredKinds(t) {
+		registered[kind] = true
+	}
+	for _, kind := range want {
+		if !chart[kind] {
+			t.Errorf("chart/crds must ship %s for testing environments on shared clusters", kind)
+		}
+		if !registered[kind] {
+			t.Errorf("main.go must register %s for testing environments on shared clusters", kind)
+		}
 	}
 }
 
@@ -182,40 +189,5 @@ func TestEveryChartCRDIsCoveredByChartRBAC(t *testing.T) {
 		t.Fatalf("chart/templates/rbac.yaml grants nothing for: %s\n"+
 			"The manager cannot list or watch these, so its cache never syncs and the whole "+
 			"operator crash-loops. Add them to the ClusterRole rules.", strings.Join(missing, ", "))
-	}
-}
-
-// Production runs no e2e suites (that is what a testing environment is for), so the install chart
-// must not put an e2e CRD on every cluster. One of them — LakeE2ETest — is what crash-looped
-// production for twelve hours in operator#166 while reconciling nothing anyone wanted.
-func TestInstallChartShipsNoE2ECRD(t *testing.T) {
-	var leaked []string
-	for _, kind := range chartKinds(t) {
-		if e2eKinds[kind] {
-			leaked = append(leaked, kind)
-		}
-	}
-	if len(leaked) > 0 {
-		sort.Strings(leaked)
-		t.Fatalf("chart/crds ships e2e kinds: %s\n"+
-			"They belong in chart/e2e-crds, applied only by testing environments alongside "+
-			"--set e2e.enabled=true.", strings.Join(leaked, ", "))
-	}
-}
-
-// And the gate itself: every kind in chart/e2e-crds is one main.go registers behind the flag, so a
-// kind cannot quietly move between the two sets.
-func TestE2EChartHoldsExactlyTheGatedKinds(t *testing.T) {
-	seen := make(map[string]bool)
-	for _, kind := range e2eChartKinds(t) {
-		if !e2eKinds[kind] {
-			t.Errorf("chart/e2e-crds ships %s, which is not gated behind --enable-e2e-controllers", kind)
-		}
-		seen[kind] = true
-	}
-	for kind := range e2eKinds {
-		if !seen[kind] {
-			t.Errorf("%s is gated behind --enable-e2e-controllers but chart/e2e-crds ships no CRD for it", kind)
-		}
 	}
 }

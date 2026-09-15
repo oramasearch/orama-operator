@@ -11,34 +11,21 @@
 # both accumulated un-applied, and the operator was down for ~12 hours. Run this BEFORE and AFTER
 # every helm upgrade.
 #
-# The e2e CRDs are NOT part of this check by default: production runs no e2e suites, so
-# chart/e2e-crds is installed only by testing environments (alongside --set e2e.enabled=true).
-# Pass --e2e to include them.
-#
 #   ./hack/check-cluster-crds.sh                              # current kube-context
 #   ./hack/check-cluster-crds.sh orama-production-cluster-01   # explicit context
 #   ./hack/check-cluster-crds.sh <context> --apply             # apply what is missing
-#   ./hack/check-cluster-crds.sh <context> --e2e               # a testing environment
 #
 # Requires: kubectl with access to the target cluster.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART_CRDS="${REPO_ROOT}/chart/crds"
-E2E_CRDS="${REPO_ROOT}/chart/e2e-crds"
 CONTEXT="${1:-}"
 APPLY=0
-WITH_E2E=0
 for arg in "$@"; do
   [ "$arg" = "--apply" ] && APPLY=1
-  [ "$arg" = "--e2e" ] && WITH_E2E=1
 done
-case "$CONTEXT" in --apply|--e2e) CONTEXT="" ;; esac
-
-DIRS=("$CHART_CRDS")
-if [ "$WITH_E2E" -eq 1 ]; then
-  DIRS+=("$E2E_CRDS")
-fi
+case "$CONTEXT" in --apply) CONTEXT="" ;; esac
 
 kube() {
   if [ -n "$CONTEXT" ]; then
@@ -48,17 +35,15 @@ kube() {
   fi
 }
 
-echo ">> chart CRDs: ${DIRS[*]}"
+echo ">> chart CRDs: ${CHART_CRDS}"
 echo ">> cluster:    $(kube config current-context 2>/dev/null || echo "${CONTEXT:-unknown}")"
 
 missing=()
 files=()
-for dir in "${DIRS[@]}"; do
-  for file in "$dir"/*.yaml; do
-    # A literal, unexpanded glob means the directory has no CRDs, which is itself wrong.
-    [ -e "$file" ] || { echo "!! no CRDs found in ${dir}" >&2; exit 2; }
-    files+=("$file")
-  done
+for file in "$CHART_CRDS"/*.yaml; do
+  # A literal, unexpanded glob means the directory has no CRDs, which is itself wrong.
+  [ -e "$file" ] || { echo "!! no CRDs found in ${CHART_CRDS}" >&2; exit 2; }
+  files+=("$file")
 done
 if [ ${#files[@]} -eq 0 ]; then
   echo "!! no CRDs to check" >&2
@@ -102,4 +87,4 @@ for file in "${missing[@]}"; do
   kube apply -f "$file"
 done
 echo ">> re-checking"
-exec "$0" ${CONTEXT:+"$CONTEXT"} $([ "$WITH_E2E" -eq 1 ] && echo --e2e)
+exec "$0" ${CONTEXT:+"$CONTEXT"}

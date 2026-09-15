@@ -36,7 +36,6 @@ its cache sync exactly like a missing CRD does.
 | A controller ships without its CRD in the chart | [`cmd/crd_coverage_test.go`](../../cmd/crd_coverage_test.go) | `go test ./cmd/...` — CI, no cluster |
 | A chart CRD ships without an RBAC grant | same test | `go test ./cmd/...` — CI, no cluster |
 | A chart CRD is absent from the cluster | [`hack/check-cluster-crds.sh`](../../hack/check-cluster-crds.sh) | before **and** after every `helm upgrade` |
-| An e2e CRD leaks into the install chart | [`cmd/crd_coverage_test.go`](../../cmd/crd_coverage_test.go) | `go test ./cmd/...` — CI, no cluster |
 
 The test also fails on the reverse — a chart CRD nothing reconciles — which catches a controller
 dropped without its CRD.
@@ -64,40 +63,20 @@ tests and scripts rather than a paragraph.
 If this is ever revisited, revisit it here, with the reasoning — do not let it change by accident of
 `SetupWithManager` ordering.
 
-## The e2e kinds do not run in production
+## E2E runs in the testing environment, on the production cluster
 
-`LakeE2ETest`, `ZettaClusterE2ETest` and `OramaCloudV1E2ETest` are test fixtures. **Production runs
-no e2e suites — that is what a testing environment is for** (decided 2026-09-09), so:
+The cluster and environment boundaries are different. `orama-production-cluster-01` hosts both
+production and testing environment namespaces. The operator installed on that cluster must keep
+the `LakeE2ETest`, `ZettaClusterE2ETest`, and `OramaCloudV1E2ETest` CRDs and controllers available
+so the testing environment can use them.
 
-- their controllers are registered only behind `--enable-e2e-controllers`, **off by default**;
-- their CRDs live in `chart/e2e-crds/`, which the install chart does not apply;
-- their RBAC renders only under `e2e.enabled`.
+Do not create e2e resources against the production environment:
 
-Off by default matters: the safe posture is the one you get by forgetting. Production installs
-nothing e2e and reconciles nothing e2e without someone deliberately turning it on.
+- create namespaced `OramaCloudV1E2ETest` and `ZettaClusterE2ETest` resources in the testing
+  namespace, beside their testing targets;
+- `LakeE2ETest` is cluster-scoped, so target only a testing `Lake` whose `spec.namespace` is the
+  testing environment namespace. Never point it at the production `Lake`.
 
-A testing environment opts in with both halves — the CRDs and the flag:
-
-```sh
-kubectl apply -f chart/e2e-crds/
-helm upgrade --install orama-operator ./chart -n orama-system --set e2e.enabled=true
-./hack/check-cluster-crds.sh <context> --e2e
-```
-
-This is not only tidiness. The twelve-hour outage was caused by `LakeE2ETest` — a kind production
-had no use for, crash-looping the manager that runs everything else. Not installing it removes that
-failure entirely rather than guarding it.
-
-`cmd/crd_coverage_test.go` holds the split: the install chart may ship no e2e CRD, and
-`chart/e2e-crds` must hold exactly the kinds gated behind the flag, so a kind cannot drift between
-the two sets.
-
-### Left on the production cluster
-
-The three e2e CRDs are still installed on `orama-production-cluster-01` from before this change —
-one of them applied during the incident. They are inert once the controllers stop, but removing a
-CRD deletes its custom resources, so retire them deliberately, having checked there are none:
-
-```sh
-kubectl --context orama-production-cluster-01 get lakee2etests,zettaclustere2etests,oramacloudv1e2etests -A
-```
+The e2e CRDs therefore live in `chart/crds`, their controllers are always registered, and their
+RBAC is always present. The same invariant and rollout checks cover them. `make check-crds
+CONTEXT=orama-production-cluster-01` checks all three along with the other operator CRDs.
