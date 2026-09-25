@@ -51,6 +51,11 @@ var operatorZettaSchema = []zettaSchemaStmt{
 	// The public deployment contract preserves response/history fields separately from the desired and
 	// status event stream. A separate table upgrades existing clusters without ALTER TABLE support.
 	{"orama_control", "CREATE TABLE deployment_records (deployment_id TEXT, lake TEXT, repository TEXT, environment TEXT, change_id TEXT, image TEXT, result_id TEXT, rollback_of TEXT, secret_refs_json TEXT, created_at TEXT)"},
+	// Per-customer Zetta workspaces (liquid-bridge decision 45). Same event-stream shape as
+	// deployments: lake appends record_type='desired' rows, the operator materializes each
+	// workspace_id into a Lake-owned OramaZettaCluster and appends record_type='status' rows on
+	// phase transitions. See zetta_workspaces.go + docs/lake/workspaces.md.
+	{"orama_control", "CREATE TABLE workspaces (workspace_id TEXT, record_type TEXT, lake TEXT, customer_id TEXT, phase TEXT, url TEXT, message TEXT, updated_at TEXT)"},
 	// Data plane — the application-data landing zone (destined to replace v1's Typesense/ClickHouse/PG).
 	{"", "CREATE DATABASE orama_data"},
 	{"orama_data", "CREATE TABLE documents (id TEXT, collection TEXT, body TEXT, updated_at TEXT)"},

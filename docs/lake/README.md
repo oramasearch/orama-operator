@@ -28,6 +28,11 @@ delivered `LakeSealedSecret` values copied into the isolated workload namespace 
 authenticated REST `/v1` and MCP deployment surface; the contract, credentials, rollback, audit
 and connection details are in the [deployment control-plane guide](../control-plane/README.md).
 
+With `spec.workspaces.enabled`, lake requests one Zetta cluster per customer workspace by appending
+rows to `orama_control.workspaces` on its own data plane; the operator creates Lake-owned
+`OramaZettaCluster`s and hands lake their URLs and tokens through a mounted Secret
+([workspaces.md](workspaces.md)).
+
 ## What a Lake reconciles into
 
 Every reconcile manages the following resources; the Deployment and disruption budget wait for
@@ -66,7 +71,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 8. **Zetta data plane** — owned `OramaZettaCluster` `lake-<name>-zetta` in the Lake namespace,
    configured from `spec.zetta` (enabled, image, replicas, per-node storage, and reachability).
    It inherits `spec.pullSecretName` and has operator-schema provisioning disabled because it is
-   Lake's data store, not the operator's control store. Its client Service and seeded admin-token
+   Lake's data store, not the operator's control store — unless `spec.workspaces.enabled`, which
+   turns it on so the cluster hosts `orama_control.workspaces` (step 15). Its client Service and seeded admin-token
    Secret reach the lake pod as `LAKE_DATA_PLANE_URL` and `LAKE_DATA_PLANE_TOKEN`. Deleting the
    Lake starts deletion of this child and waits for its finalizers before releasing the Lake
    finalizer; disabling `spec.zetta` tears the child down with its per-node volumes.
@@ -105,6 +111,12 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`
     controller runs Postgres procedures and updates the row; see
     [data services](data-services/README.md).
+15. **Workspaces** (opt-in: `spec.workspaces.enabled`) — desired rows lake appends to
+    `orama_control.workspaces` on its data plane become Lake-owned `OramaZettaCluster`s named
+    `<name>-<workspace_id>`, one per customer workspace (Zetta has no tenancy). Their admin tokens
+    are aggregated into Secret `lake-<name>-workspaces`, mounted at `/var/run/lake/workspaces`, and
+    lake gets `LAKE_WORKSPACE_DIR` and `LAKE_WORKSPACE_URL_TEMPLATE`. Workspace clusters are never
+    deleted except with the Lake. See [`workspaces.md`](workspaces.md).
 
 **Status** reports overall service readiness through `phase` and `conditions[Ready]`, alongside
 Deployment replica counts, store binding, Postgres, schema, Zetta, backup, sealing, and data-service

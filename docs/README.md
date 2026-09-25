@@ -19,6 +19,7 @@ Deep docs for the operator. Kept in lockstep with the source (see the repo
 - [`lake/schema.md`](lake/schema.md) — **Lake schema provenance and rollout ordering**: pinned byte verification, migration `0021`, automatic Job replacement, re-vendoring, and native envtest/Postgres proof.
 - [`lake/backups.md`](lake/backups.md) — **Lake control-plane backups**: R2 credentials, scheduled CNPG Barman backups, verification, configuration changes, and recovery into a new Cluster.
 - [`lake/environments.md`](lake/environments.md) — **named and per-change Lake environments**: Zetta deployment events, `LakeEnvironment` materialization, the k0s namespace profile, ingress/DNS, anti-flap status and teardown.
+- [`lake/workspaces.md`](lake/workspaces.md) — **per-customer Zetta workspaces**: the `orama_control.workspaces` row contract, Lake-owned workspace `OramaZettaCluster`s, the credentials Secret and URL template lake receives, and why nothing is deleted in v1.
 - [`lake/admission-fixtures.md`](lake/admission-fixtures.md) — pinned k0s admission policies and tenant RBAC used by the native environment delivery proof.
 - [`lake/data-services/README.md`](lake/data-services/README.md) — **Lake data-service labels**: per-operation evidence, the managed threshold, and the customer responsibility for explicitly unmanaged services.
 - [`lake/data-services/postgres.md`](lake/data-services/postgres.md) — **Lake Postgres rehearsals**: automated backup recovery, scratch upgrade, replicated failover, verification, cleanup, and status recording.

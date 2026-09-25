@@ -404,6 +404,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 		r.reconcileOperatorStateSync(ctx, &z, clientName) // best-effort; never fails the reconcile
 		r.reconcileZettaDeployments(ctx, &z, clientName)  // best-effort; the periodic poll retries
+		r.reconcileZettaWorkspaces(ctx, &z, clientName)   // best-effort; see zetta_workspaces.go
 	} else if err := r.teardownZettaControlPlane(ctx, &z); err != nil {
 		return ctrl.Result{}, err
 	}
