@@ -134,45 +134,71 @@ type LakeSpec struct {
 	// +optional
 	DeploySync LakeDeploySyncSpec `json:"deploySync,omitempty"`
 
-	// Workspaces lets lake request one OramaZettaCluster per customer workspace through the
-	// append-only orama_control.workspaces table on its data plane. Zetta has no tenancy, so each
-	// workspace is its own cluster. Requires the Zetta data plane (spec.zetta.enabled). See
-	// docs/lake/workspaces.md.
+	// Services lets lake run managed services for its customers: one OramaZettaCluster or
+	// CloudNativePG Cluster per row of the services table in lake's control Postgres, with the
+	// operator's observations written back to service_status. Requires the control-plane Postgres
+	// (spec.postgres.enabled). See docs/lake/services.md.
+	// +optional
+	Services LakeServicesSpec `json:"services,omitempty"`
+
+	// Workspaces is deprecated: use spec.services. Its fields remain as fallbacks: enabled turns
+	// services on, image is the Zetta image when spec.services.zettaImage is empty, maxWorkspaces
+	// is the cap when spec.services.maxServices is 0, and storage.storageClassName and resources
+	// shape every Zetta service's nodes. The orama_control.workspaces request table is no longer
+	// read. See docs/lake/workspaces.md.
 	// +optional
 	Workspaces LakeWorkspacesSpec `json:"workspaces,omitempty"`
 }
 
-// LakeWorkspacesSpec configures per-customer Zetta workspaces for a Lake.
-type LakeWorkspacesSpec struct {
-	// Enabled turns on workspace intake: the data plane provisions the operator schema (which
-	// holds orama_control.workspaces), the operator materializes desired rows into Lake-owned
-	// OramaZettaClusters, and lake receives LAKE_WORKSPACE_DIR and LAKE_WORKSPACE_URL_TEMPLATE.
-	// Turning it off stops intake (desired and withdrawn rows alike) and removes the env and
-	// volume from lake; existing workspace clusters are not deleted by disabling.
+// LakeServicesSpec configures a Lake's managed services (liquid-bridge decision 46).
+type LakeServicesSpec struct {
+	// Enabled turns on managed services: the operator reads the services table from lake's
+	// control Postgres, creates <lake>-<slug> in the Lake's namespace for each present service,
+	// deletes absent ones, writes service_status, and mounts Secret lake-<lake>-services in lake at
+	// /var/run/lake/services (LAKE_SERVICE_DIR). Turning it off stops reconciliation and removes
+	// the mount; it deletes no service.
 	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 
-	// Image is the Zetta image for workspace clusters. Empty uses the OramaZettaCluster default.
+	// MaxServices caps the live services of this Lake. A new service beyond the cap is not created
+	// and is reported Failed with the message "service quota reached (<n>)"; it starts once there
+	// is room. Lowering the cap never removes or refuses an existing service. 0 falls back to
+	// spec.workspaces.maxWorkspaces; 0 there too means unlimited.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxServices int32 `json:"maxServices,omitempty"`
+
+	// ZettaImage is the image for Zetta services. Empty falls back to spec.workspaces.image, and
+	// then to the OramaZettaCluster default.
+	// +optional
+	ZettaImage string `json:"zettaImage,omitempty"`
+}
+
+// LakeWorkspacesSpec is the deprecated decision-45 workspace configuration. See
+// LakeSpec.Workspaces for how each field is still read.
+type LakeWorkspacesSpec struct {
+	// Enabled is deprecated: it turns managed services on exactly as spec.services.enabled does.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Image is deprecated: the Zetta service image when spec.services.zettaImage is empty.
 	// +optional
 	Image string `json:"image,omitempty"`
 
-	// Storage configures each workspace node's persistent data volume. When the whole field is
-	// omitted the size is 5Gi; an object given without a size takes the OramaZettaStorage
-	// default (10Gi).
+	// Storage is deprecated. Its storageClassName is used for every Zetta service's data volumes;
+	// its size is ignored, since each service's size comes from its spec.storage_gi.
 	// +kubebuilder:default={size:"5Gi"}
 	// +optional
 	Storage OramaZettaStorage `json:"storage,omitempty"`
 
-	// Resources configures each workspace node's container. When omitted, the operator requests
-	// 64Mi memory, limits memory to 1Gi, and sets no CPU request.
+	// Resources configures each Zetta service node's container. When omitted, the operator
+	// requests 64Mi memory, limits memory to 1Gi, and sets no CPU request.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	// MaxWorkspaces caps the live workspace clusters of this Lake. A desired row for a new
-	// workspace beyond the cap is not materialized and gets a Failed status row reading
-	// "workspace quota reached (<n>)". Lowering the cap never removes an existing workspace.
-	// 0 or unset means unlimited.
+	// MaxWorkspaces is deprecated: the service cap when spec.services.maxServices is 0.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	MaxWorkspaces int32 `json:"maxWorkspaces,omitempty"`

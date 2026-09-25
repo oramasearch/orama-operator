@@ -1273,3 +1273,55 @@ CREATE TABLE IF NOT EXISTS custodial_identity_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0023_custodial_identities') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Managed services (migration 0024). A customer runs any number of services on the Lake's
+-- cluster: Zetta clusters and Postgres clusters today. lake writes the desired state here; the
+-- Orama operator reads it, creates one OramaZettaCluster or CloudNativePG Cluster per service,
+-- and reports back in service_status. The customer's Design, Train and Ship workspace is its
+-- default Zetta service. See docs/control-plane/services.md and liquid-bridge decision 46.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS services (
+    id                 uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    kind               text        NOT NULL,
+    name               text        NOT NULL,
+    -- Kubernetes names are <lake>-<slug>; unique for the life of the Lake, never reused.
+    slug               text        NOT NULL UNIQUE,
+    is_default         boolean     NOT NULL DEFAULT false,
+    spec               jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    desired            text        NOT NULL DEFAULT 'present',
+    generation         bigint      NOT NULL DEFAULT 1,
+    created_by_taap_id text        NOT NULL DEFAULT '',
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT service_kind_check CHECK (kind IN ('zetta', 'postgres')),
+    CONSTRAINT service_name_format CHECK (name ~ '^[a-z][a-z0-9-]{0,30}$'),
+    CONSTRAINT service_slug_format CHECK (slug ~ '^(svc|ws)-[0-9a-f]{12}$'),
+    CONSTRAINT service_desired_check CHECK (desired IN ('present', 'absent')),
+    CONSTRAINT service_spec_object CHECK (jsonb_typeof(spec) = 'object'),
+    CONSTRAINT service_default_is_zetta CHECK (NOT is_default OR kind = 'zetta')
+);
+
+-- One live service per name, and one default workspace, per customer.
+CREATE UNIQUE INDEX IF NOT EXISTS services_customer_name_idx
+    ON services (customer_id, name) WHERE desired = 'present';
+CREATE UNIQUE INDEX IF NOT EXISTS services_customer_default_idx
+    ON services (customer_id) WHERE is_default AND desired = 'present';
+CREATE INDEX IF NOT EXISTS services_customer_idx ON services (customer_id, created_at);
+
+-- Written only by the operator: one row per service, replaced on every observed change.
+CREATE TABLE IF NOT EXISTS service_status (
+    service_id          uuid        PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',
+    message             text        NOT NULL DEFAULT '',
+    endpoint            text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS services_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0024_services') ON CONFLICT DO NOTHING;

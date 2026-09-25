@@ -43,6 +43,9 @@ import (
 type LakeReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// ServiceStores opens lake's control Postgres for the managed-services poll. Nil uses pgx;
+	// tests substitute a fake store.
+	ServiceStores LakeServiceStoreOpener
 }
 
 const (
@@ -53,7 +56,7 @@ const (
 	lakeStorePath        = "/var/lib/lake/store"
 	lakeStoreVolume      = "store"
 	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
-	lakeSchemaGuardTable = "custodial_identity_guard"
+	lakeSchemaGuardTable = "services_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
@@ -190,14 +193,6 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile Zetta data plane: %w", err)
 	}
-	// Workspace credentials: one Secret mounted into lake, keyed by workspace_id. Turning
-	// workspaces off leaves the Secret in place (disabling deletes no workspace; only a withdrawn
-	// row does, through zetta_workspaces.go).
-	if lakeWorkspacesEnabled(&lake) {
-		if err := r.reconcileLakeWorkspaceSecret(ctx, &lake, ns, labels); err != nil {
-			return ctrl.Result{}, fmt.Errorf("reconcile workspace credentials: %w", err)
-		}
-	}
 	claimName, err := r.reconcileLakeStore(ctx, &lake, ns, labels)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile store: %w", err)
@@ -256,6 +251,13 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		}
 	} else if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, deploy); client.IgnoreNotFound(err) != nil {
 		return ctrl.Result{}, fmt.Errorf("read deployment while waiting for schema: %w", err)
+	}
+
+	// Managed services (lake_services.go): best-effort, never fails the Lake. The services table
+	// exists only once the schema has applied, so the poll waits for it. Turning services off
+	// stops the poll and deletes no service.
+	if lakeServicesEnabled(&lake) && schemaReady {
+		r.reconcileLakeServices(ctx, &lake, ns, labels)
 	}
 
 	// Ingress + DNS (opt-in, same contract as OramaZettaCluster).
@@ -335,17 +337,17 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			return ctrl.Result{}, err
 		}
 	}
+	// The services table is polled, and service credentials live in Secrets the Lake does not
+	// own, so services poll at their own cadence; unchanged polls write nothing.
+	if lakeServicesEnabled(&lake) {
+		return ctrl.Result{RequeueAfter: min(lakeStatusRequeue, lakeServicesPollInterval(&lake))}, nil
+	}
 	// CNPG Cluster and Backup resources are not watched. Keep polling after success so
 	// readiness loss and future backups are observed; unchanged polls write no status.
 	if lakePostgresEnabled(&lake) {
 		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
 	if lakeZettaEnabled(&lake) && !zettaReady {
-		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
-	}
-	// Workspace admin Secrets are owned by their clusters, not the Lake, so a newly minted token
-	// is picked up by polling as well as by the owned-cluster watch.
-	if lakeWorkspacesEnabled(&lake) {
 		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
 	if !storeReady {
@@ -399,9 +401,10 @@ func (r *LakeReconciler) reconcileLakeZetta(
 		if client.ObjectKeyFromObject(&children[i]) == key && lakeZettaEnabled(lake) {
 			continue
 		}
-		// Workspace clusters are also Lake-controlled but are never removed here: only the
-		// Lake's own data plane follows spec.zetta. They go with the Lake at finalization.
-		if isLakeWorkspaceCluster(&children[i]) {
+		// Service clusters are also Lake-controlled but are never removed here: only the Lake's
+		// own data plane follows spec.zetta. The services poll deletes an absent service; the rest
+		// go with the Lake at finalization.
+		if isLakeServiceCluster(&children[i]) {
 			continue
 		}
 		if err := r.Delete(ctx, &children[i]); err != nil && !apierrors.IsNotFound(err) {
@@ -435,9 +438,9 @@ func (r *LakeReconciler) reconcileLakeZetta(
 	if lake.Spec.Zetta.Replicas != nil {
 		replicas = *lake.Spec.Zetta.Replicas
 	}
-	// The data plane hosts orama_control.workspaces (lake's workspace intake) only when workspaces
-	// are enabled; otherwise it stays a plain data plane with no operator schema.
-	operatorSchema := lakeWorkspacesEnabled(lake)
+	// The data plane is a plain data plane: managed services are requested through lake's control
+	// Postgres, not an operator schema on Zetta.
+	operatorSchema := false
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, zetta, func() error {
 		zetta.Labels = labels
 		zetta.Spec = oramav1alpha1.OramaZettaClusterSpec{
@@ -585,21 +588,21 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 				},
 			}},
 		}
-		if lakeWorkspacesEnabled(lake) {
-			// Optional, so lake starts before the first workspace exists. kubelet refreshes a
-			// mounted Secret in place, so adding a workspace key never restarts lake.
+		if lakeServicesEnabled(lake) {
+			// Optional, so lake starts before the first service exists. kubelet refreshes a
+			// mounted Secret in place, so adding a service key never restarts lake.
 			optional := true
 			mode := int32(0o440) // readable by lake through its fsGroup
 			spec := &deployment.Spec.Template.Spec
 			spec.Containers[0].VolumeMounts = append(spec.Containers[0].VolumeMounts, corev1.VolumeMount{
-				Name:      lakeWorkspaceVolume,
-				MountPath: lakeWorkspaceMountPath,
+				Name:      lakeServicesVolume,
+				MountPath: lakeServicesMountPath,
 				ReadOnly:  true,
 			})
 			spec.Volumes = append(spec.Volumes, corev1.Volume{
-				Name: lakeWorkspaceVolume,
+				Name: lakeServicesVolume,
 				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-					SecretName:  lakeWorkspacesSecret(lake.Name),
+					SecretName:  lakeServicesSecret(lake.Name),
 					Optional:    &optional,
 					DefaultMode: &mode,
 				}},
@@ -887,17 +890,16 @@ func (r *LakeReconciler) lakeStoreStatus(
 // lake with an incomplete data-plane configuration.
 func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.EnvVar {
 	reserved := map[string]struct{}{
-		"LAKE_ADMIN_TOKEN":            {},
-		"LAKE_CONTROL_DB_PASSWORD":    {},
-		"LAKE_CONTROL_DB_URI":         {},
-		"LAKE_DATA_PLANE_TOKEN":       {},
-		"LAKE_DATA_PLANE_URL":         {},
-		"LAKE_INSTANCE_KEK":           {},
-		"LAKE_SEALING_KID":            {},
-		"LAKE_SEALING_PUBLIC_KEY":     {},
-		"LAKE_STORE_ROOT":             {},
-		"LAKE_WORKSPACE_DIR":          {},
-		"LAKE_WORKSPACE_URL_TEMPLATE": {},
+		"LAKE_ADMIN_TOKEN":         {},
+		"LAKE_CONTROL_DB_PASSWORD": {},
+		"LAKE_CONTROL_DB_URI":      {},
+		"LAKE_DATA_PLANE_TOKEN":    {},
+		"LAKE_DATA_PLANE_URL":      {},
+		"LAKE_INSTANCE_KEK":        {},
+		"LAKE_SEALING_KID":         {},
+		"LAKE_SEALING_PUBLIC_KEY":  {},
+		"LAKE_SERVICE_DIR":         {},
+		"LAKE_STORE_ROOT":          {},
 	}
 	env := []corev1.EnvVar{
 		{Name: "LAKE_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
@@ -956,12 +958,10 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 			},
 		)
 	}
-	if lakeWorkspacesEnabled(lake) {
-		env = append(
-			env,
-			corev1.EnvVar{Name: "LAKE_WORKSPACE_DIR", Value: lakeWorkspaceMountPath},
-			corev1.EnvVar{Name: "LAKE_WORKSPACE_URL_TEMPLATE", Value: lakeWorkspaceURLTemplate(lake)},
-		)
+	if lakeServicesEnabled(lake) {
+		// Service endpoints are in service_status; this directory holds each Ready service's
+		// connection as <slug>.json.
+		env = append(env, corev1.EnvVar{Name: lakeServiceDirEnv, Value: lakeServicesMountPath})
 	}
 	for _, custom := range lake.Spec.Env {
 		if _, found := reserved[custom.Name]; found {
