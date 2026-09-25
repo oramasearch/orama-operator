@@ -133,6 +133,41 @@ type LakeSpec struct {
 	// its Zetta orama_control database into LakeEnvironment resources.
 	// +optional
 	DeploySync LakeDeploySyncSpec `json:"deploySync,omitempty"`
+
+	// Workspaces lets lake request one OramaZettaCluster per customer workspace through the
+	// append-only orama_control.workspaces table on its data plane. Zetta has no tenancy, so each
+	// workspace is its own cluster. Requires the Zetta data plane (spec.zetta.enabled). See
+	// docs/lake/workspaces.md.
+	// +optional
+	Workspaces LakeWorkspacesSpec `json:"workspaces,omitempty"`
+}
+
+// LakeWorkspacesSpec configures per-customer Zetta workspaces for a Lake.
+type LakeWorkspacesSpec struct {
+	// Enabled turns on workspace intake: the data plane provisions the operator schema (which
+	// holds orama_control.workspaces), the operator materializes desired rows into Lake-owned
+	// OramaZettaClusters, and lake receives LAKE_WORKSPACE_DIR and LAKE_WORKSPACE_URL_TEMPLATE.
+	// Turning it off stops intake and removes the env and volume from lake; existing workspace
+	// clusters are never deleted.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Image is the Zetta image for workspace clusters. Empty uses the OramaZettaCluster default.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Storage configures each workspace node's persistent data volume. When the whole field is
+	// omitted the size is 5Gi; an object given without a size takes the OramaZettaStorage
+	// default (10Gi).
+	// +kubebuilder:default={size:"5Gi"}
+	// +optional
+	Storage OramaZettaStorage `json:"storage,omitempty"`
+
+	// Resources configures each workspace node's container. When omitted, the operator requests
+	// 64Mi memory, limits memory to 1Gi, and sets no CPU request.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // LakeTLSSpec configures HTTPS termination for a Lake Ingress.

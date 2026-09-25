@@ -190,6 +190,13 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile Zetta data plane: %w", err)
 	}
+	// Workspace credentials: one Secret mounted into lake, keyed by workspace_id. Turning
+	// workspaces off leaves the Secret in place (workspace clusters are never deleted).
+	if lakeWorkspacesEnabled(&lake) {
+		if err := r.reconcileLakeWorkspaceSecret(ctx, &lake, ns, labels); err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile workspace credentials: %w", err)
+		}
+	}
 	claimName, err := r.reconcileLakeStore(ctx, &lake, ns, labels)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile store: %w", err)
@@ -335,6 +342,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if lakeZettaEnabled(&lake) && !zettaReady {
 		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
+	// Workspace admin Secrets are owned by their clusters, not the Lake, so a newly minted token
+	// is picked up by polling as well as by the owned-cluster watch.
+	if lakeWorkspacesEnabled(&lake) {
+		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
+	}
 	if !storeReady {
 		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
@@ -386,6 +398,11 @@ func (r *LakeReconciler) reconcileLakeZetta(
 		if client.ObjectKeyFromObject(&children[i]) == key && lakeZettaEnabled(lake) {
 			continue
 		}
+		// Workspace clusters are also Lake-controlled but are never removed here: only the
+		// Lake's own data plane follows spec.zetta. They go with the Lake at finalization.
+		if isLakeWorkspaceCluster(&children[i]) {
+			continue
+		}
 		if err := r.Delete(ctx, &children[i]); err != nil && !apierrors.IsNotFound(err) {
 			return nil, err
 		}
@@ -417,7 +434,9 @@ func (r *LakeReconciler) reconcileLakeZetta(
 	if lake.Spec.Zetta.Replicas != nil {
 		replicas = *lake.Spec.Zetta.Replicas
 	}
-	operatorSchema := false
+	// The data plane hosts orama_control.workspaces (lake's workspace intake) only when workspaces
+	// are enabled; otherwise it stays a plain data plane with no operator schema.
+	operatorSchema := lakeWorkspacesEnabled(lake)
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, zetta, func() error {
 		zetta.Labels = labels
 		zetta.Spec = oramav1alpha1.OramaZettaClusterSpec{
@@ -564,6 +583,26 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 					},
 				},
 			}},
+		}
+		if lakeWorkspacesEnabled(lake) {
+			// Optional, so lake starts before the first workspace exists. kubelet refreshes a
+			// mounted Secret in place, so adding a workspace key never restarts lake.
+			optional := true
+			mode := int32(0o440) // readable by lake through its fsGroup
+			spec := &deployment.Spec.Template.Spec
+			spec.Containers[0].VolumeMounts = append(spec.Containers[0].VolumeMounts, corev1.VolumeMount{
+				Name:      lakeWorkspaceVolume,
+				MountPath: lakeWorkspaceMountPath,
+				ReadOnly:  true,
+			})
+			spec.Volumes = append(spec.Volumes, corev1.Volume{
+				Name: lakeWorkspaceVolume,
+				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+					SecretName:  lakeWorkspacesSecret(lake.Name),
+					Optional:    &optional,
+					DefaultMode: &mode,
+				}},
+			})
 		}
 		if lake.Spec.PullSecretName != "" {
 			deployment.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{
@@ -847,15 +886,17 @@ func (r *LakeReconciler) lakeStoreStatus(
 // lake with an incomplete data-plane configuration.
 func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.EnvVar {
 	reserved := map[string]struct{}{
-		"LAKE_ADMIN_TOKEN":         {},
-		"LAKE_CONTROL_DB_PASSWORD": {},
-		"LAKE_CONTROL_DB_URI":      {},
-		"LAKE_DATA_PLANE_TOKEN":    {},
-		"LAKE_DATA_PLANE_URL":      {},
-		"LAKE_INSTANCE_KEK":        {},
-		"LAKE_SEALING_KID":         {},
-		"LAKE_SEALING_PUBLIC_KEY":  {},
-		"LAKE_STORE_ROOT":          {},
+		"LAKE_ADMIN_TOKEN":            {},
+		"LAKE_CONTROL_DB_PASSWORD":    {},
+		"LAKE_CONTROL_DB_URI":         {},
+		"LAKE_DATA_PLANE_TOKEN":       {},
+		"LAKE_DATA_PLANE_URL":         {},
+		"LAKE_INSTANCE_KEK":           {},
+		"LAKE_SEALING_KID":            {},
+		"LAKE_SEALING_PUBLIC_KEY":     {},
+		"LAKE_STORE_ROOT":             {},
+		"LAKE_WORKSPACE_DIR":          {},
+		"LAKE_WORKSPACE_URL_TEMPLATE": {},
 	}
 	env := []corev1.EnvVar{
 		{Name: "LAKE_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
@@ -912,6 +953,13 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 					},
 				},
 			},
+		)
+	}
+	if lakeWorkspacesEnabled(lake) {
+		env = append(
+			env,
+			corev1.EnvVar{Name: "LAKE_WORKSPACE_DIR", Value: lakeWorkspaceMountPath},
+			corev1.EnvVar{Name: "LAKE_WORKSPACE_URL_TEMPLATE", Value: lakeWorkspaceURLTemplate(lake)},
 		)
 	}
 	for _, custom := range lake.Spec.Env {
