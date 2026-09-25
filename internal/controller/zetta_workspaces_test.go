@@ -17,6 +17,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -569,3 +570,394 @@ func countEnv(env []corev1.EnvVar, name string) int {
 }
 
 func ptrBool(value bool) *bool { return &value }
+
+func withdrawnWorkspaceRow(lake, workspaceID, customerID, updatedAt string) map[string]string {
+	row := desiredWorkspaceRow(lake, workspaceID, customerID, updatedAt)
+	row["record_type"] = workspaceRecordTypeWithdrawn
+	return row
+}
+
+// workspaceDataClaim is the PVC the StatefulSet of OramaZettaCluster <cluster> creates for ordinal
+// 0 from its "data" volumeClaimTemplate, carrying the StatefulSet's selector labels.
+func workspaceDataClaim(cluster string) *corev1.PersistentVolumeClaim {
+	owner := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: cluster}}
+	return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name: "data-" + cluster + "-zetta-0", Namespace: "lake", Labels: zettaLabels(owner),
+	}}
+}
+
+func workspaceObjectExists(t *testing.T, kubeClient client.Client, key types.NamespacedName, object client.Object) bool {
+	t.Helper()
+	err := kubeClient.Get(context.Background(), key, object)
+	if err == nil {
+		return true
+	}
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("get %s: %v", key, err)
+	}
+	return false
+}
+
+func TestReduceWorkspaceRowsWithdrawalOrdering(t *testing.T) {
+	states := reduceWorkspaceRows([]map[string]string{
+		desiredWorkspaceRow("prod", testWorkspaceID, "cus_1", "2026-09-25T10:00:00Z"),
+		withdrawnWorkspaceRow("prod", testWorkspaceID, "cus_1", "2026-09-25T11:00:00Z"),
+		desiredWorkspaceRow("prod", "ws-bbbbbbbbbbbb", "cus_1", "2026-09-25T12:00:00Z"),
+		withdrawnWorkspaceRow("prod", "ws-bbbbbbbbbbbb", "cus_1", "2026-09-25T11:00:00Z"),
+		desiredWorkspaceRow("prod", "ws-cccccccccccc", "cus_1", "2026-09-25T10:00:00Z"),
+		withdrawnWorkspaceRow("prod", "ws-cccccccccccc", "cus_1", "2026-09-25T10:00:00Z"),
+	})
+	if !states[testWorkspaceID].withdrawn() {
+		t.Error("a withdrawal newer than the desired row is not a withdrawal")
+	}
+	if states["ws-bbbbbbbbbbbb"].withdrawn() {
+		t.Error("a desired row newer than the withdrawal did not win")
+	}
+	if !states["ws-cccccccccccc"].withdrawn() {
+		t.Error("a withdrawal with the same updated_at as the desired row did not win the tiebreak")
+	}
+}
+
+func TestZettaWorkspaceWithdrawalDeletesClusterVolumeAndCredential(t *testing.T) {
+	ctx := context.Background()
+	scheme := newLakeScheme(t)
+	lake := workspaceTestLake(true)
+	const other = "ws-bbbbbbbbbbbb"
+	clusterName := "prod-" + testWorkspaceID
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake).
+		WithStatusSubresource(&oramav1alpha1.OramaZettaCluster{}).Build()
+	reconciler := &OramaZettaClusterReconciler{Client: kubeClient, Scheme: scheme}
+	lakeReconciler := &LakeReconciler{Client: kubeClient, Scheme: scheme}
+	zetta := workspaceTestDataPlane()
+	double := newWorkspaceSQLDouble(t,
+		desiredWorkspaceRow("prod", testWorkspaceID, "cus_1", "2026-09-25T10:00:00Z"),
+		desiredWorkspaceRow("prod", other, "cus_2", "2026-09-25T10:00:00Z"))
+
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	// What the StatefulSets and the Zetta controller create once the clusters exist.
+	for _, name := range []string{clusterName, "prod-" + other} {
+		if err := kubeClient.Create(ctx, workspaceDataClaim(name)); err != nil {
+			t.Fatal(err)
+		}
+		if err := kubeClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name + "-zetta-admin", Namespace: "lake"},
+			Data:       map[string][]byte{"token": []byte(name + "-token")},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := lakeReconciler.reconcileLakeWorkspaceSecret(ctx, lake, "lake", nil); err != nil {
+		t.Fatal(err)
+	}
+	secretKey := types.NamespacedName{Namespace: "lake", Name: "lake-prod-workspaces"}
+	var secret corev1.Secret
+	if err := kubeClient.Get(ctx, secretKey, &secret); err != nil || len(secret.Data) != 2 {
+		t.Fatalf("workspace Secret before withdrawal: %v (err %v)", secret.Data, err)
+	}
+	before := len(double.writes())
+
+	double.addRow(withdrawnWorkspaceRow("prod", testWorkspaceID, "cus_1", "2026-09-25T11:00:00Z"))
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+
+	clusterKey := types.NamespacedName{Namespace: "lake", Name: clusterName}
+	if workspaceObjectExists(t, kubeClient, clusterKey, &oramav1alpha1.OramaZettaCluster{}) {
+		t.Error("withdrawn workspace cluster still exists")
+	}
+	if workspaceObjectExists(t, kubeClient, types.NamespacedName{Namespace: "lake", Name: "data-" + clusterName + "-zetta-0"}, &corev1.PersistentVolumeClaim{}) {
+		t.Error("withdrawn workspace data volume still exists")
+	}
+	if err := kubeClient.Get(ctx, secretKey, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := secret.Data[testWorkspaceID]; found || string(secret.Data[other]) != "prod-"+other+"-token" {
+		t.Errorf("workspace Secret after withdrawal: %v", secret.Data)
+	}
+	// The other workspace is untouched.
+	if !workspaceObjectExists(t, kubeClient, types.NamespacedName{Namespace: "lake", Name: "prod-" + other}, &oramav1alpha1.OramaZettaCluster{}) ||
+		!workspaceObjectExists(t, kubeClient, types.NamespacedName{Namespace: "lake", Name: "data-prod-" + other + "-zetta-0"}, &corev1.PersistentVolumeClaim{}) {
+		t.Error("withdrawal touched another workspace")
+	}
+	writes := double.writes()
+	if len(writes) != before+1 {
+		t.Fatalf("withdrawal writes = %+v", writes[before:])
+	}
+	last := writes[len(writes)-1]
+	if last["workspace_id"] != testWorkspaceID || last["phase"] != WorkspacePhaseDeleted || last["url"] != "" ||
+		last["message"] != "workspace deleted" || last["customer_id"] != "cus_1" {
+		t.Errorf("deleted status row = %+v", last)
+	}
+
+	// Idempotent: re-polling writes nothing, and the Lake reconciler does not bring the key back.
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	if err := lakeReconciler.reconcileLakeWorkspaceSecret(ctx, lake, "lake", nil); err != nil {
+		t.Fatal(err)
+	}
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	if len(double.writes()) != before+1 {
+		t.Errorf("re-poll after withdrawal wrote %+v", double.writes()[before+1:])
+	}
+	if err := kubeClient.Get(ctx, secretKey, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := secret.Data[testWorkspaceID]; found {
+		t.Errorf("Lake reconciler re-added a withdrawn key: %v", secret.Data)
+	}
+	if workspaceObjectExists(t, kubeClient, clusterKey, &oramav1alpha1.OramaZettaCluster{}) {
+		t.Error("re-poll recreated the withdrawn workspace")
+	}
+}
+
+func TestZettaWorkspaceRedesireAfterWithdrawalRecreates(t *testing.T) {
+	ctx := context.Background()
+	scheme := newLakeScheme(t)
+	lake := workspaceTestLake(true)
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake).
+		WithStatusSubresource(&oramav1alpha1.OramaZettaCluster{}).Build()
+	reconciler := &OramaZettaClusterReconciler{Client: kubeClient, Scheme: scheme}
+	zetta := workspaceTestDataPlane()
+	double := newWorkspaceSQLDouble(t, desiredWorkspaceRow("prod", testWorkspaceID, "cus_1", "2026-09-25T10:00:00Z"))
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+
+	clusterKey := types.NamespacedName{Namespace: "lake", Name: "prod-" + testWorkspaceID}
+	var cluster oramav1alpha1.OramaZettaCluster
+	if err := kubeClient.Get(ctx, clusterKey, &cluster); err != nil {
+		t.Fatal(err)
+	}
+	// Hold the cluster in Terminating, as a real API server does while it runs finalizers.
+	cluster.Finalizers = []string{"test.orama.cloud/hold"}
+	if err := kubeClient.Update(ctx, &cluster); err != nil {
+		t.Fatal(err)
+	}
+	claim := workspaceDataClaim(clusterKey.Name)
+	claim.Finalizers = []string{"kubernetes.io/pvc-protection"}
+	if err := kubeClient.Create(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+
+	double.addRow(withdrawnWorkspaceRow("prod", testWorkspaceID, "cus_1", "2026-09-25T11:00:00Z"))
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	if err := kubeClient.Get(ctx, clusterKey, &cluster); err != nil || cluster.DeletionTimestamp == nil {
+		t.Fatalf("withdrawal did not start deleting the cluster: %+v (err %v)", cluster.ObjectMeta, err)
+	}
+	if writes := double.writes(); writes[len(writes)-1]["phase"] == WorkspacePhaseDeleted {
+		t.Fatal("Deleted written while the cluster is still terminating")
+	}
+
+	// A newer desired row while the old cluster terminates waits instead of reusing it.
+	double.addRow(desiredWorkspaceRow("prod", testWorkspaceID, "cus_1", "2026-09-25T12:00:00Z"))
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	writes := double.writes()
+	if last := writes[len(writes)-1]; last["phase"] != WorkspacePhaseProvisioning ||
+		last["message"] != "waiting for the previous workspace cluster to be deleted" {
+		t.Fatalf("re-desire during deletion wrote %+v", last)
+	}
+
+	// The cluster finishes deleting; its volume is still terminating: keep waiting.
+	cluster.Finalizers = nil
+	if err := kubeClient.Update(ctx, &cluster); err != nil {
+		t.Fatal(err)
+	}
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	writes = double.writes()
+	if last := writes[len(writes)-1]; last["message"] != "waiting for the previous workspace data volume to be deleted" {
+		t.Fatalf("re-desire during volume deletion wrote %+v", last)
+	}
+	if workspaceObjectExists(t, kubeClient, clusterKey, &oramav1alpha1.OramaZettaCluster{}) {
+		t.Fatal("workspace recreated on top of a terminating data volume")
+	}
+
+	// The volume is gone: the workspace is recreated from scratch.
+	var terminating corev1.PersistentVolumeClaim
+	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: "lake", Name: claim.Name}, &terminating); err != nil {
+		t.Fatal(err)
+	}
+	terminating.Finalizers = nil
+	if err := kubeClient.Update(ctx, &terminating); err != nil {
+		t.Fatal(err)
+	}
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	if err := kubeClient.Get(ctx, clusterKey, &cluster); err != nil {
+		t.Fatalf("re-desired workspace not recreated: %v", err)
+	}
+	// A new object: the old one carried the hold finalizer.
+	if len(cluster.Finalizers) != 0 || cluster.DeletionTimestamp != nil || !metav1.IsControlledBy(&cluster, lake) {
+		t.Errorf("recreated cluster = %+v", cluster.ObjectMeta)
+	}
+	writes = double.writes()
+	if last := writes[len(writes)-1]; last["phase"] != WorkspacePhaseProvisioning || last["message"] != "waiting for the workspace Zetta node" {
+		t.Errorf("recreated workspace status = %+v", last)
+	}
+}
+
+func TestZettaWorkspaceWithdrawalIgnoresForeignClusters(t *testing.T) {
+	otherLakeOwner := metav1.OwnerReference{APIVersion: oramav1alpha1.GroupVersion.String(), Kind: "Lake", Name: "staging", UID: "staging-uid", Controller: ptrBool(true)}
+	prodOwner := metav1.OwnerReference{APIVersion: oramav1alpha1.GroupVersion.String(), Kind: "Lake", Name: "prod", UID: "lake-uid", Controller: ptrBool(true)}
+	tests := []struct {
+		name        string
+		cluster     *oramav1alpha1.OramaZettaCluster
+		wantMessage string
+	}{
+		{
+			name:        "unlabelled and unowned",
+			cluster:     &oramav1alpha1.OramaZettaCluster{},
+			wantMessage: "is not this Lake's workspace",
+		},
+		{
+			name: "another Lake's",
+			cluster: &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{
+				Labels:          map[string]string{workspaceLakeLabel: "staging", workspaceIDLabel: testWorkspaceID},
+				OwnerReferences: []metav1.OwnerReference{otherLakeOwner},
+			}},
+			wantMessage: "is not this Lake's workspace",
+		},
+		{
+			name: "labelled for this Lake but not controlled by it",
+			cluster: &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{workspaceLakeLabel: "prod", workspaceIDLabel: testWorkspaceID},
+			}},
+			wantMessage: "is not this Lake's workspace",
+		},
+		{
+			name: "controlled by this Lake but not labelled as a workspace",
+			cluster: &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{
+				OwnerReferences: []metav1.OwnerReference{prodOwner},
+			}},
+			wantMessage: "is not this Lake's workspace",
+		},
+		{
+			name:        "no cluster, an unproven data volume",
+			wantMessage: "PersistentVolumeClaim lake/data-prod-ws-0123456789ab-zetta-0 exists and is not this Lake's workspace",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			scheme := newLakeScheme(t)
+			lake := workspaceTestLake(true)
+			clusterName := "prod-" + testWorkspaceID
+			objects := []client.Object{lake, workspaceDataClaim(clusterName)}
+			if test.cluster != nil {
+				test.cluster.Name = clusterName
+				test.cluster.Namespace = "lake"
+				objects = append(objects, test.cluster)
+			}
+			kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+			reconciler := &OramaZettaClusterReconciler{Client: kubeClient, Scheme: scheme}
+			double := newWorkspaceSQLDouble(t, withdrawnWorkspaceRow("prod", testWorkspaceID, "cus_1", "2026-09-25T11:00:00Z"))
+			syncWorkspaceRows(t, reconciler, workspaceTestDataPlane(), "prod", double)
+			syncWorkspaceRows(t, reconciler, workspaceTestDataPlane(), "prod", double)
+
+			if test.cluster != nil && !workspaceObjectExists(t, kubeClient, types.NamespacedName{Namespace: "lake", Name: clusterName}, &oramav1alpha1.OramaZettaCluster{}) {
+				t.Error("withdrawal deleted a cluster it does not own")
+			}
+			if !workspaceObjectExists(t, kubeClient, types.NamespacedName{Namespace: "lake", Name: "data-" + clusterName + "-zetta-0"}, &corev1.PersistentVolumeClaim{}) {
+				t.Error("withdrawal deleted a data volume it does not own")
+			}
+			writes := double.writes()
+			if len(writes) != 1 || writes[0]["phase"] != WorkspacePhaseFailed || !strings.Contains(writes[0]["message"], test.wantMessage) {
+				t.Errorf("status writes = %+v", writes)
+			}
+		})
+	}
+}
+
+func TestZettaWorkspaceWithdrawalOfUnknownWorkspace(t *testing.T) {
+	scheme := newLakeScheme(t)
+	lake := workspaceTestLake(true)
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake).Build()
+	reconciler := &OramaZettaClusterReconciler{Client: kubeClient, Scheme: scheme}
+	double := newWorkspaceSQLDouble(t, withdrawnWorkspaceRow("prod", testWorkspaceID, "cus_1", "2026-09-25T11:00:00Z"))
+	syncWorkspaceRows(t, reconciler, workspaceTestDataPlane(), "prod", double)
+	syncWorkspaceRows(t, reconciler, workspaceTestDataPlane(), "prod", double)
+	writes := double.writes()
+	if len(writes) != 1 || writes[0]["phase"] != WorkspacePhaseDeleted {
+		t.Errorf("withdrawal of a workspace with nothing to delete wrote %+v", writes)
+	}
+}
+
+func TestZettaWorkspaceQuota(t *testing.T) {
+	ctx := context.Background()
+	scheme := newLakeScheme(t)
+	lake := workspaceTestLake(true)
+	lake.Spec.Workspaces.MaxWorkspaces = 2
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake).
+		WithStatusSubresource(&oramav1alpha1.OramaZettaCluster{}).Build()
+	reconciler := &OramaZettaClusterReconciler{Client: kubeClient, Scheme: scheme}
+	zetta := workspaceTestDataPlane()
+	const second, third = "ws-bbbbbbbbbbbb", "ws-cccccccccccc"
+	double := newWorkspaceSQLDouble(t,
+		desiredWorkspaceRow("prod", testWorkspaceID, "cus_1", "2026-09-25T10:00:00Z"),
+		desiredWorkspaceRow("prod", second, "cus_1", "2026-09-25T10:00:00Z"),
+		desiredWorkspaceRow("prod", third, "cus_1", "2026-09-25T10:00:00Z"))
+	exists := func(id string) bool {
+		return workspaceObjectExists(t, kubeClient, types.NamespacedName{Namespace: "lake", Name: "prod-" + id}, &oramav1alpha1.OramaZettaCluster{})
+	}
+	statusFor := func(id string) map[string]string {
+		var latest map[string]string
+		for _, write := range double.writes() {
+			if write["workspace_id"] == id {
+				latest = write
+			}
+		}
+		return latest
+	}
+
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	if !exists(testWorkspaceID) || !exists(second) || exists(third) {
+		t.Fatalf("quota 2 materialized first=%v second=%v third=%v", exists(testWorkspaceID), exists(second), exists(third))
+	}
+	if status := statusFor(third); status["phase"] != WorkspacePhaseFailed || status["message"] != "workspace quota reached (2)" || status["url"] != "" {
+		t.Errorf("over-quota status = %+v", status)
+	}
+	if len(double.writes()) != 3 {
+		t.Errorf("quota refusal is not written on transition only: %+v", double.writes())
+	}
+
+	// Lowering the quota keeps every existing workspace and writes nothing for them; only the
+	// refused workspace's message changes to the new cap.
+	var current oramav1alpha1.Lake
+	if err := kubeClient.Get(ctx, client.ObjectKey{Name: "prod"}, &current); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.Workspaces.MaxWorkspaces = 1
+	if err := kubeClient.Update(ctx, &current); err != nil {
+		t.Fatal(err)
+	}
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	writes := double.writes()
+	if !exists(testWorkspaceID) || !exists(second) || exists(third) || len(writes) != 4 ||
+		writes[3]["workspace_id"] != third || writes[3]["message"] != "workspace quota reached (1)" {
+		t.Errorf("lowering the quota changed workspaces: first=%v second=%v third=%v writes=%+v",
+			exists(testWorkspaceID), exists(second), exists(third), writes)
+	}
+
+	// Withdrawing one leaves one live workspace, which still fills a quota of 1.
+	double.addRow(withdrawnWorkspaceRow("prod", second, "cus_1", "2026-09-25T11:00:00Z"))
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	if exists(second) || exists(third) {
+		t.Errorf("quota 1 with one live workspace: second=%v third=%v", exists(second), exists(third))
+	}
+	if status := statusFor(second); status["phase"] != WorkspacePhaseDeleted {
+		t.Errorf("withdrawn workspace status = %+v", status)
+	}
+	if status := statusFor(third); status["message"] != "workspace quota reached (1)" {
+		t.Errorf("over-quota status after withdrawal = %+v", status)
+	}
+
+	// Raising the quota lets the refused workspace through on the next poll.
+	if err := kubeClient.Get(ctx, client.ObjectKey{Name: "prod"}, &current); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.Workspaces.MaxWorkspaces = 0
+	if err := kubeClient.Update(ctx, &current); err != nil {
+		t.Fatal(err)
+	}
+	syncWorkspaceRows(t, reconciler, zetta, "prod", double)
+	if !exists(third) {
+		t.Error("unlimited quota did not materialize the refused workspace")
+	}
+	if status := statusFor(third); status["phase"] != WorkspacePhaseProvisioning {
+		t.Errorf("admitted workspace status = %+v", status)
+	}
+}

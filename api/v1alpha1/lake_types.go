@@ -147,8 +147,8 @@ type LakeWorkspacesSpec struct {
 	// Enabled turns on workspace intake: the data plane provisions the operator schema (which
 	// holds orama_control.workspaces), the operator materializes desired rows into Lake-owned
 	// OramaZettaClusters, and lake receives LAKE_WORKSPACE_DIR and LAKE_WORKSPACE_URL_TEMPLATE.
-	// Turning it off stops intake and removes the env and volume from lake; existing workspace
-	// clusters are never deleted.
+	// Turning it off stops intake (desired and withdrawn rows alike) and removes the env and
+	// volume from lake; existing workspace clusters are not deleted by disabling.
 	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
@@ -168,6 +168,14 @@ type LakeWorkspacesSpec struct {
 	// 64Mi memory, limits memory to 1Gi, and sets no CPU request.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// MaxWorkspaces caps the live workspace clusters of this Lake. A desired row for a new
+	// workspace beyond the cap is not materialized and gets a Failed status row reading
+	// "workspace quota reached (<n>)". Lowering the cap never removes an existing workspace.
+	// 0 or unset means unlimited.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxWorkspaces int32 `json:"maxWorkspaces,omitempty"`
 }
 
 // LakeTLSSpec configures HTTPS termination for a Lake Ingress.

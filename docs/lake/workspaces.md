@@ -70,19 +70,22 @@ CREATE TABLE workspaces (workspace_id TEXT, record_type TEXT, lake TEXT, custome
                          phase TEXT, url TEXT, message TEXT, updated_at TEXT)
 ```
 
-| Column | `desired` row (lake writes) | `status` row (operator writes) |
-|---|---|---|
-| `workspace_id` | the slug, `^ws-[0-9a-f]{12}$` | same |
-| `record_type` | `desired` (empty is read as `desired`) | `status` |
-| `lake` | the `Lake` resource name | same |
-| `customer_id` | the owning customer; required | copied from the desired row |
-| `phase` | empty | `Provisioning`, `Ready` or `Failed` |
-| `url` | empty | the workspace client URL (empty on `Failed`) |
-| `message` | empty | human-readable detail |
-| `updated_at` | RFC 3339 | RFC 3339 (nanosecond precision) |
+| Column | `desired` row (lake writes) | `withdrawn` row (lake writes) | `status` row (operator writes) |
+|---|---|---|---|
+| `workspace_id` | the slug, `^ws-[0-9a-f]{12}$` | same | same |
+| `record_type` | `desired` (empty is read as `desired`) | `withdrawn` | `status` |
+| `lake` | the `Lake` resource name | same | same |
+| `customer_id` | the owning customer; required | the owning customer; required | copied from the governing row |
+| `phase` | empty | empty | `Provisioning`, `Ready`, `Failed` or `Deleted` |
+| `url` | empty | empty | the workspace client URL (empty on `Failed` and `Deleted`) |
+| `message` | empty | empty | human-readable detail |
+| `updated_at` | RFC 3339 | RFC 3339 | RFC 3339 (nanosecond precision) |
 
-Readers reduce each stream latest-wins by `workspace_id` and `updated_at`. The operator processes
-a desired row only when all of these hold (the locality rule shared with deployments):
+Readers reduce each stream latest-wins by `workspace_id` and `updated_at`, per record type. A
+workspace is **withdrawn** when its newest `withdrawn` row is newer than its newest `desired` row
+(same ordering; on an identical `updated_at` the withdrawal wins). A `desired` row newer than the
+withdrawal brings the workspace back. The operator processes a row only when all of these hold
+(the locality rule shared with deployments):
 
 - a cluster-scoped `Lake` named by `lake` exists locally;
 - that Lake's `spec.namespace` is the namespace of the `OramaZettaCluster` being polled;
@@ -99,6 +102,11 @@ row gets one `Failed` status row and nothing is created:
 | `<lake>-<workspace_id>-zetta-headless` longer than 63 characters (Lake names over 32 characters) | `lake name "<lake>" is too long for workspace cluster names` |
 | a cluster of that name exists but is not this Lake's workspace | `OramaZettaCluster <ns>/<name> exists and is not this Lake's workspace` |
 | the workspace already belongs to a different `customer_id` | `workspace_id is already bound to another customer` |
+| (new workspace only) a live data PVC of that name exists without its cluster | `PersistentVolumeClaim <ns>/<pvc> exists and is not this Lake's workspace` |
+| (new workspace only) the Lake already has `spec.workspaces.maxWorkspaces` live workspaces | `workspace quota reached (<n>)` |
+
+The same checks apply to a `withdrawn` row (except the quota), and a refused withdrawal deletes
+nothing.
 
 Status rows are appended only when phase, URL or message differs from the newest status row
 already in the table, so a steady workspace writes nothing and the anti-flap survives operator
@@ -108,8 +116,11 @@ restarts. The phases:
 |---|---|---|
 | `Provisioning` | the cluster exists and its node is not ready | `waiting for the workspace Zetta node` |
 | `Provisioning` | the node is ready but its token is not yet in `lake-<lake>-workspaces` | `waiting for the workspace credential` |
+| `Provisioning` | a re-desired workspace's previous cluster is still terminating | `waiting for the previous workspace cluster to be deleted` |
+| `Provisioning` | a re-desired workspace's previous data PVC is still terminating | `waiting for the previous workspace data volume to be deleted` |
 | `Ready` | the node is ready and the token is in the Secret | `workspace ready` |
-| `Failed` | validation or ownership refused the row | see the table above |
+| `Failed` | validation, ownership or the quota refused the row | see the table above |
+| `Deleted` | a withdrawal finished: no cluster, no data PVC, no credential key | `workspace deleted` |
 
 Polling is idempotent. Re-reading the same rows, or a newer desired row for the same
 `workspace_id`, creates nothing new: the cluster's name is derived from the Lake and the
@@ -118,15 +129,73 @@ Polling is idempotent. Re-reading the same rows, or a newer desired row for the 
 server-side defaults on the rest of the spec do not cause an update on every poll. Changing
 `spec.workspaces.image`, `storage` or `resources` updates every existing workspace on its next poll.
 
-## No deletion in v1
+## Withdrawal (deletion)
 
-The operator never deletes a workspace cluster through this path. A desired row carrying a
-withdrawal or teardown field is ignored; there is no such column in v1. Disabling
-`spec.workspaces` stops intake and removes the env and volume from lake but leaves the workspace
-clusters, their data volumes and `lake-<lake>-workspaces` in place. Only deleting the Lake removes
-them: the Lake finalizer deletes every OramaZettaCluster the Lake controls, workspaces included, and
-Kubernetes garbage-collects the Secret. The Lake's `spec.zetta` reconcile skips workspace clusters,
-so turning the data plane off does not delete them either.
+**Withdrawal deletes the workspace's data. It is irreversible:** a workspace has one node and no
+backup, and its data PVC is deleted, so the storage class's reclaim policy decides whether the
+underlying disk survives (with the usual `Delete` policy it does not). A later `desired` row
+creates an empty workspace, never the old data.
+
+lake withdraws a workspace by appending a row with `record_type = 'withdrawn'` and the same
+columns as a desired row (`workspace_id`, `lake`, `customer_id`, `updated_at`; `phase`, `url` and
+`message` empty):
+
+```sql
+INSERT INTO workspaces (workspace_id, record_type, lake, customer_id, phase, url, message, updated_at)
+VALUES ('ws-0123456789ab', 'withdrawn', 'prod', 'cus_test', '', '', '', '2026-09-25T12:00:00Z')
+```
+
+When the withdrawal is newer than the newest desired row, each poll, before any desired row is
+processed:
+
+1. applies the locality rule and the validation checks above; a refused row gets one `Failed`
+   status row and nothing is deleted;
+2. reads `OramaZettaCluster <lake>-<workspace_id>`. If it exists it must be controlled by this Lake
+   and labelled `orama.cloud/lake=<lake>` and `orama.cloud/workspace-id=<workspace_id>`, and its
+   `orama.cloud/customer-id` annotation must equal the row's `customer_id`; otherwise the row is
+   refused as above. Clusters of another Lake, unlabelled clusters, and clusters not created by
+   the workspace reconciler are never touched;
+3. deletes the cluster's data PVCs, **then** the cluster (background propagation, so its
+   StatefulSet, pods, Services and Secrets are garbage-collected). The PVCs are the ones the
+   cluster's StatefulSet created from its `data` volumeClaimTemplate: named
+   **`data-<lake>-<workspace_id>-zetta-<ordinal>`** (a workspace has one replica, so
+   `data-<lake>-<workspace_id>-zetta-0`) and carrying that StatefulSet's selector labels
+   (`app.kubernetes.io/name=orama-zetta`, `app.kubernetes.io/instance=<lake>-<workspace_id>`).
+   A StatefulSet never deletes these itself. Deleting them first means an interrupted pass never
+   leaves a live volume behind a cluster that is already gone. If the cluster is already gone, a
+   leftover live PVC is deleted only when the newest status row carries a URL (proof that this
+   reconciler materialized the workspace); otherwise the row is refused;
+4. removes the `<workspace_id>` key from `lake-<lake>-workspaces` (the Lake reconciler skips
+   clusters that are gone or being deleted, so it does not put the key back);
+5. once the cluster and every data PVC are gone (the PVC waits for its pod to terminate), appends
+   one `status` row with phase **`Deleted`**, message `workspace deleted` and an empty URL.
+
+Every step is repeated on each poll until the `Deleted` row is written, and the transition rule
+keeps a finished withdrawal silent, so the path is idempotent. A withdrawal of a workspace that
+never existed writes `Deleted` at once.
+
+**Re-desire.** A `desired` row newer than the withdrawal recreates the workspace from scratch: the
+operator waits (`Provisioning`, see the phase table) while the old cluster or its data PVC is still
+terminating, so the new StatefulSet never binds the old volume, then creates a fresh cluster whose
+new admin token reaches `lake-<lake>-workspaces` as usual. lake must read the new token rather than
+cache the old one.
+
+**Other ways a workspace goes away.** Disabling `spec.workspaces` stops intake of both desired and
+withdrawn rows and removes the env and volume from lake, but deletes nothing. Deleting the Lake
+removes every workspace: the Lake finalizer deletes every OramaZettaCluster the Lake controls, and
+Kubernetes garbage-collects the Secret (their data PVCs are not deleted by that path). The Lake's
+`spec.zetta` reconcile skips workspace clusters, so turning the data plane off does not delete them.
+
+## Quota
+
+`spec.workspaces.maxWorkspaces` (`int32`, `0` or unset = unlimited) caps a Lake's live workspaces:
+clusters controlled by the Lake and labelled as its workspaces, excluding those being deleted and
+those withdrawn in the current stream. Withdrawals are processed before desired rows, so a
+withdrawal frees its slot in the same poll. A desired row for a **new** workspace (no cluster yet)
+past the cap creates nothing and gets a `Failed` status row `workspace quota reached (<n>)`, where
+`<n>` is the cap; the row is written on transition only, and the workspace is created on a later
+poll once a slot frees or the cap rises. Existing workspaces are never removed or refused by the
+quota, including after the cap is lowered below the current count.
 
 ## Known limits
 
@@ -134,7 +203,10 @@ so turning the data plane off does not delete them either.
   least-privilege follow-up once Zetta supports scoped users.
 - The Zetta binary receives the memory limit only as a cgroup limit; there is no Zetta memory
   setting derived from `spec.workspaces.resources` yet.
-- A workspace has one node and no backup; its data is recoverable only from its volume.
+- A workspace has one node and no backup; its data is recoverable only from its volume, and a
+  withdrawal deletes that volume. There is no soft-delete or retention window.
+- A withdrawal waits for the cluster's pod to terminate before its PVC disappears; a PVC stuck
+  terminating holds the `Deleted` row (and a re-desire) until it clears.
 
 ## How to verify
 
@@ -160,10 +232,23 @@ kubectl exec -n lake deploy/lake-prod -- ls /var/run/lake/workspaces
 Query the status stream with `SELECT workspace_id, phase, url, message, updated_at FROM workspaces
 WHERE record_type = 'status'` through the same `/v1/sql` call.
 
+Withdrawal (destroys the probe workspace's data) uses the same call with `record_type` `withdrawn`
+and a newer `updated_at`; within a poll or two the cluster, `data-prod-ws-0123456789ab-zetta-0`
+and the Secret key are gone and a `Deleted` status row appears:
+
+```sh
+kubectl get oramazettacluster,pvc -n lake -l app.kubernetes.io/instance=prod-ws-0123456789ab
+kubectl get oramazettacluster -n lake prod-ws-0123456789ab   # NotFound
+```
+
 The unit tests are `internal/controller/zetta_workspaces_test.go`: table DDL, SQL quoting, the
 materialization lifecycle (spec, owner, labels, idempotent re-poll, `Provisioning` then `Ready`
-only on transition), the locality rule, invalid rows, customer rebinding, Secret aggregation, and
-the lake Deployment env and volume appearing only while enabled.
+only on transition), the locality rule, invalid rows, customer rebinding, Secret aggregation, the
+lake Deployment env and volume appearing only while enabled, withdrawal ordering in the reducer,
+withdrawal deleting the cluster, data PVC and Secret key and writing `Deleted` once, re-desire
+after withdrawal waiting for the terminating cluster and volume and then recreating, withdrawal
+leaving another Lake's, unlabelled or unowned clusters and unproven PVCs alone, and the quota
+refusing the n+1th workspace while a lowered quota keeps existing ones.
 
 ## How to change
 
@@ -174,5 +259,9 @@ the lake Deployment env and volume appearing only while enabled.
   only named spec fields so re-polls stay no-ops.
 - **Credentials or URL.** The Secret name, key format, mount path and URL template are a contract
   with lake; change them only together with lake's reader.
-- **Deletion.** Adding withdrawal needs a column, a teardown path with its own status phase, and a
-  decision on data retention; none exists in v1.
+- **Deletion.** `withdrawZettaWorkspace` in `zetta_workspaces.go`. Keep the ownership check in
+  front of every delete, PVCs before the cluster, and `Deleted` only once nothing remains. A
+  retention window (keep the volume for N days) would need a new phase and a decision with lake.
+- **PVC naming.** `workspaceDataClaims` derives the claim names from the OramaZettaCluster
+  StatefulSet name (`zettaNames`) and its `data` volumeClaimTemplate; renaming either changes
+  which volumes a withdrawal finds.

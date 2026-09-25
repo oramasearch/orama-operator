@@ -115,8 +115,10 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     `orama_control.workspaces` on its data plane become Lake-owned `OramaZettaCluster`s named
     `<name>-<workspace_id>`, one per customer workspace (Zetta has no tenancy). Their admin tokens
     are aggregated into Secret `lake-<name>-workspaces`, mounted at `/var/run/lake/workspaces`, and
-    lake gets `LAKE_WORKSPACE_DIR` and `LAKE_WORKSPACE_URL_TEMPLATE`. Workspace clusters are never
-    deleted except with the Lake. See [`workspaces.md`](workspaces.md).
+    lake gets `LAKE_WORKSPACE_DIR` and `LAKE_WORKSPACE_URL_TEMPLATE`. A `withdrawn` row deletes
+    one workspace's cluster, data volume and token (irreversibly); `spec.workspaces.maxWorkspaces`
+    caps how many exist. Otherwise workspaces go only with the Lake. See
+    [`workspaces.md`](workspaces.md).
 
 **Status** reports overall service readiness through `phase` and `conditions[Ready]`, alongside
 Deployment replica counts, store binding, Postgres, schema, Zetta, backup, sealing, and data-service
