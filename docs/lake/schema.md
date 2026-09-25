@@ -2,14 +2,22 @@
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit b88670fa27dbc58638d11ac945b407d77054cbd0](https://github.com/oramasearch/lake/blob/b88670fa27dbc58638d11ac945b407d77054cbd0/db/schema.sql),
+[`oramasearch/lake` commit c045b96f75b429be3f06005e91dc347ffd2a9311](https://github.com/oramasearch/lake/blob/c045b96f75b429be3f06005e91dc347ffd2a9311/db/schema.sql),
 verified on lake `main`. Its SHA-256 is
-`f4578982ace5a673fd7663c8950f9dd4130309a8c3e814996cb8c2256710b394`.
+`58650decf95201e2df11d4955a2ea55d12a1e30c13ccb6b5d672706c1ea817fa`.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
+
+Migration `0023_custodial_identities` (lake#148) adds `custodial_identities`, the TAAP identities
+lake mints and holds for people who sign in through Clerk, and the completion table
+`public.custodial_identity_guard`, which is now Lake's PostgresSchema guard. It is additive: no
+backfill and no revocation. A database already at `0022` applies the whole idempotent file in one
+transaction and gains the two tables; one already at `0023` exits with
+`schema already applied (custodial_identity_guard present)`. The binary that writes the table
+(lake `c045b96` or later) must roll only after the schema reports Applied at this version.
 
 Migration `0021_token_attenuation` adds `sessions.parent_session_id`, its cascading foreign key,
 and `sessions_parent_session_id_idx`. It revokes existing API and static tokens once, using the
@@ -92,11 +100,11 @@ there are no Kubernetes pods in this native harness.
 `TestLakeSchemaGatesWorkloadRollout` uses the fake API client to check first startup, image-update
 ordering, failed/pending schema status, stale versions, stale generations, and a missing success
 condition. Additional Job tests cover replacing obsolete running and failed attempts. The version test shows the guard itself changes the hash for identical SQL:
-`identity_exit_guard` gives `sha256:c9d5b1949040`; `session_lookup_guard` gives
-`sha256:9aec095673cf` for this vendored file.
+`session_lookup_guard` gives `sha256:19634ce297f8` and `custodial_identity_guard` gives
+`sha256:929f2f3cf54c` for this vendored file.
 
 The regression was run before the fix: the rendered command printed
 `schema already applied (identity_exit_guard present)`, status became Applied, and the test
 failed with `PostgresSchema reported Applied with parent_session_id missing (column count 0)`.
 The fixed tree applies the file before reporting Applied; the already-updated case prints
-`schema already applied (session_lookup_guard present)` and preserves new tokens.
+`schema already applied (custodial_identity_guard present)` and preserves new tokens.

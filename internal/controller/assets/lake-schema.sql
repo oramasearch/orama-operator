@@ -2,7 +2,7 @@
 --
 -- SOURCE OF TRUTH: oramasearch/lake, db/schema.sql. The operator vendors a byte-identical copy at
 -- internal/controller/assets/lake-schema.sql and applies it to each Lake's Postgres through a
--- PostgresSchema (one transaction, guarded on the `token_attenuation_guard` table, versioned by
+-- PostgresSchema (one transaction, guarded on the `custodial_identity_guard` table, versioned by
 -- content hash).
 -- Keep the two files identical; the operator's version string changes exactly when this does.
 --
@@ -1253,3 +1253,23 @@ CREATE TABLE IF NOT EXISTS session_lookup_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0022_session_lookup') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Custodial TAAP identities (migration 0023). A person who signs in through Clerk arrives with
+-- no Liquid identity document, and policy is keyed on TAAP identities, so lake mints one on their
+-- first sign-in and holds its Ed25519 seed wrapped under the instance key, as it holds its own
+-- (lake_identity). See docs/api/clerk.md and liquid-bridge decision 44.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS custodial_identities (
+    user_id      uuid        PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    taap_id      text        NOT NULL UNIQUE,
+    public_key   text        NOT NULL,
+    wrapped_seed text        NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS custodial_identity_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0023_custodial_identities') ON CONFLICT DO NOTHING;

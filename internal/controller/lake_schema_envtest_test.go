@@ -75,7 +75,7 @@ func TestLakeSchemaEnvtest(t *testing.T) {
 			proof.reconciler = &PostgresSchemaReconciler{Client: c, Scheme: scheme}
 			proof.reconcile("Applying")
 			output := proof.runJob()
-			if alreadyApplied != strings.Contains(output, "schema already applied (session_lookup_guard present)") {
+			if alreadyApplied != strings.Contains(output, "schema already applied (custodial_identity_guard present)") {
 				t.Fatalf("unexpected guard behavior: %s", output)
 			}
 			proof.reconcile("Applied")
@@ -297,7 +297,7 @@ func (p *lakeSchemaProof) verifyAttenuation(alreadyApplied bool) {
 	if got := p.sql("SELECT count(*) FROM pg_constraint WHERE conrelid = 'sessions'::regclass AND contype = 'f' AND conname = 'sessions_parent_session_id_fkey' AND confdeltype = 'c'"); got != "1" {
 		p.t.Fatalf("parent session cascading foreign key count = %s", got)
 	}
-	if got := p.sql("SELECT max(version) FROM schema_migrations"); got != "0022_session_lookup" {
+	if got := p.sql("SELECT max(version) FROM schema_migrations"); got != "0023_custodial_identities" {
 		p.t.Fatalf("newest migration = %s", got)
 	}
 	wantRevoked := "2"
@@ -307,8 +307,16 @@ func (p *lakeSchemaProof) verifyAttenuation(alreadyApplied bool) {
 	if got := p.sql("SELECT count(*) FROM sessions WHERE kind IN ('api_token', 'static') AND revoked_at IS NOT NULL"); got != wantRevoked {
 		p.t.Fatalf("revoked sessions = %s, want %s", got, wantRevoked)
 	}
-	if got := p.sql("SELECT count(*) FROM sessions WHERE kind = 'browser' AND revoked_at IS NOT NULL"); got != "0" {
-		p.t.Fatal("browser session was revoked")
+	// 0022_session_lookup revokes every pre-migration session once, browser sessions included:
+	// a row without a lookup UUID can no longer authenticate. The seeded sessions have none, so a
+	// first application revokes the browser session too; a database already at the newest
+	// migration leaves new sessions alone.
+	wantBrowserRevoked := "1"
+	if alreadyApplied {
+		wantBrowserRevoked = "0"
+	}
+	if got := p.sql("SELECT count(*) FROM sessions WHERE kind = 'browser' AND revoked_at IS NOT NULL"); got != wantBrowserRevoked {
+		p.t.Fatalf("revoked browser sessions = %s, want %s", got, wantBrowserRevoked)
 	}
 	p.t.Logf("0021 verified: parent column, cascading FK, index, migration marker; revoked=%s", wantRevoked)
 }
