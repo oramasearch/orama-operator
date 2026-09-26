@@ -22,7 +22,7 @@ import (
 
 // SQLite services (liquid-bridge decision 47, amended; the contract is lake's
 // docs/control-plane/services.md, the sqlite row). SQLite has no upstream operator, so the Orama
-// operator runs lake-sqlite (cmd/lake-sqlite, docs/lake/lake-sqlite.md) itself: a StatefulSet of
+// operator runs lake-sqlite (github.com/oramasearch/lake-sqlite, docs/lake/lake-sqlite.md) itself: a StatefulSet of
 // one pod over one database on a storage_gi volume, a ClusterIP Service on 8080, and a Secret
 // <name>-credentials holding a generated 32-byte bearer token. They go through the catalog
 // machinery like any upstream kind: the same ownership, labels, quota, refusal of foreign objects
@@ -34,7 +34,7 @@ var (
 
 // DefaultLakeSQLiteImage is the lake-sqlite image when neither the Lake nor the operator's flag
 // names one. The chart passes its own default (lakeServices.sqliteImage) as the flag.
-const DefaultLakeSQLiteImage = "oramasearch/lake-sqlite:0.1.0"
+const DefaultLakeSQLiteImage = "oramasearch/lake-sqlite:0.1.1"
 
 const (
 	sqlitePort         = 8080
