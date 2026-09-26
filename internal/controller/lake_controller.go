@@ -191,7 +191,8 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("reconcile Zetta data plane: %w", err)
 	}
 	// Workspace credentials: one Secret mounted into lake, keyed by workspace_id. Turning
-	// workspaces off leaves the Secret in place (workspace clusters are never deleted).
+	// workspaces off leaves the Secret in place (disabling deletes no workspace; only a withdrawn
+	// row does, through zetta_workspaces.go).
 	if lakeWorkspacesEnabled(&lake) {
 		if err := r.reconcileLakeWorkspaceSecret(ctx, &lake, ns, labels); err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile workspace credentials: %w", err)

@@ -29,14 +29,17 @@ import (
 // customer that uses a workspace gets its own OramaZettaCluster. lake has no Kubernetes access: it
 // appends record_type='desired' rows to orama_control.workspaces on its own data plane, and the
 // operator materializes each valid workspace_id into a Lake-owned cluster and appends
-// record_type='status' rows on phase transitions. Workspaces are never deleted by this path.
+// record_type='status' rows on phase transitions. A record_type='withdrawn' row newer than the
+// newest desired row deletes the workspace: its cluster, its data volumes and its credential.
 const (
-	workspaceRecordTypeDesired = "desired"
-	workspaceRecordTypeStatus  = "status"
+	workspaceRecordTypeDesired   = "desired"
+	workspaceRecordTypeWithdrawn = "withdrawn"
+	workspaceRecordTypeStatus    = "status"
 
 	WorkspacePhaseProvisioning = "Provisioning"
 	WorkspacePhaseReady        = "Ready"
 	WorkspacePhaseFailed       = "Failed"
+	WorkspacePhaseDeleted      = "Deleted"
 
 	// Labels on a workspace OramaZettaCluster. workspaceIDLabel also distinguishes workspace
 	// clusters from the Lake's own data plane among the Lake's controlled OramaZettaClusters.
@@ -54,6 +57,9 @@ const (
 	workspaceDefaultMemoryReq     = "64Mi"
 	workspaceDefaultMemoryLimit   = "1Gi"
 	workspaceLongestServiceSuffix = "-zetta-headless"
+	// workspaceDataClaimTemplate is the volumeClaimTemplate name of the OramaZettaCluster
+	// StatefulSet; its PVCs are data-<cluster>-zetta-<ordinal>.
+	workspaceDataClaimTemplate = "data"
 )
 
 var workspaceIDPattern = regexp.MustCompile(`^ws-[0-9a-f]{12}$`)
@@ -70,8 +76,16 @@ type zettaWorkspaceEvent struct {
 }
 
 type zettaWorkspaceState struct {
-	Desired *zettaWorkspaceEvent
-	Status  *zettaWorkspaceEvent
+	Desired   *zettaWorkspaceEvent
+	Withdrawn *zettaWorkspaceEvent
+	Status    *zettaWorkspaceEvent
+}
+
+// withdrawn reports whether the newest withdrawn row is newer than the newest desired row, under
+// the ordering the reducer uses (updated_at, then a deterministic tiebreak that favours the
+// withdrawal when both rows carry the same updated_at).
+func (s *zettaWorkspaceState) withdrawn() bool {
+	return s.Withdrawn != nil && (s.Desired == nil || workspaceEventIsNewer(s.Desired, s.Withdrawn))
 }
 
 func lakeWorkspacesEnabled(lake *oramav1alpha1.Lake) bool {
@@ -198,6 +212,10 @@ func reduceWorkspaceRows(rows []map[string]string) map[string]*zettaWorkspaceSta
 			if workspaceEventIsNewer(state.Desired, event) {
 				state.Desired = event
 			}
+		case workspaceRecordTypeWithdrawn:
+			if workspaceEventIsNewer(state.Withdrawn, event) {
+				state.Withdrawn = event
+			}
 		}
 	}
 	return states
@@ -224,16 +242,184 @@ func (r *OramaZettaClusterReconciler) materializeZettaWorkspaceRows(ctx context.
 	states := reduceWorkspaceRows(rows)
 	ids := make([]string, 0, len(states))
 	for id, state := range states {
-		if state.Desired != nil {
+		if state.Desired != nil || state.Withdrawn != nil {
 			ids = append(ids, id)
 		}
 	}
 	sort.Strings(ids)
+	// Withdrawals first, so a workspace withdrawn in the same poll frees its quota slot.
 	for _, id := range ids {
-		if err := r.reconcileZettaWorkspace(ctx, z, lake, base, token, states[id]); err != nil {
+		if states[id].withdrawn() {
+			if err := r.withdrawZettaWorkspace(ctx, z, lake, base, token, states[id]); err != nil {
+				log.Error(err, "workspace withdrawal deferred", "workspaceId", id)
+			}
+		}
+	}
+	live, err := r.liveWorkspaceCount(ctx, lake, states)
+	if err != nil {
+		log.Error(err, "workspace sync deferred — cannot count live workspaces", "lake", lake.Name)
+		return
+	}
+	for _, id := range ids {
+		if states[id].withdrawn() {
+			continue
+		}
+		if err := r.reconcileZettaWorkspace(ctx, z, lake, base, token, states[id], &live); err != nil {
 			log.Error(err, "workspace sync deferred", "workspaceId", id)
 		}
 	}
+}
+
+// ownsWorkspaceCluster is the ownership rule behind every destructive and quota decision: the
+// cluster is controlled by this Lake and labelled as this Lake's workspace with this workspace_id.
+func ownsWorkspaceCluster(lake *oramav1alpha1.Lake, cluster *oramav1alpha1.OramaZettaCluster, workspaceID string) bool {
+	return metav1.IsControlledBy(cluster, lake) &&
+		cluster.Labels[workspaceLakeLabel] == lake.Name &&
+		cluster.Labels[workspaceIDLabel] == workspaceID
+}
+
+// liveWorkspaceCount counts the workspace clusters that count against
+// spec.workspaces.maxWorkspaces: owned by this Lake, not being deleted, and not withdrawn in the
+// current stream (the cache may not show a deletion issued moments ago).
+func (r *OramaZettaClusterReconciler) liveWorkspaceCount(ctx context.Context, lake *oramav1alpha1.Lake, states map[string]*zettaWorkspaceState) (int, error) {
+	var clusters oramav1alpha1.OramaZettaClusterList
+	if err := r.List(ctx, &clusters, client.InNamespace(lakeNamespace(lake)), client.MatchingLabels{workspaceLakeLabel: lake.Name}); err != nil {
+		return 0, err
+	}
+	live := 0
+	for i := range clusters.Items {
+		cluster := &clusters.Items[i]
+		id := cluster.Labels[workspaceIDLabel]
+		if !workspaceIDPattern.MatchString(id) || !ownsWorkspaceCluster(lake, cluster, id) || cluster.DeletionTimestamp != nil {
+			continue
+		}
+		if state := states[id]; state != nil && state.withdrawn() {
+			continue
+		}
+		live++
+	}
+	return live, nil
+}
+
+// workspaceDataClaims lists the data PVCs the workspace cluster's StatefulSet created from its
+// volumeClaimTemplate: named data-<cluster>-zetta-<ordinal> and carrying the StatefulSet's
+// selector labels, which the StatefulSet controller copies onto every claim. The StatefulSet never
+// deletes these claims itself.
+func (r *OramaZettaClusterReconciler) workspaceDataClaims(ctx context.Context, namespace, clusterName string) ([]corev1.PersistentVolumeClaim, error) {
+	owner := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: namespace}}
+	statefulSet, _, _ := zettaNames(owner)
+	pattern := regexp.MustCompile("^" + regexp.QuoteMeta(workspaceDataClaimTemplate+"-"+statefulSet+"-") + "[0-9]+$")
+	var claims corev1.PersistentVolumeClaimList
+	if err := r.List(ctx, &claims, client.InNamespace(namespace), client.MatchingLabels(zettaLabels(owner))); err != nil {
+		return nil, err
+	}
+	matched := make([]corev1.PersistentVolumeClaim, 0, len(claims.Items))
+	for _, claim := range claims.Items {
+		if pattern.MatchString(claim.Name) {
+			matched = append(matched, claim)
+		}
+	}
+	return matched, nil
+}
+
+// withdrawZettaWorkspace deletes a withdrawn workspace — its data PVCs, its OramaZettaCluster and
+// its key in lake-<lake>-workspaces — and appends one Deleted status row once none of them remains.
+// It touches only a cluster this Lake controls and labels as this workspace. Data PVCs are deleted
+// before the cluster, so an interrupted pass never leaves live volumes behind a cluster that is
+// already gone. Every poll repeats the same steps, so the path is idempotent.
+func (r *OramaZettaClusterReconciler) withdrawZettaWorkspace(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, lake *oramav1alpha1.Lake, base, token string, state *zettaWorkspaceState) error {
+	withdrawn := state.Withdrawn
+	if withdrawn.Lake != lake.Name || lakeNamespace(lake) != z.Namespace || !lakeWorkspacesEnabled(lake) {
+		return nil
+	}
+	if err := validateWorkspaceEvent(lake, withdrawn); err != nil {
+		return r.writeWorkspaceTransition(ctx, base, token, withdrawn, state.Status, WorkspacePhaseFailed, "", err.Error())
+	}
+	namespace := lakeNamespace(lake)
+	name := workspaceClusterName(lake.Name, withdrawn.WorkspaceID)
+	key := client.ObjectKey{Namespace: namespace, Name: name}
+	cluster := &oramav1alpha1.OramaZettaCluster{}
+	clusterFound := true
+	if err := r.Get(ctx, key, cluster); apierrors.IsNotFound(err) {
+		clusterFound = false
+	} else if err != nil {
+		return err
+	}
+	if clusterFound {
+		if !ownsWorkspaceCluster(lake, cluster, withdrawn.WorkspaceID) {
+			return r.writeWorkspaceTransition(ctx, base, token, withdrawn, state.Status, WorkspacePhaseFailed, "",
+				fmt.Sprintf("OramaZettaCluster %s exists and is not this Lake's workspace", key))
+		}
+		if bound := cluster.Annotations[workspaceCustomerAnnotation]; bound != "" && bound != withdrawn.CustomerID {
+			return r.writeWorkspaceTransition(ctx, base, token, withdrawn, state.Status, WorkspacePhaseFailed, "",
+				"workspace_id is already bound to another customer")
+		}
+	}
+
+	claims, err := r.workspaceDataClaims(ctx, namespace, name)
+	if err != nil {
+		return err
+	}
+	// Without the cluster, a live claim is deleted only when the status stream proves this
+	// reconciler materialized the workspace: a non-empty URL is written only for a cluster it owns.
+	claimsProven := clusterFound || (state.Status != nil && state.Status.URL != "")
+	for i := range claims {
+		claim := &claims[i]
+		if claim.DeletionTimestamp != nil {
+			continue
+		}
+		if !claimsProven {
+			return r.writeWorkspaceTransition(ctx, base, token, withdrawn, state.Status, WorkspacePhaseFailed, "",
+				fmt.Sprintf("PersistentVolumeClaim %s/%s exists and is not this Lake's workspace", namespace, claim.Name))
+		}
+		if err := r.Delete(ctx, claim); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete workspace data volume %s/%s: %w", namespace, claim.Name, err)
+		}
+	}
+	if clusterFound && cluster.DeletionTimestamp == nil {
+		if err := r.Delete(ctx, cluster, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete workspace cluster %s: %w", key, err)
+		}
+	}
+	if err := r.removeWorkspaceCredential(ctx, lake, withdrawn.WorkspaceID); err != nil {
+		return err
+	}
+
+	// Deleted only once the cluster and every data volume are gone; until then the next poll
+	// repeats the steps above and checks again.
+	if err := r.Get(ctx, key, &oramav1alpha1.OramaZettaCluster{}); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	remaining, err := r.workspaceDataClaims(ctx, namespace, name)
+	if err != nil {
+		return err
+	}
+	if len(remaining) > 0 {
+		return nil
+	}
+	return r.writeWorkspaceTransition(ctx, base, token, withdrawn, state.Status, WorkspacePhaseDeleted, "", "workspace deleted")
+}
+
+// removeWorkspaceCredential drops a workspace's key from lake-<lake>-workspaces. The Lake
+// reconciler does not re-add it: it skips workspace clusters that are gone or being deleted.
+func (r *OramaZettaClusterReconciler) removeWorkspaceCredential(ctx context.Context, lake *oramav1alpha1.Lake, workspaceID string) error {
+	var secret corev1.Secret
+	if err := r.Get(ctx, client.ObjectKey{Namespace: lakeNamespace(lake), Name: lakeWorkspacesSecret(lake.Name)}, &secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if !metav1.IsControlledBy(&secret, lake) {
+		return nil
+	}
+	if _, found := secret.Data[workspaceID]; !found {
+		return nil
+	}
+	delete(secret.Data, workspaceID)
+	return r.Update(ctx, &secret)
 }
 
 // validateWorkspaceEvent rejects a desired row the operator will not materialize. The name-length
@@ -251,15 +437,16 @@ func validateWorkspaceEvent(lake *oramav1alpha1.Lake, event *zettaWorkspaceEvent
 	}
 }
 
-func (r *OramaZettaClusterReconciler) reconcileZettaWorkspace(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, lake *oramav1alpha1.Lake, base, token string, state *zettaWorkspaceState) error {
+// reconcileZettaWorkspace materializes one desired workspace. live is the Lake's live workspace
+// count: it is compared with spec.workspaces.maxWorkspaces before a new cluster is created and
+// incremented after one is. An existing workspace is never refused by the quota.
+func (r *OramaZettaClusterReconciler) reconcileZettaWorkspace(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, lake *oramav1alpha1.Lake, base, token string, state *zettaWorkspaceState, live *int) error {
 	desired := state.Desired
 	// Locality: the row must name this Lake, which is local to the polled cluster's namespace
 	// (localDeploymentLakes) and has workspaces enabled (reconcileZettaWorkspaces).
 	if desired.Lake != lake.Name || lakeNamespace(lake) != z.Namespace || !lakeWorkspacesEnabled(lake) {
 		return nil
 	}
-	// Anything else a desired row may carry later (a withdrawal flag, a teardown request) is
-	// ignored: v1 never deletes a workspace cluster.
 	if err := validateWorkspaceEvent(lake, desired); err != nil {
 		return r.writeWorkspaceTransition(ctx, base, token, desired, state.Status, WorkspacePhaseFailed, "", err.Error())
 	}
@@ -268,7 +455,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaWorkspace(ctx context.Contex
 	key := client.ObjectKey{Namespace: namespace, Name: name}
 	cluster := &oramav1alpha1.OramaZettaCluster{}
 	if err := r.Get(ctx, key, cluster); err == nil {
-		if !metav1.IsControlledBy(cluster, lake) || cluster.Labels[workspaceIDLabel] != desired.WorkspaceID {
+		if !ownsWorkspaceCluster(lake, cluster, desired.WorkspaceID) {
 			return r.writeWorkspaceTransition(ctx, base, token, desired, state.Status, WorkspacePhaseFailed, "",
 				fmt.Sprintf("OramaZettaCluster %s exists and is not this Lake's workspace", key))
 		}
@@ -276,14 +463,39 @@ func (r *OramaZettaClusterReconciler) reconcileZettaWorkspace(ctx context.Contex
 			return r.writeWorkspaceTransition(ctx, base, token, desired, state.Status, WorkspacePhaseFailed, "",
 				"workspace_id is already bound to another customer")
 		}
+		// A re-desire after a withdrawal waits for the old cluster to finish deleting, so the
+		// workspace is recreated from scratch rather than written into a terminating object.
+		if cluster.DeletionTimestamp != nil {
+			return r.writeWorkspaceTransition(ctx, base, token, desired, state.Status, WorkspacePhaseProvisioning,
+				workspaceClientURL(lake.Name, desired.WorkspaceID, namespace), "waiting for the previous workspace cluster to be deleted")
+		}
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	} else {
+		// A new cluster must not adopt an old data volume: its StatefulSet would bind a claim of
+		// the same name. Wait for a terminating one; refuse a live one this path cannot prove is
+		// its own.
+		claims, err := r.workspaceDataClaims(ctx, namespace, name)
+		if err != nil {
+			return err
+		}
+		for _, claim := range claims {
+			if claim.DeletionTimestamp != nil {
+				return r.writeWorkspaceTransition(ctx, base, token, desired, state.Status, WorkspacePhaseProvisioning,
+					workspaceClientURL(lake.Name, desired.WorkspaceID, namespace), "waiting for the previous workspace data volume to be deleted")
+			}
+			return r.writeWorkspaceTransition(ctx, base, token, desired, state.Status, WorkspacePhaseFailed, "",
+				fmt.Sprintf("PersistentVolumeClaim %s/%s exists and is not this Lake's workspace", namespace, claim.Name))
+		}
+		if limit := int(lake.Spec.Workspaces.MaxWorkspaces); limit > 0 && *live >= limit {
+			return r.writeWorkspaceTransition(ctx, base, token, desired, state.Status, WorkspacePhaseFailed, "",
+				fmt.Sprintf("workspace quota reached (%d)", limit))
+		}
 		cluster = &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
 	}
 
 	operatorSchema := false
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		if cluster.Labels == nil {
 			cluster.Labels = map[string]string{}
 		}
@@ -307,8 +519,12 @@ func (r *OramaZettaClusterReconciler) reconcileZettaWorkspace(ctx context.Contex
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.ProvisionOperatorSchema = &operatorSchema
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)
-	}); err != nil {
+	})
+	if err != nil {
 		return err
+	}
+	if result == controllerutil.OperationResultCreated {
+		*live++
 	}
 
 	phase, message := r.workspacePhase(ctx, lake, cluster, desired.WorkspaceID)
@@ -357,7 +573,8 @@ func insertWorkspaceStatusSQL(workspaceID, lake, customerID, phase, url, message
 // reconcileLakeWorkspaceSecret maintains lake-<name>-workspaces: one key per workspace_id whose
 // value is that workspace cluster's admin token, copied from <cluster>-zetta-admin once minted. A
 // key is kept while its token is not readable (so a transient read failure never removes a file
-// lake depends on) and dropped only when its cluster no longer exists.
+// lake depends on) and dropped when its cluster no longer exists or is being deleted (a withdrawn
+// workspace).
 func (r *LakeReconciler) reconcileLakeWorkspaceSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) error {
 	var clusters oramav1alpha1.OramaZettaClusterList
 	if err := r.List(ctx, &clusters, client.InNamespace(namespace), client.MatchingLabels{workspaceLakeLabel: lake.Name}); err != nil {
@@ -368,7 +585,7 @@ func (r *LakeReconciler) reconcileLakeWorkspaceSecret(ctx context.Context, lake 
 	for i := range clusters.Items {
 		cluster := &clusters.Items[i]
 		id := cluster.Labels[workspaceIDLabel]
-		if !workspaceIDPattern.MatchString(id) || !metav1.IsControlledBy(cluster, lake) {
+		if !workspaceIDPattern.MatchString(id) || !metav1.IsControlledBy(cluster, lake) || cluster.DeletionTimestamp != nil {
 			continue
 		}
 		present[id] = true

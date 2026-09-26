@@ -72,6 +72,8 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// Withdrawn Lake workspaces: delete the StatefulSet's data PVCs (zetta_workspaces.go).
+//+kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
 // ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace for its UID — `get`
 // only, never list/watch, so the operator holds no cluster-wide Namespace informer.
 //+kubebuilder:rbac:groups="",resources=namespaces,verbs=get
