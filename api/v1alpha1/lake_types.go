@@ -180,6 +180,20 @@ type LakeServicesSpec struct {
 	// pod. See docs/lake/lake-sqlite.md.
 	// +optional
 	SQLiteImage string `json:"sqliteImage,omitempty"`
+
+	// DuckDBImage is the lake-duckdb image for duckdb services, which the operator runs itself
+	// (one StatefulSet of one pod per service). Empty falls back to the operator's
+	// --lake-duckdb-image flag, which the chart sets from lakeServices.duckdbImage. Changing it
+	// rolls every duckdb service's pod. See docs/lake/lake-duckdb.md.
+	// +optional
+	DuckDBImage string `json:"duckdbImage,omitempty"`
+
+	// PolarsImage is the lake-polars image for polars services, which the operator runs itself
+	// (one StatefulSet of spec.instances workers per service). Empty falls back to the operator's
+	// --lake-polars-image flag, which the chart sets from lakeServices.polarsImage. Changing it
+	// rolls every polars service's pods. See docs/lake/lake-polars.md.
+	// +optional
+	PolarsImage string `json:"polarsImage,omitempty"`
 }
 
 // LakeWorkspacesSpec is the deprecated decision-45 workspace configuration. See

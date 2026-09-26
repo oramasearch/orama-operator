@@ -32,6 +32,12 @@ spec:
             {{- with .Values.lakeServices.sqliteImage }}
             - --lake-sqlite-image={{ . }}
             {{- end }}
+            {{- with .Values.lakeServices.duckdbImage }}
+            - --lake-duckdb-image={{ . }}
+            {{- end }}
+            {{- with .Values.lakeServices.polarsImage }}
+            - --lake-polars-image={{ . }}
+            {{- end }}
           ports:
             - name: control-plane
               containerPort: {{ .Values.controlPlane.service.port }}

@@ -442,6 +442,13 @@ spec:
                   operator's observations written back to service_status. Requires the control-plane Postgres
                   (spec.postgres.enabled). See docs/lake/services.md.
                 properties:
+                  duckdbImage:
+                    description: |-
+                      DuckDBImage is the lake-duckdb image for duckdb services, which the operator runs itself
+                      (one StatefulSet of one pod per service). Empty falls back to the operator's
+                      --lake-duckdb-image flag, which the chart sets from lakeServices.duckdbImage. Changing it
+                      rolls every duckdb service's pod. See docs/lake/lake-duckdb.md.
+                    type: string
                   enabled:
                     default: false
                     description: |-
@@ -460,6 +467,13 @@ spec:
                     format: int32
                     minimum: 0
                     type: integer
+                  polarsImage:
+                    description: |-
+                      PolarsImage is the lake-polars image for polars services, which the operator runs itself
+                      (one StatefulSet of spec.instances workers per service). Empty falls back to the operator's
+                      --lake-polars-image flag, which the chart sets from lakeServices.polarsImage. Changing it
+                      rolls every polars service's pods. See docs/lake/lake-polars.md.
+                    type: string
                   sqliteImage:
                     description: |-
                       SQLiteImage is the lake-sqlite image for sqlite services, which the operator runs itself

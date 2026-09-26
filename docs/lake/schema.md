@@ -2,19 +2,28 @@
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit 17b4ad57f2571c30516f7ecb85c03a4165e32e59](https://github.com/oramasearch/lake/blob/17b4ad57f2571c30516f7ecb85c03a4165e32e59/db/schema.sql),
-on lake branch `feat/sqlite-service` (not yet merged to lake `main`). Its SHA-256 is
-`234e0574e13d519731071c938ce58cc581f184b9d7f8422111646b105c88da11`.
+[`oramasearch/lake` commit aee5cdada63cb6fed886c67a6fff86123b742bf5](https://github.com/oramasearch/lake/blob/aee5cdada63cb6fed886c67a6fff86123b742bf5/db/schema.sql),
+on lake branch `feat/duckdb-polars-kinds` (lake#195; not yet merged to lake `main`). Its SHA-256 is
+`1e391fb336b43699b9d316f1dec3086ab804abd86f6a66e574da51d742ba2866`.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
 
+Migration `0027_analytics_services` (lake#195) widens the `services.kind` check once more, adding
+`duckdb` and `polars` (dropping and re-adding `service_kind_check`, which every existing row already
+satisfies), and adds the completion table `public.analytics_services_guard`, which is now Lake's
+PostgresSchema guard. No data changes. A database already at `0026` applies the whole idempotent
+file in one transaction; one already at `0027` exits with
+`schema already applied (analytics_services_guard present)`. The operator runs the new kinds
+([services.md](services.md#duckdb-and-polars-lake195)); lake can only write them once this schema has
+applied.
+
 Migration `0026_sqlite_services` (liquid-bridge decision 47, amended) widens the `services.kind`
 check once more, adding `sqlite` (dropping and re-adding `service_kind_check`, which every existing
-row already satisfies), and adds the completion table `public.sqlite_services_guard`, which is now
-Lake's PostgresSchema guard. No data changes. A database already at `0025` applies the whole
+row already satisfies), and adds the completion table `public.sqlite_services_guard`, which was
+Lake's PostgresSchema guard until `0027`. No data changes. A database already at `0025` applies the whole
 idempotent file in one transaction; one already at `0026` exits with
 `schema already applied (sqlite_services_guard present)`. The operator runs the new kind
 ([services.md](services.md#sqlite-decision-47-amended)); lake can only write it once this schema has
@@ -129,7 +138,8 @@ condition. Additional Job tests cover replacing obsolete running and failed atte
 for the file vendored at `0a701ef`, `services_guard` gives `sha256:8fcd390d01ef` and
 `service_catalog_guard` gives `sha256:b4958802878c`; for the file vendored at `17b4ad5`,
 `service_catalog_guard` gives `sha256:684a7cbc81a8` and `sqlite_services_guard` gives
-`sha256:5f51287439d4`.
+`sha256:5f51287439d4`; for the file vendored at `aee5cda`, `sqlite_services_guard` gives
+`sha256:7cfdcc166fea` and `analytics_services_guard` gives `sha256:c6ca15f2c44f`.
 
 The regression was run before the fix: the rendered command printed
 `schema already applied (identity_exit_guard present)`, status became Applied, and the test

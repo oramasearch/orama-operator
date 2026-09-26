@@ -34,7 +34,7 @@ func init() {
 }
 
 func main() {
-	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage string
+	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage, lakeDuckDBImage, lakePolarsImage string
 	var enableLeaderElection, enableE2EControllers bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
@@ -42,6 +42,10 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "enable leader election")
 	flag.StringVar(&lakeSQLiteImage, "lake-sqlite-image", controller.DefaultLakeSQLiteImage,
 		"the lake-sqlite image for a Lake's sqlite services when its spec.services.sqliteImage is empty")
+	flag.StringVar(&lakeDuckDBImage, "lake-duckdb-image", controller.DefaultLakeDuckDBImage,
+		"the lake-duckdb image for a Lake's duckdb services when its spec.services.duckdbImage is empty")
+	flag.StringVar(&lakePolarsImage, "lake-polars-image", controller.DefaultLakePolarsImage,
+		"the lake-polars image for a Lake's polars services when its spec.services.polarsImage is empty")
 	// The e2e kinds are test fixtures. Production runs no e2e suites — that is what a testing
 	// environment is for — so their controllers stay unregistered unless a cluster asks, and their
 	// CRDs live outside the install chart (chart/e2e-crds). Off by default means the safe posture is
@@ -150,6 +154,8 @@ func main() {
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
 		SQLiteImage: lakeSQLiteImage,
+		DuckDBImage: lakeDuckDBImage,
+		PolarsImage: lakePolarsImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lake")
 		os.Exit(1)

@@ -32,9 +32,10 @@ import (
 // are each run by their own upstream operator. The Orama operator writes that operator's resources
 // as unstructured objects — it never imports the upstream Go modules — named <lake>-<slug> (plus,
 // for some kinds, a second resource), controlled by the Lake and labelled like every service, then
-// reads readiness from the upstream status and the connection from a Secret. SQLite has no upstream
-// operator: the Orama operator writes the StatefulSet and Service of lake-sqlite itself through the
-// same machinery (lake_service_sqlite.go; decision 47, amended). The per-kind builders live in
+// reads readiness from the upstream status and the connection from a Secret. SQLite, DuckDB and
+// Polars have no upstream operator: the Orama operator writes the StatefulSet and Service of
+// lake-sqlite, lake-duckdb and lake-polars itself through the same machinery
+// (lake_service_wrapper.go; decision 47, amended; lake#195). The per-kind builders live in
 // lake_service_<kind>.go; this file holds what every kind shares.
 //
 // +kubebuilder:rbac:groups=kafka.strimzi.io,resources=kafkas;kafkanodepools;kafkausers,verbs=get;list;watch;create;update;patch;delete
@@ -51,6 +52,8 @@ const (
 	serviceKindCassandra  = "cassandra"
 	serviceKindValkey     = "valkey"
 	serviceKindSQLite     = "sqlite"
+	serviceKindDuckDB     = "duckdb"
+	serviceKindPolars     = "polars"
 
 	// servicePasswordBytes is the entropy of a password the Orama operator generates: 32 hex
 	// characters, safe unescaped in a URI, an ACL file and a ClickHouse users.xml.
@@ -65,7 +68,7 @@ const (
 
 // serviceKindNames is every kind the operator runs, in the order the contract lists them. The
 // unknown-kind message names them all.
-var serviceKindNames = []string{serviceKindZetta, serviceKindPostgres, serviceKindKafka, serviceKindClickHouse, serviceKindTiDB, serviceKindCassandra, serviceKindValkey, serviceKindSQLite}
+var serviceKindNames = []string{serviceKindZetta, serviceKindPostgres, serviceKindKafka, serviceKindClickHouse, serviceKindTiDB, serviceKindCassandra, serviceKindValkey, serviceKindSQLite, serviceKindDuckDB, serviceKindPolars}
 
 // catalogKinds maps a catalog kind to its builder.
 var catalogKinds = map[string]catalogKind{
@@ -74,7 +77,9 @@ var catalogKinds = map[string]catalogKind{
 	serviceKindTiDB:       tidbServiceKind{},
 	serviceKindCassandra:  cassandraServiceKind{},
 	serviceKindValkey:     valkeyServiceKind{},
-	serviceKindSQLite:     sqliteServiceKind{},
+	serviceKindSQLite:     sqliteServiceKind,
+	serviceKindDuckDB:     duckdbServiceKind,
+	serviceKindPolars:     polarsServiceKind,
 }
 
 // catalogService is what a builder sees of one present or absent service.
@@ -85,7 +90,8 @@ type catalogService struct {
 	namespace string
 	// name is <lake>-<slug>, the primary resource's name.
 	name string
-	// image is the image of a kind the Orama operator runs itself (sqlite); empty otherwise.
+	// image is the image of a kind the Orama operator runs itself (sqlite, duckdb, polars); empty
+	// otherwise.
 	image string
 }
 

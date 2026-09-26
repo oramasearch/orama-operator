@@ -49,6 +49,12 @@ type LakeReconciler struct {
 	// SQLiteImage is the lake-sqlite image for sqlite services when a Lake sets no
 	// spec.services.sqliteImage (the --lake-sqlite-image flag). Empty uses DefaultLakeSQLiteImage.
 	SQLiteImage string
+	// DuckDBImage is the lake-duckdb image for duckdb services when a Lake sets no
+	// spec.services.duckdbImage (the --lake-duckdb-image flag). Empty uses DefaultLakeDuckDBImage.
+	DuckDBImage string
+	// PolarsImage is the lake-polars image for polars services when a Lake sets no
+	// spec.services.polarsImage (the --lake-polars-image flag). Empty uses DefaultLakePolarsImage.
+	PolarsImage string
 }
 
 const (
@@ -59,7 +65,7 @@ const (
 	lakeStorePath        = "/var/lib/lake/store"
 	lakeStoreVolume      = "store"
 	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
-	lakeSchemaGuardTable = "sqlite_services_guard"
+	lakeSchemaGuardTable = "analytics_services_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
