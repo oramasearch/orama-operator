@@ -11,14 +11,38 @@
 # RabbitMQ is deliberately NOT an operator dependency: it runs as a plain StatefulSet
 # (datastore.go), and its topology/streams are modeled by OUR OWN CRDs (operator#41) — we
 # dropped the bitnami RabbitMQ Cluster/Topology operators after their images 404'd (deprecated
-# catalog). ClickHouse/Redis/Typesense/Mongo likewise run as plain StatefulSets.
+# catalog). v1's ClickHouse/Redis/Typesense/Mongo likewise run as plain StatefulSets.
 # Toggle any platform operator your cluster already provides to installed: false.
+#
+# Service operators (lake managed services, liquid-bridge decision 47; the contract is lake
+# docs/control-plane/services.md). Each runs one kind of customer service; the Orama operator
+# writes their resources from lake's control Postgres and never runs the databases itself. All are
+# Apache 2.0, pinned, and watch every namespace (customer services live in the Lake's namespace):
+#   - Strimzi              — Kafka (KRaft).
+#   - Altinity             — ClickHouse (+ ClickHouse Keeper).
+#   - PingCAP TiDB 1.6.x   — TiDB. Stable 1.x line, NOT the repo's main (v2); its CRDs are not in
+#                            the chart and are applied by the presync hook below.
+#   - K8ssandra            — Cassandra (Apache Cassandra images only). Needs cert-manager.
+#   - valkey-io            — Valkey. PREVIEW: upstream says "not ready for production".
+#   - cert-manager         — only because K8ssandra's webhooks need it.
 
 repositories:
   - name: cnpg
     url: https://cloudnative-pg.github.io/charts
   - name: ingress-nginx
     url: https://kubernetes.github.io/ingress-nginx
+  - name: strimzi
+    url: https://strimzi.io/charts/
+  - name: altinity
+    url: https://helm.altinity.com
+  - name: pingcap
+    url: https://charts.pingcap.com/
+  - name: k8ssandra
+    url: https://helm.k8ssandra.io/stable
+  - name: jetstack
+    url: https://charts.jetstack.io
+  - name: valkey
+    url: https://valkey.io/valkey-helm
 
 releases:
   # ---- platform operators (building blocks the v1 operator reconciles against) ----
@@ -48,9 +72,85 @@ releases:
       - name: controller.service.externalTrafficPolicy
         value: Local
 
-  # NOTE — no RabbitMQ / ClickHouse operator: the broker is a plain StatefulSet whose topology is
-  # driven by our own CRDs (operator#41); analytics is a plain clickhouse-server StatefulSet, like
-  # Redis/Typesense/Mongo — nothing to install here.
+  # ---- service operators (lake managed services, decision 47) ----
+  - name: cert-manager
+    namespace: cert-manager
+    createNamespace: true
+    chart: jetstack/cert-manager
+    version: v1.21.2
+    labels:
+      tier: service-operators
+    set:
+      - name: crds.enabled
+        value: "true"
+
+  - name: strimzi
+    namespace: strimzi-system
+    createNamespace: true
+    chart: strimzi/strimzi-kafka-operator
+    version: 1.2.0
+    labels:
+      tier: service-operators
+    set:
+      - name: watchAnyNamespace
+        value: "true"
+
+  - name: clickhouse-operator
+    namespace: clickhouse-system
+    createNamespace: true
+    chart: altinity/altinity-clickhouse-operator
+    version: 0.27.4
+    labels:
+      tier: service-operators
+    # Watches every namespace by default (configs.files.config.yaml watch.namespaces empty).
+
+  - name: tidb-operator
+    namespace: tidb-admin
+    createNamespace: true
+    chart: pingcap/tidb-operator
+    version: v1.6.6
+    labels:
+      tier: service-operators
+    # clusterScoped defaults to true. The chart does not carry the CRDs: apply the release's
+    # own crd.yaml, server-side (the TidbCluster CRD is too large for client-side apply).
+    hooks:
+      - events: ["presync"]
+        showlogs: true
+        command: kubectl
+        args:
+          - apply
+          - --server-side
+          - --force-conflicts
+          - -f
+          - https://raw.githubusercontent.com/pingcap/tidb-operator/v1.6.6/manifests/crd.yaml
+
+  - name: k8ssandra-operator
+    namespace: k8ssandra-operator
+    createNamespace: true
+    chart: k8ssandra/k8ssandra-operator
+    version: 1.33.0
+    labels:
+      tier: service-operators
+    needs:
+      - cert-manager/cert-manager
+    set:
+      - name: global.clusterScoped
+        value: "true"
+
+  # PREVIEW: upstream's README says the operator is not ready for production and v1alpha1 may
+  # change (0.6.0 already broke the TLS spec). lake labels the kind as a preview.
+  - name: valkey-operator
+    namespace: valkey-operator-system
+    createNamespace: true
+    chart: valkey/valkey-operator
+    version: 0.6.0
+    labels:
+      tier: service-operators
+
+  # NOTE — Orama Cloud v1's own datastores are unchanged: its broker is a plain StatefulSet whose
+  # topology is driven by our own CRDs (operator#41), and its analytics is a plain
+  # clickhouse-server StatefulSet, like Redis/Typesense/Mongo. The ClickHouse operator above serves
+  # lake customer services only.
   #
   # NOTE — Airbyte (structured connectors, operator#4) is a heavy multi-service platform installed
   # from its OWN chart into the `airbyte` namespace — NOT installed here.

@@ -34,7 +34,8 @@ Application images come from their owning projects.
 
 Three layers, each with one job:
 
-- **`helmfile.yaml`** composes **CloudNativePG and ingress-nginx** plus the operator chart.
+- **`helmfile.yaml`** composes **CloudNativePG and ingress-nginx**, the **service operators** that
+  run lake managed services (label `tier=service-operators`, below), plus the operator chart.
   Select the platform releases first, as below; a bare `helmfile apply` also installs the manager
   using chart defaults without credentials.
 - The **chart** installs the **operator Deployment, CRDs, RBAC, ServiceAccount, and manager
@@ -94,6 +95,32 @@ samples; the minimal engine sample below does not expose an Ingress.
 ```sh
 helmfile -l name=cloudnative-pg -l name=ingress-nginx sync --wait --concurrency 1
 ```
+
+### Service operators (lake managed services)
+
+Only needed where a `Lake` enables `spec.services` and customers create kinds beyond Zetta and
+Postgres (liquid-bridge decision 47; the per-kind contract is lake
+`docs/control-plane/services.md`, what this operator writes is [`lake/services.md`](lake/services.md)).
+All are pinned and cluster-scoped:
+
+| Release | Chart | Version | Namespace | Runs |
+|---|---|---|---|---|
+| `cert-manager` | `jetstack/cert-manager` | v1.21.2 | `cert-manager` | K8ssandra's webhook certificates |
+| `strimzi` | `strimzi/strimzi-kafka-operator` | 1.2.0 | `strimzi-system` | Kafka |
+| `clickhouse-operator` | `altinity/altinity-clickhouse-operator` | 0.27.4 | `clickhouse-system` | ClickHouse |
+| `tidb-operator` | `pingcap/tidb-operator` | v1.6.6 | `tidb-admin` | TiDB (CRDs from the release's `crd.yaml`, applied server-side by a presync hook) |
+| `k8ssandra-operator` | `k8ssandra/k8ssandra-operator` | 1.33.0 | `k8ssandra-operator` | Cassandra |
+| `valkey-operator` | `valkey/valkey-operator` | 0.6.0 | `valkey-operator-system` | Valkey — **preview**, upstream says not production-ready |
+
+```sh
+helmfile -l tier=service-operators sync --wait --concurrency 1
+kubectl get deploy -A | grep -E 'strimzi|clickhouse|tidb|k8ssandra|cass-operator|valkey|cert-manager'
+```
+
+`needs:` installs cert-manager before K8ssandra; rendering K8ssandra alone (`helmfile template`)
+fails with "cass-operator webhooks require cert-manager" until cert-manager exists, which is
+expected. Upgrading one of them is a version bump here, checked against its release notes for CRD
+changes (Valkey 0.6.0 broke its TLS field), then the same `sync`.
 
 The selectors include **only** CloudNativePG and ingress-nginx. The manager is installed next.
 The platform chart versions are currently unpinned in `helmfile.yaml`; use your approved platform
