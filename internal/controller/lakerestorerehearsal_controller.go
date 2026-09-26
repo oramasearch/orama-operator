@@ -829,6 +829,7 @@ UNION ALL SELECT 'token_attenuation_guard=' || count(*) FROM token_attenuation_g
 UNION ALL SELECT 'session_lookup_guard=' || count(*) FROM session_lookup_guard
 UNION ALL SELECT 'custodial_identity_guard=' || count(*) FROM custodial_identity_guard
 UNION ALL SELECT 'services_guard=' || count(*) FROM services_guard
+UNION ALL SELECT 'service_catalog_guard=' || count(*) FROM service_catalog_guard
 UNION ALL SELECT 'auth_app_guard=' || count(*) FROM auth_app_guard
 UNION ALL SELECT 'drive_guard=' || count(*) FROM drive_guard
 UNION ALL SELECT 'forge_guard=' || count(*) FROM forge_guard

@@ -1325,3 +1325,19 @@ CREATE TABLE IF NOT EXISTS services_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0024_services') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- The service catalog (migration 0025): Kafka, ClickHouse, TiDB, Cassandra and Valkey join Zetta
+-- and Postgres, each run by its own upstream operator that the Orama operator drives
+-- (docs/control-plane/services.md, liquid-bridge decision 47). Re-adding the constraint is
+-- idempotent: every existing row already satisfies the wider list.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE services DROP CONSTRAINT IF EXISTS service_kind_check;
+ALTER TABLE services ADD CONSTRAINT service_kind_check
+    CHECK (kind IN ('zetta', 'postgres', 'kafka', 'clickhouse', 'tidb', 'cassandra', 'valkey'));
+
+CREATE TABLE IF NOT EXISTS service_catalog_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0025_service_catalog') ON CONFLICT DO NOTHING;
