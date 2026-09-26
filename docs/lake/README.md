@@ -37,7 +37,8 @@ Operator, K8ssandra, valkey-operator), or StatefulSet of [lake-sqlite](lake-sqli
 [lake-polars](lake-polars.md) per service, writes `service_status`, and hands lake each connection
 through a mounted Secret ([services.md](services.md)). This supersedes the
 decision-45 workspaces ([workspaces.md](workspaces.md)); a workspace is now the customer's default
-Zetta service.
+Zetta service. The same poll runs a customer's **stores** (lake#196; phase 1: cluster volumes, one
+Lake-owned PersistentVolumeClaim each, connection in the same Secret) — [stores.md](stores.md).
 
 ## What a Lake reconciles into
 
@@ -87,8 +88,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `analytics_services_guard` from
-   `0027_analytics_services`, version = hash of the SQL plus guard. A changed hash automatically
+   `oramasearch/lake` `db/schema.sql`), guard table = `stores_guard` from
+   `0028_stores`, version = hash of the SQL plus guard. A changed hash automatically
    replaces the obsolete migration Job, waiting for its pods to stop. Deployment creation and
    updates wait for Applied at the desired version and generation; existing pods retain their
    previous workload spec while the schema applies. Re-vendoring and native envtest proof are in

@@ -47,6 +47,12 @@ type fakeServiceStore struct {
 	services []LakeService
 	upserts  []LakeServiceStatus
 	opened   int
+	// stores and storeUpserts are the stores half (lake_stores_test.go). storesMissing makes
+	// ListStores fail as a schema before 0028_stores does; storesErr fails it any other way.
+	stores        []LakeStore
+	storeUpserts  []LakeStoreStatus
+	storesMissing bool
+	storesErr     error
 }
 
 func (f *fakeServiceStore) ListServices(context.Context) ([]LakeService, error) {
