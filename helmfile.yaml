@@ -102,7 +102,15 @@ releases:
     version: 0.27.4
     labels:
       tier: service-operators
-    # Watches every namespace by default (configs.files.config.yaml watch.namespaces empty).
+    # An empty watch.namespaces.include means the operator's OWN namespace only in 0.27.4 (it logs
+    # "all watched namespaces" and never sees a ClickHouseInstallation elsewhere); ".*" watches all.
+    values:
+      - configs:
+          files:
+            config.yaml:
+              watch:
+                namespaces:
+                  include: [".*"]
 
   - name: tidb-operator
     namespace: tidb-admin
