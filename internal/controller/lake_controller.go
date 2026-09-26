@@ -46,6 +46,9 @@ type LakeReconciler struct {
 	// ServiceStores opens lake's control Postgres for the managed-services poll. Nil uses pgx;
 	// tests substitute a fake store.
 	ServiceStores LakeServiceStoreOpener
+	// SQLiteImage is the lake-sqlite image for sqlite services when a Lake sets no
+	// spec.services.sqliteImage (the --lake-sqlite-image flag). Empty uses DefaultLakeSQLiteImage.
+	SQLiteImage string
 }
 
 const (
@@ -56,7 +59,7 @@ const (
 	lakeStorePath        = "/var/lib/lake/store"
 	lakeStoreVolume      = "store"
 	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
-	lakeSchemaGuardTable = "service_catalog_guard"
+	lakeSchemaGuardTable = "sqlite_services_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;

@@ -460,6 +460,13 @@ spec:
                     format: int32
                     minimum: 0
                     type: integer
+                  sqliteImage:
+                    description: |-
+                      SQLiteImage is the lake-sqlite image for sqlite services, which the operator runs itself
+                      (one StatefulSet per service). Empty falls back to the operator's --lake-sqlite-image flag,
+                      which the chart sets from lakeServices.sqliteImage. Changing it rolls every sqlite service's
+                      pod. See docs/lake/lake-sqlite.md.
+                    type: string
                   zettaImage:
                     description: |-
                       ZettaImage is the image for Zetta services. Empty falls back to spec.workspaces.image, and

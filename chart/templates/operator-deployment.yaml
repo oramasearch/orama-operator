@@ -29,6 +29,9 @@ spec:
             - --enable-e2e-controllers
             {{- end }}
             - --control-plane-bind-address=:{{ .Values.controlPlane.service.port }}
+            {{- with .Values.lakeServices.sqliteImage }}
+            - --lake-sqlite-image={{ . }}
+            {{- end }}
           ports:
             - name: control-plane
               containerPort: {{ .Values.controlPlane.service.port }}

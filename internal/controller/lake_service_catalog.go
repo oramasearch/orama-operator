@@ -7,6 +7,9 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -29,8 +32,10 @@ import (
 // are each run by their own upstream operator. The Orama operator writes that operator's resources
 // as unstructured objects — it never imports the upstream Go modules — named <lake>-<slug> (plus,
 // for some kinds, a second resource), controlled by the Lake and labelled like every service, then
-// reads readiness from the upstream status and the connection from a Secret. The per-kind builders
-// live in lake_service_<kind>.go; this file holds what every kind shares.
+// reads readiness from the upstream status and the connection from a Secret. SQLite has no upstream
+// operator: the Orama operator writes the StatefulSet and Service of lake-sqlite itself through the
+// same machinery (lake_service_sqlite.go; decision 47, amended). The per-kind builders live in
+// lake_service_<kind>.go; this file holds what every kind shares.
 //
 // +kubebuilder:rbac:groups=kafka.strimzi.io,resources=kafkas;kafkanodepools;kafkausers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhouseinstallations,verbs=get;list;watch;create;update;patch;delete
@@ -45,6 +50,7 @@ const (
 	serviceKindTiDB       = "tidb"
 	serviceKindCassandra  = "cassandra"
 	serviceKindValkey     = "valkey"
+	serviceKindSQLite     = "sqlite"
 
 	// servicePasswordBytes is the entropy of a password the Orama operator generates: 32 hex
 	// characters, safe unescaped in a URI, an ACL file and a ClickHouse users.xml.
@@ -52,11 +58,14 @@ const (
 	// serviceComponentLabel marks the password Secret the Orama operator generates for a service.
 	serviceComponentLabel  = "app.kubernetes.io/component"
 	serviceCredentialsRole = "credentials"
+	// serviceAppliedHashAnnotation records the hash of the onChange fields last written to an
+	// object, so they are rewritten only when the desired value changes.
+	serviceAppliedHashAnnotation = "orama.cloud/applied-spec-hash"
 )
 
 // serviceKindNames is every kind the operator runs, in the order the contract lists them. The
 // unknown-kind message names them all.
-var serviceKindNames = []string{serviceKindZetta, serviceKindPostgres, serviceKindKafka, serviceKindClickHouse, serviceKindTiDB, serviceKindCassandra, serviceKindValkey}
+var serviceKindNames = []string{serviceKindZetta, serviceKindPostgres, serviceKindKafka, serviceKindClickHouse, serviceKindTiDB, serviceKindCassandra, serviceKindValkey, serviceKindSQLite}
 
 // catalogKinds maps a catalog kind to its builder.
 var catalogKinds = map[string]catalogKind{
@@ -65,6 +74,7 @@ var catalogKinds = map[string]catalogKind{
 	serviceKindTiDB:       tidbServiceKind{},
 	serviceKindCassandra:  cassandraServiceKind{},
 	serviceKindValkey:     valkeyServiceKind{},
+	serviceKindSQLite:     sqliteServiceKind{},
 }
 
 // catalogService is what a builder sees of one present or absent service.
@@ -75,6 +85,8 @@ type catalogService struct {
 	namespace string
 	// name is <lake>-<slug>, the primary resource's name.
 	name string
+	// image is the image of a kind the Orama operator runs itself (sqlite); empty otherwise.
+	image string
 }
 
 // catalogObject names one upstream object a kind may write.
@@ -87,11 +99,27 @@ type catalogObject struct {
 // are written, so the upstream API server's defaults on the rest of the object survive and a
 // steady service is never rewritten. A createOnly field is written when the object is created and
 // left alone afterwards: storage (volume claim templates are immutable) and arrays whose items the
-// upstream CRD defaults.
+// upstream CRD defaults. An onChange field is written when the object is created and again only
+// when its desired value changes, tracked by a hash in serviceAppliedHashAnnotation: a pod
+// template, whose many API-server defaults would otherwise make every pass an update.
 type serviceField struct {
 	path       []string
 	value      interface{}
 	createOnly bool
+	onChange   bool
+}
+
+// catalogPasswordSizer is implemented by a kind whose generated secret is not
+// servicePasswordBytes long.
+type catalogPasswordSizer interface {
+	passwordBytes() int
+}
+
+func servicePasswordLength(kind catalogKind) int {
+	if sized, ok := kind.(catalogPasswordSizer); ok {
+		return sized.passwordBytes()
+	}
+	return servicePasswordBytes
 }
 
 // catalogResource is one desired upstream object.
@@ -187,15 +215,50 @@ func setUpstreamServiceMetadata(obj metav1.Object, lake *oramav1alpha1.Lake, svc
 
 // applyServiceFields writes the fields a builder owns onto obj.
 func applyServiceFields(obj *unstructured.Unstructured, fields []serviceField, creating bool) error {
+	appliedHash, err := onChangeFieldsHash(fields)
+	if err != nil {
+		return err
+	}
+	writeOnChange := appliedHash != "" && (creating || obj.GetAnnotations()[serviceAppliedHashAnnotation] != appliedHash)
 	for _, field := range fields {
 		if field.createOnly && !creating {
+			continue
+		}
+		if field.onChange && !writeOnChange {
 			continue
 		}
 		if err := unstructured.SetNestedField(obj.Object, runtime.DeepCopyJSONValue(field.value), field.path...); err != nil {
 			return fmt.Errorf("set %s: %w", strings.Join(field.path, "."), err)
 		}
 	}
+	if writeOnChange {
+		annotations := obj.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[serviceAppliedHashAnnotation] = appliedHash
+		obj.SetAnnotations(annotations)
+	}
 	return nil
+}
+
+// onChangeFieldsHash hashes the paths and values of the onChange fields, "" when there are none.
+func onChangeFieldsHash(fields []serviceField) (string, error) {
+	var owned []interface{}
+	for _, field := range fields {
+		if field.onChange {
+			owned = append(owned, []interface{}{field.path, field.value})
+		}
+	}
+	if len(owned) == 0 {
+		return "", nil
+	}
+	encoded, err := json.Marshal(owned)
+	if err != nil {
+		return "", fmt.Errorf("hash the owned fields: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:16]), nil
 }
 
 // reconcileCatalogService creates or updates the upstream objects of one present catalog service
@@ -204,6 +267,7 @@ func applyServiceFields(obj *unstructured.Unstructured, fields []serviceField, c
 // written.
 func (r *LakeReconciler) reconcileCatalogService(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, svc *LakeService, spec lakeServiceSpec, live *int, kind catalogKind) (serviceResult, error) {
 	in := newCatalogService(lake, namespace, svc, spec)
+	in.image = r.serviceImage(lake, svc.Kind)
 	found, refusal, err := r.findCatalogObjects(ctx, in, kind, svc)
 	if err != nil || refusal != nil {
 		return derefResult(refusal), err
@@ -223,7 +287,7 @@ func (r *LakeReconciler) reconcileCatalogService(ctx context.Context, lake *oram
 	password := ""
 	if secretName, key := kind.passwordSecret(in.name); secretName != "" {
 		var failure string
-		password, failure, err = r.ensureServicePassword(ctx, in, secretName, key)
+		password, failure, err = r.ensureServicePassword(ctx, in, secretName, key, servicePasswordLength(kind))
 		if err != nil {
 			return serviceResult{}, err
 		}
@@ -334,10 +398,10 @@ func (r *LakeReconciler) catalogVolumesBlockCreation(ctx context.Context, in cat
 }
 
 // ensureServicePassword returns the password in the Secret the Orama operator generates for the
-// service, creating the Secret with a random password the first time. The Secret is controlled by
-// the Lake and labelled with the service; the password is never rotated. A Secret of that name the
-// Lake does not own fails the service.
-func (r *LakeReconciler) ensureServicePassword(ctx context.Context, in catalogService, secretName, key string) (string, string, error) {
+// service, creating the Secret with a random password of size bytes (hex-encoded) the first time.
+// The Secret is controlled by the Lake and labelled with the service; the password is never
+// rotated. A Secret of that name the Lake does not own fails the service.
+func (r *LakeReconciler) ensureServicePassword(ctx context.Context, in catalogService, secretName, key string, size int) (string, string, error) {
 	secret := &corev1.Secret{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: in.namespace, Name: secretName}, secret)
 	if err == nil {
@@ -352,7 +416,7 @@ func (r *LakeReconciler) ensureServicePassword(ctx context.Context, in catalogSe
 	if !apierrors.IsNotFound(err) {
 		return "", "", err
 	}
-	password, err := randHex(servicePasswordBytes)
+	password, err := randHex(size)
 	if err != nil {
 		return "", "", err
 	}
@@ -389,10 +453,11 @@ func (r *LakeReconciler) applyCatalogResource(ctx context.Context, in catalogSer
 }
 
 // deleteCatalogService deletes an absent catalog service: every upstream object it owns (primary
-// first, in one pass), then — once they are gone, so the upstream operator can no longer recreate
-// them — the generated password Secret and the PVCs the upstream operator left behind. It reports
-// what remains; only objects passing the ownership rule are deleted, and a PVC only when the
-// service provably ran here (an owned object was seen, or service_status carries its endpoint).
+// first, in one pass), then — once they are gone, so nothing can recreate them — the PVCs left
+// behind, and once those are gone too, the generated password Secret: the credential is the last
+// thing to go, never before the data it opens. It reports what remains; only objects
+// passing the ownership rule are deleted, and a PVC only when the service provably ran here (an
+// owned object was seen, or service_status carries its endpoint).
 func (r *LakeReconciler) deleteCatalogService(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, svc *LakeService, previousEndpoint string, kind catalogKind) (serviceResult, bool, error) {
 	in := newCatalogService(lake, namespace, svc, lakeServiceSpec{})
 	remaining := false
@@ -421,12 +486,6 @@ func (r *LakeReconciler) deleteCatalogService(ctx context.Context, lake *oramav1
 		return serviceResult{endpoint: kind.endpoint(in), message: fmt.Sprintf("deleting the %s cluster", kind.title())}, true, nil
 	}
 
-	if secretName, _ := kind.passwordSecret(in.name); secretName != "" {
-		if err := r.deleteServicePassword(ctx, in, secretName); err != nil {
-			return serviceResult{}, false, err
-		}
-	}
-
 	claims, err := r.catalogClaims(ctx, in, kind)
 	if err != nil {
 		return serviceResult{}, false, err
@@ -445,6 +504,12 @@ func (r *LakeReconciler) deleteCatalogService(ctx context.Context, lake *oramav1
 	}
 	if len(claims) > 0 {
 		return serviceResult{message: fmt.Sprintf("deleting the %s data volumes", kind.title())}, true, nil
+	}
+
+	if secretName, _ := kind.passwordSecret(in.name); secretName != "" {
+		if err := r.deleteServicePassword(ctx, in, secretName); err != nil {
+			return serviceResult{}, false, err
+		}
 	}
 	return serviceResult{}, false, nil
 }

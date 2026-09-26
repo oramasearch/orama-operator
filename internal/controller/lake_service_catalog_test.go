@@ -23,12 +23,13 @@ import (
 )
 
 // catalogCase is one catalog kind's fixture: how its service is built, made ready, and
-// connected. Every test below runs over all five kinds.
+// connected. Every test below runs over all six kinds.
 type catalogCase struct {
 	kind string
 	id   string
 	slug string
-	// group is the API group whose absence means the kind is not installed.
+	// group is the API group whose absence means the kind is not installed; "" for a kind the
+	// Orama operator runs itself on built-in resources.
 	group string
 	// objects are the upstream objects the service writes, in deletion order: Kind/name.
 	objects []string
@@ -54,6 +55,15 @@ type catalogCase struct {
 }
 
 func (c catalogCase) name() string { return serviceResourceName("prod", c.slug) }
+
+// spec is the service spec a test asks for, with instances pinned to 1 for SQLite, which has one
+// writer.
+func (c catalogCase) spec(spec string) string {
+	if c.kind == serviceKindSQLite {
+		return strings.Replace(spec, `"instances":3`, `"instances":1`, 1)
+	}
+	return spec
+}
 
 func catalogCases() []catalogCase {
 	return []catalogCase{
@@ -282,12 +292,13 @@ func catalogCases() []catalogCase {
 			},
 			claimLabels: map[string]string{valkeyClusterLabel: "prod-svc-aaaaaaaaaaaa", "app.kubernetes.io/managed-by": "valkey-operator"},
 		},
+		sqliteCatalogCase(),
 	}
 }
 
 func catalogGVK(kind string) schema.GroupVersionKind {
 	for _, gvk := range []schema.GroupVersionKind{strimziKafkaGVK, strimziNodePoolGVK, strimziKafkaUserGVK, clickHouseInstallationGVK,
-		clickHouseKeeperGVK, tidbClusterGVK, k8ssandraClusterGVK, valkeyClusterGVK} {
+		clickHouseKeeperGVK, tidbClusterGVK, k8ssandraClusterGVK, valkeyClusterGVK, statefulSetGVK, serviceGVK} {
 		if gvk.Kind == kind {
 			return gvk
 		}
@@ -320,7 +331,9 @@ func (h *serviceHarness) update(obj client.Object) {
 	}
 }
 
-// setStatus merges fields into an upstream object's status, as its operator would.
+// setStatus merges fields into an upstream object's status, as its operator would. A StatefulSet's
+// status is a subresource, as it is on the API server; the fake client serves the upstream CRDs
+// without one.
 func (h *serviceHarness) setStatus(gvk schema.GroupVersionKind, name string, fields map[string]interface{}) {
 	h.t.Helper()
 	obj := h.upstream(gvk, name)
@@ -328,6 +341,12 @@ func (h *serviceHarness) setStatus(gvk schema.GroupVersionKind, name string, fie
 		if err := unstructured.SetNestedField(obj.Object, value, "status", key); err != nil {
 			h.t.Fatal(err)
 		}
+	}
+	if gvk == statefulSetGVK {
+		if err := h.client.Status().Update(context.Background(), obj); err != nil {
+			h.t.Fatalf("update status of %s: %v", name, err)
+		}
+		return
 	}
 	h.update(obj)
 }
@@ -367,7 +386,7 @@ func catalogClaim(c catalogCase, name string) *corev1.PersistentVolumeClaim {
 // readyCatalogService brings c's service to Ready and returns the harness and store.
 func readyCatalogService(t *testing.T, c catalogCase) (*serviceHarness, *fakeServiceStore) {
 	t.Helper()
-	store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, `{"instances":3,"storage_gi":15}`, false)}}
+	store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, c.spec(`{"instances":3,"storage_gi":15}`), false)}}
 	h := newServiceHarness(t, serviceTestLake(), store)
 	h.poll()
 	h.giveUIDs(c)
@@ -388,7 +407,7 @@ func readyCatalogService(t *testing.T, c catalogCase) (*serviceHarness, *fakeSer
 func TestServicesCatalogBuild(t *testing.T) {
 	for _, c := range catalogCases() {
 		t.Run(c.kind, func(t *testing.T) {
-			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, `{"instances":3,"storage_gi":15}`, false)}}
+			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, c.spec(`{"instances":3,"storage_gi":15}`), false)}}
 			h := newServiceHarness(t, serviceTestLake(), store)
 			h.poll()
 			for _, ref := range c.objects {
@@ -433,7 +452,7 @@ func TestServicesCatalogBuild(t *testing.T) {
 func TestServicesCatalogReadyGatingAndCredential(t *testing.T) {
 	for _, c := range catalogCases() {
 		t.Run(c.kind, func(t *testing.T) {
-			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, `{"instances":3,"storage_gi":15}`, false)}}
+			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, c.spec(`{"instances":3,"storage_gi":15}`), false)}}
 			h := newServiceHarness(t, serviceTestLake(), store)
 			h.poll()
 			h.giveUIDs(c)
@@ -489,22 +508,29 @@ func TestServicesCatalogDeletionOrder(t *testing.T) {
 			}
 			expectStatus(t, store.status(t, c.id), ServicePhaseDeleting, fmt.Sprintf("deleting the %s cluster", catalogKinds[c.kind].title()), c.endpoint)
 
-			// Once the upstream objects are gone: the generated password, then the volumes.
+			// Once the upstream objects are gone: the volumes, then — once they are gone too — the
+			// generated password.
 			primary = h.upstream(catalogGVK(kind), name)
 			primary.SetFinalizers(nil)
 			h.update(primary)
 			h.poll()
 			want := append([]string{}, c.objects...)
-			if c.passwordSecret != "" {
-				want = append(want, "Secret/"+c.passwordSecret)
-			}
 			want = append(want, "PersistentVolumeClaim/data-"+c.name()+"-0", "PersistentVolumeClaim/data-"+c.name()+"-1")
 			if fmt.Sprint(*h.deletedKinds) != fmt.Sprint(want) {
 				t.Fatalf("deletion order = %v, want %v", *h.deletedKinds, want)
 			}
+			if c.passwordSecret != "" {
+				h.secret(c.passwordSecret)
+			}
 			expectStatus(t, store.status(t, c.id), ServicePhaseDeleting, fmt.Sprintf("deleting the %s data volumes", catalogKinds[c.kind].title()), c.endpoint)
 
 			h.poll()
+			if c.passwordSecret != "" {
+				want = append(want, "Secret/"+c.passwordSecret)
+			}
+			if fmt.Sprint(*h.deletedKinds) != fmt.Sprint(want) {
+				t.Fatalf("deletion order = %v, want %v", *h.deletedKinds, want)
+			}
 			expectStatus(t, store.status(t, c.id), ServicePhaseDeleted, "service deleted", "")
 			if err := h.client.Get(context.Background(), client.ObjectKeyFromObject(unrelated), &corev1.PersistentVolumeClaim{}); err != nil {
 				t.Fatalf("an unrelated volume was touched: %v", err)
@@ -521,7 +547,7 @@ func TestServicesCatalogRefusesForeignObjects(t *testing.T) {
 			kind, name, _ := strings.Cut(c.objects[0], "/")
 			foreign := newServiceObject(catalogGVK(kind), testServiceNamespace, name)
 			foreign.SetLabels(map[string]string{serviceLakeLabel: "prod", serviceIDLabel: c.id})
-			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, `{"instances":3}`, false)}}
+			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, c.spec(`{"instances":3}`), false)}}
 			h := newServiceHarness(t, serviceTestLake(), store, foreign)
 			h.poll()
 			want := fmt.Sprintf("%s lake/%s exists and is not this Lake's service", kind, name)
@@ -573,7 +599,7 @@ func TestServicesCatalogRefusesForeignSecrets(t *testing.T) {
 			continue
 		}
 		t.Run(c.kind+"/upstream", func(t *testing.T) {
-			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, `{"instances":3}`, false)}}
+			store := &fakeServiceStore{services: []LakeService{testService(c.id, c.slug, c.kind, c.spec(`{"instances":3}`), false)}}
 			h := newServiceHarness(t, serviceTestLake(), store)
 			h.poll()
 			h.giveUIDs(c)
@@ -597,6 +623,9 @@ func TestServicesCatalogRefusesForeignSecrets(t *testing.T) {
 
 func TestServicesCatalogOperatorNotInstalled(t *testing.T) {
 	for _, c := range catalogCases() {
+		if c.group == "" {
+			continue
+		}
 		t.Run(c.kind, func(t *testing.T) {
 			store := &fakeServiceStore{services: []LakeService{
 				testService(c.id, c.slug, c.kind, `{}`, false),
@@ -678,15 +707,15 @@ func TestServicesKafkaReplicationFollowsBrokers(t *testing.T) {
 func TestServicesUnknownKindFails(t *testing.T) {
 	store := &fakeServiceStore{services: []LakeService{
 		testService(testZettaServiceID, testZettaSlug, "mongodb", `{}`, false),
-		testService(testPostgresID, testPostgresSlug, "sqlite", `{}`, false),
+		testService(testPostgresID, testPostgresSlug, "mysql", `{}`, false),
 	}}
 	store.services[1].Desired = serviceDesiredAbsent
 	h := newServiceHarness(t, serviceTestLake(), store)
 	h.poll()
 	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseFailed,
-		`unknown service kind "mongodb": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey`, "")
+		`unknown service kind "mongodb": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey, sqlite`, "")
 	expectStatus(t, store.status(t, testPostgresID), ServicePhaseFailed,
-		`unknown service kind "sqlite": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey`, "")
+		`unknown service kind "mysql": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey, sqlite`, "")
 }
 
 func TestServicesCatalogNameLengthPerKind(t *testing.T) {

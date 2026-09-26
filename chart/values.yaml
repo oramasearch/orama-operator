@@ -17,6 +17,13 @@ operator:
 serviceAccount:
   name: orama-operator
 
+# Images the operator itself runs for lake's managed services (docs/lake/services.md).
+# sqliteImage is lake-sqlite (docs/lake/lake-sqlite.md), the web service behind the sqlite kind;
+# a Lake's spec.services.sqliteImage overrides it. The image is private: a Lake's
+# spec.pullSecretName is the pull secret its services use.
+lakeServices:
+  sqliteImage: oramasearch/lake-sqlite:0.1.0
+
 controlPlane:
   service:
     port: 8090
