@@ -3,11 +3,9 @@
 # controller-gen is fetched on demand by `make generate`/`make manifests`.
 
 IMG ?= oramasearch/orama-operator:latest
-# lake-sqlite, the web service behind lake's sqlite service kind (docs/lake/lake-sqlite.md).
-LAKE_SQLITE_IMG ?= oramasearch/lake-sqlite:0.1.0
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0
 
-.PHONY: manifests generate fmt vet build run docker-build docker-build-lake-sqlite helm-package test check-crds
+.PHONY: manifests generate fmt vet build run docker-build helm-package test check-crds
 
 manifests: ## Generate CRDs + RBAC from kubebuilder markers into config/crd, config/rbac.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook \
@@ -23,8 +21,6 @@ run: ## Run the manager locally (out-of-cluster) against your current kube-conte
 	go run ./cmd/main.go
 test: ; go test ./... -coverprofile cover.out
 docker-build: ; docker build -t $(IMG) .
-docker-build-lake-sqlite: ## Build lake-sqlite for linux/amd64 (context = this repo).
-	docker buildx build --platform linux/amd64 -f build/lake-sqlite/Dockerfile -t $(LAKE_SQLITE_IMG) .
 
 helm-package: manifests ## Copy generated CRDs into the chart and package it.
 	cp config/crd/bases/*.yaml chart/crds/

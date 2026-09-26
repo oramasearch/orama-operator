@@ -22,7 +22,7 @@ serviceAccount:
 # a Lake's spec.services.sqliteImage overrides it. The image is private: a Lake's
 # spec.pullSecretName is the pull secret its services use.
 lakeServices:
-  sqliteImage: oramasearch/lake-sqlite:0.1.0
+  sqliteImage: oramasearch/lake-sqlite:0.1.1
 
 controlPlane:
   service:
