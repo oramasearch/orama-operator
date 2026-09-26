@@ -30,9 +30,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -55,6 +57,11 @@ type LakeReconciler struct {
 	// PolarsImage is the lake-polars image for polars services when a Lake sets no
 	// spec.services.polarsImage (the --lake-polars-image flag). Empty uses DefaultLakePolarsImage.
 	PolarsImage string
+	// ServiceEvents wakes the reconciler when lake writes a service (LakeServicesListener,
+	// lake#197). Nil means services are found by the poll alone.
+	ServiceEvents <-chan event.GenericEvent
+	// APIReader lists lake pods without a cache (no cluster-wide pod informer). Nil uses Client.
+	APIReader client.Reader
 }
 
 const (
@@ -144,6 +151,7 @@ type lakeBackupConfig struct {
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=postgresschemas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=scheduledbackups,verbs=get;list;watch;create;update;patch;delete
@@ -265,8 +273,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// Managed services (lake_services.go): best-effort, never fails the Lake. The services table
 	// exists only once the schema has applied, so the poll waits for it. Turning services off
 	// stops the poll and deletes no service.
+	servicesChanging := false
 	if lakeServicesEnabled(&lake) && schemaReady {
-		r.reconcileLakeServices(ctx, &lake, ns, labels)
+		servicesChanging = r.reconcileLakeServices(ctx, &lake, ns, labels)
 	}
 
 	// Ingress + DNS (opt-in, same contract as OramaZettaCluster).
@@ -349,6 +358,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	// The services table is polled, and service credentials live in Secrets the Lake does not
 	// own, so services poll at their own cadence; unchanged polls write nothing.
 	if lakeServicesEnabled(&lake) {
+		// A starting or deleting service is followed closely so its status, and the time a
+		// person waits, tracks the cluster rather than the poll (lake#197).
+		if servicesChanging {
+			return ctrl.Result{RequeueAfter: lakeServicesChangingPoll}, nil
+		}
 		return ctrl.Result{RequeueAfter: min(lakeStatusRequeue, lakeServicesPollInterval(&lake))}, nil
 	}
 	// CNPG Cluster and Backup resources are not watched. Keep polling after success so
@@ -1478,7 +1492,7 @@ func (r *LakeReconciler) lakeRequestsForStoreClaim(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.Lake{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
@@ -1494,9 +1508,11 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&oramav1alpha1.LakeSealedSecret{}).
 		Owns(&oramav1alpha1.OramaZettaCluster{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
-		Owns(newCNPGScheduledBackup(nil, "")).
-		Named("lake").
-		Complete(r)
+		Owns(newCNPGScheduledBackup(nil, ""))
+	if r.ServiceEvents != nil {
+		builder = builder.WatchesRawSource(source.Channel(r.ServiceEvents, &handler.EnqueueRequestForObject{}))
+	}
+	return builder.Named("lake").Complete(r)
 }
 
 // lakeRunAsUser and lakeRunAsGroup are the uid and gid in the oramasearch/lake image.
