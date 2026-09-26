@@ -1333,8 +1333,10 @@ INSERT INTO schema_migrations (version) VALUES ('0024_services') ON CONFLICT DO 
 -- idempotent: every existing row already satisfies the wider list.
 -- ---------------------------------------------------------------------------------------------
 ALTER TABLE services DROP CONSTRAINT IF EXISTS service_kind_check;
+-- NOT VALID: the whole file is re-applied on every schema change, and rows of kinds a later
+-- migration adds already exist then; only the newest migration's constraint validates rows.
 ALTER TABLE services ADD CONSTRAINT service_kind_check
-    CHECK (kind IN ('zetta', 'postgres', 'kafka', 'clickhouse', 'tidb', 'cassandra', 'valkey'));
+    CHECK (kind IN ('zetta', 'postgres', 'kafka', 'clickhouse', 'tidb', 'cassandra', 'valkey')) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS service_catalog_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -1348,9 +1350,11 @@ INSERT INTO schema_migrations (version) VALUES ('0025_service_catalog') ON CONFL
 -- amended). Re-adding the constraint is idempotent.
 -- ---------------------------------------------------------------------------------------------
 ALTER TABLE services DROP CONSTRAINT IF EXISTS service_kind_check;
+-- NOT VALID: the whole file is re-applied on every schema change, and rows of kinds a later
+-- migration adds already exist then; only the newest migration's constraint validates rows.
 ALTER TABLE services ADD CONSTRAINT service_kind_check
     CHECK (kind IN ('zetta', 'postgres', 'kafka', 'clickhouse', 'tidb', 'cassandra', 'valkey',
-                    'sqlite'));
+                    'sqlite')) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS sqlite_services_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
