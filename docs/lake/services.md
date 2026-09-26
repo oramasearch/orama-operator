@@ -1,13 +1,15 @@
 # Lake managed services
 
-How a lake customer gets its own Zetta, Postgres, Kafka, ClickHouse, TiDB, Cassandra and Valkey
-clusters without lake having any Kubernetes access: lake writes the `services` table in its control
-Postgres, the operator creates one Lake-owned resource per service (for the last five, the resource
-of that kind's upstream operator — [the catalog](#the-catalog-decision-47)), writes what it observed
-to `service_status`, and hands lake each service's connection through one mounted Secret. The
-authoritative contract is lake's
-[`docs/control-plane/services.md`](https://github.com/oramasearch/lake/blob/0a701ef1a329915289717ba087912e67bb68d0cc/docs/control-plane/services.md)
-(liquid-bridge decisions 46 and 47); this page is the operator's side of it. Field definitions are in the
+How a lake customer gets its own Zetta, Postgres, Kafka, ClickHouse, TiDB, Cassandra, Valkey and
+SQLite services without lake having any Kubernetes access: lake writes the `services` table in its
+control Postgres, the operator creates one Lake-owned resource per service (for Kafka through
+Valkey, the resource of that kind's upstream operator — [the catalog](#the-catalog-decision-47);
+for SQLite, a StatefulSet of [lake-sqlite](lake-sqlite.md), which the operator runs itself —
+[SQLite](#sqlite-decision-47-amended)), writes what it observed to `service_status`, and hands lake
+each service's connection through one mounted Secret. The authoritative contract is lake's
+[`docs/control-plane/services.md`](https://github.com/oramasearch/lake/blob/17b4ad57f2571c30516f7ecb85c03a4165e32e59/docs/control-plane/services.md)
+(liquid-bridge decisions 46 and 47, amended; lake branch `feat/sqlite-service`); this page is the
+operator's side of it. Field definitions are in the
 [`Lake` CRD reference](../crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service)
 (`spec.services`). It supersedes [workspaces](workspaces.md): a customer's workspace is now its
 **default Zetta service**.
@@ -20,6 +22,7 @@ spec:
     enabled: true
     maxServices: 20          # 0 = no limit
     zettaImage: oramasearch/zetta:<tag>
+    sqliteImage: oramasearch/lake-sqlite:<tag>   # optional; the chart's lakeServices.sqliteImage otherwise
 ```
 
 Services need the control-plane Postgres (`spec.postgres.enabled`, the default); they do not need
@@ -31,7 +34,8 @@ and `workspaces.storage.storageClassName` still shape every Zetta service's node
 ## The poll
 
 The Lake reconciler polls, once the Lake's schema has applied (the tables come with migration
-`0024_services`; `0025_service_catalog` widens `kind` to the catalog), at the Lake's `spec.deploySync.interval` (default `15s`, floor `1s`) — the
+`0024_services`; `0025_service_catalog` widens `kind` to the catalog and `0026_sqlite_services` adds
+`sqlite`), at the Lake's `spec.deploySync.interval` (default `15s`, floor `1s`) — the
 cadence the workspace poll used. Each poll (`internal/controller/lake_services.go`):
 
 1. reads Secret `lake-<lake>-controldb-app` key `uri` (the CloudNativePG application Secret of
@@ -90,7 +94,8 @@ Anything else already holding the name fails the service and is never modified o
 | a cluster of that name that is not this Lake's service (another controller, another Lake, another service id, or a workspace cluster claimed by a non-default service) | `OramaZettaCluster <ns>/<name> exists and is not this Lake's service`, or `CloudNativePG Cluster <ns>/<name> exists and is not this Lake's service` |
 | a new Zetta service whose data PVC `data-<cluster>-zetta-<n>` already exists without its cluster | `PersistentVolumeClaim <ns>/<pvc> exists and is not this Lake's service` |
 | a malformed row (slug, default on a non-Zetta service, missing customer, a Lake name too long for the kind's derived names, bad spec) | the specific reason, e.g. `spec.instances must be between 1 and 3` |
-| a kind this operator does not run | `unknown service kind "<kind>": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey` |
+| a kind this operator does not run | `unknown service kind "<kind>": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey, sqlite` |
+| a sqlite service whose `spec.instances` is not 1 | `a sqlite service has exactly one instance, because SQLite has one writer; spec.instances is <n>` |
 
 ## The catalog (decision 47)
 
@@ -174,9 +179,59 @@ upstream resources are read uncached, so a missing CRD never blocks the manager'
 11-character revision-hash suffix, and a Lake name that would push it past 63 characters fails the
 service with `lake name "<lake>" is too long for service resource names`: Zetta and Postgres 15
 characters, Kafka 16 (`-kafka-bootstrap`), TiDB 16 (`<name>-tikv` + hash), Valkey 22
-(`valkey-<name>-2-2` + hash), ClickHouse 26 (`chk-<name>-keeper-0-0` + hash). Cassandra's derived
-names come from the slug alone. With a 16-character slug, ClickHouse allows Lake names up to 20
+(`valkey-<name>-2-2` + hash), ClickHouse 26 (`chk-<name>-keeper-0-0` + hash), SQLite 11 (the
+StatefulSet `<name>`'s revision hash, so Zetta's 15 is the bound). Cassandra's derived names come
+from the slug alone. With a 16-character slug, ClickHouse allows Lake names up to 20
 characters and every other kind at least 24.
+
+## SQLite (decision 47, amended)
+
+SQLite has no upstream operator, so the Orama operator runs it directly behind
+**[lake-sqlite](lake-sqlite.md)**, a small web service in this repository (`cmd/lake-sqlite`,
+image `oramasearch/lake-sqlite`) over one SQLite database. The driver is
+[`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite) — pure Go, no cgo, **BSD-3-Clause**. The
+kind goes through the catalog machinery (`internal/controller/lake_service_sqlite.go`), so
+ownership, labels, the refusal of foreign objects and Secrets, the quota, the old-volume check,
+status and the deletion order are exactly the catalog's; only the objects differ, and they are
+built-in Kubernetes kinds rather than an upstream operator's.
+
+| | SQLite |
+|---|---|
+| Resources written | `apps/v1` `StatefulSet` `<name>` and `v1` `Service` `<name>` (ClusterIP, port `8080` → the pod's `http` port), plus Secret `<name>-credentials` |
+| `instances` → | must be 1 (the default); anything else fails the service (SQLite has one writer; lake enforces the same) |
+| `storage_gi` → | the StatefulSet's `volumeClaimTemplates` `data` (`ReadWriteOnce`, the default StorageClass), mounted at `/data`; the database is `/data/main.db`, in WAL mode |
+| Pod | one container `lake-sqlite`, image `spec.services.sqliteImage`, then the operator's `--lake-sqlite-image` (the chart's `lakeServices.sqliteImage`), then `oramasearch/lake-sqlite:0.1.0`; the Lake's `pullSecretName`; requests `50m` CPU and `64Mi` memory, limit `512Mi` memory, handed to the binary as `LAKE_SQLITE_MEMORY_LIMIT` (it holds the Go heap to three quarters and SQLite's soft heap limit to a quarter); startup, readiness and liveness probes on `GET /healthz`; uid/gid/fsGroup `65532`, `runAsNonRoot`, read-only root filesystem, no privilege escalation, every capability dropped, `RuntimeDefault` seccomp, no service-account token; a `1Gi` `emptyDir` at `/tmp` for SQLite's temporary files; `LAKE_SQLITE_TOKEN` from `<name>-credentials` key `token` |
+| Ready when | the StatefulSet's `status.readyReplicas` is 1 — its readiness probe passes only while `/healthz` opens the database and answers `SELECT 1` — and the credential is written |
+| Credential source | Secret `<name>-credentials`, key `token`: 32 random bytes as 64 hex characters, generated by the Orama operator, never rotated |
+| `endpoint` | `http://<name>.<ns>.svc.cluster.local:8080` |
+| PVCs deleted after the StatefulSet, selected by | the StatefulSet's selector, which the StatefulSet controller copies onto `data-<name>-0`: `app.kubernetes.io/name=lake-sqlite`, `app.kubernetes.io/instance=<name>`, `orama.cloud/service-id=<id>` |
+
+The pod template is written when the StatefulSet is created and again only when it changes: its
+hash is kept in the annotation `orama.cloud/applied-spec-hash`, since the API server's many pod
+defaults would otherwise make every poll an update. A new image (a changed `sqliteImage` or chart
+default) therefore rolls every SQLite service's pod once. The selector, the governing Service name
+and the claim template are written only at creation (they are immutable), so `storage_gi` never
+resizes a volume, as for every kind.
+
+The lake-sqlite API (the contract gives the outline; [lake-sqlite.md](lake-sqlite.md) has the whole
+of it):
+
+- `POST /v1/query` `{sql, params}` answers `{columns, rows}` with JSON integers, floats, strings
+  and `null`, a blob as `{"$base64": "…"}`, at most 10,000 rows and `"truncated": true` when cut;
+- `POST /v1/exec` `{sql, params}` answers `{rows_affected, last_insert_id}`;
+- `POST /v1/batch` `{statements: [{sql, params}]}` runs every statement in one transaction and
+  answers `{results: [...]}`, one per statement; any error rolls the whole batch back;
+- `GET /healthz` answers 200 only when the database opens and `SELECT 1` works;
+- every route but `/healthz` needs `Authorization: Bearer <token>`, compared in constant time;
+  errors are always `{error: {code, message}}` (400 for SQL errors, 401 for a bad token, 413 for a
+  body over 16 MiB).
+
+**Where this departs from the contract or adds to it:** the Service is named `<name>`, exactly as
+the contract's endpoint says, and there is no headless Service (the StatefulSet's `serviceName` is
+that ClusterIP Service; nothing resolves the pod by name). The generated token lives in the same
+`<name>-credentials` Secret name as the other generated passwords, keyed `token`. There is no
+replication and no backup: **the volume is the only copy** of a SQLite service's data, and deleting
+the service deletes it.
 
 ## Credentials
 
@@ -191,6 +246,7 @@ Secret **`lake-<lake>-services`** (controlled by the Lake) holds one key per Rea
 {"kind":"tidb","endpoint":"prod-svc-0123456789ab-tidb.lake.svc.cluster.local:4000","host":"prod-svc-0123456789ab-tidb.lake.svc.cluster.local","port":4000,"user":"root","password":"…","uri":"mysql://root:…@prod-svc-0123456789ab-tidb.lake.svc.cluster.local:4000"}
 {"kind":"cassandra","endpoint":"svc-0123456789ab-svc-0123456789ab-service.lake.svc.cluster.local:9042","host":"svc-0123456789ab-svc-0123456789ab-service.lake.svc.cluster.local","port":9042,"datacenter":"dc1","user":"svc-0123456789ab-superuser","password":"…"}
 {"kind":"valkey","endpoint":"valkey-prod-svc-0123456789ab.lake.svc.cluster.local:6379","host":"valkey-prod-svc-0123456789ab.lake.svc.cluster.local","port":6379,"user":"app","password":"…","cluster":true}
+{"kind":"sqlite","endpoint":"http://prod-svc-0123456789ab.lake.svc.cluster.local:8080","token":"<64 hex>","database":"main"}
 ```
 
 `uri` is CloudNativePG's own, copied unchanged; TiDB's is built from the host and the generated
@@ -210,12 +266,12 @@ Secret `lake-<lake>-workspaces` is deleted once services run.
 
 | Phase | When | Message |
 |---|---|---|
-| `Provisioning` | the resource exists and is not ready | `waiting for the Zetta nodes` / `waiting for the Postgres instances` / `waiting for the Kafka cluster` / `waiting for the ClickHouse installation` / `waiting for the ClickHouse Keeper` / `waiting for TiDB <pd\|tikv\|tidb>` / `waiting for the TiDB root password` / `waiting for the Cassandra datacenter` / `waiting for the Valkey cluster` |
+| `Provisioning` | the resource exists and is not ready | `waiting for the Zetta nodes` / `waiting for the Postgres instances` / `waiting for the Kafka cluster` / `waiting for the ClickHouse installation` / `waiting for the ClickHouse Keeper` / `waiting for TiDB <pd\|tikv\|tidb>` / `waiting for the TiDB root password` / `waiting for the Cassandra datacenter` / `waiting for the Valkey cluster` / `waiting for the lake-sqlite pod` |
 | `Provisioning` | the resource is ready but its credential is not yet in the Secret | `waiting for the service credential` |
 | `Provisioning` | a previous resource or data volume of that name is still terminating | `waiting for the previous … to be deleted` |
 | `Ready` | the resource is ready **and** its credential was written in this poll | `service ready` |
 | `Failed` | ownership, validation, a missing upstream operator or the quota refused the service | see above; quota: exactly `service quota reached (<n>)`; `the <kind> operator is not installed on this cluster` |
-| `Deleting` | an absent service's resources are still going | `deleting the Zetta cluster`, `deleting the Zetta data volumes`, `deleting the Postgres cluster`, `deleting the Postgres data volumes`, and for the catalog `deleting the <Kafka\|ClickHouse\|TiDB\|Cassandra\|Valkey> cluster`, then `… data volumes` |
+| `Deleting` | an absent service's resources are still going | `deleting the Zetta cluster`, `deleting the Zetta data volumes`, `deleting the Postgres cluster`, `deleting the Postgres data volumes`, and for the catalog `deleting the <Kafka\|ClickHouse\|TiDB\|Cassandra\|Valkey\|SQLite> cluster`, then `… data volumes` |
 | `Deleted` | nothing remains | `service deleted` |
 
 `endpoint` is written once the resource exists and is this service's (it is empty on `Failed` and
@@ -232,14 +288,16 @@ volumes. `observed_generation` is the `generation` of the row the phase describe
   when the service's status carries an endpoint.
 - **Postgres:** check ownership; delete the CloudNativePG `Cluster`. Its PVCs (label
   `cnpg.io/cluster=<cluster>`) are owned by it and garbage-collected.
-- **Catalog kinds:** check the ownership of every upstream object the kind can write, and delete
-  them all in one pass, primary first (`Kafka`, `KafkaNodePool`, `KafkaUser`;
-  `ClickHouseInstallation`, `ClickHouseKeeperInstallation`), with background propagation. Only
-  once every one is gone — so the upstream operator can no longer recreate a claim — delete the
-  generated password Secret (when this service owns it) and the PVCs matching the kind's selector
-  above. A PVC is deleted only when the service's status carries an endpoint, which the operator
-  writes for a resource it owns; the first deletion pass writes it too. A kind whose operator is
-  not installed has nothing to delete but its leftover PVCs.
+- **Catalog kinds and SQLite:** check the ownership of every object the kind can write, and
+  delete them all in one pass, primary first (`Kafka`, `KafkaNodePool`, `KafkaUser`;
+  `ClickHouseInstallation`, `ClickHouseKeeperInstallation`; SQLite's `StatefulSet`, then its
+  `Service`), with background propagation. Only once every one is gone — so nothing can recreate a
+  claim — delete the PVCs matching the kind's selector above (for SQLite, `data-<name>-0`, and only
+  when it carries the StatefulSet's labels); only once those are gone too, delete the generated
+  password or token Secret (when this service owns it), so the credential is the last thing to go.
+  A PVC is deleted only when the service's status carries an endpoint, which the operator writes
+  for a resource it owns; the first deletion pass writes it too. A kind whose operator is not
+  installed has nothing to delete but its leftover PVCs.
 - remove `<slug>.json` from `lake-<lake>-services`;
 - write `Deleted` only once the resource and every data PVC are gone; until then `Deleting`, and
   the next poll repeats the steps.
@@ -251,7 +309,8 @@ A resource that fails the ownership rule is never deleted; the service is `Faile
 `spec.services.maxServices` (falling back to `spec.workspaces.maxWorkspaces`; `0` = no limit) caps
 the live services: Lake-controlled `OramaZettaCluster`s, CloudNativePG `Cluster`s and the primary
 resource of each catalog kind (`Kafka`, `ClickHouseInstallation`, `TidbCluster`,
-`K8ssandraCluster`, `ValkeyCluster`; a kind that is not installed counts none) labelled
+`K8ssandraCluster`, `ValkeyCluster`, and SQLite's `StatefulSet`; a kind that is not installed counts
+none) labelled
 `orama.cloud/lake=<lake>` with a service-id (or a workspace-id, for unadopted workspaces), not being
 deleted and not absent in the current read. A **new** service over the cap creates nothing and is
 `Failed` / `service quota reached (<n>)`; it starts on a later poll once there is room. An existing
@@ -262,9 +321,10 @@ lowered. lake's own per-customer cap (`LAKE_SERVICES_PER_CUSTOMER`) is separate.
 
 Disabling services stops the poll and removes the mount and env; it deletes nothing. Deleting the
 Lake deletes every Lake-controlled `OramaZettaCluster` through the Lake finalizer and
-garbage-collects the CloudNativePG Clusters, the catalog kinds' upstream resources and the
-Secrets; Zetta data PVCs, and the PVCs that Strimzi, TiDB Operator, cass-operator and the Valkey
-operator keep, are not deleted by that path. The Lake's `spec.zetta` reconcile skips service
+garbage-collects the CloudNativePG Clusters, the catalog kinds' upstream resources, SQLite's
+StatefulSets and Services, and the Secrets; Zetta data PVCs, SQLite's `data-<name>-0`, and the PVCs
+that Strimzi, TiDB Operator, cass-operator and the Valkey operator keep, are not deleted by that
+path. The Lake's `spec.zetta` reconcile skips service
 clusters.
 
 ## RBAC
@@ -278,7 +338,8 @@ and `valkey.io` `valkeyclusters` — as kubebuilder markers in `lake_service_cat
 (`make manifests` regenerates `config/rbac/role.yaml`) and in the chart's hand-maintained
 ClusterRole. `go test ./cmd/...` (`TestChartRBACCoversGeneratedRole`) fails when the chart grants
 less than the markers ask for. None of these kinds is watched, so no CRD of theirs is needed for the
-manager to start.
+manager to start. SQLite needs nothing new: the manager already manages `statefulsets`, `services`,
+`secrets` and `persistentvolumeclaims`.
 
 ## Known limits
 
@@ -295,10 +356,13 @@ manager to start.
   memory settings, and on the cluster's default StorageClass: none of them is right-sized yet
   (CLAUDE.md principle 8), and none has backups.
 - **Valkey is a preview**: valkey-operator 0.6.0's README says it is not ready for production.
+- **SQLite has one copy.** One pod, one `ReadWriteOnce` volume, no replication and no backup yet:
+  a lost volume loses the database, and the service is unavailable while its pod restarts or moves.
 - The upstream operators themselves (and cert-manager, which K8ssandra needs) are installed by the
   `helmfile.yaml`; until they are, each kind's services report the not-installed message.
 - The catalog has been exercised against the fake client and validated against the pinned CRD
-  schemas only, not yet against the running upstream operators.
+  schemas only, not yet against the running upstream operators. The SQLite kind has been exercised
+  against the fake client only; the lake-sqlite image has not yet been built or run on a cluster.
 
 ## How to verify
 
@@ -311,6 +375,7 @@ LAKE_SERVICES_TEST_POSTGRES=1 go test ./internal/controller/ -run PgxStore
 # On a cluster, after creating a service on lake's /services page:
 kubectl -n lake get oramazettacluster,clusters.postgresql.cnpg.io -l orama.cloud/lake=prod
 kubectl -n lake get kafka,kafkanodepool,kafkauser,chi,chk,tidbcluster,k8ssandracluster,valkeycluster -l orama.cloud/lake=prod
+kubectl -n lake get statefulset,service,pvc -l orama.cloud/service-kind=sqlite
 kubectl -n lake get secret lake-prod-services -o jsonpath='{.data}' | jq 'keys'
 kubectl -n lake exec deploy/lake-prod -- ls /var/run/lake/services
 ```
@@ -319,16 +384,21 @@ The unit tests (`lake_services_test.go`) cover Zetta and Postgres creation, Read
 credential, adoption of a `ws-` cluster keeping its data, refusal of foreign resources and
 unproven volumes, the deletion order and `Deleted`, the quota message and the fact that it never
 refuses existing services, status upserts only on change, the "not yet" app Secret, and the lake
-Deployment's mount and env. `lake_service_catalog_test.go` runs every catalog kind through: the
+Deployment's mount and env. `lake_service_catalog_test.go` runs every catalog kind, SQLite included, through: the
 resources built with the right GVK, replicas and storage, labels and ownership; no update on a
 steady poll and no password rotation; Ready gated on the upstream status (and a partly ready
 status) plus the credential; the exact credential fields; the deletion order (upstream objects,
-then the generated Secret, then the PVCs, leaving an unrelated PVC alone) through `Deleting` to
+then the PVCs, then the generated Secret, leaving an unrelated PVC alone) through `Deleting` to
 `Deleted`; refusal of a foreign object, a foreign password Secret and an upstream Secret its
 object does not own, with nothing deleted; the not-installed message while a Postgres service in
 the same poll carries on; an old volume blocking creation; the quota; the unknown-kind message;
-and the per-kind name length. The pgx test also shows the vendored `0025_service_catalog` accepts a
-row of every catalog kind, which reads back as that kind, and still refuses any other.
+and the per-kind name length. `lake_service_sqlite_test.go` adds SQLite's own: the StatefulSet,
+pod, probes, resources, security context, Service and 64-hex token; `instances` other than 1
+failing; the image order (Lake, flag, default); an image change rewriting the template once and a
+steady pass after it writing nothing; a claim without the StatefulSet's labels surviving deletion;
+and the quota. The pgx test also shows the vendored schema (`0025_service_catalog` and
+`0026_sqlite_services`) accepts a row of every catalog kind and `sqlite`, which reads back as that
+kind, and still refuses any other.
 
 ## How to change
 
@@ -342,6 +412,7 @@ row of every catalog kind, which reads back as that kind, and still refuses any 
   in `catalogKinds` and `serviceKindNames`, add its RBAC marker and the chart ClusterRole rule,
   and add its case to `catalogCases()` in the tests. lake's schema must allow the kind first.
 - **Deletion**: `deleteLakeService` and `deleteCatalogService`; keep the ownership check before
-  every delete, Zetta PVCs before the cluster, a catalog kind's PVCs only after its resources, and
-  `Deleted` only once nothing remains.
+  every delete, Zetta PVCs before the cluster, a catalog kind's PVCs only after its resources and
+  its generated Secret only after its PVCs, and `Deleted` only once nothing remains.
+- **lake-sqlite itself**: see [lake-sqlite.md](lake-sqlite.md); its API is part of the contract.
 - **Schema**: the tables arrive with lake's `db/schema.sql`; see [schema.md](schema.md).

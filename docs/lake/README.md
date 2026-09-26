@@ -28,11 +28,11 @@ delivered `LakeSealedSecret` values copied into the isolated workload namespace 
 authenticated REST `/v1` and MCP deployment surface; the contract, credentials, rollback, audit
 and connection details are in the [deployment control-plane guide](../control-plane/README.md).
 
-With `spec.services.enabled`, lake runs managed services for its customers — Zetta, Postgres, and
-the catalog of Kafka, ClickHouse, TiDB, Cassandra and Valkey (preview): it writes the `services`
-table in its control Postgres, and the operator creates one Lake-owned `OramaZettaCluster`,
-CloudNativePG `Cluster`, or upstream operator's resource (Strimzi, Altinity, TiDB Operator,
-K8ssandra, valkey-operator) per service, writes `service_status`, and hands lake each connection
+With `spec.services.enabled`, lake runs managed services for its customers — Zetta, Postgres,
+the catalog of Kafka, ClickHouse, TiDB, Cassandra and Valkey (preview), and SQLite: it writes the
+`services` table in its control Postgres, and the operator creates one Lake-owned
+`OramaZettaCluster`, CloudNativePG `Cluster`, upstream operator's resource (Strimzi, Altinity, TiDB
+Operator, K8ssandra, valkey-operator), or StatefulSet of [lake-sqlite](lake-sqlite.md) per service, writes `service_status`, and hands lake each connection
 through a mounted Secret ([services.md](services.md)). This supersedes the
 decision-45 workspaces ([workspaces.md](workspaces.md)); a workspace is now the customer's default
 Zetta service.
@@ -85,8 +85,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `service_catalog_guard` from
-   `0025_service_catalog`, version = hash of the SQL plus guard. A changed hash automatically
+   `oramasearch/lake` `db/schema.sql`), guard table = `sqlite_services_guard` from
+   `0026_sqlite_services`, version = hash of the SQL plus guard. A changed hash automatically
    replaces the obsolete migration Job, waiting for its pods to stop. Deployment creation and
    updates wait for Applied at the desired version and generation; existing pods retain their
    previous workload spec while the schema applies. Re-vendoring and native envtest proof are in
@@ -120,6 +120,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     `spec.deploySync.interval`. Each present service becomes `<name>-<slug>`: an `OramaZettaCluster`,
     a CloudNativePG `Cluster`, or, for the catalog kinds (liquid-bridge decision 47), a Strimzi
     `Kafka`, Altinity `ClickHouseInstallation`, `TidbCluster`, `K8ssandraCluster` or `ValkeyCluster`,
+    or, for `sqlite`, a one-pod `StatefulSet` and `Service` of [lake-sqlite](lake-sqlite.md),
     controlled by the Lake; a kind whose upstream operator is not installed fails only its own
     services. Decision-45 `<name>-ws-…` workspace clusters are adopted by the customer's default
     Zetta service. Ready services' connections go to

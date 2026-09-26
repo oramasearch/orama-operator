@@ -35,7 +35,8 @@ import (
 // observed to service_status. A customer's decision-45 workspace cluster (<lake>-ws-<12 hex>) is
 // adopted by that customer's default Zetta service, so it keeps its data. The other kinds of the
 // catalog (decision 47: Kafka, ClickHouse, TiDB, Cassandra, Valkey) are written for their upstream
-// operators by lake_service_catalog.go.
+// operators by lake_service_catalog.go, and SQLite (decision 47, amended), which the operator runs
+// itself behind lake-sqlite, goes through the same code (lake_service_sqlite.go).
 const (
 	ServicePhaseProvisioning = "Provisioning"
 	ServicePhaseReady        = "Ready"
@@ -184,6 +185,22 @@ func serviceZettaImage(lake *oramav1alpha1.Lake) string {
 	return lake.Spec.Workspaces.Image
 }
 
+// serviceImage is the image of a kind the Orama operator runs itself, "" for the others. For
+// sqlite: spec.services.sqliteImage, then the operator's --lake-sqlite-image, then
+// DefaultLakeSQLiteImage.
+func (r *LakeReconciler) serviceImage(lake *oramav1alpha1.Lake, kind string) string {
+	if kind != serviceKindSQLite {
+		return ""
+	}
+	if lake.Spec.Services.SQLiteImage != "" {
+		return lake.Spec.Services.SQLiteImage
+	}
+	if r.SQLiteImage != "" {
+		return r.SQLiteImage
+	}
+	return DefaultLakeSQLiteImage
+}
+
 // serviceQuota is spec.services.maxServices, falling back to spec.workspaces.maxWorkspaces; 0 is
 // no limit.
 func serviceQuota(lake *oramav1alpha1.Lake) int {
@@ -262,7 +279,11 @@ func validateService(lake *oramav1alpha1.Lake, svc *LakeService) (lakeServiceSpe
 	case len(serviceResourceName(lake.Name, svc.Slug))+serviceNameOverhead(svc.Kind) > validation.DNS1035LabelMaxLength:
 		return lakeServiceSpec{}, fmt.Errorf("lake name %q is too long for service resource names", lake.Name)
 	}
-	return parseServiceSpec(svc.Spec)
+	spec, err := parseServiceSpec(svc.Spec)
+	if err == nil && svc.Kind == serviceKindSQLite && spec.Instances != 1 {
+		return spec, fmt.Errorf("a sqlite service has exactly one instance, because SQLite has one writer; spec.instances is %d", spec.Instances)
+	}
+	return spec, err
 }
 
 // serviceOwnership is the rule behind every write, deletion and quota decision.

@@ -173,6 +173,13 @@ type LakeServicesSpec struct {
 	// then to the OramaZettaCluster default.
 	// +optional
 	ZettaImage string `json:"zettaImage,omitempty"`
+
+	// SQLiteImage is the lake-sqlite image for sqlite services, which the operator runs itself
+	// (one StatefulSet per service). Empty falls back to the operator's --lake-sqlite-image flag,
+	// which the chart sets from lakeServices.sqliteImage. Changing it rolls every sqlite service's
+	// pod. See docs/lake/lake-sqlite.md.
+	// +optional
+	SQLiteImage string `json:"sqliteImage,omitempty"`
 }
 
 // LakeWorkspacesSpec is the deprecated decision-45 workspace configuration. See

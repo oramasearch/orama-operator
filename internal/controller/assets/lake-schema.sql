@@ -1341,3 +1341,19 @@ CREATE TABLE IF NOT EXISTS service_catalog_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0025_service_catalog') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- SQLite services (migration 0026): a small web service over one SQLite database per service,
+-- run by the Orama operator itself (docs/control-plane/services.md, liquid-bridge decision 47,
+-- amended). Re-adding the constraint is idempotent.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE services DROP CONSTRAINT IF EXISTS service_kind_check;
+ALTER TABLE services ADD CONSTRAINT service_kind_check
+    CHECK (kind IN ('zetta', 'postgres', 'kafka', 'clickhouse', 'tidb', 'cassandra', 'valkey',
+                    'sqlite'));
+
+CREATE TABLE IF NOT EXISTS sqlite_services_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0026_sqlite_services') ON CONFLICT DO NOTHING;
