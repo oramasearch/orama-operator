@@ -107,7 +107,7 @@ All are pinned and cluster-scoped:
 |---|---|---|---|---|
 | `cert-manager` | `jetstack/cert-manager` | v1.21.2 | `cert-manager` | K8ssandra's webhook certificates |
 | `strimzi` | `strimzi/strimzi-kafka-operator` | 1.2.0 | `strimzi-system` | Kafka |
-| `clickhouse-operator` | `altinity/altinity-clickhouse-operator` | 0.27.4 | `clickhouse-system` | ClickHouse |
+| `clickhouse-operator` | `altinity/altinity-clickhouse-operator` | 0.27.4 | `clickhouse-system` | ClickHouse (`watch.namespaces.include: [".*"]`: empty means its own namespace only) |
 | `tidb-operator` | `pingcap/tidb-operator` | v1.6.6 | `tidb-admin` | TiDB (CRDs from the release's `crd.yaml`, applied server-side by a presync hook) |
 | `k8ssandra-operator` | `k8ssandra/k8ssandra-operator` | 1.33.0 | `k8ssandra-operator` | Cassandra |
 | `valkey-operator` | `valkey/valkey-operator` | 0.6.0 | `valkey-operator-system` | Valkey — **preview**, upstream says not production-ready |
