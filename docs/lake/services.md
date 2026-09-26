@@ -15,7 +15,8 @@ lake's
 operator's side of it. Field definitions are in the
 [`Lake` CRD reference](../crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service)
 (`spec.services`). It supersedes [workspaces](workspaces.md): a customer's workspace is now its
-**default Zetta service**.
+**default Zetta service**. A customer's **stores** (volumes, and later buckets and filesystems;
+lake#196) ride the same poll, connection and Secret: see [Stores](#stores-lake196).
 
 ## Turning it on
 
@@ -55,6 +56,9 @@ cadence the workspace poll used. Each poll (`internal/controller/lake_services.g
 6. writes the credentials Secret;
 7. upserts `service_status` for each service whose phase, message, endpoint or observed
    generation changed. A steady service writes nothing.
+
+Between 5 and 6 the same pass reconciles the customer's stores ([below](#stores-lake196)), so the
+Secret is written once with both.
 
 Nothing in the poll fails the Lake reconcile: an unreachable database or a failed Kubernetes call
 is logged and retried on the next poll. The store is the Go interface `LakeServiceStore` (read
@@ -439,6 +443,19 @@ manager to start. SQLite, DuckDB and Polars need nothing new: the manager alread
   The DuckDB and Polars kinds have been exercised against the fake client only; their images
   (`oramasearch/lake-duckdb:0.1.0`, `oramasearch/lake-polars:0.1.0`) must be built and pushed
   (private) before either kind can start.
+
+## Stores (lake#196)
+
+Migration `0028_stores` adds lake's `stores` / `store_status` tables (lake
+`docs/control-plane/storage.md`). The services poll reads them on the same connection, after the
+services, and `LakeServiceStore` carries `ListStores` and `UpsertStoreStatus` beside the service
+methods. Phase 1 runs the **cluster volume**: a Lake-controlled PersistentVolumeClaim
+`<lake>-<st-slug>` labelled `orama.cloud/store-id`, on the services' StorageClass, Ready as soon as
+the claim exists and its `<slug>.json` connection is in `lake-<lake>-services`; every other type ×
+provider pair is `Failed`. A schema without the `stores` table is logged and skipped; the services
+carry on. The Secret keeps a store key by the same present-set rule as a service key, and keeps
+every `st-…` key when the stores read failed. Absent and provisioning stores keep the 2-second
+poll. The whole of it is [stores.md](stores.md).
 
 ## How to verify
 

@@ -42,8 +42,8 @@ Lake's exact object-store destination, the original Barman server name, and the 
 After CNPG is healthy, a `postgres:18-alpine` Job queries all schema guard tables and the newest
 `schema_migrations` version in both live and recovered databases, including
 `services_guard` from `0024_services`, `service_catalog_guard` from `0025_service_catalog`,
-`sqlite_services_guard` from `0026_sqlite_services` and `analytics_services_guard` from
-`0027_analytics_services`. Success marks both `backup` and
+`sqlite_services_guard` from `0026_sqlite_services`, `analytics_services_guard` from
+`0027_analytics_services` and `stores_guard` from `0028_stores`. Success marks both `backup` and
 `restore` as `tested`. Either outcome removes every scratch object.
 
 ## Upgrade

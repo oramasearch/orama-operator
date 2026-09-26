@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -124,11 +125,15 @@ type LakeServiceStatus struct {
 	ObservedGeneration int64
 }
 
-// LakeServiceStore reads the services table and upserts service_status. The pgx implementation
-// talks to lake's control Postgres; tests substitute an in-memory fake.
+// LakeServiceStore reads the services and stores tables and upserts service_status and
+// store_status. The pgx implementation talks to lake's control Postgres; tests substitute an
+// in-memory fake. ListStores returns errStoresTableMissing while lake's schema is older than
+// 0028_stores.
 type LakeServiceStore interface {
 	ListServices(ctx context.Context) ([]LakeService, error)
 	UpsertServiceStatus(ctx context.Context, status LakeServiceStatus) error
+	ListStores(ctx context.Context) ([]LakeStore, error)
+	UpsertStoreStatus(ctx context.Context, status LakeStoreStatus) error
 	Close(ctx context.Context) error
 }
 
@@ -373,14 +378,24 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 		log.Info("services deferred: cannot read services", "err", err.Error())
 		return false
 	}
-	return r.syncLakeServices(passCtx, lake, namespace, labels, store, services)
+	// Stores (lake#196) ride the same connection. A schema without the stores table, or a failed
+	// read, skips them for this pass and leaves the services alone.
+	stores, err := store.ListStores(passCtx)
+	storesRead := err == nil
+	if errors.Is(err, errStoresTableMissing) {
+		log.Info("stores skipped: " + err.Error())
+	} else if err != nil {
+		log.Info("stores deferred: cannot read stores", "err", err.Error())
+	}
+	return r.syncLakeServices(passCtx, lake, namespace, labels, store, services, stores, storesRead)
 }
 
-// syncLakeServices applies one read of the services table: absent services first, so a deletion
-// frees its quota slot in the same pass; then present services oldest first; then the credential
-// Secret; then the status of every present service, which is Ready only once its credential is in
-// the Secret.
-func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, store LakeServiceStore, services []LakeService) (changing bool) {
+// syncLakeServices applies one read of the services and stores tables: absent services first, so
+// a deletion frees its quota slot in the same pass; then present services oldest first; then the
+// stores (lake_stores.go); then the credential Secret, which holds both; then the status of every
+// present service and store, each Ready only once its connection is in the Secret. storesRead is
+// false when the stores table could not be read: the Secret then keeps every store key it has.
+func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, store LakeServiceStore, services []LakeService, stores []LakeStore, storesRead bool) (changing bool) {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	absentIDs := map[string]bool{}
 	absentSlugs := map[string]bool{}
@@ -435,7 +450,18 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		}
 	}
 
-	written, err := r.reconcileLakeServicesSecret(ctx, lake, namespace, labels, presentSlugs, credentials)
+	storesPass := r.reconcileLakeStores(ctx, lake, namespace, labels, store, stores, storesRead)
+	for slug, credential := range storesPass.credentials {
+		credentials[slug] = credential
+	}
+	keep := func(slug string) bool {
+		if storeSlugPattern.MatchString(slug) {
+			return !storesPass.read || storesPass.present[slug]
+		}
+		return presentSlugs[slug]
+	}
+
+	written, err := r.reconcileLakeServicesSecret(ctx, lake, namespace, labels, keep, credentials)
 	if err != nil {
 		log.Error(err, "service credentials deferred")
 	}
@@ -461,7 +487,8 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 			log.Error(err, "service status write deferred", "service", svc.ID)
 		}
 	}
-	return changing
+	finishLakeStores(ctx, lake, store, &storesPass, written)
+	return changing || storesPass.changing
 }
 
 // writeServiceStatus upserts service_status only when phase, message, endpoint or the observed
@@ -939,10 +966,11 @@ func (r *LakeReconciler) removeServiceCredential(ctx context.Context, lake *oram
 }
 
 // reconcileLakeServicesSecret maintains lake-<lake>-services: one <slug>.json per present service
-// whose connection is known. A present service keeps its key while its connection cannot be read
-// (a transient read never removes a file lake depends on); a key whose service is absent or no
-// longer listed is dropped. It returns the slugs whose fresh credential is now in the Secret.
-func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, present map[string]bool, credentials map[string][]byte) (map[string]bool, error) {
+// or store whose connection is known (service slugs are svc- and ws-, store slugs st-, so they
+// never collide). A present one keeps its key while its connection cannot be read (a transient
+// read never removes a file lake depends on); a key keep refuses (absent, or no longer listed) is
+// dropped. It returns the slugs whose fresh credential is now in the Secret.
+func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, keep func(slug string) bool, credentials map[string][]byte) (map[string]bool, error) {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: namespace}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(secret), secret); err == nil && !metav1.IsControlledBy(secret, lake) {
 		return nil, fmt.Errorf("secret %s/%s exists and is not controlled by Lake %s", namespace, secret.Name, lake.Name)
@@ -954,7 +982,7 @@ func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *
 		secret.Type = corev1.SecretTypeOpaque
 		data := map[string][]byte{}
 		for key, value := range secret.Data {
-			if slug, ok := strings.CutSuffix(key, ".json"); ok && present[slug] {
+			if slug, ok := strings.CutSuffix(key, ".json"); ok && keep(slug) {
 				data[key] = value
 			}
 		}

@@ -2,19 +2,26 @@
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit aee5cdada63cb6fed886c67a6fff86123b742bf5](https://github.com/oramasearch/lake/blob/aee5cdada63cb6fed886c67a6fff86123b742bf5/db/schema.sql),
-on lake branch `feat/duckdb-polars-kinds` (lake#195; not yet merged to lake `main`). Its SHA-256 is
-`1e391fb336b43699b9d316f1dec3086ab804abd86f6a66e574da51d742ba2866`.
+[`oramasearch/lake` commit 9aa61410749a092b468b78abb8e5b1aa3f2aa0cb](https://github.com/oramasearch/lake/blob/9aa61410749a092b468b78abb8e5b1aa3f2aa0cb/db/schema.sql),
+on lake branch `feat/storage` (lake#196; not yet merged to lake `main`). Its SHA-256 is
+`18fbd4d2ead236f9218fed5d834f2a4c6e8e4fc14bae251056cae9b1ce73202a`.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
 
+Migration `0028_stores` (lake#196) adds a customer's stores: the tables `stores` (written by lake)
+and `store_status` (written by the operator), their indexes, and the completion table
+`public.stores_guard`, which is now Lake's PostgresSchema guard. No existing table changes. A
+database already at `0027` applies the whole idempotent file in one transaction; one already at
+`0028` exits with `schema already applied (stores_guard present)`. The operator reconciles stores
+([stores.md](stores.md)) and, until this schema has applied, skips them without touching services.
+
 Migration `0027_analytics_services` (lake#195) widens the `services.kind` check once more, adding
 `duckdb` and `polars` (dropping and re-adding `service_kind_check`, which every existing row already
-satisfies), and adds the completion table `public.analytics_services_guard`, which is now Lake's
-PostgresSchema guard. No data changes. A database already at `0026` applies the whole idempotent
+satisfies), and adds the completion table `public.analytics_services_guard`, which was Lake's
+PostgresSchema guard until `0028`. No data changes. A database already at `0026` applies the whole idempotent
 file in one transaction; one already at `0027` exits with
 `schema already applied (analytics_services_guard present)`. The operator runs the new kinds
 ([services.md](services.md#duckdb-and-polars-lake195)); lake can only write them once this schema has
@@ -139,7 +146,9 @@ for the file vendored at `0a701ef`, `services_guard` gives `sha256:8fcd390d01ef`
 `service_catalog_guard` gives `sha256:b4958802878c`; for the file vendored at `17b4ad5`,
 `service_catalog_guard` gives `sha256:684a7cbc81a8` and `sqlite_services_guard` gives
 `sha256:5f51287439d4`; for the file vendored at `aee5cda`, `sqlite_services_guard` gives
-`sha256:7cfdcc166fea` and `analytics_services_guard` gives `sha256:c6ca15f2c44f`.
+`sha256:7cfdcc166fea` and `analytics_services_guard` gives `sha256:c6ca15f2c44f`; for the file
+vendored at `9aa6141`, `analytics_services_guard` gives `sha256:d39a657de76b` and `stores_guard`
+gives `sha256:28cc3b7c40b6`.
 
 The regression was run before the fix: the rendered command printed
 `schema already applied (identity_exit_guard present)`, status became Applied, and the test

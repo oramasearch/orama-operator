@@ -1377,3 +1377,57 @@ CREATE TABLE IF NOT EXISTS analytics_services_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0027_analytics_services') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Storage (migration 0028, lake#196): a customer's stores, one general model with two axes — the
+-- type (object, filesystem, network_filesystem, volume) and the provider that runs it (cluster,
+-- r2, s3, b2, azure, gcs, lake, zetta, nfs). lake writes the desired state here and NOTIFYs
+-- lake_services; the Orama operator reconciles each store, writes store_status and the store's
+-- connection to <slug>.json in the Lake's services Secret, as it does for services. See
+-- docs/control-plane/storage.md.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stores (
+    id                 uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    type               text        NOT NULL,
+    provider           text        NOT NULL,
+    name               text        NOT NULL,
+    -- Kubernetes names are <lake>-<slug>; unique for the life of the Lake, never reused.
+    slug               text        NOT NULL UNIQUE,
+    -- {size_gi, region, public}; public is false unless the customer chose otherwise.
+    spec               jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    desired            text        NOT NULL DEFAULT 'present',
+    generation         bigint      NOT NULL DEFAULT 1,
+    created_by_taap_id text        NOT NULL DEFAULT '',
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT store_type_check
+        CHECK (type IN ('object', 'filesystem', 'network_filesystem', 'volume')),
+    CONSTRAINT store_provider_check
+        CHECK (provider IN ('cluster', 'r2', 's3', 'b2', 'azure', 'gcs', 'lake', 'zetta', 'nfs')),
+    CONSTRAINT store_name_format CHECK (name ~ '^[a-z][a-z0-9-]{0,30}$'),
+    CONSTRAINT store_slug_format CHECK (slug ~ '^st-[0-9a-f]{12}$'),
+    CONSTRAINT store_desired_check CHECK (desired IN ('present', 'absent')),
+    CONSTRAINT store_spec_object CHECK (jsonb_typeof(spec) = 'object')
+);
+
+-- One live store per name per customer.
+CREATE UNIQUE INDEX IF NOT EXISTS stores_customer_name_idx
+    ON stores (customer_id, name) WHERE desired = 'present';
+CREATE INDEX IF NOT EXISTS stores_customer_idx ON stores (customer_id, created_at);
+
+-- Written only by the operator: one row per store, replaced on every observed change.
+CREATE TABLE IF NOT EXISTS store_status (
+    store_id            uuid        PRIMARY KEY REFERENCES stores(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',
+    message             text        NOT NULL DEFAULT '',
+    endpoint            text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS stores_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0028_stores') ON CONFLICT DO NOTHING;
