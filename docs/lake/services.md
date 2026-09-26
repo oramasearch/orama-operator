@@ -1,11 +1,13 @@
 # Lake managed services
 
-How a lake customer gets its own Zetta and Postgres clusters without lake having any Kubernetes
-access: lake writes the `services` table in its control Postgres, the operator creates one
-Lake-owned resource per service, writes what it observed to `service_status`, and hands lake each
-service's connection through one mounted Secret. The authoritative contract is lake's
-[`docs/control-plane/services.md`](https://github.com/oramasearch/lake/blob/a8d09dda036a7af9857cfa4f4b21ef9ab57b7a3d/docs/control-plane/services.md)
-(liquid-bridge decision 46); this page is the operator's side of it. Field definitions are in the
+How a lake customer gets its own Zetta, Postgres, Kafka, ClickHouse, TiDB, Cassandra and Valkey
+clusters without lake having any Kubernetes access: lake writes the `services` table in its control
+Postgres, the operator creates one Lake-owned resource per service (for the last five, the resource
+of that kind's upstream operator — [the catalog](#the-catalog-decision-47)), writes what it observed
+to `service_status`, and hands lake each service's connection through one mounted Secret. The
+authoritative contract is lake's
+[`docs/control-plane/services.md`](https://github.com/oramasearch/lake/blob/0a701ef1a329915289717ba087912e67bb68d0cc/docs/control-plane/services.md)
+(liquid-bridge decisions 46 and 47); this page is the operator's side of it. Field definitions are in the
 [`Lake` CRD reference](../crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service)
 (`spec.services`). It supersedes [workspaces](workspaces.md): a customer's workspace is now its
 **default Zetta service**.
@@ -29,7 +31,7 @@ and `workspaces.storage.storageClassName` still shape every Zetta service's node
 ## The poll
 
 The Lake reconciler polls, once the Lake's schema has applied (the tables come with migration
-`0024_services`), at the Lake's `spec.deploySync.interval` (default `15s`, floor `1s`) — the
+`0024_services`; `0025_service_catalog` widens `kind` to the catalog), at the Lake's `spec.deploySync.interval` (default `15s`, floor `1s`) — the
 cadence the workspace poll used. Each poll (`internal/controller/lake_services.go`):
 
 1. reads Secret `lake-<lake>-controldb-app` key `uri` (the CloudNativePG application Secret of
@@ -87,7 +89,94 @@ Anything else already holding the name fails the service and is never modified o
 |---|---|
 | a cluster of that name that is not this Lake's service (another controller, another Lake, another service id, or a workspace cluster claimed by a non-default service) | `OramaZettaCluster <ns>/<name> exists and is not this Lake's service`, or `CloudNativePG Cluster <ns>/<name> exists and is not this Lake's service` |
 | a new Zetta service whose data PVC `data-<cluster>-zetta-<n>` already exists without its cluster | `PersistentVolumeClaim <ns>/<pvc> exists and is not this Lake's service` |
-| a malformed row (slug, kind, default on Postgres, missing customer, Lake name over 31 characters, bad spec) | the specific reason, e.g. `spec.instances must be between 1 and 3` |
+| a malformed row (slug, default on a non-Zetta service, missing customer, a Lake name too long for the kind's derived names, bad spec) | the specific reason, e.g. `spec.instances must be between 1 and 3` |
+| a kind this operator does not run | `unknown service kind "<kind>": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey` |
+
+## The catalog (decision 47)
+
+Kafka, ClickHouse, TiDB, Cassandra and Valkey are each run by their own upstream operator, which the
+operator's `helmfile.yaml` installs cluster-wide. The Orama operator writes that operator's
+resources and never runs the database itself (`internal/controller/lake_service_catalog.go` for
+what every kind shares, `lake_service_<kind>.go` for each kind). The resources are
+**unstructured** objects with a GVK constant, as CloudNativePG's are: the operator does not import
+the upstream Go modules. Every field name below was read from the upstream CRD at the pinned
+version (and, where the CRD does not say, from that version's source); every built object was
+validated against those CRD schemas.
+
+Every upstream object is named from `<lake>-<slug>`, controlled by the Lake, and carries the
+service labels and annotation above — except `app.kubernetes.io/instance`, which is the object's own
+name: upstream operators read that label as their cluster's instance (TiDB Operator derives every
+selector from it), so a Lake-wide value would make two services of one kind select each other's
+pods. Only the fields the table lists are written, individually, so the upstream API server's
+defaults survive and a steady service issues no update; storage, and arrays whose items the CRD
+defaults, are written once at creation.
+
+| | Kafka | ClickHouse | TiDB | Cassandra | Valkey (**preview**) |
+|---|---|---|---|---|---|
+| Upstream operator | Strimzi 1.2.0 | Altinity 0.27.4 | TiDB Operator v1.6.6 (stable 1.x) | K8ssandra Operator 1.33.0 (drives cass-operator v1.32.0) | valkey-io/valkey-operator 0.6.0 |
+| Resources written | `kafka.strimzi.io/v1` `Kafka` `<name>`; `KafkaNodePool` `<name>-pool`; `KafkaUser` `<name>-app` (both labelled `strimzi.io/cluster=<name>`) | `clickhouse.altinity.com/v1` `ClickHouseInstallation` `<name>`; with `instances` > 1, `clickhouse-keeper.altinity.com/v1` `ClickHouseKeeperInstallation` `<name>` | `pingcap.com/v1alpha1` `TidbCluster` `<name>` | `k8ssandra.io/v1alpha1` `K8ssandraCluster` `<name>` | `valkey.io/v1alpha1` `ValkeyCluster` `<name>` |
+| `instances` → | node pool `replicas`, roles `controller` and `broker` (KRaft) | `configuration.clusters[main].layout`: `shardsCount: 1`, `replicasCount` | `pd`, `tikv`, `tidb` `replicas` each, `maxFailoverCount: 0` | the one datacenter's `size` | `shards: 3`, `replicas: instances - 1` |
+| `storage_gi` → | node pool `storage`: `persistent-claim`, `size`, `deleteClaim: false` | volume claim template `data` (`defaults.templates.dataVolumeClaimTemplate`); the Keeper gets `1Gi` | `pd.requests.storage`, `tikv.requests.storage` | datacenter `storageConfig.cassandraDataVolumeClaimSpec` | `persistence.size` |
+| Other fields | listener `scram` on 9092, `internal`, no TLS, `scram-sha-512` authentication; entity operator with topic and user operators; broker `config` replication factors = `instances`, min ISR 1 (2 for three brokers); `KafkaUser` `authentication: scram-sha-512` | `configuration.users`: `app/password_sha256_hex`, `app/networks/ip: ["::/0"]`, `app/profile`, `app/quota` `default`; `configuration.zookeeper.keeper.name` when replicated; Keeper: cluster `keeper`, one replica | `version: v8.5.7`, `pvReclaimPolicy: Delete`, `discovery: {}`, `pd.config.replication.max-replicas: instances`, `tikv.config.storage.reserve-space` a tenth of the volume, `tidb.service.type: ClusterIP`, `tidb.initializer.createPassword: true` | `serverType: cassandra`, `serverVersion: 5.0.4`, `clusterName: <slug>`, datacenter `metadata.name: <slug>`, `datacenterName: dc1` | users: `default` disabled; `app` with `passwordSecret` `<name>-credentials`/`password`, `commands.allow: ["@all"]`, `keys.readWrite: ["*"]`, `channels.patterns: ["*"]` |
+| Ready when | `Kafka` condition `Ready=True`, and the `KafkaUser` Secret exists | `status.status` = `Completed` (and the Keeper's, when there is one) | `status.{pd,tikv,tidb}.phase` = `Normal` with `statefulSet.readyReplicas` = `instances`, and `status.tidb.passwordInitialized` | `status.datacenters.<slug>.cassandra`: `cassandraOperatorProgress: Ready` and condition `Ready=True` | condition `Ready=True` |
+| Credential source | Secret named by the `KafkaUser`'s `status.secret`, key `password`, owned by that `KafkaUser` | Secret `<name>-credentials`, key `password`, generated by the Orama operator | Secret `<name>-init`, key `root`, generated by the Orama operator | Secret `<slug>-superuser`, keys `username`, `password`, controlled by the `K8ssandraCluster` | Secret `<name>-credentials`, key `password`, generated by the Orama operator |
+| `endpoint` | `<name>-kafka-bootstrap.<ns>.svc.cluster.local:9092` | `clickhouse-<name>.<ns>.svc.cluster.local:8123` | `<name>-tidb.<ns>.svc.cluster.local:4000` | `<slug>-<slug>-service.<ns>.svc.cluster.local:9042` | `valkey-<name>.<ns>.svc.cluster.local:6379` |
+| PVCs deleted after the resources, selected by | `strimzi.io/cluster=<name>`, `strimzi.io/kind=Kafka` | `clickhouse.altinity.com/chi=<name>` or `clickhouse-keeper.altinity.com/chk=<name>`, `…/app=chop` (Altinity normally deletes them itself) | `app.kubernetes.io/instance=<name>`, `app.kubernetes.io/managed-by=tidb-operator` | `cassandra.datastax.com/cluster=<slug>` | `valkey.io/cluster=<name>`, `app.kubernetes.io/managed-by=valkey-operator` |
+
+`<name>` is `<lake>-<slug>`. A password the Orama operator generates is 32 hex characters, stored
+once in a Secret controlled by the Lake and labelled with the service
+(`app.kubernetes.io/component=credentials`), created before the upstream resource and never
+rotated; a Secret of that name the Lake does not own fails the service. A Secret an upstream
+operator writes is trusted only when it is owned by the upstream object it belongs to; otherwise
+the service fails with `Secret <ns>/<name> exists and is not this Lake's service`.
+
+**Where this departs from the contract table** (the CRD wins, per the contract):
+
+- **Kafka user name.** The contract names the `KafkaUser` `app`. A `KafkaUser`'s name is its
+  SCRAM username and is unique per namespace, so two Kafka services of one Lake would collide; it
+  is `<name>-app`, and the credential's `username` says so. The API is `kafka.strimzi.io/v1`, the
+  only version Strimzi 1.2.0 serves; KRaft is its only mode, so there is no KRaft annotation to set.
+- **ClickHouse endpoint.** The table gives `<name>-clickhouse…` and names the installation's own
+  Service `clickhouse-<name>` in the same cell; Altinity creates only the latter, so that is the
+  host. The Keeper is referenced through `configuration.zookeeper.keeper.name`, the 0.27.4 CRD's
+  field for it, and readiness also waits for the Keeper.
+- **TiDB password Secret.** The v1.6.6 CRD's `tidb.initializer` has one field, `createPassword`;
+  with it, TiDB Operator sets the root password from Secret `<cluster>-init`, key `root`, when that
+  Secret exists. So the Orama operator generates `<name>-init` rather than `<name>-credentials`,
+  and readiness also waits for `status.tidb.passwordInitialized`. TiDB Operator keeps PD and TiKV
+  claims after the `TidbCluster` is deleted, so deletion removes them as it does for Kafka,
+  Cassandra and Valkey (the contract lists only those three).
+- **Cassandra names.** The contract's endpoint `<name>-dc1-service` needs a `CassandraDatacenter`
+  object named `dc1`, and that object is namespaced: a second Cassandra service in the Lake's
+  namespace would collide with the first. The datacenter object is named after the slug, and so is
+  the Cassandra cluster, which keeps cass-operator's StatefulSet `<slug>-<slug>-default-sts` at 45
+  characters whatever the Lake is called (cass-operator's webhook rejects more than 60, and the pod
+  revision-hash label allows 52). `datacenterName: dc1` keeps the Cassandra datacenter itself named
+  `dc1`, which is what clients route by and what the credential says. The superuser Secret follows
+  the cluster name: `<slug>-superuser`.
+- **Valkey default user.** Not in the contract: Valkey's built-in `default` user is switched off,
+  since left unmanaged it accepts unauthenticated clients. The operator's probes and replication
+  use its own system users.
+- **Additions** the contract does not mention: every catalog credential carries `endpoint` besides
+  `kind` (the contract lists it as common to all); Kafka's internal-topic replication factors
+  follow the broker count (Kafka's default of three leaves consumer groups unavailable on fewer
+  brokers); TiDB runs with `maxFailoverCount: 0` so it never exceeds `instances` pods; and, as for
+  Zetta, a new service whose selector already matches a PVC does not start.
+
+**A kind whose upstream operator is not installed** (its CRD is not served, so the API returns a
+no-match error) fails that service with `the <kind> operator is not installed on this cluster`, for
+example `the kafka operator is not installed on this cluster`. Nothing else is affected: the rest
+of the Lake's services, the quota count (a kind that is not installed has no live resources) and
+the Lake reconcile carry on; the service starts on a later poll once the operator is installed. The
+upstream resources are read uncached, so a missing CRD never blocks the manager's cache.
+
+**Names.** Each kind adds its longest derived name to `<lake>-<slug>`, counting a StatefulSet's
+11-character revision-hash suffix, and a Lake name that would push it past 63 characters fails the
+service with `lake name "<lake>" is too long for service resource names`: Zetta and Postgres 15
+characters, Kafka 16 (`-kafka-bootstrap`), TiDB 16 (`<name>-tikv` + hash), Valkey 22
+(`valkey-<name>-2-2` + hash), ClickHouse 26 (`chk-<name>-keeper-0-0` + hash). Cassandra's derived
+names come from the slug alone. With a 16-character slug, ClickHouse allows Lake names up to 20
+characters and every other kind at least 24.
 
 ## Credentials
 
@@ -97,9 +186,15 @@ Secret **`lake-<lake>-services`** (controlled by the Lake) holds one key per Rea
 ```json
 {"kind":"zetta","endpoint":"http://prod-svc-0123456789ab-zetta.lake.svc.cluster.local:4800","token":"<admin token>"}
 {"kind":"postgres","host":"prod-svc-0123456789ab-rw.lake.svc.cluster.local","port":5432,"database":"app","user":"app","password":"…","uri":"postgresql://app:…@prod-svc-0123456789ab-rw.lake:5432/app"}
+{"kind":"kafka","endpoint":"prod-svc-0123456789ab-kafka-bootstrap.lake.svc.cluster.local:9092","bootstrap":"prod-svc-0123456789ab-kafka-bootstrap.lake.svc.cluster.local:9092","username":"prod-svc-0123456789ab-app","password":"…","sasl_mechanism":"SCRAM-SHA-512","security_protocol":"SASL_PLAINTEXT"}
+{"kind":"clickhouse","endpoint":"clickhouse-prod-svc-0123456789ab.lake.svc.cluster.local:8123","host":"clickhouse-prod-svc-0123456789ab.lake.svc.cluster.local","http_port":8123,"native_port":9000,"user":"app","password":"…","database":"default"}
+{"kind":"tidb","endpoint":"prod-svc-0123456789ab-tidb.lake.svc.cluster.local:4000","host":"prod-svc-0123456789ab-tidb.lake.svc.cluster.local","port":4000,"user":"root","password":"…","uri":"mysql://root:…@prod-svc-0123456789ab-tidb.lake.svc.cluster.local:4000"}
+{"kind":"cassandra","endpoint":"svc-0123456789ab-svc-0123456789ab-service.lake.svc.cluster.local:9042","host":"svc-0123456789ab-svc-0123456789ab-service.lake.svc.cluster.local","port":9042,"datacenter":"dc1","user":"svc-0123456789ab-superuser","password":"…"}
+{"kind":"valkey","endpoint":"valkey-prod-svc-0123456789ab.lake.svc.cluster.local:6379","host":"valkey-prod-svc-0123456789ab.lake.svc.cluster.local","port":6379,"user":"app","password":"…","cluster":true}
 ```
 
-`uri` is CloudNativePG's own, copied unchanged. A present service keeps its key while its
+`uri` is CloudNativePG's own, copied unchanged; TiDB's is built from the host and the generated
+password. A present service keeps its key while its
 connection cannot be read, so a transient failure never removes a file lake depends on; the key
 of an absent service, or of a row that no longer exists, is dropped.
 
@@ -115,12 +210,12 @@ Secret `lake-<lake>-workspaces` is deleted once services run.
 
 | Phase | When | Message |
 |---|---|---|
-| `Provisioning` | the resource exists and is not ready | `waiting for the Zetta nodes` / `waiting for the Postgres instances` |
+| `Provisioning` | the resource exists and is not ready | `waiting for the Zetta nodes` / `waiting for the Postgres instances` / `waiting for the Kafka cluster` / `waiting for the ClickHouse installation` / `waiting for the ClickHouse Keeper` / `waiting for TiDB <pd\|tikv\|tidb>` / `waiting for the TiDB root password` / `waiting for the Cassandra datacenter` / `waiting for the Valkey cluster` |
 | `Provisioning` | the resource is ready but its credential is not yet in the Secret | `waiting for the service credential` |
 | `Provisioning` | a previous resource or data volume of that name is still terminating | `waiting for the previous … to be deleted` |
 | `Ready` | the resource is ready **and** its credential was written in this poll | `service ready` |
-| `Failed` | ownership, validation or the quota refused the service | see above; quota: exactly `service quota reached (<n>)` |
-| `Deleting` | an absent service's resources are still going | `deleting the Zetta cluster`, `deleting the Zetta data volumes`, `deleting the Postgres cluster`, `deleting the Postgres data volumes` |
+| `Failed` | ownership, validation, a missing upstream operator or the quota refused the service | see above; quota: exactly `service quota reached (<n>)`; `the <kind> operator is not installed on this cluster` |
+| `Deleting` | an absent service's resources are still going | `deleting the Zetta cluster`, `deleting the Zetta data volumes`, `deleting the Postgres cluster`, `deleting the Postgres data volumes`, and for the catalog `deleting the <Kafka\|ClickHouse\|TiDB\|Cassandra\|Valkey> cluster`, then `… data volumes` |
 | `Deleted` | nothing remains | `service deleted` |
 
 `endpoint` is written once the resource exists and is this service's (it is empty on `Failed` and
@@ -137,6 +232,14 @@ volumes. `observed_generation` is the `generation` of the row the phase describe
   when the service's status carries an endpoint.
 - **Postgres:** check ownership; delete the CloudNativePG `Cluster`. Its PVCs (label
   `cnpg.io/cluster=<cluster>`) are owned by it and garbage-collected.
+- **Catalog kinds:** check the ownership of every upstream object the kind can write, and delete
+  them all in one pass, primary first (`Kafka`, `KafkaNodePool`, `KafkaUser`;
+  `ClickHouseInstallation`, `ClickHouseKeeperInstallation`), with background propagation. Only
+  once every one is gone — so the upstream operator can no longer recreate a claim — delete the
+  generated password Secret (when this service owns it) and the PVCs matching the kind's selector
+  above. A PVC is deleted only when the service's status carries an endpoint, which the operator
+  writes for a resource it owns; the first deletion pass writes it too. A kind whose operator is
+  not installed has nothing to delete but its leftover PVCs.
 - remove `<slug>.json` from `lake-<lake>-services`;
 - write `Deleted` only once the resource and every data PVC are gone; until then `Deleting`, and
   the next poll repeats the steps.
@@ -146,7 +249,9 @@ A resource that fails the ownership rule is never deleted; the service is `Faile
 ## Quota
 
 `spec.services.maxServices` (falling back to `spec.workspaces.maxWorkspaces`; `0` = no limit) caps
-the live services: Lake-controlled `OramaZettaCluster`s and CloudNativePG `Cluster`s labelled
+the live services: Lake-controlled `OramaZettaCluster`s, CloudNativePG `Cluster`s and the primary
+resource of each catalog kind (`Kafka`, `ClickHouseInstallation`, `TidbCluster`,
+`K8ssandraCluster`, `ValkeyCluster`; a kind that is not installed counts none) labelled
 `orama.cloud/lake=<lake>` with a service-id (or a workspace-id, for unadopted workspaces), not being
 deleted and not absent in the current read. A **new** service over the cap creates nothing and is
 `Failed` / `service quota reached (<n>)`; it starts on a later poll once there is room. An existing
@@ -157,14 +262,23 @@ lowered. lake's own per-customer cap (`LAKE_SERVICES_PER_CUSTOMER`) is separate.
 
 Disabling services stops the poll and removes the mount and env; it deletes nothing. Deleting the
 Lake deletes every Lake-controlled `OramaZettaCluster` through the Lake finalizer and
-garbage-collects the CloudNativePG Clusters and the Secret; Zetta data PVCs are not deleted by that
-path. The Lake's `spec.zetta` reconcile skips service clusters.
+garbage-collects the CloudNativePG Clusters, the catalog kinds' upstream resources and the
+Secrets; Zetta data PVCs, and the PVCs that Strimzi, TiDB Operator, cass-operator and the Valkey
+operator keep, are not deleted by that path. The Lake's `spec.zetta` reconcile skips service
+clusters.
 
 ## RBAC
 
-Nothing new: the manager already has `postgresql.cnpg.io/clusters`, `secrets`,
-`persistentvolumeclaims` (including `delete`) and `oramazettaclusters`, both as kubebuilder markers
-and in the chart's hand-maintained ClusterRole.
+Zetta and Postgres need nothing beyond what the manager already had (`postgresql.cnpg.io/clusters`,
+`secrets`, `persistentvolumeclaims` including `delete`, `oramazettaclusters`). The catalog adds
+`get, list, watch, create, update, patch, delete` on `kafka.strimzi.io` `kafkas`, `kafkanodepools`,
+`kafkausers`; `clickhouse.altinity.com` `clickhouseinstallations`; `clickhouse-keeper.altinity.com`
+`clickhousekeeperinstallations`; `pingcap.com` `tidbclusters`; `k8ssandra.io` `k8ssandraclusters`;
+and `valkey.io` `valkeyclusters` — as kubebuilder markers in `lake_service_catalog.go`
+(`make manifests` regenerates `config/rbac/role.yaml`) and in the chart's hand-maintained
+ClusterRole. `go test ./cmd/...` (`TestChartRBACCoversGeneratedRole`) fails when the chart grants
+less than the markers ask for. None of these kinds is watched, so no CRD of theirs is needed for the
+manager to start.
 
 ## Known limits
 
@@ -177,16 +291,26 @@ and in the chart's hand-maintained ClusterRole.
 - Services whose rows disappear without passing through `absent` (lake's `services.customer_id`
   cascades on customer deletion) lose their credential key but their resources are not deleted:
   the operator deletes only what a row marked absent.
+- The catalog kinds run with their upstream operators' default container resources and binary
+  memory settings, and on the cluster's default StorageClass: none of them is right-sized yet
+  (CLAUDE.md principle 8), and none has backups.
+- **Valkey is a preview**: valkey-operator 0.6.0's README says it is not ready for production.
+- The upstream operators themselves (and cert-manager, which K8ssandra needs) are installed by the
+  `helmfile.yaml`; until they are, each kind's services report the not-installed message.
+- The catalog has been exercised against the fake client and validated against the pinned CRD
+  schemas only, not yet against the running upstream operators.
 
 ## How to verify
 
 ```sh
 go test ./internal/controller/ -run Services
+go test ./cmd/...        # the chart ClusterRole grants every RBAC marker
 # The pgx SQL against the vendored schema on a local Postgres, inside a rolled-back transaction:
 LAKE_SERVICES_TEST_POSTGRES=1 go test ./internal/controller/ -run PgxStore
 
 # On a cluster, after creating a service on lake's /services page:
 kubectl -n lake get oramazettacluster,clusters.postgresql.cnpg.io -l orama.cloud/lake=prod
+kubectl -n lake get kafka,kafkanodepool,kafkauser,chi,chk,tidbcluster,k8ssandracluster,valkeycluster -l orama.cloud/lake=prod
 kubectl -n lake get secret lake-prod-services -o jsonpath='{.data}' | jq 'keys'
 kubectl -n lake exec deploy/lake-prod -- ls /var/run/lake/services
 ```
@@ -195,14 +319,29 @@ The unit tests (`lake_services_test.go`) cover Zetta and Postgres creation, Read
 credential, adoption of a `ws-` cluster keeping its data, refusal of foreign resources and
 unproven volumes, the deletion order and `Deleted`, the quota message and the fact that it never
 refuses existing services, status upserts only on change, the "not yet" app Secret, and the lake
-Deployment's mount and env.
+Deployment's mount and env. `lake_service_catalog_test.go` runs every catalog kind through: the
+resources built with the right GVK, replicas and storage, labels and ownership; no update on a
+steady poll and no password rotation; Ready gated on the upstream status (and a partly ready
+status) plus the credential; the exact credential fields; the deletion order (upstream objects,
+then the generated Secret, then the PVCs, leaving an unrelated PVC alone) through `Deleting` to
+`Deleted`; refusal of a foreign object, a foreign password Secret and an upstream Secret its
+object does not own, with nothing deleted; the not-installed message while a Postgres service in
+the same poll carries on; an old volume blocking creation; the quota; the unknown-kind message;
+and the per-kind name length. The pgx test also shows the vendored `0025_service_catalog` accepts a
+row of every catalog kind, which reads back as that kind, and still refuses any other.
 
 ## How to change
 
 - **The contract** (tables, phases, messages, Secret name and key format, labels): change it in
   lake's `docs/control-plane/services.md` first, then here and in `lake_services.go` together.
 - **Resource shape**: the mutate functions in `reconcileZettaService` and
-  `reconcilePostgresService`; keep writing named fields only.
-- **Deletion**: `deleteLakeService`; keep the ownership check before every delete, Zetta PVCs
-  before the cluster, and `Deleted` only once nothing remains.
+  `reconcilePostgresService`, and each catalog kind's `build` in `lake_service_<kind>.go`; keep
+  writing named fields only, mark storage and defaulted arrays `createOnly`, and read field names
+  from the upstream CRD at the pinned version.
+- **A new catalog kind**: implement `catalogKind` in its own `lake_service_<kind>.go`, register it
+  in `catalogKinds` and `serviceKindNames`, add its RBAC marker and the chart ClusterRole rule,
+  and add its case to `catalogCases()` in the tests. lake's schema must allow the kind first.
+- **Deletion**: `deleteLakeService` and `deleteCatalogService`; keep the ownership check before
+  every delete, Zetta PVCs before the cluster, a catalog kind's PVCs only after its resources, and
+  `Deleted` only once nothing remains.
 - **Schema**: the tables arrive with lake's `db/schema.sql`; see [schema.md](schema.md).

@@ -116,4 +116,35 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 			t.Fatalf("status = %+v, want %+v", svc.Status, status)
 		}
 	}
+
+	// Migration 0025_service_catalog: every catalog kind is a valid row and reads back as that
+	// kind; anything else is still refused by the kind check.
+	for i, kind := range []string{serviceKindKafka, serviceKindClickHouse, serviceKindTiDB, serviceKindCassandra, serviceKindValkey} {
+		id := fmt.Sprintf("c0000000-0000-4000-8000-00000000000%d", i)
+		if _, err := tx.Exec(ctx, insert, id, customerID, kind, kind, fmt.Sprintf("svc-c0000000000%d", i), false, `{}`, "present", 1); err != nil {
+			t.Fatalf("seed %s service: %v", kind, err)
+		}
+	}
+	services, err = store.ListServices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]bool{}
+	for _, svc := range services {
+		kinds[svc.Kind] = true
+		if !knownServiceKind(svc.Kind) {
+			t.Fatalf("lake accepted kind %q, which the operator does not run", svc.Kind)
+		}
+	}
+	if len(kinds) != len(serviceKindNames) {
+		t.Fatalf("kinds read back = %v, want %v", kinds, serviceKindNames)
+	}
+	refused, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := refused.Exec(ctx, insert, "d0000000-0000-4000-8000-000000000000", customerID, "sqlite", "lite", "svc-d00000000000", false, `{}`, "present", 1); err == nil {
+		t.Fatal("the kind check accepted sqlite")
+	}
+	_ = refused.Rollback(ctx)
 }

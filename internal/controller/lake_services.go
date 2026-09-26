@@ -33,7 +33,9 @@ import (
 // OramaZettaCluster or CloudNativePG Cluster named <lake>-<slug> per present service, deletes absent
 // ones, copies each Ready service's connection into Secret lake-<lake>-services, and writes what it
 // observed to service_status. A customer's decision-45 workspace cluster (<lake>-ws-<12 hex>) is
-// adopted by that customer's default Zetta service, so it keeps its data.
+// adopted by that customer's default Zetta service, so it keeps its data. The other kinds of the
+// catalog (decision 47: Kafka, ClickHouse, TiDB, Cassandra, Valkey) are written for their upstream
+// operators by lake_service_catalog.go.
 const (
 	ServicePhaseProvisioning = "Provisioning"
 	ServicePhaseReady        = "Ready"
@@ -251,13 +253,13 @@ func validateService(lake *oramav1alpha1.Lake, svc *LakeService) (lakeServiceSpe
 	switch {
 	case !serviceSlugPattern.MatchString(svc.Slug):
 		return lakeServiceSpec{}, fmt.Errorf("slug must match %s", serviceSlugPattern.String())
-	case svc.Kind != serviceKindZetta && svc.Kind != serviceKindPostgres:
-		return lakeServiceSpec{}, fmt.Errorf("kind must be %s or %s", serviceKindZetta, serviceKindPostgres)
+	case !knownServiceKind(svc.Kind):
+		return lakeServiceSpec{}, fmt.Errorf("%s", unknownServiceKindMessage(svc.Kind))
 	case svc.IsDefault && svc.Kind != serviceKindZetta:
 		return lakeServiceSpec{}, fmt.Errorf("only a zetta service can be the default")
 	case svc.CustomerID == "":
 		return lakeServiceSpec{}, fmt.Errorf("customer_id is required")
-	case len(serviceResourceName(lake.Name, svc.Slug)+serviceLongestNameSuffix) > validation.DNS1035LabelMaxLength:
+	case len(serviceResourceName(lake.Name, svc.Slug))+serviceNameOverhead(svc.Kind) > validation.DNS1035LabelMaxLength:
 		return lakeServiceSpec{}, fmt.Errorf("lake name %q is too long for service resource names", lake.Name)
 	}
 	return parseServiceSpec(svc.Spec)
@@ -463,6 +465,11 @@ func (r *LakeReconciler) liveServiceCount(ctx context.Context, lake *oramav1alph
 	for i := range postgres.Items {
 		objects = append(objects, &postgres.Items[i])
 	}
+	catalog, err := r.liveCatalogObjects(ctx, lake, namespace)
+	if err != nil {
+		return 0, err
+	}
+	objects = append(objects, catalog...)
 	live := 0
 	for _, obj := range objects {
 		if !metav1.IsControlledBy(obj, lake) || obj.GetDeletionTimestamp() != nil {
@@ -534,10 +541,19 @@ func (r *LakeReconciler) reconcileLakeService(ctx context.Context, lake *oramav1
 	if err != nil {
 		return serviceResult{phase: ServicePhaseFailed, message: err.Error()}, nil
 	}
-	if svc.Kind == serviceKindPostgres {
+	switch svc.Kind {
+	case serviceKindZetta:
+		return r.reconcileZettaService(ctx, lake, namespace, svc, spec, live)
+	case serviceKindPostgres:
 		return r.reconcilePostgresService(ctx, lake, namespace, svc, spec, live)
 	}
-	return r.reconcileZettaService(ctx, lake, namespace, svc, spec, live)
+	return r.reconcileCatalogService(ctx, lake, namespace, svc, spec, live, catalogKinds[svc.Kind])
+}
+
+// knownServiceKind reports whether the operator runs kind: Zetta, Postgres or a catalog kind.
+func knownServiceKind(kind string) bool {
+	_, catalog := catalogKinds[kind]
+	return kind == serviceKindZetta || kind == serviceKindPostgres || catalog
 }
 
 func quotaRefusal(lake *oramav1alpha1.Lake, live int) (serviceResult, bool) {
@@ -756,7 +772,11 @@ func (r *LakeReconciler) deleteLakeService(ctx context.Context, lake *oramav1alp
 	case serviceKindPostgres:
 		result, remaining, err = r.deletePostgresService(ctx, lake, namespace, svc)
 	default:
-		return serviceResult{phase: ServicePhaseFailed, message: fmt.Sprintf("kind must be %s or %s", serviceKindZetta, serviceKindPostgres)}, nil
+		kind, found := catalogKinds[svc.Kind]
+		if !found {
+			return serviceResult{phase: ServicePhaseFailed, message: unknownServiceKindMessage(svc.Kind)}, nil
+		}
+		result, remaining, err = r.deleteCatalogService(ctx, lake, namespace, svc, previousEndpoint, kind)
 	}
 	if err != nil || result.phase == ServicePhaseFailed {
 		return result, err
@@ -765,7 +785,11 @@ func (r *LakeReconciler) deleteLakeService(ctx context.Context, lake *oramav1alp
 		return serviceResult{}, err
 	}
 	if remaining {
-		return serviceResult{phase: ServicePhaseDeleting, endpoint: previousEndpoint, message: result.message}, nil
+		endpoint := previousEndpoint
+		if result.endpoint != "" {
+			endpoint = result.endpoint
+		}
+		return serviceResult{phase: ServicePhaseDeleting, endpoint: endpoint, message: result.message}, nil
 	}
 	return serviceResult{phase: ServicePhaseDeleted, message: "service deleted"}, nil
 }

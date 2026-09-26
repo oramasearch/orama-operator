@@ -6,12 +6,19 @@ Licensed under the Apache License, Version 2.0.
 package main
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
+
+	rbacv1 "k8s.io/api/rbac/v1"
+	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
 
 // The manager registers a watch for every kind unconditionally, so a kind whose CRD is not on the
@@ -183,6 +190,96 @@ func TestEveryChartCRDIsCoveredByChartRBAC(t *testing.T) {
 			"The manager cannot list or watch these, so its cache never syncs and the whole "+
 			"operator crash-loops. Add them to the ClusterRole rules.", strings.Join(missing, ", "))
 	}
+}
+
+// The generated ClusterRole (config/rbac/role.yaml, from the +kubebuilder:rbac markers) is what the
+// code needs; the chart's hand-maintained ClusterRole is what the operator gets. Every generated
+// group/resource/verb must be granted by the chart, or the operator fails at runtime with a
+// Forbidden that no unit test sees — the managed-services catalog's upstream kinds, for one.
+// Template directives are dropped, so e2e-gated resources count as granted (their gating is
+// checked above).
+func TestChartRBACCoversGeneratedRole(t *testing.T) {
+	generated := readClusterRoles(t, filepath.Join("..", "config", "rbac", "role.yaml"), false)
+	chart := readClusterRoles(t, filepath.Join("..", "chart", "templates", "rbac.yaml"), true)
+	if len(generated) != 1 || len(chart) == 0 {
+		t.Fatalf("found %d generated and %d chart ClusterRoles", len(generated), len(chart))
+	}
+	var chartRules []rbacv1.PolicyRule
+	for _, role := range chart {
+		chartRules = append(chartRules, role.Rules...)
+	}
+	var missing []string
+	for _, rule := range generated[0].Rules {
+		for _, group := range rule.APIGroups {
+			for _, resource := range rule.Resources {
+				for _, verb := range rule.Verbs {
+					if !ruleGrants(chartRules, group, resource, verb) && !knownChartRBACGaps[group+"/"+resource+" "+verb] {
+						missing = append(missing, fmt.Sprintf("%s/%s %s", group, resource, verb))
+					}
+				}
+			}
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("chart/templates/rbac.yaml does not grant what the code's RBAC markers require:\n  %s\n"+
+			"Add them to the chart ClusterRole (make manifests regenerates only config/rbac).", strings.Join(missing, "\n  "))
+	}
+}
+
+// knownChartRBACGaps are markers the chart deliberately does not grant. Pods: the
+// OramaZettaCluster marker asks for watch, but nothing reads pods through the cache, and the chart
+// grants get and list only (for the Zetta e2e log reader).
+var knownChartRBACGaps = map[string]bool{
+	"/pods watch": true,
+}
+
+func ruleGrants(rules []rbacv1.PolicyRule, group, resource, verb string) bool {
+	matches := func(values []string, want string) bool {
+		for _, value := range values {
+			if value == want || value == "*" {
+				return true
+			}
+		}
+		return false
+	}
+	for _, rule := range rules {
+		if matches(rule.APIGroups, group) && matches(rule.Resources, resource) && matches(rule.Verbs, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+func readClusterRoles(t *testing.T, path string, template bool) []rbacv1.ClusterRole {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if template {
+		var kept []string
+		for _, line := range strings.Split(string(raw), "\n") {
+			if !strings.Contains(line, "{{") {
+				kept = append(kept, line)
+			}
+		}
+		raw = []byte(strings.Join(kept, "\n"))
+	}
+	decoder := yamlutil.NewYAMLOrJSONDecoder(bytes.NewReader(raw), 4096)
+	var roles []rbacv1.ClusterRole
+	for {
+		var role rbacv1.ClusterRole
+		if err := decoder.Decode(&role); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("decode %s: %v", path, err)
+		}
+		if role.Kind == "ClusterRole" {
+			roles = append(roles, role)
+		}
+	}
+	return roles
 }
 
 // Production runs no e2e suites (that is what a testing environment is for), so the install chart

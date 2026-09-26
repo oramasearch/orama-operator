@@ -15,12 +15,14 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -153,20 +155,75 @@ type serviceHarness struct {
 	reconciler *LakeReconciler
 	lake       *oramav1alpha1.Lake
 	deletes    *[]string
+	// deletedKinds records every deletion as <Kind>/<name>, which tells apart unstructured
+	// objects of one name.
+	deletedKinds *[]string
+	// updates counts Update calls, so a test can prove a steady service is never rewritten.
+	updates *int
 }
 
 func newServiceHarness(t *testing.T, lake *oramav1alpha1.Lake, store *fakeServiceStore, objects ...client.Object) *serviceHarness {
 	t.Helper()
+	return newServiceHarnessWithout(t, lake, store, nil, objects...)
+}
+
+// newServiceHarnessWithout builds the harness on an API server that does not serve the given API
+// groups: every call for one of their kinds fails with a no-match error, as the real client's
+// RESTMapper does when a CRD is not installed.
+func newServiceHarnessWithout(t *testing.T, lake *oramav1alpha1.Lake, store *fakeServiceStore, missingGroups []string, objects ...client.Object) *serviceHarness {
+	t.Helper()
 	s := newLakeScheme(t)
-	deletes := &[]string{}
+	deletes, deletedKinds, updates := &[]string{}, &[]string{}, new(int)
+	missing := map[string]bool{}
+	for _, group := range missingGroups {
+		missing[group] = true
+	}
+	notServed := func(obj runtime.Object) error {
+		gvk := obj.GetObjectKind().GroupVersionKind()
+		if missing[gvk.Group] {
+			return &meta.NoKindMatchError{GroupKind: gvk.GroupKind(), SearchedVersions: []string{gvk.Version}}
+		}
+		return nil
+	}
 	objects = append(objects, lake, controlDBAppSecretForTest(lake.Name, "postgresql://lake:pw@lake-prod-controldb-rw.lake:5432/lake"))
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).
 		WithStatusSubresource(&oramav1alpha1.OramaZettaCluster{}).
-		WithInterceptorFuncs(interceptor.Funcs{Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
-			*deletes = append(*deletes, fmt.Sprintf("%T/%s", obj, obj.GetName()))
-			return c.Delete(ctx, obj, opts...)
-		}}).Build()
-	return &serviceHarness{t: t, client: c, scheme: s, store: store, lake: lake, deletes: deletes,
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := notServed(obj); err != nil {
+					return err
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if err := notServed(list); err != nil {
+					return err
+				}
+				return c.List(ctx, list, opts...)
+			},
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if err := notServed(obj); err != nil {
+					return err
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				*updates++
+				return c.Update(ctx, obj, opts...)
+			},
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				*deletes = append(*deletes, fmt.Sprintf("%T/%s", obj, obj.GetName()))
+				kind := obj.GetObjectKind().GroupVersionKind().Kind
+				if kind == "" {
+					if gvk, err := apiutil.GVKForObject(obj, s); err == nil {
+						kind = gvk.Kind
+					}
+				}
+				*deletedKinds = append(*deletedKinds, kind+"/"+obj.GetName())
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	return &serviceHarness{t: t, client: c, scheme: s, store: store, lake: lake, deletes: deletes, deletedKinds: deletedKinds, updates: updates,
 		reconciler: &LakeReconciler{Client: c, Scheme: s, ServiceStores: store.opener()}}
 }
 

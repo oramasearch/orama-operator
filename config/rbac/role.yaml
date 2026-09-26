@@ -97,6 +97,56 @@ rules:
   - update
   - watch
 - apiGroups:
+  - clickhouse-keeper.altinity.com
+  resources:
+  - clickhousekeeperinstallations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - clickhouse.altinity.com
+  resources:
+  - clickhouseinstallations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - k8ssandra.io
+  resources:
+  - k8ssandraclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - kafka.strimzi.io
+  resources:
+  - kafkanodepools
+  - kafkas
+  - kafkausers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - karpenter.azure.com
   resources:
   - aksnodeclasses
@@ -211,6 +261,18 @@ rules:
   - patch
   - update
 - apiGroups:
+  - pingcap.com
+  resources:
+  - tidbclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - policy
   resources:
   - poddisruptionbudgets
@@ -256,6 +318,18 @@ rules:
   - create
   - delete
   - escalate
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - valkey.io
+  resources:
+  - valkeyclusters
+  verbs:
+  - create
+  - delete
   - get
   - list
   - patch

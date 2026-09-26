@@ -2,18 +2,27 @@
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit a8d09dda036a7af9857cfa4f4b21ef9ab57b7a3d](https://github.com/oramasearch/lake/blob/a8d09dda036a7af9857cfa4f4b21ef9ab57b7a3d/db/schema.sql),
-on lake branch `feat/services` (not yet merged to lake `main`). Its SHA-256 is
-`60c0d67f28e9a908426241c65f3ef8cecf05ada8921e12b9a895cf0e7699fc54`.
+[`oramasearch/lake` commit 0a701ef1a329915289717ba087912e67bb68d0cc](https://github.com/oramasearch/lake/blob/0a701ef1a329915289717ba087912e67bb68d0cc/db/schema.sql),
+on lake branch `feat/service-catalog` (not yet merged to lake `main`). Its SHA-256 is
+`7159b0c624381102818ba9fa4a6cf4b08e4313f4465d1c1c477b25b4d8a84425`.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
 
+Migration `0025_service_catalog` (liquid-bridge decision 47) widens the `services.kind` check to
+`zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey` (dropping and re-adding
+`service_kind_check`, which every existing row already satisfies) and adds the completion table
+`public.service_catalog_guard`, which is now Lake's PostgresSchema guard. No data changes. A
+database already at `0024` applies the whole idempotent file in one transaction; one already at
+`0025` exits with `schema already applied (service_catalog_guard present)`. The operator runs the
+new kinds ([services.md](services.md#the-catalog-decision-47)); lake can only write them once this
+schema has applied.
+
 Migration `0024_services` (liquid-bridge decision 46) adds `services`, written by lake, and
 `service_status`, written by the operator's managed-services poll ([services.md](services.md)),
-plus the completion table `public.services_guard`, which is now Lake's PostgresSchema guard. It
+plus the completion table `public.services_guard`, which was Lake's PostgresSchema guard until `0025`. It
 is additive: no backfill. A database already at `0023` applies the whole idempotent file in one
 transaction and gains the three tables; one already at `0024` exits with
 `schema already applied (services_guard present)`. The services poll waits for the schema to report
@@ -108,8 +117,8 @@ there are no Kubernetes pods in this native harness.
 `TestLakeSchemaGatesWorkloadRollout` uses the fake API client to check first startup, image-update
 ordering, failed/pending schema status, stale versions, stale generations, and a missing success
 condition. Additional Job tests cover replacing obsolete running and failed attempts. The version test shows the guard itself changes the hash for identical SQL:
-for the file vendored at `a8d09dd`, `custodial_identity_guard` gives `sha256:6a7b4aad7353` and
-`services_guard` gives `sha256:bd7ec28ab406`.
+for the file vendored at `0a701ef`, `services_guard` gives `sha256:8fcd390d01ef` and
+`service_catalog_guard` gives `sha256:b4958802878c`.
 
 The regression was run before the fix: the rendered command printed
 `schema already applied (identity_exit_guard present)`, status became Applied, and the test
