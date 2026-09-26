@@ -28,10 +28,12 @@ delivered `LakeSealedSecret` values copied into the isolated workload namespace 
 authenticated REST `/v1` and MCP deployment surface; the contract, credentials, rollback, audit
 and connection details are in the [deployment control-plane guide](../control-plane/README.md).
 
-With `spec.workspaces.enabled`, lake requests one Zetta cluster per customer workspace by appending
-rows to `orama_control.workspaces` on its own data plane; the operator creates Lake-owned
-`OramaZettaCluster`s and hands lake their URLs and tokens through a mounted Secret
-([workspaces.md](workspaces.md)).
+With `spec.services.enabled`, lake runs managed Zetta and Postgres services for its customers:
+it writes the `services` table in its control Postgres, and the operator creates one Lake-owned
+`OramaZettaCluster` or CloudNativePG `Cluster` per service, writes `service_status`, and hands lake
+each connection through a mounted Secret ([services.md](services.md)). This supersedes the
+decision-45 workspaces ([workspaces.md](workspaces.md)); a workspace is now the customer's default
+Zetta service.
 
 ## What a Lake reconciles into
 
@@ -71,8 +73,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 8. **Zetta data plane** — owned `OramaZettaCluster` `lake-<name>-zetta` in the Lake namespace,
    configured from `spec.zetta` (enabled, image, replicas, per-node storage, and reachability).
    It inherits `spec.pullSecretName` and has operator-schema provisioning disabled because it is
-   Lake's data store, not the operator's control store — unless `spec.workspaces.enabled`, which
-   turns it on so the cluster hosts `orama_control.workspaces` (step 15). Its client Service and seeded admin-token
+   Lake's data store, not the operator's control store. Its client Service and seeded admin-token
    Secret reach the lake pod as `LAKE_DATA_PLANE_URL` and `LAKE_DATA_PLANE_TOKEN`. Deleting the
    Lake starts deletion of this child and waits for its finalizers before releasing the Lake
    finalizer; disabling `spec.zetta` tears the child down with its per-node volumes.
@@ -82,8 +83,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `custodial_identity_guard` from
-   `0023_custodial_identities`, version = hash of the SQL plus guard. A changed hash automatically
+   `oramasearch/lake` `db/schema.sql`), guard table = `services_guard` from
+   `0024_services`, version = hash of the SQL plus guard. A changed hash automatically
    replaces the obsolete migration Job, waiting for its pods to stop. Deployment creation and
    updates wait for Applied at the desired version and generation; existing pods retain their
    previous workload spec while the schema applies. Re-vendoring and native envtest proof are in
@@ -111,14 +112,16 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`
     controller runs Postgres procedures and updates the row; see
     [data services](data-services/README.md).
-15. **Workspaces** (opt-in: `spec.workspaces.enabled`) — desired rows lake appends to
-    `orama_control.workspaces` on its data plane become Lake-owned `OramaZettaCluster`s named
-    `<name>-<workspace_id>`, one per customer workspace (Zetta has no tenancy). Their admin tokens
-    are aggregated into Secret `lake-<name>-workspaces`, mounted at `/var/run/lake/workspaces`, and
-    lake gets `LAKE_WORKSPACE_DIR` and `LAKE_WORKSPACE_URL_TEMPLATE`. A `withdrawn` row deletes
-    one workspace's cluster, data volume and token (irreversibly); `spec.workspaces.maxWorkspaces`
-    caps how many exist. Otherwise workspaces go only with the Lake. See
-    [`workspaces.md`](workspaces.md).
+15. **Managed services** (opt-in: `spec.services.enabled`, or the deprecated
+    `spec.workspaces.enabled`) — once the schema has applied, the operator polls the `services`
+    table in the control Postgres (pgx, Secret `lake-<name>-controldb-app` key `uri`) every
+    `spec.deploySync.interval`. Each present service becomes `<name>-<slug>`: an `OramaZettaCluster`
+    or a CloudNativePG `Cluster`, controlled by the Lake; decision-45 `<name>-ws-…` workspace
+    clusters are adopted by the customer's default Zetta service. Ready services' connections go to
+    Secret `lake-<name>-services` (key `<slug>.json`), mounted at `/var/run/lake/services` with
+    `LAKE_SERVICE_DIR`; `service_status` is upserted on change. An absent service is deleted with its
+    data (irreversibly); `spec.services.maxServices` caps how many exist. The poll never fails the
+    Lake. See [`services.md`](services.md).
 
 **Status** reports overall service readiness through `phase` and `conditions[Ready]`, alongside
 Deployment replica counts, store binding, Postgres, schema, Zetta, backup, sealing, and data-service

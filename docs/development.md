@@ -51,6 +51,12 @@ Set `LAKE_SCHEMA_TEST_POSTGRES=1` and `PGUSER` to your local role; the suite cre
 on `127.0.0.1:5432` and drops only those it created. With this opt-in, missing envtest assets are
 a failure. See [the schema proof and vendoring commands](lake/schema.md#verification).
 
+The Lake managed-services store runs its pgx SQL against the vendored schema with
+`LAKE_SERVICES_TEST_POSTGRES=1` (connection `LAKE_SERVICES_TEST_POSTGRES_URI`, default
+`postgres://127.0.0.1:5432/postgres`). It works in a scratch schema inside one transaction that is
+rolled back, so it creates and drops nothing: `go test ./internal/controller/ -run PgxStore`. See
+[services](lake/services.md#how-to-verify).
+
 The sealed-delivery admission suite also uses these assets and requires `helm` to render the
 operator's actual RBAC. It installs both pinned k0s policies and the tenant grant, then proves namespace
 selection, delivery, rotation/removal and authorization without using a live cluster. Run it with:

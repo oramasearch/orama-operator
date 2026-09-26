@@ -72,7 +72,7 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
-// Withdrawn Lake workspaces: delete the StatefulSet's data PVCs (zetta_workspaces.go).
+// Zetta data PVCs of an absent Lake service are deleted by the services poll (lake_services.go).
 //+kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
 // ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace for its UID — `get`
 // only, never list/watch, so the operator holds no cluster-wide Namespace informer.
@@ -406,7 +406,6 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 		r.reconcileOperatorStateSync(ctx, &z, clientName) // best-effort; never fails the reconcile
 		r.reconcileZettaDeployments(ctx, &z, clientName)  // best-effort; the periodic poll retries
-		r.reconcileZettaWorkspaces(ctx, &z, clientName)   // best-effort; see zetta_workspaces.go
 	} else if err := r.teardownZettaControlPlane(ctx, &z); err != nil {
 		return ctrl.Result{}, err
 	}
