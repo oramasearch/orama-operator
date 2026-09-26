@@ -337,7 +337,9 @@ func foreignServiceMessage(kind, namespace, name string) string {
 // reconcileLakeServices is one poll of lake's services table. It is best-effort: a Secret that is
 // not there yet, an unreachable database or a failed Kubernetes call is logged and retried on the
 // Lake's next requeue, and never fails the Lake reconcile.
-func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) {
+// reconcileLakeServices reports whether any service is still changing (starting or being
+// deleted), so the Lake is polled fast until it settles (lake#197).
+func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) bool {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	var app corev1.Secret
 	secretName := lakeControlDB(lake.Name) + "-app"
@@ -347,12 +349,12 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 		} else {
 			log.Error(err, "services deferred: cannot read the control DB app Secret", "secret", secretName)
 		}
-		return
+		return false
 	}
 	uri := string(app.Data["uri"])
 	if uri == "" {
 		log.Info("services deferred: control DB app Secret has no uri yet", "secret", secretName)
-		return
+		return false
 	}
 	passCtx, cancel := context.WithTimeout(ctx, servicePassTimeout)
 	defer cancel()
@@ -363,22 +365,22 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 	store, err := open(passCtx, uri)
 	if err != nil {
 		log.Info("services deferred: cannot connect to the control DB", "err", err.Error())
-		return
+		return false
 	}
 	defer func() { _ = store.Close(context.Background()) }()
 	services, err := store.ListServices(passCtx)
 	if err != nil {
 		log.Info("services deferred: cannot read services", "err", err.Error())
-		return
+		return false
 	}
-	r.syncLakeServices(passCtx, lake, namespace, labels, store, services)
+	return r.syncLakeServices(passCtx, lake, namespace, labels, store, services)
 }
 
 // syncLakeServices applies one read of the services table: absent services first, so a deletion
 // frees its quota slot in the same pass; then present services oldest first; then the credential
 // Secret; then the status of every present service, which is Ready only once its credential is in
 // the Secret.
-func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, store LakeServiceStore, services []LakeService) {
+func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, store LakeServiceStore, services []LakeService) (changing bool) {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	absentIDs := map[string]bool{}
 	absentSlugs := map[string]bool{}
@@ -393,6 +395,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 			if svc.Status != nil && svc.Status.Phase == ServicePhaseDeleted {
 				continue
 			}
+			changing = true
 			result, err := r.deleteLakeService(ctx, lake, namespace, svc)
 			if err != nil {
 				log.Error(err, "service deletion deferred", "service", svc.ID, "slug", svc.Slug)
@@ -414,7 +417,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 	live, err := r.liveServiceCount(ctx, lake, namespace, absentIDs, absentSlugs)
 	if err != nil {
 		log.Error(err, "services deferred: cannot count live services")
-		return
+		return false
 	}
 	results := make(map[string]serviceResult, len(present))
 	presentSlugs := map[string]bool{}
@@ -448,13 +451,17 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 			if written[svc.Slug] {
 				result.phase, result.message = ServicePhaseReady, "service ready"
 			} else {
-				result.phase, result.message = ServicePhaseProvisioning, "waiting for the service credential"
+				result.phase, result.message = ServicePhaseProvisioning, "delivering the connection"
 			}
+		}
+		if result.phase == ServicePhaseProvisioning {
+			changing = true
 		}
 		if err := writeServiceStatus(ctx, store, svc, result); err != nil {
 			log.Error(err, "service status write deferred", "service", svc.ID)
 		}
 	}
+	return changing
 }
 
 // writeServiceStatus upserts service_status only when phase, message, endpoint or the observed
@@ -942,7 +949,7 @@ func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *
 	} else if err != nil && !apierrors.IsNotFound(err) {
 		return nil, err
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		secret.Labels = labels
 		secret.Type = corev1.SecretTypeOpaque
 		data := map[string][]byte{}
@@ -956,14 +963,56 @@ func (r *LakeReconciler) reconcileLakeServicesSecret(ctx context.Context, lake *
 		}
 		secret.Data = data
 		return controllerutil.SetControllerReference(lake, secret, r.Scheme)
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
+	}
+	if op != controllerutil.OperationResultNone {
+		r.refreshLakeServiceMounts(ctx, namespace, labels, secret.ResourceVersion)
 	}
 	written := make(map[string]bool, len(credentials))
 	for slug := range credentials {
 		written[slug] = true
 	}
 	return written, nil
+}
+
+// lakeServicesSecretVersionAnnotation carries the services Secret's resourceVersion on each lake
+// pod. Kubelet refreshes a mounted Secret only when it syncs the pod, about once a minute, so a
+// new credential reached lake up to a minute after the operator wrote it (lake#197). Changing
+// the pod's annotations makes kubelet sync the pod, and so the volume, now. It restarts nothing.
+const lakeServicesSecretVersionAnnotation = "orama.cloud/services-secret-version"
+
+// refreshLakeServiceMounts patches that annotation onto every lake pod. Best-effort: a failure
+// only means the credential arrives on kubelet's own schedule.
+func (r *LakeReconciler) refreshLakeServiceMounts(ctx context.Context, namespace string, labels map[string]string, version string) {
+	if len(labels) == 0 || version == "" {
+		return
+	}
+	log := logf.FromContext(ctx)
+	var reader client.Reader = r.Client
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels(labels)); err != nil {
+		log.Info("cannot list lake pods to refresh the services mount", "err", err.Error())
+		return
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.DeletionTimestamp != nil || pod.Annotations[lakeServicesSecretVersionAnnotation] == version {
+			continue
+		}
+		patch := client.MergeFrom(pod.DeepCopy())
+		if pod.Annotations == nil {
+			pod.Annotations = map[string]string{}
+		}
+		pod.Annotations[lakeServicesSecretVersionAnnotation] = version
+		if err := r.Patch(ctx, pod, patch); err != nil {
+			log.Info("cannot refresh the services mount", "pod", pod.Name, "err", err.Error())
+		}
+	}
 }
 
 // removeLakeWorkspacesSecret deletes the decision-45 lake-<lake>-workspaces Secret, which nothing
@@ -978,6 +1027,9 @@ func (r *LakeReconciler) removeLakeWorkspacesSecret(ctx context.Context, lake *o
 	}
 	return client.IgnoreNotFound(r.Delete(ctx, &secret))
 }
+
+// lakeServicesChangingPoll is the poll while any service is starting or being deleted.
+const lakeServicesChangingPoll = 2 * time.Second
 
 // lakeServicesPollInterval is the services poll: the Lake's deploySync interval (default 15s,
 // floor 1s), the cadence the decision-45 workspace poll ran at.

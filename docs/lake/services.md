@@ -61,6 +61,17 @@ is logged and retried on the next poll. The store is the Go interface `LakeServi
 services, upsert status); `lake_services_pgx.go` is the pgx implementation, and tests substitute
 an in-memory fake through `LakeReconciler.ServiceStores`.
 
+### Starting fast (lake#197)
+
+Three delays used to sit between *Create* and a Ready row on lake's Services page, each up to a
+poll or more. Each now has a mechanism:
+
+| Delay | Before | Now |
+|---|---|---|
+| Seeing a new or deleted service | the next poll (up to 15 s) | lake sends `NOTIFY lake_services` when it writes a service; `LakeServicesListener` (`lake_services_notify.go`, a leader-only manager Runnable) keeps one `LISTEN lake_services` connection per services-enabled Lake and sends that Lake to the reconciler through `LakeReconciler.ServiceEvents` (a `source.Channel` watch). The poll remains the fallback for a missed notification |
+| Following a starting service | the poll (15 s) | while any service is Provisioning or being deleted, the Lake requeues every 2 s (`lakeServicesChangingPoll`); a settled Lake goes back to the poll |
+| lake seeing the credential | kubelet refreshes a mounted Secret only when it syncs the pod, about once a minute | when the services Secret changes, the operator patches `orama.cloud/services-secret-version: <resourceVersion>` onto every lake pod (listed uncached through `LakeReconciler.APIReader`, so no pod informer); an annotation change makes kubelet sync the pod, and its volumes, now. Nothing restarts. RBAC: `pods` `get`, `list`, `patch` |
+
 ## Present services
 
 Every service becomes **`<lake>-<slug>`** in the Lake namespace, controlled by the Lake, with
@@ -324,7 +335,7 @@ Secret `lake-<lake>-workspaces` is deleted once services run.
 | Phase | When | Message |
 |---|---|---|
 | `Provisioning` | the resource exists and is not ready | `waiting for the Zetta nodes` / `waiting for the Postgres instances` / `waiting for the Kafka cluster` / `waiting for the ClickHouse installation` / `waiting for the ClickHouse Keeper` / `waiting for TiDB <pd\|tikv\|tidb>` / `waiting for the TiDB root password` / `waiting for the Cassandra datacenter` / `waiting for the Valkey cluster` / `waiting for the lake-sqlite pod` / `waiting for the lake-duckdb pod` / `waiting for the lake-polars pods` |
-| `Provisioning` | the resource is ready but its credential is not yet in the Secret | `waiting for the service credential` |
+| `Provisioning` | the resource is ready but its credential is not yet in the Secret | `delivering the connection` |
 | `Provisioning` | a previous resource or data volume of that name is still terminating | `waiting for the previous … to be deleted` |
 | `Ready` | the resource is ready **and** its credential was written in this poll | `service ready` |
 | `Failed` | ownership, validation, a missing upstream operator or the quota refused the service | see above; quota: exactly `service quota reached (<n>)`; `the <kind> operator is not installed on this cluster` |

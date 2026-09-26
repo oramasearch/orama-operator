@@ -469,7 +469,7 @@ func TestServicesCatalogReadyGatingAndCredential(t *testing.T) {
 			h.poll()
 			if c.upstreamSecret != nil {
 				// Upstream ready, but its Secret is not there yet: not Ready, no key.
-				expectStatus(t, store.status(t, c.id), ServicePhaseProvisioning, "waiting for the service credential", c.endpoint)
+				expectStatus(t, store.status(t, c.id), ServicePhaseProvisioning, "delivering the connection", c.endpoint)
 				if _, found := h.credentials()[c.slug+".json"]; found {
 					t.Fatal("credential written before the upstream Secret exists")
 				}

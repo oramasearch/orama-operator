@@ -150,12 +150,21 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "PostgresSchema")
 		os.Exit(1)
 	}
+	// lake NOTIFYs lake_services when it writes a service; the listener wakes the Lake reconciler
+	// then instead of on the next poll (lake#197).
+	servicesListener := controller.NewLakeServicesListener(mgr.GetClient())
+	if err = mgr.Add(servicesListener); err != nil {
+		setupLog.Error(err, "unable to add the lake services listener")
+		os.Exit(1)
+	}
 	if err = (&controller.LakeReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		SQLiteImage: lakeSQLiteImage,
-		DuckDBImage: lakeDuckDBImage,
-		PolarsImage: lakePolarsImage,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		SQLiteImage:   lakeSQLiteImage,
+		DuckDBImage:   lakeDuckDBImage,
+		PolarsImage:   lakePolarsImage,
+		ServiceEvents: servicesListener.Events,
+		APIReader:     mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lake")
 		os.Exit(1)

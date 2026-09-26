@@ -160,6 +160,8 @@ type serviceHarness struct {
 	deletedKinds *[]string
 	// updates counts Update calls, so a test can prove a steady service is never rewritten.
 	updates *int
+	// changing is what the last poll reported: a service still starting or being deleted.
+	changing bool
 }
 
 func newServiceHarness(t *testing.T, lake *oramav1alpha1.Lake, store *fakeServiceStore, objects ...client.Object) *serviceHarness {
@@ -233,7 +235,7 @@ func (h *serviceHarness) poll() {
 	if err := h.client.Get(context.Background(), client.ObjectKey{Name: h.lake.Name}, &lake); err != nil {
 		h.t.Fatalf("get lake: %v", err)
 	}
-	h.reconciler.reconcileLakeServices(context.Background(), &lake, testServiceNamespace, map[string]string{"app.kubernetes.io/name": "lake"})
+	h.changing = h.reconciler.reconcileLakeServices(context.Background(), &lake, testServiceNamespace, map[string]string{"app.kubernetes.io/name": "lake"})
 }
 
 func (h *serviceHarness) zettaCluster(slug string) *oramav1alpha1.OramaZettaCluster {
@@ -341,7 +343,7 @@ func TestServicesZettaCreateAndReadyGating(t *testing.T) {
 	// Every node ready but no admin token yet: not Ready, and no credential key.
 	h.markZettaReady(testZettaSlug, 2)
 	h.poll()
-	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseProvisioning, "waiting for the service credential", endpoint)
+	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseProvisioning, "delivering the connection", endpoint)
 	if _, found := h.credentials()[testZettaSlug+".json"]; found {
 		t.Fatal("credential written before the admin token exists")
 	}
@@ -402,14 +404,34 @@ func TestServicesPostgresCreateAndCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.poll()
-	expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "waiting for the service credential", endpoint)
+	expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "delivering the connection", endpoint)
+	if !h.changing {
+		t.Fatal("a starting service must keep the Lake on the fast poll")
+	}
 
+	// A lake pod: the credential's arrival annotates it so kubelet refreshes the mount (lake#197).
+	h.create(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "lake-prod-abc", Namespace: testServiceNamespace,
+		Labels: map[string]string{"app.kubernetes.io/name": "lake"}}})
 	uri := "postgresql://app:secret@prod-svc-222222222222-rw.lake:5432/app"
 	h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "prod-svc-222222222222-app", Namespace: testServiceNamespace},
 		Data: map[string][]byte{"username": []byte("app"), "password": []byte("secret"), "dbname": []byte("app"), "uri": []byte(uri),
 			"host": []byte("prod-svc-222222222222-rw"), "port": []byte("5432")}})
 	h.poll()
 	expectStatus(t, store.status(t, testPostgresID), ServicePhaseReady, "service ready", endpoint)
+	if h.changing {
+		t.Fatal("a Ready service needs no fast poll")
+	}
+	var pod corev1.Pod
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: "lake-prod-abc"}, &pod); err != nil {
+		t.Fatal(err)
+	}
+	var secret corev1.Secret
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: lakeServicesSecret(h.lake.Name)}, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if got := pod.Annotations[lakeServicesSecretVersionAnnotation]; got == "" || got != secret.ResourceVersion {
+		t.Fatalf("lake pod annotation = %q, want the services Secret version %q", got, secret.ResourceVersion)
+	}
 	raw := h.credentials()[testPostgresSlug+".json"]
 	want := `{"kind":"postgres","host":"prod-svc-222222222222-rw.lake.svc.cluster.local","port":5432,"database":"app","user":"app","password":"secret","uri":"` + uri + `"}`
 	if string(raw) != want {
