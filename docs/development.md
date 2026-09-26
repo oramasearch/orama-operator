@@ -57,9 +57,13 @@ The Lake managed-services store runs its pgx SQL against the vendored schema wit
 rolled back, so it creates and drops nothing: `go test ./internal/controller/ -run PgxStore`. See
 [services](lake/services.md#how-to-verify).
 
-lake-sqlite, the web service behind the `sqlite` service kind, is its own private repository
-([oramasearch/lake-sqlite](https://github.com/oramasearch/lake-sqlite)); this repository only runs
-its image ([`lake/lake-sqlite.md`](lake/lake-sqlite.md)).
+lake-sqlite, lake-duckdb and lake-polars, the web services behind the `sqlite`, `duckdb` and
+`polars` service kinds, are each their own private repository
+([oramasearch/lake-sqlite](https://github.com/oramasearch/lake-sqlite),
+[oramasearch/lake-duckdb](https://github.com/oramasearch/lake-duckdb),
+[oramasearch/lake-polars](https://github.com/oramasearch/lake-polars)); this repository only runs
+their images ([`lake/lake-sqlite.md`](lake/lake-sqlite.md), [`lake/lake-duckdb.md`](lake/lake-duckdb.md),
+[`lake/lake-polars.md`](lake/lake-polars.md)).
 
 The sealed-delivery admission suite also uses these assets and requires `helm` to render the
 operator's actual RBAC. It installs both pinned k0s policies and the tenant grant, then proves namespace

@@ -117,9 +117,9 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 		}
 	}
 
-	// Migrations 0025_service_catalog and 0026_sqlite_services: every catalog kind is a valid row
+	// Migrations 0025_service_catalog, 0026_sqlite_services and 0027_analytics_services: every catalog kind is a valid row
 	// and reads back as that kind; anything else is still refused by the kind check.
-	for i, kind := range []string{serviceKindKafka, serviceKindClickHouse, serviceKindTiDB, serviceKindCassandra, serviceKindValkey, serviceKindSQLite} {
+	for i, kind := range []string{serviceKindKafka, serviceKindClickHouse, serviceKindTiDB, serviceKindCassandra, serviceKindValkey, serviceKindSQLite, serviceKindDuckDB, serviceKindPolars} {
 		id := fmt.Sprintf("c0000000-0000-4000-8000-00000000000%d", i)
 		if _, err := tx.Exec(ctx, insert, id, customerID, kind, kind, fmt.Sprintf("svc-c0000000000%d", i), false, `{}`, "present", 1); err != nil {
 			t.Fatalf("seed %s service: %v", kind, err)

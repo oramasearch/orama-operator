@@ -1,14 +1,17 @@
 # Lake managed services
 
-How a lake customer gets its own Zetta, Postgres, Kafka, ClickHouse, TiDB, Cassandra, Valkey and
-SQLite services without lake having any Kubernetes access: lake writes the `services` table in its
-control Postgres, the operator creates one Lake-owned resource per service (for Kafka through
-Valkey, the resource of that kind's upstream operator — [the catalog](#the-catalog-decision-47);
-for SQLite, a StatefulSet of [lake-sqlite](lake-sqlite.md), which the operator runs itself —
-[SQLite](#sqlite-decision-47-amended)), writes what it observed to `service_status`, and hands lake
-each service's connection through one mounted Secret. The authoritative contract is lake's
-[`docs/control-plane/services.md`](https://github.com/oramasearch/lake/blob/17b4ad57f2571c30516f7ecb85c03a4165e32e59/docs/control-plane/services.md)
-(liquid-bridge decisions 46 and 47, amended; lake branch `feat/sqlite-service`); this page is the
+How a lake customer gets its own Zetta, Postgres, Kafka, ClickHouse, TiDB, Cassandra, Valkey,
+SQLite, DuckDB and Polars services without lake having any Kubernetes access: lake writes the
+`services` table in its control Postgres, the operator creates one Lake-owned resource per service
+(for Kafka through Valkey, the resource of that kind's upstream operator —
+[the catalog](#the-catalog-decision-47); for SQLite, DuckDB and Polars, a StatefulSet of
+[lake-sqlite](lake-sqlite.md), [lake-duckdb](lake-duckdb.md) or [lake-polars](lake-polars.md), which
+the operator runs itself — [SQLite](#sqlite-decision-47-amended),
+[DuckDB and Polars](#duckdb-and-polars-lake195)), writes what it observed to `service_status`, and
+hands lake each service's connection through one mounted Secret. The authoritative contract is
+lake's
+[`docs/control-plane/services.md`](https://github.com/oramasearch/lake/blob/aee5cdada63cb6fed886c67a6fff86123b742bf5/docs/control-plane/services.md)
+(liquid-bridge decisions 46 and 47, amended; lake#195; lake branch `feat/duckdb-polars-kinds`); this page is the
 operator's side of it. Field definitions are in the
 [`Lake` CRD reference](../crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service)
 (`spec.services`). It supersedes [workspaces](workspaces.md): a customer's workspace is now its
@@ -23,6 +26,8 @@ spec:
     maxServices: 20          # 0 = no limit
     zettaImage: oramasearch/zetta:<tag>
     sqliteImage: oramasearch/lake-sqlite:<tag>   # optional; the chart's lakeServices.sqliteImage otherwise
+    duckdbImage: oramasearch/lake-duckdb:<tag>   # optional; the chart's lakeServices.duckdbImage otherwise
+    polarsImage: oramasearch/lake-polars:<tag>   # optional; the chart's lakeServices.polarsImage otherwise
 ```
 
 Services need the control-plane Postgres (`spec.postgres.enabled`, the default); they do not need
@@ -34,8 +39,8 @@ and `workspaces.storage.storageClassName` still shape every Zetta service's node
 ## The poll
 
 The Lake reconciler polls, once the Lake's schema has applied (the tables come with migration
-`0024_services`; `0025_service_catalog` widens `kind` to the catalog and `0026_sqlite_services` adds
-`sqlite`), at the Lake's `spec.deploySync.interval` (default `15s`, floor `1s`) — the
+`0024_services`; `0025_service_catalog` widens `kind` to the catalog, `0026_sqlite_services` adds
+`sqlite` and `0027_analytics_services` adds `duckdb` and `polars`), at the Lake's `spec.deploySync.interval` (default `15s`, floor `1s`) — the
 cadence the workspace poll used. Each poll (`internal/controller/lake_services.go`):
 
 1. reads Secret `lake-<lake>-controldb-app` key `uri` (the CloudNativePG application Secret of
@@ -94,8 +99,9 @@ Anything else already holding the name fails the service and is never modified o
 | a cluster of that name that is not this Lake's service (another controller, another Lake, another service id, or a workspace cluster claimed by a non-default service) | `OramaZettaCluster <ns>/<name> exists and is not this Lake's service`, or `CloudNativePG Cluster <ns>/<name> exists and is not this Lake's service` |
 | a new Zetta service whose data PVC `data-<cluster>-zetta-<n>` already exists without its cluster | `PersistentVolumeClaim <ns>/<pvc> exists and is not this Lake's service` |
 | a malformed row (slug, default on a non-Zetta service, missing customer, a Lake name too long for the kind's derived names, bad spec) | the specific reason, e.g. `spec.instances must be between 1 and 3` |
-| a kind this operator does not run | `unknown service kind "<kind>": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey, sqlite` |
+| a kind this operator does not run | `unknown service kind "<kind>": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey, sqlite, duckdb, polars` |
 | a sqlite service whose `spec.instances` is not 1 | `a sqlite service has exactly one instance, because SQLite has one writer; spec.instances is <n>` |
+| a duckdb service whose `spec.instances` is not 1 | `a duckdb service has exactly one instance, because one DuckDB process owns its database file; spec.instances is <n>` |
 
 ## The catalog (decision 47)
 
@@ -179,8 +185,8 @@ upstream resources are read uncached, so a missing CRD never blocks the manager'
 11-character revision-hash suffix, and a Lake name that would push it past 63 characters fails the
 service with `lake name "<lake>" is too long for service resource names`: Zetta and Postgres 15
 characters, Kafka 16 (`-kafka-bootstrap`), TiDB 16 (`<name>-tikv` + hash), Valkey 22
-(`valkey-<name>-2-2` + hash), ClickHouse 26 (`chk-<name>-keeper-0-0` + hash), SQLite 11 (the
-StatefulSet `<name>`'s revision hash, so Zetta's 15 is the bound). Cassandra's derived names come
+(`valkey-<name>-2-2` + hash), ClickHouse 26 (`chk-<name>-keeper-0-0` + hash), SQLite, DuckDB and
+Polars 11 (the StatefulSet `<name>`'s revision hash, so Zetta's 15 is the bound). Cassandra's derived names come
 from the slug alone. With a 16-character slug, ClickHouse allows Lake names up to 20
 characters and every other kind at least 24.
 
@@ -190,7 +196,8 @@ SQLite has no upstream operator, so the Orama operator runs it directly behind
 **[lake-sqlite](lake-sqlite.md)**, a small web service in its own private repository (`oramasearch/lake-sqlite`,
 image `oramasearch/lake-sqlite`) over one SQLite database. The driver is
 [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite) — pure Go, no cgo, **BSD-3-Clause**. The
-kind goes through the catalog machinery (`internal/controller/lake_service_sqlite.go`), so
+kind goes through the catalog machinery (`internal/controller/lake_service_wrapper.go`, with
+SQLite's values in `lake_service_sqlite.go`), so
 ownership, labels, the refusal of foreign objects and Secrets, the quota, the old-volume check,
 status and the deletion order are exactly the catalog's; only the objects differ, and they are
 built-in Kubernetes kinds rather than an upstream operator's.
@@ -233,6 +240,54 @@ that ClusterIP Service; nothing resolves the pod by name). The generated token l
 replication and no backup: **the volume is the only copy** of a SQLite service's data, and deleting
 the service deletes it.
 
+## DuckDB and Polars (lake#195)
+
+DuckDB and Polars have no upstream operator we would use either (lake `/lake-service` skill, step
+1: the commercial Polars On-Prem product and its operator are excluded by their terms), so the
+Orama operator runs each behind a small web service of ours, in its own private repository and
+private image, exactly as it runs lake-sqlite:
+
+- **[lake-duckdb](lake-duckdb.md)** (`oramasearch/lake-duckdb`), *powered by DuckDB*: lake-sqlite's
+  API over one DuckDB file, in Go with `github.com/duckdb/duckdb-go/v2` (MIT; DuckDB 1.5.5, MIT,
+  linked statically). The engine is locked down before it answers: `enable_external_access=false`,
+  no extension install or autoload, no community extensions, memory and thread limits, then
+  `lock_configuration=true`; the request timeout interrupts a statement.
+- **[lake-polars](lake-polars.md)** (`oramasearch/lake-polars`), *powered by Polars*: analytics
+  compute, in Rust with the open-source `polars` crate (MIT). `POST /v1/datasets/<name>` uploads
+  CSV, JSONL or Parquet (stored as Parquet), `GET /v1/datasets` lists them, `DELETE
+  /v1/datasets/<name>` removes one, and `POST /v1/query` `{sql}` runs Polars SQL over them
+  (`{columns, rows}`, 10,000-row cap, `truncated`). Table functions that read files are refused
+  before Polars sees the query.
+
+Both go through the same wrapper machinery as SQLite (`internal/controller/lake_service_wrapper.go`;
+their values in `lake_service_duckdb.go` and `lake_service_polars.go`): the same ownership, labels,
+refusal of foreign objects and Secrets, quota, old-volume check, status, deletion order, pod
+security and applied-hash template writes. What differs:
+
+| | DuckDB | Polars |
+|---|---|---|
+| Resources written | `StatefulSet` `<name>`, ClusterIP `Service` `<name>` (8080 → `http`), Secret `<name>-credentials` | the same |
+| `instances` → | must be 1 (the default); anything else fails the service — one DuckDB process owns its file | the StatefulSet's `replicas` (1–3): workers sharing nothing, each with its own volume, behind the one Service. Datasets are per worker until shared storage exists (lake#196), so 1 is the useful value. A StatefulSet, not a Deployment, so a volume stays with its pod |
+| `storage_gi` → | `volumeClaimTemplates` `data` (`ReadWriteOnce`), mounted at `/data`; the database is `/data/main.duckdb` (WAL and spill files beside it) | the same claim template, one `data-<name>-<i>` per worker, at `/data`; each dataset is `/data/<name>.parquet` |
+| Pod | container `lake-duckdb`, image `spec.services.duckdbImage`, then `--lake-duckdb-image` (the chart's `lakeServices.duckdbImage`), then `oramasearch/lake-duckdb:0.1.0`; requests `50m` CPU, `256Mi` memory, limit `2Gi`, handed over as `LAKE_DUCKDB_MEMORY_LIMIT` (DuckDB's `memory_limit` is half of it, the Go heap a quarter); `LAKE_DUCKDB_THREADS=2` (no CPU limit, so DuckDB would otherwise start a thread per node CPU); `LAKE_DUCKDB_TOKEN` from the Secret | container `lake-polars`, image `spec.services.polarsImage`, then `--lake-polars-image` (`lakeServices.polarsImage`), then `oramasearch/lake-polars:0.1.0`; requests `50m` CPU, `256Mi` memory, limit `2Gi`, handed over as `LAKE_POLARS_MEMORY_LIMIT` (an upload is capped at a quarter of it); `LAKE_POLARS_THREADS=2`; `TMPDIR=/tmp`; `LAKE_POLARS_ADDR=0.0.0.0:8080`; `LAKE_POLARS_TOKEN` from the Secret |
+| Both | the Lake's `pullSecretName`; startup, readiness and liveness probes on `GET /healthz`; uid/gid/fsGroup `65532`, `runAsNonRoot`, read-only root filesystem, no privilege escalation, every capability dropped, `RuntimeDefault` seccomp, no service-account token; a `1Gi` `emptyDir` at `/tmp`; `terminationGracePeriodSeconds` 45 | |
+| Ready when | `status.readyReplicas` is 1 (`/healthz` runs `SELECT 1`) and the credential is written | `status.readyReplicas` equals `instances` (every worker's `/healthz` lists and writes its directory) and the credential is written |
+| Credential | `{"kind":"duckdb","endpoint":…,"token":…,"database":"main"}` | `{"kind":"polars","endpoint":…,"token":…}` |
+| `endpoint` | `http://<name>.<ns>.svc.cluster.local:8080` | the same |
+| PVCs deleted after the StatefulSet, selected by | `app.kubernetes.io/name=lake-duckdb`, `app.kubernetes.io/instance=<name>`, `orama.cloud/service-id=<id>` (`data-<name>-0`) | `app.kubernetes.io/name=lake-polars`, the same instance and service id (every `data-<name>-<i>`, including a worker's claim left behind after `instances` went down) |
+
+Changing a Polars service's `instances` scales the StatefulSet in place (the claim template is
+immutable, `storage_gi` never resizes). Scaling down keeps the removed workers' claims, and their
+datasets, until the service is deleted or scaled back up. A new image rolls every pod of that kind
+once, as for SQLite.
+
+**Where this departs from the contract or adds to it:** the same as SQLite (the ClusterIP Service is
+the StatefulSet's governing Service; the token is key `token` of `<name>-credentials`). lake-duckdb's
+`/v1/exec` answers `last_insert_id: null` (DuckDB has no rowid to report), binds a JSON boolean as
+`BOOLEAN` rather than 1/0, and adds `403 forbidden` for a refused file, extension or network access
+and `409 conflict` for a transaction conflict. The operator does not bound CPU (neither does it for
+SQLite); both binaries bound their own thread pools to 2.
+
 ## Credentials
 
 Secret **`lake-<lake>-services`** (controlled by the Lake) holds one key per Ready service,
@@ -247,6 +302,8 @@ Secret **`lake-<lake>-services`** (controlled by the Lake) holds one key per Rea
 {"kind":"cassandra","endpoint":"svc-0123456789ab-svc-0123456789ab-service.lake.svc.cluster.local:9042","host":"svc-0123456789ab-svc-0123456789ab-service.lake.svc.cluster.local","port":9042,"datacenter":"dc1","user":"svc-0123456789ab-superuser","password":"…"}
 {"kind":"valkey","endpoint":"valkey-prod-svc-0123456789ab.lake.svc.cluster.local:6379","host":"valkey-prod-svc-0123456789ab.lake.svc.cluster.local","port":6379,"user":"app","password":"…","cluster":true}
 {"kind":"sqlite","endpoint":"http://prod-svc-0123456789ab.lake.svc.cluster.local:8080","token":"<64 hex>","database":"main"}
+{"kind":"duckdb","endpoint":"http://prod-svc-0123456789ab.lake.svc.cluster.local:8080","token":"<64 hex>","database":"main"}
+{"kind":"polars","endpoint":"http://prod-svc-0123456789ab.lake.svc.cluster.local:8080","token":"<64 hex>"}
 ```
 
 `uri` is CloudNativePG's own, copied unchanged; TiDB's is built from the host and the generated
@@ -266,12 +323,12 @@ Secret `lake-<lake>-workspaces` is deleted once services run.
 
 | Phase | When | Message |
 |---|---|---|
-| `Provisioning` | the resource exists and is not ready | `waiting for the Zetta nodes` / `waiting for the Postgres instances` / `waiting for the Kafka cluster` / `waiting for the ClickHouse installation` / `waiting for the ClickHouse Keeper` / `waiting for TiDB <pd\|tikv\|tidb>` / `waiting for the TiDB root password` / `waiting for the Cassandra datacenter` / `waiting for the Valkey cluster` / `waiting for the lake-sqlite pod` |
+| `Provisioning` | the resource exists and is not ready | `waiting for the Zetta nodes` / `waiting for the Postgres instances` / `waiting for the Kafka cluster` / `waiting for the ClickHouse installation` / `waiting for the ClickHouse Keeper` / `waiting for TiDB <pd\|tikv\|tidb>` / `waiting for the TiDB root password` / `waiting for the Cassandra datacenter` / `waiting for the Valkey cluster` / `waiting for the lake-sqlite pod` / `waiting for the lake-duckdb pod` / `waiting for the lake-polars pods` |
 | `Provisioning` | the resource is ready but its credential is not yet in the Secret | `waiting for the service credential` |
 | `Provisioning` | a previous resource or data volume of that name is still terminating | `waiting for the previous … to be deleted` |
 | `Ready` | the resource is ready **and** its credential was written in this poll | `service ready` |
 | `Failed` | ownership, validation, a missing upstream operator or the quota refused the service | see above; quota: exactly `service quota reached (<n>)`; `the <kind> operator is not installed on this cluster` |
-| `Deleting` | an absent service's resources are still going | `deleting the Zetta cluster`, `deleting the Zetta data volumes`, `deleting the Postgres cluster`, `deleting the Postgres data volumes`, and for the catalog `deleting the <Kafka\|ClickHouse\|TiDB\|Cassandra\|Valkey\|SQLite> cluster`, then `… data volumes` |
+| `Deleting` | an absent service's resources are still going | `deleting the Zetta cluster`, `deleting the Zetta data volumes`, `deleting the Postgres cluster`, `deleting the Postgres data volumes`, and for the catalog `deleting the <Kafka\|ClickHouse\|TiDB\|Cassandra\|Valkey\|SQLite\|DuckDB\|Polars> cluster`, then `… data volumes` |
 | `Deleted` | nothing remains | `service deleted` |
 
 `endpoint` is written once the resource exists and is this service's (it is empty on `Failed` and
@@ -288,12 +345,13 @@ volumes. `observed_generation` is the `generation` of the row the phase describe
   when the service's status carries an endpoint.
 - **Postgres:** check ownership; delete the CloudNativePG `Cluster`. Its PVCs (label
   `cnpg.io/cluster=<cluster>`) are owned by it and garbage-collected.
-- **Catalog kinds and SQLite:** check the ownership of every object the kind can write, and
-  delete them all in one pass, primary first (`Kafka`, `KafkaNodePool`, `KafkaUser`;
-  `ClickHouseInstallation`, `ClickHouseKeeperInstallation`; SQLite's `StatefulSet`, then its
+- **Catalog kinds, SQLite, DuckDB and Polars:** check the ownership of every object the kind can
+  write, and delete them all in one pass, primary first (`Kafka`, `KafkaNodePool`, `KafkaUser`;
+  `ClickHouseInstallation`, `ClickHouseKeeperInstallation`; a wrapper kind's `StatefulSet`, then its
   `Service`), with background propagation. Only once every one is gone — so nothing can recreate a
-  claim — delete the PVCs matching the kind's selector above (for SQLite, `data-<name>-0`, and only
-  when it carries the StatefulSet's labels); only once those are gone too, delete the generated
+  claim — delete the PVCs matching the kind's selector above (for SQLite and DuckDB,
+  `data-<name>-0`; for Polars every worker's `data-<name>-<i>`; and only when they carry the
+  StatefulSet's labels); only once those are gone too, delete the generated
   password or token Secret (when this service owns it), so the credential is the last thing to go.
   A PVC is deleted only when the service's status carries an endpoint, which the operator writes
   for a resource it owns; the first deletion pass writes it too. A kind whose operator is not
@@ -309,7 +367,7 @@ A resource that fails the ownership rule is never deleted; the service is `Faile
 `spec.services.maxServices` (falling back to `spec.workspaces.maxWorkspaces`; `0` = no limit) caps
 the live services: Lake-controlled `OramaZettaCluster`s, CloudNativePG `Cluster`s and the primary
 resource of each catalog kind (`Kafka`, `ClickHouseInstallation`, `TidbCluster`,
-`K8ssandraCluster`, `ValkeyCluster`, and SQLite's `StatefulSet`; a kind that is not installed counts
+`K8ssandraCluster`, `ValkeyCluster`, and the `StatefulSet` of SQLite, DuckDB and Polars; a kind that is not installed counts
 none) labelled
 `orama.cloud/lake=<lake>` with a service-id (or a workspace-id, for unadopted workspaces), not being
 deleted and not absent in the current read. A **new** service over the cap creates nothing and is
@@ -321,8 +379,9 @@ lowered. lake's own per-customer cap (`LAKE_SERVICES_PER_CUSTOMER`) is separate.
 
 Disabling services stops the poll and removes the mount and env; it deletes nothing. Deleting the
 Lake deletes every Lake-controlled `OramaZettaCluster` through the Lake finalizer and
-garbage-collects the CloudNativePG Clusters, the catalog kinds' upstream resources, SQLite's
-StatefulSets and Services, and the Secrets; Zetta data PVCs, SQLite's `data-<name>-0`, and the PVCs
+garbage-collects the CloudNativePG Clusters, the catalog kinds' upstream resources, the
+StatefulSets and Services of SQLite, DuckDB and Polars, and the Secrets; Zetta data PVCs, the wrapper
+kinds' `data-<name>-<i>`, and the PVCs
 that Strimzi, TiDB Operator, cass-operator and the Valkey operator keep, are not deleted by that
 path. The Lake's `spec.zetta` reconcile skips service
 clusters.
@@ -338,8 +397,8 @@ and `valkey.io` `valkeyclusters` — as kubebuilder markers in `lake_service_cat
 (`make manifests` regenerates `config/rbac/role.yaml`) and in the chart's hand-maintained
 ClusterRole. `go test ./cmd/...` (`TestChartRBACCoversGeneratedRole`) fails when the chart grants
 less than the markers ask for. None of these kinds is watched, so no CRD of theirs is needed for the
-manager to start. SQLite needs nothing new: the manager already manages `statefulsets`, `services`,
-`secrets` and `persistentvolumeclaims`.
+manager to start. SQLite, DuckDB and Polars need nothing new: the manager already manages `statefulsets`,
+`services`, `secrets` and `persistentvolumeclaims`.
 
 ## Known limits
 
@@ -358,11 +417,17 @@ manager to start. SQLite needs nothing new: the manager already manages `statefu
 - **Valkey is a preview**: valkey-operator 0.6.0's README says it is not ready for production.
 - **SQLite has one copy.** One pod, one `ReadWriteOnce` volume, no replication and no backup yet:
   a lost volume loses the database, and the service is unavailable while its pod restarts or moves.
+  The same holds for DuckDB, and for each Polars worker's datasets.
+- **Polars datasets are per worker** until shared storage (lake#196): with `instances` above 1 an
+  upload lands on one worker and a query on any, so 1 is the only useful value.
 - The upstream operators themselves (and cert-manager, which K8ssandra needs) are installed by the
   `helmfile.yaml`; until they are, each kind's services report the not-installed message.
 - The catalog has been exercised against the fake client and validated against the pinned CRD
   schemas only, not yet against the running upstream operators. The SQLite kind has been exercised
   against the fake client only; the lake-sqlite image has not yet been built or run on a cluster.
+  The DuckDB and Polars kinds have been exercised against the fake client only; their images
+  (`oramasearch/lake-duckdb:0.1.0`, `oramasearch/lake-polars:0.1.0`) must be built and pushed
+  (private) before either kind can start.
 
 ## How to verify
 
@@ -376,6 +441,7 @@ LAKE_SERVICES_TEST_POSTGRES=1 go test ./internal/controller/ -run PgxStore
 kubectl -n lake get oramazettacluster,clusters.postgresql.cnpg.io -l orama.cloud/lake=prod
 kubectl -n lake get kafka,kafkanodepool,kafkauser,chi,chk,tidbcluster,k8ssandracluster,valkeycluster -l orama.cloud/lake=prod
 kubectl -n lake get statefulset,service,pvc -l orama.cloud/service-kind=sqlite
+kubectl -n lake get statefulset,service,pvc -l 'orama.cloud/service-kind in (duckdb,polars)'
 kubectl -n lake get secret lake-prod-services -o jsonpath='{.data}' | jq 'keys'
 kubectl -n lake exec deploy/lake-prod -- ls /var/run/lake/services
 ```
@@ -384,7 +450,7 @@ The unit tests (`lake_services_test.go`) cover Zetta and Postgres creation, Read
 credential, adoption of a `ws-` cluster keeping its data, refusal of foreign resources and
 unproven volumes, the deletion order and `Deleted`, the quota message and the fact that it never
 refuses existing services, status upserts only on change, the "not yet" app Secret, and the lake
-Deployment's mount and env. `lake_service_catalog_test.go` runs every catalog kind, SQLite included, through: the
+Deployment's mount and env. `lake_service_catalog_test.go` runs every catalog kind, SQLite, DuckDB and Polars included, through: the
 resources built with the right GVK, replicas and storage, labels and ownership; no update on a
 steady poll and no password rotation; Ready gated on the upstream status (and a partly ready
 status) plus the credential; the exact credential fields; the deletion order (upstream objects,
@@ -396,9 +462,14 @@ and the per-kind name length. `lake_service_sqlite_test.go` adds SQLite's own: t
 pod, probes, resources, security context, Service and 64-hex token; `instances` other than 1
 failing; the image order (Lake, flag, default); an image change rewriting the template once and a
 steady pass after it writing nothing; a claim without the StatefulSet's labels surviving deletion;
-and the quota. The pgx test also shows the vendored schema (`0025_service_catalog` and
-`0026_sqlite_services`) accepts a row of every catalog kind and `sqlite`, which reads back as that
-kind, and still refuses any other.
+and the quota. `lake_service_analytics_test.go` adds DuckDB's and Polars': the StatefulSet (one
+pod, or `instances` workers), pod, probes, resources, security context, env, Service and token;
+DuckDB's `instances` other than 1 failing; Polars scaling with `instances` and Ready only when
+every worker is; every worker's claim deleted with the service; the image order; and an image
+change rewriting the template once. The pgx test also shows the vendored schema
+(`0025_service_catalog`, `0026_sqlite_services` and `0027_analytics_services`) accepts a row of
+every catalog kind, `sqlite`, `duckdb` and `polars`, which reads back as that kind, and still
+refuses any other.
 
 ## How to change
 
@@ -414,5 +485,10 @@ kind, and still refuses any other.
 - **Deletion**: `deleteLakeService` and `deleteCatalogService`; keep the ownership check before
   every delete, Zetta PVCs before the cluster, a catalog kind's PVCs only after its resources and
   its generated Secret only after its PVCs, and `Deleted` only once nothing remains.
-- **lake-sqlite itself**: see [lake-sqlite.md](lake-sqlite.md); its API is part of the contract.
+- **A new wrapper kind** (a service of ours rather than an upstream operator's): a
+  `wrapperServiceKind` value in its own `lake_service_<kind>.go`, registered like a catalog kind,
+  plus its image in `serviceImage`, a Lake CRD field, a flag and a chart value.
+- **lake-sqlite, lake-duckdb, lake-polars themselves**: see [lake-sqlite.md](lake-sqlite.md),
+  [lake-duckdb.md](lake-duckdb.md) and [lake-polars.md](lake-polars.md); their APIs are part of the
+  contract.
 - **Schema**: the tables arrive with lake's `db/schema.sql`; see [schema.md](schema.md).

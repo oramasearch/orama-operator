@@ -1357,3 +1357,19 @@ CREATE TABLE IF NOT EXISTS sqlite_services_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0026_sqlite_services') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- DuckDB and Polars services (migration 0027): each behind a small wrapper service of ours that
+-- the Orama operator runs, like lake-sqlite (docs/control-plane/services.md, liquid-bridge
+-- decision 47, amended; lake#195). Re-adding the constraint is idempotent.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE services DROP CONSTRAINT IF EXISTS service_kind_check;
+ALTER TABLE services ADD CONSTRAINT service_kind_check
+    CHECK (kind IN ('zetta', 'postgres', 'kafka', 'clickhouse', 'tidb', 'cassandra', 'valkey',
+                    'sqlite', 'duckdb', 'polars'));
+
+CREATE TABLE IF NOT EXISTS analytics_services_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0027_analytics_services') ON CONFLICT DO NOTHING;

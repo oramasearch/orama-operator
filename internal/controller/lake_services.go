@@ -35,8 +35,9 @@ import (
 // observed to service_status. A customer's decision-45 workspace cluster (<lake>-ws-<12 hex>) is
 // adopted by that customer's default Zetta service, so it keeps its data. The other kinds of the
 // catalog (decision 47: Kafka, ClickHouse, TiDB, Cassandra, Valkey) are written for their upstream
-// operators by lake_service_catalog.go, and SQLite (decision 47, amended), which the operator runs
-// itself behind lake-sqlite, goes through the same code (lake_service_sqlite.go).
+// operators by lake_service_catalog.go, and SQLite, DuckDB and Polars (decision 47, amended;
+// lake#195), which the operator runs itself behind lake-sqlite, lake-duckdb and lake-polars, go
+// through the same code (lake_service_wrapper.go).
 const (
 	ServicePhaseProvisioning = "Provisioning"
 	ServicePhaseReady        = "Ready"
@@ -185,20 +186,28 @@ func serviceZettaImage(lake *oramav1alpha1.Lake) string {
 	return lake.Spec.Workspaces.Image
 }
 
-// serviceImage is the image of a kind the Orama operator runs itself, "" for the others. For
-// sqlite: spec.services.sqliteImage, then the operator's --lake-sqlite-image, then
-// DefaultLakeSQLiteImage.
+// serviceImage is the image of a kind the Orama operator runs itself, "" for the others: the
+// Lake's spec.services.<kind>Image, then the operator's --lake-<kind>-image flag, then the built-in
+// default (DefaultLakeSQLiteImage, DefaultLakeDuckDBImage, DefaultLakePolarsImage).
 func (r *LakeReconciler) serviceImage(lake *oramav1alpha1.Lake, kind string) string {
-	if kind != serviceKindSQLite {
+	var lakeImage, flagImage, fallback string
+	switch kind {
+	case serviceKindSQLite:
+		lakeImage, flagImage, fallback = lake.Spec.Services.SQLiteImage, r.SQLiteImage, DefaultLakeSQLiteImage
+	case serviceKindDuckDB:
+		lakeImage, flagImage, fallback = lake.Spec.Services.DuckDBImage, r.DuckDBImage, DefaultLakeDuckDBImage
+	case serviceKindPolars:
+		lakeImage, flagImage, fallback = lake.Spec.Services.PolarsImage, r.PolarsImage, DefaultLakePolarsImage
+	default:
 		return ""
 	}
-	if lake.Spec.Services.SQLiteImage != "" {
-		return lake.Spec.Services.SQLiteImage
+	if lakeImage != "" {
+		return lakeImage
 	}
-	if r.SQLiteImage != "" {
-		return r.SQLiteImage
+	if flagImage != "" {
+		return flagImage
 	}
-	return DefaultLakeSQLiteImage
+	return fallback
 }
 
 // serviceQuota is spec.services.maxServices, falling back to spec.workspaces.maxWorkspaces; 0 is
@@ -282,6 +291,9 @@ func validateService(lake *oramav1alpha1.Lake, svc *LakeService) (lakeServiceSpe
 	spec, err := parseServiceSpec(svc.Spec)
 	if err == nil && svc.Kind == serviceKindSQLite && spec.Instances != 1 {
 		return spec, fmt.Errorf("a sqlite service has exactly one instance, because SQLite has one writer; spec.instances is %d", spec.Instances)
+	}
+	if err == nil && svc.Kind == serviceKindDuckDB && spec.Instances != 1 {
+		return spec, fmt.Errorf("a duckdb service has exactly one instance, because one DuckDB process owns its database file; spec.instances is %d", spec.Instances)
 	}
 	return spec, err
 }

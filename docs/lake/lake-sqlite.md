@@ -6,7 +6,8 @@ repository: **[oramasearch/lake-sqlite](https://github.com/oramasearch/lake-sqli
 repository on 2026-09-26 under the umbrella rule that every service is its own private repo with its
 own private image.
 
-This operator only runs it: `internal/controller/lake_service_sqlite.go` writes one StatefulSet,
+This operator only runs it: `internal/controller/lake_service_wrapper.go`, with the SQLite values in
+`lake_service_sqlite.go`, writes one StatefulSet,
 Service and credential Secret per SQLite service ([`services.md`](services.md)). The image is
 `spec.services.sqliteImage` on the Lake, else `--lake-sqlite-image`, else the chart's
 `lakeServices.sqliteImage` (currently `oramasearch/lake-sqlite:0.1.1`). To release a new version,

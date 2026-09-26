@@ -19,10 +19,15 @@ serviceAccount:
 
 # Images the operator itself runs for lake's managed services (docs/lake/services.md).
 # sqliteImage is lake-sqlite (docs/lake/lake-sqlite.md), the web service behind the sqlite kind;
-# a Lake's spec.services.sqliteImage overrides it. The image is private: a Lake's
-# spec.pullSecretName is the pull secret its services use.
+# a Lake's spec.services.sqliteImage overrides it. duckdbImage is lake-duckdb
+# (docs/lake/lake-duckdb.md) behind the duckdb kind and polarsImage lake-polars
+# (docs/lake/lake-polars.md) behind the polars kind, overridden by spec.services.duckdbImage and
+# spec.services.polarsImage. The images are private: a Lake's spec.pullSecretName is the pull
+# secret its services use.
 lakeServices:
   sqliteImage: oramasearch/lake-sqlite:0.1.1
+  duckdbImage: oramasearch/lake-duckdb:0.1.0
+  polarsImage: oramasearch/lake-polars:0.1.0
 
 controlPlane:
   service:

@@ -56,10 +56,10 @@ type catalogCase struct {
 
 func (c catalogCase) name() string { return serviceResourceName("prod", c.slug) }
 
-// spec is the service spec a test asks for, with instances pinned to 1 for SQLite, which has one
-// writer.
+// spec is the service spec a test asks for, with instances pinned to 1 for SQLite and DuckDB, which
+// have one writer.
 func (c catalogCase) spec(spec string) string {
-	if c.kind == serviceKindSQLite {
+	if c.kind == serviceKindSQLite || c.kind == serviceKindDuckDB {
 		return strings.Replace(spec, `"instances":3`, `"instances":1`, 1)
 	}
 	return spec
@@ -293,6 +293,8 @@ func catalogCases() []catalogCase {
 			claimLabels: map[string]string{valkeyClusterLabel: "prod-svc-aaaaaaaaaaaa", "app.kubernetes.io/managed-by": "valkey-operator"},
 		},
 		sqliteCatalogCase(),
+		duckdbCatalogCase(),
+		polarsCatalogCase(),
 	}
 }
 
@@ -713,9 +715,9 @@ func TestServicesUnknownKindFails(t *testing.T) {
 	h := newServiceHarness(t, serviceTestLake(), store)
 	h.poll()
 	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseFailed,
-		`unknown service kind "mongodb": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey, sqlite`, "")
+		`unknown service kind "mongodb": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey, sqlite, duckdb, polars`, "")
 	expectStatus(t, store.status(t, testPostgresID), ServicePhaseFailed,
-		`unknown service kind "mysql": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey, sqlite`, "")
+		`unknown service kind "mysql": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey, sqlite, duckdb, polars`, "")
 }
 
 func TestServicesCatalogNameLengthPerKind(t *testing.T) {

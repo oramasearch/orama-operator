@@ -831,6 +831,7 @@ UNION ALL SELECT 'custodial_identity_guard=' || count(*) FROM custodial_identity
 UNION ALL SELECT 'services_guard=' || count(*) FROM services_guard
 UNION ALL SELECT 'service_catalog_guard=' || count(*) FROM service_catalog_guard
 UNION ALL SELECT 'sqlite_services_guard=' || count(*) FROM sqlite_services_guard
+UNION ALL SELECT 'analytics_services_guard=' || count(*) FROM analytics_services_guard
 UNION ALL SELECT 'auth_app_guard=' || count(*) FROM auth_app_guard
 UNION ALL SELECT 'drive_guard=' || count(*) FROM drive_guard
 UNION ALL SELECT 'forge_guard=' || count(*) FROM forge_guard
