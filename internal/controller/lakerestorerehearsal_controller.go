@@ -835,6 +835,7 @@ UNION ALL SELECT 'analytics_services_guard=' || count(*) FROM analytics_services
 UNION ALL SELECT 'stores_guard=' || count(*) FROM stores_guard
 UNION ALL SELECT 'credentials_guard=' || count(*) FROM credentials_guard
 UNION ALL SELECT 'agents_guard=' || count(*) FROM agents_guard
+UNION ALL SELECT 'agent_cron_guard=' || count(*) FROM agent_cron_guard
 UNION ALL SELECT 'auth_app_guard=' || count(*) FROM auth_app_guard
 UNION ALL SELECT 'drive_guard=' || count(*) FROM drive_guard
 UNION ALL SELECT 'forge_guard=' || count(*) FROM forge_guard

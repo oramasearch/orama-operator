@@ -1,9 +1,10 @@
 # Lake agents
 
 **What.** The operator runs lake's agents (lake#228): the **Agent Library**'s specialized agents
-and the **launches** of user-created Python agents on `agent-runtime` (lake#231). The contract with
+the **launches** of user-created Python agents on `agent-runtime` (lake#231), and their **cron
+schedules**, each a Kubernetes CronJob (lake#244). The contract with
 lake is lake's [`docs/api/agent-launches.md`](https://github.com/oramasearch/lake/blob/main/docs/api/agent-launches.md);
-the code is `internal/controller/lake_agents.go`.
+the code is `internal/controller/lake_agents.go` and `lake_agent_schedules.go`.
 
 **Why.** Agents are how lake builds Pipelines from intent, recommends Opportunities, and runs the
 agents people build. lake records what it wants and never talks to Kubernetes; the operator runs it
@@ -77,15 +78,44 @@ this Lake controls with this launch's id), and its status becomes `Stopped` with
 digest cleared. A finished job keeps `Succeeded` or `Failed`. Status rows are written only on
 change; a starting or running launch keeps the Lake's poll fast.
 
+## Schedules
+
+A Python agent may have **any number of cron schedules**; lake writes each as a row of
+`agent_cron_schedules` (migration `0031_agent_cron_schedules`), read on the same services poll. For
+each present schedule the operator:
+
+1. generates the schedule's credential once, `las.<schedule id>.<secret>`, in Secret
+   `<lake>-<slug>-credential` (labelled `orama.cloud/agent-schedule-id`), and writes only its
+   SHA-256 into `agent_cron_schedule_status`;
+2. keeps a **CronJob** `<lake>-<slug>` with the schedule's `cron` and `timeZone`,
+   `concurrencyPolicy: Forbid`, `startingDeadlineSeconds: 300`, three successful and three failed
+   Jobs kept, and a Job template that is a job launch's: `backoffLimit: 0`, the runtime image,
+   `AGENT_MODE=job`, the schedule's `input` as `AGENT_INPUT`, the credential as `LAKE_TOKEN`, and
+   the pod labels `agent-runtime` / `<lake>-<slug>`, never lake's selector;
+3. reports the CronJob as `Ready` / *scheduled* with its last firing, and writes one
+   `agent_cron_runs` row per Job it started (keyed by the Job's uid) whenever the run's phase
+   changes. A Job is `Succeeded` only once its pod's exit code and termination message are readable;
+   a finished run is written once.
+
+A schedule lake marks absent loses its CronJob (background propagation, so a run under way stops)
+and its credential Secret; the status becomes `Stopped` with no digest, and the credential stops
+resolving in lake. A cron or time zone the API server refuses makes the schedule `Failed` with the
+server's message. A run under way keeps the Lake's poll fast; otherwise runs are reported on the
+regular poll. The operator needs `batch/cronjobs` (both the kubebuilder marker and the chart's
+ClusterRole).
+
 ## Verify
 
 ```sh
-go test ./internal/controller/ -run 'Agent|Launch|Library|LakeTellsLake'
+go test ./internal/controller/ -run 'Agent|Launch|Library|LakeTellsLake|Schedule'
 ```
 
 `TestLakeTellsLakeWhereItsAgentsAre`, `TestLibraryAgentsRunAsDeploymentsAndLeaveWhenUnlisted`,
 `TestAJobLaunchRunsOnceWithItsCredentialAndReportsItsOutcome`,
-`TestAServiceLaunchIsReadyWhenItsDeploymentIs`, `TestLaunchesFailWithoutARuntimeImage`.
+`TestAServiceLaunchIsReadyWhenItsDeploymentIs`, `TestLaunchesFailWithoutARuntimeImage`,
+`TestEachAgentScheduleIsItsOwnCronJobWithItsOwnCredential`,
+`TestAScheduledRunIsReportedOnceItsOutcomeIsReadable`,
+`TestARemovedScheduleLosesItsCronJobAndCredential`, `TestAScheduleWithoutAgentsEnabledOrAValidSlugFails`.
 
 ## Change it
 

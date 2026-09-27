@@ -136,6 +136,9 @@ type LakeServiceStore interface {
 	UpsertStoreStatus(ctx context.Context, status LakeStoreStatus) error
 	ListAgentLaunches(ctx context.Context) ([]LakeAgentLaunch, error)
 	UpsertAgentLaunchStatus(ctx context.Context, status LakeAgentLaunchStatus) error
+	ListAgentSchedules(ctx context.Context) ([]LakeAgentSchedule, error)
+	UpsertAgentScheduleStatus(ctx context.Context, status LakeAgentScheduleStatus) error
+	UpsertAgentScheduleRun(ctx context.Context, run LakeAgentScheduleRun) error
 	Close(ctx context.Context) error
 }
 
@@ -398,6 +401,15 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 	} else if err != nil {
 		log.Info("agent launches deferred: cannot read agent launches", "err", err.Error())
 	} else if r.reconcileLakeAgentLaunches(passCtx, lake, namespace, labels, store, launches) {
+		changing = true
+	}
+	// Agent cron schedules (lake_agent_schedules.go, lake#244): one CronJob each, same connection.
+	schedules, err := store.ListAgentSchedules(passCtx)
+	if errors.Is(err, errAgentSchedulesTableMissing) {
+		log.Info("agent schedules skipped: " + err.Error())
+	} else if err != nil {
+		log.Info("agent schedules deferred: cannot read agent schedules", "err", err.Error())
+	} else if r.reconcileLakeAgentSchedules(passCtx, lake, namespace, labels, store, schedules) {
 		changing = true
 	}
 	return changing
