@@ -278,6 +278,16 @@ func agentPodSpec(lake *oramav1alpha1.Lake, image string, env []corev1.EnvVar, s
 	}
 }
 
+// agentLabels are an agent's own labels: the Lake's, with the name and instance replaced. An agent
+// pod must never carry the Lake's app.kubernetes.io/name and instance, which are the selector of
+// lake's Service and PodDisruptionBudget: a job pod carrying them received lake's traffic.
+func agentLabels(labels map[string]string, name, instance string, extra map[string]string) map[string]string {
+	out := withLabels(labels, extra)
+	out["app.kubernetes.io/name"] = name
+	out["app.kubernetes.io/instance"] = instance
+	return out
+}
+
 func withLabels(labels map[string]string, extra map[string]string) map[string]string {
 	out := make(map[string]string, len(labels)+len(extra))
 	for key, value := range labels {
@@ -326,8 +336,8 @@ func (r *LakeReconciler) reconcileLakeLibraryAgents(ctx context.Context, lake *o
 		env := append(agentBaseEnv(lake, namespace),
 			secretEnv("AGENT_SERVICE_TOKEN", lakeAgentServiceTokenSecret(lake.Name), agentServiceTokenKey))
 		pod := agentPodSpec(lake, agent.Image, env, true)
-		agentLabels := withLabels(labels, map[string]string{libraryAgentLabel: agent.Key})
-		if _, err := r.reconcileAgentService(ctx, lake, namespace, name, agentLabels, selector, pod); err != nil {
+		libraryLabels := agentLabels(labels, agent.Key, name, map[string]string{libraryAgentLabel: agent.Key})
+		if _, err := r.reconcileAgentService(ctx, lake, namespace, name, libraryLabels, selector, pod); err != nil {
 			return err
 		}
 	}
@@ -452,7 +462,7 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 	}
 	status.CredentialSHA256 = credentialDigest(credential)
 	name := agentLaunchName(lake.Name, launch.Slug)
-	launchLabels := withLabels(labels, map[string]string{agentLaunchIDLabel: launch.ID})
+	launchLabels := agentLabels(labels, "agent-runtime", name, map[string]string{agentLaunchIDLabel: launch.ID})
 	if launch.Mode == agentLaunchModeService {
 		selector := map[string]string{"app.kubernetes.io/name": "agent-runtime", "app.kubernetes.io/instance": name}
 		available, err := r.reconcileAgentService(ctx, lake, namespace, name, launchLabels, selector,
@@ -500,6 +510,12 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 	switch {
 	case job.Status.Succeeded > 0:
 		status.ExitCode, status.Result = r.jobOutcome(ctx, namespace, name)
+		if status.ExitCode == nil {
+			// The Job reports success before its pod's termination state is readable. Wait for
+			// it rather than freezing an empty outcome, since a finished run is never revisited.
+			status.Phase, status.Message = AgentPhaseRunning, "collecting the result"
+			return status, true, nil
+		}
 		status.Phase, status.Message = AgentPhaseSucceeded, "finished"
 		// The run is over: its credential stops resolving in lake.
 		status.CredentialSHA256 = ""

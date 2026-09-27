@@ -168,6 +168,11 @@ func TestAJobLaunchRunsOnceWithItsCredentialAndReportsItsOutcome(t *testing.T) {
 	if *job.Spec.BackoffLimit != 0 || job.Spec.Template.Spec.RestartPolicy != corev1.RestartPolicyNever {
 		t.Fatal("an agent run is never retried behind the person's back")
 	}
+	for key, lake := range map[string]string{"app.kubernetes.io/name": "lake", "app.kubernetes.io/instance": "prod"} {
+		if job.Spec.Template.Labels[key] == lake {
+			t.Fatalf("a job pod carries lake's selector label %s=%s and would receive lake's traffic", key, lake)
+		}
+	}
 	env := job.Spec.Template.Spec.Containers[0].Env
 	if envValue(t, env, "AGENT_INPUT").Value != `"week 39"` || envValue(t, env, "AGENT_MODE").Value != "job" ||
 		envValue(t, env, "LAKE_TOKEN").ValueFrom.SecretKeyRef.Name != testLaunchName+"-credential" {
@@ -180,6 +185,14 @@ func TestAJobLaunchRunsOnceWithItsCredentialAndReportsItsOutcome(t *testing.T) {
 	}
 
 	job.Status.Succeeded = 1
+	if err := h.client.Status().Update(ctx, &job); err != nil {
+		_ = h.client.Update(ctx, &job)
+	}
+	h.poll()
+	if status := store.launchStatus(t); status.Phase != AgentPhaseRunning {
+		t.Fatalf("a success whose pod outcome is not readable yet is not final: %+v", status)
+	}
+
 	if err := h.client.Status().Update(ctx, &job); err != nil {
 		if err := h.client.Update(ctx, &job); err != nil {
 			t.Fatal(err)
