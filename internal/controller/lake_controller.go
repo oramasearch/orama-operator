@@ -72,7 +72,7 @@ const (
 	lakeStorePath        = "/var/lib/lake/store"
 	lakeStoreVolume      = "store"
 	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
-	lakeSchemaGuardTable = "stores_guard"
+	lakeSchemaGuardTable = "agents_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
@@ -145,6 +145,7 @@ type lakeBackupConfig struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
@@ -226,6 +227,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile sealing key: %w", err)
 	}
+	if err := r.reconcileLakeAgentServiceToken(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile agent service token: %w", err)
+	}
 
 	// Service.
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
@@ -276,6 +280,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	servicesChanging := false
 	if lakeServicesEnabled(&lake) && schemaReady {
 		servicesChanging = r.reconcileLakeServices(ctx, &lake, ns, labels)
+	}
+
+	// The Agent Library's specialized agents (lake_agents.go): best-effort, never fails the Lake.
+	if err := r.reconcileLakeLibraryAgents(ctx, &lake, ns, labels); err != nil {
+		log.Error(err, "library agents deferred")
 	}
 
 	// Ingress + DNS (opt-in, same contract as OramaZettaCluster).
@@ -914,6 +923,10 @@ func (r *LakeReconciler) lakeStoreStatus(
 func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.EnvVar {
 	reserved := map[string]struct{}{
 		"LAKE_ADMIN_TOKEN":         {},
+		"LAKE_AGENT_ENDPOINTS":     {},
+		"LAKE_AGENT_MODEL":         {},
+		"LAKE_AGENT_SERVICE_TOKEN": {},
+		"LAKE_INTERNAL_URL":        {},
 		"LAKE_CONTROL_DB_PASSWORD": {},
 		"LAKE_CONTROL_DB_URI":      {},
 		"LAKE_DATA_PLANE_TOKEN":    {},
@@ -986,6 +999,9 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		// connection as <slug>.json.
 		env = append(env, corev1.EnvVar{Name: lakeServiceDirEnv, Value: lakeServicesMountPath})
 	}
+	// Its agents (lake_agents.go): where the library agents are, lake's own in-cluster address,
+	// the model, and the token lake presents to agent services.
+	env = append(env, lakeAgentEnv(lake, lakeNamespace(lake))...)
 	for _, custom := range lake.Spec.Env {
 		if _, found := reserved[custom.Name]; found {
 			continue

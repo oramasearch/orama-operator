@@ -74,6 +74,12 @@ type LakeSpec struct {
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
+	// Agents runs lake's agents (lake#228): the specialized agents of the Agent Library, one
+	// Deployment each, and the launches of user-created agents on agent-runtime (lake#231). Off
+	// until runtimeImage or library is set.
+	// +optional
+	Agents LakeAgentsSpec `json:"agents,omitempty"`
+
 	// Sealing configures the X25519 cluster delivery key. The operator mints generation 1 when
 	// omitted. Increasing Generation rotates the public key while retaining private keys still
 	// needed by LakeSealedSecret resources.
@@ -266,6 +272,39 @@ type LakeStoreSpec struct {
 	// lake-<name>-store. The operator does not adopt, modify, or delete this claim.
 	// +optional
 	ExistingClaim string `json:"existingClaim,omitempty"`
+}
+
+// LakeAgentsSpec configures lake's agents (docs/lake/agents.md).
+type LakeAgentsSpec struct {
+	// RuntimeImage is oramasearch/agent-runtime:<tag>, the one image every user-created Python
+	// agent runs on. Empty: launches are reported Failed and nothing runs.
+	// +optional
+	RuntimeImage string `json:"runtimeImage,omitempty"`
+	// Library lists the specialized agents this Lake runs, each from its own private image. lake
+	// learns their addresses through LAKE_AGENT_ENDPOINTS.
+	// +optional
+	Library []LakeLibraryAgent `json:"library,omitempty"`
+	// OpenAISecretName names a Secret in spec.namespace holding OPENAI_API_KEY, the general Orama
+	// key every agent uses. People provide it; the operator never creates or reads its value.
+	// +optional
+	OpenAISecretName string `json:"openaiSecretName,omitempty"`
+	// Model is the frontier model agents default to.
+	// +kubebuilder:default=gpt-5.5
+	// +optional
+	Model string `json:"model,omitempty"`
+	// JobDeadlineSeconds bounds one job launch.
+	// +kubebuilder:validation:Minimum=60
+	// +optional
+	JobDeadlineSeconds *int64 `json:"jobDeadlineSeconds,omitempty"`
+}
+
+// LakeLibraryAgent is one specialized agent of lake's Agent Library.
+type LakeLibraryAgent struct {
+	// Key is the agent's repository name, which lake's Agent Library uses too.
+	// +kubebuilder:validation:Enum=agent-ask-orama;agent-project;agent-autosuggest;agent-creator
+	Key string `json:"key"`
+	// Image is the agent's private image and tag.
+	Image string `json:"image"`
 }
 
 // LakeSealingSpec selects the desired cluster sealing-key generation.

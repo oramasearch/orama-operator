@@ -2,14 +2,23 @@
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit 9aa61410749a092b468b78abb8e5b1aa3f2aa0cb](https://github.com/oramasearch/lake/blob/9aa61410749a092b468b78abb8e5b1aa3f2aa0cb/db/schema.sql),
-on lake branch `feat/storage` (lake#196; not yet merged to lake `main`). Its SHA-256 is
-`18fbd4d2ead236f9218fed5d834f2a4c6e8e4fc14bae251056cae9b1ce73202a`.
+[`oramasearch/lake` commit ef485cd1a146874cd6443d4e88a7906e10d2d210](https://github.com/oramasearch/lake/blob/ef485cd1a146874cd6443d4e88a7906e10d2d210/db/schema.sql)
+(lake `main`, lake#242). Its SHA-256 is
+`d884440dafd60f843658419645cb1898ffc456f878336349558beea2fe95806e`.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
+
+Migration `0030_agent_launches` (lake#231) adds `agent_launches` (written by lake),
+`agent_launch_status` (written by the operator, including the SHA-256 of each launch's credential),
+`agent_schedules`, `ask_messages`, and the completion table `public.agents_guard`, now Lake's
+PostgresSchema guard. Migration `0029_non_expiring_credentials` (lake#234) adds
+`customers.allow_non_expiring_credentials` and `agent_sessions.revoked_at` with guard
+`credentials_guard`. Both are idempotent; a database at `0028` applies the whole file in one
+transaction. The operator runs launches ([agents.md](agents.md)) and, until this schema has applied,
+skips them without touching services or stores.
 
 Migration `0028_stores` (lake#196) adds a customer's stores: the tables `stores` (written by lake)
 and `store_status` (written by the operator), their indexes, and the completion table

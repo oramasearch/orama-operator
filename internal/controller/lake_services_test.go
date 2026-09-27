@@ -53,6 +53,36 @@ type fakeServiceStore struct {
 	storeUpserts  []LakeStoreStatus
 	storesMissing bool
 	storesErr     error
+	// launches and launchUpserts are the agent launches half (lake_agents_test.go).
+	launches      []LakeAgentLaunch
+	launchUpserts []LakeAgentLaunchStatus
+}
+
+func (f *fakeServiceStore) ListAgentLaunches(context.Context) ([]LakeAgentLaunch, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]LakeAgentLaunch, 0, len(f.launches))
+	for _, launch := range f.launches {
+		if launch.Status != nil {
+			status := *launch.Status
+			launch.Status = &status
+		}
+		out = append(out, launch)
+	}
+	return out, nil
+}
+
+func (f *fakeServiceStore) UpsertAgentLaunchStatus(_ context.Context, status LakeAgentLaunchStatus) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.launchUpserts = append(f.launchUpserts, status)
+	for i := range f.launches {
+		if f.launches[i].ID == status.LaunchID {
+			copied := status
+			f.launches[i].Status = &copied
+		}
+	}
+	return nil
 }
 
 func (f *fakeServiceStore) ListServices(context.Context) ([]LakeService, error) {
