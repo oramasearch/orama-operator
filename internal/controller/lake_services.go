@@ -134,6 +134,8 @@ type LakeServiceStore interface {
 	UpsertServiceStatus(ctx context.Context, status LakeServiceStatus) error
 	ListStores(ctx context.Context) ([]LakeStore, error)
 	UpsertStoreStatus(ctx context.Context, status LakeStoreStatus) error
+	ListAgentLaunches(ctx context.Context) ([]LakeAgentLaunch, error)
+	UpsertAgentLaunchStatus(ctx context.Context, status LakeAgentLaunchStatus) error
 	Close(ctx context.Context) error
 }
 
@@ -387,7 +389,18 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 	} else if err != nil {
 		log.Info("stores deferred: cannot read stores", "err", err.Error())
 	}
-	return r.syncLakeServices(passCtx, lake, namespace, labels, store, services, stores, storesRead)
+	changing := r.syncLakeServices(passCtx, lake, namespace, labels, store, services, stores, storesRead)
+	// Agent launches (lake_agents.go, lake#231) ride the same connection. A schema without the
+	// table, or a failed read, skips them for this pass.
+	launches, err := store.ListAgentLaunches(passCtx)
+	if errors.Is(err, errAgentLaunchesTableMissing) {
+		log.Info("agent launches skipped: " + err.Error())
+	} else if err != nil {
+		log.Info("agent launches deferred: cannot read agent launches", "err", err.Error())
+	} else if r.reconcileLakeAgentLaunches(passCtx, lake, namespace, labels, store, launches) {
+		changing = true
+	}
+	return changing
 }
 
 // syncLakeServices applies one read of the services and stores tables: absent services first, so

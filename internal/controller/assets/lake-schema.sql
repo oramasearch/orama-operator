@@ -1431,3 +1431,99 @@ CREATE TABLE IF NOT EXISTS stores_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0028_stores') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Credentials that never expire (migration 0029, lake#234): a customer's opt-in, off by default,
+-- and revocation for agent session keys. A never-expiring agent key stores expires_at =
+-- 'infinity', which satisfies agent_sessions_expiry_check. See docs/api/agents.md and
+-- docs/api/identity.md.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS allow_non_expiring_credentials boolean NOT NULL DEFAULT false;
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS credentials_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0029_non_expiring_credentials') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- Agent launches, schedules and Ask Orama conversations (migration 0030, lake#231, lake#236).
+-- lake writes agent_launches and NOTIFYs lake_services; the Orama operator runs each present
+-- launch on agent-runtime (a Job for mode job, a Deployment and Service for mode service) and
+-- writes agent_launch_status, including the SHA-256 of the credential it generated for the pod.
+-- The credential itself is never stored. See docs/api/agent-launches.md.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_launches (
+    id                 uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    -- The AgentRecord in the customer's workspace Zetta.
+    agent_id           text        NOT NULL,
+    agent_name         text        NOT NULL DEFAULT '',
+    mode               text        NOT NULL,
+    input              jsonb       NOT NULL DEFAULT 'null'::jsonb,
+    -- The lake capabilities the pod's credential may call.
+    scopes             text[]      NOT NULL,
+    slug               text        NOT NULL UNIQUE,
+    desired            text        NOT NULL DEFAULT 'present',
+    generation         bigint      NOT NULL DEFAULT 1,
+    trigger            text        NOT NULL DEFAULT 'manual',
+    created_by_user_id uuid        REFERENCES users(id) ON DELETE CASCADE,
+    created_by_taap_id text        NOT NULL DEFAULT '',
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT agent_launch_mode_check CHECK (mode IN ('job', 'service')),
+    CONSTRAINT agent_launch_desired_check CHECK (desired IN ('present', 'absent')),
+    CONSTRAINT agent_launch_slug_format CHECK (slug ~ '^al-[0-9a-f]{12}$'),
+    CONSTRAINT agent_launch_scopes_check CHECK (cardinality(scopes) > 0)
+);
+CREATE INDEX IF NOT EXISTS agent_launches_customer_agent_idx
+    ON agent_launches (customer_id, agent_id, created_at DESC);
+
+-- Written only by the operator: one row per launch, replaced on every observed change.
+CREATE TABLE IF NOT EXISTS agent_launch_status (
+    launch_id           uuid        PRIMARY KEY REFERENCES agent_launches(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',
+    message             text        NOT NULL DEFAULT '',
+    endpoint            text        NOT NULL DEFAULT '',
+    exit_code           integer,
+    result              jsonb       NOT NULL DEFAULT 'null'::jsonb,
+    credential_sha256   text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+-- One schedule per agent: lake's scheduler launches a job when next_run_at has passed.
+CREATE TABLE IF NOT EXISTS agent_schedules (
+    customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    agent_id           text        NOT NULL,
+    agent_name         text        NOT NULL DEFAULT '',
+    trigger            text        NOT NULL,
+    next_run_at        timestamptz NOT NULL,
+    last_run_at        timestamptz,
+    created_by_user_id uuid        REFERENCES users(id) ON DELETE CASCADE,
+    created_by_taap_id text        NOT NULL DEFAULT '',
+    PRIMARY KEY (customer_id, agent_id)
+);
+CREATE INDEX IF NOT EXISTS agent_schedules_due_idx ON agent_schedules (next_run_at);
+
+-- Ask Orama conversations: rendered by whichever replica serves the panel.
+CREATE TABLE IF NOT EXISTS ask_messages (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id uuid        NOT NULL,
+    customer_id     uuid        REFERENCES customers(id) ON DELETE CASCADE,
+    user_id         uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role            text        NOT NULL,
+    content         text        NOT NULL DEFAULT '',
+    payload         jsonb       NOT NULL DEFAULT 'null'::jsonb,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ask_message_role_check CHECK (role IN ('user', 'assistant'))
+);
+CREATE INDEX IF NOT EXISTS ask_messages_conversation_idx
+    ON ask_messages (conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS agents_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0030_agent_launches') ON CONFLICT DO NOTHING;

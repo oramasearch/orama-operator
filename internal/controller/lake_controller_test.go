@@ -13,6 +13,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -34,6 +35,7 @@ func newLakeScheme(t *testing.T) *runtime.Scheme {
 	for _, add := range []func(*runtime.Scheme) error{
 		corev1.AddToScheme,
 		appsv1.AddToScheme,
+		batchv1.AddToScheme,
 		networkingv1.AddToScheme,
 		policyv1.AddToScheme,
 		oramav1alpha1.AddToScheme,
@@ -941,7 +943,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatalf("PostgresSchema not created: %v", err)
 	}
 	if ps.Spec.ConnectionSecretRef.Name != "lake-hello-controldb-app" || ps.Spec.ConnectionSecretRef.Key != "uri" ||
-		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "stores_guard" ||
+		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "agents_guard" ||
 		ps.Spec.Version != lakeSchemaVersion() {
 		t.Errorf("PostgresSchema spec = %+v", ps.Spec)
 	}

@@ -70,6 +70,57 @@ spec:
           spec:
             description: spec defines the desired state of Lake
             properties:
+              agents:
+                description: |-
+                  Agents runs lake's agents (lake#228): the specialized agents of the Agent Library, one
+                  Deployment each, and the launches of user-created agents on agent-runtime (lake#231). Off
+                  until runtimeImage or library is set.
+                properties:
+                  jobDeadlineSeconds:
+                    description: JobDeadlineSeconds bounds one job launch.
+                    format: int64
+                    minimum: 60
+                    type: integer
+                  library:
+                    description: |-
+                      Library lists the specialized agents this Lake runs, each from its own private image. lake
+                      learns their addresses through LAKE_AGENT_ENDPOINTS.
+                    items:
+                      description: LakeLibraryAgent is one specialized agent of lake's
+                        Agent Library.
+                      properties:
+                        image:
+                          description: Image is the agent's private image and tag.
+                          type: string
+                        key:
+                          description: Key is the agent's repository name, which lake's
+                            Agent Library uses too.
+                          enum:
+                          - agent-ask-orama
+                          - agent-project
+                          - agent-autosuggest
+                          - agent-creator
+                          type: string
+                      required:
+                      - image
+                      - key
+                      type: object
+                    type: array
+                  model:
+                    default: gpt-5.5
+                    description: Model is the frontier model agents default to.
+                    type: string
+                  openaiSecretName:
+                    description: |-
+                      OpenAISecretName names a Secret in spec.namespace holding OPENAI_API_KEY, the general Orama
+                      key every agent uses. People provide it; the operator never creates or reads its value.
+                    type: string
+                  runtimeImage:
+                    description: |-
+                      RuntimeImage is oramasearch/agent-runtime:<tag>, the one image every user-created Python
+                      agent runs on. Empty: launches are reported Failed and nothing runs.
+                    type: string
+                type: object
               args:
                 description: Args passed to the image's entrypoint. Empty runs the
                   image as built.
