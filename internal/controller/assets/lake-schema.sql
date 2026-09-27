@@ -1673,3 +1673,17 @@ CREATE TABLE IF NOT EXISTS agent_tasks_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0032_agent_tasks') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0033_agent_task_events: where a task's events start on the agent bus (lake#275). When an agent
+-- claims a task, lake records the agent-events sequence its bus loop has reached: every event the
+-- task publishes comes after it, so following the task reads from there instead of from the start
+-- of a topic that only grows. 0 means unknown (read from the start).
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE agent_task_status ADD COLUMN IF NOT EXISTS events_from bigint NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS agent_task_events_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0033_agent_task_events') ON CONFLICT DO NOTHING;
