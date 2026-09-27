@@ -1493,7 +1493,8 @@ CREATE TABLE IF NOT EXISTS agent_launch_status (
     updated_at          timestamptz NOT NULL DEFAULT now()
 );
 
--- One schedule per agent: lake's scheduler launches a job when next_run_at has passed.
+-- Retired by 0031_agent_cron_schedules (lake no longer fires schedules itself); kept, unread, until
+-- its rows are dropped deliberately.
 CREATE TABLE IF NOT EXISTS agent_schedules (
     customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
     agent_id           text        NOT NULL,
@@ -1527,3 +1528,70 @@ CREATE TABLE IF NOT EXISTS agents_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0030_agent_launches') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0031_agent_cron_schedules: a Python agent's cron schedules, any number per agent. lake writes
+-- the desired schedule; the Orama operator makes each present one a Kubernetes CronJob (named
+-- after the slug) and writes agent_cron_schedule_status and one agent_cron_runs row per Job the
+-- CronJob starts. Every run authenticates with the schedule's credential,
+-- las.<schedule id>.<secret>, which the operator generates and of which it writes only the SHA-256.
+-- See docs/api/agent-launches.md.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_cron_schedules (
+    id                 uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    agent_id           text        NOT NULL,
+    agent_name         text        NOT NULL DEFAULT '',
+    -- Five fields, as a Kubernetes CronJob's spec.schedule; lake validates it.
+    cron               text        NOT NULL,
+    time_zone          text        NOT NULL DEFAULT 'Etc/UTC',
+    -- The plain words it was set from, when it was ("every monday at 09:00").
+    description        text        NOT NULL DEFAULT '',
+    input              jsonb       NOT NULL DEFAULT 'null'::jsonb,
+    scopes             text[]      NOT NULL,
+    slug               text        NOT NULL UNIQUE,
+    desired            text        NOT NULL DEFAULT 'present',
+    generation         bigint      NOT NULL DEFAULT 1,
+    created_by_user_id uuid        REFERENCES users(id) ON DELETE CASCADE,
+    created_by_taap_id text        NOT NULL DEFAULT '',
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT agent_cron_schedule_desired_check CHECK (desired IN ('present', 'absent')),
+    CONSTRAINT agent_cron_schedule_slug_format CHECK (slug ~ '^as-[0-9a-f]{12}$'),
+    CONSTRAINT agent_cron_schedule_scopes_check CHECK (cardinality(scopes) > 0)
+);
+CREATE INDEX IF NOT EXISTS agent_cron_schedules_customer_agent_idx
+    ON agent_cron_schedules (customer_id, agent_id, created_at);
+
+-- Written only by the operator: one row per schedule, replaced on every observed change.
+CREATE TABLE IF NOT EXISTS agent_cron_schedule_status (
+    schedule_id         uuid        PRIMARY KEY REFERENCES agent_cron_schedules(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',
+    message             text        NOT NULL DEFAULT '',
+    last_schedule_at    timestamptz,
+    credential_sha256   text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+-- Written only by the operator: one row per Job a schedule's CronJob started, keyed by the Job's uid.
+CREATE TABLE IF NOT EXISTS agent_cron_runs (
+    id          uuid        PRIMARY KEY,
+    schedule_id uuid        NOT NULL REFERENCES agent_cron_schedules(id) ON DELETE CASCADE,
+    job_name    text        NOT NULL,
+    phase       text        NOT NULL DEFAULT '',
+    message     text        NOT NULL DEFAULT '',
+    exit_code   integer,
+    result      jsonb       NOT NULL DEFAULT 'null'::jsonb,
+    started_at  timestamptz NOT NULL DEFAULT now(),
+    finished_at timestamptz,
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_cron_runs_schedule_idx
+    ON agent_cron_runs (schedule_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_cron_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0031_agent_cron_schedules') ON CONFLICT DO NOTHING;

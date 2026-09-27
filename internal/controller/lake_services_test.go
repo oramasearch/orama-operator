@@ -56,6 +56,52 @@ type fakeServiceStore struct {
 	// launches and launchUpserts are the agent launches half (lake_agents_test.go).
 	launches      []LakeAgentLaunch
 	launchUpserts []LakeAgentLaunchStatus
+	// schedules, scheduleUpserts and runUpserts are the agent cron schedules half
+	// (lake_agent_schedules_test.go).
+	schedules       []LakeAgentSchedule
+	scheduleUpserts []LakeAgentScheduleStatus
+	runUpserts      []LakeAgentScheduleRun
+}
+
+func (f *fakeServiceStore) ListAgentSchedules(context.Context) ([]LakeAgentSchedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]LakeAgentSchedule, 0, len(f.schedules))
+	for _, schedule := range f.schedules {
+		if schedule.Status != nil {
+			status := *schedule.Status
+			schedule.Status = &status
+		}
+		phases := map[string]string{}
+		for _, run := range f.runUpserts {
+			if run.ScheduleID == schedule.ID {
+				phases[run.ID] = run.Phase
+			}
+		}
+		schedule.RunPhases = phases
+		out = append(out, schedule)
+	}
+	return out, nil
+}
+
+func (f *fakeServiceStore) UpsertAgentScheduleStatus(_ context.Context, status LakeAgentScheduleStatus) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scheduleUpserts = append(f.scheduleUpserts, status)
+	for i := range f.schedules {
+		if f.schedules[i].ID == status.ScheduleID {
+			copied := status
+			f.schedules[i].Status = &copied
+		}
+	}
+	return nil
+}
+
+func (f *fakeServiceStore) UpsertAgentScheduleRun(_ context.Context, run LakeAgentScheduleRun) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runUpserts = append(f.runUpserts, run)
+	return nil
 }
 
 func (f *fakeServiceStore) ListAgentLaunches(context.Context) ([]LakeAgentLaunch, error) {

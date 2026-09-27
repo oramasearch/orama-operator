@@ -135,7 +135,7 @@ rules:
     resources: ["poddisruptionbudgets"]
     verbs: ["*"]
   - apiGroups: ["batch"]
-    resources: ["jobs"]
+    resources: ["jobs", "cronjobs"]
     verbs: ["*"]
   # Elastic capacity (operator#69): the operator OWNS a Karpenter NodePool for the Zetta cluster and
   # reads the provider NodeClasses/NodeClaims + cluster Nodes for the provisioned-node status count.

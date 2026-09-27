@@ -363,11 +363,17 @@ func (r *LakeReconciler) reconcileLakeLibraryAgents(ctx context.Context, lake *o
 
 // reconcileAgentLaunchCredential returns the launch's credential, generating it once.
 func (r *LakeReconciler) reconcileAgentLaunchCredential(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, launch *LakeAgentLaunch) (string, error) {
-	name := agentLaunchCredentialSecret(lake.Name, launch.Slug)
+	return r.reconcileAgentCredential(ctx, lake, namespace, labels, agentLaunchCredentialSecret(lake.Name, launch.Slug),
+		agentLaunchIDLabel, launch.ID, "lal.")
+}
+
+// reconcileAgentCredential returns the credential in Secret `name`, generating it once as
+// <prefix><id>.<secret>. The Secret must carry idLabel=id and belong to the Lake.
+func (r *LakeReconciler) reconcileAgentCredential(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, name, idLabel, id, prefix string) (string, error) {
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, secret); err == nil {
-		if secret.Labels[agentLaunchIDLabel] != launch.ID || !metav1.IsControlledBy(secret, lake) {
-			return "", fmt.Errorf("Secret %s/%s exists and is not this launch's credential", namespace, name)
+		if secret.Labels[idLabel] != id || !metav1.IsControlledBy(secret, lake) {
+			return "", fmt.Errorf("Secret %s/%s exists and is not this agent's credential", namespace, name)
 		}
 		return string(secret.Data[agentCredentialKey]), nil
 	} else if !apierrors.IsNotFound(err) {
@@ -377,17 +383,17 @@ func (r *LakeReconciler) reconcileAgentLaunchCredential(ctx context.Context, lak
 	if err != nil {
 		return "", err
 	}
-	credential := "lal." + launch.ID + "." + random
+	credential := prefix + id + "." + random
 	secret = &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace,
-			Labels: withLabels(labels, map[string]string{agentLaunchIDLabel: launch.ID})},
+			Labels: withLabels(labels, map[string]string{idLabel: id})},
 		Data: map[string][]byte{agentCredentialKey: []byte(credential)},
 	}
 	if err := controllerutil.SetControllerReference(lake, secret, r.Scheme); err != nil {
 		return "", err
 	}
 	if err := r.Create(ctx, secret); err != nil {
-		return "", fmt.Errorf("create launch credential %s: %w", name, err)
+		return "", fmt.Errorf("create agent credential %s: %w", name, err)
 	}
 	return credential, nil
 }
@@ -398,14 +404,20 @@ func credentialDigest(credential string) string {
 }
 
 func (launch *LakeAgentLaunch) env(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar {
+	return agentRunEnv(lake, namespace, agentLaunchCredentialSecret(lake.Name, launch.Slug),
+		launch.CustomerID, launch.AgentID, launch.Mode, launch.Input)
+}
+
+// agentRunEnv is what a run of a user-created agent is told: the base env, its credential, whose
+// agent it is, and for a job what it is asked to do.
+func agentRunEnv(lake *oramav1alpha1.Lake, namespace, credentialSecret, customerID, agentID, mode, input string) []corev1.EnvVar {
 	env := append(agentBaseEnv(lake, namespace),
-		secretEnv("LAKE_TOKEN", agentLaunchCredentialSecret(lake.Name, launch.Slug), agentCredentialKey),
-		corev1.EnvVar{Name: "CUSTOMER_ID", Value: launch.CustomerID},
-		corev1.EnvVar{Name: "AGENT_ID", Value: launch.AgentID},
-		corev1.EnvVar{Name: "AGENT_MODE", Value: launch.Mode},
+		secretEnv("LAKE_TOKEN", credentialSecret, agentCredentialKey),
+		corev1.EnvVar{Name: "CUSTOMER_ID", Value: customerID},
+		corev1.EnvVar{Name: "AGENT_ID", Value: agentID},
+		corev1.EnvVar{Name: "AGENT_MODE", Value: mode},
 	)
-	if launch.Mode == agentLaunchModeJob {
-		input := launch.Input
+	if mode == agentLaunchModeJob {
 		if strings.TrimSpace(input) == "" {
 			input = "null"
 		}
@@ -414,6 +426,21 @@ func (launch *LakeAgentLaunch) env(lake *oramav1alpha1.Lake, namespace string) [
 		env = append(env, secretEnv("AGENT_SERVICE_TOKEN", lakeAgentServiceTokenSecret(lake.Name), agentServiceTokenKey))
 	}
 	return env
+}
+
+// agentJobPod is the pod of one unattended run: never restarted, a Job's to retry (never).
+func agentJobPod(lake *oramav1alpha1.Lake, env []corev1.EnvVar) corev1.PodSpec {
+	pod := agentPodSpec(lake, lake.Spec.Agents.RuntimeImage, env, false)
+	pod.RestartPolicy = corev1.RestartPolicyNever
+	return pod
+}
+
+// agentJobDeadline is spec.agents.jobDeadlineSeconds, or an hour.
+func agentJobDeadline(lake *oramav1alpha1.Lake) int64 {
+	if lake.Spec.Agents.JobDeadlineSeconds != nil {
+		return *lake.Spec.Agents.JobDeadlineSeconds
+	}
+	return agentDefaultDeadline
 }
 
 // jobOutcome reads a finished job's pod: its exit code and the runtime's termination summary.
@@ -480,13 +507,9 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 
 	job := &batchv1.Job{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, job); apierrors.IsNotFound(err) {
-		deadline := agentDefaultDeadline
-		if lake.Spec.Agents.JobDeadlineSeconds != nil {
-			deadline = *lake.Spec.Agents.JobDeadlineSeconds
-		}
+		deadline := agentJobDeadline(lake)
 		backoff, ttl := int32(0), agentJobTTLSeconds
-		pod := agentPodSpec(lake, lake.Spec.Agents.RuntimeImage, launch.env(lake, namespace), false)
-		pod.RestartPolicy = corev1.RestartPolicyNever
+		pod := agentJobPod(lake, launch.env(lake, namespace))
 		job = &batchv1.Job{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: launchLabels},
 			Spec: batchv1.JobSpec{

@@ -13,8 +13,12 @@ The adjacent `lake-schema.source.json` records the repository, path, commit, and
 
 Migration `0030_agent_launches` (lake#231) adds `agent_launches` (written by lake),
 `agent_launch_status` (written by the operator, including the SHA-256 of each launch's credential),
-`agent_schedules`, `ask_messages`, and the completion table `public.agents_guard`, now Lake's
-PostgresSchema guard. Migration `0029_non_expiring_credentials` (lake#234) adds
+`agent_schedules`, `ask_messages`, and the completion table `public.agents_guard`. Migration
+`0031_agent_cron_schedules` (lake#244) adds `agent_cron_schedules` (written by lake: any number of
+cron schedules per agent), `agent_cron_schedule_status` and `agent_cron_runs` (written by the
+operator: each schedule's CronJob status and credential digest, and one row per Job it started),
+and the completion table `public.agent_cron_guard`, now Lake's PostgresSchema guard. It leaves
+0030's `agent_schedules` unread and in place. Migration `0029_non_expiring_credentials` (lake#234) adds
 `customers.allow_non_expiring_credentials` and `agent_sessions.revoked_at` with guard
 `credentials_guard`. Both are idempotent; a database at `0028` applies the whole file in one
 transaction. The operator runs launches ([agents.md](agents.md)) and, until this schema has applied,
