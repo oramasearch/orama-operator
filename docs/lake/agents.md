@@ -60,6 +60,14 @@ On every services poll, after the services and stores, the operator reads lake's
    `AGENT_SERVICE_TOKEN`. `Ready` with `endpoint = http://<lake>-<slug>.<ns>.svc:8080` once a replica is
    available; `Pending` until then.
 
+**Agent pods never carry the Lake's `app.kubernetes.io/name` and `instance`**: those are the selector
+of lake's Service and PodDisruptionBudget. A launch pod is `agent-runtime` / `<lake>-<slug>`, a library
+agent `<key>` / `<lake>-<key>`. (A job pod once carried the Lake's labels and received lake's traffic
+while it ran, which made the job's own calls to lake fail with *connection refused*.)
+
+A job is `Succeeded` only once its pod's exit code and termination message are readable; until then
+it stays `Running` with *collecting the result*, since a finished run is never revisited.
+
 Every agent pod runs as UID 10001, non-root, with a read-only root filesystem, a 1 GiB `emptyDir` at
 `/tmp`, no service-account token, all capabilities dropped, the Lake's `pullSecretName`, and
 `LAKE_URL`, `CUSTOMER_ID`, `AGENT_ID`, `OPENAI_API_KEY`, the model and `TRACE_DIR`.
