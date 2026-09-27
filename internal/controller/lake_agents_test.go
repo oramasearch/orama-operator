@@ -79,6 +79,9 @@ func TestLakeTellsLakeWhereItsAgentsAre(t *testing.T) {
 	if ref := envValue(t, env, "LAKE_AGENT_SERVICE_TOKEN").ValueFrom.SecretKeyRef; ref.Name != "lake-prod-agent-service-token" {
 		t.Fatalf("service token from %q", ref.Name)
 	}
+	if got := envValue(t, env, "LAKE_AGENT_BUS_DIR").Value; got != "/var/run/lake/agent-bus" {
+		t.Fatalf("LAKE_AGENT_BUS_DIR = %q", got)
+	}
 	if got := lakeAgentEnv(serviceTestLake(), "lake"); got != nil {
 		t.Fatalf("a Lake without agents gets no agent env, got %v", got)
 	}
@@ -106,6 +109,25 @@ func TestLibraryAgentsRunAsDeploymentsAndLeaveWhenUnlisted(t *testing.T) {
 	if string(token.Data["token"]) != minted {
 		t.Fatal("the service token is minted once")
 	}
+	// Each library agent gets its own bus credential, kept across reconciles.
+	if err := h.reconciler.reconcileLakeAgentBusTokens(ctx, h.lake, testServiceNamespace, labels); err != nil {
+		t.Fatal(err)
+	}
+	var bus corev1.Secret
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testServiceNamespace, Name: "lake-prod-agent-bus"}, &bus); err != nil {
+		t.Fatalf("bus tokens not minted: %v", err)
+	}
+	askToken, projectToken := string(bus.Data["agent-ask-orama"]), string(bus.Data["agent-project"])
+	if len(askToken) != 64 || len(projectToken) != 64 || askToken == projectToken || askToken == minted {
+		t.Fatalf("one distinct bus token per agent, never the service token: %v", bus.Data)
+	}
+	if err := h.reconciler.reconcileLakeAgentBusTokens(ctx, h.lake, testServiceNamespace, labels); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.client.Get(ctx, client.ObjectKeyFromObject(&bus), &bus)
+	if string(bus.Data["agent-ask-orama"]) != askToken {
+		t.Fatal("a bus token never changes")
+	}
 	if err := h.reconciler.reconcileLakeLibraryAgents(ctx, h.lake, testServiceNamespace, labels); err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +141,12 @@ func TestLibraryAgentsRunAsDeploymentsAndLeaveWhenUnlisted(t *testing.T) {
 	}
 	if envValue(t, container.Env, "LAKE_URL").Value != "http://lake-prod.lake.svc:80" {
 		t.Fatal("agents reach lake in-cluster")
+	}
+	if ref := envValue(t, container.Env, "AGENT_BUS_TOKEN").ValueFrom.SecretKeyRef; ref.Name != "lake-prod-agent-bus" || ref.Key != "agent-ask-orama" {
+		t.Fatalf("Ask Orama's bus token from %v", ref)
+	}
+	if envValue(t, container.Env, "AGENT_BUS_AGENT").Value != "agent-ask-orama" {
+		t.Fatal("the agent takes tasks under its own key")
 	}
 	if ref := envValue(t, container.Env, "OPENAI_API_KEY").ValueFrom.SecretKeyRef; ref.Name != "lake-prod-openai" || ref.Key != "OPENAI_API_KEY" {
 		t.Fatalf("OpenAI key from %v", ref)

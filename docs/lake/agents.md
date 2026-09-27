@@ -27,7 +27,8 @@ Agents are on when `runtimeImage` or `library` is set.
 Each `library` entry is a Deployment and a ClusterIP Service `<lake>-<key>` on port 8080 in
 `spec.namespace`, controlled by the Lake and labelled `orama.cloud/library-agent`, probed on
 `/healthz`. Its pod gets `LAKE_URL` (lake's in-cluster Service, `http://lake-<lake>.<ns>.svc:80`),
-`AGENT_SERVICE_TOKEN`, `OPENAI_API_KEY` from `openaiSecretName`, and the model as `AGENT_MODEL`,
+`AGENT_SERVICE_TOKEN`, its own agent-bus credential as `AGENT_BUS_TOKEN` with its key as
+`AGENT_BUS_AGENT`, `OPENAI_API_KEY` from `openaiSecretName`, and the model as `AGENT_MODEL`,
 `ASK_ORAMA_MODEL`, `PROJECT_MODEL` and `AUTOSUGGEST_MODEL`. An entry removed from the list is
 deleted (only a Deployment this Lake controls).
 
@@ -39,6 +40,16 @@ lake learns where they are through its own environment:
 | `LAKE_INTERNAL_URL` | lake's in-cluster address, handed to agents |
 | `LAKE_AGENT_MODEL` | `spec.agents.model` |
 | `LAKE_AGENT_SERVICE_TOKEN` | from Secret `lake-<lake>-agent-service-token` (key `token`, 32 random bytes, minted once), the bearer lake presents to every agent service |
+| `LAKE_AGENT_BUS_DIR` | `/var/run/lake/agent-bus`, where Secret `lake-<lake>-agent-bus` is mounted: one file per library agent, its bus credential |
+
+**The agent bus** (lake `docs/api/agent-bus.md`). Library agents take their tasks from lake over
+Zetta pub/sub on lake's own Zetta (`spec.zetta`, which needs a Zetta image with pub/sub). Each
+library agent authenticates to lake with **its own** credential. Secret `lake-<lake>-agent-bus`
+holds one key per `library` entry (32 random bytes, hex, minted when the agent is added, kept
+across reconciles, removed with the agent). Lake mounts the whole Secret; each agent pod gets only
+its own key. The service token is never a bus credential, because user-created service launches
+on `runtimeImage` hold it too. The operator runs no task loop: tasks, claims and results travel on
+the bus.
 
 ## Launches
 

@@ -122,6 +122,17 @@ func agentModel(lake *oramav1alpha1.Lake) string {
 
 func lakeAgentServiceTokenSecret(lake string) string { return "lake-" + lake + "-agent-service-token" }
 
+// The agent bus (lake docs/api/agent-bus.md): each library agent's own credential, one key per
+// agent. Lake mounts the whole Secret; each agent gets only its own key. Never the service token,
+// which user-created agents on agent-runtime also hold.
+const (
+	lakeAgentBusMountPath = "/var/run/lake/agent-bus"
+	lakeAgentBusVolume    = "agent-bus"
+	lakeAgentBusDirEnv    = "LAKE_AGENT_BUS_DIR"
+)
+
+func lakeAgentBusSecret(lake string) string { return "lake-" + lake + "-agent-bus" }
+
 func libraryAgentName(lake, key string) string { return lake + "-" + key }
 
 func agentLaunchName(lake, slug string) string { return lake + "-" + slug }
@@ -154,7 +165,7 @@ func lakeAgentEnv(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar {
 	if !agentsEnabled(lake) {
 		return nil
 	}
-	return []corev1.EnvVar{
+	env := []corev1.EnvVar{
 		{Name: "LAKE_AGENT_ENDPOINTS", Value: libraryAgentEndpoints(lake, namespace)},
 		{Name: "LAKE_INTERNAL_URL", Value: lakeInternalURL(lake, namespace)},
 		{Name: "LAKE_AGENT_MODEL", Value: agentModel(lake)},
@@ -163,6 +174,10 @@ func lakeAgentEnv(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar {
 			Key:                  agentServiceTokenKey,
 		}}},
 	}
+	if len(lake.Spec.Agents.Library) > 0 {
+		env = append(env, corev1.EnvVar{Name: lakeAgentBusDirEnv, Value: lakeAgentBusMountPath})
+	}
+	return env
 }
 
 func randomHex(bytes int) (string, error) {
@@ -198,6 +213,44 @@ func (r *LakeReconciler) reconcileLakeAgentServiceToken(ctx context.Context, lak
 	}
 	if err := r.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create agent service token: %w", err)
+	}
+	return nil
+}
+
+// reconcileLakeAgentBusTokens keeps one random bus credential per library agent: an agent added to
+// spec.agents.library gets one, an agent removed loses its own, and an existing one never changes.
+func (r *LakeReconciler) reconcileLakeAgentBusTokens(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) error {
+	if len(lake.Spec.Agents.Library) == 0 {
+		return nil
+	}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeAgentBusSecret(lake.Name), Namespace: namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		secret.Labels = labels
+		wanted := map[string]bool{}
+		for _, agent := range lake.Spec.Agents.Library {
+			wanted[agent.Key] = true
+		}
+		data := map[string][]byte{}
+		for key, value := range secret.Data {
+			if wanted[key] && len(value) > 0 {
+				data[key] = value
+			}
+		}
+		for key := range wanted {
+			if _, ok := data[key]; ok {
+				continue
+			}
+			token, err := randomHex(32)
+			if err != nil {
+				return err
+			}
+			data[key] = []byte(token)
+		}
+		secret.Data = data
+		return controllerutil.SetControllerReference(lake, secret, r.Scheme)
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile agent bus tokens: %w", err)
 	}
 	return nil
 }
@@ -334,7 +387,10 @@ func (r *LakeReconciler) reconcileLakeLibraryAgents(ctx context.Context, lake *o
 		wanted[name] = true
 		selector := map[string]string{"app.kubernetes.io/name": agent.Key, "app.kubernetes.io/instance": name}
 		env := append(agentBaseEnv(lake, namespace),
-			secretEnv("AGENT_SERVICE_TOKEN", lakeAgentServiceTokenSecret(lake.Name), agentServiceTokenKey))
+			secretEnv("AGENT_SERVICE_TOKEN", lakeAgentServiceTokenSecret(lake.Name), agentServiceTokenKey),
+			// Its own credential on the agent bus, and the name it takes tasks under.
+			secretEnv("AGENT_BUS_TOKEN", lakeAgentBusSecret(lake.Name), agent.Key),
+			corev1.EnvVar{Name: "AGENT_BUS_AGENT", Value: agent.Key})
 		pod := agentPodSpec(lake, agent.Image, env, true)
 		libraryLabels := agentLabels(labels, agent.Key, name, map[string]string{libraryAgentLabel: agent.Key})
 		if _, err := r.reconcileAgentService(ctx, lake, namespace, name, libraryLabels, selector, pod); err != nil {
