@@ -61,6 +61,31 @@ type fakeServiceStore struct {
 	schedules       []LakeAgentSchedule
 	scheduleUpserts []LakeAgentScheduleStatus
 	runUpserts      []LakeAgentScheduleRun
+	// builds and buildUpdates are the in-cluster build half (lake_builds_test.go).
+	builds       []LakeBuild
+	buildUpdates []LakeBuildStatus
+}
+
+func (f *fakeServiceStore) ListBuilds(context.Context) ([]LakeBuild, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]LakeBuild(nil), f.builds...), nil
+}
+
+func (f *fakeServiceStore) UpdateBuildStatus(_ context.Context, status LakeBuildStatus) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.buildUpdates = append(f.buildUpdates, status)
+	for i := range f.builds {
+		if f.builds[i].ID == status.BuildID {
+			f.builds[i].Phase = status.Phase
+			f.builds[i].Digest = status.Digest
+			f.builds[i].Size = status.Size
+			f.builds[i].Message = status.Message
+			f.builds[i].TokenHashes = status.TokenHashes
+		}
+	}
+	return nil
 }
 
 func (f *fakeServiceStore) ListAgentSchedules(context.Context) ([]LakeAgentSchedule, error) {

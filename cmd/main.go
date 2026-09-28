@@ -165,6 +165,7 @@ func main() {
 		PolarsImage:   lakePolarsImage,
 		ServiceEvents: servicesListener.Events,
 		APIReader:     mgr.GetAPIReader(),
+		Clientset:     clientset,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lake")
 		os.Exit(1)

@@ -148,6 +148,104 @@ spec:
                 items:
                   type: string
                 type: array
+              builds:
+                description: |-
+                  Builds runs one isolated rootless BuildKit Job for each queued row in lake's builds table.
+                  The operator creates short-lived source, registry-push, and event credentials and reports
+                  the Job's observed outcome to the row. See docs/lake/builds.md.
+                properties:
+                  builderImage:
+                    description: |-
+                      BuilderImage is the private oramasearch/lake-builder image run for every build. It must be
+                      set when Enabled is true. The operator copies the Lake's pullSecretName into each build
+                      namespace and uses that local copy to pull it.
+                    type: string
+                  cacheEnabled:
+                    default: true
+                    description: CacheEnabled exports and imports a per-space registry
+                      cache. The default is true.
+                    type: boolean
+                  concurrency:
+                    description: Concurrency caps active Jobs for this Lake and for
+                      any one target registry space.
+                    properties:
+                      perLake:
+                        default: 4
+                        description: PerLake is the maximum number of active build
+                          Jobs for this Lake.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      perSpace:
+                        default: 2
+                        description: PerSpace is the maximum number of active build
+                          Jobs targeting one registry space.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    type: object
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled turns on the builds-table poll. Turning it off starts no new Jobs and leaves Jobs
+                      already created to finish.
+                    type: boolean
+                  resources:
+                    description: |-
+                      Resources configures each builder container. Values are merged over the operator's bounded
+                      CPU, memory, and ephemeral-storage defaults.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This is an alpha field and requires enabling the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                type: object
               deploySync:
                 description: |-
                   DeploySync configures how frequently this operator materializes desired deployment rows from

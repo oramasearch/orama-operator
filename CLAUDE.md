@@ -129,7 +129,8 @@ about the **operator**, not a copy of prod docs.
 control-plane Postgres with lake's schema applied through `PostgresSchema`, an owned `OramaZettaCluster` data plane, opt-in scheduled R2/S3
 backup through CNPG Barman, cluster-scoped `LakeRestoreRehearsal` restore/upgrade/failover proof,
 opt-in Ingress + Cloudflare DNS, and Lake-owned `LakeEnvironment` CRs materialized from the
-operator's Zetta deployment table. `LakeSealedSecret` delivers cluster-bound ciphertext into
+operator's Zetta deployment table. It also runs opt-in, isolated image-build Jobs from Lake's
+`builds` table. `LakeSealedSecret` delivers cluster-bound ciphertext into
 owned Kubernetes Secrets; see `docs/lake/sealed-secrets.md`.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
 production instance) and the `Lake` section of [`docs/crd-reference.md`](docs/crd-reference.md) before touching

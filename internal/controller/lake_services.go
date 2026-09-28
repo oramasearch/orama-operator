@@ -139,6 +139,8 @@ type LakeServiceStore interface {
 	ListAgentSchedules(ctx context.Context) ([]LakeAgentSchedule, error)
 	UpsertAgentScheduleStatus(ctx context.Context, status LakeAgentScheduleStatus) error
 	UpsertAgentScheduleRun(ctx context.Context, run LakeAgentScheduleRun) error
+	ListBuilds(ctx context.Context) ([]LakeBuild, error)
+	UpdateBuildStatus(ctx context.Context, status LakeBuildStatus) error
 	Close(ctx context.Context) error
 }
 
@@ -344,26 +346,25 @@ func foreignServiceMessage(kind, namespace, name string) string {
 	return fmt.Sprintf("%s %s/%s exists and is not this Lake's service", kind, namespace, name)
 }
 
-// reconcileLakeServices is one poll of lake's services table. It is best-effort: a Secret that is
-// not there yet, an unreachable database or a failed Kubernetes call is logged and retried on the
-// Lake's next requeue, and never fails the Lake reconcile.
-// reconcileLakeServices reports whether any service is still changing (starting or being
-// deleted), so the Lake is polled fast until it settles (lake#197).
+// reconcileLakeServices is one poll of Lake-owned control rows: services, stores, agents, and
+// builds. It is best-effort: a Secret that is not there yet, an unreachable database, or a failed
+// Kubernetes call is logged and retried on the Lake's next requeue and never fails Lake reconcile.
+// It reports whether any row is still changing, so the Lake is polled fast until it settles.
 func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) bool {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	var app corev1.Secret
 	secretName := lakeControlDB(lake.Name) + "-app"
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, &app); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("services deferred: control DB app Secret not created yet", "secret", secretName)
+			log.Info("control rows deferred: control DB app Secret not created yet", "secret", secretName)
 		} else {
-			log.Error(err, "services deferred: cannot read the control DB app Secret", "secret", secretName)
+			log.Error(err, "control rows deferred: cannot read the control DB app Secret", "secret", secretName)
 		}
 		return false
 	}
 	uri := string(app.Data["uri"])
 	if uri == "" {
-		log.Info("services deferred: control DB app Secret has no uri yet", "secret", secretName)
+		log.Info("control rows deferred: control DB app Secret has no uri yet", "secret", secretName)
 		return false
 	}
 	passCtx, cancel := context.WithTimeout(ctx, servicePassTimeout)
@@ -374,43 +375,56 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 	}
 	store, err := open(passCtx, uri)
 	if err != nil {
-		log.Info("services deferred: cannot connect to the control DB", "err", err.Error())
+		log.Info("control rows deferred: cannot connect to the control DB", "err", err.Error())
 		return false
 	}
 	defer func() { _ = store.Close(context.Background()) }()
-	services, err := store.ListServices(passCtx)
-	if err != nil {
-		log.Info("services deferred: cannot read services", "err", err.Error())
-		return false
+	changing := false
+	if lakeServicesEnabled(lake) {
+		services, err := store.ListServices(passCtx)
+		if err != nil {
+			log.Info("services deferred: cannot read services", "err", err.Error())
+		} else {
+			// Stores (lake#196) ride the same connection. A schema without the stores table, or a
+			// failed read, skips them for this pass and leaves the services alone.
+			stores, storesErr := store.ListStores(passCtx)
+			storesRead := storesErr == nil
+			if errors.Is(storesErr, errStoresTableMissing) {
+				log.Info("stores skipped: " + storesErr.Error())
+			} else if storesErr != nil {
+				log.Info("stores deferred: cannot read stores", "err", storesErr.Error())
+			}
+			changing = r.syncLakeServices(passCtx, lake, namespace, labels, store, services, stores, storesRead)
+		}
+		// Agent launches (lake_agents.go, lake#231) ride the same connection. A schema without
+		// the table, or a failed read, skips them for this pass.
+		launches, err := store.ListAgentLaunches(passCtx)
+		if errors.Is(err, errAgentLaunchesTableMissing) {
+			log.Info("agent launches skipped: " + err.Error())
+		} else if err != nil {
+			log.Info("agent launches deferred: cannot read agent launches", "err", err.Error())
+		} else if r.reconcileLakeAgentLaunches(passCtx, lake, namespace, labels, store, launches) {
+			changing = true
+		}
+		// Agent cron schedules (lake_agent_schedules.go, lake#244): one CronJob each.
+		schedules, err := store.ListAgentSchedules(passCtx)
+		if errors.Is(err, errAgentSchedulesTableMissing) {
+			log.Info("agent schedules skipped: " + err.Error())
+		} else if err != nil {
+			log.Info("agent schedules deferred: cannot read agent schedules", "err", err.Error())
+		} else if r.reconcileLakeAgentSchedules(passCtx, lake, namespace, labels, store, schedules) {
+			changing = true
+		}
 	}
-	// Stores (lake#196) ride the same connection. A schema without the stores table, or a failed
-	// read, skips them for this pass and leaves the services alone.
-	stores, err := store.ListStores(passCtx)
-	storesRead := err == nil
-	if errors.Is(err, errStoresTableMissing) {
-		log.Info("stores skipped: " + err.Error())
-	} else if err != nil {
-		log.Info("stores deferred: cannot read stores", "err", err.Error())
-	}
-	changing := r.syncLakeServices(passCtx, lake, namespace, labels, store, services, stores, storesRead)
-	// Agent launches (lake_agents.go, lake#231) ride the same connection. A schema without the
-	// table, or a failed read, skips them for this pass.
-	launches, err := store.ListAgentLaunches(passCtx)
-	if errors.Is(err, errAgentLaunchesTableMissing) {
-		log.Info("agent launches skipped: " + err.Error())
-	} else if err != nil {
-		log.Info("agent launches deferred: cannot read agent launches", "err", err.Error())
-	} else if r.reconcileLakeAgentLaunches(passCtx, lake, namespace, labels, store, launches) {
-		changing = true
-	}
-	// Agent cron schedules (lake_agent_schedules.go, lake#244): one CronJob each, same connection.
-	schedules, err := store.ListAgentSchedules(passCtx)
-	if errors.Is(err, errAgentSchedulesTableMissing) {
-		log.Info("agent schedules skipped: " + err.Error())
-	} else if err != nil {
-		log.Info("agent schedules deferred: cannot read agent schedules", "err", err.Error())
-	} else if r.reconcileLakeAgentSchedules(passCtx, lake, namespace, labels, store, schedules) {
-		changing = true
+	if lakeBuildsEnabled(lake) {
+		builds, err := store.ListBuilds(passCtx)
+		if errors.Is(err, errBuildsTableMissing) {
+			log.Info("builds skipped: " + err.Error())
+		} else if err != nil {
+			log.Info("builds deferred: cannot read builds", "err", err.Error())
+		} else if r.reconcileLakeBuilds(passCtx, lake, store, builds) {
+			changing = true
+		}
 	}
 	return changing
 }
