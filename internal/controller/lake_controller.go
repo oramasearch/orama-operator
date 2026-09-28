@@ -11,10 +11,12 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -27,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -57,11 +60,17 @@ type LakeReconciler struct {
 	// PolarsImage is the lake-polars image for polars services when a Lake sets no
 	// spec.services.polarsImage (the --lake-polars-image flag). Empty uses DefaultLakePolarsImage.
 	PolarsImage string
-	// ServiceEvents wakes the reconciler when lake writes a service (LakeServicesListener,
-	// lake#197). Nil means services are found by the poll alone.
+	// ServiceEvents wakes the reconciler when lake writes a service or build row
+	// (LakeServicesListener). Nil means rows are found by the poll alone.
 	ServiceEvents <-chan event.GenericEvent
 	// APIReader lists lake pods without a cache (no cluster-wide pod informer). Nil uses Client.
 	APIReader client.Reader
+	// Clientset reads a completed builder pod's final stdout lines through pods/log.
+	Clientset kubernetes.Interface
+	// BuildLogs substitutes the pods/log read in tests.
+	BuildLogs func(ctx context.Context, namespace, jobName string) (string, error)
+	// BuildEventClient posts best-effort pod-level events to lake. Nil uses a bounded client.
+	BuildEventClient *http.Client
 }
 
 const (
@@ -154,6 +163,8 @@ type lakeBackupConfig struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;patch
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=postgresschemas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=scheduledbackups,verbs=get;list;watch;create;update;patch;delete
@@ -278,12 +289,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("read deployment while waiting for schema: %w", err)
 	}
 
-	// Managed services (lake_services.go): best-effort, never fails the Lake. The services table
-	// exists only once the schema has applied, so the poll waits for it. Turning services off
-	// stops the poll and deletes no service.
-	servicesChanging := false
-	if lakeServicesEnabled(&lake) && schemaReady {
-		servicesChanging = r.reconcileLakeServices(ctx, &lake, ns, labels)
+	// Lake-owned control rows (services, stores, agents, builds): best-effort, never fail the Lake.
+	// The tables exist only once the schema has applied, so the poll waits for it.
+	controlRowsChanging := false
+	if lakeControlRowsEnabled(&lake) && schemaReady {
+		controlRowsChanging = r.reconcileLakeServices(ctx, &lake, ns, labels)
 	}
 
 	// The Agent Library's specialized agents (lake_agents.go): best-effort, never fails the Lake.
@@ -370,10 +380,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 	// The services table is polled, and service credentials live in Secrets the Lake does not
 	// own, so services poll at their own cadence; unchanged polls write nothing.
-	if lakeServicesEnabled(&lake) {
+	if lakeControlRowsEnabled(&lake) {
 		// A starting or deleting service is followed closely so its status, and the time a
 		// person waits, tracks the cluster rather than the poll (lake#197).
-		if servicesChanging {
+		if controlRowsChanging {
 			return ctrl.Result{RequeueAfter: lakeServicesChangingPoll}, nil
 		}
 		return ctrl.Result{RequeueAfter: min(lakeStatusRequeue, lakeServicesPollInterval(&lake))}, nil
@@ -1533,6 +1543,7 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.Lake{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&batchv1.Job{}).
 		Owns(&corev1.Service{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Watches(
@@ -1540,6 +1551,7 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.lakeRequestsForStoreClaim),
 		).
 		Owns(&networkingv1.Ingress{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).

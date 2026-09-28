@@ -14,14 +14,17 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// lakeServicesChannel is the Postgres channel lake notifies when it writes a service: a create or
-// a delete (lake db/schema.sql and docs/control-plane/services.md).
-const lakeServicesChannel = "lake_services"
+const (
+	// lakeServicesChannel is notified when lake creates or deletes a managed service.
+	lakeServicesChannel = "lake_services"
+	// lakeBuildsChannel is notified when lake queues or cancels an in-cluster build.
+	lakeBuildsChannel = "lake_builds"
+)
 
-// LakeServicesListener wakes the Lake reconciler the moment lake writes a service, instead of on
-// the next services poll (lake#197). It keeps one LISTEN connection to each services-enabled Lake's
-// control Postgres and sends that Lake on Events for every notification. The poll stays: a missed
-// notification (a reconnect, a restart) only means the service is picked up by the poll.
+// LakeServicesListener wakes the Lake reconciler the moment lake writes a service or build row,
+// instead of on the next poll. It keeps one LISTEN connection to each enabled Lake's control
+// Postgres and sends that Lake on Events for every notification. The poll stays as the recovery
+// path for a missed notification, reconnect, or restart.
 type LakeServicesListener struct {
 	Client client.Client
 	Events chan event.GenericEvent
@@ -79,7 +82,7 @@ func (l *LakeServicesListener) sync(ctx context.Context) {
 	}
 	want := map[string]*oramav1alpha1.Lake{}
 	for i := range lakes.Items {
-		if lakeServicesEnabled(&lakes.Items[i]) {
+		if lakeControlRowsEnabled(&lakes.Items[i]) {
 			want[lakes.Items[i].Name] = &lakes.Items[i]
 		}
 	}
@@ -139,7 +142,7 @@ func (l *LakeServicesListener) listen(ctx context.Context, lake *oramav1alpha1.L
 	}
 }
 
-// pgxListen is Listen against Postgres: LISTEN lake_services, then wait.
+// pgxListen listens to every lake row channel on one Postgres connection, then waits.
 func pgxListen(ctx context.Context, uri string, notify func()) error {
 	config, err := pgx.ParseConfig(uri)
 	if err != nil {
@@ -156,6 +159,9 @@ func pgxListen(ctx context.Context, uri string, notify func()) error {
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
 	if _, err := conn.Exec(ctx, "LISTEN "+lakeServicesChannel); err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx, "LISTEN "+lakeBuildsChannel); err != nil {
 		return err
 	}
 	for {

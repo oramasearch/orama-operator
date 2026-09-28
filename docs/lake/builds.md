@@ -84,11 +84,12 @@ Lake's in-cluster Service. Its final stdout line is JSON `{"digest":"sha256:…"
 
 Each target space has a deterministic namespace `lake-<lake>-builds-<hash>`. The exact space is in
 an ownership annotation; a hash collision or a namespace created by another owner fails the row
-instead of adopting it. The namespace uses Pod Security `baseline` enforcement and
-`restricted` audit/warn. This is deliberate: the Kubernetes restricted policy rejects the
-unconfined seccomp and AppArmor profiles rootless BuildKit requires. Only the builder container is
-unconfined; it still runs as non-root uid/gid 1000, cannot escalate privileges, drops every Linux
-capability, has no service-account token, and receives no host mounts.
+instead of adopting it. The namespace uses Pod Security `restricted` audit/warn and `privileged`
+enforcement. Kubernetes Pod Security Admission has no per-pod exception: both restricted and
+baseline reject the unconfined seccomp and AppArmor profiles rootless BuildKit requires. The
+namespace is not tenant-writable, and only the builder container receives those two exceptions; it
+still runs as non-root uid/gid 1000, cannot escalate privileges, drops every Linux capability, has
+no service-account token, and receives no host mounts.
 
 The namespace has default-deny ingress and egress. A second NetworkPolicy permits:
 
