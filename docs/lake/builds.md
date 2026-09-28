@@ -58,7 +58,9 @@ Before creating a Job, the operator mints three independent credentials once:
 Their plaintext exists only in Secret `<job>-tokens` in the build namespace. The row receives a
 canonical JSON object containing the three SHA-256 hashes; Lake resolves presented credentials by
 hash and never stores their plaintext. A retry after an operator restart reuses the Secret and the
-same hashes.
+same hashes. The operator creates the Job suspended, persists all three hashes, and releases that
+same Job only after a later read sees the hashes in the row. A builder therefore cannot present a
+credential before Lake can resolve it.
 
 The Job receives the lake-builder contract exactly as environment variables:
 
@@ -115,7 +117,9 @@ While the Job is pending or active, the row is `Queued` or `Running`. A succeede
 Malformed or unavailable final output remains non-terminal and is retried while the retained Job
 and pod exist. A failed Job records its Kubernetes condition or container termination reason. The
 terminal row keeps the digest, size, and message after Job garbage collection; its event topic
-`build-events.<build-id>` is the durable logs reference.
+`build-events.<build-id>` is the durable logs reference. Before either terminal update, the operator
+deletes the plaintext token Secret and clears all three hashes, retrying cleanup instead of leaving
+a credential behind.
 
 lake-builder posts phase, batched BuildKit log, digest, and error events to
 `POST /v1/publish_build_event` with its event token. Event delivery is best-effort and never decides

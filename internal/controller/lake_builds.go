@@ -521,6 +521,7 @@ func (r *LakeReconciler) createBuildJob(ctx context.Context, lake *oramav1alpha1
 	backoff := int32(0)
 	deadline := buildDeadlineSeconds
 	ttl := buildJobTTLSeconds
+	suspended := true
 	name := buildJobName(build.ID)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
@@ -528,6 +529,7 @@ func (r *LakeReconciler) createBuildJob(ctx context.Context, lake *oramav1alpha1
 			BackoffLimit:            &backoff,
 			ActiveDeadlineSeconds:   &deadline,
 			TTLSecondsAfterFinished: &ttl,
+			Suspend:                 &suspended,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec:       buildPod(lake, build, target, labels),
@@ -659,11 +661,28 @@ func (r *LakeReconciler) reconcileLakeBuild(ctx context.Context, lake *oramav1al
 
 func (r *LakeReconciler) observeBuildJob(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, build *LakeBuild, job *batchv1.Job) (LakeBuildStatus, bool, bool, error) {
 	status := LakeBuildStatus{BuildID: build.ID, Phase: BuildPhaseQueued, Message: "waiting for builder pod", TokenHashes: canonicalJSON(build.TokenHashes)}
-	if status.TokenHashes == "{}" {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: buildTokenSecretName(build.ID)}, secret); err == nil {
-			status.TokenHashes = buildTokenHashes(secret.Data)
+	if job.Spec.Suspend != nil && *job.Spec.Suspend {
+		target, err := parseBuildTarget(build.Target)
+		if err != nil {
+			return status, false, false, err
 		}
+		labels := buildLabels(lake, build, target)
+		hashes, err := r.reconcileBuildTokens(ctx, lake, namespace, build, labels)
+		if err != nil {
+			return status, true, false, err
+		}
+		status.TokenHashes = hashes
+		if canonicalJSON(build.TokenHashes) != hashes {
+			status.Message = "build credentials ready"
+			return status, true, false, nil
+		}
+		released := false
+		job.Spec.Suspend = &released
+		if err := r.Update(ctx, job); err != nil {
+			return status, true, false, err
+		}
+		status.Message = "build Job released"
+		return status, true, false, nil
 	}
 	r.publishBuildPodEvents(ctx, lake, namespace, build, job)
 	switch {
@@ -801,21 +820,26 @@ func (r *LakeReconciler) cancelLakeBuild(ctx context.Context, lake *oramav1alpha
 	return status, deleting, nil
 }
 
-func (r *LakeReconciler) cleanupBuildTokens(ctx context.Context, lake *oramav1alpha1.Lake, build *LakeBuild) {
+func (r *LakeReconciler) cleanupBuildTokens(ctx context.Context, lake *oramav1alpha1.Lake, build *LakeBuild) error {
 	target, err := parseBuildTarget(build.Target)
 	if err != nil {
-		return
+		return nil
 	}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 		Name: buildTokenSecretName(build.ID), Namespace: buildNamespace(lake.Name, target.Space),
 	}}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
-		return
+	if err := r.Get(ctx, client.ObjectKeyFromObject(secret), secret); apierrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return err
 	}
 	if secret.Labels[buildIDLabel] != build.ID || !metav1.IsControlledBy(secret, lake) {
-		return
+		return fmt.Errorf("Secret %s is not owned by this build", client.ObjectKeyFromObject(secret))
 	}
-	_ = r.Delete(ctx, secret)
+	if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // reconcileLakeBuilds applies one ordered read of the builds table and reports whether any build
@@ -844,7 +868,11 @@ func (r *LakeReconciler) reconcileLakeBuilds(ctx context.Context, lake *oramav1a
 			continue
 		}
 		if cleanup {
-			r.cleanupBuildTokens(ctx, lake, build)
+			if err := r.cleanupBuildTokens(ctx, lake, build); err != nil {
+				log.Error(err, "build token cleanup deferred", "build", build.ID)
+				changing = true
+				continue
+			}
 		}
 		if status.equalBuild(build) {
 			continue

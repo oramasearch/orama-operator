@@ -74,6 +74,9 @@ func TestLakeBuildEnvtestRowToJobToStatus(t *testing.T) {
 			t.Fatalf("created %T: %v", object, err)
 		}
 	}
+	if !reconciler.reconcileLakeBuilds(context.Background(), lake, store, store.builds) {
+		t.Fatal("suspended Job release did not request a follow-up poll")
+	}
 	job := &batchv1.Job{}
 	jobKey := client.ObjectKey{Namespace: namespace, Name: buildJobName(build.ID)}
 	if err := kube.Get(context.Background(), jobKey, job); err != nil {

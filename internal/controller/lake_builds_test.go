@@ -127,7 +127,8 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 	}
 	if job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 0 ||
 		job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != buildDeadlineSeconds ||
-		job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != buildJobTTLSeconds {
+		job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != buildJobTTLSeconds ||
+		job.Spec.Suspend == nil || !*job.Spec.Suspend {
 		t.Fatalf("Job bounds = %+v", job.Spec)
 	}
 	pod := job.Spec.Template.Spec
@@ -153,6 +154,13 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 	}
 	if env["CACHE_REF"].Value != "lake-registry.lake.svc:80/space-one/cache/app" {
 		t.Fatalf("CACHE_REF = %q", env["CACHE_REF"].Value)
+	}
+	h.poll()
+	if err := h.client.Get(context.Background(), jobKey, &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Spec.Suspend == nil || *job.Spec.Suspend {
+		t.Fatal("build Job was not released after Lake received the token hashes")
 	}
 	job.Status.Succeeded = 1
 	if err := h.client.Status().Update(context.Background(), &job); err != nil {
@@ -301,6 +309,7 @@ func TestLakeBuildPublishesPodEventsOnce(t *testing.T) {
 	target, _ := parseBuildTarget(testBuildTarget)
 	namespace := buildNamespace(lake.Name, target.Space)
 	jobKey := client.ObjectKey{Namespace: namespace, Name: buildJobName(testBuildID)}
+	h.poll()
 	var job batchv1.Job
 	if err := h.client.Get(context.Background(), jobKey, &job); err != nil {
 		t.Fatal(err)
