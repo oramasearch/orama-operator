@@ -378,11 +378,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			return ctrl.Result{}, err
 		}
 	}
-	// The services table is polled, and service credentials live in Secrets the Lake does not
-	// own, so services poll at their own cadence; unchanged polls write nothing.
+	// Control rows are polled, and their observed Kubernetes state can change without updating the
+	// Lake, so they run at their own cadence; unchanged polls write nothing.
 	if lakeControlRowsEnabled(&lake) {
-		// A starting or deleting service is followed closely so its status, and the time a
-		// person waits, tracks the cluster rather than the poll (lake#197).
+		// Starting or deleting work is followed closely so its status tracks the cluster rather
+		// than the regular poll.
 		if controlRowsChanging {
 			return ctrl.Result{RequeueAfter: lakeServicesChangingPoll}, nil
 		}

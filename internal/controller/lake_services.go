@@ -346,26 +346,25 @@ func foreignServiceMessage(kind, namespace, name string) string {
 	return fmt.Sprintf("%s %s/%s exists and is not this Lake's service", kind, namespace, name)
 }
 
-// reconcileLakeServices is one poll of lake's services table. It is best-effort: a Secret that is
-// not there yet, an unreachable database or a failed Kubernetes call is logged and retried on the
-// Lake's next requeue, and never fails the Lake reconcile.
-// reconcileLakeServices reports whether any service is still changing (starting or being
-// deleted), so the Lake is polled fast until it settles (lake#197).
+// reconcileLakeServices is one poll of Lake-owned control rows: services, stores, agents, and
+// builds. It is best-effort: a Secret that is not there yet, an unreachable database, or a failed
+// Kubernetes call is logged and retried on the Lake's next requeue and never fails Lake reconcile.
+// It reports whether any row is still changing, so the Lake is polled fast until it settles.
 func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) bool {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	var app corev1.Secret
 	secretName := lakeControlDB(lake.Name) + "-app"
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, &app); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("services deferred: control DB app Secret not created yet", "secret", secretName)
+			log.Info("control rows deferred: control DB app Secret not created yet", "secret", secretName)
 		} else {
-			log.Error(err, "services deferred: cannot read the control DB app Secret", "secret", secretName)
+			log.Error(err, "control rows deferred: cannot read the control DB app Secret", "secret", secretName)
 		}
 		return false
 	}
 	uri := string(app.Data["uri"])
 	if uri == "" {
-		log.Info("services deferred: control DB app Secret has no uri yet", "secret", secretName)
+		log.Info("control rows deferred: control DB app Secret has no uri yet", "secret", secretName)
 		return false
 	}
 	passCtx, cancel := context.WithTimeout(ctx, servicePassTimeout)
@@ -376,7 +375,7 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 	}
 	store, err := open(passCtx, uri)
 	if err != nil {
-		log.Info("services deferred: cannot connect to the control DB", "err", err.Error())
+		log.Info("control rows deferred: cannot connect to the control DB", "err", err.Error())
 		return false
 	}
 	defer func() { _ = store.Close(context.Background()) }()
