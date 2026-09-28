@@ -36,6 +36,11 @@ table using the Services DSN, `lake_apps` notifications and a 60-second fallback
 generated token hashes, returns current rollout status, handles stopped/deleted rows and orphans,
 and owns one proxied apps wildcard DNS record. Builds remain separate in #195.
 
+With `spec.builds.enabled`, lake writes a queued image-build row and the operator runs one isolated
+rootless BuildKit Job for it in a per-space namespace. Source, push, and event credentials are
+single-build scoped; the Job pushes through Lake's in-cluster registry, reuses a per-space registry
+cache, and reports its digest, size, progress, and failures. See [`builds.md`](builds.md).
+
 With `spec.services.enabled`, lake runs managed services for its customers — Zetta, Postgres,
 the catalog of Kafka, ClickHouse, TiDB, Cassandra and Valkey (preview), and SQLite, DuckDB and
 Polars: it writes the
@@ -140,6 +145,11 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     `LAKE_SERVICE_DIR`; `service_status` is upserted on change. An absent service is deleted with its
     data (irreversibly); `spec.services.maxServices` caps how many exist. The poll never fails the
     Lake. See [`services.md`](services.md).
+16. **In-cluster builds** (opt-in: `spec.builds.enabled`) — queued rows in the Lake control
+    Postgres become one `oramasearch/lake-builder` Job each in a deterministic per-space namespace,
+    with scoped credentials, network isolation, resource/deadline/retention bounds, per-Lake and
+    per-space concurrency, registry cache, progress events, and terminal digest/size status. See
+    [`builds.md`](builds.md).
 
 **Status** reports overall service readiness through `phase` and `conditions[Ready]`, alongside
 Deployment replica counts, store binding, Postgres, schema, Zetta, backup, sealing, and data-service

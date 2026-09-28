@@ -82,7 +82,8 @@ rules:
   - apiGroups: [""]
     resources: ["services", "configmaps", "secrets", "persistentvolumeclaims", "serviceaccounts", "resourcequotas", "limitranges"]
     verbs: ["*"]
-  # Read the Zetta e2e Job's pod logs to parse pass/fail/skip counts into ZettaClusterE2ETest status.
+  # Read the Zetta e2e Job's pod logs to parse pass/fail/skip counts and Lake builder logs to read
+  # the final pushed digest and size into their respective status records.
   # Patch lake pods' orama.cloud/services-secret-version annotation so kubelet refreshes the
   # mounted services Secret at once (lake#197). Listed uncached: no pod informer.
   - apiGroups: [""]

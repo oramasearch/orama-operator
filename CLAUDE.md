@@ -132,6 +132,7 @@ opt-in Ingress + Cloudflare DNS, and Lake-owned `LakeEnvironment` CRs materializ
 operator's Zetta deployment table. Opt-in `spec.apps.enabled` synchronizes the control Postgres
 `apps` table into Lake-owned `LakeApp` resources, registers generated token hashes, returns status,
 and maintains the apps wildcard DNS record; see `docs/lake/apps.md`.
+It also runs opt-in, isolated image-build Jobs from Lake's `builds` table; see `docs/lake/builds.md`.
 `LakeSealedSecret` delivers cluster-bound ciphertext into
 owned Kubernetes Secrets; see `docs/lake/sealed-secrets.md`.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
