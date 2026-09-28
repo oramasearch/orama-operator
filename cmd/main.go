@@ -177,6 +177,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeEnvironment")
 		os.Exit(1)
 	}
+	if err = (&controller.LakeAppReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeApp")
+		os.Exit(1)
+	}
 	if err = (&controller.LakeRestoreRehearsalReconciler{
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),

@@ -14,7 +14,8 @@ into running systems:
   control-plane DB, analytics, cache, broker, ingestion, workers), one CR per cluster.
 - The supporting CRDs those own: `PostgresSchema`, `RabbitMQTopology`, `CloudflareDNSRecord`,
   `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `LakeSealedSecret`,
-  `LakeRestoreRehearsal`, and the three e2e test CRDs, including `LakeE2ETest`.
+  `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and the three e2e test CRDs, including
+  `LakeE2ETest`.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -62,7 +63,7 @@ Existing AKS installations that use the former release name must follow the sche
 - [`docs/components.md`](docs/components.md): what each reconciler creates, and its status.
 - [`docs/install/k0s.md`](docs/install/k0s.md): install one Lake on connected or air-gapped liquid k0s.
 - [`docs/lake/README.md`](docs/lake/README.md): the `Lake` CR, with
-  [`environments.md`](docs/lake/environments.md),
+  [`environments.md`](docs/lake/environments.md), [`apps.md`](docs/lake/apps.md),
   [`sealed-secrets.md`](docs/lake/sealed-secrets.md), [`backups.md`](docs/lake/backups.md)
   and [`data-services/`](docs/lake/data-services/README.md).
 - [`docs/control-plane/README.md`](docs/control-plane/README.md): the deployment control plane

@@ -80,6 +80,11 @@ type LakeSpec struct {
 	// +optional
 	Agents LakeAgentsSpec `json:"agents,omitempty"`
 
+	// Apps configures LakeApp runtime delivery and public addressing. The apps table sync is a
+	// separate controller path; these settings are consumed by each LakeApp reconciler.
+	// +optional
+	Apps LakeAppsSpec `json:"apps,omitempty"`
+
 	// Sealing configures the X25519 cluster delivery key. The operator mints generation 1 when
 	// omitted. Increasing Generation rotates the public key while retaining private keys still
 	// needed by LakeSealedSecret resources.
@@ -154,6 +159,21 @@ type LakeSpec struct {
 	// read. See docs/lake/workspaces.md.
 	// +optional
 	Workspaces LakeWorkspacesSpec `json:"workspaces,omitempty"`
+}
+
+// LakeAppsSpec configures the shared settings used by LakeApp resources.
+type LakeAppsSpec struct {
+	// Wildcard is the DNS suffix for apps. An app without spec.host uses <app>.<wildcard>.
+	// +optional
+	Wildcard string `json:"wildcard,omitempty"`
+
+	// IngressClass selects the ingress controller for apps. Empty defaults to nginx.
+	// +optional
+	IngressClass string `json:"ingressClass,omitempty"`
+
+	// RuntimeImage is the private app-runtime image used by runtime-mode apps.
+	// +optional
+	RuntimeImage string `json:"runtimeImage,omitempty"`
 }
 
 // LakeServicesSpec configures a Lake's managed services (liquid-bridge decision 46).

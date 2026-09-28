@@ -124,6 +124,24 @@ spec:
                       agent runs on. Empty: launches are reported Failed and nothing runs.
                     type: string
                 type: object
+              apps:
+                description: |-
+                  Apps configures LakeApp runtime delivery and public addressing. The apps table sync is a
+                  separate controller path; these settings are consumed by each LakeApp reconciler.
+                properties:
+                  ingressClass:
+                    description: IngressClass selects the ingress controller for apps.
+                      Empty defaults to nginx.
+                    type: string
+                  runtimeImage:
+                    description: RuntimeImage is the private app-runtime image used
+                      by runtime-mode apps.
+                    type: string
+                  wildcard:
+                    description: Wildcard is the DNS suffix for apps. An app without
+                      spec.host uses <app>.<wildcard>.
+                    type: string
+                type: object
               args:
                 description: Args passed to the image's entrypoint. Empty runs the
                   image as built.

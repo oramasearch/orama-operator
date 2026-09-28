@@ -28,6 +28,11 @@ delivered `LakeSealedSecret` values copied into the isolated workload namespace 
 authenticated REST `/v1` and MCP deployment surface; the contract, credentials, rollback, audit
 and connection details are in the [deployment control-plane guide](../control-plane/README.md).
 
+Namespaced `LakeApp` resources run customer apps from a pinned Lake repository revision or a
+digest-pinned image. Each app has a restricted namespace, private-by-default ingress, scoped data
+bindings, and live rollout events. The CR contract and resource lifecycle are in
+[`apps.md`](apps.md).
+
 With `spec.services.enabled`, lake runs managed services for its customers — Zetta, Postgres,
 the catalog of Kafka, ClickHouse, TiDB, Cassandra and Valkey (preview), and SQLite, DuckDB and
 Polars: it writes the

@@ -82,6 +82,10 @@ Every service becomes **`<lake>-<slug>`** in the Lake namespace, controlled by t
 labels `orama.cloud/lake=<lake>`, `orama.cloud/service-id=<id>`, `orama.cloud/service-kind=<kind>`,
 `orama.cloud/customer-id` (a `sha256-…` digest when the id is not a valid label value) and
 `app.kubernetes.io/name=lake-service`, and annotation `orama.cloud/customer-id=<customer_id>`.
+For a Zetta service, the reconciler carries the Lake/service/kind/customer identity labels from the
+child `OramaZettaCluster` onto its pods without changing the StatefulSet's immutable selector.
+`LakeApp` NetworkPolicies use those labels to open workspace and explicit service egress to that
+target only.
 
 | | Zetta (`kind = 'zetta'`) | Postgres (`kind = 'postgres'`) |
 |---|---|---|
