@@ -20,6 +20,7 @@ Deep docs for the operator. Kept in lockstep with the source (see the repo
 - [`lake/backups.md`](lake/backups.md) — **Lake control-plane backups**: R2 credentials, scheduled CNPG Barman backups, verification, configuration changes, and recovery into a new Cluster.
 - [`lake/environments.md`](lake/environments.md) — **named and per-change Lake environments**: Zetta deployment events, `LakeEnvironment` materialization, the k0s namespace profile, ingress/DNS, anti-flap status and teardown.
 - [`lake/apps.md`](lake/apps.md) — **deployed Lake apps**: the `LakeApp` runtime/image contract, isolated namespace, ingress/auth, data-binding Secret delivery, rollout status and live events.
+- [`lake/builds.md`](lake/builds.md) — **Lake in-cluster image builds**: one rootless BuildKit Job per queued row, per-space isolation and registry cache, scoped credentials, concurrency, progress events, and status recovery.
 - [`lake/lake-sqlite.md`](lake/lake-sqlite.md) — **lake-sqlite**: the web service behind the `sqlite` service kind (one SQLite database, `modernc.org/sqlite`, BSD-3-Clause): its API, configuration, build and local run.
 - [`lake/lake-duckdb.md`](lake/lake-duckdb.md) — **lake-duckdb**, powered by DuckDB: where the web service behind the `duckdb` service kind lives (its own private repository and image) and how this operator runs it.
 - [`lake/lake-polars.md`](lake/lake-polars.md) — **lake-polars**, powered by Polars: where the web service behind the `polars` service kind lives (its own private repository and image) and how this operator runs it.
