@@ -328,6 +328,9 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
 | `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. |
 | `spec.previewWildcard` | DNS suffix for preview environments. `preview.example.com` yields `<change-short>.preview.example.com`; with Lake ingress and DNS enabled, the Lake owns one `*.preview.example.com` Cloudflare record and previews do not create records per change. |
+| `spec.apps.runtimeImage` | Private app-runtime image used by `LakeApp` resources in runtime mode. |
+| `spec.apps.wildcard` | DNS suffix for apps. An app without `spec.host` uses `<app>.<wildcard>`. The shared wildcard DNS record is owned by the apps-table sync path. |
+| `spec.apps.ingressClass` | Ingress class for apps; empty defaults to `nginx`. |
 | `spec.deploySync.interval` | How often the operator reads desired deployment events from its Zetta `orama_control.deployments` table, and, with services enabled, how often it polls the `services` table. Default `15s`; positive values below `1s` are clamped to `1s`. |
 | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:<tag>`, the image every launch of a user-created Python agent runs on ([`lake/agents.md`](lake/agents.md), lake#231). Empty: launches are `Failed`. Each present `agent_launches` row becomes a Job (`job`) or a Deployment + Service (`service`) `<name>-<slug>`, with a credential Secret `<name>-<slug>-credential` whose SHA-256 only is written to `agent_launch_status`. |
 | `spec.agents.library[]` | `{key, image}`: the Agent Library's specialized agents (`agent-ask-orama`, `agent-project`, `agent-autosuggest`, `agent-creator`, and since lake#263 `agent-eval-generator`, `agent-autosuggest-corpus`, `agent-project-corpus`), each a Deployment + Service `<name>-<key>` on 8080; lake gets `LAKE_AGENT_ENDPOINTS`, `LAKE_INTERNAL_URL`, `LAKE_AGENT_MODEL`, `LAKE_AGENT_SERVICE_TOKEN` (Secret `lake-<name>-agent-service-token`, minted once) and `LAKE_AGENT_BUS_DIR` (Secret `lake-<name>-agent-bus`, one agent-bus credential per entry; each agent gets only its own as `AGENT_BUS_TOKEN`). An entry removed is deleted. |
@@ -372,6 +375,41 @@ The runner receives exactly two values from the controller: `LAKE_E2E_BASE_URL` 
 `http://lake-<target>.<namespace>.svc.cluster.local`, and `LAKE_E2E_RUN_ID` is the test resource UID
 for collision-free account and repository names. Authentication begins with the suite's public
 signup path; the operator does not inject the Lake admin bearer.
+
+## `LakeApp` (separate CRD, namespaced) — one deployed app
+
+A `LakeApp` is one Lake-owned application desired state. It lives in the referenced Lake's
+namespace; its workload runs in a separate namespace. See the operational contract in
+[`lake/apps.md`](lake/apps.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.lakeRef` | Name of the cluster-scoped `Lake`; the `LakeApp` must live in that Lake's `spec.namespace`. |
+| `spec.mode` | `runtime` (default) or `image`. Runtime requires `source`; image requires a digest-pinned `image`. |
+| `spec.source.repository` | Lake repository identifier loaded by app-runtime. |
+| `spec.source.revision` | Explicit pinned repository revision. It becomes `status.observedRevision` after reconciliation. |
+| `spec.source.path` | Application directory within the repository; empty means its root. |
+| `spec.source.entrypoint` | Framework-specific module, file, or directory served by app-runtime. |
+| `spec.source.framework` | `fastapi`, `streamlit`, or `static`. |
+| `spec.image` | Image-mode OCI reference, required to match `name@sha256:<64 hex>`. |
+| `spec.pullSecretName` | Image-mode override for the Lake's private-image pull Secret. The Secret is copied from the Lake namespace into the app namespace. |
+| `spec.port` | App container port, default `8080`. The Service exposes it on port 80. |
+| `spec.replicas` | Desired replicas, default `1`. Zero stops pods while retaining the app resources. |
+| `spec.resources` | App-container requests/limits; defaults to `100m`/`128Mi` requests and `1`/`1Gi` limits. |
+| `spec.env[]` | Literal `{name, value}` entries. Operator-managed runtime variables take precedence. |
+| `spec.secretRefs[]` | Lake-namespace Secrets copied into the app namespace and exposed through `envFrom`. |
+| `spec.host` | Exact hostname. Empty derives `<app>.<Lake spec.apps.wildcard>`. |
+| `spec.auth` | `lake` (default) uses Lake's session authorization through nginx `auth-url`; `public` omits that gate. |
+| `spec.bindings.zetta` | `{customerId, scopes}` for a Lake-minted, scoped read-only workspace token. |
+| `spec.bindings.services[]` | Lake service identifiers whose connection documents are delivered. |
+| `spec.bindings.secretRef` | Lake-namespace source Secret. Key `zetta` contains the workspace token; a key equal to each requested service identifier contains that connection. Required when bindings are requested. |
+| `spec.eventsSecretRef` | Lake-namespace Secret with `url` and `token`; copied to the app and used for best-effort publication to `app-events.<app>`. |
+| `status.phase` | `Progressing`, `Ready`, `Degraded`, or `TornDown`. |
+| `status.url` | `https://<host>` when ingress is configured. |
+| `status.ready` | True only when every desired replica is updated and available at the current revision. |
+| `status.observedRevision` | Runtime source revision or image digest observed by the controller. |
+| `status.message` | Stable rollout summary or highest-priority pod failure. |
+| `status.conditions` | Standard `Ready` condition, deep-compared before status writes. |
 
 ## `LakeEnvironment` (separate CRD, namespaced) — one desired deployment
 

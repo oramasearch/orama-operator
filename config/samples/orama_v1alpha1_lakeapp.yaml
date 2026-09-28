@@ -1,0 +1,28 @@
+apiVersion: orama.cloud/v1alpha1
+kind: LakeApp
+metadata:
+  name: sales-dashboard
+  namespace: lake
+spec:
+  lakeRef: prod
+  mode: runtime
+  source:
+    repository: sales-analytics
+    revision: 8f1d6dfdbde090ba5b293a7439f975f5564b026a
+    path: apps/dashboard
+    entrypoint: main:app
+    framework: fastapi
+  port: 8080
+  replicas: 1
+  auth: lake
+  bindings:
+    secretRef:
+      name: sales-dashboard-bindings
+    zetta:
+      customerId: 50d440ef-d5e3-44df-8381-340ad2c3a0fb
+      scopes:
+        - datasets:read
+    services:
+      - 8831658d-5691-4d40-b2cd-d52c651a8087
+  eventsSecretRef:
+    name: sales-dashboard-events
