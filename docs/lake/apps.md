@@ -284,4 +284,10 @@ covering nullable columns, hash/status writes, concurrent generations and row re
 fixture does not alter the byte-identical vendored schema. Re-vendoring lake#293's actual migration
 and live app-runtime/Cloudflare validation remain deployment prerequisites outside this proof.
 
+The regression files are `lake_apps_test.go` (row lifecycle, rollback, isolation and no steady
+writes), `lake_apps_pgx_test.go` (SQL and concurrent row changes), `lake_apps_dns_test.go`
+(wildcard ownership and ingress class), `lake_apps_notify_test.go` (listener and polling gates),
+and `lakeapp_tokens_test.go` (credential ownership, unbinding, DNS finalization and event HTTP).
+The Services/Stores shared-Secret regression additionally verifies ID aliases and their withdrawal.
+
 The field-by-field reference is in [`../crd-reference.md`](../crd-reference.md#lakeapp-separate-crd-namespaced--one-deployed-app).

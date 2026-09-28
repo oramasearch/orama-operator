@@ -57,6 +57,13 @@ The Lake managed-services store runs its pgx SQL against the vendored schema wit
 rolled back, so it creates and drops nothing: `go test ./internal/controller/ -run PgxStore`. See
 [services](lake/services.md#how-to-verify).
 
+The apps sync uses fake Lake Postgres rows with native envtest (`TestLakeAppsEnvtestLifecycle`).
+Its optional SQL adapter proof is `TestLakeAppsPgxStoreAgainstPostgres`, using
+`LAKE_APPS_TEST_POSTGRES_URI` against a fresh local database. It creates only a temporary contract
+table in a rolled-back transaction while lake#293 implements the upstream migration. Run native
+tests with `GOMAXPROCS=6 GOFLAGS=-p=6`; no image build or live cluster is needed. See
+[the apps contract and proof](lake/apps.md#verification).
+
 lake-sqlite, lake-duckdb and lake-polars, the web services behind the `sqlite`, `duckdb` and
 `polars` service kinds, are each their own private repository
 ([oramasearch/lake-sqlite](https://github.com/oramasearch/lake-sqlite),
