@@ -104,6 +104,7 @@ spec:
                           - agent-autosuggest-corpus
                           - agent-project-corpus
                           - agent-application
+                          - agent-experiments
                           type: string
                       required:
                       - image
