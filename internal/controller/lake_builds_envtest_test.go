@@ -51,6 +51,16 @@ func TestLakeBuildEnvtestRowToJobToStatus(t *testing.T) {
 	if err := kube.Get(context.Background(), client.ObjectKey{Name: lake.Name}, lake); err != nil {
 		t.Fatal(err)
 	}
+	if err := kube.Create(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: lakeNamespace(lake)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Create(context.Background(), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: lake.Spec.PullSecretName, Namespace: lakeNamespace(lake)},
+		Type:       corev1.SecretTypeDockerConfigJson,
+		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{}}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	build := testBuild("55555555-5555-4555-8555-555555555555", testBuildTarget)
 	store := &fakeServiceStore{builds: []LakeBuild{build}}
 	reconciler := &LakeReconciler{

@@ -191,7 +191,8 @@ type LakeBuildsSpec struct {
 	Enabled bool `json:"enabled,omitempty"`
 
 	// BuilderImage is the private oramasearch/lake-builder image run for every build. It must be
-	// set when Enabled is true. The Lake's pullSecretName is used to pull it.
+	// set when Enabled is true. The operator copies the Lake's pullSecretName into each build
+	// namespace and uses that local copy to pull it.
 	// +optional
 	BuilderImage string `json:"builderImage,omitempty"`
 

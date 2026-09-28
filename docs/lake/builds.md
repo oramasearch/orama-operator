@@ -28,11 +28,13 @@ spec:
         ephemeral-storage: 20Gi
 ```
 
-`builderImage` is required when builds are enabled. The builder Job inherits the Lake's image pull
-Secret. Resource entries override the bounded defaults shown above one key at a time, so CPU,
-memory, and ephemeral-storage remain bounded when a partial override is supplied. Concurrency
-defaults to four active Jobs for the Lake and two for one registry space. Both configured limits
-must be positive. Registry cache import/export defaults on and can be disabled explicitly.
+`builderImage` is required when builds are enabled. The operator copies the Lake's image pull Secret
+into each build namespace as the Lake-owned Secret `builder-pull`; the builder Job references that
+local copy because Kubernetes image pull Secrets cannot cross namespaces. Resource entries override
+the bounded defaults shown above one key at a time, so CPU, memory, and ephemeral-storage remain
+bounded when a partial override is supplied. Concurrency defaults to four active Jobs for the Lake
+and two for one registry space. Both configured limits must be positive. Registry cache
+import/export defaults on and can be disabled explicitly.
 
 Turning builds off stops the table poll. It does not kill a Job already created and does not remove
 the per-space namespace, because doing either would make an in-flight build's outcome ambiguous.

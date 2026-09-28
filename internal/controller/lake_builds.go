@@ -62,6 +62,7 @@ const (
 	buildRootlessGroup    = int64(1000)
 	buildNetworkPolicy    = "build-network"
 	buildDefaultDeny      = "build-default-deny"
+	buildPullSecretName   = "builder-pull"
 	buildDockerConfigPath = "/home/user/.docker"
 )
 
@@ -297,6 +298,46 @@ func (r *LakeReconciler) reconcileBuildNetworkPolicies(ctx context.Context, lake
 	return nil
 }
 
+func (r *LakeReconciler) reconcileBuildPullSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace, space string) error {
+	if lake.Spec.PullSecretName == "" {
+		return nil
+	}
+	source := &corev1.Secret{}
+	sourceKey := client.ObjectKey{Namespace: lakeNamespace(lake), Name: lake.Spec.PullSecretName}
+	if err := r.Get(ctx, sourceKey, source); err != nil {
+		return fmt.Errorf("read builder image pull Secret %s: %w", sourceKey, err)
+	}
+	destination := &corev1.Secret{}
+	destinationKey := client.ObjectKey{Namespace: namespace, Name: buildPullSecretName}
+	if err := r.Get(ctx, destinationKey, destination); err == nil {
+		if !metav1.IsControlledBy(destination, lake) {
+			return fmt.Errorf("Secret %s exists and is not this Lake's builder pull Secret", destinationKey)
+		}
+	} else if apierrors.IsNotFound(err) {
+		destination = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: destinationKey.Name, Namespace: destinationKey.Namespace}}
+	} else {
+		return err
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, destination, func() error {
+		destination.Labels = buildPolicyLabels(lake, space)
+		destination.Type = source.Type
+		destination.Data = copySecretData(source.Data)
+		destination.Immutable = nil
+		return controllerutil.SetControllerReference(lake, destination, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("reconcile builder image pull Secret %s: %w", destinationKey, err)
+	}
+	return nil
+}
+
+func copySecretData(source map[string][]byte) map[string][]byte {
+	destination := make(map[string][]byte, len(source))
+	for key, value := range source {
+		destination[key] = append([]byte(nil), value...)
+	}
+	return destination
+}
+
 func buildEgressRules(lake *oramav1alpha1.Lake) []networkingv1.NetworkPolicyEgressRule {
 	tcp := corev1.ProtocolTCP
 	udp := corev1.ProtocolUDP
@@ -441,7 +482,7 @@ func buildPod(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget, la
 		},
 	}
 	if lake.Spec.PullSecretName != "" {
-		pod.ImagePullSecrets = []corev1.LocalObjectReference{{Name: lake.Spec.PullSecretName}}
+		pod.ImagePullSecrets = []corev1.LocalObjectReference{{Name: buildPullSecretName}}
 	}
 	return pod
 }
@@ -604,6 +645,9 @@ func (r *LakeReconciler) reconcileLakeBuild(ctx context.Context, lake *oramav1al
 		return status, true, false, err
 	}
 	labels := buildLabels(lake, build, target)
+	if err := r.reconcileBuildPullSecret(ctx, lake, namespace, target.Space); err != nil {
+		return status, true, false, err
+	}
 	if err := r.reconcileBuildNetworkPolicies(ctx, lake, namespace, target.Space); err != nil {
 		return status, true, false, err
 	}

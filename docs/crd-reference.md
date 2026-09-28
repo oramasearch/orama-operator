@@ -332,7 +332,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.apps.wildcard` | DNS suffix for apps. An app without `spec.host` uses `<app>.<wildcard>`. The shared wildcard DNS record is owned by the apps-table sync path. |
 | `spec.apps.ingressClass` | Ingress class for apps; empty defaults to `nginx`. |
 | `spec.builds.enabled` | **Default `false`.** Enables lake's in-cluster build row reconciliation. Each queued row becomes one isolated rootless BuildKit Job; disabling stops new reconciliation and does not interrupt Jobs already created. See [`lake/builds.md`](lake/builds.md). |
-| `spec.builds.builderImage` | Private `oramasearch/lake-builder:<tag>` image used for every build. Required when builds are enabled; the Job inherits `spec.pullSecretName`. |
+| `spec.builds.builderImage` | Private `oramasearch/lake-builder:<tag>` image used for every build. Required when builds are enabled. When `spec.pullSecretName` is set, the operator copies that Secret from the Lake namespace to each build namespace as `builder-pull`; the Job references the local copy because image pull Secrets cannot cross namespaces. |
 | `spec.builds.resources` | Builder container resource override, merged over bounded defaults for CPU, memory, and ephemeral storage. |
 | `spec.builds.concurrency.perLake` / `.perSpace` | Active Job caps for the whole Lake and one target registry space. Defaults are 4 and 2; both must be at least 1. |
 | `spec.builds.cacheEnabled` | Enables a per-space BuildKit registry cache (`<registry>/<space>/cache/<image>`). Defaults to `true`. |

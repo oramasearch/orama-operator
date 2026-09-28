@@ -58,6 +58,18 @@ func testBuild(id, target string) LakeBuild {
 	}
 }
 
+func newBuildHarness(t *testing.T, lake *oramav1alpha1.Lake, store *fakeServiceStore, objects ...client.Object) *serviceHarness {
+	t.Helper()
+	if lake.Spec.PullSecretName != "" {
+		objects = append(objects, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: lake.Spec.PullSecretName, Namespace: lakeNamespace(lake)},
+			Type:       corev1.SecretTypeDockerConfigJson,
+			Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{"registry.example":{"auth":"dGVzdA=="}}}`)},
+		})
+	}
+	return newServiceHarness(t, lake, store, objects...)
+}
+
 func buildStatus(t *testing.T, store *fakeServiceStore, id string) LakeBuild {
 	t.Helper()
 	store.mu.Lock()
@@ -74,7 +86,7 @@ func buildStatus(t *testing.T, store *fakeServiceStore, id string) LakeBuild {
 func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 	lake := buildTestLake()
 	store := &fakeServiceStore{builds: []LakeBuild{testBuild(testBuildID, testBuildTarget)}}
-	h := newServiceHarness(t, lake, store)
+	h := newBuildHarness(t, lake, store)
 	h.reconciler.BuildLogs = func(context.Context, string, string) (string, error) {
 		return "#8 pushing\n{\"digest\":\"sha256:" + strings.Repeat("a", 64) + "\",\"size\":1234}\n", nil
 	}
@@ -101,6 +113,13 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 		if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: name}, &policy); err != nil {
 			t.Fatalf("NetworkPolicy %s: %v", name, err)
 		}
+	}
+	var pullSecret corev1.Secret
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: buildPullSecretName}, &pullSecret); err != nil {
+		t.Fatal(err)
+	}
+	if pullSecret.Type != corev1.SecretTypeDockerConfigJson || len(pullSecret.Data[corev1.DockerConfigJsonKey]) == 0 {
+		t.Fatalf("builder pull Secret = %+v", pullSecret)
 	}
 	var secret corev1.Secret
 	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: buildTokenSecretName(testBuildID)}, &secret); err != nil {
@@ -139,6 +158,9 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 		container.SecurityContext.AppArmorProfile.Type != corev1.AppArmorProfileTypeUnconfined ||
 		ephemeralLimit.String() != "20Gi" {
 		t.Fatalf("builder pod is not hardened and bounded: %+v", pod)
+	}
+	if len(pod.ImagePullSecrets) != 1 || pod.ImagePullSecrets[0].Name != buildPullSecretName {
+		t.Fatalf("builder imagePullSecrets = %+v", pod.ImagePullSecrets)
 	}
 	env := map[string]corev1.EnvVar{}
 	for _, item := range container.Env {
@@ -204,7 +226,7 @@ func TestLakeBuildConcurrencyCapsLakeAndSpace(t *testing.T) {
 				},
 				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(lake, oramav1alpha1.GroupVersion.WithKind("Lake"))},
 			}}
-			h := newServiceHarness(t, lake, store, existing)
+			h := newBuildHarness(t, lake, store, existing)
 			h.poll()
 			status := buildStatus(t, store, testBuildID)
 			if status.Phase != BuildPhaseQueued || status.Message != test.wantMessage {
@@ -223,7 +245,7 @@ func TestLakeBuildConcurrencyCapsLakeAndSpace(t *testing.T) {
 func TestCancelledLakeBuildDeletesOnlyItsJobAndTokens(t *testing.T) {
 	lake := buildTestLake()
 	store := &fakeServiceStore{builds: []LakeBuild{testBuild(testBuildID, testBuildTarget)}}
-	h := newServiceHarness(t, lake, store)
+	h := newBuildHarness(t, lake, store)
 	h.poll()
 	store.mu.Lock()
 	store.builds[0].Desired = buildDesiredCancelled
@@ -242,7 +264,7 @@ func TestCancelledLakeBuildDeletesOnlyItsJobAndTokens(t *testing.T) {
 func TestLakeBuildDoesNotRestartWhenItsJobDisappears(t *testing.T) {
 	lake := buildTestLake()
 	store := &fakeServiceStore{builds: []LakeBuild{testBuild(testBuildID, testBuildTarget)}}
-	h := newServiceHarness(t, lake, store)
+	h := newBuildHarness(t, lake, store)
 	h.poll()
 	target, _ := parseBuildTarget(testBuildTarget)
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
@@ -265,7 +287,7 @@ func TestInvalidLakeBuildFailsWithoutCreatingResources(t *testing.T) {
 	lake := buildTestLake()
 	build := testBuild(testBuildID, "public.example/Space/app:latest")
 	store := &fakeServiceStore{builds: []LakeBuild{build}}
-	h := newServiceHarness(t, lake, store)
+	h := newBuildHarness(t, lake, store)
 	h.poll()
 	status := buildStatus(t, store, testBuildID)
 	if status.Phase != BuildPhaseFailed || !strings.Contains(status.Message, "target must be") {
@@ -302,7 +324,7 @@ func (t *buildEventTransport) RoundTrip(request *http.Request) (*http.Response, 
 func TestLakeBuildPublishesPodEventsOnce(t *testing.T) {
 	lake := buildTestLake()
 	store := &fakeServiceStore{builds: []LakeBuild{testBuild(testBuildID, testBuildTarget)}}
-	h := newServiceHarness(t, lake, store)
+	h := newBuildHarness(t, lake, store)
 	transport := &buildEventTransport{}
 	h.reconciler.BuildEventClient = &http.Client{Transport: transport}
 	h.poll()
