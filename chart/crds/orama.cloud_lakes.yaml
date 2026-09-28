@@ -103,6 +103,7 @@ spec:
                           - agent-eval-generator
                           - agent-autosuggest-corpus
                           - agent-project-corpus
+                          - agent-application
                           type: string
                       required:
                       - image
