@@ -403,7 +403,7 @@ namespace; its workload runs in a separate namespace. See the operational contra
 | `spec.secretRefs[]` | Lake-namespace Secrets copied into the app namespace and exposed through `envFrom`. |
 | `spec.host` | Exact hostname. Empty derives `<app>.<Lake spec.apps.wildcard>`. |
 | `spec.auth` | `lake` (default) uses Lake's session authorization through nginx `auth-url`; `public` omits that gate. |
-| `spec.bindings.zetta` | `{customerId, scopes}` for a Lake-minted, scoped read-only workspace token. |
+| `spec.bindings.zetta` | `{customerId, scopes}` for scoped read-only workspace access. Synchronized apps use an operator-generated token validated by Lake; standalone apps supply the token through their binding Secret. |
 | `spec.bindings.services[]` | Lake service identifiers whose connection documents are delivered. |
 | `spec.bindings.serviceNames` | Service-ID-to-filename map for `/var/run/orama/bindings/services/<name>`. The sync resolves same-customer service names; standalone apps can omit it to retain ID filenames. |
 | `spec.bindings.secretRef` | Standalone app's Lake-namespace source Secret. Key `zetta` contains the workspace token; each requested service identifier names its connection. Required for standalone data bindings; synchronized apps use generated tokens and the Lake services Secret. |

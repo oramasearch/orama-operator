@@ -31,7 +31,10 @@ and connection details are in the [deployment control-plane guide](../control-pl
 Namespaced `LakeApp` resources run customer apps from a pinned Lake repository revision or a
 digest-pinned image. Each app has a restricted namespace, private-by-default ingress, scoped data
 bindings, and live rollout events. The CR contract and resource lifecycle are in
-[`apps.md`](apps.md).
+[`apps.md`](apps.md). With `spec.apps.enabled`, a dedicated controller follows lake's `apps`
+table using the Services DSN, `lake_apps` notifications and a 60-second fallback list. It registers
+generated token hashes, returns current rollout status, handles stopped/deleted rows and orphans,
+and owns one proxied apps wildcard DNS record. Builds remain separate in #195.
 
 With `spec.services.enabled`, lake runs managed services for its customers — Zetta, Postgres,
 the catalog of Kafka, ClickHouse, TiDB, Cassandra and Valkey (preview), and SQLite, DuckDB and

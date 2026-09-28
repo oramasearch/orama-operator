@@ -26,6 +26,11 @@ was written down and skipped, twice, without anything noticing.
 
 Each half is checked rather than remembered:
 
+`LakeAppsReconciler` is a second controller of the existing `Lake` kind. The registration check
+maps that controller to `Lake`; it watches existing `LakeApp`, Secret, Ingress, DNS and schema
+resources and introduces no additional CRD or RBAC resource. Apply the updated Lake/LakeApp CRD
+schemas before rolling out apps sync, so `apps.enabled` and `LakeApp.spec.sync` are retained.
+
 There are **three** hand-maintained artifacts per kind, and forgetting any one of them produces the
 same crash with the same blast radius: the CRD in `chart/crds`, the CRD on the cluster, and the
 grant in the chart ClusterRole. A kind the manager watches without RBAC to list and watch it fails

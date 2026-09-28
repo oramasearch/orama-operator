@@ -52,7 +52,7 @@ type LakeAppSource struct {
 	TokenSecretRef corev1.SecretKeySelector `json:"tokenSecretRef,omitempty"`
 }
 
-// LakeAppZettaBinding requests a read-only workspace credential minted by Lake.
+// LakeAppZettaBinding requests scoped read-only workspace access through Lake.
 type LakeAppZettaBinding struct {
 	// CustomerID identifies the workspace owner.
 	// +kubebuilder:validation:MinLength=1
@@ -80,7 +80,7 @@ type LakeAppBindings struct {
 	// +optional
 	ServiceNames map[string]string `json:"serviceNames,omitempty"`
 
-	// SecretRef names the Lake-namespace Secret containing the credentials minted by Lake. Key
+	// SecretRef names a standalone app's Lake-namespace source credential Secret. Key
 	// "zetta" contains the workspace token and each service identifier names that service's
 	// connection value. The controller copies only requested keys into the app namespace.
 	// +optional
