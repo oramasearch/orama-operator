@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,6 +139,51 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 	}
 	if len(kinds) != len(serviceKindNames) {
 		t.Fatalf("kinds read back = %v, want %v", kinds, serviceKindNames)
+	}
+	if _, err := tx.Exec(ctx, `CREATE TABLE builds (
+        id uuid PRIMARY KEY,
+        customer_id uuid NOT NULL,
+        repository text NOT NULL,
+        revision text NOT NULL,
+        context text NOT NULL,
+        dockerfile text NOT NULL,
+        target text NOT NULL,
+        build_args_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+        desired text NOT NULL,
+        phase text NOT NULL DEFAULT '',
+        digest text NOT NULL DEFAULT '',
+        size bigint NOT NULL DEFAULT 0,
+        message text NOT NULL DEFAULT '',
+        token_hashes_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+    )`); err != nil {
+		t.Fatalf("create builds contract table: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO builds
+        (id, customer_id, repository, revision, context, dockerfile, target, build_args_json, desired)
+        VALUES ($1, $2, 'repo', 'abc123', '.', 'Dockerfile', $3, '{"PYTHON_VERSION":"3.13"}', 'queued')`,
+		testBuildID, customerID, testBuildTarget); err != nil {
+		t.Fatalf("seed build: %v", err)
+	}
+	builds, err := store.ListBuilds(ctx)
+	if err != nil || len(builds) != 1 || builds[0].ID != testBuildID || builds[0].BuildArgs != `{"PYTHON_VERSION": "3.13"}` {
+		t.Fatalf("builds = %+v, %v", builds, err)
+	}
+	buildStatus := LakeBuildStatus{
+		BuildID: testBuildID, Phase: BuildPhaseSucceeded, Digest: "sha256:" + strings.Repeat("c", 64),
+		Size: 42, Message: "image pushed", TokenHashes: `{}`,
+	}
+	if err := store.UpdateBuildStatus(ctx, buildStatus); err != nil {
+		t.Fatalf("update build: %v", err)
+	}
+	var phase, digest string
+	var size int64
+	if err := tx.QueryRow(ctx, `SELECT phase, digest, size FROM builds WHERE id = $1`, testBuildID).Scan(&phase, &digest, &size); err != nil {
+		t.Fatal(err)
+	}
+	if phase != BuildPhaseSucceeded || digest != buildStatus.Digest || size != buildStatus.Size {
+		t.Fatalf("stored build status = %s %s %d", phase, digest, size)
 	}
 	refused, err := tx.Begin(ctx)
 	if err != nil {

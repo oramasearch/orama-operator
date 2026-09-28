@@ -165,6 +165,7 @@ func main() {
 		PolarsImage:   lakePolarsImage,
 		ServiceEvents: servicesListener.Events,
 		APIReader:     mgr.GetAPIReader(),
+		Clientset:     clientset,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lake")
 		os.Exit(1)
@@ -175,6 +176,25 @@ func main() {
 		APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeEnvironment")
+		os.Exit(1)
+	}
+	if err = (&controller.LakeAppReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeApp")
+		os.Exit(1)
+	}
+	appsListener := controller.NewLakeAppsListener(mgr.GetClient())
+	if err = mgr.Add(appsListener); err != nil {
+		setupLog.Error(err, "unable to add the lake apps listener")
+		os.Exit(1)
+	}
+	if err = (&controller.LakeAppsReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(), Events: appsListener.Events,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeAppsSync")
 		os.Exit(1)
 	}
 	if err = (&controller.LakeRestoreRehearsalReconciler{

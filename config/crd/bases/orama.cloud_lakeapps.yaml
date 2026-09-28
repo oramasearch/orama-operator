@@ -1,0 +1,467 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: lakeapps.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: LakeApp
+    listKind: LakeAppList
+    plural: lakeapps
+    shortNames:
+    - lakeapp
+    singular: lakeapp
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.mode
+      name: Mode
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .status.observedRevision
+      name: Revision
+      type: string
+    - jsonPath: .status.url
+      name: URL
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: LakeApp runs one application in a dedicated, restricted namespace.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: Spec defines the desired application.
+            properties:
+              auth:
+                default: lake
+                description: Auth selects public access or Lake session authentication.
+                enum:
+                - public
+                - lake
+                type: string
+              bindings:
+                description: Bindings configures workspace and managed-service data
+                  access.
+                properties:
+                  secretRef:
+                    description: |-
+                      SecretRef names a standalone app's Lake-namespace source credential Secret. Key
+                      "zetta" contains the workspace token and each service identifier names that service's
+                      connection value. The controller copies only requested keys into the app namespace.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  serviceNames:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ServiceNames maps service identifiers to filenames under bindings/services. The apps
+                      sync resolves these names from same-customer services; standalone apps default to the ID.
+                    type: object
+                  services:
+                    description: Services contains the Lake service identifiers whose
+                      connections are delivered.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  zetta:
+                    description: Zetta requests a scoped, read-only workspace token.
+                    properties:
+                      customerId:
+                        description: CustomerID identifies the workspace owner.
+                        minLength: 1
+                        type: string
+                      scopes:
+                        description: Scopes narrows the read-only workspace credential.
+                        items:
+                          type: string
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: set
+                    required:
+                    - customerId
+                    - scopes
+                    type: object
+                type: object
+              env:
+                description: |-
+                  Env contains literal application environment variables. Operator-managed names take
+                  precedence over entries with the same name.
+                items:
+                  description: LakeEnvironmentVariable is a literal environment variable
+                    supplied by a deployment record.
+                  properties:
+                    name:
+                      description: Name is the environment variable name.
+                      minLength: 1
+                      type: string
+                    value:
+                      description: Value is the literal environment variable value.
+                      type: string
+                  required:
+                  - name
+                  - value
+                  type: object
+                type: array
+              eventsSecretRef:
+                description: |-
+                  EventsSecretRef names a Lake-namespace Secret with "url" and "token" keys. The controller
+                  and app use it to publish to app-events.<app>.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              host:
+                description: Host is the public hostname. Empty defaults to <app>.<Lake
+                  spec.apps.wildcard>.
+                format: hostname
+                type: string
+              image:
+                description: Image is the digest-pinned OCI image used in image mode.
+                pattern: ^.+@sha256:[a-fA-F0-9]{64}$
+                type: string
+              lakeRef:
+                description: LakeRef names the cluster-scoped Lake whose namespace
+                  contains this resource.
+                minLength: 1
+                type: string
+              mode:
+                default: runtime
+                description: Mode selects app-runtime source loading or an immutable
+                  OCI image.
+                enum:
+                - runtime
+                - image
+                type: string
+              port:
+                default: 8080
+                description: Port is the container port exposed by the app Service.
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              pullSecretName:
+                description: |-
+                  PullSecretName overrides the Lake pull Secret for image mode. The source Secret is read from
+                  the Lake namespace and copied into the isolated app namespace.
+                type: string
+              replicas:
+                default: 1
+                description: Replicas is the desired app replica count. Zero stops
+                  the app while preserving its resources.
+                format: int32
+                minimum: 0
+                type: integer
+              resources:
+                default:
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+                  requests:
+                    cpu: 100m
+                    memory: 128Mi
+                description: Resources configures CPU and memory requests and limits
+                  for the app container.
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This is an alpha field and requires enabling the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              secretRefs:
+                description: |-
+                  SecretRefs names Secrets in the Lake namespace that are copied into the app namespace and
+                  exposed through envFrom.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              source:
+                description: Source configures runtime mode.
+                properties:
+                  entrypoint:
+                    description: Entrypoint overrides app.toml. Empty lets app-runtime
+                      read the app's own configuration.
+                    type: string
+                  framework:
+                    description: Framework selects the app-runtime adapter.
+                    enum:
+                    - fastapi
+                    - streamlit
+                    - static
+                    type: string
+                  path:
+                    description: Path is the application directory within the repository.
+                      Empty means the repository root.
+                    type: string
+                  repository:
+                    description: Repository is the Lake repository identifier.
+                    minLength: 1
+                    type: string
+                  revision:
+                    description: Revision is the pinned repository revision loaded
+                      by app-runtime.
+                    minLength: 1
+                    type: string
+                  tokenSecretRef:
+                    description: |-
+                      TokenSecretRef selects the Lake-minted repository read token from a Secret in the Lake
+                      namespace. The controller copies only this key and exposes it as APP_TOKEN.
+                      Apps synchronized from Postgres use their generated app-tokens Secret instead.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                required:
+                - framework
+                - repository
+                - revision
+                type: object
+              sync:
+                description: |-
+                  Sync is set by the apps-table controller. It selects generated local tokens and
+                  service connections, and is valid only on a Lake-controlled app in the Lake namespace.
+                properties:
+                  customerId:
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: customer ID is immutable
+                      rule: self == oldSelf
+                  generation:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  id:
+                    format: uuid
+                    type: string
+                    x-kubernetes-validations:
+                    - message: app ID is immutable
+                      rule: self == oldSelf
+                  tokenHashes:
+                    description: TokenHashes gates rollout until the sync has registered
+                      these hashes in Postgres.
+                    properties:
+                      events:
+                        type: string
+                      source:
+                        type: string
+                      zetta:
+                        nullable: true
+                        type: string
+                    required:
+                    - events
+                    - source
+                    - zetta
+                    type: object
+                required:
+                - customerId
+                - generation
+                - id
+                type: object
+            required:
+            - lakeRef
+            type: object
+            x-kubernetes-validations:
+            - message: source is required in runtime mode
+              rule: self.mode != 'runtime' || has(self.source)
+            - message: image is required in image mode
+              rule: self.mode != 'image' || has(self.image)
+            - message: bindings.secretRef is required for standalone data bindings
+              rule: has(self.sync) || !has(self.bindings) || (!has(self.bindings.zetta)
+                && (!has(self.bindings.services) || size(self.bindings.services) ==
+                0)) || has(self.bindings.secretRef)
+          status:
+            description: Status defines the observed application state.
+            properties:
+              conditions:
+                description: Conditions contains the standard Ready condition and
+                  transition details.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              message:
+                description: Message summarizes rollout progress or the highest-priority
+                  pod failure.
+                type: string
+              observedRevision:
+                description: ObservedRevision is the runtime source revision or image
+                  digest currently observed.
+                type: string
+              phase:
+                description: Phase is Progressing, Ready, Degraded, or TornDown.
+                type: string
+              ready:
+                description: Ready reports whether all desired replicas are available
+                  at the observed revision.
+                type: boolean
+              url:
+                description: URL is the app's public URL when a host is configured.
+                type: string
+            type: object
+        required:
+        - metadata
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

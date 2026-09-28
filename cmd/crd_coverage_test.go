@@ -57,7 +57,12 @@ func registeredKinds(t *testing.T) []string {
 	}
 	var kinds []string
 	for _, match := range reconcilerPattern.FindAllStringSubmatch(string(source), -1) {
-		kinds = append(kinds, match[1])
+		kind := match[1]
+		// The apps-table intake is a second controller of Lake, not a separate CRD.
+		if kind == "LakeApps" {
+			kind = "Lake"
+		}
+		kinds = append(kinds, kind)
 	}
 	if len(kinds) == 0 {
 		t.Fatal("no controller.XxxReconciler registrations found in main.go; the pattern needs updating")

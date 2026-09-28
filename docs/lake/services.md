@@ -82,6 +82,10 @@ Every service becomes **`<lake>-<slug>`** in the Lake namespace, controlled by t
 labels `orama.cloud/lake=<lake>`, `orama.cloud/service-id=<id>`, `orama.cloud/service-kind=<kind>`,
 `orama.cloud/customer-id` (a `sha256-…` digest when the id is not a valid label value) and
 `app.kubernetes.io/name=lake-service`, and annotation `orama.cloud/customer-id=<customer_id>`.
+For a Zetta service, the reconciler carries the Lake/service/kind/customer identity labels from the
+child `OramaZettaCluster` onto its pods without changing the StatefulSet's immutable selector.
+`LakeApp` NetworkPolicies use those labels to open workspace and explicit service egress to that
+target only.
 
 | | Zetta (`kind = 'zetta'`) | Postgres (`kind = 'postgres'`) |
 |---|---|---|
@@ -325,6 +329,12 @@ Secret **`lake-<lake>-services`** (controlled by the Lake) holds one key per Rea
 password. A present service keeps its key while its
 connection cannot be read, so a transient failure never removes a file lake depends on; the key
 of an absent service, or of a row that no longer exists, is dropped.
+
+For [Apps](apps.md), every present service with a connection also has a key equal to its service
+ID in this same Secret. It is an exact alias of `<slug>.json`, retained across temporary credential
+read failures and removed on withdrawal or row removal. Store connections keep only their existing
+`<slug>.json` keys. Apps resolve same-customer service IDs and mount only requested connections,
+using the service name as the filename. Existing Lake consumers continue using slug keys.
 
 The lake Deployment mounts the Secret read-only at **`/var/run/lake/services`** (volume
 `services`, `optional: true`, mode `0440`) and gets **`LAKE_SERVICE_DIR=/var/run/lake/services`**.

@@ -212,6 +212,7 @@ rules:
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
+  - lakeapps
   - lakee2etests
   - lakeenvironments
   - lakerestorerehearsals
@@ -239,6 +240,7 @@ rules:
   - cloudflarekvnamespaces/finalizers
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
+  - lakeapps/finalizers
   - lakeenvironments/finalizers
   - lakes/finalizers
   - lakesealedsecrets/finalizers
@@ -254,6 +256,7 @@ rules:
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
+  - lakeapps/status
   - lakee2etests/status
   - lakeenvironments/status
   - lakerestorerehearsals/status

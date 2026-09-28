@@ -328,9 +328,18 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
 | `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. |
 | `spec.previewWildcard` | DNS suffix for preview environments. `preview.example.com` yields `<change-short>.preview.example.com`; with Lake ingress and DNS enabled, the Lake owns one `*.preview.example.com` Cloudflare record and previews do not create records per change. |
-| `spec.deploySync.interval` | How often the operator reads desired deployment events from its Zetta `orama_control.deployments` table, and, with services enabled, how often it polls the `services` table. Default `15s`; positive values below `1s` are clamped to `1s`. |
+| `spec.apps.runtimeImage` | Private app-runtime image used by `LakeApp` resources in runtime mode. |
+| `spec.apps.enabled` | Opt-in apps-table synchronization from Lake control Postgres. Default `false`; disabling preserves existing apps. Uses `lake_apps` notifications and a 60-second fallback list. Builds have separate configuration in #195. |
+| `spec.apps.wildcard` | DNS suffix for apps. An app without `spec.host` uses `<app>.<wildcard>`. The shared wildcard DNS record is owned by the apps-table sync path. |
+| `spec.apps.ingressClass` | Ingress class for apps; empty defaults to `nginx`. |
+| `spec.builds.enabled` | **Default `false`.** Enables lake's in-cluster build row reconciliation. Each queued row becomes one isolated rootless BuildKit Job; disabling stops new reconciliation and does not interrupt Jobs already created. See [`lake/builds.md`](lake/builds.md). |
+| `spec.builds.builderImage` | Private `oramasearch/lake-builder:<tag>` image used for every build. Required when builds are enabled. When `spec.pullSecretName` is set, the operator copies that Secret from the Lake namespace to each build namespace as `builder-pull`; the Job references the local copy because image pull Secrets cannot cross namespaces. |
+| `spec.builds.resources` | Builder container resource override, merged over bounded defaults for CPU, memory, and ephemeral storage. |
+| `spec.builds.concurrency.perLake` / `.perSpace` | Active Job caps for the whole Lake and one target registry space. Defaults are 4 and 2; both must be at least 1. |
+| `spec.builds.cacheEnabled` | Enables a per-space BuildKit registry cache (`<registry>/<space>/cache/<image>`). Defaults to `true`. |
+| `spec.deploySync.interval` | How often the operator reads desired deployment events from its Zetta `orama_control.deployments` table and polls enabled Lake control rows (`services`, stores, agents, and `builds`). Default `15s`; positive values below `1s` are clamped to `1s`. |
 | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:<tag>`, the image every launch of a user-created Python agent runs on ([`lake/agents.md`](lake/agents.md), lake#231). Empty: launches are `Failed`. Each present `agent_launches` row becomes a Job (`job`) or a Deployment + Service (`service`) `<name>-<slug>`, with a credential Secret `<name>-<slug>-credential` whose SHA-256 only is written to `agent_launch_status`. |
-| `spec.agents.library[]` | `{key, image}`: the Agent Library's specialized agents (`agent-ask-orama`, `agent-project`, `agent-autosuggest`, `agent-creator`, and since lake#263 `agent-eval-generator`, `agent-autosuggest-corpus`, `agent-project-corpus`), each a Deployment + Service `<name>-<key>` on 8080; lake gets `LAKE_AGENT_ENDPOINTS`, `LAKE_INTERNAL_URL`, `LAKE_AGENT_MODEL`, `LAKE_AGENT_SERVICE_TOKEN` (Secret `lake-<name>-agent-service-token`, minted once) and `LAKE_AGENT_BUS_DIR` (Secret `lake-<name>-agent-bus`, one agent-bus credential per entry; each agent gets only its own as `AGENT_BUS_TOKEN`). An entry removed is deleted. |
+| `spec.agents.library[]` | `{key, image}`: the Agent Library's specialized agents (`agent-ask-orama`, `agent-project`, `agent-autosuggest`, `agent-creator`, and since lake#263 `agent-eval-generator`, `agent-autosuggest-corpus`, `agent-project-corpus`, and since lake#296 `agent-application`, which builds and deploys apps only through lake's capabilities and needs no cluster privileges, and since lake#304 `agent-experiments`, which runs AutoML studies the same way), each a Deployment + Service `<name>-<key>` on 8080; lake gets `LAKE_AGENT_ENDPOINTS`, `LAKE_INTERNAL_URL`, `LAKE_AGENT_MODEL`, `LAKE_AGENT_SERVICE_TOKEN` (Secret `lake-<name>-agent-service-token`, minted once) and `LAKE_AGENT_BUS_DIR` (Secret `lake-<name>-agent-bus`, one agent-bus credential per entry; each agent gets only its own as `AGENT_BUS_TOKEN`). An entry removed is deleted. |
 | `spec.agents.openaiSecretName` | A Secret in `spec.namespace` with `OPENAI_API_KEY`, the general Orama key; people provide it, the operator only references it. |
 | `spec.agents.model` | The frontier model agents default to (default `gpt-5.5`). |
 | `spec.agents.jobDeadlineSeconds` | `activeDeadlineSeconds` of a job launch (default 3600, minimum 60). |
@@ -372,6 +381,44 @@ The runner receives exactly two values from the controller: `LAKE_E2E_BASE_URL` 
 `http://lake-<target>.<namespace>.svc.cluster.local`, and `LAKE_E2E_RUN_ID` is the test resource UID
 for collision-free account and repository names. Authentication begins with the suite's public
 signup path; the operator does not inject the Lake admin bearer.
+
+## `LakeApp` (separate CRD, namespaced) — one deployed app
+
+A `LakeApp` is one Lake-owned application desired state. It lives in the referenced Lake's
+namespace; its workload runs in a separate namespace. See the operational contract in
+[`lake/apps.md`](lake/apps.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.lakeRef` | Name of the cluster-scoped `Lake`; the `LakeApp` must live in that Lake's `spec.namespace`. |
+| `spec.mode` | `runtime` (default) or `image`. Runtime requires `source`; image requires a digest-pinned `image`. |
+| `spec.source.repository` | Lake repository identifier loaded by app-runtime. |
+| `spec.source.revision` | Explicit pinned repository revision. It becomes `status.observedRevision` after reconciliation. |
+| `spec.source.path` | Application directory within the repository; empty means its root. |
+| `spec.source.entrypoint` | Optional framework entrypoint override. Empty omits `APP_ENTRYPOINT`, letting app-runtime read `app.toml`. |
+| `spec.source.framework` | `fastapi`, `streamlit`, or `static`. |
+| `spec.source.tokenSecretRef` | Standalone app's `{name, key}` selecting its repository read token in the Lake namespace. Synchronized apps use the generated `app-tokens/source` in their workload namespace instead. |
+| `spec.sync` | Operator-managed apps-row identity: immutable `id` and `customerId`, desired `generation`, and optional `tokenHashes` (`source`, nullable `zetta`, `events` SHA-256 digests). Requires Lake ownership; token hashes acknowledge successful registration in Postgres before workload startup. Plaintext is never in this field. |
+| `spec.image` | Image-mode OCI reference, required to match `name@sha256:<64 hex>`. |
+| `spec.pullSecretName` | Image-mode override for the Lake's private-image pull Secret. The Secret is copied from the Lake namespace into the app namespace. |
+| `spec.port` | App container port, default `8080`. The Service exposes it on port 80. |
+| `spec.replicas` | Desired replicas, default `1`. Zero stops pods while retaining the app resources. |
+| `spec.resources` | App-container requests/limits; defaults to `100m`/`128Mi` requests and `1`/`1Gi` limits. |
+| `spec.env[]` | Literal `{name, value}` entries. Operator-managed runtime variables take precedence. |
+| `spec.secretRefs[]` | Lake-namespace Secrets copied into the app namespace and exposed through `envFrom`. |
+| `spec.host` | Exact hostname. Empty derives `<app>.<Lake spec.apps.wildcard>`. |
+| `spec.auth` | `lake` (default) uses Lake's session authorization through nginx `auth-url`; `public` omits that gate. |
+| `spec.bindings.zetta` | `{customerId, scopes}` for scoped read-only workspace access. Synchronized apps use an operator-generated token validated by Lake; standalone apps supply the token through their binding Secret. |
+| `spec.bindings.services[]` | Lake service identifiers whose connection documents are delivered. |
+| `spec.bindings.serviceNames` | Service-ID-to-filename map for `/var/run/orama/bindings/services/<name>`. The sync resolves same-customer service names; standalone apps can omit it to retain ID filenames. |
+| `spec.bindings.secretRef` | Standalone app's Lake-namespace source Secret. Key `zetta` contains the workspace token; each requested service identifier names its connection. Required for standalone data bindings; synchronized apps use generated tokens and the Lake services Secret. |
+| `spec.eventsSecretRef` | Lake-namespace Secret with `url` and `token`; copied to the app and used for best-effort publication to `app-events.<app>`. |
+| `status.phase` | `Progressing`, `Ready`, `Degraded`, or `TornDown`. |
+| `status.url` | `https://<host>` when ingress is configured. |
+| `status.ready` | True only when every desired replica is updated and available at the current revision. |
+| `status.observedRevision` | Runtime source revision or image digest observed by the controller. |
+| `status.message` | Stable rollout summary or highest-priority pod failure. |
+| `status.conditions` | Standard `Ready` condition, deep-compared before status writes. |
 
 ## `LakeEnvironment` (separate CRD, namespaced) — one desired deployment
 

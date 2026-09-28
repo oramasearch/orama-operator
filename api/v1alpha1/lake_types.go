@@ -80,6 +80,16 @@ type LakeSpec struct {
 	// +optional
 	Agents LakeAgentsSpec `json:"agents,omitempty"`
 
+	// Apps configures apps-table synchronization, LakeApp runtime delivery and public addressing.
+	// +optional
+	Apps LakeAppsSpec `json:"apps,omitempty"`
+
+	// Builds runs one isolated rootless BuildKit Job for each queued row in lake's builds table.
+	// The operator creates short-lived source, registry-push, and event credentials and reports
+	// the Job's observed outcome to the row. See docs/lake/builds.md.
+	// +optional
+	Builds LakeBuildsSpec `json:"builds,omitempty"`
+
 	// Sealing configures the X25519 cluster delivery key. The operator mints generation 1 when
 	// omitted. Increasing Generation rotates the public key while retaining private keys still
 	// needed by LakeSealedSecret resources.
@@ -154,6 +164,71 @@ type LakeSpec struct {
 	// read. See docs/lake/workspaces.md.
 	// +optional
 	Workspaces LakeWorkspacesSpec `json:"workspaces,omitempty"`
+}
+
+// LakeAppsSpec configures the shared settings used by LakeApp resources.
+type LakeAppsSpec struct {
+	// Enabled synchronizes lake's apps table into LakeApp resources. Requires Postgres.
+	// Disabling stops synchronization without deleting existing apps.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Wildcard is the DNS suffix for apps. An app without spec.host uses <app>.<wildcard>.
+	// +optional
+	Wildcard string `json:"wildcard,omitempty"`
+
+	// IngressClass selects the ingress controller for apps. Empty defaults to nginx.
+	// +optional
+	IngressClass string `json:"ingressClass,omitempty"`
+
+	// RuntimeImage is the private app-runtime image used by runtime-mode apps.
+	// +optional
+	RuntimeImage string `json:"runtimeImage,omitempty"`
+}
+
+// LakeBuildsSpec configures lake's in-cluster image builds.
+type LakeBuildsSpec struct {
+	// Enabled turns on the builds-table poll. Turning it off starts no new Jobs and leaves Jobs
+	// already created to finish.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// BuilderImage is the private oramasearch/lake-builder image run for every build. It must be
+	// set when Enabled is true. The operator copies the Lake's pullSecretName into each build
+	// namespace and uses that local copy to pull it.
+	// +optional
+	BuilderImage string `json:"builderImage,omitempty"`
+
+	// Resources configures each builder container. Values are merged over the operator's bounded
+	// CPU, memory, and ephemeral-storage defaults.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Concurrency caps active Jobs for this Lake and for any one target registry space.
+	// +optional
+	Concurrency LakeBuildConcurrencySpec `json:"concurrency,omitempty"`
+
+	// CacheEnabled exports and imports a per-space registry cache. The default is true.
+	// +kubebuilder:default=true
+	// +optional
+	CacheEnabled *bool `json:"cacheEnabled,omitempty"`
+}
+
+// LakeBuildConcurrencySpec sets independent build concurrency limits.
+type LakeBuildConcurrencySpec struct {
+	// PerLake is the maximum number of active build Jobs for this Lake.
+	// +kubebuilder:default=4
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	PerLake int32 `json:"perLake,omitempty"`
+
+	// PerSpace is the maximum number of active build Jobs targeting one registry space.
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	PerSpace int32 `json:"perSpace,omitempty"`
 }
 
 // LakeServicesSpec configures a Lake's managed services (liquid-bridge decision 46).
@@ -301,7 +376,7 @@ type LakeAgentsSpec struct {
 // LakeLibraryAgent is one specialized agent of lake's Agent Library.
 type LakeLibraryAgent struct {
 	// Key is the agent's repository name, which lake's Agent Library uses too.
-	// +kubebuilder:validation:Enum=agent-ask-orama;agent-project;agent-autosuggest;agent-creator;agent-eval-generator;agent-autosuggest-corpus;agent-project-corpus
+	// +kubebuilder:validation:Enum=agent-ask-orama;agent-project;agent-autosuggest;agent-creator;agent-eval-generator;agent-autosuggest-corpus;agent-project-corpus;agent-application;agent-experiments
 	Key string `json:"key"`
 	// Image is the agent's private image and tag.
 	Image string `json:"image"`
