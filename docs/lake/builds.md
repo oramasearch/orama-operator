@@ -133,6 +133,11 @@ that adds it.
 
 ```sh
 go test ./internal/controller -run 'LakeBuild|BuildStore|BuildListener'
+KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)" \
+  go test -count=1 -v ./internal/controller -run '^TestLakeBuildEnvtestRowToJobToStatus$'
+LAKE_SERVICES_TEST_POSTGRES=1 \
+  LAKE_SERVICES_TEST_POSTGRES_URI=postgresql://<local-role>@127.0.0.1:5432/<scratch-db> \
+  go test -count=1 -v ./internal/controller -run '^TestServicesPgxStoreAgainstPostgres$'
 ```
 
 The native envtest covers queued row to namespace, policies, Secret, and Job, then simulated Job
