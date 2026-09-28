@@ -376,7 +376,7 @@ type LakeAgentsSpec struct {
 // LakeLibraryAgent is one specialized agent of lake's Agent Library.
 type LakeLibraryAgent struct {
 	// Key is the agent's repository name, which lake's Agent Library uses too.
-	// +kubebuilder:validation:Enum=agent-ask-orama;agent-project;agent-autosuggest;agent-creator;agent-eval-generator;agent-autosuggest-corpus;agent-project-corpus
+	// +kubebuilder:validation:Enum=agent-ask-orama;agent-project;agent-autosuggest;agent-creator;agent-eval-generator;agent-autosuggest-corpus;agent-project-corpus;agent-application;agent-experiments
 	Key string `json:"key"`
 	// Image is the agent's private image and tag.
 	Image string `json:"image"`
