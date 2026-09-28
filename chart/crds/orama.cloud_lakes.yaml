@@ -125,10 +125,15 @@ spec:
                     type: string
                 type: object
               apps:
-                description: |-
-                  Apps configures LakeApp runtime delivery and public addressing. The apps table sync is a
-                  separate controller path; these settings are consumed by each LakeApp reconciler.
+                description: Apps configures apps-table synchronization, LakeApp runtime
+                  delivery and public addressing.
                 properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled synchronizes lake's apps table into LakeApp resources. Requires Postgres.
+                      Disabling stops synchronization without deleting existing apps.
+                    type: boolean
                   ingressClass:
                     description: IngressClass selects the ingress controller for apps.
                       Empty defaults to nginx.

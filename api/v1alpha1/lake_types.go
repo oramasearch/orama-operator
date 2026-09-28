@@ -80,8 +80,7 @@ type LakeSpec struct {
 	// +optional
 	Agents LakeAgentsSpec `json:"agents,omitempty"`
 
-	// Apps configures LakeApp runtime delivery and public addressing. The apps table sync is a
-	// separate controller path; these settings are consumed by each LakeApp reconciler.
+	// Apps configures apps-table synchronization, LakeApp runtime delivery and public addressing.
 	// +optional
 	Apps LakeAppsSpec `json:"apps,omitempty"`
 
@@ -163,6 +162,12 @@ type LakeSpec struct {
 
 // LakeAppsSpec configures the shared settings used by LakeApp resources.
 type LakeAppsSpec struct {
+	// Enabled synchronizes lake's apps table into LakeApp resources. Requires Postgres.
+	// Disabling stops synchronization without deleting existing apps.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
 	// Wildcard is the DNS suffix for apps. An app without spec.host uses <app>.<wildcard>.
 	// +optional
 	Wildcard string `json:"wildcard,omitempty"`

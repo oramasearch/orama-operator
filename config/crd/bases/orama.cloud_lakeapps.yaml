@@ -85,6 +85,13 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  serviceNames:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ServiceNames maps service identifiers to filenames under bindings/services. The apps
+                      sync resolves these names from same-customer services; standalone apps default to the ID.
+                    type: object
                   services:
                     description: Services contains the Lake service identifiers whose
                       connections are delivered.
@@ -261,9 +268,8 @@ spec:
                 description: Source configures runtime mode.
                 properties:
                   entrypoint:
-                    description: Entrypoint is the framework-specific module, file,
-                      or directory app-runtime serves.
-                    minLength: 1
+                    description: Entrypoint overrides app.toml. Empty lets app-runtime
+                      read the app's own configuration.
                     type: string
                   framework:
                     description: Framework selects the app-runtime adapter.
@@ -289,6 +295,7 @@ spec:
                     description: |-
                       TokenSecretRef selects the Lake-minted repository read token from a Secret in the Lake
                       namespace. The controller copies only this key and exposes it as APP_TOKEN.
+                      Apps synchronized from Postgres use their generated app-tokens Secret instead.
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -312,11 +319,51 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                 required:
-                - entrypoint
                 - framework
                 - repository
                 - revision
-                - tokenSecretRef
+                type: object
+              sync:
+                description: |-
+                  Sync is set by the apps-table controller. It selects generated local tokens and
+                  service connections, and is valid only on a Lake-controlled app in the Lake namespace.
+                properties:
+                  customerId:
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: customer ID is immutable
+                      rule: self == oldSelf
+                  generation:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  id:
+                    format: uuid
+                    type: string
+                    x-kubernetes-validations:
+                    - message: app ID is immutable
+                      rule: self == oldSelf
+                  tokenHashes:
+                    description: TokenHashes gates rollout until the sync has registered
+                      these hashes in Postgres.
+                    properties:
+                      events:
+                        type: string
+                      source:
+                        type: string
+                      zetta:
+                        nullable: true
+                        type: string
+                    required:
+                    - events
+                    - source
+                    - zetta
+                    type: object
+                required:
+                - customerId
+                - generation
+                - id
                 type: object
             required:
             - lakeRef
@@ -326,9 +373,10 @@ spec:
               rule: self.mode != 'runtime' || has(self.source)
             - message: image is required in image mode
               rule: self.mode != 'image' || has(self.image)
-            - message: bindings.secretRef is required when data bindings are requested
-              rule: '!has(self.bindings) || (!has(self.bindings.zetta) && size(self.bindings.services)
-                == 0) || has(self.bindings.secretRef)'
+            - message: bindings.secretRef is required for standalone data bindings
+              rule: has(self.sync) || !has(self.bindings) || (!has(self.bindings.zetta)
+                && (!has(self.bindings.services) || size(self.bindings.services) ==
+                0)) || has(self.bindings.secretRef)
           status:
             description: Status defines the observed application state.
             properties:

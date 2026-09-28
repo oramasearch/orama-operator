@@ -44,6 +44,7 @@ spec:
 
 The Lake-level settings are:
 
+- `spec.apps.enabled`: opt-in synchronization from the Lake control Postgres;
 - `spec.apps.runtimeImage`: the private `oramasearch/app-runtime` image used in runtime mode;
 - `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`;
 - `spec.apps.ingressClass`: the app Ingress class, defaulting to `nginx`.
@@ -51,6 +52,15 @@ The Lake-level settings are:
 An image-mode app sets `spec.image` to an immutable `name@sha256:<64 hex>` reference. Its optional
 `spec.pullSecretName` overrides the Lake's pull Secret. The source pull Secret always remains in the
 Lake namespace; the controller copies it into the isolated app namespace.
+
+The apps sync sets `spec.sync` on its Lake-owned CRs: the immutable app `id` and `customerId`,
+the desired row `generation`, and `tokenHashes` acknowledging credentials registered in Postgres.
+Only SHA-256 hashes appear here. `bindings.serviceNames` records the service IDs' resolved names
+for mount filenames. Standalone CRs omit `sync` and keep their explicit Secret references.
+There is no `spec.apps.buildkit`; build Jobs belong to #195 and `spec.builds`.
+
+`source.entrypoint` is optional. An empty value omits `APP_ENTRYPOINT` so app-runtime reads
+the entrypoint from the app's own `app.toml`; an explicit value overrides that file.
 
 ## Credential inputs
 
