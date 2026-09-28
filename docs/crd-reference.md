@@ -329,6 +329,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. |
 | `spec.previewWildcard` | DNS suffix for preview environments. `preview.example.com` yields `<change-short>.preview.example.com`; with Lake ingress and DNS enabled, the Lake owns one `*.preview.example.com` Cloudflare record and previews do not create records per change. |
 | `spec.apps.runtimeImage` | Private app-runtime image used by `LakeApp` resources in runtime mode. |
+| `spec.apps.enabled` | Opt-in apps-table synchronization from Lake control Postgres. Default `false`; disabling preserves existing apps. Uses `lake_apps` notifications and a 60-second fallback list. Builds have separate configuration in #195. |
 | `spec.apps.wildcard` | DNS suffix for apps. An app without `spec.host` uses `<app>.<wildcard>`. The shared wildcard DNS record is owned by the apps-table sync path. |
 | `spec.apps.ingressClass` | Ingress class for apps; empty defaults to `nginx`. |
 | `spec.deploySync.interval` | How often the operator reads desired deployment events from its Zetta `orama_control.deployments` table, and, with services enabled, how often it polls the `services` table. Default `15s`; positive values below `1s` are clamped to `1s`. |
@@ -389,9 +390,10 @@ namespace; its workload runs in a separate namespace. See the operational contra
 | `spec.source.repository` | Lake repository identifier loaded by app-runtime. |
 | `spec.source.revision` | Explicit pinned repository revision. It becomes `status.observedRevision` after reconciliation. |
 | `spec.source.path` | Application directory within the repository; empty means its root. |
-| `spec.source.entrypoint` | Framework-specific module, file, or directory served by app-runtime. |
+| `spec.source.entrypoint` | Optional framework entrypoint override. Empty omits `APP_ENTRYPOINT`, letting app-runtime read `app.toml`. |
 | `spec.source.framework` | `fastapi`, `streamlit`, or `static`. |
-| `spec.source.tokenSecretRef` | `{name, key}` selecting the Lake-minted repository read token in the Lake namespace. The controller copies only that key and exposes it as `APP_TOKEN`. |
+| `spec.source.tokenSecretRef` | Standalone app's `{name, key}` selecting its repository read token in the Lake namespace. Synchronized apps use the generated `app-tokens/source` in their workload namespace instead. |
+| `spec.sync` | Operator-managed apps-row identity: immutable `id` and `customerId`, desired `generation`, and optional `tokenHashes` (`source`, nullable `zetta`, `events` SHA-256 digests). Requires Lake ownership; token hashes acknowledge successful registration in Postgres before workload startup. Plaintext is never in this field. |
 | `spec.image` | Image-mode OCI reference, required to match `name@sha256:<64 hex>`. |
 | `spec.pullSecretName` | Image-mode override for the Lake's private-image pull Secret. The Secret is copied from the Lake namespace into the app namespace. |
 | `spec.port` | App container port, default `8080`. The Service exposes it on port 80. |
@@ -401,9 +403,10 @@ namespace; its workload runs in a separate namespace. See the operational contra
 | `spec.secretRefs[]` | Lake-namespace Secrets copied into the app namespace and exposed through `envFrom`. |
 | `spec.host` | Exact hostname. Empty derives `<app>.<Lake spec.apps.wildcard>`. |
 | `spec.auth` | `lake` (default) uses Lake's session authorization through nginx `auth-url`; `public` omits that gate. |
-| `spec.bindings.zetta` | `{customerId, scopes}` for a Lake-minted, scoped read-only workspace token. |
+| `spec.bindings.zetta` | `{customerId, scopes}` for scoped read-only workspace access. Synchronized apps use an operator-generated token validated by Lake; standalone apps supply the token through their binding Secret. |
 | `spec.bindings.services[]` | Lake service identifiers whose connection documents are delivered. |
-| `spec.bindings.secretRef` | Lake-namespace source Secret. Key `zetta` contains the workspace token; a key equal to each requested service identifier contains that connection. Required when bindings are requested. |
+| `spec.bindings.serviceNames` | Service-ID-to-filename map for `/var/run/orama/bindings/services/<name>`. The sync resolves same-customer service names; standalone apps can omit it to retain ID filenames. |
+| `spec.bindings.secretRef` | Standalone app's Lake-namespace source Secret. Key `zetta` contains the workspace token; each requested service identifier names its connection. Required for standalone data bindings; synchronized apps use generated tokens and the Lake services Secret. |
 | `spec.eventsSecretRef` | Lake-namespace Secret with `url` and `token`; copied to the app and used for best-effort publication to `app-events.<app>`. |
 | `status.phase` | `Progressing`, `Ready`, `Degraded`, or `TornDown`. |
 | `status.url` | `https://<host>` when ingress is configured. |

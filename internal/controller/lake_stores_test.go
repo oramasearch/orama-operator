@@ -313,8 +313,11 @@ func TestStoresShareTheServicesSecret(t *testing.T) {
 		Data: map[string][]byte{"token": []byte("zetta-admin-token")}})
 	h.poll()
 	credentials := h.credentials()
-	if len(credentials) != 2 || credentials[testZettaSlug+".json"] == nil || credentials[testVolumeStoreSlug+".json"] == nil {
+	if len(credentials) != 3 || credentials[testZettaSlug+".json"] == nil || credentials[testZettaServiceID] == nil || credentials[testVolumeStoreSlug+".json"] == nil {
 		t.Fatalf("services Secret keys = %v", credentials)
+	}
+	if string(credentials[testZettaServiceID]) != string(credentials[testZettaSlug+".json"]) {
+		t.Fatal("service ID alias differs from the existing slug credential")
 	}
 	expectStatus(t, store.status(t, testZettaServiceID), ServicePhaseReady, "service ready", serviceZettaEndpoint("prod", testZettaSlug, testServiceNamespace))
 	expectStoreStatus(t, store.storeStatus(t, testVolumeStoreID), ServicePhaseReady, storeReadyUnboundMessage, "lake/"+testVolumeClaim)

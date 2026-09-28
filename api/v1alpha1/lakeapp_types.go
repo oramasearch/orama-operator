@@ -37,9 +37,9 @@ type LakeAppSource struct {
 	// +optional
 	Path string `json:"path,omitempty"`
 
-	// Entrypoint is the framework-specific module, file, or directory app-runtime serves.
-	// +kubebuilder:validation:MinLength=1
-	Entrypoint string `json:"entrypoint"`
+	// Entrypoint overrides app.toml. Empty lets app-runtime read the app's own configuration.
+	// +optional
+	Entrypoint string `json:"entrypoint,omitempty"`
 
 	// Framework selects the app-runtime adapter.
 	// +kubebuilder:validation:Enum=fastapi;streamlit;static
@@ -47,10 +47,12 @@ type LakeAppSource struct {
 
 	// TokenSecretRef selects the Lake-minted repository read token from a Secret in the Lake
 	// namespace. The controller copies only this key and exposes it as APP_TOKEN.
-	TokenSecretRef corev1.SecretKeySelector `json:"tokenSecretRef"`
+	// Apps synchronized from Postgres use their generated app-tokens Secret instead.
+	// +optional
+	TokenSecretRef corev1.SecretKeySelector `json:"tokenSecretRef,omitempty"`
 }
 
-// LakeAppZettaBinding requests a read-only workspace credential minted by Lake.
+// LakeAppZettaBinding requests scoped read-only workspace access through Lake.
 type LakeAppZettaBinding struct {
 	// CustomerID identifies the workspace owner.
 	// +kubebuilder:validation:MinLength=1
@@ -73,21 +75,55 @@ type LakeAppBindings struct {
 	// +optional
 	Services []string `json:"services,omitempty"`
 
-	// SecretRef names the Lake-namespace Secret containing the credentials minted by Lake. Key
+	// ServiceNames maps service identifiers to filenames under bindings/services. The apps
+	// sync resolves these names from same-customer services; standalone apps default to the ID.
+	// +optional
+	ServiceNames map[string]string `json:"serviceNames,omitempty"`
+
+	// SecretRef names a standalone app's Lake-namespace source credential Secret. Key
 	// "zetta" contains the workspace token and each service identifier names that service's
 	// connection value. The controller copies only requested keys into the app namespace.
 	// +optional
 	SecretRef *corev1.LocalObjectReference `json:"secretRef,omitempty"`
 }
 
+// LakeAppTokenHashes acknowledges tokens registered in lake's apps row. These are SHA-256
+// digests only; plaintext credentials stay in the workload namespace's app-tokens Secret.
+type LakeAppTokenHashes struct {
+	Source string `json:"source"`
+	// +nullable
+	Zetta  *string `json:"zetta"`
+	Events string  `json:"events"`
+}
+
+// LakeAppSync identifies the desired row managed by the Lake apps sync.
+type LakeAppSync struct {
+	// +kubebuilder:validation:Format=uuid
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="app ID is immutable"
+	ID string `json:"id"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="customer ID is immutable"
+	CustomerID string `json:"customerId"`
+	// +kubebuilder:validation:Minimum=1
+	Generation int64 `json:"generation"`
+	// TokenHashes gates rollout until the sync has registered these hashes in Postgres.
+	// +optional
+	TokenHashes *LakeAppTokenHashes `json:"tokenHashes,omitempty"`
+}
+
 // LakeAppSpec defines one isolated application belonging to a Lake.
 // +kubebuilder:validation:XValidation:rule="self.mode != 'runtime' || has(self.source)",message="source is required in runtime mode"
 // +kubebuilder:validation:XValidation:rule="self.mode != 'image' || has(self.image)",message="image is required in image mode"
-// +kubebuilder:validation:XValidation:rule="!has(self.bindings) || (!has(self.bindings.zetta) && size(self.bindings.services) == 0) || has(self.bindings.secretRef)",message="bindings.secretRef is required when data bindings are requested"
+// +kubebuilder:validation:XValidation:rule="has(self.sync) || !has(self.bindings) || (!has(self.bindings.zetta) && (!has(self.bindings.services) || size(self.bindings.services) == 0)) || has(self.bindings.secretRef)",message="bindings.secretRef is required for standalone data bindings"
 type LakeAppSpec struct {
 	// LakeRef names the cluster-scoped Lake whose namespace contains this resource.
 	// +kubebuilder:validation:MinLength=1
 	LakeRef string `json:"lakeRef"`
+
+	// Sync is set by the apps-table controller. It selects generated local tokens and
+	// service connections, and is valid only on a Lake-controlled app in the Lake namespace.
+	// +optional
+	Sync *LakeAppSync `json:"sync,omitempty"`
 
 	// Mode selects app-runtime source loading or an immutable OCI image.
 	// +kubebuilder:default=runtime

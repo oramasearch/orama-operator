@@ -30,6 +30,9 @@ type LakeServicesListener struct {
 	Listen func(ctx context.Context, uri string, notify func()) error
 	// Resync is how often the set of Lakes is re-read; zero means 10s.
 	Resync time.Duration
+	// enabled and channel let apps reuse the same leader-only reconnecting listener.
+	enabled func(*oramav1alpha1.Lake) bool
+	channel string
 
 	mu      sync.Mutex
 	running map[string]context.CancelFunc
@@ -38,6 +41,12 @@ type LakeServicesListener struct {
 // NewLakeServicesListener returns a listener whose Events the Lake controller watches.
 func NewLakeServicesListener(c client.Client) *LakeServicesListener {
 	return &LakeServicesListener{Client: c, Events: make(chan event.GenericEvent, 64)}
+}
+
+func NewLakeAppsListener(c client.Client) *LakeServicesListener {
+	return &LakeServicesListener{
+		Client: c, Events: make(chan event.GenericEvent, 64), enabled: lakeAppsEnabled, channel: "lake_apps",
+	}
 }
 
 // Start runs until ctx ends (a manager Runnable).
@@ -67,7 +76,9 @@ func (l *LakeServicesListener) Start(ctx context.Context) error {
 }
 
 // NeedLeaderElection: only the leader reconciles, so only the leader listens.
-func (l *LakeServicesListener) NeedLeaderElection() bool { return true }
+func (l *LakeServicesListener) NeedLeaderElection() bool {
+	return true
+}
 
 // sync starts a listener for each services-enabled Lake that has none and stops those whose Lake
 // is gone or has services turned off.
@@ -78,8 +89,12 @@ func (l *LakeServicesListener) sync(ctx context.Context) {
 		return
 	}
 	want := map[string]*oramav1alpha1.Lake{}
+	enabled := l.enabled
+	if enabled == nil {
+		enabled = lakeServicesEnabled
+	}
 	for i := range lakes.Items {
-		if lakeServicesEnabled(&lakes.Items[i]) {
+		if enabled(&lakes.Items[i]) {
 			want[lakes.Items[i].Name] = &lakes.Items[i]
 		}
 	}
@@ -107,7 +122,13 @@ func (l *LakeServicesListener) listen(ctx context.Context, lake *oramav1alpha1.L
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	listen := l.Listen
 	if listen == nil {
-		listen = pgxListen
+		listen = func(ctx context.Context, uri string, notify func()) error {
+			channel := l.channel
+			if channel == "" {
+				channel = lakeServicesChannel
+			}
+			return pgxListenChannel(ctx, uri, channel, notify)
+		}
 	}
 	namespace := lake.Spec.Namespace
 	if namespace == "" {
@@ -129,7 +150,7 @@ func (l *LakeServicesListener) listen(ctx context.Context, lake *oramav1alpha1.L
 			return
 		}
 		if err != nil {
-			log.V(1).Info("services listener reconnecting", "err", err.Error())
+			log.V(1).Info("Lake desired-state listener reconnecting")
 		}
 		select {
 		case <-ctx.Done():
@@ -141,6 +162,10 @@ func (l *LakeServicesListener) listen(ctx context.Context, lake *oramav1alpha1.L
 
 // pgxListen is Listen against Postgres: LISTEN lake_services, then wait.
 func pgxListen(ctx context.Context, uri string, notify func()) error {
+	return pgxListenChannel(ctx, uri, lakeServicesChannel, notify)
+}
+
+func pgxListenChannel(ctx context.Context, uri, channel string, notify func()) error {
 	config, err := pgx.ParseConfig(uri)
 	if err != nil {
 		return err
@@ -155,7 +180,7 @@ func pgxListen(ctx context.Context, uri string, notify func()) error {
 		return err
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
-	if _, err := conn.Exec(ctx, "LISTEN "+lakeServicesChannel); err != nil {
+	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{channel}.Sanitize()); err != nil {
 		return err
 	}
 	for {

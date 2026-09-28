@@ -145,7 +145,11 @@ func (r *LakeAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.teardownLakeAppWorkload(ctx, &app, workloadNamespace); err != nil {
 			return ctrl.Result{}, err
 		}
-		return r.finishLakeAppStatus(ctx, &app, nil, host, oramav1alpha1.LakeAppPhaseDegraded, false, reason, message)
+		phase := oramav1alpha1.LakeAppPhaseDegraded
+		if reason == "TokenRegistrationPending" || reason == "BindingPending" {
+			phase = oramav1alpha1.LakeAppPhaseProgressing
+		}
+		return r.finishLakeAppStatus(ctx, &app, nil, host, phase, false, reason, message)
 	}
 	if err := r.reconcileLakeAppWorkload(ctx, &lake, &app, workloadNamespace, secrets); err != nil {
 		return ctrl.Result{}, err
@@ -156,7 +160,9 @@ func (r *LakeAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	var deployment appsv1.Deployment
 	key := client.ObjectKey{Namespace: workloadNamespace, Name: lakeAppWorkloadName}
-	if err := r.Get(ctx, key, &deployment); err != nil {
+	// The cache can still hold the previous ready Deployment immediately after an update.
+	// Read through the API reader so that old readiness cannot acknowledge this app generation.
+	if err := r.reader().Get(ctx, key, &deployment); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
@@ -177,6 +183,9 @@ func (r *LakeAppReconciler) reader() client.Reader {
 }
 
 func validateLakeApp(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) (string, string) {
+	if app.Spec.Sync != nil && !metav1.IsControlledBy(app, lake) {
+		return "SyncOwnerInvalid", "a synchronized app must be controlled by its Lake"
+	}
 	mode := app.Spec.Mode
 	if mode == "" {
 		mode = oramav1alpha1.LakeAppModeRuntime
@@ -186,7 +195,7 @@ func validateLakeApp(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) (stri
 		if app.Spec.Source == nil {
 			return "SourceRequired", "runtime mode requires spec.source"
 		}
-		if app.Spec.Source.TokenSecretRef.Name == "" || app.Spec.Source.TokenSecretRef.Key == "" {
+		if app.Spec.Sync == nil && (app.Spec.Source.TokenSecretRef.Name == "" || app.Spec.Source.TokenSecretRef.Key == "") {
 			return "SourceCredentialRequired", "runtime mode requires spec.source.tokenSecretRef name and key"
 		}
 		if lake.Spec.Apps.RuntimeImage == "" {
@@ -200,8 +209,13 @@ func validateLakeApp(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) (stri
 		return "ModeInvalid", "spec.mode must be runtime or image"
 	}
 	if app.Spec.Bindings != nil {
+		for _, name := range app.Spec.Bindings.ServiceNames {
+			if !validAppServiceName(name) {
+				return "ServiceNameInvalid", "service binding filename is invalid"
+			}
+		}
 		hasBindings := app.Spec.Bindings.Zetta != nil || len(app.Spec.Bindings.Services) > 0
-		if hasBindings && (app.Spec.Bindings.SecretRef == nil || app.Spec.Bindings.SecretRef.Name == "") {
+		if app.Spec.Sync == nil && hasBindings && (app.Spec.Bindings.SecretRef == nil || app.Spec.Bindings.SecretRef.Name == "") {
 			return "BindingSecretRequired", "bindings.secretRef is required when data bindings are requested"
 		}
 	}
@@ -383,10 +397,10 @@ func lakeAppEgressRules(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) []
 	if mode == "" {
 		mode = oramav1alpha1.LakeAppModeRuntime
 	}
-	if mode == oramav1alpha1.LakeAppModeRuntime {
+	if mode == oramav1alpha1.LakeAppModeRuntime || app.Spec.Sync != nil {
 		rules = append(rules, lakeAppLakeEgressRule(lake, app.Namespace))
 	}
-	if app.Spec.Bindings != nil && app.Spec.Bindings.Zetta != nil {
+	if app.Spec.Sync == nil && app.Spec.Bindings != nil && app.Spec.Bindings.Zetta != nil {
 		customer := serviceCustomerLabelValue(app.Spec.Bindings.Zetta.CustomerID)
 		rules = append(rules, lakeAppTargetEgressRule(app.Namespace, map[string]string{
 			serviceCustomerLabel: customer,
@@ -400,7 +414,7 @@ func lakeAppEgressRules(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) []
 			rules = append(rules, lakeAppTargetEgressRule(app.Namespace, map[string]string{serviceIDLabel: serviceID}))
 		}
 	}
-	if app.Spec.EventsSecretRef != nil {
+	if app.Spec.Sync == nil && app.Spec.EventsSecretRef != nil {
 		rules = append(rules, lakeAppTargetEgressRule(app.Namespace, map[string]string{
 			"app.kubernetes.io/name":     "orama-zetta",
 			"app.kubernetes.io/instance": "lake-" + lake.Name + "-zetta",
@@ -438,9 +452,17 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 	wanted := map[string]bool{}
 	digests := map[string][]byte{}
 	result := lakeAppSecrets{}
+	if app.Spec.Sync != nil {
+		var reason, message string
+		var err error
+		result, reason, message, err = r.reconcileSyncedLakeAppSecrets(ctx, lake, app, namespace, wanted, digests)
+		if err != nil || reason != "" {
+			return result, reason, message, err
+		}
+	}
 
 	for _, sourceName := range app.Spec.SecretRefs {
-		if sourceName == lakeAppBindingsSecretName || sourceName == lakeAppEventsSecretName || sourceName == lakeAppSourceSecretName || sourceName == lakeAppPullSecretName {
+		if sourceName == lakeAppTokensSecretName || sourceName == lakeAppBindingsSecretName || sourceName == lakeAppEventsSecretName || sourceName == lakeAppSourceSecretName || sourceName == lakeAppPullSecretName {
 			message := fmt.Sprintf("secret reference %q conflicts with an operator-managed Secret", sourceName)
 			return result, "SecretReferenceConflict", message, nil
 		}
@@ -460,7 +482,7 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 	if mode == "" {
 		mode = oramav1alpha1.LakeAppModeRuntime
 	}
-	if mode == oramav1alpha1.LakeAppModeRuntime && app.Spec.Source != nil {
+	if app.Spec.Sync == nil && mode == oramav1alpha1.LakeAppModeRuntime && app.Spec.Source != nil {
 		selector := app.Spec.Source.TokenSecretRef
 		source, reason, message, err := r.lakeAppSourceSecret(ctx, app, selector.Name)
 		if err != nil || reason != "" {
@@ -480,7 +502,7 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 		addLakeAppSecretDigest(digests, lakeAppSourceSecretName, data)
 	}
 
-	if app.Spec.Bindings != nil && (app.Spec.Bindings.Zetta != nil || len(app.Spec.Bindings.Services) > 0) {
+	if app.Spec.Sync == nil && app.Spec.Bindings != nil && (app.Spec.Bindings.Zetta != nil || len(app.Spec.Bindings.Services) > 0) {
 		sourceName := app.Spec.Bindings.SecretRef.Name
 		source, reason, message, err := r.lakeAppSourceSecret(ctx, app, sourceName)
 		if err != nil || reason != "" {
@@ -510,7 +532,7 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 		addLakeAppSecretDigest(digests, lakeAppBindingsSecretName, data)
 	}
 
-	if app.Spec.EventsSecretRef != nil && app.Spec.EventsSecretRef.Name != "" {
+	if app.Spec.Sync == nil && app.Spec.EventsSecretRef != nil && app.Spec.EventsSecretRef.Name != "" {
 		sourceName := app.Spec.EventsSecretRef.Name
 		source, reason, message, err := r.lakeAppSourceSecret(ctx, app, sourceName)
 		if err != nil || reason != "" {
@@ -706,11 +728,22 @@ func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, sec
 			corev1.EnvVar{Name: "APP_REPOSITORY", Value: source.Repository},
 			corev1.EnvVar{Name: "APP_REVISION", Value: source.Revision},
 			corev1.EnvVar{Name: "APP_PATH", Value: source.Path},
-			corev1.EnvVar{Name: "APP_ENTRYPOINT", Value: source.Entrypoint},
 			corev1.EnvVar{Name: "APP_FRAMEWORK", Value: source.Framework},
 		)
+		if source.Entrypoint != "" {
+			env = append(env, corev1.EnvVar{Name: "APP_ENTRYPOINT", Value: source.Entrypoint})
+		}
 	}
-	if secrets.SourceName != "" {
+	if app.Spec.Sync != nil {
+		env = append(env,
+			corev1.EnvVar{Name: "APP_ID", Value: app.Spec.Sync.ID},
+			corev1.EnvVar{Name: "EVENTS_URL", Value: lakeInternalURL(lake, app.Namespace) + "/v1/publish_app_event"},
+			secretEnv("EVENTS_TOKEN", lakeAppTokensSecretName, "events"),
+		)
+		if mode == oramav1alpha1.LakeAppModeRuntime {
+			env = append(env, secretEnv("APP_TOKEN", lakeAppTokensSecretName, "source"))
+		}
+	} else if secrets.SourceName != "" {
 		env = append(env, secretEnv("APP_TOKEN", secrets.SourceName, "token"))
 	}
 	if secrets.EventsName != "" {
@@ -720,6 +753,7 @@ func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, sec
 		)
 	}
 	managed := make(map[string]bool, len(env))
+	managed["APP_ENTRYPOINT"] = true
 	for _, variable := range env {
 		managed[variable.Name] = true
 	}
@@ -781,7 +815,11 @@ func lakeAppPodSpec(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, secret
 		serviceIDs := append([]string(nil), app.Spec.Bindings.Services...)
 		sort.Strings(serviceIDs)
 		for _, serviceID := range serviceIDs {
-			items = append(items, corev1.KeyToPath{Key: serviceID, Path: "services/" + serviceID})
+			name := serviceID
+			if app.Spec.Bindings.ServiceNames[serviceID] != "" {
+				name = app.Spec.Bindings.ServiceNames[serviceID]
+			}
+			items = append(items, corev1.KeyToPath{Key: serviceID, Path: "services/" + name})
 		}
 		volumes = append(volumes, corev1.Volume{
 			Name: lakeAppBindingsVolume,
@@ -966,6 +1004,12 @@ func (r *LakeAppReconciler) deleteLakeAppDNSRecords(ctx context.Context, app *or
 }
 
 func (r *LakeAppReconciler) lakeAppDeploymentState(ctx context.Context, app *oramav1alpha1.LakeApp, deployment *appsv1.Deployment, namespace string) (string, bool, string, string, error) {
+	if app.Spec.Replicas != nil && *app.Spec.Replicas == 0 {
+		if deployment.Status.ObservedGeneration >= deployment.Generation && deployment.Status.Replicas == 0 {
+			return oramav1alpha1.LakeAppPhaseProgressing, false, "DeploymentStopped", "app stopped", nil
+		}
+		return oramav1alpha1.LakeAppPhaseProgressing, false, "DeploymentStopping", "waiting for app replicas to stop", nil
+	}
 	if phase, reason, message, found, err := r.lakeAppPodFailure(ctx, app, namespace); err != nil {
 		return "", false, "", "", err
 	} else if found {
@@ -1060,6 +1104,10 @@ func (r *LakeAppReconciler) finishLakeAppStatus(ctx context.Context, app *oramav
 }
 
 func (r *LakeAppReconciler) publishLakeAppEvent(ctx context.Context, app *oramav1alpha1.LakeApp) {
+	if app.Spec.Sync != nil {
+		r.publishSyncedLakeAppEvent(ctx, app)
+		return
+	}
 	if app.Spec.EventsSecretRef == nil || app.Spec.EventsSecretRef.Name == "" {
 		return
 	}
@@ -1189,6 +1237,18 @@ func (r *LakeAppReconciler) finalizeLakeApp(ctx context.Context, app *oramav1alp
 		return ctrl.Result{}, err
 	}
 
+	var records oramav1alpha1.CloudflareDNSRecordList
+	if err := r.List(ctx, &records, client.InNamespace(app.Namespace), client.MatchingLabels{
+		lakeAppIdentityLabel: lakeAppLabels(app)[lakeAppIdentityLabel],
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+	for i := range records.Items {
+		if records.Items[i].Annotations[lakeAppOwnerAnnotation] == lakeAppOwner(app) {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+	}
+
 	controllerutil.RemoveFinalizer(app, lakeAppFinalizer)
 	if err := r.Update(ctx, app); err != nil {
 		return ctrl.Result{}, err
@@ -1250,6 +1310,9 @@ func (r *LakeAppReconciler) requestsForLakeAppSourceSecret(ctx context.Context, 
 }
 
 func (r *LakeAppReconciler) lakeAppReferencesSecret(ctx context.Context, app *oramav1alpha1.LakeApp, name string) bool {
+	if app.Spec.Sync != nil && name == lakeServicesSecret(app.Spec.LakeRef) {
+		return true
+	}
 	if app.Spec.PullSecretName == name || app.Spec.EventsSecretRef != nil && app.Spec.EventsSecretRef.Name == name {
 		return true
 	}
