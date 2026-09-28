@@ -12,6 +12,9 @@ spec:
     path: apps/dashboard
     entrypoint: main:app
     framework: fastapi
+    tokenSecretRef:
+      name: sales-dashboard-source
+      key: token
   port: 8080
   replicas: 1
   auth: lake

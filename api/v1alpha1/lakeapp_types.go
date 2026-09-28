@@ -44,6 +44,10 @@ type LakeAppSource struct {
 	// Framework selects the app-runtime adapter.
 	// +kubebuilder:validation:Enum=fastapi;streamlit;static
 	Framework string `json:"framework"`
+
+	// TokenSecretRef selects the Lake-minted repository read token from a Secret in the Lake
+	// namespace. The controller copies only this key and exposes it as APP_TOKEN.
+	TokenSecretRef corev1.SecretKeySelector `json:"tokenSecretRef"`
 }
 
 // LakeAppZettaBinding requests a read-only workspace credential minted by Lake.

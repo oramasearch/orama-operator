@@ -27,6 +27,28 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
+func TestZettaPodLabelsExposeManagedServiceWithoutChangingSelector(t *testing.T) {
+	z := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{
+		Name: "prod-svc-123456789abc",
+		Labels: map[string]string{
+			serviceLakeLabel:     "prod",
+			serviceIDLabel:       "8831658d-5691-4d40-b2cd-d52c651a8087",
+			serviceKindLabel:     serviceKindZetta,
+			serviceCustomerLabel: "sha256-customer",
+		},
+	}}
+	selector := zettaLabels(z)
+	podLabels := zettaPodLabels(z)
+	for _, key := range []string{serviceLakeLabel, serviceIDLabel, serviceKindLabel, serviceCustomerLabel} {
+		if selector[key] != "" {
+			t.Errorf("immutable selector contains %s", key)
+		}
+		if podLabels[key] != z.Labels[key] {
+			t.Errorf("pod label %s = %q, want %q", key, podLabels[key], z.Labels[key])
+		}
+	}
+}
+
 func zettaTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()

@@ -391,6 +391,7 @@ namespace; its workload runs in a separate namespace. See the operational contra
 | `spec.source.path` | Application directory within the repository; empty means its root. |
 | `spec.source.entrypoint` | Framework-specific module, file, or directory served by app-runtime. |
 | `spec.source.framework` | `fastapi`, `streamlit`, or `static`. |
+| `spec.source.tokenSecretRef` | `{name, key}` selecting the Lake-minted repository read token in the Lake namespace. The controller copies only that key and exposes it as `APP_TOKEN`. |
 | `spec.image` | Image-mode OCI reference, required to match `name@sha256:<64 hex>`. |
 | `spec.pullSecretName` | Image-mode override for the Lake's private-image pull Secret. The Secret is copied from the Lake namespace into the app namespace. |
 | `spec.port` | App container port, default `8080`. The Service exposes it on port 80. |

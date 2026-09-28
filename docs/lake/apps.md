@@ -24,6 +24,9 @@ spec:
     path: apps/dashboard
     framework: fastapi
     entrypoint: main:app
+    tokenSecretRef:
+      name: sales-dashboard-source
+      key: token
   port: 8080
   replicas: 1
   auth: lake
@@ -55,6 +58,10 @@ Credentials never appear in `LakeApp.spec`, Deployment environment values, annot
 logs. The Lake-side sync writes source Secrets in the Lake namespace and puts only their names in the
 CR.
 
+`spec.source.tokenSecretRef` selects the Lake-minted repository read token used as `APP_TOKEN`.
+Runtime mode requires its Secret name and key. The workload copy contains only the selected value,
+even when the source Secret holds other keys.
+
 `spec.bindings.secretRef` points at a Secret with these data keys:
 
 - `zetta`: the Lake-minted scoped workspace token when `bindings.zetta` is present;
@@ -64,5 +71,79 @@ The controller copies only those named keys. Generic `spec.secretRefs` name Lake
 that are copied and exposed through `envFrom`. `spec.eventsSecretRef` names a Secret with `url` and
 `token` keys for the app's `app-events.<app>` topic. A source Secret change changes the pod-template
 credential digest, so Kubernetes performs a rollout without putting secret data in the template.
+
+## Resources and isolation
+
+The resource's stable workload namespace is `lake-<lake>-app-<10-hex-hash>`, derived from Lake and
+`LakeApp` identity. It carries Pod Security `restricted` labels and an ownership annotation that the
+finalizer verifies before deletion. The controller creates:
+
+- `ResourceQuota tenant-defaults` and `LimitRange tenant-defaults`;
+- a default-deny ingress/egress `NetworkPolicy` and an `app-access` policy;
+- Deployment and Service `app`;
+- Ingress `app` when a host is available;
+- a proxied `CloudflareDNSRecord` for a custom host when Lake DNS credentials are configured.
+
+The access policy admits the nginx ingress namespace and DNS. Runtime mode can reach the Lake
+Service to load source. A Zetta binding can reach the customer's Zetta service pods, each requested
+service binding gets a rule selecting only that service identifier, and event credentials allow the
+Lake bus Zetta pods. No general internet egress is opened.
+
+The pod runs as uid/gid 10001, drops all capabilities, prevents privilege escalation, uses runtime
+default seccomp, has a read-only root filesystem, disables its Kubernetes token and service links,
+and gets a size-limited `emptyDir` at `/tmp`. Private pull credentials are copied into the workload
+namespace. The selected binding values appear as files at:
+
+```text
+/var/run/orama/bindings/zetta
+/var/run/orama/bindings/services/<service-id>
+```
+
+Runtime mode sets both the original app-runtime source variables and the expanded contract:
+`LAKE_URL`, `APP_SOURCE=<repository>@<revision>`, `APP_REPOSITORY`, `APP_REVISION`, `APP_PATH`,
+`APP_ENTRYPOINT`, `APP_FRAMEWORK`, `APP_TOKEN`, and `APP_PORT`. Event credentials become
+`EVENTS_URL` and `EVENTS_TOKEN` through Secret key references.
+
+## Ingress and authentication
+
+An empty app host derives `<app>.<Lake spec.apps.wildcard>`. That address uses the one shared
+wildcard record maintained by the apps sync. A custom host gets its own proxied record after nginx
+reports a load-balancer target. The ingress class is `spec.apps.ingressClass`, default `nginx`.
+
+`auth: lake` is the default. It adds nginx's `auth-url` annotation pointing at Lake's in-cluster
+`/v1/apps/auth` endpoint, which verifies the browser's Lake session and space membership before the
+request reaches the app. `auth: public` omits the annotation.
+
+## Status and events
+
+Status is deep-compared before every write. `Ready` requires the Deployment controller to have
+observed the current generation and every desired replica to be updated and available. Pod status
+takes priority over generic rollout progress: `ImagePullBackOff`/`ErrImagePull`,
+`CrashLoopBackOff`, and `OOMKilled` produce stable `Degraded` messages. `status.observedRevision`
+is the source revision in runtime mode or image digest in image mode.
+
+Only a real status transition publishes an event. The controller reads the scoped event Secret and
+POSTs `publish_event` to Zetta with JSON payload on `app-events.<app>`. Production publication runs
+asynchronously with a short timeout; a missing credential, unreachable bus, or rejected event is
+logged and never fails or delays resource reconciliation. The same event Secret is delivered to the
+app so app-runtime can publish its own progress.
+
+Deletion records `TornDown`, publishes that transition best-effort, removes any individual DNS
+record, verifies namespace ownership, deletes the namespace, waits until it is absent, and only then
+releases the finalizer.
+
+## Verification
+
+The native API-server test exercises create, source update, rollback, pod-failure status, binding
+delivery, exact NetworkPolicy targets, credential rotation, and deletion:
+
+```sh
+export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)"
+go test -count=1 -v ./internal/controller -run '^TestLakeAppEnvtestLifecycle$'
+```
+
+The repository proof also runs `go build ./...`, `go vet ./...`, `go test ./...`, and
+`helm lint chart`. A dev-cluster e2e remains deferred until the Lake apps-table sync and app-runtime
+image are available.
 
 The field-by-field reference is in [`../crd-reference.md`](../crd-reference.md#lakeapp-separate-crd-namespaced--one-deployed-app).

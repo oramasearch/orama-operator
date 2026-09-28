@@ -103,6 +103,20 @@ func zettaLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 		"app.kubernetes.io/component":  "zetta-node",
 		"app.kubernetes.io/managed-by": "orama-cloud-v1-operator",
 	}
+
+}
+
+func zettaPodLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
+	labels := zettaLabels(z)
+	// LakeApp egress is label-scoped to the exact managed service. Preserve only the Lake service
+	// identity labels on pods. The StatefulSet selector deliberately remains zettaLabels: changing
+	// that immutable selector would break adopted workspace clusters.
+	for _, key := range []string{serviceLakeLabel, serviceIDLabel, serviceKindLabel, serviceCustomerLabel, workspaceIDLabel} {
+		if value := z.Labels[key]; value != "" {
+			labels[key] = value
+		}
+	}
+	return labels
 }
 
 func zettaNames(z *oramav1alpha1.OramaZettaCluster) (sts, headlessSvc, clientSvc string) {
@@ -710,7 +724,7 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 	pmp := appsv1.ParallelPodManagement
 	sts.Spec.PodManagementPolicy = pmp
 	sts.Spec.Template = corev1.PodTemplateSpec{
-		ObjectMeta: metav1.ObjectMeta{Labels: lbls},
+		ObjectMeta: metav1.ObjectMeta{Labels: zettaPodLabels(z)},
 		Spec: corev1.PodSpec{
 			ImagePullSecrets: pull,
 			// The image runs zetta as uid 10001; fsGroup makes the mounted PVC group-writable so the
