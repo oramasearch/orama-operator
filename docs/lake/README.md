@@ -450,4 +450,4 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 ## Open
 
 - #126 incremental migrations in `PostgresSchema`.
-- [`agents.md`](agents.md) — the Agent Library's agents, the launches of user-created agents on agent-runtime, and their cron schedules as CronJobs (lake#228, lake#231, lake#244).
+- [`agents.md`](agents.md) — the Agent Library's agents, the launches of user-created agents on agent-runtime, their cron schedules as CronJobs, and each library agent's own agent-bus credential (lake#228, lake#231, lake#244, lake#269).

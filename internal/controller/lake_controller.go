@@ -72,7 +72,7 @@ const (
 	lakeStorePath        = "/var/lib/lake/store"
 	lakeStoreVolume      = "store"
 	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
-	lakeSchemaGuardTable = "agent_cron_guard"
+	lakeSchemaGuardTable = "agent_task_events_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
@@ -230,6 +230,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 	if err := r.reconcileLakeAgentServiceToken(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile agent service token: %w", err)
+	}
+	if err := r.reconcileLakeAgentBusTokens(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Service.
@@ -641,6 +644,23 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 				}},
 			})
 		}
+		if len(lake.Spec.Agents.Library) > 0 {
+			// The library agents' bus credentials (lake docs/api/agent-bus.md), one file each.
+			mode := int32(0o440)
+			spec := &deployment.Spec.Template.Spec
+			spec.Containers[0].VolumeMounts = append(spec.Containers[0].VolumeMounts, corev1.VolumeMount{
+				Name:      lakeAgentBusVolume,
+				MountPath: lakeAgentBusMountPath,
+				ReadOnly:  true,
+			})
+			spec.Volumes = append(spec.Volumes, corev1.Volume{
+				Name: lakeAgentBusVolume,
+				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+					SecretName:  lakeAgentBusSecret(lake.Name),
+					DefaultMode: &mode,
+				}},
+			})
+		}
 		if lake.Spec.PullSecretName != "" {
 			deployment.Spec.Template.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{
 				Name: lake.Spec.PullSecretName,
@@ -924,6 +944,7 @@ func (r *LakeReconciler) lakeStoreStatus(
 func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.EnvVar {
 	reserved := map[string]struct{}{
 		"LAKE_ADMIN_TOKEN":         {},
+		"LAKE_AGENT_BUS_DIR":       {},
 		"LAKE_AGENT_ENDPOINTS":     {},
 		"LAKE_AGENT_MODEL":         {},
 		"LAKE_AGENT_SERVICE_TOKEN": {},

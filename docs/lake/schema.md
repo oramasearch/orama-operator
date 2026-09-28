@@ -17,8 +17,12 @@ Migration `0030_agent_launches` (lake#231) adds `agent_launches` (written by lak
 `0031_agent_cron_schedules` (lake#244) adds `agent_cron_schedules` (written by lake: any number of
 cron schedules per agent), `agent_cron_schedule_status` and `agent_cron_runs` (written by the
 operator: each schedule's CronJob status and credential digest, and one row per Job it started),
-and the completion table `public.agent_cron_guard`, now Lake's PostgresSchema guard. It leaves
-0030's `agent_schedules` unread and in place. Migration `0029_non_expiring_credentials` (lake#234) adds
+and the completion table `public.agent_cron_guard`. It leaves 0030's `agent_schedules` unread and
+in place. Migration `0032_agent_tasks` (lake#269) adds `agent_tasks` (a library agent's turn, published
+on lake's agent bus), `agent_task_status` (written by lake as the agent claims and reports; the
+SHA-256 of each task's credential), `opportunities` (Design → Opportunities), and the completion
+table `public.agent_tasks_guard`. Migration `0033_agent_task_events` (lake#275) adds `agent_task_status.events_from` (where a task's events start on `agent-events`) and `public.agent_task_events_guard`, now Lake's PostgresSchema guard. The operator reads none of them:
+tasks travel on Zetta pub/sub (lake `docs/api/agent-bus.md`). Migration `0029_non_expiring_credentials` (lake#234) adds
 `customers.allow_non_expiring_credentials` and `agent_sessions.revoked_at` with guard
 `credentials_guard`. Both are idempotent; a database at `0028` applies the whole file in one
 transaction. The operator runs launches ([agents.md](agents.md)) and, until this schema has applied,
