@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -111,6 +112,49 @@ func TestZettaStatefulSetInjectsSharedClusterToken(t *testing.T) {
 	entry := c.Command[len(c.Command)-1]
 	if strings.Contains(entry, "--cluster-plaintext") || strings.Contains(entry, "PLAINTEXT") {
 		t.Error("entrypoint still references the removed plaintext mode")
+	}
+}
+
+func TestZettaStatefulSetAppendsCustomEnvAndProtectsManagedNames(t *testing.T) {
+	r := &OramaZettaClusterReconciler{Scheme: zettaTestScheme(t)}
+	z := newZettaTestCluster()
+	z.Spec.Env = []corev1.EnvVar{
+		{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "134217728"},
+		{Name: "ZETTA_ADMIN_TOKEN", Value: "not-the-managed-token"},
+		{Name: "MALLOC_ARENA_MAX", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "allocator-settings"},
+			Key:                  "arenas",
+		}}},
+		{Name: "ZETTA_ADMIN_TOKEN", Value: "still-not-the-managed-token"},
+		{Name: "POD_NAME", Value: "not-the-pod-name"},
+	}
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
+
+	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), "", nil); err != nil {
+		t.Fatalf("mutateZettaStatefulSet: %v", err)
+	}
+
+	env := sts.Spec.Template.Spec.Containers[0].Env
+	trim := findEnv(env, "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES")
+	if trim == nil || trim.Value != "134217728" {
+		t.Fatalf("ZETTA_MALLOC_TRIM_THRESHOLD_BYTES = %+v", trim)
+	}
+	arenas := findEnv(env, "MALLOC_ARENA_MAX")
+	if arenas == nil || arenas.ValueFrom == nil || arenas.ValueFrom.SecretKeyRef == nil ||
+		arenas.ValueFrom.SecretKeyRef.Name != "allocator-settings" || arenas.ValueFrom.SecretKeyRef.Key != "arenas" {
+		t.Fatalf("MALLOC_ARENA_MAX = %+v", arenas)
+	}
+	admin := findEnv(env, "ZETTA_ADMIN_TOKEN")
+	if admin == nil || admin.Value != "" || admin.ValueFrom == nil || admin.ValueFrom.SecretKeyRef == nil ||
+		admin.ValueFrom.SecretKeyRef.Name != "z0-zetta-admin" {
+		t.Fatalf("managed ZETTA_ADMIN_TOKEN was overridden: %+v", admin)
+	}
+	if env[len(env)-2].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || env[len(env)-1].Name != "MALLOC_ARENA_MAX" {
+		t.Fatalf("custom env was not appended in authored order: %+v", env)
+	}
+	_, ignored := zettaCustomEnv(z.Spec.Env)
+	if !slices.Equal(ignored, []string{"POD_NAME", "ZETTA_ADMIN_TOKEN"}) {
+		t.Fatalf("ignored env = %v", ignored)
 	}
 }
 

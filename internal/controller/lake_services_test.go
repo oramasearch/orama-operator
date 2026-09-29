@@ -419,7 +419,9 @@ func zettaDataClaim(cluster string, ordinal int, deleting bool) *corev1.Persiste
 
 func TestServicesZettaCreateAndReadyGating(t *testing.T) {
 	store := &fakeServiceStore{services: []LakeService{testService(testZettaServiceID, testZettaSlug, serviceKindZetta, `{"instances":2,"storage_gi":20}`, false)}}
-	h := newServiceHarness(t, serviceTestLake(), store)
+	lake := serviceTestLake()
+	lake.Spec.Services.ZettaEnv = []corev1.EnvVar{{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "134217728"}}
+	h := newServiceHarness(t, lake, store)
 	h.poll()
 
 	cluster := h.zettaCluster(testZettaSlug)
@@ -436,7 +438,8 @@ func TestServicesZettaCreateAndReadyGating(t *testing.T) {
 	}
 	if cluster.Spec.Replicas != 2 || cluster.Spec.Storage.Size != "20Gi" || cluster.Spec.Image != "oramasearch/zetta:service" ||
 		cluster.Spec.IngressEnabled || cluster.Spec.ProvisionOperatorSchema == nil || *cluster.Spec.ProvisionOperatorSchema ||
-		cluster.Spec.PullSecretName != "oramasearch-dockerhub" {
+		cluster.Spec.PullSecretName != "oramasearch-dockerhub" || len(cluster.Spec.Env) != 1 ||
+		cluster.Spec.Env[0].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || cluster.Spec.Env[0].Value != "134217728" {
 		t.Fatalf("unexpected zetta service spec: %+v", cluster.Spec)
 	}
 	endpoint := "http://prod-svc-111111111111-zetta.lake.svc.cluster.local:4800"

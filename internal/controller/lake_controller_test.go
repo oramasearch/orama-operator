@@ -682,6 +682,7 @@ func TestLakeReconcileZettaDataPlane(t *testing.T) {
 				Image:        "oramasearch/zetta:20260906",
 				Replicas:     &two,
 				Storage:      oramav1alpha1.OramaZettaStorage{Size: "40Gi", StorageClassName: "fast"},
+				Env:          []corev1.EnvVar{{Name: "MALLOC_ARENA_MAX", Value: "2"}},
 				Reachability: oramav1alpha1.ReachabilityWANAccessible,
 			},
 		},
@@ -710,6 +711,7 @@ func TestLakeReconcileZettaDataPlane(t *testing.T) {
 		zetta.Spec.Storage.Size != "40Gi" || zetta.Spec.Storage.StorageClassName != "fast" ||
 		zetta.Spec.Reachability != oramav1alpha1.ReachabilityWANAccessible ||
 		zetta.Spec.PullSecretName != "oramasearch-dockerhub" ||
+		len(zetta.Spec.Env) != 1 || zetta.Spec.Env[0].Name != "MALLOC_ARENA_MAX" || zetta.Spec.Env[0].Value != "2" ||
 		zetta.Spec.ProvisionOperatorSchema == nil || *zetta.Spec.ProvisionOperatorSchema {
 		t.Errorf("Zetta spec = %+v", zetta.Spec)
 	}

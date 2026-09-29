@@ -481,6 +481,12 @@ siblings copy `.status.wanAddress` into their `spec.externalPeers`, and the **Cl
 is populated from those addresses (HTTP origin at the same host `:4800`) — the documented wiring hook, not
 yet auto-populated here.
 
+**Zetta runtime environment.** `spec.env` accepts Kubernetes `EnvVar` values and sources, appends
+accepted entries after the variables the operator owns, and updates the StatefulSet pod template so a
+change rolls the nodes. Operator-owned names cannot be overridden; their sorted names are exposed as
+`status.ignoredEnvVars` without changing readiness. Lake copies `spec.zetta.env` to its data-plane child
+and `spec.services.zettaEnv` to every managed or adopted Zetta service cluster.
+
 **Reachability + node-type FLAGS into the engine** (`mutateZettaStatefulSet`,
 [zetta#803](https://github.com/oramasearch/zetta/issues/803)/[#810](https://github.com/oramasearch/zetta/issues/810)).
 Classifying the slice is not enough — the operator must tell the *engine* what each node is, or the engine
@@ -535,7 +541,7 @@ and reuses this operator's CNPG, PostgresSchema and Cloudflare DNS paths.
 | Deployment | `lake-<name>` | yes | resource defaults or `spec.resources`; `/healthz` liveness and `/readyz` readiness; non-root uid/gid 10001; zero-unavailable rolling update with pre-stop drain; default or configured topology spread; store mount and `LAKE_STORE_ROOT` |
 | PodDisruptionBudget | `lake-<name>` | yes | created only above one replica with `maxUnavailable: 1`; removed when scaled to one |
 | Service | `lake-<name>` | yes | ClusterIP 80 → `spec.port` |
-| `OramaZettaCluster` | `lake-<name>-zetta` | yes | `spec.zetta`; data plane only, so operator-schema provisioning is off; deletion completes before the Lake finalizer is released |
+| `OramaZettaCluster` | `lake-<name>-zetta` | yes | `spec.zetta`, including `env`; data plane only, so operator-schema provisioning is off; deletion completes before the Lake finalizer is released |
 | CNPG `Cluster` | `lake-<name>-controldb` | yes (unstructured) | `spec.postgres`: instances, storageSize (50Gi), storageClassName; disable tears down **with data** |
 | ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; guard = the newest migration's table (`custodial_identity_guard`, `0023_custodial_identities`) |
 | CNPG `ScheduledBackup` | `lake-<name>-controldb-backup` | yes (unstructured) | opt-in Barman R2/S3 backup; CNPG `Backup` resources are observed by `cnpg.io/cluster` label |

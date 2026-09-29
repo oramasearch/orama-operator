@@ -725,6 +725,7 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 		cluster.Spec.Image = serviceZettaImage(lake)
 		cluster.Spec.PullSecretName = lake.Spec.PullSecretName
 		cluster.Spec.Resources = serviceZettaResources(lake)
+		cluster.Spec.Env = append([]corev1.EnvVar(nil), lake.Spec.Services.ZettaEnv...)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.ProvisionOperatorSchema = &operatorSchema
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)
