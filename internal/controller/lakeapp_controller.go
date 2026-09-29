@@ -943,7 +943,7 @@ func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, sec
 	if mode == oramav1alpha1.LakeAppModeRuntime && app.Spec.Source != nil {
 		source := app.Spec.Source
 		env = append(env,
-			corev1.EnvVar{Name: "APP_SOURCE", Value: source.Repository + "@" + source.Revision},
+			corev1.EnvVar{Name: "APP_SOURCE", Value: lakeURL + "|" + source.Repository + "|" + source.Revision + "|" + source.Path},
 			corev1.EnvVar{Name: "APP_REPOSITORY", Value: source.Repository},
 			corev1.EnvVar{Name: "APP_REVISION", Value: source.Revision},
 			corev1.EnvVar{Name: "APP_PATH", Value: source.Path},
