@@ -427,16 +427,78 @@ func lakeAppRowEnvironment(row *LakeAppRow, spec *oramav1alpha1.LakeAppSpec) err
 	for _, name := range names {
 		spec.Env = append(spec.Env, oramav1alpha1.LakeEnvironmentVariable{Name: name, Value: env[name]})
 	}
-	if row.SecretEnvRefs != "" && json.Unmarshal([]byte(row.SecretEnvRefs), &spec.SecretRefs) != nil {
-		return errors.New("secret_env_refs must be an array of Secret names")
+	return lakeAppRowSecretEnvironment(row.SecretEnvRefs, spec)
+}
+
+func lakeAppRowSecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	if strings.HasPrefix(raw, "[") {
+		return lakeAppRowLegacySecretEnvironment(raw, spec)
+	}
+	if !strings.HasPrefix(raw, "{") {
+		return errors.New("secret_env_refs must be an object of environment names to Secret references or a legacy array of Secret names")
+	}
+	secretEnvironment := map[string]string{}
+	if err := json.Unmarshal([]byte(raw), &secretEnvironment); err != nil {
+		return errors.New("secret_env_refs must be an object of environment names to Secret references or a legacy array of Secret names")
+	}
+	names := make([]string, 0, len(secretEnvironment))
+	for name := range secretEnvironment {
+		if len(validation.IsEnvVarName(name)) != 0 {
+			return fmt.Errorf("secret_env_refs environment name %q is invalid", name)
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		secretName, key, err := lakeAppSecretReference(name, secretEnvironment[name])
+		if err != nil {
+			return err
+		}
+		spec.SecretEnv = append(spec.SecretEnv, oramav1alpha1.LakeAppSecretEnvironmentVariable{
+			Name: name,
+			SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{
+				Name: secretName,
+				Key:  key,
+			},
+		})
+	}
+	return nil
+}
+
+func lakeAppRowLegacySecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) error {
+	if err := json.Unmarshal([]byte(raw), &spec.SecretRefs); err != nil {
+		return errors.New("secret_env_refs must be an object of environment names to Secret references or a legacy array of Secret names")
 	}
 	spec.SecretRefs = sortedUnique(spec.SecretRefs)
 	for _, name := range spec.SecretRefs {
 		if len(validation.IsDNS1123Subdomain(name)) != 0 {
-			return errors.New("secret_env_refs contains an invalid Secret name")
+			return fmt.Errorf("secret_env_refs legacy Secret name %q is invalid", name)
 		}
 	}
 	return nil
+}
+
+func lakeAppSecretReference(environmentName, reference string) (string, string, error) {
+	parts := strings.Split(reference, "/")
+	if len(parts) > 2 || parts[0] == "" {
+		return "", "", fmt.Errorf("secret_env_refs reference for %q must be <secret-name> or <secret-name>/<key>", environmentName)
+	}
+	secretName := parts[0]
+	key := environmentName
+	if len(parts) == 2 {
+		key = parts[1]
+	}
+	if len(validation.IsDNS1123Subdomain(secretName)) != 0 {
+		return "", "", fmt.Errorf("secret_env_refs Secret name for %q is invalid", environmentName)
+	}
+	if len(validation.IsConfigMapKey(key)) != 0 {
+		return "", "", fmt.Errorf("secret_env_refs Secret key for %q is invalid", environmentName)
+	}
+	return secretName, key, nil
 }
 
 func sortedUnique(values []string) []string {

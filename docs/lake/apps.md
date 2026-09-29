@@ -47,8 +47,24 @@ and token hashes. Status and hash writes match ID, customer, generation and desi
 old read cannot acknowledge a newer row or recreate a removed row. Unchanged observations write
 nothing; `updated_at` changes on status transitions.
 
-`env_json` is a string-to-string JSON object. `secret_env_refs` is a JSON array of Secret names
-in the Lake namespace. Lake must authorize these references and detect secret env values before
+`env_json` is a string-to-string JSON object. `secret_env_refs` is a JSON object whose keys are
+environment variable names and whose string values select Secrets in the Lake namespace. A value
+is `<secret-name>` to use the environment name as the Secret key, or `<secret-name>/<key>` to select
+a different key:
+
+```json
+{"API_KEY":"svc-creds/token","DB_URL":"db-secret"}
+```
+
+This renders `API_KEY` from key `token` in `svc-creds` and `DB_URL` from key `DB_URL` in
+`db-secret`. `{}`, SQL `NULL`, JSON `null`, and an empty decoded value request no secret
+environment variables. Environment names must pass Kubernetes `IsEnvVarName`, Secret names must
+be DNS-1123 subdomains, and keys must be valid Kubernetes Secret keys. Invalid input makes the row
+`Failed` with a stable validation message and creates no invalid `LakeApp` update.
+
+For one compatibility release, the operator also accepts the former JSON array of Secret names.
+Those whole Secrets retain their `envFrom` behavior through `spec.secretRefs`; new writers must use
+the object contract. Lake must authorize these references and detect secret env values before
 writing them; plaintext credentials belong in Secrets, never these JSON columns. `bindings_json` is:
 
 ```json
@@ -140,6 +156,11 @@ spec:
   port: 8080
   replicas: 1
   auth: lake
+  secretEnv:
+    - name: API_KEY
+      secretKeyRef:
+        name: svc-creds
+        key: token
   bindings:
     secretRef:
       name: sales-dashboard-bindings
@@ -196,10 +217,14 @@ even when the source Secret holds other keys.
 - `zetta`: the Lake-minted scoped workspace token when `bindings.zetta` is present;
 - one key equal to each requested service identifier: that service's connection document.
 
-The controller copies only those named keys. Generic `spec.secretRefs` name Lake-namespace Secrets
-that are copied and exposed through `envFrom`. `spec.eventsSecretRef` names a Secret with `url` and
-`token` keys for the app's `app-events.<app>` topic. A source Secret change changes the pod-template
-credential digest, so Kubernetes performs a rollout without putting secret data in the template.
+The controller copies only those named keys. `spec.secretEnv` maps each environment name to a
+Lake-namespace `secretKeyRef`; only selected keys are copied into the isolated namespace and the
+Deployment references the local copies through `env[].valueFrom.secretKeyRef`. Operator-managed
+environment names take precedence, followed by secret-backed values and then literal `spec.env`
+values. `spec.secretRefs` is the one-release legacy whole-Secret form: those Secrets are copied and
+exposed through `envFrom`. `spec.eventsSecretRef` names a Secret with `url` and `token` keys for the
+app's `app-events.<app>` topic. A selected source Secret change changes the pod-template credential
+digest, so Kubernetes performs a rollout without putting secret data in the template.
 
 ## Resources and isolation
 

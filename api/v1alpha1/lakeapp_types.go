@@ -118,6 +118,29 @@ type LakeAppSync struct {
 	TokenHashes *LakeAppTokenHashes `json:"tokenHashes,omitempty"`
 }
 
+// LakeAppSecretKeyReference selects one key from a Secret in the Lake namespace.
+type LakeAppSecretKeyReference struct {
+	// Name is the source Secret name.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	Name string `json:"name"`
+
+	// Key is the source Secret data key.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[-._a-zA-Z0-9]+$`
+	Key string `json:"key"`
+}
+
+// LakeAppSecretEnvironmentVariable exposes one Secret key as an application environment variable.
+type LakeAppSecretEnvironmentVariable struct {
+	// Name is the application environment variable name.
+	// +kubebuilder:validation:Pattern=`^[-._a-zA-Z][-._a-zA-Z0-9]*$`
+	Name string `json:"name"`
+
+	// SecretKeyRef selects the source Secret and key in the Lake namespace.
+	SecretKeyRef LakeAppSecretKeyReference `json:"secretKeyRef"`
+}
+
 // LakeAppSpec defines one isolated application belonging to a Lake.
 // +kubebuilder:validation:XValidation:rule="self.mode != 'runtime' || has(self.source)",message="source is required in runtime mode"
 // +kubebuilder:validation:XValidation:rule="self.mode != 'image' || has(self.image)",message="image is required in image mode"
@@ -175,8 +198,15 @@ type LakeAppSpec struct {
 	// +optional
 	Env []LakeEnvironmentVariable `json:"env,omitempty"`
 
-	// SecretRefs names Secrets in the Lake namespace that are copied into the app namespace and
-	// exposed through envFrom.
+	// SecretEnv contains environment variables sourced from individual Secret keys. Source Secrets
+	// live in the Lake namespace; the controller copies only selected keys into the app namespace.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	SecretEnv []LakeAppSecretEnvironmentVariable `json:"secretEnv,omitempty"`
+
+	// SecretRefs is the one-release legacy whole-Secret input. Named Secrets are copied into the app
+	// namespace and exposed through envFrom.
 	// +listType=set
 	// +optional
 	SecretRefs []string `json:"secretRefs,omitempty"`

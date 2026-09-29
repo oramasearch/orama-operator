@@ -69,7 +69,7 @@ const listAppsSQL = `SELECT a.id::text, a.customer_id::text, a.workspace_id::tex
  COALESCE(a.source_entrypoint, ''), COALESCE(a.image, ''), COALESCE(a.framework, ''),
  COALESCE(a.port, 8080), COALESCE(a.replicas, 1), COALESCE(a.host, ''), COALESCE(a.auth, 'lake'),
  COALESCE(a.bindings_json, '{}'::jsonb)::text, COALESCE(a.env_json, '{}'::jsonb)::text,
- COALESCE(a.secret_env_refs, '[]'::jsonb)::text, a.desired, a.generation,
+ COALESCE(a.secret_env_refs, '{}'::jsonb)::text, a.desired, a.generation,
  COALESCE(a.phase, 'Pending'), COALESCE(a.url, ''), COALESCE(a.ready, false), COALESCE(a.message, ''),
  COALESCE(a.observed_generation, 0), COALESCE(a.token_hashes_json, 'null'::jsonb)::text
  FROM apps a

@@ -96,7 +96,7 @@ func testLakeAppRow() LakeAppRow {
 		SourceRepository: "sales", SourceRevision: testLakeAppRevisionA, SourcePath: "apps/dashboard",
 		Framework: "fastapi", Port: 8080, Replicas: 1, Auth: "lake", Desired: "running", Generation: 1,
 		BindingsJSON: `{"zetta":{"scopes":["read"]},"services":["` + testPostgresID + `"]}`,
-		EnvJSON:      `{"GREETING":"hello"}`, SecretEnvRefs: `[]`,
+		EnvJSON:      `{"GREETING":"hello"}`, SecretEnvRefs: `{}`,
 	}
 }
 
@@ -246,6 +246,7 @@ func TestLakeAppsEnvtestLifecycle(t *testing.T) {
 		t.Fatalf("status did not flow back: %+v", status)
 	}
 	assertSyncedAppSteady(t, h)
+	assertSyncedAppSecretEnvironment(t, h)
 	assertSyncedAppUpdateAndStop(t, h)
 	assertSyncedAppRotation(t, h)
 	h.store.rows[0].Desired = "deleted"
@@ -264,6 +265,140 @@ func TestLakeAppsEnvtestLifecycle(t *testing.T) {
 	}
 	if err := kubeClient.Get(h.ctx, client.ObjectKey{Name: namespace}, &corev1.Namespace{}); err != nil {
 		t.Fatalf("app deletion removed the shared workspace namespace: %v", err)
+	}
+}
+
+func assertSyncedAppSecretEnvironment(t *testing.T, h *appsSyncHarness) {
+	t.Helper()
+	for _, secret := range []*corev1.Secret{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "svc-creds", Namespace: h.app().Namespace},
+			Data: map[string][]byte{
+				"token":   []byte("api-token"),
+				"ignored": []byte("do-not-copy"),
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "db-secret", Namespace: h.app().Namespace},
+			Data:       map[string][]byte{"DB_URL": []byte("postgresql://app@db/app")},
+		},
+	} {
+		if err := h.client.Create(h.ctx, secret); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.store.rows[0].SecretEnvRefs = `{"API_KEY":"svc-creds/token","DB_URL":"db-secret"}`
+	h.store.rows[0].Generation++
+	h.converge()
+	app := h.app()
+	if len(app.Spec.SecretEnv) != 2 || len(app.Spec.SecretRefs) != 0 {
+		t.Fatalf("object secret environment = %+v, legacy = %+v", app.Spec.SecretEnv, app.Spec.SecretRefs)
+	}
+	var deployment appsv1.Deployment
+	deploymentKey := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppWorkloadObjectName(app)}
+	if err := h.client.Get(h.ctx, deploymentKey, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	assertLakeAppSecretEnv(t, container.Env, "API_KEY", lakeAppEnvSecretName(app, "svc-creds"), "token")
+	assertLakeAppSecretEnv(t, container.Env, "DB_URL", lakeAppEnvSecretName(app, "db-secret"), "DB_URL")
+	if len(container.EnvFrom) != 0 {
+		t.Fatalf("object secret environment used envFrom: %+v", container.EnvFrom)
+	}
+	var copied corev1.Secret
+	copyKey := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppEnvSecretName(app, "svc-creds")}
+	if err := h.client.Get(h.ctx, copyKey, &copied); err != nil {
+		t.Fatal(err)
+	}
+	if len(copied.Data) != 1 || string(copied.Data["token"]) != "api-token" {
+		t.Fatalf("selected secret copy = %#v", copied.Data)
+	}
+
+	legacy := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "legacy-env", Namespace: app.Namespace},
+		Data:       map[string][]byte{"LEGACY_FLAG": []byte("enabled")},
+	}
+	if err := h.client.Create(h.ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	h.store.rows[0].SecretEnvRefs = `["legacy-env"]`
+	h.store.rows[0].Generation++
+	h.converge()
+	app = h.app()
+	if len(app.Spec.SecretEnv) != 0 || !reflect.DeepEqual(app.Spec.SecretRefs, []string{"legacy-env"}) {
+		t.Fatalf("legacy secret environment = %+v, object = %+v", app.Spec.SecretRefs, app.Spec.SecretEnv)
+	}
+	if err := h.client.Get(h.ctx, deploymentKey, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	container = deployment.Spec.Template.Spec.Containers[0]
+	legacyName := lakeAppEnvSecretName(app, "legacy-env")
+	if len(container.EnvFrom) != 1 || container.EnvFrom[0].SecretRef == nil || container.EnvFrom[0].SecretRef.Name != legacyName {
+		t.Fatalf("legacy envFrom = %+v, want %q", container.EnvFrom, legacyName)
+	}
+}
+
+func assertLakeAppSecretEnv(t *testing.T, env []corev1.EnvVar, name, secretName, key string) {
+	t.Helper()
+	for _, variable := range env {
+		if variable.Name != name {
+			continue
+		}
+		if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil {
+			t.Fatalf("%s is not sourced from a Secret key", name)
+		}
+		selector := variable.ValueFrom.SecretKeyRef
+		if selector.Name != secretName || selector.Key != key {
+			t.Fatalf("%s selector = %s/%s, want %s/%s", name, selector.Name, selector.Key, secretName, key)
+		}
+		return
+	}
+	t.Fatalf("secret environment variable %s not found", name)
+}
+
+func TestLakeAppRowSecretEnvironmentContract(t *testing.T) {
+	tests := []struct {
+		name          string
+		raw           string
+		wantSecretEnv []oramav1alpha1.LakeAppSecretEnvironmentVariable
+		wantLegacy    []string
+		wantError     string
+	}{
+		{name: "empty"},
+		{name: "null", raw: "null"},
+		{name: "empty object", raw: `{}`},
+		{
+			name: "object references",
+			raw:  `{"DB_URL":"db-secret","API_KEY":"svc-creds/token"}`,
+			wantSecretEnv: []oramav1alpha1.LakeAppSecretEnvironmentVariable{
+				{Name: "API_KEY", SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{Name: "svc-creds", Key: "token"}},
+				{Name: "DB_URL", SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{Name: "db-secret", Key: "DB_URL"}},
+			},
+		},
+		{name: "legacy array", raw: `["z-secret","a-secret","z-secret"]`, wantLegacy: []string{"a-secret", "z-secret"}},
+		{name: "invalid environment name", raw: `{"9BAD":"good-secret"}`, wantError: "environment name"},
+		{name: "invalid Secret name", raw: `{"GOOD":"Bad-Secret"}`, wantError: "Secret name"},
+		{name: "invalid Secret key", raw: `{"GOOD":"good-secret/.."}`, wantError: "Secret key"},
+		{name: "nested object value", raw: `{"GOOD":{"secret":"good-secret"}}`, wantError: "must be an object"},
+		{name: "invalid shape", raw: `true`, wantError: "must be an object"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spec := oramav1alpha1.LakeAppSpec{}
+			err := lakeAppRowSecretEnvironment(test.raw, &spec)
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("error = %v, want message containing %q", err, test.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(spec.SecretEnv, test.wantSecretEnv) || !reflect.DeepEqual(spec.SecretRefs, test.wantLegacy) {
+				t.Fatalf("secret environment = %+v, legacy = %+v", spec.SecretEnv, spec.SecretRefs)
+			}
+		})
 	}
 }
 

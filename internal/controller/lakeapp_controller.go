@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -526,6 +527,7 @@ func lakeAppTargetEgressRule(namespace string, podLabels map[string]string) netw
 
 type lakeAppSecrets struct {
 	EnvFromNames []string
+	SecretEnv    []corev1.EnvVar
 	BindingsName string
 	EventsName   string
 	SourceName   string
@@ -546,25 +548,10 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 		}
 	}
 
-	for _, sourceName := range app.Spec.SecretRefs {
-		targetName := lakeAppEnvSecretName(app, sourceName)
-		if targetName == lakeAppTokensName(app) || targetName == lakeAppBindingsName(app) ||
-			targetName == lakeAppEventsName(app) || targetName == lakeAppSourceName(app) || targetName == lakeAppPullName(app) {
-			message := fmt.Sprintf("secret reference %q conflicts with an operator-managed Secret", sourceName)
-			return result, "SecretReferenceConflict", message, nil
-		}
-		source, reason, message, err := r.lakeAppSourceSecret(ctx, app, sourceName)
-		if err != nil || reason != "" {
-			return result, reason, message, err
-		}
-		if err := r.copyLakeAppSecret(ctx, app, namespace, targetName, source.Type, source.Data); err != nil {
-			return result, "", "", err
-		}
-		wanted[targetName] = true
-		result.EnvFromNames = append(result.EnvFromNames, targetName)
-		addLakeAppSecretDigest(digests, targetName, source.Data)
+	reason, message, err := r.reconcileLakeAppEnvironmentSecrets(ctx, app, namespace, wanted, digests, &result)
+	if err != nil || reason != "" {
+		return result, reason, message, err
 	}
-	sort.Strings(result.EnvFromNames)
 	mode := app.Spec.Mode
 	if mode == "" {
 		mode = oramav1alpha1.LakeAppModeRuntime
@@ -667,6 +654,143 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 	}
 	result.Digest = lakeAppSecretDigest(digests)
 	return result, "", "", nil
+}
+
+type lakeAppEnvironmentSecretSource struct {
+	full bool
+	keys map[string]bool
+}
+
+func (r *LakeAppReconciler) reconcileLakeAppEnvironmentSecrets(
+	ctx context.Context,
+	app *oramav1alpha1.LakeApp,
+	namespace string,
+	wanted map[string]bool,
+	digests map[string][]byte,
+	result *lakeAppSecrets,
+) (string, string, error) {
+	sources, reason, message := lakeAppEnvironmentSecretSources(app)
+	if reason != "" {
+		return reason, message, nil
+	}
+	targetNames, reason, message, err := r.copyLakeAppEnvironmentSecrets(ctx, app, namespace, sources, wanted, digests, result)
+	if err != nil || reason != "" {
+		return reason, message, err
+	}
+	sort.Strings(result.EnvFromNames)
+	secretEnvironment := append([]oramav1alpha1.LakeAppSecretEnvironmentVariable(nil), app.Spec.SecretEnv...)
+	sort.Slice(secretEnvironment, func(i, j int) bool {
+		return secretEnvironment[i].Name < secretEnvironment[j].Name
+	})
+	for _, variable := range secretEnvironment {
+		selector := variable.SecretKeyRef
+		result.SecretEnv = append(result.SecretEnv, secretEnv(variable.Name, targetNames[selector.Name], selector.Key))
+	}
+	return "", "", nil
+}
+
+func lakeAppEnvironmentSecretSources(app *oramav1alpha1.LakeApp) (map[string]*lakeAppEnvironmentSecretSource, string, string) {
+	sources := map[string]*lakeAppEnvironmentSecretSource{}
+	for _, sourceName := range app.Spec.SecretRefs {
+		if len(validation.IsDNS1123Subdomain(sourceName)) != 0 {
+			message := fmt.Sprintf("secret reference %q must be a valid Secret name", sourceName)
+			return nil, "SecretReferenceInvalid", message
+		}
+		request := lakeAppEnvironmentSecretSourceFor(sources, sourceName)
+		request.full = true
+	}
+	environmentNames := map[string]bool{}
+	for _, variable := range app.Spec.SecretEnv {
+		if len(validation.IsEnvVarName(variable.Name)) != 0 || environmentNames[variable.Name] {
+			message := fmt.Sprintf("secret environment name %q is invalid or duplicated", variable.Name)
+			return nil, "SecretReferenceInvalid", message
+		}
+		environmentNames[variable.Name] = true
+		selector := variable.SecretKeyRef
+		if len(validation.IsDNS1123Subdomain(selector.Name)) != 0 {
+			message := fmt.Sprintf("secret environment %q has an invalid Secret name", variable.Name)
+			return nil, "SecretReferenceInvalid", message
+		}
+		if len(validation.IsConfigMapKey(selector.Key)) != 0 {
+			message := fmt.Sprintf("secret environment %q has an invalid Secret key", variable.Name)
+			return nil, "SecretReferenceInvalid", message
+		}
+		request := lakeAppEnvironmentSecretSourceFor(sources, selector.Name)
+		request.keys[selector.Key] = true
+	}
+	return sources, "", ""
+}
+
+func lakeAppEnvironmentSecretSourceFor(sources map[string]*lakeAppEnvironmentSecretSource, name string) *lakeAppEnvironmentSecretSource {
+	request := sources[name]
+	if request == nil {
+		request = &lakeAppEnvironmentSecretSource{keys: map[string]bool{}}
+		sources[name] = request
+	}
+	return request
+}
+
+func (r *LakeAppReconciler) copyLakeAppEnvironmentSecrets(
+	ctx context.Context,
+	app *oramav1alpha1.LakeApp,
+	namespace string,
+	sources map[string]*lakeAppEnvironmentSecretSource,
+	wanted map[string]bool,
+	digests map[string][]byte,
+	result *lakeAppSecrets,
+) (map[string]string, string, string, error) {
+	sourceNames := make([]string, 0, len(sources))
+	for sourceName := range sources {
+		sourceNames = append(sourceNames, sourceName)
+	}
+	sort.Strings(sourceNames)
+	targetNames := make(map[string]string, len(sourceNames))
+	for _, sourceName := range sourceNames {
+		targetName := lakeAppEnvSecretName(app, sourceName)
+		if lakeAppSecretNameIsManaged(app, targetName) {
+			message := fmt.Sprintf("secret reference %q conflicts with an operator-managed Secret", sourceName)
+			return nil, "SecretReferenceConflict", message, nil
+		}
+		source, reason, message, err := r.lakeAppSourceSecret(ctx, app, sourceName)
+		if err != nil || reason != "" {
+			return nil, reason, message, err
+		}
+		request := sources[sourceName]
+		data := source.Data
+		secretType := source.Type
+		if !request.full {
+			data = map[string][]byte{}
+			secretType = corev1.SecretTypeOpaque
+		}
+		for key := range request.keys {
+			value, found := source.Data[key]
+			if !found {
+				message := fmt.Sprintf("Secret %q has no %q key", sourceName, key)
+				return nil, "SecretReferenceKeyNotFound", message, nil
+			}
+			if !request.full {
+				data[key] = value
+			}
+		}
+		if err := r.copyLakeAppSecret(ctx, app, namespace, targetName, secretType, data); err != nil {
+			return nil, "", "", err
+		}
+		wanted[targetName] = true
+		targetNames[sourceName] = targetName
+		addLakeAppSecretDigest(digests, targetName, data)
+		if request.full {
+			result.EnvFromNames = append(result.EnvFromNames, targetName)
+		}
+	}
+	return targetNames, "", "", nil
+}
+
+func lakeAppSecretNameIsManaged(app *oramav1alpha1.LakeApp, name string) bool {
+	return name == lakeAppTokensName(app) ||
+		name == lakeAppBindingsName(app) ||
+		name == lakeAppEventsName(app) ||
+		name == lakeAppSourceName(app) ||
+		name == lakeAppPullName(app)
 }
 
 func (r *LakeAppReconciler) lakeAppSourceSecret(ctx context.Context, app *oramav1alpha1.LakeApp, name string) (*corev1.Secret, string, string, error) {
@@ -849,13 +973,20 @@ func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, sec
 			secretEnv("EVENTS_TOKEN", secrets.EventsName, "token"),
 		)
 	}
-	managed := make(map[string]bool, len(env))
-	managed["APP_ENTRYPOINT"] = true
+	used := make(map[string]bool, len(env)+len(secrets.SecretEnv))
+	used["APP_ENTRYPOINT"] = true
 	for _, variable := range env {
-		managed[variable.Name] = true
+		used[variable.Name] = true
+	}
+	for _, variable := range secrets.SecretEnv {
+		if used[variable.Name] {
+			continue
+		}
+		env = append(env, variable)
+		used[variable.Name] = true
 	}
 	for _, variable := range app.Spec.Env {
-		if managed[variable.Name] {
+		if used[variable.Name] {
 			continue
 		}
 		env = append(env, corev1.EnvVar{Name: variable.Name, Value: variable.Value})
@@ -1461,6 +1592,11 @@ func (r *LakeAppReconciler) lakeAppReferencesSecret(ctx context.Context, app *or
 	}
 	for _, reference := range app.Spec.SecretRefs {
 		if reference == name {
+			return true
+		}
+	}
+	for _, variable := range app.Spec.SecretEnv {
+		if variable.SecretKeyRef.Name == name {
 			return true
 		}
 	}
