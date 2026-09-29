@@ -622,37 +622,40 @@ func TestServicesPostgresCreateAndCredential(t *testing.T) {
 	}
 }
 
-func TestServicesAdoptWorkspaceClusterKeepingItsData(t *testing.T) {
+func TestServicesSkipWorkspaceOwnedZettaAndReconcileOtherServices(t *testing.T) {
 	lake := serviceTestLake()
-	lake.Spec.Services.MaxServices = 1
 	name := serviceResourceName("prod", testDefaultSlug)
 	workspace := &oramav1alpha1.OramaZettaCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testServiceNamespace, OwnerReferences: lakeOwnerRef(lake),
-			Labels:      map[string]string{workspaceIDLabel: testDefaultSlug, serviceLakeLabel: "prod", "app.kubernetes.io/name": "lake-workspace"},
+			Labels:      map[string]string{workspaceLabel: testWorkspaceID, serviceIDLabel: testDefaultID, serviceKindLabel: serviceKindZetta, serviceLakeLabel: "prod", "app.kubernetes.io/name": "lake-workspace"},
 			Annotations: map[string]string{serviceCustomerAnnotation: testServiceCustomer}},
-		Spec: oramav1alpha1.OramaZettaClusterSpec{Replicas: 1, Storage: oramav1alpha1.OramaZettaStorage{Size: "5Gi"}},
+		Spec: oramav1alpha1.OramaZettaClusterSpec{Replicas: 1, Image: "oramasearch/zetta:workspace-owner", Storage: oramav1alpha1.OramaZettaStorage{Size: "5Gi"}},
 	}
 	claim := zettaDataClaim(name, 0, false)
-	store := &fakeServiceStore{services: []LakeService{testService(testDefaultID, testDefaultSlug, serviceKindZetta, `{"instances":1,"storage_gi":10}`, true)}}
+	workspaceService := testService(testDefaultID, testDefaultSlug, serviceKindZetta, `{"instances":3,"storage_gi":100}`, true)
+	workspaceService.WorkspaceZetta = true
+	store := &fakeServiceStore{services: []LakeService{
+		workspaceService,
+		testService(testPostgresID, testPostgresSlug, serviceKindPostgres, `{}`, false),
+	}}
 	h := newServiceHarness(t, lake, store, workspace, claim)
 	h.poll()
 
-	adopted := h.zettaCluster(testDefaultSlug)
-	if adopted.Labels[serviceIDLabel] != testDefaultID || adopted.Labels[workspaceIDLabel] != testDefaultSlug {
-		t.Fatalf("workspace not adopted: %v", adopted.Labels)
-	}
-	if adopted.Spec.Storage.Size != "5Gi" {
-		t.Fatalf("adoption resized the data volume template to %q", adopted.Spec.Storage.Size)
+	unchanged := h.zettaCluster(testDefaultSlug)
+	if unchanged.Spec.Image != "oramasearch/zetta:workspace-owner" || unchanged.Spec.Replicas != 1 || unchanged.Spec.Storage.Size != "5Gi" {
+		t.Fatalf("services poll changed the workspace Zetta: %+v", unchanged.Spec)
 	}
 	if err := h.client.Get(context.Background(), client.ObjectKeyFromObject(claim), &corev1.PersistentVolumeClaim{}); err != nil {
 		t.Fatalf("the workspace data volume is gone: %v", err)
 	}
 	if len(*h.deletes) != 0 {
-		t.Fatalf("adoption deleted %v", *h.deletes)
+		t.Fatalf("services poll deleted workspace data: %v", *h.deletes)
 	}
-	// Adoption is not a new service: the quota of 1, already used by this workspace, does not refuse it.
-	expectStatus(t, store.status(t, testDefaultID), ServicePhaseProvisioning, "waiting for the Zetta nodes",
-		"http://prod-ws-0123456789ab-zetta.lake.svc.cluster.local:4800")
+	if workspaceService.Status != nil || store.services[0].Status != nil {
+		t.Fatal("services poll wrote workspace Zetta status")
+	}
+	expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "waiting for the Postgres instances",
+		"prod-svc-222222222222-rw.lake.svc.cluster.local:5432")
 }
 
 func TestServicesRefuseForeignResources(t *testing.T) {
@@ -660,7 +663,7 @@ func TestServicesRefuseForeignResources(t *testing.T) {
 	// A cluster of the right name the Lake does not control.
 	foreign := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: serviceResourceName("prod", testZettaSlug), Namespace: testServiceNamespace,
 		Labels: map[string]string{serviceLakeLabel: "prod", serviceIDLabel: testZettaServiceID}}}
-	// A workspace cluster of a non-default service's slug: only the default service adopts.
+	// A workspace cluster without this service's identity is foreign.
 	workspace := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: serviceResourceName("prod", testDefaultSlug), Namespace: testServiceNamespace,
 		OwnerReferences: lakeOwnerRef(lake), Labels: map[string]string{workspaceIDLabel: testDefaultSlug, serviceLakeLabel: "prod"}}}
 	// A Lake-controlled CNPG cluster labelled as another service.
@@ -679,7 +682,7 @@ func TestServicesRefuseForeignResources(t *testing.T) {
 	expectStatus(t, store.status(t, testDefaultID), ServicePhaseFailed, "OramaZettaCluster lake/prod-ws-0123456789ab exists and is not this Lake's service", "")
 	expectStatus(t, store.status(t, testPostgresID), ServicePhaseFailed, "CloudNativePG Cluster lake/prod-svc-222222222222 exists and is not this Lake's service", "")
 	if h.zettaCluster(testDefaultSlug).Labels[serviceIDLabel] != "" {
-		t.Fatal("a non-default service adopted a workspace cluster")
+		t.Fatal("a service claimed a foreign workspace cluster")
 	}
 
 	// Deleting them is refused too, and nothing is deleted.

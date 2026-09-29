@@ -8,7 +8,9 @@ SQLite, DuckDB and Polars services without lake having any Kubernetes access: la
 [lake-sqlite](lake-sqlite.md), [lake-duckdb](lake-duckdb.md) or [lake-polars](lake-polars.md), which
 the operator runs itself — [SQLite](#sqlite-decision-47-amended),
 [DuckDB and Polars](#duckdb-and-polars-lake195)), writes what it observed to `service_status`, and
-hands lake each service's connection through one mounted Secret. The authoritative contract is
+hands lake each service's connection through one mounted Secret. The exception is the Zetta named
+by a workspace's `zetta_service_id`: the workspace reconciler owns that cluster and its
+`service_status`, while this poll skips it. The authoritative contract is
 lake's
 [`docs/control-plane/services.md`](https://github.com/oramasearch/lake/blob/aee5cdada63cb6fed886c67a6fff86123b742bf5/docs/control-plane/services.md)
 (liquid-bridge decisions 46 and 47, amended; lake#195; lake branch `feat/duckdb-polars-kinds`); this page is the
@@ -27,7 +29,7 @@ spec:
     enabled: true
     maxServices: 20          # 0 = no limit
     zettaImage: oramasearch/zetta:<tag>
-    zettaEnv:                # copied to every Zetta service or adopted workspace cluster
+    zettaEnv:                # copied to every Zetta service, including the workspace-owned cluster
       - { name: ZETTA_MALLOC_TRIM_THRESHOLD_BYTES, value: "134217728" }
       - { name: MALLOC_ARENA_MAX, value: "2" }
     sqliteImage: oramasearch/lake-sqlite:<tag>   # optional; the chart's lakeServices.sqliteImage otherwise
@@ -52,8 +54,9 @@ cadence the workspace poll used. Each poll (`internal/controller/lake_services.g
    the Lake's control DB). A missing Secret or an empty `uri` means "not yet": it is logged and the
    poll ends. It connects with pgx (one connection per poll, closed at the end, 30-second bound on
    the whole pass).
-2. reads every service joined to its status, oldest first, leaving out history (`desired =
-   'absent'` with phase `Deleted`).
+2. reads every service joined to its workspace and status, oldest first, leaving out history
+   (`desired = 'absent'` with phase `Deleted`). The joined `w.zetta_service_id` marks the one Zetta
+   row this poll must skip.
 3. handles **absent** services first, so a deletion frees its quota slot in the same poll;
 4. counts the live services for the quota;
 5. creates or updates each **present** service;
@@ -91,7 +94,7 @@ labels `orama.cloud/lake=<lake>`, `orama.cloud/service-id=<id>`, `orama.cloud/se
 For a Zetta service, the reconciler carries the Lake/service/kind/customer identity labels from the
 child `OramaZettaCluster` onto its pods without changing the StatefulSet's immutable selector.
 `LakeApp` NetworkPolicies use those labels to open workspace and explicit service egress to that
-target only.
+target only. This section describes rows other than the workspace-owned Zetta.
 
 | | Zetta (`kind = 'zetta'`) | Postgres (`kind = 'postgres'`) |
 |---|---|---|
@@ -108,25 +111,25 @@ service. The data volume and the Postgres bootstrap are written only when the re
 a StatefulSet's volume template is immutable and the contract has no resize. Only named fields are
 written, so server-side defaults never turn a poll into an update.
 
-Changing `spec.services.zettaEnv` updates every present Zetta service child. Its Zetta reconciler then
-changes the StatefulSet pod template and rolls the nodes. Operator-managed environment names remain
-authoritative; each child reports ignored collisions through `status.ignoredEnvVars`.
+Changing `spec.services.zettaEnv` updates every Zetta child through its single owner: the workspace
+reconciler for `zetta_service_id`, and this services reconciler for all other Zetta rows. The Zetta
+controller then changes the StatefulSet pod template and rolls the nodes. Operator-managed
+environment names remain authoritative; each child reports ignored collisions through
+`status.ignoredEnvVars`.
 
-### Adoption of workspace clusters
+### Workspace-owned Zetta exclusion
 
-A workspace cluster — `OramaZettaCluster <lake>-ws-<12 hex>` in its reconciled workspace namespace,
-controlled by the Lake and labelled `orama.cloud/lake=<lake>` and
-`orama.cloud/workspace=<full workspace UUID>`, with no service-id label,
-and whose customer annotation (if any) matches — is **adopted** by the customer's default Zetta
-service with that workspace ID. The old `orama.cloud/workspace-id=<slug>` label remains accepted
-during replacement. Adoption adds the service labels, keeps the existing data volume and its size,
-and is not subject to the quota.
+`listServicesSQL` selects `w.zetta_service_id` beside every service row. When a Zetta service ID
+matches, the services poll does not create, update, delete or write status for that row, and does
+not count its cluster against `spec.services.maxServices`. It preserves an existing slug connection
+and ID alias in the services Secret without minting a replacement. The workspace reconciler owns
+the child spec, creation-time storage and comparison-gated `service_status` endpoint.
 
 Anything else already holding the name fails the service and is never modified or deleted:
 
 | Case | `Failed` message |
 |---|---|
-| a cluster of that name that is not this Lake's service (another controller, another Lake, another service id, or a workspace cluster claimed by a non-default service) | `OramaZettaCluster <ns>/<name> exists and is not this Lake's service`, or `CloudNativePG Cluster <ns>/<name> exists and is not this Lake's service` |
+| a cluster of that name that is not this Lake's service (another controller, another Lake or another service id) | `OramaZettaCluster <ns>/<name> exists and is not this Lake's service`, or `CloudNativePG Cluster <ns>/<name> exists and is not this Lake's service` |
 | a new Zetta service whose data PVC `data-<cluster>-zetta-<n>` already exists without its cluster | `PersistentVolumeClaim <ns>/<pvc> exists and is not this Lake's service` |
 | a malformed row (slug, default on a non-Zetta service, missing customer, a Lake name too long for the kind's derived names, bad spec) | the specific reason, e.g. `spec.instances must be between 1 and 3` |
 | a kind this operator does not run | `unknown service kind "<kind>": this operator runs zetta, postgres, kafka, clickhouse, tidb, cassandra, valkey, sqlite, duckdb, polars` |
@@ -375,8 +378,7 @@ volumes. `observed_generation` is the `generation` of the row the phase describe
 
 **Deleting a service deletes its data, irreversibly.** For each absent service not yet `Deleted`:
 
-- **Zetta:** check ownership (as above, a not-yet-adopted workspace cluster of a default service
-  counts as the service's); delete the data PVCs `data-<cluster>-zetta-<n>`, **then** the cluster
+- **Zetta:** check ownership; delete the data PVCs `data-<cluster>-zetta-<n>`, **then** the cluster
   (background propagation). If the cluster is already gone, a leftover live PVC is deleted only
   when the service's status carries an endpoint.
 - **Postgres:** check ownership; delete the CloudNativePG `Cluster`. Its PVCs (label
@@ -405,11 +407,12 @@ the live services: Lake-controlled `OramaZettaCluster`s, CloudNativePG `Cluster`
 resource of each catalog kind (`Kafka`, `ClickHouseInstallation`, `TidbCluster`,
 `K8ssandraCluster`, `ValkeyCluster`, and the `StatefulSet` of SQLite, DuckDB and Polars; a kind that is not installed counts
 none) labelled
-`orama.cloud/lake=<lake>` with a service-id (or a workspace-id, for unadopted workspaces), not being
+`orama.cloud/lake=<lake>` with a service-id, not being
 deleted and not absent in the current read. A **new** service over the cap creates nothing and is
 `Failed` / `service quota reached (<n>)`; it starts on a later poll once there is room. An existing
-service — including an adopted workspace — is never refused or removed, even after the cap is
-lowered. lake's own per-customer cap (`LAKE_SERVICES_PER_CUSTOMER`) is separate.
+service is never refused or removed, even after the cap is lowered. The workspace-owned Zetta is
+excluded from this count; `spec.workspaces.maxWorkspaces` governs workspace admission. lake's own
+per-customer cap (`LAKE_SERVICES_PER_CUSTOMER`) is separate.
 
 ## Other ways a service goes away
 
@@ -496,7 +499,7 @@ kubectl -n lake exec deploy/lake-prod -- ls /var/run/lake/services
 ```
 
 The unit tests (`lake_services_test.go`) cover Zetta and Postgres creation, Ready gated on the
-credential, adoption of a `ws-` cluster keeping its data, refusal of foreign resources and
+credential, exclusion of a workspace-owned Zetta while other services continue, refusal of foreign resources and
 unproven volumes, the deletion order and `Deleted`, the quota message and the fact that it never
 refuses existing services, status upserts only on change, the "not yet" app Secret, and the lake
 Deployment's mount and env. `lake_service_catalog_test.go` runs every catalog kind, SQLite, DuckDB and Polars included, through: the

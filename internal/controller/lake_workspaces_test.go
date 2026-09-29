@@ -25,12 +25,15 @@ const (
 	testWorkspaceID       = "123e4567-e89b-42d3-a456-426614174000"
 	testWorkspaceCustomer = "223e4567-e89b-42d3-a456-426614174000"
 	testWorkspaceName     = "prod-ws-123e4567e89b"
+	testWorkspaceZettaID  = "323e4567-e89b-42d3-a456-426614174000"
 )
 
 type fakeWorkspacesStore struct {
-	rows    []LakeWorkspaceRow
-	writes  int
-	updated []LakeWorkspaceStatus
+	rows           []LakeWorkspaceRow
+	writes         int
+	updated        []LakeWorkspaceStatus
+	serviceUpserts []LakeServiceStatus
+	serviceStore   *fakeServiceStore
 }
 
 func (s *fakeWorkspacesStore) ListWorkspaces(context.Context) ([]LakeWorkspaceRow, error) {
@@ -63,6 +66,22 @@ func (s *fakeWorkspacesStore) Close(context.Context) error {
 	return nil
 }
 
+func (s *fakeWorkspacesStore) UpsertServiceStatus(_ context.Context, status LakeServiceStatus) error {
+	s.serviceUpserts = append(s.serviceUpserts, status)
+	if s.serviceStore != nil {
+		if err := s.serviceStore.UpsertServiceStatus(context.Background(), status); err != nil {
+			return err
+		}
+	}
+	for i := range s.rows {
+		if s.rows[i].ZettaServiceID == status.ServiceID {
+			copied := status
+			s.rows[i].ZettaServiceStatus = &copied
+		}
+	}
+	return nil
+}
+
 func testWorkspaceLake() *oramav1alpha1.Lake {
 	return &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: "lake-prod-uid"},
@@ -70,6 +89,9 @@ func testWorkspaceLake() *oramav1alpha1.Lake {
 			Namespace:      "lake",
 			Image:          "oramasearch/lake:test",
 			PullSecretName: "private-pull",
+			Services: oramav1alpha1.LakeServicesSpec{
+				ZettaImage: "oramasearch/zetta:service",
+			},
 			Workspaces: oramav1alpha1.LakeWorkspacesSpec{
 				Enabled: true,
 				Image:   "oramasearch/zetta:workspace",
@@ -81,12 +103,14 @@ func testWorkspaceLake() *oramav1alpha1.Lake {
 
 func testWorkspaceRow(desired string) LakeWorkspaceRow {
 	return LakeWorkspaceRow{
-		ID:          testWorkspaceID,
-		CustomerID:  testWorkspaceCustomer,
-		Name:        "Production",
-		Environment: "prod",
-		Desired:     desired,
-		Generation:  7,
+		ID:                     testWorkspaceID,
+		CustomerID:             testWorkspaceCustomer,
+		Name:                   "Production",
+		Environment:            "prod",
+		Desired:                desired,
+		Generation:             7,
+		ZettaServiceID:         testWorkspaceZettaID,
+		ZettaServiceGeneration: 11,
 	}
 }
 
@@ -191,8 +215,22 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 	}
 	if cluster.Labels[workspaceLabel] != testWorkspaceID || cluster.Spec.HostNetwork ||
 		cluster.Spec.IngressEnabled || cluster.Spec.PullSecretName != lake.Spec.PullSecretName ||
-		cluster.Spec.Storage.Size != "20Gi" {
+		cluster.Spec.Storage.Size != "20Gi" || cluster.Spec.Image != lake.Spec.Services.ZettaImage {
 		t.Fatalf("workspace Zetta = %+v", cluster)
+	}
+	if len(store.serviceUpserts) != 1 || store.serviceUpserts[0].Phase != ServicePhaseProvisioning ||
+		store.serviceUpserts[0].Endpoint != "http://prod-ws-123e4567e89b-zetta.prod-ws-123e4567e89b.svc.cluster.local:4800" {
+		t.Fatalf("workspace Zetta service status = %+v", store.serviceUpserts)
+	}
+	lake.Spec.Workspaces.Storage.Size = "40Gi"
+	if changing := reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows); !changing {
+		t.Fatal("pending workspace did not request another poll")
+	}
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: testWorkspaceName}, &cluster); err != nil {
+		t.Fatal(err)
+	}
+	if cluster.Spec.Storage.Size != "20Gi" {
+		t.Fatalf("workspace Zetta storage changed after creation: %q", cluster.Spec.Storage.Size)
 	}
 	var pull corev1.Secret
 	if err := kube.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: lake.Spec.PullSecretName}, &pull); err != nil {
@@ -213,8 +251,15 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 	if store.rows[0].Phase != WorkspacePhaseReady || store.writes != 2 {
 		t.Fatalf("ready status = %+v, writes %d", store.rows[0], store.writes)
 	}
+	if got := store.serviceUpserts[len(store.serviceUpserts)-1]; got.Phase != ServicePhaseReady || got.Message != "service ready" {
+		t.Fatalf("ready service status = %+v", got)
+	}
+	serviceWrites := len(store.serviceUpserts)
 	if changing := reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows); changing || store.writes != 2 {
 		t.Fatalf("steady workspace changed or rewrote status: changing %v writes %d", changing, store.writes)
+	}
+	if len(store.serviceUpserts) != serviceWrites {
+		t.Fatalf("steady workspace rewrote service status: %d -> %d", serviceWrites, len(store.serviceUpserts))
 	}
 }
 

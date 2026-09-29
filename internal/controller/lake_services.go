@@ -33,12 +33,12 @@ import (
 // talks to Kubernetes; the operator reads that table, creates one Lake-controlled
 // OramaZettaCluster or CloudNativePG Cluster named <lake>-<slug> per present service, deletes absent
 // ones, copies each Ready service's connection into Secret lake-<lake>-services, and writes what it
-// observed to service_status. A customer's decision-45 workspace cluster (<lake>-ws-<12 hex>) is
-// adopted by that customer's default Zetta service, so it keeps its data. The other kinds of the
-// catalog (decision 47: Kafka, ClickHouse, TiDB, Cassandra, Valkey) are written for their upstream
-// operators by lake_service_catalog.go, and SQLite, DuckDB and Polars (decision 47, amended;
-// lake#195), which the operator runs itself behind lake-sqlite, lake-duckdb and lake-polars, go
-// through the same code (lake_service_wrapper.go).
+// observed to service_status. The workspace reconciler exclusively owns the Zetta service named by
+// workspaces.zetta_service_id, so this poll skips that row. The other kinds of the catalog (decision
+// 47: Kafka, ClickHouse, TiDB, Cassandra, Valkey) are written for their upstream operators by
+// lake_service_catalog.go, and SQLite, DuckDB and Polars (decision 47, amended; lake#195), which the
+// operator runs itself behind lake-sqlite, lake-duckdb and lake-polars, go through the same code
+// (lake_service_wrapper.go).
 const (
 	ServicePhaseProvisioning = "Provisioning"
 	ServicePhaseReady        = "Ready"
@@ -51,8 +51,7 @@ const (
 	serviceDesiredPresent = "present"
 	serviceDesiredAbsent  = "absent"
 
-	// Labels and annotation on every service resource. serviceIDLabel is the ownership key; the
-	// Lake label is shared with the decision-45 workspace clusters so adoption can find them.
+	// Labels and annotation on every service resource. serviceIDLabel is the ownership key.
 	serviceIDLabel            = "orama.cloud/service-id"
 	serviceKindLabel          = "orama.cloud/service-kind"
 	serviceLakeLabel          = "orama.cloud/lake"
@@ -95,7 +94,6 @@ const (
 
 var (
 	serviceSlugPattern      = regexp.MustCompile(`^(svc|ws)-[0-9a-f]{12}$`)
-	workspaceSlugPattern    = regexp.MustCompile(`^ws-[0-9a-f]{12}$`)
 	cnpgClusterListGVK      = cnpgClusterGVK.GroupVersion().WithKind("ClusterList")
 	servicePostgresSelector = func(name string) client.MatchingLabels { return client.MatchingLabels{cnpgClusterLabel: name} }
 )
@@ -114,6 +112,9 @@ type LakeService struct {
 	Spec       string
 	Desired    string
 	Generation int64
+	// WorkspaceZetta is true when this service is the Zetta named by its workspace's
+	// zetta_service_id. LakeWorkspacesReconciler is its only resource and status writer.
+	WorkspaceZetta bool
 	// Status is the current service_status row, nil when the operator has written none.
 	Status *LakeServiceStatus
 }
@@ -248,8 +249,8 @@ func serviceCustomerLabelValue(customerID string) string {
 	return fmt.Sprintf("sha256-%x", sha256.Sum256([]byte(customerID)))[:23]
 }
 
-// isLakeServiceCluster reports whether a Lake-controlled OramaZettaCluster is a service (or a
-// not-yet-adopted workspace) rather than the Lake's own data plane.
+// isLakeServiceCluster reports whether a Lake-controlled OramaZettaCluster is a managed service or
+// workspace data plane rather than the Lake's own data plane.
 func isLakeServiceCluster(cluster *oramav1alpha1.OramaZettaCluster) bool {
 	return cluster.Labels[serviceIDLabel] != "" || cluster.Labels[workspaceLabel] != "" || cluster.Labels[workspaceIDLabel] != ""
 }
@@ -312,17 +313,13 @@ func validateService(lake *oramav1alpha1.Lake, svc *LakeService) (lakeServiceSpe
 	return spec, err
 }
 
-// serviceOwnership is the rule behind every write, deletion and quota decision.
+// serviceOwnership is the rule behind every write and deletion decision.
 type serviceOwnership int
 
 const (
 	serviceForeign serviceOwnership = iota
 	// serviceOwned: controlled by this Lake, labelled with this Lake and this service's id.
 	serviceOwned
-	// serviceAdoptable: a decision-45 workspace cluster, controlled by this Lake, labelled with
-	// this Lake and workspace-id equal to the slug, with no service-id label, claimed by the
-	// customer's default Zetta service with that slug.
-	serviceAdoptable
 )
 
 func serviceOwnershipOf(lake *oramav1alpha1.Lake, obj metav1.Object, svc *LakeService) serviceOwnership {
@@ -335,12 +332,6 @@ func serviceOwnershipOf(lake *oramav1alpha1.Lake, obj metav1.Object, svc *LakeSe
 			return serviceOwned
 		}
 		return serviceForeign
-	}
-	workspaceMatches := labels[workspaceLabel] == svc.WorkspaceID || labels[workspaceIDLabel] == svc.Slug
-	if svc.Kind == serviceKindZetta && svc.IsDefault && workspaceMatches {
-		if bound := obj.GetAnnotations()[serviceCustomerAnnotation]; bound == "" || bound == svc.CustomerID {
-			return serviceAdoptable
-		}
 	}
 	return serviceForeign
 }
@@ -440,7 +431,9 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, store LakeServiceStore, services []LakeService, stores []LakeStore, storesRead bool) (changing bool) {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	absentIDs := map[string]bool{}
-	absentSlugs := map[string]bool{}
+	workspaceZettaIDs := map[string]bool{}
+	preservedSlugs := map[string]bool{}
+	preservedAliases := map[string]string{}
 	var present []*LakeService
 	workspaceNamespaces := map[string]bool{}
 	for i := range services {
@@ -448,10 +441,15 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		if svc.WorkspaceNamespace != "" {
 			workspaceNamespaces[svc.WorkspaceNamespace] = true
 		}
+		if svc.Kind == serviceKindZetta && svc.WorkspaceZetta {
+			workspaceZettaIDs[svc.ID] = true
+			preservedSlugs[svc.Slug] = true
+			preservedAliases[svc.ID] = svc.Slug
+			continue
+		}
 		switch svc.Desired {
 		case serviceDesiredAbsent:
 			absentIDs[svc.ID] = true
-			absentSlugs[svc.Slug] = true
 			// History: lake hides it and the operator skips it.
 			if svc.Status != nil && svc.Status.Phase == ServicePhaseDeleted {
 				continue
@@ -482,13 +480,17 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		}
 	}
 
-	live, err := r.liveServiceCount(ctx, lake, workspaceNamespaces, absentIDs, absentSlugs)
-	if err != nil {
-		log.Error(err, "services deferred: cannot count live services")
-		return false
+	live := 0
+	if len(present) > 0 {
+		var err error
+		live, err = r.liveServiceCount(ctx, lake, workspaceNamespaces, absentIDs, workspaceZettaIDs)
+		if err != nil {
+			log.Error(err, "services deferred: cannot count live services")
+			return false
+		}
 	}
 	results := make(map[string]serviceResult, len(present))
-	presentSlugs := map[string]bool{}
+	presentSlugs := preservedSlugs
 	credentials := map[string][]byte{}
 	for _, svc := range present {
 		presentSlugs[svc.Slug] = true
@@ -514,7 +516,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		return presentSlugs[slug]
 	}
 
-	aliases := map[string]string{}
+	aliases := preservedAliases
 	for _, svc := range present {
 		aliases[svc.ID] = svc.Slug
 	}
@@ -568,10 +570,10 @@ func writeServiceStatus(ctx context.Context, store LakeServiceStore, svc *LakeSe
 	return nil
 }
 
-// liveServiceCount counts the resources that count against the quota: owned by this Lake, not
-// being deleted, and not belonging to a service the current read marks absent (the cache may not
-// show a deletion issued moments ago). Workspace clusters not yet adopted count too.
-func (r *LakeReconciler) liveServiceCount(ctx context.Context, lake *oramav1alpha1.Lake, namespaces map[string]bool, absentIDs, absentSlugs map[string]bool) (int, error) {
+// liveServiceCount counts the resources that count against the service quota: owned by this Lake,
+// labelled with a service id, not being deleted, not absent in the current read, and not the Zetta
+// owned by a workspace reconciler.
+func (r *LakeReconciler) liveServiceCount(ctx context.Context, lake *oramav1alpha1.Lake, namespaces map[string]bool, absentIDs, workspaceZettaIDs map[string]bool) (int, error) {
 	selector := client.MatchingLabels{serviceLakeLabel: lake.Name}
 	objects := []metav1.Object{}
 	for namespace := range namespaces {
@@ -603,17 +605,9 @@ func (r *LakeReconciler) liveServiceCount(ctx context.Context, lake *oramav1alph
 		}
 		labels := obj.GetLabels()
 		if id := labels[serviceIDLabel]; id != "" {
-			if !absentIDs[id] {
+			if !absentIDs[id] && !workspaceZettaIDs[id] {
 				live++
 			}
-			continue
-		}
-		if slug := labels[workspaceIDLabel]; workspaceSlugPattern.MatchString(slug) && !absentSlugs[slug] {
-			live++
-			continue
-		}
-		if labels[workspaceLabel] != "" {
-			live++
 		}
 	}
 	return live, nil
@@ -701,7 +695,7 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 	cluster := &oramav1alpha1.OramaZettaCluster{}
 	creating := false
 	if err := r.Get(ctx, key, cluster); err == nil {
-		if serviceOwnershipOf(lake, cluster, svc) == serviceForeign {
+		if serviceOwnershipOf(lake, cluster, svc) != serviceOwned {
 			return serviceResult{phase: ServicePhaseFailed, message: foreignServiceMessage("OramaZettaCluster", namespace, name)}, nil
 		}
 		if cluster.DeletionTimestamp != nil {
@@ -733,9 +727,8 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		setServiceMetadata(cluster, lake, svc)
 		// Only the fields the service contract owns are written, so server-side defaults on the
-		// rest of the spec do not turn every poll into an update. The data volume is sized once:
-		// a StatefulSet's volumeClaimTemplates are immutable, and an adopted workspace keeps the
-		// volume it has.
+		// rest of the spec do not turn every poll into an update. The data volume is sized once
+		// because a StatefulSet's volumeClaimTemplates are immutable.
 		if creating {
 			cluster.Spec.Storage = oramav1alpha1.OramaZettaStorage{
 				Size:             fmt.Sprintf("%dGi", spec.StorageGi),

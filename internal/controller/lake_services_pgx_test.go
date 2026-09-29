@@ -62,12 +62,18 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 	if _, err := tx.Exec(ctx, string(workspaceFixture)); err != nil {
 		t.Fatalf("apply workspace fixture: %v", err)
 	}
-	if _, err := tx.Exec(ctx, `ALTER TABLE services ADD COLUMN workspace_id uuid NOT NULL REFERENCES workspaces(id)`); err != nil {
-		t.Fatalf("add services workspace contract: %v", err)
+	if _, err := tx.Exec(ctx, `ALTER TABLE services ADD COLUMN IF NOT EXISTS workspace_id uuid REFERENCES workspaces(id)`); err != nil {
+		t.Fatalf("ensure services workspace contract: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE services ALTER COLUMN workspace_id SET NOT NULL`); err != nil {
+		t.Fatalf("require services workspace identity: %v", err)
 	}
 	for _, table := range []string{"agent_launches", "agent_cron_schedules"} {
-		if _, err := tx.Exec(ctx, `ALTER TABLE `+table+` ADD COLUMN workspace_id uuid NOT NULL REFERENCES workspaces(id)`); err != nil {
-			t.Fatalf("add %s workspace contract: %v", table, err)
+		if _, err := tx.Exec(ctx, `ALTER TABLE `+table+` ADD COLUMN IF NOT EXISTS workspace_id uuid REFERENCES workspaces(id)`); err != nil {
+			t.Fatalf("ensure %s workspace contract: %v", table, err)
+		}
+		if _, err := tx.Exec(ctx, `ALTER TABLE `+table+` ALTER COLUMN workspace_id SET NOT NULL`); err != nil {
+			t.Fatalf("require %s workspace identity: %v", table, err)
 		}
 	}
 	var customerID string
@@ -101,6 +107,9 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 			t.Fatalf("seed service: %v", err)
 		}
 	}
+	if _, err := tx.Exec(ctx, `UPDATE workspaces SET zetta_service_id=$1 WHERE id=$2`, testDefaultID, testWorkspaceID); err != nil {
+		t.Fatalf("link workspace Zetta service: %v", err)
+	}
 
 	store := &pgxServiceStore{db: tx}
 	launches, err := store.ListAgentLaunches(ctx)
@@ -122,8 +131,11 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 	for _, svc := range services {
 		byID[svc.ID] = svc
 	}
-	if got := byID[testDefaultID]; got.Kind != "zetta" || !got.IsDefault || got.CustomerID != customerID || got.Slug != testDefaultSlug {
+	if got := byID[testDefaultID]; got.Kind != "zetta" || !got.IsDefault || !got.WorkspaceZetta || got.CustomerID != customerID || got.Slug != testDefaultSlug {
 		t.Fatalf("default service = %+v", got)
+	}
+	if byID[testPostgresID].WorkspaceZetta || byID[testZettaServiceID].WorkspaceZetta {
+		t.Fatalf("non-workspace services were marked as workspace Zetta: %+v", byID)
 	}
 	if spec, err := parseServiceSpec(byID[testDefaultID].Spec); err != nil || spec.Instances != 1 || spec.StorageGi != 10 {
 		t.Fatalf("spec %q parsed to %+v, %v", byID[testDefaultID].Spec, spec, err)
@@ -178,30 +190,10 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 	if len(kinds) != len(serviceKindNames) {
 		t.Fatalf("kinds read back = %v, want %v", kinds, serviceKindNames)
 	}
-	if _, err := tx.Exec(ctx, `CREATE TABLE builds (
-        id uuid PRIMARY KEY,
-        customer_id uuid NOT NULL,
-        repository text NOT NULL,
-        revision text NOT NULL,
-        context text NOT NULL,
-        dockerfile text NOT NULL,
-        target text NOT NULL,
-        build_args_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-        desired text NOT NULL,
-        phase text NOT NULL DEFAULT '',
-        digest text NOT NULL DEFAULT '',
-        size bigint NOT NULL DEFAULT 0,
-        message text NOT NULL DEFAULT '',
-        token_hashes_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-    )`); err != nil {
-		t.Fatalf("create builds contract table: %v", err)
-	}
 	if _, err := tx.Exec(ctx, `INSERT INTO builds
-        (id, customer_id, repository, revision, context, dockerfile, target, build_args_json, desired)
-        VALUES ($1, $2, 'repo', 'abc123', '.', 'Dockerfile', $3, '{"PYTHON_VERSION":"3.13"}', 'queued')`,
-		testBuildID, customerID, testBuildTarget); err != nil {
+		(id, customer_id, workspace_id, repository, revision, context, dockerfile, target, build_args_json, desired)
+		VALUES ($1, $2, $3, 'repo', 'abc123', '.', 'Dockerfile', $4, '{"PYTHON_VERSION":"3.13"}', 'queued')`,
+		testBuildID, customerID, testWorkspaceID, testBuildTarget); err != nil {
 		t.Fatalf("seed build: %v", err)
 	}
 	builds, err := store.ListBuilds(ctx)

@@ -3,7 +3,9 @@
 Each Lake workspace is a Zetta data plane in its own Kubernetes namespace. The namespace is a
 security boundary for customer workloads and credentials; it is not a naming convenience. This is
 the operator side of [lake#265](https://github.com/oramasearch/lake/issues/265) and
-[operator#190](https://github.com/oramasearch/orama-operator/issues/190).
+[operator#190](https://github.com/oramasearch/orama-operator/issues/190). The workspace reconciler
+is the only writer of that workspace's `OramaZettaCluster`; the managed-services poll explicitly
+excludes the service named by `workspaces.zetta_service_id`.
 
 ## Control-Postgres contract
 
@@ -28,6 +30,12 @@ Status updates include `id`, `customer_id`, `generation` and `desired` in the `W
 stale pass therefore cannot acknowledge a row that changed after it was listed. An unchanged
 status writes nothing.
 
+The same pass joins `zetta_service_id` to its `services` generation and current `service_status`.
+It comparison-gates a second observation for that service ID: `Provisioning` with the in-cluster
+endpoint while Zetta starts, `Ready` / `service ready` when the cluster is ready, and a deletion
+phase with no endpoint once the workspace is stopped or deleted. This preserves lake's service
+connection contract without giving the services reconciler a second write path.
+
 The namespace is `<environment>-ws-<first 12 UUID hex characters>`, for example
 `prod-ws-123e4567e89b`, with these labels:
 
@@ -51,6 +59,26 @@ services, stores, agent Jobs/Deployments/CronJobs and synchronized app workloads
 joined workspace namespace and labelled with the full workspace UUID. App resource and Secret
 names include the first 12 app-ID hex characters so multiple apps can share the namespace without
 colliding. Standalone `LakeApp` resources retain their separately owned app namespace.
+
+## Workspace Zetta ownership
+
+The workspace reconciler creates `<lake>-ws-<first 12 workspace UUID hex>` in the reconciled
+workspace namespace and owns its complete desired spec. Its image is
+`spec.services.zettaImage`, then `spec.workspaces.image`, then the `OramaZettaCluster` default.
+Resources and Zetta environment variables continue to come from the shared workspace/service
+settings. Replicas remain one.
+
+Storage size and class are copied from `spec.workspaces.storage` only when the child is created.
+Later settings changes do not rewrite the child claim template because the StatefulSet
+`volumeClaimTemplates` field is immutable. Image, resources, environment, pull credentials and
+the forced private reachability settings remain reconciled normally.
+
+The managed-services query also reads each joined workspace's `zetta_service_id`. A Zetta row
+whose ID matches is excluded from service resource reconciliation, deletion, status writes and
+the services quota. Every other row in that workspace, including Postgres and additional Zetta
+services, remains managed by the services poll in the workspace namespace. An existing connection
+document for the excluded row is preserved in `lake-<lake>-services`; the services poll does not
+regenerate or remove it.
 
 ## Namespace security profile
 
@@ -134,6 +162,30 @@ For each exact `<lake>-ws-<first 12 workspace UUID hex>` cluster name, the opera
 It never selects or deletes `lake-<lake>-store`, `lake-<lake>-instance-kek`, or any resource by a
 broad customer label. A foreign object at an expected name stops reconciliation.
 
+### Issue #219 dev rollout cleanup
+
+Migration `0039_workspaces` changed the two dev service slugs after their old Lake-namespace
+clusters had already been created. Those old clusters are not the isolated workspace children and
+their workspaces have since been deleted. During the issue #219 rollout, remove only these exact
+development objects after confirming their Lake ownership:
+
+```sh
+for name in prod-ws-3a09e97096a0 prod-ws-7f9b8da6a275; do
+  kubectl -n lake get oramazettacluster "$name" \
+    -o jsonpath='{.metadata.ownerReferences[?(@.kind=="Lake")].name}{"\n"}'
+  kubectl -n lake delete oramazettacluster "$name" --ignore-not-found
+  kubectl -n lake delete pvc -l "app.kubernetes.io/instance=$name" --ignore-not-found
+  kubectl -n lake delete secret \
+    "$name-zetta-admin" \
+    "$name-zetta-cluster" \
+    --ignore-not-found
+done
+```
+
+The first command must print `prod` for each object before deletion. The explicit names and
+instance label keep this cleanup away from the current workspace clusters, Lake's own data plane,
+store, and instance keys. The data on these two obsolete dev volumes is intentionally deleted.
+
 ## Verification Job
 
 The same Job is used by cluster CI and the dev-cluster runbook:
@@ -154,6 +206,8 @@ other workspace's Zetta, Lake's Postgres, `169.254.169.254`, or a non-DNS CoreDN
 the live-cluster proof artifact.
 
 The native Go suite covers the deterministic object model, data-plane placement, generation guards,
-status anti-flap, internet exclusions, stopped-data preservation, namespace deletion and exact legacy cleanup. The
-SQL adapter uses `internal/controller/testdata/lake-workspaces.sql`; lake owns the production
-migration, so the fixture is intentionally not copied into the vendored lake schema.
+status anti-flap, internet exclusions, stopped-data preservation, namespace deletion and exact legacy cleanup.
+An envtest alternates the workspace and services polls and proves the child generation stays fixed,
+the services image wins, creation-time storage is preserved, and `service_status` is written once
+per transition. The SQL adapter uses `internal/controller/testdata/lake-workspaces.sql`; lake owns
+the production migration, so the fixture is intentionally not copied into the vendored lake schema.
