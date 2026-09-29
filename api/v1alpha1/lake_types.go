@@ -157,11 +157,9 @@ type LakeSpec struct {
 	// +optional
 	Services LakeServicesSpec `json:"services,omitempty"`
 
-	// Workspaces is deprecated: use spec.services. Its fields remain as fallbacks: enabled turns
-	// services on, image is the Zetta image when spec.services.zettaImage is empty, maxWorkspaces
-	// is the cap when spec.services.maxServices is 0, and storage.storageClassName and resources
-	// shape every Zetta service's nodes. The orama_control.workspaces request table is no longer
-	// read. See docs/lake/workspaces.md.
+	// Workspaces configures synchronization of lake's workspaces table into isolated Kubernetes
+	// namespaces. Each running row gets a Zetta cluster, a restricted namespace profile and local
+	// credentials. Requires the control-plane Postgres. See docs/lake/workspaces.md.
 	// +optional
 	Workspaces LakeWorkspacesSpec `json:"workspaces,omitempty"`
 }
@@ -244,8 +242,7 @@ type LakeServicesSpec struct {
 
 	// MaxServices caps the live services of this Lake. A new service beyond the cap is not created
 	// and is reported Failed with the message "service quota reached (<n>)"; it starts once there
-	// is room. Lowering the cap never removes or refuses an existing service. 0 falls back to
-	// spec.workspaces.maxWorkspaces; 0 there too means unlimited.
+	// is room. Lowering the cap never removes or refuses an existing service. 0 means unlimited.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	MaxServices int32 `json:"maxServices,omitempty"`
@@ -282,33 +279,77 @@ type LakeServicesSpec struct {
 	PolarsImage string `json:"polarsImage,omitempty"`
 }
 
-// LakeWorkspacesSpec is the deprecated decision-45 workspace configuration. See
-// LakeSpec.Workspaces for how each field is still read.
+// LakeWorkspacesSpec configures isolated workspaces reconciled from lake's control Postgres.
 type LakeWorkspacesSpec struct {
-	// Enabled is deprecated: it turns managed services on exactly as spec.services.enabled does.
+	// Enabled synchronizes lake's workspaces table. Disabling stops reconciliation without deleting
+	// existing workspace namespaces.
 	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 
-	// Image is deprecated: the Zetta service image when spec.services.zettaImage is empty.
+	// Image is the Zetta image used by every workspace. Empty uses the OramaZettaCluster default.
 	// +optional
 	Image string `json:"image,omitempty"`
 
-	// Storage is deprecated. Its storageClassName is used for every Zetta service's data volumes;
-	// its size is ignored, since each service's size comes from its spec.storage_gi.
+	// Storage configures every workspace Zetta cluster's persistent data volume.
 	// +kubebuilder:default={size:"5Gi"}
 	// +optional
 	Storage OramaZettaStorage `json:"storage,omitempty"`
 
-	// Resources configures each Zetta service node's container. When omitted, the operator
+	// Resources configures each workspace Zetta node's container. When omitted, the operator
 	// requests 64Mi memory, limits memory to 1Gi, and sets no CPU request.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	// MaxWorkspaces is deprecated: the service cap when spec.services.maxServices is 0.
+	// MaxWorkspaces caps running and stopped workspace namespaces. Existing workspaces are never
+	// removed when this value is lowered. Zero means unlimited.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	MaxWorkspaces int32 `json:"maxWorkspaces,omitempty"`
+
+	// DefaultPlan selects the quota plan for a workspace without an override. Empty selects the
+	// built-in "default" plan.
+	// +optional
+	DefaultPlan string `json:"defaultPlan,omitempty"`
+
+	// Plans defines named ResourceQuota and LimitRange profiles. The built-in "default" plan is
+	// always available and can be replaced by defining a plan with that name.
+	// +optional
+	Plans map[string]LakeWorkspacePlanSpec `json:"plans,omitempty"`
+
+	// Overrides selects a plan and outbound internet policy by canonical workspace UUID. A missing
+	// override uses DefaultPlan and denies internet egress. Internet access is limited to TCP 443.
+	// +optional
+	Overrides map[string]LakeWorkspaceOverrideSpec `json:"overrides,omitempty"`
+}
+
+// LakeWorkspacePlanSpec defines one namespace quota and its per-container defaults.
+type LakeWorkspacePlanSpec struct {
+	// Quota is the hard ResourceQuota applied to a workspace namespace.
+	// +optional
+	Quota corev1.ResourceList `json:"quota,omitempty"`
+
+	// DefaultRequest is the LimitRange default request for a container.
+	// +optional
+	DefaultRequest corev1.ResourceList `json:"defaultRequest,omitempty"`
+
+	// Default is the LimitRange default limit for a container.
+	// +optional
+	Default corev1.ResourceList `json:"default,omitempty"`
+}
+
+// LakeWorkspaceOverrideSpec selects settings that vary per workspace without extending lake's
+// fixed workspaces table contract.
+type LakeWorkspaceOverrideSpec struct {
+	// Plan selects one entry in spec.workspaces.plans, or the built-in "default" plan.
+	// +optional
+	Plan string `json:"plan,omitempty"`
+
+	// InternetEgress permits outbound TCP 443 to public addresses. Private, link-local, metadata,
+	// node and cluster ranges remain denied.
+	// +kubebuilder:default=false
+	// +optional
+	InternetEgress bool `json:"internetEgress,omitempty"`
 }
 
 // LakeTLSSpec configures HTTPS termination for a Lake Ingress.

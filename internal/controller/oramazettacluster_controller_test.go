@@ -126,8 +126,21 @@ func TestZettaStatefulSetSkipsRecursiveFSGroupChanges(t *testing.T) {
 	securityContext := sts.Spec.Template.Spec.SecurityContext
 	if securityContext == nil || securityContext.FSGroup == nil || *securityContext.FSGroup != 10001 ||
 		securityContext.FSGroupChangePolicy == nil ||
-		*securityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+		*securityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch ||
+		securityContext.RunAsNonRoot == nil || !*securityContext.RunAsNonRoot ||
+		securityContext.SeccompProfile == nil ||
+		securityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Fatalf("pod security context = %+v", securityContext)
+	}
+	pod := sts.Spec.Template.Spec
+	if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
+		t.Fatal("Zetta pod mounts a Kubernetes API token")
+	}
+	containerSecurity := pod.Containers[0].SecurityContext
+	if containerSecurity == nil || containerSecurity.AllowPrivilegeEscalation == nil ||
+		*containerSecurity.AllowPrivilegeEscalation || containerSecurity.Capabilities == nil ||
+		len(containerSecurity.Capabilities.Drop) != 1 || containerSecurity.Capabilities.Drop[0] != "ALL" {
+		t.Fatalf("container security context = %+v", containerSecurity)
 	}
 }
 

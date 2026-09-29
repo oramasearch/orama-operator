@@ -52,6 +52,12 @@ func NewLakeAppsListener(c client.Client) *LakeServicesListener {
 	}
 }
 
+func NewLakeWorkspacesListener(c client.Client) *LakeServicesListener {
+	return &LakeServicesListener{
+		Client: c, Events: make(chan event.GenericEvent, 64), enabled: lakeWorkspacesEnabled, channel: "lake_workspaces",
+	}
+}
+
 // Start runs until ctx ends (a manager Runnable).
 func (l *LakeServicesListener) Start(ctx context.Context) error {
 	resync := l.Resync
