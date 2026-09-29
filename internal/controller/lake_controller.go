@@ -494,6 +494,7 @@ func (r *LakeReconciler) reconcileLakeZetta(
 			Image:                   lake.Spec.Zetta.Image,
 			PullSecretName:          lake.Spec.PullSecretName,
 			Storage:                 lake.Spec.Zetta.Storage,
+			Env:                     append([]corev1.EnvVar(nil), lake.Spec.Zetta.Env...),
 			Reachability:            lake.Spec.Zetta.Reachability,
 			ProvisionOperatorSchema: &operatorSchema,
 		}

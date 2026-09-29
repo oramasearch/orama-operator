@@ -26,6 +26,9 @@ spec:
     enabled: true
     maxServices: 20          # 0 = no limit
     zettaImage: oramasearch/zetta:<tag>
+    zettaEnv:                # copied to every Zetta service or adopted workspace cluster
+      - { name: ZETTA_MALLOC_TRIM_THRESHOLD_BYTES, value: "134217728" }
+      - { name: MALLOC_ARENA_MAX, value: "2" }
     sqliteImage: oramasearch/lake-sqlite:<tag>   # optional; the chart's lakeServices.sqliteImage otherwise
     duckdbImage: oramasearch/lake-duckdb:<tag>   # optional; the chart's lakeServices.duckdbImage otherwise
     polarsImage: oramasearch/lake-polars:<tag>   # optional; the chart's lakeServices.polarsImage otherwise
@@ -92,7 +95,7 @@ target only.
 | Resource | `OramaZettaCluster` | CloudNativePG `Cluster` (`postgresql.cnpg.io/v1`, unstructured, as `controldb.go` does) |
 | From `spec.instances` | `replicas` | `instances` |
 | From `spec.storage_gi` | `storage.size` `<n>Gi`, class from `spec.workspaces.storage.storageClassName` | `storage.size` `<n>Gi`, class from `spec.postgres.storageClassName` |
-| Other fields | image `spec.services.zettaImage` (then `spec.workspaces.image`), the Lake's `pullSecretName`, `resources` from `spec.workspaces.resources` (default memory `64Mi`/`1Gi`, no CPU request), no ingress, no operator schema | `bootstrap.initdb` database `app`, owner `app` |
+| Other fields | image `spec.services.zettaImage` (then `spec.workspaces.image`), `env` from `spec.services.zettaEnv`, the Lake's `pullSecretName`, `resources` from `spec.workspaces.resources` (default memory `64Mi`/`1Gi`, no CPU request), no ingress, no operator schema | `bootstrap.initdb` database `app`, owner `app` |
 | Ready when | status phase `Ready` and `readyNodes` ≥ instances | `status.readyInstances` = instances |
 | Credential source | `<cluster>-zetta-admin` key `token` | the whole CloudNativePG `<cluster>-app` Secret |
 | `endpoint` | `http://<cluster>-zetta.<ns>.svc.cluster.local:4800` | `<cluster>-rw.<ns>.svc.cluster.local:5432` |
@@ -101,6 +104,10 @@ target only.
 service. The data volume and the Postgres bootstrap are written only when the resource is created:
 a StatefulSet's volume template is immutable and the contract has no resize. Only named fields are
 written, so server-side defaults never turn a poll into an update.
+
+Changing `spec.services.zettaEnv` updates every present Zetta service child. Its Zetta reconciler then
+changes the StatefulSet pod template and rolls the nodes. Operator-managed environment names remain
+authoritative; each child reports ignored collisions through `status.ignoredEnvVars`.
 
 ### Adoption of workspace clusters
 

@@ -89,7 +89,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    `spec.topologySpreadConstraints` when supplied. Scaling to one replica removes the budget.
 7. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
 8. **Zetta data plane** — owned `OramaZettaCluster` `lake-<name>-zetta` in the Lake namespace,
-   configured from `spec.zetta` (enabled, image, replicas, per-node storage, and reachability).
+   configured from `spec.zetta` (enabled, image, replicas, per-node storage, env, and reachability).
    It inherits `spec.pullSecretName` and has operator-schema provisioning disabled because it is
    Lake's data store, not the operator's control store. Its client Service and seeded admin-token
    Secret reach the lake pod as `LAKE_DATA_PLANE_URL` and `LAKE_DATA_PLANE_TOKEN`. Deleting the
@@ -350,6 +350,9 @@ spec:
     replicas: 1
     image: oramasearch/zetta:<tag>
     storage: { size: 10Gi }
+    env:
+      - { name: ZETTA_MALLOC_TRIM_THRESHOLD_BYTES, value: "134217728" }
+      - { name: MALLOC_ARENA_MAX, value: "2" }
     reachability: dial-out-only
   ingressEnabled: true
   host: lake.oramadev.net

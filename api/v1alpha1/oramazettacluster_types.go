@@ -54,6 +54,12 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
+	// Env appends Zetta-specific environment variables after the operator-managed variables.
+	// Operator-managed names take precedence and conflicting entries are ignored and reported in
+	// status. Both literal values and Kubernetes valueFrom sources are supported.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
 	// NOTE: inter-node peer traffic is ALWAYS mutual-TLS. The operator mints one shared cluster join
 	// token per cluster (Secret `<name>-zetta-cluster`) and injects it into every node as
 	// ZETTA_CLUSTER_TOKEN; the engine derives the cluster CA from it, so all nodes form ONE cluster
@@ -377,6 +383,10 @@ type OramaZettaClusterStatus struct {
 	WanAddress string `json:"wanAddress,omitempty"`
 	// +optional
 	Message string `json:"message,omitempty"`
+	// IgnoredEnvVars lists spec.env names that conflict with operator-managed variables. The list is
+	// sorted and de-duplicated so a steady collision does not cause status writes.
+	// +optional
+	IgnoredEnvVars []string `json:"ignoredEnvVars,omitempty"`
 	// +optional
 	// +listType=map
 	// +listMapKey=type

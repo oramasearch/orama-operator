@@ -24,6 +24,9 @@ spec:
   # resources:                                    # right-size each node (mem/cpu)
   #   requests: { cpu: "500m", memory: "1Gi" }
   #   limits:   { cpu: "2",    memory: "4Gi" }
+  env:                                             # appended after operator-owned Zetta variables
+    - { name: ZETTA_MALLOC_TRIM_THRESHOLD_BYTES, value: "134217728" }
+    - { name: MALLOC_ARENA_MAX, value: "2" }
   # Inter-node peer traffic is ALWAYS mTLS. The operator mints one shared cluster join token per cluster
   # (Secret zetta-0-zetta-cluster) and injects it into every node as ZETTA_CLUSTER_TOKEN, so all nodes
   # derive the same cluster CA and form ONE cluster (operator#92). There is no plaintext-peer option.

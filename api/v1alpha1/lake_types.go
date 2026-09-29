@@ -255,6 +255,11 @@ type LakeServicesSpec struct {
 	// +optional
 	ZettaImage string `json:"zettaImage,omitempty"`
 
+	// ZettaEnv is copied to every managed Zetta service's OramaZettaCluster spec.env. Operator-managed
+	// Zetta environment names remain reserved and are reported by each child cluster when ignored.
+	// +optional
+	ZettaEnv []corev1.EnvVar `json:"zettaEnv,omitempty"`
+
 	// SQLiteImage is the lake-sqlite image for sqlite services, which the operator runs itself
 	// (one StatefulSet per service). Empty falls back to the operator's --lake-sqlite-image flag,
 	// which the chart sets from lakeServices.sqliteImage. Changing it rolls every sqlite service's
@@ -441,6 +446,11 @@ type LakeZettaSpec struct {
 	// Storage configures each Zetta node's persistent data volume.
 	// +optional
 	Storage OramaZettaStorage `json:"storage,omitempty"`
+
+	// Env is copied to the owned OramaZettaCluster spec.env. Operator-managed Zetta environment names
+	// remain reserved and are reported by the child cluster when ignored.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// Reachability declares whether this data-plane slice is dial-out-only or wan-accessible.
 	// Empty defaults to dial-out-only.

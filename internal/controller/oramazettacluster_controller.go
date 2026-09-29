@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 
@@ -36,6 +37,36 @@ const (
 	zettaAPIPort  = 4800 // MCP + REST + model/index serving (one HTTP server)
 	zettaDataDir  = "/data"
 )
+
+var zettaManagedEnvNames = map[string]struct{}{
+	"HOST_IP":             {},
+	"POD_NAME":            {},
+	"ZETTA_ADMIN_TOKEN":   {},
+	"ZETTA_ADVERTISE_MAP": {},
+	"ZETTA_CLUSTER_TOKEN": {},
+	"ZETTA_HOST_NETWORK":  {},
+}
+
+// zettaCustomEnv returns accepted spec.env entries in authored order and a stable list of names the
+// operator ignored because it owns their values. The same function drives the pod and status so the two
+// cannot disagree.
+func zettaCustomEnv(env []corev1.EnvVar) ([]corev1.EnvVar, []string) {
+	accepted := make([]corev1.EnvVar, 0, len(env))
+	ignoredSet := make(map[string]struct{})
+	for _, variable := range env {
+		if _, reserved := zettaManagedEnvNames[variable.Name]; reserved {
+			ignoredSet[variable.Name] = struct{}{}
+			continue
+		}
+		accepted = append(accepted, variable)
+	}
+	ignored := make([]string, 0, len(ignoredSet))
+	for name := range ignoredSet {
+		ignored = append(ignored, name)
+	}
+	slices.Sort(ignored)
+	return accepted, ignored
+}
 
 // OramaZettaClusterReconciler deploys a headless Orama Zetta cluster (StatefulSet of equal-peer CRDT
 // nodes) from an OramaZettaCluster CR. Step 1 of One Orama (orama-bridge#130): it only RUNS Zetta
@@ -715,6 +746,8 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 	if advertise != "" {
 		zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_ADVERTISE_MAP", Value: advertise})
 	}
+	customEnv, _ := zettaCustomEnv(z.Spec.Env)
+	zettaEnv = append(zettaEnv, customEnv...)
 
 	sts.Labels = lbls
 	sts.Spec.ServiceName = headlessName
@@ -846,12 +879,14 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 	} else if ready == 0 {
 		phase = "Progressing"
 	}
+	_, ignoredEnvVars := zettaCustomEnv(z.Spec.Env)
 
 	changed := z.Status.Phase != phase || z.Status.ReadyNodes != ready ||
 		z.Status.TotalNodes != desired || z.Status.Message != msg ||
 		z.Status.ProvisionedNodes != provisionedNodes ||
 		z.Status.Reachability != reachability || z.Status.Ephemeral != z.Spec.Ephemeral ||
-		z.Status.WanAddress != wanAddress
+		z.Status.WanAddress != wanAddress ||
+		!slices.Equal(z.Status.IgnoredEnvVars, ignoredEnvVars)
 
 	if capCond != nil {
 		capCond.ObservedGeneration = z.Generation
@@ -877,6 +912,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 	z.Status.Phase, z.Status.ReadyNodes, z.Status.TotalNodes, z.Status.Message = phase, ready, desired, msg
 	z.Status.ProvisionedNodes = provisionedNodes
 	z.Status.Reachability, z.Status.Ephemeral, z.Status.WanAddress = reachability, z.Spec.Ephemeral, wanAddress
+	z.Status.IgnoredEnvVars = ignoredEnvVars
 	return r.Status().Update(ctx, z)
 }
 
