@@ -84,6 +84,11 @@ func TestZettaEnvEnvtestUpdatesPodTemplateForRollout(t *testing.T) {
 	if env := findEnv(statefulSet.Spec.Template.Spec.Containers[0].Env, "MALLOC_ARENA_MAX"); env == nil || env.Value != "2" {
 		t.Fatalf("initial MALLOC_ARENA_MAX = %+v", env)
 	}
+	securityContext := statefulSet.Spec.Template.Spec.SecurityContext
+	if securityContext == nil || securityContext.FSGroupChangePolicy == nil ||
+		*securityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+		t.Fatalf("pod fsGroupChangePolicy = %+v, want %q", securityContext, corev1.FSGroupChangeOnRootMismatch)
+	}
 	admin := findEnv(statefulSet.Spec.Template.Spec.Containers[0].Env, "ZETTA_ADMIN_TOKEN")
 	if admin == nil || admin.ValueFrom == nil || admin.ValueFrom.SecretKeyRef == nil || admin.ValueFrom.SecretKeyRef.Name != "allocator-zetta-admin" {
 		t.Fatalf("managed ZETTA_ADMIN_TOKEN was overridden: %+v", admin)

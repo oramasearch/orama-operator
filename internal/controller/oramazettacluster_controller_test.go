@@ -115,6 +115,22 @@ func TestZettaStatefulSetInjectsSharedClusterToken(t *testing.T) {
 	}
 }
 
+func TestZettaStatefulSetSkipsRecursiveFSGroupChanges(t *testing.T) {
+	r := &OramaZettaClusterReconciler{Scheme: zettaTestScheme(t)}
+	z := newZettaTestCluster()
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
+
+	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), "", nil); err != nil {
+		t.Fatalf("mutateZettaStatefulSet: %v", err)
+	}
+	securityContext := sts.Spec.Template.Spec.SecurityContext
+	if securityContext == nil || securityContext.FSGroup == nil || *securityContext.FSGroup != 10001 ||
+		securityContext.FSGroupChangePolicy == nil ||
+		*securityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+		t.Fatalf("pod security context = %+v", securityContext)
+	}
+}
+
 func TestZettaStatefulSetAppendsCustomEnvAndProtectsManagedNames(t *testing.T) {
 	r := &OramaZettaClusterReconciler{Scheme: zettaTestScheme(t)}
 	z := newZettaTestCluster()

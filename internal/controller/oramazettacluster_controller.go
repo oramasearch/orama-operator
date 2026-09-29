@@ -748,6 +748,7 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 	}
 	customEnv, _ := zettaCustomEnv(z.Spec.Env)
 	zettaEnv = append(zettaEnv, customEnv...)
+	onRootMismatch := corev1.FSGroupChangeOnRootMismatch
 
 	sts.Labels = lbls
 	sts.Spec.ServiceName = headlessName
@@ -762,11 +763,13 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 			ImagePullSecrets: pull,
 			// The image runs zetta as uid 10001; fsGroup makes the mounted PVC group-writable so the
 			// node can create /data/security (mints its cluster cert/token) etc. Azure/most CSI disks
-			// mount root-owned, so a non-root node needs this.
+			// mount root-owned, so a non-root node needs this. OnRootMismatch avoids walking all data
+			// after a node move when the volume root already has the expected ownership.
 			SecurityContext: &corev1.PodSecurityContext{
-				RunAsUser:  int64Ptr(10001),
-				RunAsGroup: int64Ptr(10001),
-				FSGroup:    int64Ptr(10001),
+				RunAsUser:           int64Ptr(10001),
+				RunAsGroup:          int64Ptr(10001),
+				FSGroup:             int64Ptr(10001),
+				FSGroupChangePolicy: &onRootMismatch,
 			},
 			Containers: []corev1.Container{{
 				Name:            "zetta",

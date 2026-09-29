@@ -185,7 +185,8 @@ func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
 		!*podSecurityContext.RunAsNonRoot || podSecurityContext.RunAsUser == nil ||
 		*podSecurityContext.RunAsUser != lakeRunAsUser || podSecurityContext.RunAsGroup == nil ||
 		*podSecurityContext.RunAsGroup != lakeRunAsGroup || podSecurityContext.FSGroup == nil ||
-		*podSecurityContext.FSGroup != lakeRunAsGroup {
+		*podSecurityContext.FSGroup != lakeRunAsGroup || podSecurityContext.FSGroupChangePolicy == nil ||
+		*podSecurityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
 		t.Errorf("pod security context = %+v", podSecurityContext)
 	}
 	if container.SecurityContext == nil || container.SecurityContext.RunAsNonRoot == nil ||
@@ -202,12 +203,9 @@ func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
 		strings.Join(container.Lifecycle.PreStop.Exec.Command, " ") != "sh -c sleep 5" {
 		t.Errorf("preStop lifecycle = %+v", container.Lifecycle)
 	}
-	if deployment.Spec.Strategy.RollingUpdate == nil ||
-		deployment.Spec.Strategy.RollingUpdate.MaxUnavailable == nil ||
-		deployment.Spec.Strategy.RollingUpdate.MaxUnavailable.IntValue() != 0 ||
-		deployment.Spec.Strategy.RollingUpdate.MaxSurge == nil ||
-		deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntValue() != 1 {
-		t.Errorf("rolling update strategy = %+v", deployment.Spec.Strategy)
+	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType ||
+		deployment.Spec.Strategy.RollingUpdate != nil {
+		t.Errorf("deployment strategy = %+v", deployment.Spec.Strategy)
 	}
 	constraints := deployment.Spec.Template.Spec.TopologySpreadConstraints
 	if len(constraints) != 1 || constraints[0].MaxSkew != 1 ||

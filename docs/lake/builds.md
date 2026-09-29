@@ -36,6 +36,10 @@ bounded when a partial override is supplied. Concurrency defaults to four active
 and two for one registry space. Both configured limits must be positive. Registry cache
 import/export defaults on and can be disabled explicitly.
 
+The operator injects `LAKE_INTERNAL_URL=http://lake-<name>.<namespace>.svc:80` into the lake
+container when builds are enabled. Lake derives each build's registry authority from that URL; no
+separate registry endpoint setting is required.
+
 Turning builds off stops the table poll. It does not kill a Job already created and does not remove
 the per-space namespace, because doing either would make an in-flight build's outcome ambiguous.
 
