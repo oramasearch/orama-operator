@@ -1156,11 +1156,7 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 			auth = oramav1alpha1.LakeAppAuthLake
 		}
 		if auth == oramav1alpha1.LakeAppAuthLake {
-			lakeURL := lakeInternalURL(lake, app.Namespace)
-			if app.Spec.Sync != nil {
-				lakeURL = workspaceLakeInternalURL(lake, app.Spec.Sync.WorkspaceID)
-			}
-			ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] = lakeURL + "/v1/apps/auth"
+			ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] = lakeAppAuthURL(lake, app)
 			ingress.Annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = "X-Orama-User,X-Orama-Space"
 		}
 		ingress.Spec.IngressClassName = &ingressClass
@@ -1201,6 +1197,19 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 		return fmt.Errorf("reconcile app DNS: %w", err)
 	}
 	return nil
+}
+
+func lakeAppAuthURL(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) string {
+	baseURL := fmt.Sprintf(
+		"http://lake-%s.%s.svc.cluster.local:%d",
+		lake.Name,
+		lakeNamespace(lake),
+		lakeServicePort,
+	)
+	if app.Spec.Sync != nil {
+		baseURL += "/w/" + app.Spec.Sync.WorkspaceID
+	}
+	return baseURL + "/v1/apps/auth"
 }
 
 func lakeAppUsesWildcard(lake *oramav1alpha1.Lake, host string) bool {

@@ -276,15 +276,17 @@ disabling apps or removing the suffix/credentials removes the wildcard. Foreign 
 never changed or deleted. This path is independent of `previewWildcard` and supports apps even
 when the Lake itself has no public ingress.
 
-`auth: lake` is the default. It adds nginx's `auth-url` annotation pointing at Lake's in-cluster
-`/v1/apps/auth` endpoint, which verifies the browser's Lake session and space membership before the
-request reaches the app. `auth: public` omits the annotation.
+`auth: lake` is the default. It adds nginx's `auth-url` annotation pointing at
+`http://lake-<lake>.<namespace>.svc.cluster.local:80[/w/<workspace id>]/v1/apps/auth`. The fully
+qualified Service name is required by ingress-nginx's resolver. Lake verifies the browser's session
+and space membership before the request reaches the app. `auth: public` omits the annotation.
 
 ## Status and events
 
 Status is deep-compared before every write. `Ready` requires the Deployment controller to have
-observed the current generation and every desired replica to be updated and available. Pod status
-takes priority over generic rollout progress: `ImagePullBackOff`/`ErrImagePull`,
+observed the Deployment's own `metadata.generation` and every desired replica to be updated and
+available; the independent `LakeApp` generation is not a rollout marker. Pod status takes priority
+over generic rollout progress: `ImagePullBackOff`/`ErrImagePull`,
 `CrashLoopBackOff`, and `OOMKilled` produce stable `Degraded` messages. `status.observedRevision`
 is the source revision in runtime mode or image digest in image mode.
 
@@ -307,8 +309,10 @@ also verifies and deletes its private namespace; synchronized deletion preserves
 ## Verification
 
 The native API-server tests use a fake Lake store, as the Services tests do. They exercise row to
-CR to workload, hashes before startup, status return, no steady writes, source updates, stop/start,
-credential rotation with a failed DB write, namespace finalization and Deleted acknowledgement.
+CR to workload, hashes before startup, FQDN ingress authentication, status return, no steady writes,
+source rollouts whose app and Deployment generations differ, return to `Running` and ready,
+stop/start, credential rotation with a failed DB write, namespace finalization and Deleted
+acknowledgement.
 Unit cases cover failed-list orphan safety, foreign ownership/bindings, DNS changes and ingress
 class selection, listener enable/disable, the schema gate and fallback interval, and HTTP events.
 The original standalone lifecycle suite retains its create, rollback and pod-failure coverage:

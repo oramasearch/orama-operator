@@ -455,6 +455,14 @@ func assertSyncedAppDelivery(t *testing.T, h *appsSyncHarness) {
 	if !lakeAppPolicyHasPodSelector(policy.Spec.Egress, map[string]string{serviceIDLabel: testPostgresID}) || !lakeAppPolicyHasPodSelector(policy.Spec.Egress, map[string]string{"app.kubernetes.io/name": "lake"}) {
 		t.Fatal("scoped service or Lake egress is missing")
 	}
+	var ingress networkingv1.Ingress
+	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: key.Namespace, Name: lakeAppWorkloadObjectName(app)}, &ingress); err != nil {
+		t.Fatal(err)
+	}
+	wantAuthURL := "http://lake-apps-test.lake.svc.cluster.local:80/w/" + testWorkspaceID + "/v1/apps/auth"
+	if ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] != wantAuthURL {
+		t.Fatalf("auth-url = %q, want %q", ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"], wantAuthURL)
+	}
 }
 
 func assertSyncedAppSteady(t *testing.T, h *appsSyncHarness) {
@@ -478,6 +486,30 @@ func assertSyncedAppSteady(t *testing.T, h *appsSyncHarness) {
 
 func assertSyncedAppUpdateAndStop(t *testing.T, h *appsSyncHarness) {
 	t.Helper()
+	app := h.app()
+	deploymentKey := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppWorkloadObjectName(app)}
+	setNamedLakeAppDeploymentReady(t, h.ctx, h.client, deploymentKey.Namespace, deploymentKey.Name, 1)
+	h.reconcileApp()
+	h.poll()
+	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready {
+		t.Fatalf("app was not ready before rollout checks: %+v", status)
+	}
+
+	h.store.rows[0].Host = "sales-dashboard-v2.apps.example.test"
+	h.store.rows[0].Generation++
+	h.converge()
+	app = h.app()
+	var deployment appsv1.Deployment
+	if err := h.client.Get(h.ctx, deploymentKey, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if app.Generation <= deployment.Generation {
+		t.Fatalf("test setup did not separate generations: app=%d Deployment=%d", app.Generation, deployment.Generation)
+	}
+	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard-v2.apps.example.test" {
+		t.Fatalf("ingress-only update lost ready status: %+v", status)
+	}
+
 	h.store.rows[0].SourceRevision = testLakeAppRevisionB
 	h.store.rows[0].SourceEntrypoint = "main:app"
 	h.store.rows[0].Generation++
@@ -486,10 +518,23 @@ func assertSyncedAppUpdateAndStop(t *testing.T, h *appsSyncHarness) {
 		t.Fatal("old Ready status acknowledged a new row generation")
 	}
 	h.converge()
-	app := h.app()
+	app = h.app()
 	if app.Spec.Source.Entrypoint != "main:app" || app.Status.ObservedRevision != testLakeAppRevisionB {
 		t.Fatal("source update did not reach the app")
 	}
+	if err := h.client.Get(h.ctx, deploymentKey, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if deployment.Status.ObservedGeneration >= deployment.Generation {
+		t.Fatal("rolled Deployment was ready before its new generation was observed")
+	}
+	setNamedLakeAppDeploymentReady(t, h.ctx, h.client, deploymentKey.Namespace, deploymentKey.Name, 1)
+	h.reconcileApp()
+	h.poll()
+	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard-v2.apps.example.test" {
+		t.Fatalf("rolled app status = %+v", status)
+	}
+
 	h.store.rows[0].Desired = "stopped"
 	h.store.rows[0].Generation++
 	h.converge()
@@ -508,6 +553,12 @@ func assertSyncedAppUpdateAndStop(t *testing.T, h *appsSyncHarness) {
 	h.converge()
 	if h.app().Status.ObservedRevision != testLakeAppRevisionA {
 		t.Fatal("rollback did not return to the original source revision")
+	}
+	setNamedLakeAppDeploymentReady(t, h.ctx, h.client, deploymentKey.Namespace, deploymentKey.Name, 1)
+	h.reconcileApp()
+	h.poll()
+	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard-v2.apps.example.test" {
+		t.Fatalf("restarted app status = %+v", status)
 	}
 }
 
