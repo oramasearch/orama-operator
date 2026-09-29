@@ -2,7 +2,7 @@
 --
 -- SOURCE OF TRUTH: oramasearch/lake, db/schema.sql. The operator vendors a byte-identical copy at
 -- internal/controller/assets/lake-schema.sql and applies it to each Lake's Postgres through a
--- PostgresSchema (one transaction, guarded on the `custodial_identity_guard` table, versioned by
+-- PostgresSchema (one transaction, guarded on the `workspace_data_plane_guard` table, versioned by
 -- content hash).
 -- Keep the two files identical; the operator's version string changes exactly when this does.
 --
@@ -1687,3 +1687,374 @@ CREATE TABLE IF NOT EXISTS agent_task_events_guard (
 );
 
 INSERT INTO schema_migrations (version) VALUES ('0033_agent_task_events') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0034_web_apps: Ship apps desired state and the status the Orama operator observes (lake#293).
+-- lake writes the desired fields, increments generation, and NOTIFYs lake_apps. The operator
+-- reconciles one LakeApp per row and writes phase through observed_generation back on this row.
+-- The operator writes token hashes; bindings contain read scopes and service IDs only.
+-- env_json never contains clear credentials. See docs/control-plane/web-apps.md.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS apps (
+    id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id         uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    name                text        NOT NULL,
+    mode                text        NOT NULL,
+    source_repository   text        NOT NULL DEFAULT '',
+    source_revision     text        NOT NULL DEFAULT '',
+    source_path         text        NOT NULL DEFAULT '',
+    source_entrypoint   text        NOT NULL DEFAULT '',
+    image               text        NOT NULL DEFAULT '',
+    framework           text        NOT NULL DEFAULT '',
+    port                integer     NOT NULL,
+    replicas            integer     NOT NULL DEFAULT 1,
+    host                text        NOT NULL,
+    auth                text        NOT NULL DEFAULT 'lake',
+    bindings_json       jsonb       NOT NULL DEFAULT '{"zetta":null,"services":[]}'::jsonb,
+    env_json            jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    secret_env_refs     jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    token_hashes_json   jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    desired             text        NOT NULL DEFAULT 'running',
+    generation          bigint      NOT NULL DEFAULT 1,
+    phase               text        NOT NULL DEFAULT 'Pending',
+    url                 text        NOT NULL DEFAULT '',
+    ready               boolean     NOT NULL DEFAULT false,
+    message             text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT app_name_format CHECK (name ~ '^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$'),
+    CONSTRAINT app_mode_check CHECK (mode IN ('runtime', 'image')),
+    CONSTRAINT app_source_or_image_check CHECK (
+        (mode = 'runtime' AND source_repository <> '' AND source_revision <> '' AND image = '') OR
+        (mode = 'image' AND image <> '' AND source_repository = '' AND source_revision = '')
+    ),
+    CONSTRAINT app_port_check CHECK (port BETWEEN 1 AND 65535),
+    CONSTRAINT app_replicas_check CHECK (replicas BETWEEN 1 AND 100),
+    CONSTRAINT app_auth_check CHECK (auth IN ('lake', 'none')),
+    CONSTRAINT app_desired_check CHECK (desired IN ('running', 'stopped', 'deleted')),
+    CONSTRAINT app_bindings_object CHECK (jsonb_typeof(bindings_json) = 'object'),
+    CONSTRAINT app_env_object CHECK (jsonb_typeof(env_json) = 'object'),
+    CONSTRAINT app_secret_refs_object CHECK (jsonb_typeof(secret_env_refs) = 'object')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS apps_customer_name_idx
+    ON apps (customer_id, name) WHERE desired <> 'deleted';
+CREATE UNIQUE INDEX IF NOT EXISTS apps_host_idx ON apps (host) WHERE desired <> 'deleted';
+CREATE INDEX IF NOT EXISTS apps_customer_idx ON apps (customer_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS web_apps_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0034_web_apps') ON CONFLICT DO NOTHING;
+
+-- 0035_web_apps_operator_contract: upgrade earlier Apps rows to the operator-owned token contract.
+-- This also works after 0034 has already been applied. No app bearer material is retained by lake.
+ALTER TABLE apps ADD COLUMN IF NOT EXISTS source_entrypoint text NOT NULL DEFAULT '';
+ALTER TABLE apps ADD COLUMN IF NOT EXISTS token_hashes_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE apps DROP CONSTRAINT IF EXISTS app_mode_check;
+ALTER TABLE apps DROP CONSTRAINT IF EXISTS app_source_or_image_check;
+ALTER TABLE apps DROP CONSTRAINT IF EXISTS app_desired_check;
+-- Earlier partial indexes exclude absent rows. Remove them before converting historical rows,
+-- which may legitimately reuse a name or host after deletion.
+DROP INDEX IF EXISTS apps_customer_name_idx;
+DROP INDEX IF EXISTS apps_host_idx;
+UPDATE apps SET mode = 'runtime' WHERE mode = 'source';
+UPDATE apps SET desired = 'deleted' WHERE desired = 'absent';
+UPDATE apps SET phase = 'Running' WHERE phase = 'Ready';
+ALTER TABLE apps ALTER COLUMN phase SET DEFAULT 'Pending';
+ALTER TABLE apps ALTER COLUMN bindings_json SET DEFAULT '{"zetta":null,"services":[]}'::jsonb;
+ALTER TABLE apps ADD CONSTRAINT app_mode_check CHECK (mode IN ('runtime', 'image'));
+ALTER TABLE apps ADD CONSTRAINT app_source_or_image_check CHECK (
+    (mode = 'runtime' AND source_repository <> '' AND source_revision <> '' AND image = '') OR
+    (mode = 'image' AND image <> '' AND source_repository = '' AND source_revision = '')
+);
+ALTER TABLE apps ADD CONSTRAINT app_desired_check CHECK (desired IN ('running', 'stopped', 'deleted'));
+UPDATE apps SET bindings_json = jsonb_build_object(
+    'zetta', CASE WHEN jsonb_typeof(bindings_json->'zetta') = 'object'
+        OR bindings_json->'zetta' = 'true'::jsonb
+        THEN '{"scopes":["read"]}'::jsonb ELSE 'null'::jsonb END,
+    'services', COALESCE((SELECT jsonb_agg(CASE WHEN jsonb_typeof(value) = 'object'
+        THEN value->'id' ELSE value END)
+        FROM jsonb_array_elements(COALESCE(bindings_json->'services', '[]'::jsonb))), '[]'::jsonb)
+) WHERE NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version = '0035_web_apps_operator_contract'
+);
+CREATE UNIQUE INDEX apps_customer_name_idx ON apps (customer_id, name) WHERE desired <> 'deleted';
+CREATE UNIQUE INDEX apps_host_idx ON apps (host) WHERE desired <> 'deleted';
+CREATE INDEX IF NOT EXISTS apps_source_token_idx ON apps ((token_hashes_json->>'source'));
+CREATE INDEX IF NOT EXISTS apps_zetta_token_idx ON apps ((token_hashes_json->>'zetta'));
+CREATE INDEX IF NOT EXISTS apps_events_token_idx ON apps ((token_hashes_json->>'events'));
+DROP TABLE IF EXISTS app_credentials;
+CREATE TABLE IF NOT EXISTS web_apps_operator_contract_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0035_web_apps_operator_contract')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0036_builds: in-cluster image build intent and operator observation (lake#295). Lake writes
+-- queued/cancelled desired state and NOTIFYs lake_builds. The operator owns phase, result and the
+-- SHA-256 hashes of its source, push and event credentials. Plain credentials never enter this
+-- database. See docs/control-plane/builds.md.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS builds (
+    id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id         uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    repository          text        NOT NULL,
+    revision            text        NOT NULL,
+    context             text        NOT NULL DEFAULT '.',
+    dockerfile          text        NOT NULL DEFAULT 'Dockerfile',
+    target              text        NOT NULL,
+    build_args_json     jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    desired             text        NOT NULL DEFAULT 'queued',
+    phase               text        NOT NULL DEFAULT 'Queued',
+    digest              text        NOT NULL DEFAULT '',
+    size                bigint      NOT NULL DEFAULT 0,
+    message             text        NOT NULL DEFAULT '',
+    token_hashes_json   jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT build_desired_check CHECK (desired IN ('queued', 'cancelled')),
+    CONSTRAINT build_phase_check CHECK (
+        phase IN ('Queued', 'Running', 'Succeeded', 'Failed', 'Cancelled')
+    ),
+    CONSTRAINT build_args_object CHECK (jsonb_typeof(build_args_json) = 'object'),
+    CONSTRAINT build_token_hashes_object CHECK (jsonb_typeof(token_hashes_json) = 'object'),
+    CONSTRAINT build_size_check CHECK (size >= 0)
+);
+CREATE INDEX IF NOT EXISTS builds_customer_idx ON builds (customer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS builds_source_token_idx ON builds ((token_hashes_json->>'source'));
+CREATE INDEX IF NOT EXISTS builds_push_token_idx ON builds ((token_hashes_json->>'push'));
+CREATE INDEX IF NOT EXISTS builds_events_token_idx ON builds ((token_hashes_json->>'events'));
+
+CREATE TABLE IF NOT EXISTS builds_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_migrations (version) VALUES ('0036_builds') ON CONFLICT DO NOTHING;
+
+-- 0037_streams: creator ownership survives audit retention and workspace replacement (lake#301).
+CREATE TABLE IF NOT EXISTS stream_owners (
+    customer_id uuid NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    workspace_id text NOT NULL,
+    topic text NOT NULL,
+    created_by text NOT NULL,
+    PRIMARY KEY (customer_id, workspace_id, topic)
+);
+CREATE TABLE IF NOT EXISTS streams_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0037_streams') ON CONFLICT DO NOTHING;
+
+-- 0038_workspace_data_plane: immutable routing, never event payloads (lake#311).
+-- Legacy assignments are recorded, including rows requiring explicit remediation.
+CREATE TABLE IF NOT EXISTS workspace_assignments (
+    object_table text NOT NULL,
+    object_id uuid NOT NULL,
+    customer_id uuid NOT NULL,
+    workspace_id uuid,
+    outcome text NOT NULL,
+    recorded_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (object_table, object_id)
+);
+
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS workspace_id uuid REFERENCES services(id);
+ALTER TABLE apps ADD COLUMN IF NOT EXISTS workspace_id uuid REFERENCES services(id);
+ALTER TABLE builds ADD COLUMN IF NOT EXISTS workspace_id uuid REFERENCES services(id);
+
+DO $$
+DECLARE
+    target_table text;
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0038_workspace_data_plane') THEN
+        FOREACH target_table IN ARRAY ARRAY['agent_tasks', 'apps', 'builds'] LOOP
+            EXECUTE format(
+                'INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+                 SELECT %L, o.id, o.customer_id, w.id,
+                        CASE WHEN w.id IS NULL THEN ''needs_selection'' ELSE ''sole_default'' END
+                 FROM %I o LEFT JOIN services w ON w.customer_id = o.customer_id
+                      AND w.kind = ''zetta'' AND w.desired = ''present'' AND w.is_default
+                      AND (SELECT count(*) FROM services s WHERE s.customer_id = o.customer_id
+                           AND s.kind = ''zetta'' AND s.desired = ''present'') = 1
+                 WHERE o.workspace_id IS NULL ON CONFLICT DO NOTHING', target_table, target_table);
+            EXECUTE format(
+                'UPDATE %I o SET workspace_id = a.workspace_id FROM workspace_assignments a
+                 WHERE a.object_table = %L AND a.object_id = o.id
+                       AND o.workspace_id IS NULL AND a.workspace_id IS NOT NULL',
+                 target_table, target_table);
+        END LOOP;
+        FOR unresolved IN SELECT * FROM workspace_assignments WHERE workspace_id IS NULL LOOP
+            RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%',
+                unresolved.object_table, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION enforce_workspace_routing() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        IF NEW.workspace_id IS DISTINCT FROM OLD.workspace_id OR
+           NEW.customer_id IS DISTINCT FROM OLD.customer_id THEN
+            RAISE EXCEPTION 'workspace_id and customer_id are immutable' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NEW.workspace_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM services WHERE id = NEW.workspace_id AND customer_id = NEW.customer_id
+            AND kind = 'zetta' AND desired = 'present'
+    ) THEN
+        RAISE EXCEPTION 'workspace_id must name a workspace Zetta in this space'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS agent_task_workspace_routing ON agent_tasks;
+CREATE TRIGGER agent_task_workspace_routing BEFORE INSERT OR UPDATE ON agent_tasks
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+DROP TRIGGER IF EXISTS app_workspace_routing ON apps;
+CREATE TRIGGER app_workspace_routing BEFORE INSERT OR UPDATE ON apps
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+DROP TRIGGER IF EXISTS build_workspace_routing ON builds;
+CREATE TRIGGER build_workspace_routing BEFORE INSERT OR UPDATE ON builds
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+
+CREATE TABLE IF NOT EXISTS workspace_data_plane_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0038_workspace_data_plane') ON CONFLICT DO NOTHING;
+
+-- 0039_workspaces: lake#265 / lake#311 operator contract. Lake owns desired state;
+-- the operator owns phase, observed_generation, message and namespace.
+CREATE TABLE IF NOT EXISTS workspaces (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id uuid NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    name text NOT NULL CHECK (length(name) BETWEEN 1 AND 128),
+    environment text NOT NULL CHECK (
+        length(environment) <= 47 AND environment ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+    ),
+    desired text NOT NULL DEFAULT 'running' CHECK (desired IN ('running', 'stopped', 'deleted')),
+    generation bigint NOT NULL DEFAULT 1 CHECK (generation > 0),
+    phase text NOT NULL DEFAULT 'Pending',
+    observed_generation bigint NOT NULL DEFAULT 0,
+    message text NOT NULL DEFAULT '',
+    namespace text NOT NULL DEFAULT '',
+    zetta_service_id uuid REFERENCES services(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS workspaces_customer_idx ON workspaces (customer_id, created_at, id);
+CREATE UNIQUE INDEX IF NOT EXISTS workspaces_name_idx ON workspaces (customer_id, name)
+    WHERE desired <> 'deleted';
+CREATE UNIQUE INDEX IF NOT EXISTS workspaces_zetta_idx ON workspaces (zetta_service_id);
+ALTER TABLE services ADD COLUMN IF NOT EXISTS workspace_id uuid REFERENCES workspaces(id);
+ALTER TABLE agent_tasks DROP CONSTRAINT IF EXISTS agent_tasks_workspace_id_fkey;
+ALTER TABLE apps DROP CONSTRAINT IF EXISTS apps_workspace_id_fkey;
+ALTER TABLE builds DROP CONSTRAINT IF EXISTS builds_workspace_id_fkey;
+
+CREATE OR REPLACE FUNCTION notify_lake_workspaces() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        PERFORM pg_notify('lake_workspaces', OLD.id::text);
+        RETURN OLD;
+    END IF;
+    PERFORM pg_notify('lake_workspaces', NEW.id::text);
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS lake_workspaces_changed ON workspaces;
+CREATE TRIGGER lake_workspaces_changed AFTER INSERT OR UPDATE OR DELETE ON workspaces
+    FOR EACH ROW EXECUTE FUNCTION notify_lake_workspaces();
+
+DO $$
+DECLARE
+    unresolved record;
+    target_table text;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0039_workspaces') THEN
+        -- Match the operator's legacy name for the original customer-named workspace.
+        INSERT INTO workspaces (id, customer_id, name, environment, desired, zetta_service_id,
+                                created_at, updated_at)
+            SELECT CASE WHEN slug = 'ws-' || left(replace(customer_id::text, '-', ''), 12)
+                        THEN customer_id ELSE id END,
+                   customer_id, name, 'prod',
+                   CASE WHEN desired = 'absent' THEN 'deleted' ELSE 'running' END,
+                   id, created_at, updated_at
+            FROM services WHERE kind = 'zetta';
+        UPDATE services s SET workspace_id = w.id,
+            slug = 'ws-' || left(replace(w.id::text, '-', ''), 12)
+            FROM workspaces w WHERE w.zetta_service_id = s.id;
+        ALTER TABLE agent_tasks DISABLE TRIGGER agent_task_workspace_routing;
+        ALTER TABLE apps DISABLE TRIGGER app_workspace_routing;
+        ALTER TABLE builds DISABLE TRIGGER build_workspace_routing;
+        FOREACH target_table IN ARRAY ARRAY['agent_tasks', 'apps', 'builds'] LOOP
+            EXECUTE format(
+                'INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+                 SELECT %L, o.id, o.customer_id, w.id, ''workspace_contract_remap''
+                 FROM %I o JOIN workspaces w ON o.workspace_id = w.zetta_service_id
+                 ON CONFLICT DO NOTHING', target_table, target_table);
+        END LOOP;
+        UPDATE agent_tasks o SET workspace_id = w.id FROM workspaces w
+            WHERE o.workspace_id = w.zetta_service_id;
+        UPDATE apps o SET workspace_id = w.id FROM workspaces w
+            WHERE o.workspace_id = w.zetta_service_id;
+        UPDATE builds o SET workspace_id = w.id FROM workspaces w
+            WHERE o.workspace_id = w.zetta_service_id;
+        UPDATE workspace_assignments a SET workspace_id = w.id FROM workspaces w
+            WHERE a.workspace_id = w.zetta_service_id;
+        ALTER TABLE agent_tasks ENABLE TRIGGER agent_task_workspace_routing;
+        ALTER TABLE apps ENABLE TRIGGER app_workspace_routing;
+        ALTER TABLE builds ENABLE TRIGGER build_workspace_routing;
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'services', id, customer_id, workspace_id, 'workspace_contract_prod'
+            FROM services WHERE kind = 'zetta' ON CONFLICT DO NOTHING;
+        -- Other services can be assigned only where ownership is unambiguous.
+        UPDATE services s SET workspace_id = w.id FROM workspaces w
+            WHERE s.workspace_id IS NULL AND s.customer_id = w.customer_id
+              AND w.desired <> 'deleted'
+              AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = s.customer_id
+                   AND w2.desired <> 'deleted') = 1;
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'services', id, customer_id, workspace_id,
+                   CASE WHEN workspace_id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
+            FROM services WHERE kind <> 'zetta' ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments WHERE workspace_id IS NULL LOOP
+            RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%',
+                unresolved.object_table, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+ALTER TABLE agent_tasks DROP CONSTRAINT IF EXISTS agent_tasks_workspace_id_fkey;
+ALTER TABLE agent_tasks ADD CONSTRAINT agent_tasks_workspace_id_fkey
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id);
+ALTER TABLE apps DROP CONSTRAINT IF EXISTS apps_workspace_id_fkey;
+ALTER TABLE apps ADD CONSTRAINT apps_workspace_id_fkey
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id);
+ALTER TABLE builds DROP CONSTRAINT IF EXISTS builds_workspace_id_fkey;
+ALTER TABLE builds ADD CONSTRAINT builds_workspace_id_fkey
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id);
+
+CREATE OR REPLACE FUNCTION enforce_workspace_routing() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        IF NEW.workspace_id IS DISTINCT FROM OLD.workspace_id OR
+           NEW.customer_id IS DISTINCT FROM OLD.customer_id THEN
+            RAISE EXCEPTION 'workspace_id and customer_id are immutable' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NEW.workspace_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM workspaces WHERE id = NEW.workspace_id AND customer_id = NEW.customer_id
+            AND desired <> 'deleted'
+    ) THEN
+        RAISE EXCEPTION 'workspace_id must name a workspace in this space' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END $$;
+
+CREATE TABLE IF NOT EXISTS workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0039_workspaces') ON CONFLICT DO NOTHING;
