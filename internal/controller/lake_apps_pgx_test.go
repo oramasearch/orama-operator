@@ -69,7 +69,7 @@ func TestLakeAppsPgxStoreAgainstPostgres(t *testing.T) {
 	}
 	store := &pgxAppsStore{pgxServiceStore: &pgxServiceStore{db: tx}}
 	rows, err := store.ListApps(ctx)
-	if err != nil || len(rows) != 1 || rows[0].SourceEntrypoint != "" || rows[0].TokenHashes != nil || rows[0].Port != 8080 || rows[0].Replicas != 1 {
+	if err != nil || len(rows) != 1 || rows[0].SourceEntrypoint != "" || rows[0].TokenHashes != nil || rows[0].Port != 8080 || rows[0].Replicas != 1 || rows[0].SecretEnvRefs != "{}" {
 		t.Fatalf("nullable row decoding failed: %v", err)
 	}
 	row := &rows[0]

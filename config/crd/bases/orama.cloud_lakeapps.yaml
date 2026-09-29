@@ -256,10 +256,48 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+              secretEnv:
+                description: |-
+                  SecretEnv contains environment variables sourced from individual Secret keys. Source Secrets
+                  live in the Lake namespace; the controller copies only selected keys into the app namespace.
+                items:
+                  description: LakeAppSecretEnvironmentVariable exposes one Secret
+                    key as an application environment variable.
+                  properties:
+                    name:
+                      description: Name is the application environment variable name.
+                      pattern: ^[-._a-zA-Z][-._a-zA-Z0-9]*$
+                      type: string
+                    secretKeyRef:
+                      description: SecretKeyRef selects the source Secret and key
+                        in the Lake namespace.
+                      properties:
+                        key:
+                          description: Key is the source Secret data key.
+                          maxLength: 253
+                          pattern: ^[-._a-zA-Z0-9]+$
+                          type: string
+                        name:
+                          description: Name is the source Secret name.
+                          maxLength: 253
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                  required:
+                  - name
+                  - secretKeyRef
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               secretRefs:
                 description: |-
-                  SecretRefs names Secrets in the Lake namespace that are copied into the app namespace and
-                  exposed through envFrom.
+                  SecretRefs is the one-release legacy whole-Secret input. Named Secrets are copied into the app
+                  namespace and exposed through envFrom.
                 items:
                   type: string
                 type: array

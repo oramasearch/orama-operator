@@ -415,7 +415,8 @@ private namespace. See the operational contract in
 | `spec.replicas` | Desired replicas, default `1`. Zero stops pods while retaining the app resources. |
 | `spec.resources` | App-container requests/limits; defaults to `100m`/`128Mi` requests and `1`/`1Gi` limits. |
 | `spec.env[]` | Literal `{name, value}` entries. Operator-managed runtime variables take precedence. |
-| `spec.secretRefs[]` | Lake-namespace Secrets copied into the app namespace and exposed through `envFrom`. |
+| `spec.secretEnv[]` | `{name, secretKeyRef: {name, key}}` entries. Each source Secret is read from the Lake namespace, only selected keys are copied into the isolated app namespace, and the Deployment uses `env[].valueFrom.secretKeyRef`. Operator-managed names take precedence; secret-backed values take precedence over literal `spec.env`. |
+| `spec.secretRefs[]` | One-release legacy input: Lake-namespace whole Secrets copied into the app namespace and exposed through `envFrom`. New apps use `spec.secretEnv`. |
 | `spec.host` | Exact hostname. Empty derives `<app>.<Lake spec.apps.wildcard>`. |
 | `spec.auth` | `lake` (default) uses Lake's session authorization through nginx `auth-url`; `public` omits that gate. |
 | `spec.bindings.zetta` | `{customerId, scopes}` for scoped read-only workspace access. Synchronized apps use an operator-generated token validated by Lake; standalone apps supply the token through their binding Secret. |
