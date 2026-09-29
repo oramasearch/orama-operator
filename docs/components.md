@@ -487,6 +487,11 @@ change rolls the nodes. Operator-owned names cannot be overridden; their sorted 
 `status.ignoredEnvVars` without changing readiness. Lake copies `spec.zetta.env` to its data-plane child
 and `spec.services.zettaEnv` to every managed or adopted Zetta service cluster.
 
+**Zetta volume ownership.** Every node pod runs with uid/gid/fsGroup 10001 and
+`fsGroupChangePolicy: OnRootMismatch`. A per-node RWO volume that attaches after a node move therefore
+skips the recursive ownership pass when the `/data` root already has the expected group, while a new
+or mismatched volume is still corrected before Zetta starts.
+
 **Reachability + node-type FLAGS into the engine** (`mutateZettaStatefulSet`,
 [zetta#803](https://github.com/oramasearch/zetta/issues/803)/[#810](https://github.com/oramasearch/zetta/issues/810)).
 Classifying the slice is not enough — the operator must tell the *engine* what each node is, or the engine

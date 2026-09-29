@@ -77,8 +77,10 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    `lake-<name>-store`, created once with `spec.store.size` (default `100Gi`),
    `storageClassName`, and `accessModes` (default `ReadWriteMany`). The selected claim is mounted
    read-write at `/var/lib/lake/store` in every pod. The pod runs with `fsGroup: 10001` (lake's
-   uid/gid in the image) so a freshly provisioned volume is writable by lake on first mount. Operator-created claims are never replaced,
-   resized, or deleted because the store spec changes.
+   uid/gid in the image) so a freshly provisioned volume is writable by lake on first mount, and
+   `fsGroupChangePolicy: OnRootMismatch` avoids recursively changing every stored object's ownership
+   after a node move when the volume root is already correct. Operator-created claims are never
+   replaced, resized, or deleted because the store spec changes.
 6. **Deployment + disruption budget** `lake-<name>` — `spec.image` run as built, `spec.args`, port
    `spec.port` (default 4900), readiness `GET /readyz`, liveness `GET /healthz`,
    `spec.replicas`, resource defaults or `spec.resources`, `imagePullSecrets` from
@@ -417,6 +419,8 @@ period let lake finish in-flight work. The Deployment uses `Recreate`: Kubernete
 pod before starting replacements, so an RWO store can detach from the old node and attach to a new
 one without a surge pod deadlock. A single-replica Lake is unavailable during this handoff;
 readiness and rollout automation must allow for that planned restart gap.
+The pod's `fsGroupChangePolicy: OnRootMismatch` applies the store's group ownership only when its
+root does not already match gid 10001, avoiding a full recursive ownership pass on every mount.
 
 When `spec.replicas` is greater than one, the operator creates `PodDisruptionBudget lake-<name>`
 with `maxUnavailable: 1`. It also defaults `spec.topologySpreadConstraints` to a soft

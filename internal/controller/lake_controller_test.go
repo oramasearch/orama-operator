@@ -185,7 +185,8 @@ func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
 		!*podSecurityContext.RunAsNonRoot || podSecurityContext.RunAsUser == nil ||
 		*podSecurityContext.RunAsUser != lakeRunAsUser || podSecurityContext.RunAsGroup == nil ||
 		*podSecurityContext.RunAsGroup != lakeRunAsGroup || podSecurityContext.FSGroup == nil ||
-		*podSecurityContext.FSGroup != lakeRunAsGroup {
+		*podSecurityContext.FSGroup != lakeRunAsGroup || podSecurityContext.FSGroupChangePolicy == nil ||
+		*podSecurityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
 		t.Errorf("pod security context = %+v", podSecurityContext)
 	}
 	if container.SecurityContext == nil || container.SecurityContext.RunAsNonRoot == nil ||

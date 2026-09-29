@@ -106,6 +106,11 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 	if deployment.Spec.Strategy.RollingUpdate != nil {
 		t.Fatalf("Recreate deployment has rollingUpdate settings: %+v", deployment.Spec.Strategy.RollingUpdate)
 	}
+	securityContext := deployment.Spec.Template.Spec.SecurityContext
+	if securityContext == nil || securityContext.FSGroupChangePolicy == nil ||
+		*securityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
+		t.Fatalf("pod fsGroupChangePolicy = %+v, want %q", securityContext, corev1.FSGroupChangeOnRootMismatch)
+	}
 	assertEnvValueOnce(t, deployment, "LAKE_APPS_WILDCARD", "apps.example.com")
 	assertEnvValueOnce(t, deployment, "LAKE_INTERNAL_URL", "http://lake-pod-template.lake-dev.svc:80")
 
