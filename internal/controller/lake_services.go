@@ -102,12 +102,14 @@ var (
 
 // LakeService is one row of lake's services table joined to its service_status row.
 type LakeService struct {
-	ID         string
-	CustomerID string
-	Kind       string
-	Name       string
-	Slug       string
-	IsDefault  bool
+	ID                 string
+	CustomerID         string
+	WorkspaceID        string
+	WorkspaceNamespace string
+	Kind               string
+	Name               string
+	Slug               string
+	IsDefault          bool
 	// Spec is the raw jsonb spec: {"instances": 1-3, "storage_gi": 1-100}.
 	Spec       string
 	Desired    string
@@ -162,10 +164,10 @@ type serviceResult struct {
 	credential    []byte
 }
 
-// lakeServicesEnabled: spec.services.enabled, or the deprecated spec.workspaces.enabled. The
-// services table lives in the control-plane Postgres, so services need it.
+// lakeServicesEnabled: managed services have their own switch. Workspaces use a separate table,
+// listener and reconciler.
 func lakeServicesEnabled(lake *oramav1alpha1.Lake) bool {
-	return (lake.Spec.Services.Enabled || lake.Spec.Workspaces.Enabled) && lakePostgresEnabled(lake)
+	return lake.Spec.Services.Enabled && lakePostgresEnabled(lake)
 }
 
 // lakeServicesSecret holds one <slug>.json connection per Ready service.
@@ -222,13 +224,9 @@ func (r *LakeReconciler) serviceImage(lake *oramav1alpha1.Lake, kind string) str
 	return fallback
 }
 
-// serviceQuota is spec.services.maxServices, falling back to spec.workspaces.maxWorkspaces; 0 is
-// no limit.
+// serviceQuota is spec.services.maxServices; 0 is no limit.
 func serviceQuota(lake *oramav1alpha1.Lake) int {
-	if lake.Spec.Services.MaxServices > 0 {
-		return int(lake.Spec.Services.MaxServices)
-	}
-	return int(lake.Spec.Workspaces.MaxWorkspaces)
+	return int(lake.Spec.Services.MaxServices)
 }
 
 // serviceZettaResources is spec.workspaces.resources, or the small default: 64Mi memory request,
@@ -253,7 +251,7 @@ func serviceCustomerLabelValue(customerID string) string {
 // isLakeServiceCluster reports whether a Lake-controlled OramaZettaCluster is a service (or a
 // not-yet-adopted workspace) rather than the Lake's own data plane.
 func isLakeServiceCluster(cluster *oramav1alpha1.OramaZettaCluster) bool {
-	return cluster.Labels[serviceIDLabel] != "" || cluster.Labels[workspaceIDLabel] != ""
+	return cluster.Labels[serviceIDLabel] != "" || cluster.Labels[workspaceLabel] != "" || cluster.Labels[workspaceIDLabel] != ""
 }
 
 // parseServiceSpec reads spec {instances, storage_gi}, applying the contract's defaults and ranges.
@@ -297,6 +295,10 @@ func validateService(lake *oramav1alpha1.Lake, svc *LakeService) (lakeServiceSpe
 		return lakeServiceSpec{}, fmt.Errorf("only a zetta service can be the default")
 	case svc.CustomerID == "":
 		return lakeServiceSpec{}, fmt.Errorf("customer_id is required")
+	case svc.WorkspaceID == "" || svc.WorkspaceNamespace == "":
+		return lakeServiceSpec{}, fmt.Errorf("workspace_id and its reconciled namespace are required")
+	case len(validation.IsDNS1123Label(svc.WorkspaceNamespace)) != 0:
+		return lakeServiceSpec{}, fmt.Errorf("workspace namespace is invalid")
 	case len(serviceResourceName(lake.Name, svc.Slug))+serviceNameOverhead(svc.Kind) > validation.DNS1035LabelMaxLength:
 		return lakeServiceSpec{}, fmt.Errorf("lake name %q is too long for service resource names", lake.Name)
 	}
@@ -334,7 +336,8 @@ func serviceOwnershipOf(lake *oramav1alpha1.Lake, obj metav1.Object, svc *LakeSe
 		}
 		return serviceForeign
 	}
-	if svc.Kind == serviceKindZetta && svc.IsDefault && labels[workspaceIDLabel] == svc.Slug {
+	workspaceMatches := labels[workspaceLabel] == svc.WorkspaceID || labels[workspaceIDLabel] == svc.Slug
+	if svc.Kind == serviceKindZetta && svc.IsDefault && workspaceMatches {
 		if bound := obj.GetAnnotations()[serviceCustomerAnnotation]; bound == "" || bound == svc.CustomerID {
 			return serviceAdoptable
 		}
@@ -403,7 +406,7 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 			log.Info("agent launches skipped: " + err.Error())
 		} else if err != nil {
 			log.Info("agent launches deferred: cannot read agent launches", "err", err.Error())
-		} else if r.reconcileLakeAgentLaunches(passCtx, lake, namespace, labels, store, launches) {
+		} else if r.reconcileLakeAgentLaunches(passCtx, lake, labels, store, launches) {
 			changing = true
 		}
 		// Agent cron schedules (lake_agent_schedules.go, lake#244): one CronJob each.
@@ -412,7 +415,7 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 			log.Info("agent schedules skipped: " + err.Error())
 		} else if err != nil {
 			log.Info("agent schedules deferred: cannot read agent schedules", "err", err.Error())
-		} else if r.reconcileLakeAgentSchedules(passCtx, lake, namespace, labels, store, schedules) {
+		} else if r.reconcileLakeAgentSchedules(passCtx, lake, labels, store, schedules) {
 			changing = true
 		}
 	}
@@ -439,8 +442,12 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 	absentIDs := map[string]bool{}
 	absentSlugs := map[string]bool{}
 	var present []*LakeService
+	workspaceNamespaces := map[string]bool{}
 	for i := range services {
 		svc := &services[i]
+		if svc.WorkspaceNamespace != "" {
+			workspaceNamespaces[svc.WorkspaceNamespace] = true
+		}
 		switch svc.Desired {
 		case serviceDesiredAbsent:
 			absentIDs[svc.ID] = true
@@ -450,7 +457,14 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 				continue
 			}
 			changing = true
-			result, err := r.deleteLakeService(ctx, lake, namespace, svc)
+			if svc.WorkspaceID == "" || len(validation.IsDNS1123Label(svc.WorkspaceNamespace)) != 0 {
+				result := serviceResult{phase: ServicePhaseFailed, message: "workspace_id and its reconciled namespace are required"}
+				if err := writeServiceStatus(ctx, store, svc, result); err != nil {
+					log.Error(err, "service status write deferred", "service", svc.ID)
+				}
+				continue
+			}
+			result, err := r.deleteLakeService(ctx, lake, svc.WorkspaceNamespace, namespace, svc)
 			if err != nil {
 				log.Error(err, "service deletion deferred", "service", svc.ID, "slug", svc.Slug)
 				continue
@@ -468,7 +482,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		}
 	}
 
-	live, err := r.liveServiceCount(ctx, lake, namespace, absentIDs, absentSlugs)
+	live, err := r.liveServiceCount(ctx, lake, workspaceNamespaces, absentIDs, absentSlugs)
 	if err != nil {
 		log.Error(err, "services deferred: cannot count live services")
 		return false
@@ -478,7 +492,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 	credentials := map[string][]byte{}
 	for _, svc := range present {
 		presentSlugs[svc.Slug] = true
-		result, err := r.reconcileLakeService(ctx, lake, namespace, svc, &live)
+		result, err := r.reconcileLakeService(ctx, lake, svc.WorkspaceNamespace, svc, &live)
 		if err != nil {
 			log.Error(err, "service reconcile deferred", "service", svc.ID, "slug", svc.Slug)
 			continue
@@ -557,29 +571,31 @@ func writeServiceStatus(ctx context.Context, store LakeServiceStore, svc *LakeSe
 // liveServiceCount counts the resources that count against the quota: owned by this Lake, not
 // being deleted, and not belonging to a service the current read marks absent (the cache may not
 // show a deletion issued moments ago). Workspace clusters not yet adopted count too.
-func (r *LakeReconciler) liveServiceCount(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, absentIDs, absentSlugs map[string]bool) (int, error) {
+func (r *LakeReconciler) liveServiceCount(ctx context.Context, lake *oramav1alpha1.Lake, namespaces map[string]bool, absentIDs, absentSlugs map[string]bool) (int, error) {
 	selector := client.MatchingLabels{serviceLakeLabel: lake.Name}
-	var clusters oramav1alpha1.OramaZettaClusterList
-	if err := r.List(ctx, &clusters, client.InNamespace(namespace), selector); err != nil {
-		return 0, err
+	objects := []metav1.Object{}
+	for namespace := range namespaces {
+		var clusters oramav1alpha1.OramaZettaClusterList
+		if err := r.List(ctx, &clusters, client.InNamespace(namespace), selector); err != nil {
+			return 0, err
+		}
+		for i := range clusters.Items {
+			objects = append(objects, &clusters.Items[i])
+		}
+		postgres := &unstructured.UnstructuredList{}
+		postgres.SetGroupVersionKind(cnpgClusterListGVK)
+		if err := r.List(ctx, postgres, client.InNamespace(namespace), selector); err != nil {
+			return 0, err
+		}
+		for i := range postgres.Items {
+			objects = append(objects, &postgres.Items[i])
+		}
+		catalog, err := r.liveCatalogObjects(ctx, lake, namespace)
+		if err != nil {
+			return 0, err
+		}
+		objects = append(objects, catalog...)
 	}
-	objects := make([]metav1.Object, 0, len(clusters.Items))
-	for i := range clusters.Items {
-		objects = append(objects, &clusters.Items[i])
-	}
-	postgres := &unstructured.UnstructuredList{}
-	postgres.SetGroupVersionKind(cnpgClusterListGVK)
-	if err := r.List(ctx, postgres, client.InNamespace(namespace), selector); err != nil {
-		return 0, err
-	}
-	for i := range postgres.Items {
-		objects = append(objects, &postgres.Items[i])
-	}
-	catalog, err := r.liveCatalogObjects(ctx, lake, namespace)
-	if err != nil {
-		return 0, err
-	}
-	objects = append(objects, catalog...)
 	live := 0
 	for _, obj := range objects {
 		if !metav1.IsControlledBy(obj, lake) || obj.GetDeletionTimestamp() != nil {
@@ -593,6 +609,10 @@ func (r *LakeReconciler) liveServiceCount(ctx context.Context, lake *oramav1alph
 			continue
 		}
 		if slug := labels[workspaceIDLabel]; workspaceSlugPattern.MatchString(slug) && !absentSlugs[slug] {
+			live++
+			continue
+		}
+		if labels[workspaceLabel] != "" {
 			live++
 		}
 	}
@@ -634,6 +654,7 @@ func setServiceMetadata(obj metav1.Object, lake *oramav1alpha1.Lake, svc *LakeSe
 	labels[serviceIDLabel] = svc.ID
 	labels[serviceKindLabel] = svc.Kind
 	labels[serviceCustomerLabel] = serviceCustomerLabelValue(svc.CustomerID)
+	labels[workspaceLabel] = svc.WorkspaceID
 	obj.SetLabels(labels)
 	annotations := obj.GetAnnotations()
 	if annotations == nil {
@@ -866,7 +887,13 @@ func (r *LakeReconciler) reconcilePostgresService(ctx context.Context, lake *ora
 // Postgres its CloudNativePG Cluster, whose PVCs it owns; then its credential key. It reports
 // Deleted only once none of them remains; until then every poll repeats the same steps. Only a
 // resource that passes the ownership rule is ever deleted.
-func (r *LakeReconciler) deleteLakeService(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, svc *LakeService) (serviceResult, error) {
+func (r *LakeReconciler) deleteLakeService(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	namespace string,
+	credentialNamespace string,
+	svc *LakeService,
+) (serviceResult, error) {
 	if !serviceSlugPattern.MatchString(svc.Slug) {
 		return serviceResult{phase: ServicePhaseFailed, message: fmt.Sprintf("slug must match %s", serviceSlugPattern.String())}, nil
 	}
@@ -892,7 +919,7 @@ func (r *LakeReconciler) deleteLakeService(ctx context.Context, lake *oramav1alp
 	if err != nil || result.phase == ServicePhaseFailed {
 		return result, err
 	}
-	if err := r.removeServiceCredential(ctx, lake, namespace, svc.Slug); err != nil {
+	if err := r.removeServiceCredential(ctx, lake, credentialNamespace, svc.Slug); err != nil {
 		return serviceResult{}, err
 	}
 	if remaining {

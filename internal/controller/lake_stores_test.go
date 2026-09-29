@@ -95,7 +95,8 @@ func (f *fakeServiceStore) setStoreDesired(id, desired string) {
 }
 
 func testStore(id, slug, storeType, provider, spec string) LakeStore {
-	return LakeStore{ID: id, CustomerID: testServiceCustomer, Type: storeType, Provider: provider, Name: "data", Slug: slug,
+	return LakeStore{ID: id, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID,
+		WorkspaceNamespace: testServiceNamespace, Type: storeType, Provider: provider, Name: "data", Slug: slug,
 		Spec: spec, Desired: serviceDesiredPresent, Generation: 1}
 }
 

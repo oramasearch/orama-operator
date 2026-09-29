@@ -14,8 +14,9 @@ lake's
 (liquid-bridge decisions 46 and 47, amended; lake#195; lake branch `feat/duckdb-polars-kinds`); this page is the
 operator's side of it. Field definitions are in the
 [`Lake` CRD reference](../crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service)
-(`spec.services`). It supersedes [workspaces](workspaces.md): a customer's workspace is now its
-**default Zetta service**. A customer's **stores** (volumes, and later buckets and filesystems;
+(`spec.services`). Workspace namespaces are reconciled separately from the
+[`workspaces` table](workspaces.md); `spec.services.enabled` controls only this services poll. A
+customer's **stores** (volumes, and later buckets and filesystems;
 lake#196) ride the same poll, connection and Secret: see [Stores](#stores-lake196).
 
 ## Turning it on
@@ -35,10 +36,10 @@ spec:
 ```
 
 Services need the control-plane Postgres (`spec.postgres.enabled`, the default); they do not need
-the Zetta data plane. `spec.workspaces` is a deprecated alias: `workspaces.enabled` turns services
-on, `workspaces.image` is the Zetta image when `services.zettaImage` is empty, and
-`workspaces.maxWorkspaces` is the cap when `services.maxServices` is `0`. `workspaces.resources`
-and `workspaces.storage.storageClassName` still shape every Zetta service's nodes.
+the Zetta data plane. `spec.workspaces.enabled` no longer enables services and
+`spec.workspaces.maxWorkspaces` no longer caps them. For compatibility, `workspaces.image`,
+`workspaces.resources` and `workspaces.storage.storageClassName` remain the shared fallbacks for
+managed Zetta service pods; set `services.zettaImage` when the images differ.
 
 ## The poll
 
@@ -81,9 +82,11 @@ poll or more. Each now has a mechanism:
 
 ## Present services
 
-Every service becomes **`<lake>-<slug>`** in the Lake namespace, controlled by the Lake, with
+Every service row has a required immutable `workspace_id`. The operator joins it to the
+operator-written `workspaces.namespace`; a missing namespace fails closed. The service becomes
+**`<lake>-<slug>`** in that workspace namespace, controlled by the Lake, with
 labels `orama.cloud/lake=<lake>`, `orama.cloud/service-id=<id>`, `orama.cloud/service-kind=<kind>`,
-`orama.cloud/customer-id` (a `sha256-…` digest when the id is not a valid label value) and
+`orama.cloud/workspace=<workspace_id>`, `orama.cloud/customer-id` (a `sha256-…` digest when the id is not a valid label value) and
 `app.kubernetes.io/name=lake-service`, and annotation `orama.cloud/customer-id=<customer_id>`.
 For a Zetta service, the reconciler carries the Lake/service/kind/customer identity labels from the
 child `OramaZettaCluster` onto its pods without changing the StatefulSet's immutable selector.
@@ -111,12 +114,13 @@ authoritative; each child reports ignored collisions through `status.ignoredEnvV
 
 ### Adoption of workspace clusters
 
-A decision-45 workspace cluster — `OramaZettaCluster <lake>-ws-<12 hex>`, controlled by the Lake,
-labelled `orama.cloud/lake=<lake>` and `orama.cloud/workspace-id=<slug>`, with no service-id label,
+A workspace cluster — `OramaZettaCluster <lake>-ws-<12 hex>` in its reconciled workspace namespace,
+controlled by the Lake and labelled `orama.cloud/lake=<lake>` and
+`orama.cloud/workspace=<full workspace UUID>`, with no service-id label,
 and whose customer annotation (if any) matches — is **adopted** by the customer's default Zetta
-service with that slug. Adoption adds the service labels (the `workspace-id` label stays), keeps the
-existing data volume and its size, and is not subject to the quota, so an existing workspace keeps
-its data.
+service with that workspace ID. The old `orama.cloud/workspace-id=<slug>` label remains accepted
+during replacement. Adoption adds the service labels, keeps the existing data volume and its size,
+and is not subject to the quota.
 
 Anything else already holding the name fails the service and is never modified or deleted:
 
@@ -184,7 +188,7 @@ the service fails with `Secret <ns>/<name> exists and is not this Lake's service
   claims after the `TidbCluster` is deleted, so deletion removes them as it does for Kafka,
   Cassandra and Valkey (the contract lists only those three).
 - **Cassandra names.** The contract's endpoint `<name>-dc1-service` needs a `CassandraDatacenter`
-  object named `dc1`, and that object is namespaced: a second Cassandra service in the Lake's
+  object named `dc1`, and that object is namespaced: a second Cassandra service in the workspace's
   namespace would collide with the first. The datacenter object is named after the slug, and so is
   the Cassandra cluster, which keeps cass-operator's StatefulSet `<slug>-<slug>-default-sts` at 45
   characters whatever the Lake is called (cass-operator's webhook rejects more than 60, and the pod
@@ -320,16 +324,16 @@ Secret **`lake-<lake>-services`** (controlled by the Lake) holds one key per Rea
 **`<slug>.json`**:
 
 ```json
-{"kind":"zetta","endpoint":"http://prod-svc-0123456789ab-zetta.lake.svc.cluster.local:4800","token":"<admin token>"}
-{"kind":"postgres","host":"prod-svc-0123456789ab-rw.lake.svc.cluster.local","port":5432,"database":"app","user":"app","password":"…","uri":"postgresql://app:…@prod-svc-0123456789ab-rw.lake:5432/app"}
-{"kind":"kafka","endpoint":"prod-svc-0123456789ab-kafka-bootstrap.lake.svc.cluster.local:9092","bootstrap":"prod-svc-0123456789ab-kafka-bootstrap.lake.svc.cluster.local:9092","username":"prod-svc-0123456789ab-app","password":"…","sasl_mechanism":"SCRAM-SHA-512","security_protocol":"SASL_PLAINTEXT"}
-{"kind":"clickhouse","endpoint":"clickhouse-prod-svc-0123456789ab.lake.svc.cluster.local:8123","host":"clickhouse-prod-svc-0123456789ab.lake.svc.cluster.local","http_port":8123,"native_port":9000,"user":"app","password":"…","database":"default"}
-{"kind":"tidb","endpoint":"prod-svc-0123456789ab-tidb.lake.svc.cluster.local:4000","host":"prod-svc-0123456789ab-tidb.lake.svc.cluster.local","port":4000,"user":"root","password":"…","uri":"mysql://root:…@prod-svc-0123456789ab-tidb.lake.svc.cluster.local:4000"}
-{"kind":"cassandra","endpoint":"svc-0123456789ab-svc-0123456789ab-service.lake.svc.cluster.local:9042","host":"svc-0123456789ab-svc-0123456789ab-service.lake.svc.cluster.local","port":9042,"datacenter":"dc1","user":"svc-0123456789ab-superuser","password":"…"}
-{"kind":"valkey","endpoint":"valkey-prod-svc-0123456789ab.lake.svc.cluster.local:6379","host":"valkey-prod-svc-0123456789ab.lake.svc.cluster.local","port":6379,"user":"app","password":"…","cluster":true}
-{"kind":"sqlite","endpoint":"http://prod-svc-0123456789ab.lake.svc.cluster.local:8080","token":"<64 hex>","database":"main"}
-{"kind":"duckdb","endpoint":"http://prod-svc-0123456789ab.lake.svc.cluster.local:8080","token":"<64 hex>","database":"main"}
-{"kind":"polars","endpoint":"http://prod-svc-0123456789ab.lake.svc.cluster.local:8080","token":"<64 hex>"}
+{"kind":"zetta","endpoint":"http://prod-svc-0123456789ab-zetta.prod-ws-123e4567e89b.svc.cluster.local:4800","token":"<admin token>"}
+{"kind":"postgres","host":"prod-svc-0123456789ab-rw.prod-ws-123e4567e89b.svc.cluster.local","port":5432,"database":"app","user":"app","password":"…","uri":"postgresql://app:…@prod-svc-0123456789ab-rw.prod-ws-123e4567e89b:5432/app"}
+{"kind":"kafka","endpoint":"prod-svc-0123456789ab-kafka-bootstrap.prod-ws-123e4567e89b.svc.cluster.local:9092","bootstrap":"prod-svc-0123456789ab-kafka-bootstrap.prod-ws-123e4567e89b.svc.cluster.local:9092","username":"prod-svc-0123456789ab-app","password":"…","sasl_mechanism":"SCRAM-SHA-512","security_protocol":"SASL_PLAINTEXT"}
+{"kind":"clickhouse","endpoint":"clickhouse-prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local:8123","host":"clickhouse-prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local","http_port":8123,"native_port":9000,"user":"app","password":"…","database":"default"}
+{"kind":"tidb","endpoint":"prod-svc-0123456789ab-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000","host":"prod-svc-0123456789ab-tidb.prod-ws-123e4567e89b.svc.cluster.local","port":4000,"user":"root","password":"…","uri":"mysql://root:…@prod-svc-0123456789ab-tidb.prod-ws-123e4567e89b.svc.cluster.local:4000"}
+{"kind":"cassandra","endpoint":"svc-0123456789ab-svc-0123456789ab-service.prod-ws-123e4567e89b.svc.cluster.local:9042","host":"svc-0123456789ab-svc-0123456789ab-service.prod-ws-123e4567e89b.svc.cluster.local","port":9042,"datacenter":"dc1","user":"svc-0123456789ab-superuser","password":"…"}
+{"kind":"valkey","endpoint":"valkey-prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local:6379","host":"valkey-prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local","port":6379,"user":"app","password":"…","cluster":true}
+{"kind":"sqlite","endpoint":"http://prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local:8080","token":"<64 hex>","database":"main"}
+{"kind":"duckdb","endpoint":"http://prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local:8080","token":"<64 hex>","database":"main"}
+{"kind":"polars","endpoint":"http://prod-svc-0123456789ab.prod-ws-123e4567e89b.svc.cluster.local:8080","token":"<64 hex>"}
 ```
 
 `uri` is CloudNativePG's own, copied unchanged; TiDB's is built from the host and the generated
@@ -340,7 +344,7 @@ of an absent service, or of a row that no longer exists, is dropped.
 For [Apps](apps.md), every present service with a connection also has a key equal to its service
 ID in this same Secret. It is an exact alias of `<slug>.json`, retained across temporary credential
 read failures and removed on withdrawal or row removal. Store connections keep only their existing
-`<slug>.json` keys. Apps resolve same-customer service IDs and mount only requested connections,
+`<slug>.json` keys. Apps resolve same-workspace service IDs and mount only requested connections,
 using the service name as the filename. Existing Lake consumers continue using slug keys.
 
 The lake Deployment mounts the Secret read-only at **`/var/run/lake/services`** (volume
@@ -396,7 +400,7 @@ A resource that fails the ownership rule is never deleted; the service is `Faile
 
 ## Quota
 
-`spec.services.maxServices` (falling back to `spec.workspaces.maxWorkspaces`; `0` = no limit) caps
+`spec.services.maxServices` (`0` = no limit) caps
 the live services: Lake-controlled `OramaZettaCluster`s, CloudNativePG `Cluster`s and the primary
 resource of each catalog kind (`Kafka`, `ClickHouseInstallation`, `TidbCluster`,
 `K8ssandraCluster`, `ValkeyCluster`, and the `StatefulSet` of SQLite, DuckDB and Polars; a kind that is not installed counts
@@ -486,7 +490,7 @@ LAKE_SERVICES_TEST_POSTGRES=1 go test ./internal/controller/ -run PgxStore
 kubectl -n lake get oramazettacluster,clusters.postgresql.cnpg.io -l orama.cloud/lake=prod
 kubectl -n lake get kafka,kafkanodepool,kafkauser,chi,chk,tidbcluster,k8ssandracluster,valkeycluster -l orama.cloud/lake=prod
 kubectl -n lake get statefulset,service,pvc -l orama.cloud/service-kind=sqlite
-kubectl -n lake get statefulset,service,pvc -l 'orama.cloud/service-kind in (duckdb,polars)'
+kubectl -n prod-ws-123e4567e89b get statefulset,service,pvc -l 'orama.cloud/service-kind in (duckdb,polars)'
 kubectl -n lake get secret lake-prod-services -o jsonpath='{.data}' | jq 'keys'
 kubectl -n lake exec deploy/lake-prod -- ls /var/run/lake/services
 ```

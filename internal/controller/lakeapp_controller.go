@@ -74,7 +74,7 @@ type LakeAppEventPublisher func(ctx context.Context, baseURL, token, topic strin
 
 // LakeAppReconciler materializes one LakeApp into a restricted, dedicated namespace. Cross-
 // namespace children cannot use owner references, so every object carries a stable ownership
-// annotation and the finalizer verifies that annotation before deleting the namespace.
+// annotation and the finalizer verifies that annotation before deleting a standalone namespace.
 type LakeAppReconciler struct {
 	client.Client
 	Scheme         *runtime.Scheme
@@ -159,7 +159,7 @@ func (r *LakeAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	var deployment appsv1.Deployment
-	key := client.ObjectKey{Namespace: workloadNamespace, Name: lakeAppWorkloadName}
+	key := client.ObjectKey{Namespace: workloadNamespace, Name: lakeAppWorkloadObjectName(&app)}
 	// The cache can still hold the previous ready Deployment immediately after an update.
 	// Read through the API reader so that old readiness cannot acknowledge this app generation.
 	if err := r.reader().Get(ctx, key, &deployment); err != nil {
@@ -223,6 +223,9 @@ func validateLakeApp(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) (stri
 }
 
 func lakeAppNamespace(app *oramav1alpha1.LakeApp) string {
+	if app.Spec.Sync != nil {
+		return app.Spec.Sync.WorkspaceNamespace
+	}
 	id := app.Spec.LakeRef + "\n" + app.Namespace + "\n" + app.Name
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(id)))[:10]
 	lakeName := dnsLabel(app.Spec.LakeRef)
@@ -231,6 +234,57 @@ func lakeAppNamespace(app *oramav1alpha1.LakeApp) string {
 		lakeName = strings.Trim(lakeName[:maxLakeLength], "-")
 	}
 	return fmt.Sprintf("lake-%s-app-%s", lakeName, hash)
+}
+
+func lakeAppManagedName(app *oramav1alpha1.LakeApp, legacyName, suffix string) string {
+	if app.Spec.Sync == nil {
+		return legacyName
+	}
+	hex := strings.ReplaceAll(app.Spec.Sync.ID, "-", "")
+	if len(hex) < 12 {
+		hex = fmt.Sprintf("%x", sha256.Sum256([]byte(app.Spec.Sync.ID)))
+	}
+	name := "app-" + hex[:12]
+	if suffix != "" {
+		name += "-" + suffix
+	}
+	return name
+}
+
+func lakeAppWorkloadObjectName(app *oramav1alpha1.LakeApp) string {
+	return lakeAppManagedName(app, lakeAppWorkloadName, "")
+}
+
+func lakeAppTokensName(app *oramav1alpha1.LakeApp) string {
+	return lakeAppManagedName(app, lakeAppTokensSecretName, "tokens")
+}
+
+func lakeAppBindingsName(app *oramav1alpha1.LakeApp) string {
+	return lakeAppManagedName(app, lakeAppBindingsSecretName, "bindings")
+}
+
+func lakeAppEventsName(app *oramav1alpha1.LakeApp) string {
+	return lakeAppManagedName(app, lakeAppEventsSecretName, "events")
+}
+
+func lakeAppSourceName(app *oramav1alpha1.LakeApp) string {
+	return lakeAppManagedName(app, lakeAppSourceSecretName, "source")
+}
+
+func lakeAppPullName(app *oramav1alpha1.LakeApp) string {
+	return lakeAppManagedName(app, lakeAppPullSecretName, "pull")
+}
+
+func lakeAppAccessPolicyName(app *oramav1alpha1.LakeApp) string {
+	return lakeAppManagedName(app, lakeAppNetworkAccessName, "access")
+}
+
+func lakeAppEnvSecretName(app *oramav1alpha1.LakeApp, sourceName string) string {
+	if app.Spec.Sync == nil {
+		return sourceName
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(sourceName)))[:8]
+	return lakeAppManagedName(app, sourceName, "env-"+hash)
 }
 
 func lakeAppOwner(app *oramav1alpha1.LakeApp) string {
@@ -258,6 +312,9 @@ func lakeAppObjectMeta(app *oramav1alpha1.LakeApp, name, namespace string) metav
 
 func lakeAppNamespaceLabels(app *oramav1alpha1.LakeApp) map[string]string {
 	labels := lakeAppLabels(app)
+	if app.Spec.Sync != nil {
+		labels[workspaceLabel] = app.Spec.Sync.WorkspaceID
+	}
 	labels["pod-security.kubernetes.io/audit"] = "restricted"
 	labels["pod-security.kubernetes.io/audit-version"] = "latest"
 	labels["pod-security.kubernetes.io/enforce"] = "restricted"
@@ -268,6 +325,16 @@ func lakeAppNamespaceLabels(app *oramav1alpha1.LakeApp) map[string]string {
 }
 
 func (r *LakeAppReconciler) reconcileLakeAppNamespace(ctx context.Context, app *oramav1alpha1.LakeApp, name string) error {
+	if app.Spec.Sync != nil {
+		var existing corev1.Namespace
+		if err := r.reader().Get(ctx, client.ObjectKey{Name: name}, &existing); err != nil {
+			return fmt.Errorf("read workspace namespace %q: %w", name, err)
+		}
+		if existing.Labels[workspaceLabel] != app.Spec.Sync.WorkspaceID {
+			return fmt.Errorf("namespace %q is not owned by workspace %s", name, app.Spec.Sync.WorkspaceID)
+		}
+		return nil
+	}
 	desired := &corev1.Namespace{ObjectMeta: lakeAppObjectMeta(app, name, "")}
 	desired.Labels = lakeAppNamespaceLabels(app)
 	if err := r.Create(ctx, desired); err == nil {
@@ -300,6 +367,9 @@ func (r *LakeAppReconciler) reconcileLakeAppNamespace(ctx context.Context, app *
 }
 
 func (r *LakeAppReconciler) reconcileLakeAppProfile(ctx context.Context, lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, namespace string) error {
+	if app.Spec.Sync != nil {
+		return r.reconcileLakeAppAccessPolicy(ctx, lake, app, namespace)
+	}
 	quota := &corev1.ResourceQuota{ObjectMeta: lakeAppObjectMeta(app, lakeAppProfileName, namespace)}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, quota, func() error {
 		quota.Labels = lakeAppLabels(app)
@@ -350,7 +420,18 @@ func (r *LakeAppReconciler) reconcileLakeAppProfile(ctx context.Context, lake *o
 		return fmt.Errorf("reconcile app default-deny NetworkPolicy: %w", err)
 	}
 
-	access := &networkingv1.NetworkPolicy{ObjectMeta: lakeAppObjectMeta(app, lakeAppNetworkAccessName, namespace)}
+	return r.reconcileLakeAppAccessPolicy(ctx, lake, app, namespace)
+}
+
+func (r *LakeAppReconciler) reconcileLakeAppAccessPolicy(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	app *oramav1alpha1.LakeApp,
+	namespace string,
+) error {
+	access := &networkingv1.NetworkPolicy{
+		ObjectMeta: lakeAppObjectMeta(app, lakeAppAccessPolicyName(app), namespace),
+	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, access, func() error {
 		access.Labels = lakeAppLabels(app)
 		access.Annotations = map[string]string{lakeAppOwnerAnnotation: lakeAppOwner(app)}
@@ -407,11 +488,15 @@ func lakeAppEgressRules(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) []
 			serviceKindLabel:     serviceKindZetta,
 		}))
 	}
+	dataNamespace := app.Namespace
+	if app.Spec.Sync != nil {
+		dataNamespace = app.Spec.Sync.WorkspaceNamespace
+	}
 	if app.Spec.Bindings != nil {
 		serviceIDs := append([]string(nil), app.Spec.Bindings.Services...)
 		sort.Strings(serviceIDs)
 		for _, serviceID := range serviceIDs {
-			rules = append(rules, lakeAppTargetEgressRule(app.Namespace, map[string]string{serviceIDLabel: serviceID}))
+			rules = append(rules, lakeAppTargetEgressRule(dataNamespace, map[string]string{serviceIDLabel: serviceID}))
 		}
 	}
 	if app.Spec.Sync == nil && app.Spec.EventsSecretRef != nil {
@@ -462,7 +547,9 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 	}
 
 	for _, sourceName := range app.Spec.SecretRefs {
-		if sourceName == lakeAppTokensSecretName || sourceName == lakeAppBindingsSecretName || sourceName == lakeAppEventsSecretName || sourceName == lakeAppSourceSecretName || sourceName == lakeAppPullSecretName {
+		targetName := lakeAppEnvSecretName(app, sourceName)
+		if targetName == lakeAppTokensName(app) || targetName == lakeAppBindingsName(app) ||
+			targetName == lakeAppEventsName(app) || targetName == lakeAppSourceName(app) || targetName == lakeAppPullName(app) {
 			message := fmt.Sprintf("secret reference %q conflicts with an operator-managed Secret", sourceName)
 			return result, "SecretReferenceConflict", message, nil
 		}
@@ -470,12 +557,12 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 		if err != nil || reason != "" {
 			return result, reason, message, err
 		}
-		if err := r.copyLakeAppSecret(ctx, app, namespace, sourceName, source.Type, source.Data); err != nil {
+		if err := r.copyLakeAppSecret(ctx, app, namespace, targetName, source.Type, source.Data); err != nil {
 			return result, "", "", err
 		}
-		wanted[sourceName] = true
-		result.EnvFromNames = append(result.EnvFromNames, sourceName)
-		addLakeAppSecretDigest(digests, sourceName, source.Data)
+		wanted[targetName] = true
+		result.EnvFromNames = append(result.EnvFromNames, targetName)
+		addLakeAppSecretDigest(digests, targetName, source.Data)
 	}
 	sort.Strings(result.EnvFromNames)
 	mode := app.Spec.Mode
@@ -494,12 +581,13 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 			return result, "SourceCredentialPending", message, nil
 		}
 		data := map[string][]byte{"token": value}
-		if err := r.copyLakeAppSecret(ctx, app, namespace, lakeAppSourceSecretName, corev1.SecretTypeOpaque, data); err != nil {
+		targetName := lakeAppSourceName(app)
+		if err := r.copyLakeAppSecret(ctx, app, namespace, targetName, corev1.SecretTypeOpaque, data); err != nil {
 			return result, "", "", err
 		}
-		wanted[lakeAppSourceSecretName] = true
-		result.SourceName = lakeAppSourceSecretName
-		addLakeAppSecretDigest(digests, lakeAppSourceSecretName, data)
+		wanted[targetName] = true
+		result.SourceName = targetName
+		addLakeAppSecretDigest(digests, targetName, data)
 	}
 
 	if app.Spec.Sync == nil && app.Spec.Bindings != nil && (app.Spec.Bindings.Zetta != nil || len(app.Spec.Bindings.Services) > 0) {
@@ -524,12 +612,13 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 			}
 			data[serviceID] = value
 		}
-		if err := r.copyLakeAppSecret(ctx, app, namespace, lakeAppBindingsSecretName, corev1.SecretTypeOpaque, data); err != nil {
+		targetName := lakeAppBindingsName(app)
+		if err := r.copyLakeAppSecret(ctx, app, namespace, targetName, corev1.SecretTypeOpaque, data); err != nil {
 			return result, "", "", err
 		}
-		wanted[lakeAppBindingsSecretName] = true
-		result.BindingsName = lakeAppBindingsSecretName
-		addLakeAppSecretDigest(digests, lakeAppBindingsSecretName, data)
+		wanted[targetName] = true
+		result.BindingsName = targetName
+		addLakeAppSecretDigest(digests, targetName, data)
 	}
 
 	if app.Spec.Sync == nil && app.Spec.EventsSecretRef != nil && app.Spec.EventsSecretRef.Name != "" {
@@ -547,12 +636,13 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 			}
 			data[key] = value
 		}
-		if err := r.copyLakeAppSecret(ctx, app, namespace, lakeAppEventsSecretName, corev1.SecretTypeOpaque, data); err != nil {
+		targetName := lakeAppEventsName(app)
+		if err := r.copyLakeAppSecret(ctx, app, namespace, targetName, corev1.SecretTypeOpaque, data); err != nil {
 			return result, "", "", err
 		}
-		wanted[lakeAppEventsSecretName] = true
-		result.EventsName = lakeAppEventsSecretName
-		addLakeAppSecretDigest(digests, lakeAppEventsSecretName, data)
+		wanted[targetName] = true
+		result.EventsName = targetName
+		addLakeAppSecretDigest(digests, targetName, data)
 	}
 
 	pullName := lake.Spec.PullSecretName
@@ -564,12 +654,13 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 		if err != nil || reason != "" {
 			return result, reason, message, err
 		}
-		if err := r.copyLakeAppSecret(ctx, app, namespace, lakeAppPullSecretName, source.Type, source.Data); err != nil {
+		targetName := lakeAppPullName(app)
+		if err := r.copyLakeAppSecret(ctx, app, namespace, targetName, source.Type, source.Data); err != nil {
 			return result, "", "", err
 		}
-		wanted[lakeAppPullSecretName] = true
-		result.PullName = lakeAppPullSecretName
-		addLakeAppSecretDigest(digests, lakeAppPullSecretName, source.Data)
+		wanted[targetName] = true
+		result.PullName = targetName
+		addLakeAppSecretDigest(digests, targetName, source.Data)
 	}
 	if err := r.deleteStaleLakeAppSecrets(ctx, app, namespace, wanted); err != nil {
 		return result, "", "", err
@@ -713,8 +804,12 @@ func lakeAppResources(app *oramav1alpha1.LakeApp) corev1.ResourceRequirements {
 }
 
 func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, secrets lakeAppSecrets) []corev1.EnvVar {
+	lakeURL := lakeInternalURL(lake, app.Namespace)
+	if app.Spec.Sync != nil {
+		lakeURL = workspaceLakeInternalURL(lake, app.Spec.Sync.WorkspaceID)
+	}
 	env := []corev1.EnvVar{
-		{Name: "LAKE_URL", Value: lakeInternalURL(lake, app.Namespace)},
+		{Name: "LAKE_URL", Value: lakeURL},
 		{Name: "APP_PORT", Value: fmt.Sprint(app.Spec.Port)},
 	}
 	mode := app.Spec.Mode
@@ -735,13 +830,15 @@ func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, sec
 		}
 	}
 	if app.Spec.Sync != nil {
+		tokensName := lakeAppTokensName(app)
 		env = append(env,
 			corev1.EnvVar{Name: "APP_ID", Value: app.Spec.Sync.ID},
-			corev1.EnvVar{Name: "EVENTS_URL", Value: lakeInternalURL(lake, app.Namespace) + "/v1/publish_app_event"},
-			secretEnv("EVENTS_TOKEN", lakeAppTokensSecretName, "events"),
+			corev1.EnvVar{Name: "WORKSPACE_ID", Value: app.Spec.Sync.WorkspaceID},
+			corev1.EnvVar{Name: "EVENTS_URL", Value: lakeURL + "/v1/publish_app_event"},
+			secretEnv("EVENTS_TOKEN", tokensName, "events"),
 		)
 		if mode == oramav1alpha1.LakeAppModeRuntime {
-			env = append(env, secretEnv("APP_TOKEN", lakeAppTokensSecretName, "source"))
+			env = append(env, secretEnv("APP_TOKEN", tokensName, "source"))
 		}
 	} else if secrets.SourceName != "" {
 		env = append(env, secretEnv("APP_TOKEN", secrets.SourceName, "token"))
@@ -859,7 +956,8 @@ func (r *LakeAppReconciler) reconcileLakeAppWorkload(ctx context.Context, lake *
 		replicas = *app.Spec.Replicas
 	}
 	revisionHistoryLimit := int32(10)
-	deployment := &appsv1.Deployment{ObjectMeta: lakeAppObjectMeta(app, lakeAppWorkloadName, namespace)}
+	workloadName := lakeAppWorkloadObjectName(app)
+	deployment := &appsv1.Deployment{ObjectMeta: lakeAppObjectMeta(app, workloadName, namespace)}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
 		deployment.Labels = labels
 		deployment.Annotations = map[string]string{lakeAppOwnerAnnotation: lakeAppOwner(app)}
@@ -877,7 +975,7 @@ func (r *LakeAppReconciler) reconcileLakeAppWorkload(ctx context.Context, lake *
 		return fmt.Errorf("reconcile app Deployment: %w", err)
 	}
 
-	service := &corev1.Service{ObjectMeta: lakeAppObjectMeta(app, lakeAppWorkloadName, namespace)}
+	service := &corev1.Service{ObjectMeta: lakeAppObjectMeta(app, workloadName, namespace)}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
 		clusterIP := service.Spec.ClusterIP
 		clusterIPs := service.Spec.ClusterIPs
@@ -908,7 +1006,7 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 	}
 	if host == "" {
 		return deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{
-			Name: lakeAppWorkloadName, Namespace: namespace,
+			Name: lakeAppWorkloadObjectName(app), Namespace: namespace,
 		}})
 	}
 
@@ -917,7 +1015,8 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 	if ingressClass == "" {
 		ingressClass = "nginx"
 	}
-	ingress := &networkingv1.Ingress{ObjectMeta: lakeAppObjectMeta(app, lakeAppWorkloadName, namespace)}
+	workloadName := lakeAppWorkloadObjectName(app)
+	ingress := &networkingv1.Ingress{ObjectMeta: lakeAppObjectMeta(app, workloadName, namespace)}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ingress, func() error {
 		ingress.Labels = lakeAppLabels(app)
 		ingress.Annotations = map[string]string{lakeAppOwnerAnnotation: lakeAppOwner(app)}
@@ -926,7 +1025,11 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 			auth = oramav1alpha1.LakeAppAuthLake
 		}
 		if auth == oramav1alpha1.LakeAppAuthLake {
-			ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] = lakeInternalURL(lake, app.Namespace) + "/v1/apps/auth"
+			lakeURL := lakeInternalURL(lake, app.Namespace)
+			if app.Spec.Sync != nil {
+				lakeURL = workspaceLakeInternalURL(lake, app.Spec.Sync.WorkspaceID)
+			}
+			ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] = lakeURL + "/v1/apps/auth"
 			ingress.Annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = "X-Orama-User,X-Orama-Space"
 		}
 		ingress.Spec.IngressClassName = &ingressClass
@@ -937,7 +1040,7 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 					Path:     "/",
 					PathType: &prefix,
 					Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-						Name: lakeAppWorkloadName,
+						Name: workloadName,
 						Port: networkingv1.ServiceBackendPort{Number: lakeAppServicePort},
 					}},
 				}},
@@ -1182,10 +1285,11 @@ func publishLakeAppEvent(ctx context.Context, baseURL, token, topic string, even
 }
 
 func (r *LakeAppReconciler) teardownLakeAppWorkload(ctx context.Context, app *oramav1alpha1.LakeApp, namespace string) error {
+	workloadName := lakeAppWorkloadObjectName(app)
 	objects := []client.Object{
-		&networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: lakeAppWorkloadName, Namespace: namespace}},
-		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: lakeAppWorkloadName, Namespace: namespace}},
-		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: lakeAppWorkloadName, Namespace: namespace}},
+		&networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: workloadName, Namespace: namespace}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: workloadName, Namespace: namespace}},
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: workloadName, Namespace: namespace}},
 	}
 	for _, object := range objects {
 		if err := deleteIfExists(ctx, r.Client, object); err != nil {
@@ -1193,6 +1297,33 @@ func (r *LakeAppReconciler) teardownLakeAppWorkload(ctx context.Context, app *or
 		}
 	}
 	return r.deleteLakeAppDNSRecords(ctx, app, "")
+}
+
+func (r *LakeAppReconciler) deleteLakeAppSharedResources(
+	ctx context.Context,
+	app *oramav1alpha1.LakeApp,
+	namespace string,
+) error {
+	policy := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: lakeAppAccessPolicyName(app), Namespace: namespace},
+	}
+	if err := deleteIfExists(ctx, r.Client, policy); err != nil {
+		return err
+	}
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.InNamespace(namespace), client.MatchingLabels(lakeAppLabels(app))); err != nil {
+		return err
+	}
+	for i := range secrets.Items {
+		secret := &secrets.Items[i]
+		if secret.Annotations[lakeAppOwnerAnnotation] != lakeAppOwner(app) {
+			continue
+		}
+		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *LakeAppReconciler) finalizeLakeApp(ctx context.Context, app *oramav1alpha1.LakeApp) (ctrl.Result, error) {
@@ -1221,20 +1352,26 @@ func (r *LakeAppReconciler) finalizeLakeApp(ctx context.Context, app *oramav1alp
 		return ctrl.Result{}, err
 	}
 
-	var namespace corev1.Namespace
 	name := lakeAppNamespace(app)
-	if err := r.reader().Get(ctx, client.ObjectKey{Name: name}, &namespace); err == nil {
-		if namespace.Annotations[lakeAppOwnerAnnotation] != lakeAppOwner(app) {
-			return ctrl.Result{}, fmt.Errorf("refusing to delete namespace %q without ownership annotation %q", name, lakeAppOwner(app))
+	if app.Spec.Sync != nil {
+		if err := r.deleteLakeAppSharedResources(ctx, app, name); err != nil {
+			return ctrl.Result{}, err
 		}
-		if namespace.DeletionTimestamp.IsZero() {
-			if err := r.Delete(ctx, &namespace); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, err
+	} else {
+		var namespace corev1.Namespace
+		if err := r.reader().Get(ctx, client.ObjectKey{Name: name}, &namespace); err == nil {
+			if namespace.Annotations[lakeAppOwnerAnnotation] != lakeAppOwner(app) {
+				return ctrl.Result{}, fmt.Errorf("refusing to delete namespace %q without ownership annotation %q", name, lakeAppOwner(app))
 			}
+			if namespace.DeletionTimestamp.IsZero() {
+				if err := r.Delete(ctx, &namespace); err != nil && !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+			}
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		} else if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: time.Second}, nil
-	} else if !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
 	}
 
 	var records oramav1alpha1.CloudflareDNSRecordList

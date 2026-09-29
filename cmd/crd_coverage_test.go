@@ -58,8 +58,8 @@ func registeredKinds(t *testing.T) []string {
 	var kinds []string
 	for _, match := range reconcilerPattern.FindAllStringSubmatch(string(source), -1) {
 		kind := match[1]
-		// The apps-table intake is a second controller of Lake, not a separate CRD.
-		if kind == "LakeApps" {
+		// The row-intake reconcilers are additional controllers of Lake, not separate CRDs.
+		if kind == "LakeApps" || kind == "LakeWorkspaces" {
 			kind = "Lake"
 		}
 		kinds = append(kinds, kind)

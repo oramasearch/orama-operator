@@ -5,7 +5,7 @@
 IMG ?= oramasearch/orama-operator:latest
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0
 
-.PHONY: manifests generate fmt vet build run docker-build helm-package test check-crds
+.PHONY: manifests generate fmt vet build run docker-build helm-package test check-crds verify-workspace-isolation
 
 manifests: ## Generate CRDs + RBAC from kubebuilder markers into config/crd, config/rbac.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook \
@@ -28,3 +28,7 @@ helm-package: manifests ## Copy generated CRDs into the chart and package it.
 
 check-crds: ## Fail if the cluster is missing a CRD this chart ships. CONTEXT=<kube-context>
 	./hack/check-cluster-crds.sh $(CONTEXT)
+
+verify-workspace-isolation: ## Run the workspace trust-boundary Job against a live cluster.
+	@test -n "$(WORKSPACE_NAMESPACE)" -a -n "$(LAKE_NAMESPACE)" -a -n "$(LAKE_NAME)" -a -n "$(OTHER_WORKSPACE_NAMESPACE)"
+	./hack/verify-workspace-isolation.sh "$(WORKSPACE_NAMESPACE)" "$(LAKE_NAMESPACE)" "$(LAKE_NAME)" "$(OTHER_WORKSPACE_NAMESPACE)"

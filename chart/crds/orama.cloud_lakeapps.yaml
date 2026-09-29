@@ -90,7 +90,7 @@ spec:
                       type: string
                     description: |-
                       ServiceNames maps service identifiers to filenames under bindings/services. The apps
-                      sync resolves these names from same-customer services; standalone apps default to the ID.
+                      sync resolves these names from same-workspace services; standalone apps default to the ID.
                     type: object
                   services:
                     description: Services contains the Lake service identifiers whose
@@ -360,10 +360,25 @@ spec:
                     - source
                     - zetta
                     type: object
+                  workspaceId:
+                    description: WorkspaceID is the immutable workspace that owns
+                      this app.
+                    format: uuid
+                    type: string
+                    x-kubernetes-validations:
+                    - message: workspace ID is immutable
+                      rule: self == oldSelf
+                  workspaceNamespace:
+                    description: WorkspaceNamespace is the operator-reconciled namespace
+                      containing the app's data services.
+                    minLength: 1
+                    type: string
                 required:
                 - customerId
                 - generation
                 - id
+                - workspaceId
+                - workspaceNamespace
                 type: object
             required:
             - lakeRef

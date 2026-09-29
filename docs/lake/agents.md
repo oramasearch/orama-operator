@@ -16,7 +16,7 @@ and reports back, as it does for services and stores.
 |---|---|
 | `runtimeImage` | `oramasearch/agent-runtime:<tag>`, the one image every launch runs on. Empty: every launch is `Failed` with *agents are not enabled on this Lake* |
 | `library[]` | `{key, image}` per specialized agent: `agent-ask-orama`, `agent-project`, `agent-autosuggest`, `agent-creator` |
-| `openaiSecretName` | a Secret in `spec.namespace` holding `OPENAI_API_KEY`, the general Orama key. **People provide it**; the operator only references it, never creates or reads it |
+| `openaiSecretName` | a Secret in `spec.namespace` holding `OPENAI_API_KEY`, the general Orama key. **People provide it**; the operator copies it into each launch's workspace and never writes the key to a row or status |
 | `model` | the frontier model agents default to (default `gpt-5.5`) |
 | `jobDeadlineSeconds` | the bound on one job launch (default 3600) |
 
@@ -54,13 +54,17 @@ the bus.
 ## Launches
 
 On every services poll, after the services and stores, the operator reads lake's `agent_launches`
-(migration `0030`; a schema without it is skipped and logged). For each present launch:
+(migration `0030`; a schema without it is skipped and logged). Every row requires `workspace_id`;
+the query joins the operator-written `workspaces.namespace`, and there is no Lake-namespace
+fallback. For each present launch:
 
 1. **Its credential.** A Secret `<lake>-<slug>-credential` (key `token`) holding
    `lal.<launch id>.<32 random hex>`, created once, controlled by the Lake and labelled
    `orama.cloud/agent-launch-id`. The operator writes only its **SHA-256** into
    `agent_launch_status.credential_sha256`; lake resolves the credential by comparing digests and
    never stores it. The pod reads it as `LAKE_TOKEN` through a Secret reference, never a plain value.
+   The credential, pull credential, OpenAI key and service token used by service-mode agents are
+   copied into the workspace namespace.
 2. **`job`** — a Job `<lake>-<slug>` from `runtimeImage` with `backoffLimit: 0` (an agent run is never
    retried behind the person's back), `activeDeadlineSeconds` = `jobDeadlineSeconds`,
    `ttlSecondsAfterFinished: 3600`, `AGENT_MODE=job` and the launch's `input` as `AGENT_INPUT`.
@@ -80,9 +84,12 @@ while it ran, which made the job's own calls to lake fail with *connection refus
 A job is `Succeeded` only once its pod's exit code and termination message are readable; until then
 it stays `Running` with *collecting the result*, since a finished run is never revisited.
 
-Every agent pod runs as UID 10001, non-root, with a read-only root filesystem, a 1 GiB `emptyDir` at
-`/tmp`, no service-account token, all capabilities dropped, the Lake's `pullSecretName`, and
-`LAKE_URL`, `CUSTOMER_ID`, `AGENT_ID`, `OPENAI_API_KEY`, the model and `TRACE_DIR`.
+Every user-agent pod runs in its workspace namespace as UID 10001, non-root, with a read-only root
+filesystem, a 1 GiB `emptyDir` at `/tmp`, no service-account token, all capabilities dropped, the
+localized pull Secret, and `LAKE_URL`, `WORKSPACE_ID`, `CUSTOMER_ID`, `AGENT_ID`, `OPENAI_API_KEY`,
+the model and `TRACE_DIR`. `LAKE_URL` is Lake's in-cluster Service followed by
+`/w/<workspace id>`; workspace NetworkPolicy permits that service while denying other Lake and
+cluster traffic. Library agents remain trusted control-plane workloads in `spec.namespace`.
 
 An **absent** launch's Job or Deployment, Service and credential Secret are deleted (only objects
 this Lake controls with this launch's id), and its status becomes `Stopped` with the credential
@@ -92,8 +99,9 @@ change; a starting or running launch keeps the Lake's poll fast.
 ## Schedules
 
 A Python agent may have **any number of cron schedules**; lake writes each as a row of
-`agent_cron_schedules` (migration `0031_agent_cron_schedules`), read on the same services poll. For
-each present schedule the operator:
+`agent_cron_schedules` (migration `0031_agent_cron_schedules`), read on the same services poll.
+Schedules also require `workspace_id` and run in the joined workspace namespace. For each present
+schedule the operator:
 
 1. generates the schedule's credential once, `las.<schedule id>.<secret>`, in Secret
    `<lake>-<slug>-credential` (labelled `orama.cloud/agent-schedule-id`), and writes only its
@@ -127,6 +135,8 @@ go test ./internal/controller/ -run 'Agent|Launch|Library|LakeTellsLake|Schedule
 `TestEachAgentScheduleIsItsOwnCronJobWithItsOwnCredential`,
 `TestAScheduledRunIsReportedOnceItsOutcomeIsReadable`,
 `TestARemovedScheduleLosesItsCronJobAndCredential`, `TestAScheduleWithoutAgentsEnabledOrAValidSlugFails`.
+Workspace placement tests also assert that Jobs, CronJobs and their Secrets are absent from the
+Lake namespace and carry the full `orama.cloud/workspace` UUID label.
 
 ## Change it
 

@@ -29,17 +29,19 @@ writes use a two-second retry. LakeApp, dependency Secret, schema and ingress ch
 the sync. An unavailable database, missing table or incomplete list preserves existing resources.
 Disabling apps stops intake and removes its wildcard record, but retains apps and credentials.
 
-The table has exactly the issue's original columns:
+The table includes the required workspace identity:
 
 ```text
-id, customer_id, name, mode, source_repository, source_revision, source_path,
+id, customer_id, workspace_id, name, mode, source_repository, source_revision, source_path,
 image, framework, port, replicas, host, auth, bindings_json, env_json,
 secret_env_refs, desired, generation, phase, url, ready, message,
 observed_generation, updated_at
 ```
 
 The agreed additions are `source_entrypoint` (optional text) and `token_hashes_json` (jsonb).
-`id` and `customer_id` are UUIDs; `generation` is a positive, monotonically increasing integer.
+`id`, `customer_id` and `workspace_id` are UUIDs; `generation` is a positive, monotonically
+increasing integer. The query joins `workspace_id` to the operator-written
+`workspaces.namespace`; there is no Lake-namespace fallback.
 Lake writes desired fields and increments generation on edits. The operator writes only status
 and token hashes. Status and hash writes match ID, customer, generation and desired value, so an
 old read cannot acknowledge a newer row or recreate a removed row. Unchanged observations write
@@ -54,7 +56,7 @@ writing them; plaintext credentials belong in Secrets, never these JSON columns.
 ```
 
 `zetta` can be null or absent. The sync checks each service ID against a present `services` row
-with the same customer and resolves its name. Duplicate or unsafe filenames fail validation.
+in the same workspace and resolves its name. Duplicate or unsafe filenames fail validation.
 The Service reconciler publishes an ID key alongside its existing `<slug>.json` key in the
 Lake-owned `lake-<lake>-services` Secret; both contain the same connection document. Only requested
 ID keys are copied to `app-bindings` in the app namespace. The pod mounts them as
@@ -73,7 +75,7 @@ label beneath that suffix. Lake is responsible for reserving unique app hosts.
 |---|---|
 | `running` | Create/update the CR from the row. `Pending` until its current generation is observed; `Deploying` during rollout; `Running` with `ready=true` only after current Deployment readiness; `Degraded` for workload failures. Invalid desired input or foreign ownership is `Failed`. |
 | `stopped` | Keep the CR and all resources, setting replicas to zero. Report `Stopped`, `ready=false` only after the Deployment observes zero running replicas. Starting restores the row's replica count. |
-| `deleted` | Delete the owned CR with UID/resource-version preconditions. Its finalizer removes the namespace and individual DNS record. While cleanup runs report `Deploying`, `ready=false`; after the CR is absent revoke token hashes and write `Deleted`. Lake then removes the row. |
+| `deleted` | Delete the owned CR with UID/resource-version preconditions. Its finalizer removes only that app's resources, credentials, policy and individual DNS record; the shared workspace namespace remains. While cleanup runs report `Deploying`, `ready=false`; after the CR is absent revoke token hashes and write `Deleted`. Lake then removes the row. |
 | Row absent | A successful complete list deletes only orphan CRs controlled by this Lake with a sync identity. Standalone and foreign CRs remain untouched. Failed reads never trigger orphan cleanup. |
 
 Every status write includes `phase`, `url`, `ready`, `message`, `observed_generation`, `updated_at`.
@@ -83,7 +85,7 @@ Allowed database phases are `Pending`, `Deploying`, `Running`, `Degraded`, `Stop
 ### Generated credentials
 
 The app controller generates independent 32-byte random tokens, encoded as hex, once in Secret
-`app-tokens` in the isolated app namespace. Its ownership includes the LakeApp UID, so a Secret
+`app-<first 12 app UUID hex>-tokens` in the workspace namespace. Its ownership includes the LakeApp UID, so a Secret
 from another app incarnation cannot be adopted. `source` and `events` always exist; `zetta` exists
 only with a workspace binding. The sync writes their SHA-256 hex digests as:
 
@@ -93,7 +95,7 @@ only with a workspace binding. The sync writes their SHA-256 hex digests as:
 
 When bound, `zetta` is its SHA-256 hex digest instead of null. A workload starts only after the
 sync successfully registers these hashes and acknowledges them in `spec.sync.tokenHashes`.
-Retries retain the existing tokens. Removing `app-tokens` requests rotation: the controller
+Retries retain the existing tokens. Removing the app's token Secret requests rotation: the controller
 generates replacements, pauses the workload, registers new hashes, and rolls the new credentials
 into the pod. A failed registration keeps the workload paused. Old tokens stop authenticating when
 lake sees the new hashes. Unbinding removes the Zetta token and registers null without rotating
@@ -105,9 +107,9 @@ Lake hashes each bearer and enforces its purpose against the current row:
 - `zetta`: `workspace_query` / read-only `workspace_sql` for this customer and its declared scopes;
 - `events`: `publish_app_event` for this app only, publishing to `app-events.<app id>`.
 
-Runtime pods receive `APP_TOKEN` from `app-tokens/source`. The Zetta token is copied to the local
+Runtime pods receive `APP_TOKEN` from the app token Secret's `source` key. The Zetta token is copied to the local
 binding Secret and mounted at `/var/run/orama/bindings/zetta`. `EVENTS_TOKEN` comes from
-`app-tokens/events`, `APP_ID` is the row ID, and `EVENTS_URL` is Lake's in-cluster
+the token Secret's `events` key, `APP_ID` is the row ID, and `EVENTS_URL` is Lake's in-cluster
 `/v1/publish_app_event` endpoint. The publisher reads that same Secret. Tokens never appear in
 Postgres, specs, literal env values, annotations, status or logs. SQL/client errors are reduced to
 stable messages before logging so connection strings and driver details cannot expose credentials.
@@ -161,10 +163,12 @@ The Lake-level settings are:
 
 An image-mode app sets `spec.image` to an immutable `name@sha256:<64 hex>` reference. Its optional
 `spec.pullSecretName` overrides the Lake's pull Secret. The source pull Secret always remains in the
-Lake namespace; the controller copies it into the isolated app namespace.
+Lake namespace; the controller copies it into the workspace namespace for synchronized apps or
+the private app namespace for standalone CRs.
 
-The apps sync sets `spec.sync` on its Lake-owned CRs: the immutable app `id` and `customerId`,
-the desired row `generation`, and `tokenHashes` acknowledging credentials registered in Postgres.
+The apps sync sets `spec.sync` on its Lake-owned CRs: the immutable app `id`, `customerId` and
+`workspaceId`, the operator-written `workspaceNamespace`, the desired row `generation`, and
+`tokenHashes` acknowledging credentials registered in Postgres.
 Only SHA-256 hashes appear here. `bindings.serviceNames` records the service IDs' resolved names
 for mount filenames. Standalone CRs omit `sync` and keep their explicit Secret references.
 There is no `spec.apps.buildkit`; build Jobs belong to #195 and `spec.builds`.
@@ -199,17 +203,20 @@ credential digest, so Kubernetes performs a rollout without putting secret data 
 
 ## Resources and isolation
 
-The resource's stable workload namespace is `lake-<lake>-app-<10-hex-hash>`, derived from Lake and
-`LakeApp` identity. It carries Pod Security `restricted` labels and an ownership annotation that the
-finalizer verifies before deletion. The controller creates:
+Synchronized apps run in the owning `<environment>-ws-<workspace id>` namespace and use
+`app-<first 12 app UUID hex>` object names so multiple apps cannot collide. The controller verifies
+the namespace's full workspace label and never adopts or deletes that shared namespace. Standalone
+CRs retain their stable private `lake-<lake>-app-<10-hex-hash>` namespace, derived from Lake and
+`LakeApp` identity, with an ownership annotation checked before deletion. The controller creates:
 
-- `ResourceQuota tenant-defaults` and `LimitRange tenant-defaults`;
-- a default-deny ingress/egress `NetworkPolicy` and an `app-access` policy;
-- Deployment and Service `app`;
-- Ingress `app` when a host is available;
+- for standalone apps, `ResourceQuota tenant-defaults`, `LimitRange tenant-defaults` and a default-deny policy;
+- a per-app access policy;
+- a uniquely named Deployment and Service;
+- a uniquely named Ingress when a host is available;
 - a proxied `CloudflareDNSRecord` for a custom host when Lake DNS credentials are configured.
 
-The access policy admits the nginx ingress namespace and DNS. Synchronized apps can reach the Lake
+The workspace's baseline policies admit DNS and Lake. The per-app policy admits the nginx ingress
+controller only to that app's labelled pod and port. Synchronized apps can reach the Lake
 Service for source, workspace reads and event publication; their scoped Zetta bearer is validated
 by Lake, not sent directly to Zetta. Each service binding gets a rule selecting that service ID.
 Standalone apps retain their direct workspace/bus Zetta policies. No general internet egress opens.
@@ -217,7 +224,8 @@ Standalone apps retain their direct workspace/bus Zetta policies. No general int
 The pod runs as uid/gid 10001, drops all capabilities, prevents privilege escalation, uses runtime
 default seccomp, has a read-only root filesystem, disables its Kubernetes token and service links,
 and gets a size-limited `emptyDir` at `/tmp`. Private pull credentials are copied into the workload
-namespace. The selected binding values appear as files at:
+namespace. Runtime env includes `WORKSPACE_ID`, and `LAKE_URL`, auth and event URLs use Lake's
+`/w/<workspace id>` route. The selected binding values appear as files at:
 
 ```text
 /var/run/orama/bindings/zetta
@@ -268,8 +276,8 @@ logged and never fails or delays resource reconciliation. The same event Secret 
 app so app-runtime can publish its own progress. Redirects are refused for Lake-issued bearers.
 
 Deletion records `TornDown`, publishes that transition best-effort, removes any individual DNS
-record, verifies namespace ownership, deletes the namespace, waits until it and the DNS record are absent, and only then
-releases the finalizer.
+record and the app's named resources, and only then releases the finalizer. Standalone deletion
+also verifies and deletes its private namespace; synchronized deletion preserves the workspace.
 
 ## Verification
 

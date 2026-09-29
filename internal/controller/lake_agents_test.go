@@ -41,7 +41,8 @@ func agentsTestLake() *oramav1alpha1.Lake {
 }
 
 func testLaunch(mode string) LakeAgentLaunch {
-	return LakeAgentLaunch{ID: testLaunchID, CustomerID: testServiceCustomer, AgentID: "a-1", Mode: mode,
+	return LakeAgentLaunch{ID: testLaunchID, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID,
+		WorkspaceNamespace: testServiceNamespace, AgentID: "a-1", Mode: mode,
 		Input: `"week 39"`, Slug: testLaunchSlug, Desired: serviceDesiredPresent, Generation: 1}
 }
 

@@ -68,6 +68,14 @@ table in a rolled-back transaction while lake#293 implements the upstream migrat
 tests with `GOMAXPROCS=6 GOFLAGS=-p=6`; no image build or live cluster is needed. See
 [the apps contract and proof](lake/apps.md#verification).
 
+The workspace sync's optional SQL proof is `TestLakeWorkspacesPgxStoreAgainstPostgres`, using
+`LAKE_WORKSPACES_TEST_POSTGRES_URI` against a fresh local database. It applies only
+`internal/controller/testdata/lake-workspaces.sql` inside a rolled-back transaction because
+lake#265/lake#311 own the production migration. The deterministic namespace, policy, lifecycle and
+legacy-cleanup cases run in the ordinary Go suite. A live CI or dev cluster runs the tokenless
+network Job with `make verify-workspace-isolation`; its required variables and assertions are in
+[`lake/workspaces.md`](lake/workspaces.md#verification-job).
+
 lake-sqlite, lake-duckdb and lake-polars, the web services behind the `sqlite`, `duckdb` and
 `polars` service kinds, are each their own private repository
 ([oramasearch/lake-sqlite](https://github.com/oramasearch/lake-sqlite),

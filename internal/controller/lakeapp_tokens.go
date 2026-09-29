@@ -33,10 +33,10 @@ const (
 // Tokens are persisted before their hashes are acknowledged by the apps sync. Retrying a
 // database write never mints another token, and a missing Secret recovers with new credentials.
 func (r *LakeAppReconciler) reconcileLakeAppTokens(ctx context.Context, app *oramav1alpha1.LakeApp, namespace string) (*corev1.Secret, error) {
-	secret := &corev1.Secret{ObjectMeta: lakeAppObjectMeta(app, lakeAppTokensSecretName, namespace)}
+	secret := &corev1.Secret{ObjectMeta: lakeAppObjectMeta(app, lakeAppTokensName(app), namespace)}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		if secret.ResourceVersion != "" && !lakeAppOwnsTokens(app, secret) {
-			return errors.New("app-tokens is not owned by this LakeApp")
+			return errors.New("app token Secret is not owned by this LakeApp")
 		}
 		secret.Annotations[lakeAppUIDAnnotation] = string(app.UID)
 		secret.Type = corev1.SecretTypeOpaque
@@ -88,10 +88,11 @@ func (r *LakeAppReconciler) reconcileSyncedLakeAppSecrets(ctx context.Context, l
 	result := lakeAppSecrets{}
 	tokens, err := r.reconcileLakeAppTokens(ctx, app, namespace)
 	if err != nil {
-		return result, "TokenSecretConflict", "cannot reconcile the owned app-tokens Secret", nil
+		return result, "TokenSecretConflict", "cannot reconcile the owned app token Secret", nil
 	}
-	wanted[lakeAppTokensSecretName] = true
-	addLakeAppSecretDigest(digests, lakeAppTokensSecretName, tokens.Data)
+	tokensName := lakeAppTokensName(app)
+	wanted[tokensName] = true
+	addLakeAppSecretDigest(digests, tokensName, tokens.Data)
 	if !apiequality.Semantic.DeepEqual(app.Spec.Sync.TokenHashes, lakeAppTokenHashes(tokens)) {
 		return result, "TokenRegistrationPending", "waiting for app token hashes to be registered in Lake", nil
 	}
@@ -116,12 +117,13 @@ func (r *LakeAppReconciler) reconcileSyncedLakeAppSecrets(ctx context.Context, l
 		}
 	}
 	if len(data) > 0 {
-		if err := r.copyLakeAppSecret(ctx, app, namespace, lakeAppBindingsSecretName, corev1.SecretTypeOpaque, data); err != nil {
+		bindingsName := lakeAppBindingsName(app)
+		if err := r.copyLakeAppSecret(ctx, app, namespace, bindingsName, corev1.SecretTypeOpaque, data); err != nil {
 			return result, "", "", err
 		}
-		wanted[lakeAppBindingsSecretName] = true
-		result.BindingsName = lakeAppBindingsSecretName
-		addLakeAppSecretDigest(digests, lakeAppBindingsSecretName, data)
+		wanted[bindingsName] = true
+		result.BindingsName = bindingsName
+		addLakeAppSecretDigest(digests, bindingsName, data)
 	}
 	return result, "", "", nil
 }
@@ -136,14 +138,14 @@ func (r *LakeAppReconciler) publishSyncedLakeAppEvent(ctx context.Context, app *
 		return
 	}
 	var tokens corev1.Secret
-	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppTokensSecretName}
+	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppTokensName(app)}
 	if err := r.Get(ctx, key, &tokens); err != nil || !lakeAppOwnsTokens(app, &tokens) {
 		return
 	}
 	if app.Spec.Sync.TokenHashes == nil || credentialDigest(string(tokens.Data["events"])) != app.Spec.Sync.TokenHashes.Events {
 		return
 	}
-	baseURL := lakeInternalURL(&lake, app.Namespace)
+	baseURL := workspaceLakeInternalURL(&lake, app.Spec.Sync.WorkspaceID)
 	token := string(tokens.Data["events"])
 	id := app.Spec.Sync.ID
 	event := lakeAppEvent{

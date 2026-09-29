@@ -142,7 +142,7 @@ func zettaPodLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 	// LakeApp egress is label-scoped to the exact managed service. Preserve only the Lake service
 	// identity labels on pods. The StatefulSet selector deliberately remains zettaLabels: changing
 	// that immutable selector would break adopted workspace clusters.
-	for _, key := range []string{serviceLakeLabel, serviceIDLabel, serviceKindLabel, serviceCustomerLabel, workspaceIDLabel} {
+	for _, key := range []string{serviceLakeLabel, serviceIDLabel, serviceKindLabel, serviceCustomerLabel, workspaceIDLabel, workspaceLabel} {
 		if value := z.Labels[key]; value != "" {
 			labels[key] = value
 		}
@@ -749,6 +749,9 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 	customEnv, _ := zettaCustomEnv(z.Spec.Env)
 	zettaEnv = append(zettaEnv, customEnv...)
 	onRootMismatch := corev1.FSGroupChangeOnRootMismatch
+	noToken := false
+	runAsNonRoot := true
+	noPrivilegeEscalation := false
 
 	sts.Labels = lbls
 	sts.Spec.ServiceName = headlessName
@@ -760,7 +763,8 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 	sts.Spec.Template = corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{Labels: zettaPodLabels(z)},
 		Spec: corev1.PodSpec{
-			ImagePullSecrets: pull,
+			ImagePullSecrets:             pull,
+			AutomountServiceAccountToken: &noToken,
 			// The image runs zetta as uid 10001; fsGroup makes the mounted PVC group-writable so the
 			// node can create /data/security (mints its cluster cert/token) etc. Azure/most CSI disks
 			// mount root-owned, so a non-root node needs this. OnRootMismatch avoids walking all data
@@ -768,8 +772,10 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsUser:           int64Ptr(10001),
 				RunAsGroup:          int64Ptr(10001),
+				RunAsNonRoot:        &runAsNonRoot,
 				FSGroup:             int64Ptr(10001),
 				FSGroupChangePolicy: &onRootMismatch,
+				SeccompProfile:      &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 			},
 			Containers: []corev1.Container{{
 				Name:            "zetta",
@@ -783,6 +789,10 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 				},
 				VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: zettaDataDir}},
 				Resources:    resources,
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: &noPrivilegeEscalation,
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				},
 				// Readiness probe intentionally DISABLED (operator#68): the node's HTTP server is flaky
 				// (drops ~2/3 of back-to-back requests, zetta#731), so an HTTP/TCP readiness probe keeps
 				// flapping the pod out of the Service — starving the schema Job + clients. Without a

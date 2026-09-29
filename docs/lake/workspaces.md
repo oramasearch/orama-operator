@@ -1,41 +1,159 @@
-# Lake workspaces (superseded by managed services)
+# Lake workspace namespaces
 
-**Superseded by [managed services](services.md) (liquid-bridge decision 46).** A customer's
-workspace — the Zetta cluster behind lake's Design, Train and Ship pages — is now that customer's
-**default Zetta service**. This page records what decision 45 built and what happens to it.
+Each Lake workspace is a Zetta data plane in its own Kubernetes namespace. The namespace is a
+security boundary for customer workloads and credentials; it is not a naming convenience. This is
+the operator side of [lake#265](https://github.com/oramasearch/lake/issues/265) and
+[operator#190](https://github.com/oramasearch/orama-operator/issues/190).
 
-## What decision 45 did
+## Control-Postgres contract
 
-Zetta has no tenancy, so each lake customer workspace got its own `OramaZettaCluster`. lake
-appended `desired` and `withdrawn` rows to `orama_control.workspaces` on its own Zetta data plane
-(which ran with `provisionOperatorSchema: true` for that purpose); the operator's
-`OramaZettaCluster` poll created `<lake>-<workspace_id>` per valid `workspace_id`
-(`^ws-[0-9a-f]{12}$`), appended `status` rows on transition, deleted a withdrawn workspace's data
-PVCs, cluster and credential ([#173](https://github.com/oramasearch/orama-operator/pull/173)),
-capped the count with `spec.workspaces.maxWorkspaces`, and handed lake the admin tokens in Secret
-`lake-<lake>-workspaces` mounted at `/var/run/lake/workspaces`, with `LAKE_WORKSPACE_DIR` and
-`LAKE_WORKSPACE_URL_TEMPLATE`.
+With `Lake.spec.workspaces.enabled`, a dedicated controller reads lake's `workspaces` table through
+the CloudNativePG application Secret `lake-<lake>-controldb-app` (`uri`). Lake sends `NOTIFY
+lake_workspaces` after every change, and the operator performs a complete list every 60 seconds so a
+missed notification, reconnect or manager restart cannot strand desired state.
 
-## What changed
+The fixed row is:
 
-| Decision 45 | Now |
+| Column | Owner and meaning |
 |---|---|
-| requests in `orama_control.workspaces` on the Zetta data plane | the `services` table in lake's control Postgres, read with pgx |
-| status rows appended to the same Zetta table | `service_status` rows upserted on change |
-| the data plane provisions the operator schema | the data plane is a plain data plane again (`provisionOperatorSchema: false`); the `workspaces` table is no longer in the operator schema |
-| Secret `lake-<lake>-workspaces`, key `<workspace_id>` = token | Secret `lake-<lake>-services`, key `<slug>.json` = connection JSON; the old Secret is deleted |
-| `/var/run/lake/workspaces`, `LAKE_WORKSPACE_DIR`, `LAKE_WORKSPACE_URL_TEMPLATE` | `/var/run/lake/services`, `LAKE_SERVICE_DIR`; endpoints come from `service_status` |
-| `withdrawn` row | `desired = 'absent'`; the same PVC-then-cluster order and ownership rule |
-| `workspace quota reached (<n>)` | `service quota reached (<n>)` |
+| `id` | lake; canonical workspace UUID and immutable identity |
+| `customer_id`, `name`, `environment` | lake; `environment` is a DNS label |
+| `desired` | lake; `running`, `stopped` or `deleted` |
+| `generation` | lake; increments with desired state |
+| `phase`, `observed_generation`, `message`, `namespace` | operator observations |
+| `zetta_service_id` | lake's workspace-to-data-plane identity |
+| `created_at`, `updated_at` | lake timestamps |
 
-## Existing workspace clusters
+Status updates include `id`, `customer_id`, `generation` and `desired` in the `WHERE` clause. A
+stale pass therefore cannot acknowledge a row that changed after it was listed. An unchanged
+status writes nothing.
 
-An existing `<lake>-ws-<12 hex>` cluster keeps its data: the customer's default Zetta service with
-that slug **adopts** it (see [adoption](services.md#adoption-of-workspace-clusters)). Until lake
-writes that service row, the cluster is left alone and counts against the quota.
+The namespace is `<environment>-ws-<first 12 UUID hex characters>`, for example
+`prod-ws-123e4567e89b`, with these labels:
 
-## `spec.workspaces`
+```text
+orama.cloud/workspace=<full workspace UUID>
+orama.cloud/customer=<customer UUID>
+orama.cloud/environment=<environment>
+orama.cloud/lake=<Lake name>
+```
 
-The field remains as a deprecated alias; see [turning services on](services.md#turning-it-on):
-`enabled` turns services on, `image` and `maxWorkspaces` are fallbacks for `spec.services`, and
-`resources` and `storage.storageClassName` still shape Zetta services' nodes.
+An existing namespace whose identity labels do not match is refused, never adopted. If the
+environment changes, the previously reported owned namespace is deleted before the replacement is
+created. `desired=stopped` removes the workspace `OramaZettaCluster` but leaves its namespace and
+PVCs for restart. `desired=deleted` deletes the owned namespace; Kubernetes namespace deletion
+cascades through the Zetta cluster, volumes and Secrets before the row becomes `Deleted`.
+
+Every data-plane row carries the required immutable `workspace_id`. The services, stores, agent
+launches, agent schedules and apps readers join that ID to `workspaces.namespace`; an empty or
+invalid reconciled namespace fails the object instead of falling back to Lake's namespace. Managed
+services, stores, agent Jobs/Deployments/CronJobs and synchronized app workloads are created in the
+joined workspace namespace and labelled with the full workspace UUID. App resource and Secret
+names include the first 12 app-ID hex characters so multiple apps can share the namespace without
+colliding. Standalone `LakeApp` resources retain their separately owned app namespace.
+
+## Namespace security profile
+
+Every workspace namespace receives all of the following:
+
+- Pod Security Admission `restricted` at `enforce`, `audit` and `warn`, with the corresponding
+  version labels set to `latest`.
+- The `default` ServiceAccount with `automountServiceAccountToken: false`. Zetta, agent, app and
+  operator-owned service pods also set `automountServiceAccountToken: false` on their pod specs.
+  The operator creates no Role or RoleBinding in the namespace and binds no ClusterRole to it.
+- One `ResourceQuota` and `LimitRange` selected by the workspace's declarative plan.
+- A default-deny NetworkPolicy for both ingress and egress, followed only by the explicit policies
+  below.
+- A local copy of the Lake image-pull Secret, when configured. Zetta's admin and cluster tokens are
+  minted by the Zetta controller in this namespace. Agent provider and service credentials are
+  copied here, and per-run and synchronized-app credentials are minted here. The trusted Lake pod
+  retains its read-only services connection projection for control-plane dispatch; tenant workloads
+  receive only local Secret copies. Namespace deletion is the credential deletion boundary.
+
+Zetta pods use uid/gid `10001`, `runAsNonRoot`, `RuntimeDefault` seccomp, no privilege escalation,
+and drop all Linux capabilities. Workspace Zetta resources force `hostNetwork`, public ingress and
+peer LoadBalancers off.
+
+No dedicated node pool or taint is selected by this feature. AKS placement is cluster-specific and
+the operator does not invent a node class or reduce available capacity. The namespace boundary is
+enforced with Cilium policy, Pod Security Admission and identity isolation. A cluster that requires
+physical separation can apply its existing scheduling policy to the stable workspace labels; an
+operator-owned AKS node-pool contract remains a separate platform decision.
+
+## Allowed network flows
+
+Everything not listed is refused, including every other workspace, Lake's Postgres, the Kubernetes
+API Service and its backing endpoints, node and pod networks, RFC1918/private ranges, the metadata
+endpoint `169.254.169.254`, and non-DNS traffic to `kube-system`.
+
+| From | To | Ports | Why |
+|---|---|---|---|
+| workspace pod | pod in the same workspace namespace | all | Zetta peers, customer services and local applications must communicate inside their trust boundary |
+| Lake pod in the Lake namespace | workspace pod | TCP 4800, 8080 | Lake calls Zetta and agent HTTP APIs; namespace and pod selectors prevent another workspace from using this rule |
+| operator pod in its release namespace | workspace pod | TCP 4800, 8080 | operational reconciliation and verification use the same narrow application ports; the chart supplies the release namespace through `POD_NAMESPACE`, so a tenant cannot gain access by copying the operator pod label |
+| nginx ingress pod in `ingress-nginx` | synchronized app pod | the app's declared port | serves an app host; the per-app policy selects only that app's identity labels and port |
+| workspace pod | CoreDNS pods in `kube-system` | UDP/TCP 53 | service discovery |
+| workspace pod | Lake pod in the Lake namespace | Lake container port | agents and applications call Lake's Service; the rule selects Lake pods rather than the namespace generally |
+| opted-in workspace pod | public IP addresses | TCP 443 | model-provider HTTPS; private, reserved, node, API-Service and metadata ranges are excluded |
+
+Internet egress is denied by default. `spec.workspaces.overrides[<workspace UUID>].internetEgress`
+adds or removes the TCP 443 policy for that workspace alone. Before enabling it, the operator reads
+the `default/kubernetes` Service and Endpoints plus every Node address and pod CIDR, then adds them
+as exclusions. If those reads fail, it refuses to create the internet policy; the base default-deny
+and narrow internal policies are installed before that calculation, and any older internet policy
+is removed so a stale exclusion list cannot remain active.
+
+## Quota plans
+
+The built-in `default` plan has these hard limits:
+
+| Resource | Limit |
+|---|---:|
+| requests CPU / memory | `4` / `8Gi` |
+| limits CPU / memory | `8` / `16Gi` |
+| requested storage | `100Gi` |
+| pods / Services / PVCs / Secrets | `50` / `20` / `20` / `50` |
+
+Its container defaults are a `100m`/`128Mi` request and a `1`/`1Gi` limit. Define named plans under
+`spec.workspaces.plans`, choose the fallback with `defaultPlan`, and select a different plan for one
+UUID with `overrides[uuid].plan`. A custom plan must supply `quota`, `defaultRequest` and `default`;
+an absent or incomplete plan fails that workspace without creating an unbounded workload.
+
+## Legacy workspace replacement
+
+The old `prod-ws-*` clusters live beside Lake in the Lake namespace and cannot be moved with their
+PVCs. This is a development environment, so takeover deliberately recreates them with empty data.
+For each exact `<lake>-ws-<first 12 workspace UUID hex>` cluster name, the operator:
+
+1. verifies that the legacy `OramaZettaCluster` is controlled by the same Lake;
+2. deletes it and logs the Lake, workspace UUID and namespaced cluster name;
+3. deletes only PVCs named `data-<workspace>-zetta-<ordinal>` and only the exact
+   `<workspace>-zetta-admin` and `<workspace>-zetta-cluster` Secrets, logging every object;
+4. creates the isolated namespace and a fresh workspace Zetta there.
+
+It never selects or deletes `lake-<lake>-store`, `lake-<lake>-instance-kek`, or any resource by a
+broad customer label. A foreign object at an expected name stops reconciliation.
+
+## Verification Job
+
+The same Job is used by cluster CI and the dev-cluster runbook:
+
+```sh
+make verify-workspace-isolation \
+  WORKSPACE_NAMESPACE=prod-ws-123e4567e89b \
+  OTHER_WORKSPACE_NAMESPACE=prod-ws-abcdef012345 \
+  LAKE_NAMESPACE=lake \
+  LAKE_NAME=prod
+```
+
+`hack/verify-workspace-isolation.sh` first refuses a namespace containing any RoleBinding or a
+ClusterRoleBinding that names one of its ServiceAccounts, then
+runs a restricted, tokenless BusyBox Job inside the workspace. The Job must resolve DNS and reach
+Lake's Service. It must fail to connect to the Kubernetes API, list pods or Secrets, reach the
+other workspace's Zetta, Lake's Postgres, `169.254.169.254`, or a non-DNS CoreDNS port. Its logs are
+the live-cluster proof artifact.
+
+The native Go suite covers the deterministic object model, data-plane placement, generation guards,
+status anti-flap, internet exclusions, stopped-data preservation, namespace deletion and exact legacy cleanup. The
+SQL adapter uses `internal/controller/testdata/lake-workspaces.sql`; lake owns the production
+migration, so the fixture is intentionally not copied into the vendored lake schema.

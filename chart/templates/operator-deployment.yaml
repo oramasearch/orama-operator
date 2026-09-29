@@ -42,6 +42,11 @@ spec:
             - name: control-plane
               containerPort: {{ .Values.controlPlane.service.port }}
               protocol: TCP
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           resources: {{- toYaml .Values.operator.resources | nindent 12 }}
           securityContext:
             runAsNonRoot: true
