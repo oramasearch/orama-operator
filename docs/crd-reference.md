@@ -295,8 +295,9 @@ one **cluster-scoped** CR. It creates the target **Namespace** (if missing; not 
 Lake never takes a namespace with it), a hardened **Deployment** (`lake-<name>`, running
 `spec.image`), a ClusterIP **Service** (`lake-<name>`, port 80), and an owned
 **`OramaZettaCluster`** (`lake-<name>-zetta`) for the data plane. Replicated workloads also get a
-PodDisruptionBudget and topology spread. A Lake finalizer starts and waits for Zetta's ordered
-cleanup before releasing the parent. With `spec.ingressEnabled` and `spec.host` it fronts the
+PodDisruptionBudget and topology spread. The Deployment uses `Recreate` so a ReadWriteOnce store
+is detached from old pods before replacements start. A Lake finalizer starts and waits for Zetta's
+ordered cleanup before releasing the parent. With `spec.ingressEnabled` and `spec.host` it fronts the
 host with an **nginx Ingress** (the whole host → the lake Service), optional origin TLS, and, when
 `spec.dnsSecretRef` is given, an **owned `CloudflareDNSRecord`** (proxied, host → the ingress
 LoadBalancer) — the same contract and child-controller path as `OramaZettaCluster`. Gating off
@@ -313,7 +314,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.replicas` | Deployment replicas (default 1). |
 | `spec.resources` | Complete Kubernetes container resource override. Default requests: CPU `50m`, memory `128Mi`; default limit: memory `512Mi`, with no CPU limit. |
 | `spec.topologySpreadConstraints[]` | Complete pod topology-spread override. When omitted with more than one replica, defaults to `maxSkew: 1`, `topologyKey: kubernetes.io/hostname`, `whenUnsatisfiable: ScheduleAnyway`, selecting this Lake's pods. An explicit empty list disables the default. At one replica no default is rendered. |
-| _(workload hardening — automatic)_ | The pod and container require non-root uid/gid 10001, disallow privilege escalation, drop all Linux capabilities, and use `RuntimeDefault` seccomp. The container gets a five-second pre-stop drain and the pod gets a 30-second termination grace period. Rolling updates use `maxUnavailable: 0`, `maxSurge: 1`. More than one replica creates `PodDisruptionBudget lake-<name>` with `maxUnavailable: 1`; scaling to one deletes it. |
+| _(workload hardening — automatic)_ | The pod and container require non-root uid/gid 10001, disallow privilege escalation, drop all Linux capabilities, and use `RuntimeDefault` seccomp. The container gets a five-second pre-stop drain and the pod gets a 30-second termination grace period. The Deployment uses `Recreate` so an RWO store detaches before replacements start; one replica has a planned restart gap. More than one replica creates `PodDisruptionBudget lake-<name>` with `maxUnavailable: 1`; scaling to one deletes it. |
 | `spec.store` | Persistent libliquid customer store mounted read-write at `/var/lib/lake/store`, with `LAKE_STORE_ROOT` fixed to that path. Without `existingClaim`, the operator creates and owns `lake-<name>-store` once. Later store spec changes never mutate, replace, or delete it. |
 | `spec.store.size` / `.storageClassName` / `.accessModes` | Creation-time settings for the generated claim: quantity `100Gi` by default, cluster-default storage class, and `[ReadWriteMany]`. RWX is the multi-replica default; `ReadWriteOnce` requires `spec.replicas: 1`. |
 | `spec.store.existingClaim` | PVC in `spec.namespace` to mount instead of creating one. It is referenced without adoption, mutation, or deletion. |

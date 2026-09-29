@@ -10,7 +10,7 @@ The cluster-scoped `Lake` CR deploys the lake service with its control-plane Pos
 Zetta data plane, and a shared persistent libliquid store. The operator creates a `100Gi` RWX store claim by default or
 mounts `spec.store.existingClaim`, sets `LAKE_STORE_ROOT=/var/lib/lake/store`, and accepts
 additional lake runtime configuration through `spec.env`. The workload has resource bounds,
-Lake-native health probes, non-root execution, safe rolling-update settings, and replicated-pod
+Lake-native health probes, non-root execution, RWO-safe replacement, and replicated-pod
 disruption and placement controls. Each Lake also owns an X25519 sealing
 key and publishes its recipient in status; namespaced `LakeSealedSecret` resources turn
 cluster-bound ciphertext into owned, labelled Kubernetes Secrets without putting plaintext in the
@@ -84,7 +84,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    `spec.replicas`, resource defaults or `spec.resources`, `imagePullSecrets` from
    `spec.pullSecretName`, and operator env including `LAKE_STORE_ROOT=/var/lib/lake/store` plus
    `spec.env` entries whose names do not conflict with operator-owned variables. Pods run as
-   uid/gid 10001 with the restricted container baseline. Replicated Deployments get a
+   uid/gid 10001 with the restricted container baseline. The Deployment uses `Recreate`, so an
+   old pod releases a ReadWriteOnce store before its replacement can attach the volume on another
+   node. Replicated Deployments get a
    `maxUnavailable: 1` PodDisruptionBudget and the default soft hostname spread, or
    `spec.topologySpreadConstraints` when supplied. Scaling to one replica removes the budget.
 7. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
@@ -406,9 +408,11 @@ the scheduler still reserves CPU through the request.
 Lake's unauthenticated operational routes drive distinct probes: `GET /healthz` is liveness and
 `GET /readyz` is readiness, including control-store availability. The pod and container require
 non-root uid/gid 10001, disable privilege escalation, drop every Linux capability, and use the
-runtime-default seccomp profile. A five-second pre-stop drain, 30-second termination grace period,
-and rolling strategy of `maxUnavailable: 0`, `maxSurge: 1` keep a ready endpoint serving while a
-replacement becomes ready.
+runtime-default seccomp profile. A five-second pre-stop drain and 30-second termination grace
+period let lake finish in-flight work. The Deployment uses `Recreate`: Kubernetes stops every old
+pod before starting replacements, so an RWO store can detach from the old node and attach to a new
+one without a surge pod deadlock. A single-replica Lake is unavailable during this handoff;
+readiness and rollout automation must allow for that planned restart gap.
 
 When `spec.replicas` is greater than one, the operator creates `PodDisruptionBudget lake-<name>`
 with `maxUnavailable: 1`. It also defaults `spec.topologySpreadConstraints` to a soft
@@ -423,32 +427,15 @@ is present and the Ingress answers HTTPS.
 
 ### Rollout-restart check
 
-Run this after deploying the CRD and controller change to AKS. The Lake must have at least two
-ready replicas, its shared store must support the placement, and the public hostname must already
-be healthy.
+Run this after deploying the controller change to AKS. The Lake must be Ready and its public
+hostname must already be healthy.
 
 ```sh
 kubectl get deployment,poddisruptionbudget -n <namespace> lake-<name>
 kubectl get pods -n <namespace> -l app.kubernetes.io/name=lake -o wide
 ```
 
-In one terminal, probe continuously and retain a failure count:
-
-```sh
-requests=0
-failures=0
-trap 'echo "requests=$requests failures=$failures"; exit' INT TERM
-while true; do
-  requests=$((requests + 1))
-  if ! curl -fsS https://<host>/readyz >/dev/null; then
-    failures=$((failures + 1))
-    echo "request $requests failed"
-  fi
-  sleep 0.1
-done
-```
-
-In another terminal, restart and wait for the Deployment:
+Record the current pod and node, then restart and wait for the Deployment:
 
 ```sh
 kubectl rollout restart deployment/lake-<name> -n <namespace>
@@ -456,11 +443,13 @@ kubectl rollout status deployment/lake-<name> -n <namespace>
 kubectl get pods -n <namespace> -l app.kubernetes.io/name=lake
 ```
 
-Stop the probe with Ctrl-C. The check passes only when `failures=0`, every replacement pod is
-Ready, and the PDB still has `maxUnavailable: 1`.
+Watch events during the restart. The check passes when every old pod terminates before a replacement
+is created, the replacement attaches the store without a persistent `Multi-Attach` error, and the
+Lake returns to Ready. A short readiness failure is expected for one replica. The PDB still has
+`maxUnavailable: 1` when the Lake has multiple replicas.
 
-AKS rollout-restart evidence for issue #122 is deferred because this host is not authorized to
-change the cluster.
+The earlier issue #122 zero-failure rolling-restart check is superseded by this RWO-safe restart
+check: `Recreate` deliberately allows a readiness gap instead of starting a surge pod.
 
 ## Current production instance
 

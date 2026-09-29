@@ -572,8 +572,6 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 	port int32,
 	sealing lakeSealingMaterial,
 ) (*appsv1.Deployment, error) {
-	maxUnavailable := intstr.FromInt(0)
-	maxSurge := intstr.FromInt(1)
 	terminationGracePeriodSeconds := int64(30)
 	resources := resourceReqs("128Mi", "50m", "512Mi")
 	if lake.Spec.Resources != nil {
@@ -593,11 +591,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 		deployment.Spec.Replicas = &replicas
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		deployment.Spec.Strategy = appsv1.DeploymentStrategy{
-			Type: appsv1.RollingUpdateDeploymentStrategyType,
-			RollingUpdate: &appsv1.RollingUpdateDeployment{
-				MaxUnavailable: &maxUnavailable,
-				MaxSurge:       &maxSurge,
-			},
+			Type: appsv1.RecreateDeploymentStrategyType,
 		}
 		deployment.Spec.Template.ObjectMeta.Labels = labels
 		deployment.Spec.Template.Spec = corev1.PodSpec{
