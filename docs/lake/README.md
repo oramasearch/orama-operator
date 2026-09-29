@@ -29,8 +29,9 @@ authenticated REST `/v1` and MCP deployment surface; the contract, credentials, 
 and connection details are in the [deployment control-plane guide](../control-plane/README.md).
 
 Namespaced `LakeApp` resources run customer apps from a pinned Lake repository revision or a
-digest-pinned image. Each app has a restricted namespace, private-by-default ingress, scoped data
-bindings, and live rollout events. The CR contract and resource lifecycle are in
+digest-pinned image. Synchronized apps share their restricted workspace namespace with
+collision-free resource names; standalone CRs retain a private namespace. Apps have
+private-by-default ingress, scoped data bindings, and live rollout events. The CR contract and resource lifecycle are in
 [`apps.md`](apps.md). With `spec.apps.enabled`, a dedicated controller follows lake's `apps`
 table using the Services DSN, `lake_apps` notifications and a 60-second fallback list. It registers
 generated token hashes, returns current rollout status, handles stopped/deleted rows and orphans,
@@ -41,6 +42,11 @@ rootless BuildKit Job for it in a per-space namespace. Source, push, and event c
 single-build scoped; the Job pushes through Lake's in-cluster registry, reuses a per-space registry
 cache, and reports its digest, size, progress, and failures. See [`builds.md`](builds.md).
 
+With `spec.workspaces.enabled`, the operator follows lake's `workspaces` table and creates one
+restricted namespace and Zetta data plane per workspace. Default-deny network policy, restricted
+Pod Security Admission, tokenless service accounts, plan quotas and local credentials make the
+namespace the trust boundary; see [`workspaces.md`](workspaces.md).
+
 With `spec.services.enabled`, lake runs managed services for its customers — Zetta, Postgres,
 the catalog of Kafka, ClickHouse, TiDB, Cassandra and Valkey (preview), and SQLite, DuckDB and
 Polars: it writes the
@@ -48,9 +54,8 @@ Polars: it writes the
 `OramaZettaCluster`, CloudNativePG `Cluster`, upstream operator's resource (Strimzi, Altinity, TiDB
 Operator, K8ssandra, valkey-operator), or StatefulSet of [lake-sqlite](lake-sqlite.md), [lake-duckdb](lake-duckdb.md) or
 [lake-polars](lake-polars.md) per service, writes `service_status`, and hands lake each connection
-through a mounted Secret ([services.md](services.md)). This supersedes the
-decision-45 workspaces ([workspaces.md](workspaces.md)); a workspace is now the customer's default
-Zetta service. The same poll runs a customer's **stores** (lake#196; phase 1: cluster volumes, one
+through a mounted Secret ([services.md](services.md)). The same poll runs a customer's **stores**
+(lake#196; phase 1: cluster volumes, one
 Lake-owned PersistentVolumeClaim each, connection in the same Secret) — [stores.md](stores.md).
 
 ## What a Lake reconciles into
@@ -136,8 +141,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`
     controller runs Postgres procedures and updates the row; see
     [data services](data-services/README.md).
-15. **Managed services** (opt-in: `spec.services.enabled`, or the deprecated
-    `spec.workspaces.enabled`) — once the schema has applied, the operator polls the `services`
+15. **Managed services** (opt-in: `spec.services.enabled`) — once the schema has applied, the operator polls the `services`
     table in the control Postgres (pgx, Secret `lake-<name>-controldb-app` key `uri`) every
     `spec.deploySync.interval`. Each present service becomes `<name>-<slug>`: an `OramaZettaCluster`,
     a CloudNativePG `Cluster`, or, for the catalog kinds (liquid-bridge decision 47), a Strimzi
@@ -145,13 +149,18 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     or, for `sqlite`, `duckdb` and `polars`, a `StatefulSet` and `Service` of
     [lake-sqlite](lake-sqlite.md), [lake-duckdb](lake-duckdb.md) or [lake-polars](lake-polars.md),
     controlled by the Lake; a kind whose upstream operator is not installed fails only its own
-    services. Decision-45 `<name>-ws-…` workspace clusters are adopted by the customer's default
-    Zetta service. Ready services' connections go to
+    services. Ready services' connections go to
     Secret `lake-<name>-services` (key `<slug>.json`), mounted at `/var/run/lake/services` with
-    `LAKE_SERVICE_DIR`; `service_status` is upserted on change. An absent service is deleted with its
+    `LAKE_SERVICE_DIR`; data-plane resources live in the row's joined workspace namespace and
+    `service_status` is upserted on change. An absent service is deleted with its
     data (irreversibly); `spec.services.maxServices` caps how many exist. The poll never fails the
     Lake. See [`services.md`](services.md).
-16. **In-cluster builds** (opt-in: `spec.builds.enabled`) — queued rows in the Lake control
+16. **Workspace namespaces** (opt-in: `spec.workspaces.enabled`) — `workspaces` rows become
+    restricted `<environment>-ws-<id>` namespaces with quota, explicit network flows, localized
+    pull credentials and one workspace Zetta. Services, stores, user agents and synchronized apps
+    with that required `workspace_id` also run there. Status writes are generation guarded; stopped rows
+    retain data and deleted rows remove the namespace. See [`workspaces.md`](workspaces.md).
+17. **In-cluster builds** (opt-in: `spec.builds.enabled`) — queued rows in the Lake control
     Postgres become one `oramasearch/lake-builder` Job each in a deterministic per-space namespace,
     with scoped credentials, network isolation, resource/deadline/retention bounds, per-Lake and
     per-space concurrency, registry cache, progress events, and terminal digest/size status. See

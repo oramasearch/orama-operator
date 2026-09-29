@@ -27,7 +27,7 @@ func TestLakeAppsTokensRefuseForeignSecret(t *testing.T) {
 	h := newAppsSyncHarness(t, c)
 	h.poll()
 	app := h.app()
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeAppTokensSecretName, Namespace: lakeAppNamespace(app)}, Data: map[string][]byte{"source": []byte("foreign")}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeAppTokensName(app), Namespace: lakeAppNamespace(app)}, Data: map[string][]byte{"source": []byte("foreign")}}
 	if err := c.Create(h.ctx, secret); err != nil {
 		t.Fatal(err)
 	}

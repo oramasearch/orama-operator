@@ -9,7 +9,8 @@ into running systems:
   provisioned for each Lake. Every node forms one mTLS cluster from a shared join token.
 - `Lake`: the hosted lake service for the liquid project, with its control-plane Postgres, a
   shared libliquid store, sealed-secret delivery, per-change `LakeEnvironment` namespaces,
-  opt-in apps-table synchronization into isolated `LakeApp` workloads, and
+  opt-in isolated workspace namespaces for services, stores, user agents and synchronized apps,
+  apps-table synchronization into `LakeApp` workloads, and
   an authenticated REST `/v1` and MCP deployment surface that liquid drives.
 - `OramaCloudV1`: the complete, self-contained Orama Cloud v1 stack (engine, dashboard,
   control-plane DB, analytics, cache, broker, ingestion, workers), one CR per cluster.

@@ -29,7 +29,8 @@ const (
 )
 
 func testSchedule(id, slug, cron, timeZone string) LakeAgentSchedule {
-	return LakeAgentSchedule{ID: id, CustomerID: testServiceCustomer, AgentID: "a-1", Cron: cron, TimeZone: timeZone,
+	return LakeAgentSchedule{ID: id, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID,
+		WorkspaceNamespace: testServiceNamespace, AgentID: "a-1", Cron: cron, TimeZone: timeZone,
 		Input: `"the weekly churn check"`, Slug: slug, Desired: serviceDesiredPresent, Generation: 1}
 }
 

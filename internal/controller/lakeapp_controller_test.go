@@ -86,6 +86,35 @@ func newLakeAppScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
+func TestSynchronizedAppsUseCollisionFreeWorkspaceResourceNames(t *testing.T) {
+	workspaceNamespace := "prod-ws-123e4567e89b"
+	first := &oramav1alpha1.LakeApp{
+		Spec: oramav1alpha1.LakeAppSpec{
+			Sync: &oramav1alpha1.LakeAppSync{
+				ID:                 "11111111-1111-4111-8111-111111111111",
+				WorkspaceNamespace: workspaceNamespace,
+			},
+		},
+	}
+	second := &oramav1alpha1.LakeApp{
+		Spec: oramav1alpha1.LakeAppSpec{
+			Sync: &oramav1alpha1.LakeAppSync{
+				ID:                 "22222222-2222-4222-8222-222222222222",
+				WorkspaceNamespace: workspaceNamespace,
+			},
+		},
+	}
+	if lakeAppNamespace(first) != workspaceNamespace || lakeAppNamespace(second) != workspaceNamespace {
+		t.Fatal("synchronized apps did not select their shared workspace namespace")
+	}
+	if lakeAppWorkloadObjectName(first) == lakeAppWorkloadObjectName(second) {
+		t.Fatal("synchronized app workload names collide")
+	}
+	if lakeAppTokensName(first) == lakeAppTokensName(second) {
+		t.Fatal("synchronized app token Secret names collide")
+	}
+}
+
 func TestLakeAppEnvtestLifecycle(t *testing.T) {
 	assets := os.Getenv("KUBEBUILDER_ASSETS")
 	if assets == "" {
@@ -417,9 +446,13 @@ func lakeAppPolicyHasPodSelector(rules []networkingv1.NetworkPolicyEgressRule, w
 }
 
 func setLakeAppDeploymentReady(t *testing.T, ctx context.Context, kubeClient client.Client, namespace string, replicas int32) {
+	setNamedLakeAppDeploymentReady(t, ctx, kubeClient, namespace, lakeAppWorkloadName, replicas)
+}
+
+func setNamedLakeAppDeploymentReady(t *testing.T, ctx context.Context, kubeClient client.Client, namespace, name string, replicas int32) {
 	t.Helper()
 	var deployment appsv1.Deployment
-	key := client.ObjectKey{Namespace: namespace, Name: lakeAppWorkloadName}
+	key := client.ObjectKey{Namespace: namespace, Name: name}
 	if err := kubeClient.Get(ctx, key, &deployment); err != nil {
 		t.Fatal(err)
 	}

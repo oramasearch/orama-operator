@@ -20,12 +20,14 @@ import (
 // listAgentLaunchesSQL reads every launch that still needs the operator: present ones, and absent
 // ones whose resources may not be gone yet (their status is not yet Stopped, Succeeded or Failed at
 // the current generation, or their credential digest is still set).
-const listAgentLaunchesSQL = `SELECT l.id::text, l.customer_id::text, l.agent_id, l.mode, l.input::text, l.slug,
+const listAgentLaunchesSQL = `SELECT l.id::text, l.customer_id::text, l.workspace_id::text, COALESCE(w.namespace, ''),
+       l.agent_id, l.mode, l.input::text, l.slug,
        l.desired, l.generation, ls.launch_id IS NOT NULL,
        COALESCE(ls.phase, ''), COALESCE(ls.message, ''), COALESCE(ls.endpoint, ''), ls.exit_code,
        COALESCE(ls.result, 'null'::jsonb)::text, COALESCE(ls.credential_sha256, ''),
        COALESCE(ls.observed_generation, 0)
   FROM agent_launches l
+  JOIN workspaces w ON w.id = l.workspace_id
   LEFT JOIN agent_launch_status ls ON ls.launch_id = l.id
  WHERE l.desired = 'present'
     OR ls.launch_id IS NULL
@@ -66,7 +68,8 @@ func (s *pgxServiceStore) ListAgentLaunches(ctx context.Context) ([]LakeAgentLau
 		var launch LakeAgentLaunch
 		var hasStatus bool
 		var status LakeAgentLaunchStatus
-		if err := rows.Scan(&launch.ID, &launch.CustomerID, &launch.AgentID, &launch.Mode, &launch.Input, &launch.Slug,
+		if err := rows.Scan(&launch.ID, &launch.CustomerID, &launch.WorkspaceID, &launch.WorkspaceNamespace,
+			&launch.AgentID, &launch.Mode, &launch.Input, &launch.Slug,
 			&launch.Desired, &launch.Generation, &hasStatus,
 			&status.Phase, &status.Message, &status.Endpoint, &status.ExitCode,
 			&status.Result, &status.CredentialSHA256, &status.ObservedGeneration); err != nil {
@@ -99,13 +102,15 @@ func (s *pgxServiceStore) UpsertAgentLaunchStatus(ctx context.Context, status La
 
 // listAgentSchedulesSQL reads every schedule that still needs the operator, as for launches, with
 // the phase of its latest runs by id (a CronJob keeps at most six Jobs).
-const listAgentSchedulesSQL = `SELECT s.id::text, s.customer_id::text, s.agent_id, s.cron, s.time_zone, s.input::text,
+const listAgentSchedulesSQL = `SELECT s.id::text, s.customer_id::text, s.workspace_id::text, COALESCE(w.namespace, ''),
+       s.agent_id, s.cron, s.time_zone, s.input::text,
        s.slug, s.desired, s.generation, ss.schedule_id IS NOT NULL,
        COALESCE(ss.phase, ''), COALESCE(ss.message, ''), ss.last_schedule_at,
        COALESCE(ss.credential_sha256, ''), COALESCE(ss.observed_generation, 0),
        COALESCE((SELECT json_object_agg(r.id::text, r.phase) FROM (SELECT id, phase FROM agent_cron_runs
                   WHERE schedule_id = s.id ORDER BY started_at DESC LIMIT 20) r), '{}')::text
   FROM agent_cron_schedules s
+  JOIN workspaces w ON w.id = s.workspace_id
   LEFT JOIN agent_cron_schedule_status ss ON ss.schedule_id = s.id
  WHERE s.desired = 'present'
     OR ss.schedule_id IS NULL
@@ -156,7 +161,8 @@ func (s *pgxServiceStore) ListAgentSchedules(ctx context.Context) ([]LakeAgentSc
 		var hasStatus bool
 		var status LakeAgentScheduleStatus
 		var runs string
-		if err := rows.Scan(&schedule.ID, &schedule.CustomerID, &schedule.AgentID, &schedule.Cron, &schedule.TimeZone,
+		if err := rows.Scan(&schedule.ID, &schedule.CustomerID, &schedule.WorkspaceID, &schedule.WorkspaceNamespace,
+			&schedule.AgentID, &schedule.Cron, &schedule.TimeZone,
 			&schedule.Input, &schedule.Slug, &schedule.Desired, &schedule.Generation, &hasStatus,
 			&status.Phase, &status.Message, &status.LastScheduleTime, &status.CredentialSHA256,
 			&status.ObservedGeneration, &runs); err != nil {

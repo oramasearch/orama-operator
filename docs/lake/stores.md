@@ -38,8 +38,9 @@ An absent store not yet `Deleted`, and a `Provisioning` store, keep the Lake on 
 
 ## Cluster volume
 
-A present `volume` / `cluster` store becomes a **PersistentVolumeClaim `<lake>-<slug>`** in the
-Lake's namespace (`<slug>` is `st-` plus 12 hex digits, so it never collides with a service's
+A store row's required `workspace_id` is joined to the operator-written workspace namespace; there
+is no Lake-namespace fallback. A present `volume` / `cluster` store becomes a
+**PersistentVolumeClaim `<lake>-<slug>`** in that workspace namespace (`<slug>` is `st-` plus 12 hex digits, so it never collides with a service's
 `svc-…` or `ws-…`):
 
 | Field | Value |
@@ -47,7 +48,7 @@ Lake's namespace (`<slug>` is `st-` plus 12 hex digits, so it never collides wit
 | access mode | `ReadWriteOnce` |
 | size | `spec.size_gi` GiB, default `10`, `1`–`1024` (anything else is `Failed`) |
 | StorageClass | the Lake's services' class, `spec.workspaces.storage.storageClassName` (the one every Zetta service's data volumes use); empty leaves it to the cluster default |
-| labels | the Lake's labels (`app.kubernetes.io/name: lake`, `instance`, `managed-by`) plus `orama.cloud/lake: <lake>` and **`orama.cloud/store-id: <id>`** |
+| labels | the Lake's labels (`app.kubernetes.io/name: lake`, `instance`, `managed-by`) plus `orama.cloud/lake: <lake>`, `orama.cloud/workspace: <workspace id>` and **`orama.cloud/store-id: <id>`** |
 | annotation | `orama.cloud/customer-id: <customer id>` |
 | owner | the Lake, as controller |
 
@@ -66,7 +67,7 @@ that is the expected state, and the message says so.
 same writer (`reconcileLakeServicesSecret`) before the store is `Ready`:
 
 ```json
-{"type":"volume","provider":"cluster","claim":"prod-st-0123456789ab","namespace":"lake","size_gi":10,"storage_class":"managed-csi"}
+{"type":"volume","provider":"cluster","claim":"prod-st-0123456789ab","namespace":"prod-ws-123e4567e89b","size_gi":10,"storage_class":"managed-csi"}
 ```
 
 `size_gi` and `storage_class` are read from the claim itself: its requested size, and the class it

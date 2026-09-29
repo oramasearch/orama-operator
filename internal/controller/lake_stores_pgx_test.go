@@ -65,16 +65,31 @@ func TestStoresPgxStoreAgainstPostgres(t *testing.T) {
 	if _, err := tx.Exec(ctx, lakeSchemaSQL); err != nil {
 		t.Fatalf("apply the vendored lake schema: %v", err)
 	}
+	workspaceFixture, err := os.ReadFile("testdata/lake-workspaces.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, string(workspaceFixture)); err != nil {
+		t.Fatalf("apply workspace fixture: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE stores ADD COLUMN workspace_id uuid NOT NULL REFERENCES workspaces(id)`); err != nil {
+		t.Fatalf("add stores workspace contract: %v", err)
+	}
 	var customerID string
 	if err := tx.QueryRow(ctx, `WITH u AS (INSERT INTO users (display_name) VALUES ('t') RETURNING id)
 		INSERT INTO customers (customer_type, user_id, name) SELECT 'individual', id, 'stores-test' FROM u RETURNING id::text`).Scan(&customerID); err != nil {
 		t.Fatalf("seed customer: %v", err)
 	}
-	insert := `INSERT INTO stores (id, customer_id, type, provider, name, slug, spec, desired, generation, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, now() + $10 * interval '1 second')`
+	if _, err := tx.Exec(ctx, `INSERT INTO workspaces
+		(id, customer_id, name, environment, desired, generation, namespace)
+		VALUES ($1, $2, 'Production', 'prod', 'running', 1, $3)`, testWorkspaceID, customerID, testWorkspaceName); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	insert := `INSERT INTO stores (id, customer_id, workspace_id, type, provider, name, slug, spec, desired, generation, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, now() + $11 * interval '1 second')`
 	for _, row := range [][]any{
-		{testVolumeStoreID, customerID, "volume", "cluster", "data", testVolumeStoreSlug, `{"size_gi":20,"public":false}`, "present", 1, 0},
-		{testBucketStoreID, customerID, "object", "r2", "gone", testBucketStoreSlug, `{}`, "absent", 2, 1},
+		{testVolumeStoreID, customerID, testWorkspaceID, "volume", "cluster", "data", testVolumeStoreSlug, `{"size_gi":20,"public":false}`, "present", 1, 0},
+		{testBucketStoreID, customerID, testWorkspaceID, "object", "r2", "gone", testBucketStoreSlug, `{}`, "absent", 2, 1},
 	} {
 		if _, err := tx.Exec(ctx, insert, row...); err != nil {
 			t.Fatalf("seed store: %v", err)

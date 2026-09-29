@@ -17,11 +17,13 @@ import (
 
 // listStoresSQL reads every store with its status, oldest first, leaving out history (absent and
 // already Deleted).
-const listStoresSQL = `SELECT s.id::text, s.customer_id::text, s.type, s.provider, s.name, s.slug, s.spec::text,
+const listStoresSQL = `SELECT s.id::text, s.customer_id::text, s.workspace_id::text, COALESCE(w.namespace, ''),
+       s.type, s.provider, s.name, s.slug, s.spec::text,
        s.desired, s.generation, st.store_id IS NOT NULL,
        COALESCE(st.phase, ''), COALESCE(st.message, ''), COALESCE(st.endpoint, ''),
        COALESCE(st.observed_generation, 0)
   FROM stores s
+  JOIN workspaces w ON w.id = s.workspace_id
   LEFT JOIN store_status st ON st.store_id = s.id
  WHERE NOT (s.desired = 'absent' AND COALESCE(st.phase, '') = 'Deleted')
  ORDER BY s.created_at, s.id`
@@ -58,7 +60,8 @@ func (s *pgxServiceStore) ListStores(ctx context.Context) ([]LakeStore, error) {
 		var st LakeStore
 		var hasStatus bool
 		var status LakeStoreStatus
-		if err := rows.Scan(&st.ID, &st.CustomerID, &st.Type, &st.Provider, &st.Name, &st.Slug, &st.Spec,
+		if err := rows.Scan(&st.ID, &st.CustomerID, &st.WorkspaceID, &st.WorkspaceNamespace,
+			&st.Type, &st.Provider, &st.Name, &st.Slug, &st.Spec,
 			&st.Desired, &st.Generation, &hasStatus,
 			&status.Phase, &status.Message, &status.Endpoint, &status.ObservedGeneration); err != nil {
 			return nil, err

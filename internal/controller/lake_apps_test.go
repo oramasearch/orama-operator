@@ -91,7 +91,8 @@ func (s *fakeAppsStore) UpdateAppTokenHashes(_ context.Context, row *LakeAppRow,
 
 func testLakeAppRow() LakeAppRow {
 	return LakeAppRow{
-		ID: testAppRowID, CustomerID: testServiceCustomer, Name: "sales-dashboard", Mode: "runtime",
+		ID: testAppRowID, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID,
+		WorkspaceNamespace: testWorkspaceName, Name: "sales-dashboard", Mode: "runtime",
 		SourceRepository: "sales", SourceRevision: testLakeAppRevisionA, SourcePath: "apps/dashboard",
 		Framework: "fastapi", Port: 8080, Replicas: 1, Auth: "lake", Desired: "running", Generation: 1,
 		BindingsJSON: `{"zetta":{"scopes":["read"]},"services":["` + testPostgresID + `"]}`,
@@ -120,7 +121,13 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 			Enabled: true, Wildcard: "apps.example.test", RuntimeImage: "oramasearch/app-runtime:0.1.0",
 		}},
 	}
-	for _, object := range []client.Object{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lake"}}, lake} {
+	for _, object := range []client.Object{
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lake"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			Name: testWorkspaceName, Labels: map[string]string{workspaceLabel: testWorkspaceID},
+		}},
+		lake,
+	} {
 		if err := kubeClient.Create(ctx, object); err != nil {
 			t.Fatal(err)
 		}
@@ -143,7 +150,8 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 	}
 	row := testLakeAppRow()
 	store := &fakeAppsStore{rows: []LakeAppRow{row}, services: []LakeService{{
-		ID: testPostgresID, CustomerID: testServiceCustomer, Name: "analytics", Desired: serviceDesiredPresent,
+		ID: testPostgresID, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID,
+		WorkspaceNamespace: testWorkspaceName, Name: "analytics", Desired: serviceDesiredPresent,
 	}}}
 	h := &appsSyncHarness{t: t, ctx: ctx, client: kubeClient, lake: lake, store: store,
 		key: client.ObjectKey{Namespace: "lake", Name: lakeAppRowName(lake.Name, &row)}}
@@ -157,7 +165,7 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 	}
 	h.apps = &LakeAppReconciler{Client: kubeClient, Scheme: kubeClient.Scheme(), APIReader: kubeClient,
 		EventPublisher: func(_ context.Context, baseURL, token, topic string, event lakeAppEvent) error {
-			if baseURL != lakeInternalURL(lake, "lake") || topic != "app-events."+row.ID || len(token) != 64 {
+			if baseURL != workspaceLakeInternalURL(lake, testWorkspaceID) || topic != "app-events."+row.ID || len(token) != 64 {
 				t.Error("incorrect scoped Lake event inputs")
 			}
 			h.events++
@@ -225,13 +233,13 @@ func TestLakeAppsEnvtestLifecycle(t *testing.T) {
 	app := h.app()
 	namespace := lakeAppNamespace(app)
 	var deployment appsv1.Deployment
-	deploymentKey := client.ObjectKey{Namespace: namespace, Name: lakeAppWorkloadName}
+	deploymentKey := client.ObjectKey{Namespace: namespace, Name: lakeAppWorkloadObjectName(app)}
 	if err := kubeClient.Get(h.ctx, deploymentKey, &deployment); !apierrors.IsNotFound(err) {
 		t.Fatalf("workload started before token registration: %v", err)
 	}
 	h.converge()
 	assertSyncedAppDelivery(t, h)
-	setLakeAppDeploymentReady(t, h.ctx, kubeClient, namespace, 1)
+	setNamedLakeAppDeploymentReady(t, h.ctx, kubeClient, namespace, lakeAppWorkloadObjectName(app), 1)
 	h.reconcileApp()
 	h.poll()
 	if status := h.store.rows[0].Status; status.Phase != "Running" || !status.Ready || status.URL != "https://sales-dashboard.apps.example.test" {
@@ -248,17 +256,14 @@ func TestLakeAppsEnvtestLifecycle(t *testing.T) {
 	}
 	h.reconcileApp()
 	h.poll()
-	if h.store.rows[0].Status.Phase == "Deleted" {
-		t.Fatal("Deleted acknowledged while finalizer still runs")
-	}
-	finalizeLakeAppNamespaceForEnvtest(t, h.ctx, config, namespace)
-	h.reconcileApp()
-	h.poll()
 	if status := h.store.rows[0].Status; status.Phase != "Deleted" || status.Ready || h.store.rows[0].TokenHashes != nil {
 		t.Fatalf("deleted app not acknowledged and revoked: %+v", status)
 	}
 	if err := kubeClient.Get(h.ctx, h.key, &oramav1alpha1.LakeApp{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("LakeApp still exists: %v", err)
+	}
+	if err := kubeClient.Get(h.ctx, client.ObjectKey{Name: namespace}, &corev1.Namespace{}); err != nil {
+		t.Fatalf("app deletion removed the shared workspace namespace: %v", err)
 	}
 }
 
@@ -266,7 +271,7 @@ func assertSyncedAppDelivery(t *testing.T, h *appsSyncHarness) {
 	t.Helper()
 	app := h.app()
 	var tokens corev1.Secret
-	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppTokensSecretName}
+	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppTokensName(app)}
 	if err := h.client.Get(h.ctx, key, &tokens); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +288,7 @@ func assertSyncedAppDelivery(t *testing.T, h *appsSyncHarness) {
 		}
 	}
 	var deployment appsv1.Deployment
-	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: key.Namespace, Name: "app"}, &deployment); err != nil {
+	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: key.Namespace, Name: lakeAppWorkloadObjectName(app)}, &deployment); err != nil {
 		t.Fatal(err)
 	}
 	env := deployment.Spec.Template.Spec.Containers[0].Env
@@ -293,7 +298,7 @@ func assertSyncedAppDelivery(t *testing.T, h *appsSyncHarness) {
 		if variable.Name == "APP_ENTRYPOINT" {
 			t.Fatal("empty entrypoint overrides app.toml")
 		}
-		if variable.Name == "APP_TOKEN" && variable.ValueFrom.SecretKeyRef.Name != lakeAppTokensSecretName {
+		if variable.Name == "APP_TOKEN" && variable.ValueFrom.SecretKeyRef.Name != lakeAppTokensName(app) {
 			t.Fatal("source token does not use app-tokens")
 		}
 	}
@@ -309,7 +314,7 @@ func assertSyncedAppDelivery(t *testing.T, h *appsSyncHarness) {
 		t.Fatal("service connection is not mounted by service name")
 	}
 	var policy networkingv1.NetworkPolicy
-	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: key.Namespace, Name: lakeAppNetworkAccessName}, &policy); err != nil {
+	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: key.Namespace, Name: lakeAppAccessPolicyName(app)}, &policy); err != nil {
 		t.Fatal(err)
 	}
 	if !lakeAppPolicyHasPodSelector(policy.Spec.Egress, map[string]string{serviceIDLabel: testPostgresID}) || !lakeAppPolicyHasPodSelector(policy.Spec.Egress, map[string]string{"app.kubernetes.io/name": "lake"}) {
@@ -322,7 +327,7 @@ func assertSyncedAppSteady(t *testing.T, h *appsSyncHarness) {
 	app := h.app()
 	statusWrites, hashWrites, events := h.store.statusWrites, h.store.hashWrites, h.events
 	var tokens corev1.Secret
-	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppTokensSecretName}
+	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppTokensName(app)}
 	if err := h.client.Get(h.ctx, key, &tokens); err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +361,7 @@ func assertSyncedAppUpdateAndStop(t *testing.T, h *appsSyncHarness) {
 	if h.store.rows[0].Status.Phase == "Stopped" {
 		t.Fatal("Stopped acknowledged before the Deployment observed zero replicas")
 	}
-	setLakeAppDeploymentReady(t, h.ctx, h.client, lakeAppNamespace(app), 0)
+	setNamedLakeAppDeploymentReady(t, h.ctx, h.client, lakeAppNamespace(app), lakeAppWorkloadObjectName(app), 0)
 	h.reconcileApp()
 	h.poll()
 	if status := h.store.rows[0].Status; status.Phase != "Stopped" || status.Ready || *h.app().Spec.Replicas != 0 {
@@ -374,7 +379,7 @@ func assertSyncedAppUpdateAndStop(t *testing.T, h *appsSyncHarness) {
 func assertSyncedAppRotation(t *testing.T, h *appsSyncHarness) {
 	t.Helper()
 	app := h.app()
-	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppTokensSecretName}
+	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppTokensName(app)}
 	var tokens corev1.Secret
 	if err := h.client.Get(h.ctx, key, &tokens); err != nil {
 		t.Fatal(err)
@@ -390,7 +395,7 @@ func assertSyncedAppRotation(t *testing.T, h *appsSyncHarness) {
 		t.Fatal("failed registration changed hashes")
 	}
 	var deployment appsv1.Deployment
-	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: key.Namespace, Name: "app"}, &deployment); !apierrors.IsNotFound(err) {
+	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: key.Namespace, Name: lakeAppWorkloadObjectName(app)}, &deployment); !apierrors.IsNotFound(err) {
 		t.Fatal("rotation allowed a workload before registering the new hashes")
 	}
 	h.store.writeErr = nil

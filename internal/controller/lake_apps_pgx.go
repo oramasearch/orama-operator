@@ -20,7 +20,7 @@ var errAppsTableMissing = errors.New("the apps table is not installed yet")
 // LakeAppRow is lake's desired apps record, including the last observed state. JSON fields
 // contain configuration and references only, never plaintext credentials.
 type LakeAppRow struct {
-	ID, CustomerID, Name, Mode                                     string
+	ID, CustomerID, WorkspaceID, WorkspaceNamespace, Name, Mode    string
 	SourceRepository, SourceRevision, SourcePath, SourceEntrypoint string
 	Image, Framework                                               string
 	Port, Replicas                                                 int32
@@ -64,15 +64,17 @@ func openPgxAppsStore(ctx context.Context, uri string) (LakeAppsStore, error) {
 	return &pgxAppsStore{pgxServiceStore: store.(*pgxServiceStore)}, nil
 }
 
-const listAppsSQL = `SELECT id::text, customer_id::text, name, mode,
- COALESCE(source_repository, ''), COALESCE(source_revision, ''), COALESCE(source_path, ''),
- COALESCE(source_entrypoint, ''), COALESCE(image, ''), COALESCE(framework, ''),
- COALESCE(port, 8080), COALESCE(replicas, 1), COALESCE(host, ''), COALESCE(auth, 'lake'),
- COALESCE(bindings_json, '{}'::jsonb)::text, COALESCE(env_json, '{}'::jsonb)::text,
- COALESCE(secret_env_refs, '[]'::jsonb)::text, desired, generation,
- COALESCE(phase, 'Pending'), COALESCE(url, ''), COALESCE(ready, false), COALESCE(message, ''),
- COALESCE(observed_generation, 0), COALESCE(token_hashes_json, 'null'::jsonb)::text
- FROM apps ORDER BY id`
+const listAppsSQL = `SELECT a.id::text, a.customer_id::text, a.workspace_id::text, COALESCE(w.namespace, ''), a.name, a.mode,
+ COALESCE(a.source_repository, ''), COALESCE(a.source_revision, ''), COALESCE(a.source_path, ''),
+ COALESCE(a.source_entrypoint, ''), COALESCE(a.image, ''), COALESCE(a.framework, ''),
+ COALESCE(a.port, 8080), COALESCE(a.replicas, 1), COALESCE(a.host, ''), COALESCE(a.auth, 'lake'),
+ COALESCE(a.bindings_json, '{}'::jsonb)::text, COALESCE(a.env_json, '{}'::jsonb)::text,
+ COALESCE(a.secret_env_refs, '[]'::jsonb)::text, a.desired, a.generation,
+ COALESCE(a.phase, 'Pending'), COALESCE(a.url, ''), COALESCE(a.ready, false), COALESCE(a.message, ''),
+ COALESCE(a.observed_generation, 0), COALESCE(a.token_hashes_json, 'null'::jsonb)::text
+ FROM apps a
+ JOIN workspaces w ON w.id = a.workspace_id
+ ORDER BY a.id`
 
 func (s *pgxAppsStore) ListApps(ctx context.Context) ([]LakeAppRow, error) {
 	rows, err := s.db.Query(ctx, listAppsSQL)
@@ -84,7 +86,7 @@ func (s *pgxAppsStore) ListApps(ctx context.Context) ([]LakeAppRow, error) {
 	for rows.Next() {
 		var app LakeAppRow
 		var hashes string
-		err := rows.Scan(&app.ID, &app.CustomerID, &app.Name, &app.Mode,
+		err := rows.Scan(&app.ID, &app.CustomerID, &app.WorkspaceID, &app.WorkspaceNamespace, &app.Name, &app.Mode,
 			&app.SourceRepository, &app.SourceRevision, &app.SourcePath, &app.SourceEntrypoint,
 			&app.Image, &app.Framework, &app.Port, &app.Replicas, &app.Host, &app.Auth,
 			&app.BindingsJSON, &app.EnvJSON, &app.SecretEnvRefs, &app.Desired, &app.Generation,

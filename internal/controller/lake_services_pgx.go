@@ -20,11 +20,13 @@ const serviceStoreConnectTimeout = 10 * time.Second
 
 // listServicesSQL reads every service with its status, oldest first, leaving out history
 // (absent and already Deleted).
-const listServicesSQL = `SELECT s.id::text, s.customer_id::text, s.kind, s.name, s.slug, s.is_default, s.spec::text,
+const listServicesSQL = `SELECT s.id::text, s.customer_id::text, s.workspace_id::text, COALESCE(w.namespace, ''),
+       s.kind, s.name, s.slug, s.is_default, s.spec::text,
        s.desired, s.generation, st.service_id IS NOT NULL,
        COALESCE(st.phase, ''), COALESCE(st.message, ''), COALESCE(st.endpoint, ''),
        COALESCE(st.observed_generation, 0)
   FROM services s
+  JOIN workspaces w ON w.id = s.workspace_id
   LEFT JOIN service_status st ON st.service_id = s.id
  WHERE NOT (s.desired = 'absent' AND COALESCE(st.phase, '') = 'Deleted')
  ORDER BY s.created_at, s.id`
@@ -78,7 +80,8 @@ func (s *pgxServiceStore) ListServices(ctx context.Context) ([]LakeService, erro
 		var svc LakeService
 		var hasStatus bool
 		var status LakeServiceStatus
-		if err := rows.Scan(&svc.ID, &svc.CustomerID, &svc.Kind, &svc.Name, &svc.Slug, &svc.IsDefault, &svc.Spec,
+		if err := rows.Scan(&svc.ID, &svc.CustomerID, &svc.WorkspaceID, &svc.WorkspaceNamespace,
+			&svc.Kind, &svc.Name, &svc.Slug, &svc.IsDefault, &svc.Spec,
 			&svc.Desired, &svc.Generation, &hasStatus,
 			&status.Phase, &status.Message, &status.Endpoint, &status.ObservedGeneration); err != nil {
 			return nil, err

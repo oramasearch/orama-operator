@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -231,7 +232,8 @@ func (f *fakeServiceStore) setDesired(id, desired string) {
 }
 
 func testService(id, slug, kind, spec string, isDefault bool) LakeService {
-	return LakeService{ID: id, CustomerID: testServiceCustomer, Kind: kind, Name: kind, Slug: slug,
+	return LakeService{ID: id, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID,
+		WorkspaceNamespace: testServiceNamespace, Kind: kind, Name: kind, Slug: slug,
 		IsDefault: isDefault, Spec: spec, Desired: serviceDesiredPresent, Generation: 1}
 }
 
@@ -471,6 +473,77 @@ func TestServicesZettaCreateAndReadyGating(t *testing.T) {
 	}
 	if got := store.status(t, testZettaServiceID).ObservedGeneration; got != 1 {
 		t.Fatalf("observed_generation = %d", got)
+	}
+}
+
+func TestWorkspaceDataPlaneRowsStayInTheirWorkspaceNamespace(t *testing.T) {
+	lake := agentsTestLake()
+	service := testService(testZettaServiceID, testZettaSlug, serviceKindZetta, `{}`, false)
+	service.WorkspaceNamespace = testWorkspaceName
+	volume := testStore(testVolumeStoreID, testVolumeStoreSlug, storeTypeVolume, storeProviderCluster, `{}`)
+	volume.WorkspaceNamespace = testWorkspaceName
+	launch := testLaunch(agentLaunchModeJob)
+	launch.WorkspaceNamespace = testWorkspaceName
+	store := &fakeServiceStore{
+		services: []LakeService{service},
+		stores:   []LakeStore{volume},
+		launches: []LakeAgentLaunch{launch},
+	}
+	pull := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: lake.Spec.PullSecretName, Namespace: testServiceNamespace},
+		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{}}`)},
+	}
+	openAI := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: lake.Spec.Agents.OpenAISecretName, Namespace: testServiceNamespace},
+		Data:       map[string][]byte{openAIKeyName: []byte("test-key")},
+	}
+	h := newServiceHarness(t, lake, store, pull, openAI)
+	h.poll()
+
+	ctx := context.Background()
+	objects := []client.Object{
+		&oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{
+			Name: serviceResourceName(lake.Name, service.Slug), Namespace: testWorkspaceName,
+		}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+			Name: storeResourceName(lake.Name, volume.Slug), Namespace: testWorkspaceName,
+		}},
+		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+			Name: agentLaunchName(lake.Name, launch.Slug), Namespace: testWorkspaceName,
+		}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: agentLaunchCredentialSecret(lake.Name, launch.Slug), Namespace: testWorkspaceName,
+		}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: lake.Spec.PullSecretName, Namespace: testWorkspaceName,
+		}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: lake.Spec.Agents.OpenAISecretName, Namespace: testWorkspaceName,
+		}},
+	}
+	for _, object := range objects {
+		if err := h.client.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+			t.Fatalf("workspace object %T %s: %v", object, client.ObjectKeyFromObject(object), err)
+		}
+		if object.GetLabels()[workspaceLabel] != testWorkspaceID {
+			t.Errorf("workspace object %T lacks workspace identity", object)
+		}
+	}
+	wrongNamespace := []client.Object{
+		&oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{
+			Name: serviceResourceName(lake.Name, service.Slug), Namespace: testServiceNamespace,
+		}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+			Name: storeResourceName(lake.Name, volume.Slug), Namespace: testServiceNamespace,
+		}},
+		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+			Name: agentLaunchName(lake.Name, launch.Slug), Namespace: testServiceNamespace,
+		}},
+	}
+	for _, object := range wrongNamespace {
+		if err := h.client.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
+			t.Errorf("data-plane object %T was also materialized in the Lake namespace", object)
+		}
 	}
 }
 
@@ -772,9 +845,9 @@ func TestServicesQuotaRefusesOnlyNewServices(t *testing.T) {
 	}
 }
 
-func TestServicesQuotaFallsBackToMaxWorkspaces(t *testing.T) {
+func TestServicesQuotaIsIndependentFromMaxWorkspaces(t *testing.T) {
 	lake := serviceTestLake()
-	lake.Spec.Services = oramav1alpha1.LakeServicesSpec{}
+	lake.Spec.Services = oramav1alpha1.LakeServicesSpec{Enabled: true}
 	lake.Spec.Workspaces = oramav1alpha1.LakeWorkspacesSpec{Enabled: true, Image: "oramasearch/zetta:workspace", MaxWorkspaces: 1}
 	store := &fakeServiceStore{services: []LakeService{
 		testService(testZettaServiceID, testZettaSlug, serviceKindZetta, `{}`, false),
@@ -785,7 +858,7 @@ func TestServicesQuotaFallsBackToMaxWorkspaces(t *testing.T) {
 	if h.zettaCluster(testZettaSlug).Spec.Image != "oramasearch/zetta:workspace" {
 		t.Fatal("spec.workspaces.image is not the fallback Zetta image")
 	}
-	expectStatus(t, store.status(t, testPostgresID), ServicePhaseFailed, "service quota reached (1)", "")
+	expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "waiting for the Postgres instances", "prod-svc-222222222222-rw.lake.svc.cluster.local:5432")
 }
 
 func TestServicesStatusUpsertOnlyOnChange(t *testing.T) {
@@ -840,10 +913,10 @@ func TestLakeServicesDeploymentMountAndEnv(t *testing.T) {
 		want   bool
 	}{
 		{"services", func(*oramav1alpha1.Lake) {}, true},
-		{"deprecated workspaces", func(l *oramav1alpha1.Lake) {
+		{"workspaces only", func(l *oramav1alpha1.Lake) {
 			l.Spec.Services = oramav1alpha1.LakeServicesSpec{}
 			l.Spec.Workspaces.Enabled = true
-		}, true},
+		}, false},
 		{"disabled", func(l *oramav1alpha1.Lake) { l.Spec.Services = oramav1alpha1.LakeServicesSpec{} }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

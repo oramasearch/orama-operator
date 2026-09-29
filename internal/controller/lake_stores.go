@@ -58,12 +58,14 @@ var errStoresTableMissing = errors.New("the stores table does not exist yet (lak
 
 // LakeStore is one row of lake's stores table joined to its store_status row.
 type LakeStore struct {
-	ID         string
-	CustomerID string
-	Type       string
-	Provider   string
-	Name       string
-	Slug       string
+	ID                 string
+	CustomerID         string
+	WorkspaceID        string
+	WorkspaceNamespace string
+	Type               string
+	Provider           string
+	Name               string
+	Slug               string
 	// Spec is the raw jsonb spec: {"size_gi", "region", "public"}.
 	Spec       string
 	Desired    string
@@ -154,6 +156,10 @@ func validateStore(lake *oramav1alpha1.Lake, st *LakeStore) (lakeStoreSpec, erro
 		return lakeStoreSpec{}, fmt.Errorf("slug must match %s", storeSlugPattern.String())
 	case st.CustomerID == "":
 		return lakeStoreSpec{}, fmt.Errorf("customer_id is required")
+	case st.WorkspaceID == "" || st.WorkspaceNamespace == "":
+		return lakeStoreSpec{}, fmt.Errorf("workspace_id and its reconciled namespace are required")
+	case len(validation.IsDNS1123Label(st.WorkspaceNamespace)) != 0:
+		return lakeStoreSpec{}, fmt.Errorf("workspace namespace is invalid")
 	case len(validation.IsDNS1123Subdomain(storeResourceName(lake.Name, st.Slug))) > 0:
 		return lakeStoreSpec{}, fmt.Errorf("lake name %q is too long for store resource names", lake.Name)
 	}
@@ -168,7 +174,7 @@ func storeOwned(lake *oramav1alpha1.Lake, obj metav1.Object, st *LakeStore) bool
 // reconcileLakeStores applies one read of the stores table: absent stores first, then present
 // stores oldest first. It writes no status of a present store: that waits for the services Secret,
 // since a store is Ready only once its connection is there (finishLakeStores).
-func (r *LakeReconciler) reconcileLakeStores(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, store LakeServiceStore, stores []LakeStore, read bool) lakeStoresPass {
+func (r *LakeReconciler) reconcileLakeStores(ctx context.Context, lake *oramav1alpha1.Lake, credentialNamespace string, labels map[string]string, store LakeServiceStore, stores []LakeStore, read bool) lakeStoresPass {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	pass := lakeStoresPass{read: read, present: map[string]bool{}, credentials: map[string][]byte{}, results: map[string]serviceResult{}}
 	for i := range stores {
@@ -180,7 +186,14 @@ func (r *LakeReconciler) reconcileLakeStores(ctx context.Context, lake *oramav1a
 				continue
 			}
 			pass.changing = true
-			result, err := r.deleteCustomerStore(ctx, lake, namespace, st)
+			if st.WorkspaceID == "" || len(validation.IsDNS1123Label(st.WorkspaceNamespace)) != 0 {
+				result := serviceResult{phase: ServicePhaseFailed, message: "workspace_id and its reconciled namespace are required"}
+				if err := writeStoreStatus(ctx, store, st, result); err != nil {
+					log.Error(err, "store status write deferred", "store", st.ID)
+				}
+				continue
+			}
+			result, err := r.deleteCustomerStore(ctx, lake, st.WorkspaceNamespace, credentialNamespace, st)
 			if err != nil {
 				log.Error(err, "store deletion deferred", "store", st.ID, "slug", st.Slug)
 				continue
@@ -191,7 +204,8 @@ func (r *LakeReconciler) reconcileLakeStores(ctx context.Context, lake *oramav1a
 		case serviceDesiredPresent:
 			pass.present[st.Slug] = true
 			pass.stores = append(pass.stores, st)
-			result, err := r.reconcileCustomerStore(ctx, lake, namespace, labels, st)
+			workspaceLabels := withLabels(labels, map[string]string{workspaceLabel: st.WorkspaceID})
+			result, err := r.reconcileCustomerStore(ctx, lake, st.WorkspaceNamespace, workspaceLabels, st)
 			if err != nil {
 				log.Error(err, "store reconcile deferred", "store", st.ID, "slug", st.Slug)
 				pass.changing = true
@@ -276,6 +290,7 @@ func storeClaimLabels(lake *oramav1alpha1.Lake, labels map[string]string, st *La
 	}
 	out[serviceLakeLabel] = lake.Name
 	out[storeIDLabel] = st.ID
+	out[workspaceLabel] = st.WorkspaceID
 	return out
 }
 
@@ -347,7 +362,13 @@ func (r *LakeReconciler) reconcileVolumeStore(ctx context.Context, lake *oramav1
 // (lake asks for a typed confirmation first); then its connection. It reports Deleted only once
 // the claim is gone; until then every poll repeats the same steps. Only a claim this Lake owns for
 // this store is ever deleted: a foreign claim of the same name is left in place.
-func (r *LakeReconciler) deleteCustomerStore(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, st *LakeStore) (serviceResult, error) {
+func (r *LakeReconciler) deleteCustomerStore(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	namespace string,
+	credentialNamespace string,
+	st *LakeStore,
+) (serviceResult, error) {
 	if !storeSlugPattern.MatchString(st.Slug) {
 		return serviceResult{phase: ServicePhaseFailed, message: fmt.Sprintf("slug must match %s", storeSlugPattern.String())}, nil
 	}
@@ -367,7 +388,7 @@ func (r *LakeReconciler) deleteCustomerStore(ctx context.Context, lake *oramav1a
 		} else if !apierrors.IsNotFound(err) {
 			return serviceResult{}, err
 		}
-		if err := r.removeServiceCredential(ctx, lake, namespace, st.Slug); err != nil {
+		if err := r.removeServiceCredential(ctx, lake, credentialNamespace, st.Slug); err != nil {
 			return serviceResult{}, err
 		}
 		remaining := &corev1.PersistentVolumeClaim{}
@@ -381,7 +402,7 @@ func (r *LakeReconciler) deleteCustomerStore(ctx context.Context, lake *oramav1a
 		return deleted, nil
 	}
 	// An unavailable pair never had a resource; only a connection could be left.
-	if err := r.removeServiceCredential(ctx, lake, namespace, st.Slug); err != nil {
+	if err := r.removeServiceCredential(ctx, lake, credentialNamespace, st.Slug); err != nil {
 		return serviceResult{}, err
 	}
 	return deleted, nil

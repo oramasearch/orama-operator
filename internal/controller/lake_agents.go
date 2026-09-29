@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -77,10 +78,12 @@ var errAgentLaunchesTableMissing = errors.New("the agent_launches table does not
 
 // LakeAgentLaunch is one row of lake's agent_launches table joined to its status row.
 type LakeAgentLaunch struct {
-	ID         string
-	CustomerID string
-	AgentID    string
-	Mode       string
+	ID                 string
+	CustomerID         string
+	WorkspaceID        string
+	WorkspaceNamespace string
+	AgentID            string
+	Mode               string
 	// Input is the raw jsonb input a job is asked to do.
 	Input      string
 	Slug       string
@@ -144,6 +147,10 @@ func agentLaunchCredentialSecret(lake, slug string) string {
 // lakeInternalURL is lake's in-cluster address: its Service, on the Service port.
 func lakeInternalURL(lake *oramav1alpha1.Lake, namespace string) string {
 	return fmt.Sprintf("http://lake-%s.%s.svc:%d", lake.Name, namespace, lakeServicePort)
+}
+
+func workspaceLakeInternalURL(lake *oramav1alpha1.Lake, workspaceID string) string {
+	return lakeInternalURL(lake, lakeNamespace(lake)) + "/w/" + workspaceID
 }
 
 func agentServiceURL(name, namespace string) string {
@@ -423,6 +430,26 @@ func (r *LakeReconciler) reconcileAgentLaunchCredential(ctx context.Context, lak
 		agentLaunchIDLabel, launch.ID, "lal.")
 }
 
+func (r *LakeReconciler) reconcileAgentWorkspaceSecrets(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	namespace string,
+	labels map[string]string,
+	workspaceID string,
+	serviceMode bool,
+) error {
+	names := []string{lake.Spec.PullSecretName, lake.Spec.Agents.OpenAISecretName}
+	if serviceMode {
+		names = append(names, lakeAgentServiceTokenSecret(lake.Name))
+	}
+	for _, name := range names {
+		if err := reconcileLakeSecretCopy(ctx, r.Client, r.Scheme, lake, workspaceID, namespace, name, labels); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // reconcileAgentCredential returns the credential in Secret `name`, generating it once as
 // <prefix><id>.<secret>. The Secret must carry idLabel=id and belong to the Lake.
 func (r *LakeReconciler) reconcileAgentCredential(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, name, idLabel, id, prefix string) (string, error) {
@@ -459,17 +486,24 @@ func credentialDigest(credential string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (launch *LakeAgentLaunch) env(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar {
-	return agentRunEnv(lake, namespace, agentLaunchCredentialSecret(lake.Name, launch.Slug),
-		launch.CustomerID, launch.AgentID, launch.Mode, launch.Input)
+func (launch *LakeAgentLaunch) env(lake *oramav1alpha1.Lake) []corev1.EnvVar {
+	return agentRunEnv(lake, agentLaunchCredentialSecret(lake.Name, launch.Slug),
+		launch.CustomerID, launch.WorkspaceID, launch.AgentID, launch.Mode, launch.Input)
 }
 
 // agentRunEnv is what a run of a user-created agent is told: the base env, its credential, whose
 // agent it is, and for a job what it is asked to do.
-func agentRunEnv(lake *oramav1alpha1.Lake, namespace, credentialSecret, customerID, agentID, mode, input string) []corev1.EnvVar {
-	env := append(agentBaseEnv(lake, namespace),
+func agentRunEnv(lake *oramav1alpha1.Lake, credentialSecret, customerID, workspaceID, agentID, mode, input string) []corev1.EnvVar {
+	env := agentBaseEnv(lake, lakeNamespace(lake))
+	for i := range env {
+		if env[i].Name == "LAKE_URL" {
+			env[i].Value = workspaceLakeInternalURL(lake, workspaceID)
+		}
+	}
+	env = append(env,
 		secretEnv("LAKE_TOKEN", credentialSecret, agentCredentialKey),
 		corev1.EnvVar{Name: "CUSTOMER_ID", Value: customerID},
+		corev1.EnvVar{Name: "WORKSPACE_ID", Value: workspaceID},
 		corev1.EnvVar{Name: "AGENT_ID", Value: agentID},
 		corev1.EnvVar{Name: "AGENT_MODE", Value: mode},
 	)
@@ -534,10 +568,23 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 	case lake.Spec.Agents.RuntimeImage == "":
 		status.Phase, status.Message = AgentPhaseFailed, "agents are not enabled on this Lake (spec.agents.runtimeImage)"
 		return status, false, nil
+	case launch.WorkspaceID == "" || len(validation.IsDNS1123Label(launch.WorkspaceNamespace)) != 0:
+		status.Phase, status.Message = AgentPhaseFailed, "workspace_id and its reconciled namespace are required"
+		return status, false, nil
 	}
 	// A job that already finished keeps its outcome; its pod may be gone.
 	if prior := launch.Status; prior != nil && (prior.Phase == AgentPhaseSucceeded || prior.Phase == AgentPhaseFailed) {
 		return *prior, false, nil
+	}
+	if err := r.reconcileAgentWorkspaceSecrets(
+		ctx,
+		lake,
+		namespace,
+		labels,
+		launch.WorkspaceID,
+		launch.Mode == agentLaunchModeService,
+	); err != nil {
+		return status, true, err
 	}
 	credential, err := r.reconcileAgentLaunchCredential(ctx, lake, namespace, labels, launch)
 	if err != nil {
@@ -549,7 +596,7 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 	if launch.Mode == agentLaunchModeService {
 		selector := map[string]string{"app.kubernetes.io/name": "agent-runtime", "app.kubernetes.io/instance": name}
 		available, err := r.reconcileAgentService(ctx, lake, namespace, name, launchLabels, selector,
-			agentPodSpec(lake, lake.Spec.Agents.RuntimeImage, launch.env(lake, namespace), true))
+			agentPodSpec(lake, lake.Spec.Agents.RuntimeImage, launch.env(lake), true))
 		if err != nil {
 			return status, true, err
 		}
@@ -565,7 +612,7 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, job); apierrors.IsNotFound(err) {
 		deadline := agentJobDeadline(lake)
 		backoff, ttl := int32(0), agentJobTTLSeconds
-		pod := agentJobPod(lake, launch.env(lake, namespace))
+		pod := agentJobPod(lake, launch.env(lake))
 		job = &batchv1.Job{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: launchLabels},
 			Spec: batchv1.JobSpec{
@@ -655,11 +702,12 @@ func (r *LakeReconciler) stopAgentLaunch(ctx context.Context, lake *oramav1alpha
 
 // reconcileLakeAgentLaunches applies one read of agent_launches and reports whether any launch
 // is still changing.
-func (r *LakeReconciler) reconcileLakeAgentLaunches(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, store LakeServiceStore, launches []LakeAgentLaunch) bool {
+func (r *LakeReconciler) reconcileLakeAgentLaunches(ctx context.Context, lake *oramav1alpha1.Lake, labels map[string]string, store LakeServiceStore, launches []LakeAgentLaunch) bool {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	changing := false
 	for i := range launches {
 		launch := &launches[i]
+		workspaceLabels := withLabels(labels, map[string]string{workspaceLabel: launch.WorkspaceID})
 		var status LakeAgentLaunchStatus
 		var err error
 		switch launch.Desired {
@@ -669,10 +717,15 @@ func (r *LakeReconciler) reconcileLakeAgentLaunches(ctx context.Context, lake *o
 				launch.Status.CredentialSHA256 == "" {
 				continue
 			}
-			status, err = r.stopAgentLaunch(ctx, lake, namespace, launch)
+			if launch.WorkspaceID == "" || len(validation.IsDNS1123Label(launch.WorkspaceNamespace)) != 0 {
+				status = LakeAgentLaunchStatus{LaunchID: launch.ID, Phase: AgentPhaseFailed, Result: "null",
+					Message: "workspace_id and its reconciled namespace are required", ObservedGeneration: launch.Generation}
+				break
+			}
+			status, err = r.stopAgentLaunch(ctx, lake, launch.WorkspaceNamespace, launch)
 		case serviceDesiredPresent:
 			var still bool
-			status, still, err = r.reconcileAgentLaunch(ctx, lake, namespace, labels, launch)
+			status, still, err = r.reconcileAgentLaunch(ctx, lake, launch.WorkspaceNamespace, workspaceLabels, launch)
 			changing = changing || still
 		default:
 			status = LakeAgentLaunchStatus{LaunchID: launch.ID, Phase: AgentPhaseFailed, Result: "null",

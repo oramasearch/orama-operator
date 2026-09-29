@@ -76,7 +76,7 @@ type LakeAppBindings struct {
 	Services []string `json:"services,omitempty"`
 
 	// ServiceNames maps service identifiers to filenames under bindings/services. The apps
-	// sync resolves these names from same-customer services; standalone apps default to the ID.
+	// sync resolves these names from same-workspace services; standalone apps default to the ID.
 	// +optional
 	ServiceNames map[string]string `json:"serviceNames,omitempty"`
 
@@ -88,7 +88,7 @@ type LakeAppBindings struct {
 }
 
 // LakeAppTokenHashes acknowledges tokens registered in lake's apps row. These are SHA-256
-// digests only; plaintext credentials stay in the workload namespace's app-tokens Secret.
+// digests only; plaintext credentials stay in the workload namespace's app token Secret.
 type LakeAppTokenHashes struct {
 	Source string `json:"source"`
 	// +nullable
@@ -104,6 +104,13 @@ type LakeAppSync struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="customer ID is immutable"
 	CustomerID string `json:"customerId"`
+	// WorkspaceID is the immutable workspace that owns this app.
+	// +kubebuilder:validation:Format=uuid
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="workspace ID is immutable"
+	WorkspaceID string `json:"workspaceId"`
+	// WorkspaceNamespace is the operator-reconciled namespace containing the app's data services.
+	// +kubebuilder:validation:MinLength=1
+	WorkspaceNamespace string `json:"workspaceNamespace"`
 	// +kubebuilder:validation:Minimum=1
 	Generation int64 `json:"generation"`
 	// TokenHashes gates rollout until the sync has registered these hashes in Postgres.

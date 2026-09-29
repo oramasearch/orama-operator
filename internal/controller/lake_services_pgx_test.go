@@ -55,17 +55,47 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 	if _, err := tx.Exec(ctx, lakeSchemaSQL); err != nil {
 		t.Fatalf("apply the vendored lake schema: %v", err)
 	}
+	workspaceFixture, err := os.ReadFile("testdata/lake-workspaces.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, string(workspaceFixture)); err != nil {
+		t.Fatalf("apply workspace fixture: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE services ADD COLUMN workspace_id uuid NOT NULL REFERENCES workspaces(id)`); err != nil {
+		t.Fatalf("add services workspace contract: %v", err)
+	}
+	for _, table := range []string{"agent_launches", "agent_cron_schedules"} {
+		if _, err := tx.Exec(ctx, `ALTER TABLE `+table+` ADD COLUMN workspace_id uuid NOT NULL REFERENCES workspaces(id)`); err != nil {
+			t.Fatalf("add %s workspace contract: %v", table, err)
+		}
+	}
 	var customerID string
 	if err := tx.QueryRow(ctx, `WITH u AS (INSERT INTO users (display_name) VALUES ('t') RETURNING id)
 		INSERT INTO customers (customer_type, user_id, name) SELECT 'individual', id, 'services-test' FROM u RETURNING id::text`).Scan(&customerID); err != nil {
 		t.Fatalf("seed customer: %v", err)
 	}
-	insert := `INSERT INTO services (id, customer_id, kind, name, slug, is_default, spec, desired, generation)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)`
+	if _, err := tx.Exec(ctx, `INSERT INTO workspaces
+		(id, customer_id, name, environment, desired, generation, namespace)
+		VALUES ($1, $2, 'Production', 'prod', 'running', 1, $3)`, testWorkspaceID, customerID, testWorkspaceName); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_launches
+		(id, customer_id, workspace_id, agent_id, mode, scopes, slug)
+		VALUES ('a1000000-0000-4000-8000-000000000001', $1, $2, 'agent', 'job', ARRAY['read'], 'al-a10000000000')`, customerID, testWorkspaceID); err != nil {
+		t.Fatalf("seed agent launch: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_cron_schedules
+		(id, customer_id, workspace_id, agent_id, cron, scopes, slug)
+		VALUES ('a2000000-0000-4000-8000-000000000002', $1, $2, 'agent', '0 9 * * *', ARRAY['read'], 'as-a20000000000')`, customerID, testWorkspaceID); err != nil {
+		t.Fatalf("seed agent schedule: %v", err)
+	}
+	insert := `INSERT INTO services (id, customer_id, workspace_id, kind, name, slug, is_default, spec, desired, generation)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)`
 	for _, row := range [][]any{
-		{testDefaultID, customerID, "zetta", "workspace", testDefaultSlug, true, `{"instances":1,"storage_gi":10}`, "present", 1},
-		{testPostgresID, customerID, "postgres", "db", testPostgresSlug, false, `{}`, "present", 3},
-		{testZettaServiceID, customerID, "zetta", "gone", testZettaSlug, false, `{}`, "absent", 2},
+		{testDefaultID, customerID, testWorkspaceID, "zetta", "workspace", testDefaultSlug, true, `{"instances":1,"storage_gi":10}`, "present", 1},
+		{testPostgresID, customerID, testWorkspaceID, "postgres", "db", testPostgresSlug, false, `{}`, "present", 3},
+		{testZettaServiceID, customerID, testWorkspaceID, "zetta", "gone", testZettaSlug, false, `{}`, "absent", 2},
 	} {
 		if _, err := tx.Exec(ctx, insert, row...); err != nil {
 			t.Fatalf("seed service: %v", err)
@@ -73,6 +103,14 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 	}
 
 	store := &pgxServiceStore{db: tx}
+	launches, err := store.ListAgentLaunches(ctx)
+	if err != nil || len(launches) != 1 || launches[0].WorkspaceID != testWorkspaceID || launches[0].WorkspaceNamespace != testWorkspaceName {
+		t.Fatalf("workspace agent launches = %+v, %v", launches, err)
+	}
+	schedules, err := store.ListAgentSchedules(ctx)
+	if err != nil || len(schedules) != 1 || schedules[0].WorkspaceID != testWorkspaceID || schedules[0].WorkspaceNamespace != testWorkspaceName {
+		t.Fatalf("workspace agent schedules = %+v, %v", schedules, err)
+	}
 	services, err := store.ListServices(ctx)
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -122,7 +160,7 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 	// and reads back as that kind; anything else is still refused by the kind check.
 	for i, kind := range []string{serviceKindKafka, serviceKindClickHouse, serviceKindTiDB, serviceKindCassandra, serviceKindValkey, serviceKindSQLite, serviceKindDuckDB, serviceKindPolars} {
 		id := fmt.Sprintf("c0000000-0000-4000-8000-00000000000%d", i)
-		if _, err := tx.Exec(ctx, insert, id, customerID, kind, kind, fmt.Sprintf("svc-c0000000000%d", i), false, `{}`, "present", 1); err != nil {
+		if _, err := tx.Exec(ctx, insert, id, customerID, testWorkspaceID, kind, kind, fmt.Sprintf("svc-c0000000000%d", i), false, `{}`, "present", 1); err != nil {
 			t.Fatalf("seed %s service: %v", kind, err)
 		}
 	}

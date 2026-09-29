@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -45,11 +46,13 @@ var errAgentSchedulesTableMissing = errors.New("the agent_cron_schedules table d
 // LakeAgentSchedule is one row of lake's agent_cron_schedules joined to its status row, with the
 // phase of each run already written (by run id) so a finished run is written once.
 type LakeAgentSchedule struct {
-	ID         string
-	CustomerID string
-	AgentID    string
-	Cron       string
-	TimeZone   string
+	ID                 string
+	CustomerID         string
+	WorkspaceID        string
+	WorkspaceNamespace string
+	AgentID            string
+	Cron               string
+	TimeZone           string
 	// Input is the raw jsonb input every run is asked to do.
 	Input      string
 	Slug       string
@@ -113,6 +116,12 @@ func (r *LakeReconciler) reconcileAgentSchedule(ctx context.Context, lake *orama
 	case lake.Spec.Agents.RuntimeImage == "":
 		status.Phase, status.Message = AgentPhaseFailed, "agents are not enabled on this Lake (spec.agents.runtimeImage)"
 		return status, false, nil
+	case schedule.WorkspaceID == "" || len(validation.IsDNS1123Label(schedule.WorkspaceNamespace)) != 0:
+		status.Phase, status.Message = AgentPhaseFailed, "workspace_id and its reconciled namespace are required"
+		return status, false, nil
+	}
+	if err := r.reconcileAgentWorkspaceSecrets(ctx, lake, namespace, labels, schedule.WorkspaceID, false); err != nil {
+		return status, true, err
 	}
 	credential, err := r.reconcileAgentCredential(ctx, lake, namespace, labels,
 		agentScheduleCredentialSecret(lake.Name, schedule.Slug), agentScheduleIDLabel, schedule.ID, "las.")
@@ -134,8 +143,8 @@ func (r *LakeReconciler) reconcileAgentSchedule(ctx context.Context, lake *orama
 		}
 		deadline, starting := agentJobDeadline(lake), agentScheduleStartingDeadline
 		backoff, history := int32(0), agentScheduleHistory
-		env := agentRunEnv(lake, namespace, agentScheduleCredentialSecret(lake.Name, schedule.Slug),
-			schedule.CustomerID, schedule.AgentID, agentLaunchModeJob, schedule.Input)
+		env := agentRunEnv(lake, agentScheduleCredentialSecret(lake.Name, schedule.Slug),
+			schedule.CustomerID, schedule.WorkspaceID, schedule.AgentID, agentLaunchModeJob, schedule.Input)
 		cron.Labels = scheduleLabels
 		cron.Spec.Schedule = schedule.Cron
 		cron.Spec.TimeZone = &timeZone
@@ -278,11 +287,12 @@ func (r *LakeReconciler) stopAgentSchedule(ctx context.Context, lake *oramav1alp
 
 // reconcileLakeAgentSchedules applies one read of agent_cron_schedules and reports whether any
 // schedule is still changing or has a run under way.
-func (r *LakeReconciler) reconcileLakeAgentSchedules(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, store LakeServiceStore, schedules []LakeAgentSchedule) bool {
+func (r *LakeReconciler) reconcileLakeAgentSchedules(ctx context.Context, lake *oramav1alpha1.Lake, labels map[string]string, store LakeServiceStore, schedules []LakeAgentSchedule) bool {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	changing := false
 	for i := range schedules {
 		schedule := &schedules[i]
+		workspaceLabels := withLabels(labels, map[string]string{workspaceLabel: schedule.WorkspaceID})
 		var status LakeAgentScheduleStatus
 		var err error
 		switch schedule.Desired {
@@ -291,10 +301,15 @@ func (r *LakeReconciler) reconcileLakeAgentSchedules(ctx context.Context, lake *
 				schedule.Status.Phase == AgentPhaseStopped && schedule.Status.CredentialSHA256 == "" {
 				continue
 			}
-			status, err = r.stopAgentSchedule(ctx, lake, namespace, schedule)
+			if schedule.WorkspaceID == "" || len(validation.IsDNS1123Label(schedule.WorkspaceNamespace)) != 0 {
+				status = LakeAgentScheduleStatus{ScheduleID: schedule.ID, Phase: AgentPhaseFailed,
+					Message: "workspace_id and its reconciled namespace are required", ObservedGeneration: schedule.Generation}
+				break
+			}
+			status, err = r.stopAgentSchedule(ctx, lake, schedule.WorkspaceNamespace, schedule)
 		case serviceDesiredPresent:
 			var still bool
-			status, still, err = r.reconcileAgentSchedule(ctx, lake, namespace, labels, store, schedule)
+			status, still, err = r.reconcileAgentSchedule(ctx, lake, schedule.WorkspaceNamespace, workspaceLabels, store, schedule)
 			changing = changing || still
 		default:
 			status = LakeAgentScheduleStatus{ScheduleID: schedule.ID, Phase: AgentPhaseFailed,

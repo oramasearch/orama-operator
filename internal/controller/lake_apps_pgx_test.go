@@ -21,7 +21,7 @@ import (
 // This contract fixture belongs to the test only. Lake #293 owns the real migration; the
 // operator's byte-identical vendored schema is not modified to fabricate an upstream migration.
 const lakeAppsTestTable = `CREATE TEMP TABLE apps (
- id uuid PRIMARY KEY, customer_id uuid NOT NULL, name text NOT NULL, mode text NOT NULL,
+ id uuid PRIMARY KEY, customer_id uuid NOT NULL, workspace_id uuid NOT NULL, name text NOT NULL, mode text NOT NULL,
  source_repository text, source_revision text, source_path text, source_entrypoint text,
  image text, framework text, port integer, replicas integer, host text, auth text,
  bindings_json jsonb, env_json jsonb, secret_env_refs jsonb, desired text, generation bigint,
@@ -46,12 +46,25 @@ func TestLakeAppsPgxStoreAgainstPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(context.Background())
+	workspaceFixture, err := os.ReadFile("testdata/lake-workspaces.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, string(workspaceFixture)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.Exec(ctx, lakeAppsTestTable); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO apps (id, customer_id, name, mode, desired, generation,
+	if _, err := tx.Exec(ctx, `INSERT INTO workspaces
+ (id, customer_id, name, environment, desired, generation, namespace)
+ VALUES ($1, $2, 'Production', 'prod', 'running', 1, $3)`, testWorkspaceID, testServiceCustomer, testWorkspaceName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO apps (id, customer_id, workspace_id, name, mode, desired, generation,
  source_repository, source_revision, framework, bindings_json)
- VALUES ($1, $2, 'sales', 'runtime', 'running', 1, 'sales', 'revision-a', 'fastapi', '{"zetta":{"scopes":["read"]}}')`, testAppRowID, testServiceCustomer); err != nil {
+ VALUES ($1, $2, $3, 'sales', 'runtime', 'running', 1, 'sales', 'revision-a', 'fastapi', '{"zetta":{"scopes":["read"]}}')`,
+		testAppRowID, testServiceCustomer, testWorkspaceID); err != nil {
 		t.Fatal(err)
 	}
 	store := &pgxAppsStore{pgxServiceStore: &pgxServiceStore{db: tx}}

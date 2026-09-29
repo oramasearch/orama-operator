@@ -173,7 +173,8 @@ func (r *LakeAppsReconciler) syncLakeAppRow(ctx context.Context, lake *oramav1al
 		return status, err
 	}
 	exists := err == nil
-	if exists && (!metav1.IsControlledBy(app, lake) || app.Spec.Sync == nil || app.Spec.Sync.ID != row.ID || app.Spec.Sync.CustomerID != row.CustomerID) {
+	if exists && (!metav1.IsControlledBy(app, lake) || app.Spec.Sync == nil || app.Spec.Sync.ID != row.ID ||
+		app.Spec.Sync.CustomerID != row.CustomerID || app.Spec.Sync.WorkspaceID != row.WorkspaceID) {
 		status.Phase, status.Message = "Failed", "LakeApp name is occupied by another owner or app"
 		return status, nil
 	}
@@ -205,6 +206,7 @@ func (r *LakeAppsReconciler) syncLakeAppRow(ctx context.Context, lake *oramav1al
 		}
 		app.Labels[serviceLakeLabel] = lake.Name
 		app.Labels[lakeAppRowIDLabel] = row.ID
+		app.Labels[workspaceLabel] = row.WorkspaceID
 		app.Spec = spec
 		controllerutil.AddFinalizer(app, lakeAppFinalizer)
 		return controllerutil.SetControllerReference(lake, app, r.Scheme)
@@ -217,7 +219,7 @@ func (r *LakeAppsReconciler) syncLakeAppRow(ctx context.Context, lake *oramav1al
 
 func (r *LakeAppsReconciler) registerLakeAppTokens(ctx context.Context, store LakeAppsStore, row *LakeAppRow, app *oramav1alpha1.LakeApp) (*oramav1alpha1.LakeAppTokenHashes, error) {
 	var tokens corev1.Secret
-	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppTokensSecretName}
+	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppTokensName(app)}
 	reader := client.Reader(r.Client)
 	if r.APIReader != nil {
 		reader = r.APIReader
@@ -290,13 +292,20 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 	spec := oramav1alpha1.LakeAppSpec{
 		LakeRef: lake.Name, Mode: row.Mode, Image: row.Image, Port: row.Port,
 		Replicas: &row.Replicas, Auth: row.Auth, Host: row.Host,
-		Sync: &oramav1alpha1.LakeAppSync{ID: row.ID, CustomerID: row.CustomerID, Generation: row.Generation},
+		Sync: &oramav1alpha1.LakeAppSync{
+			ID: row.ID, CustomerID: row.CustomerID, WorkspaceID: row.WorkspaceID,
+			WorkspaceNamespace: row.WorkspaceNamespace, Generation: row.Generation,
+		},
 	}
 	if row.CustomerID == "" || row.Generation < 1 || len(validation.IsDNS1123Label(row.Name)) != 0 {
 		return spec, errors.New("app customer, generation or name is invalid")
 	}
 	if _, err := uuid.Parse(row.CustomerID); err != nil {
 		return spec, errors.New("app customer must be a UUID")
+	}
+	if workspaceID, err := uuid.Parse(row.WorkspaceID); err != nil || workspaceID.String() != row.WorkspaceID ||
+		len(validation.IsDNS1123Label(row.WorkspaceNamespace)) != 0 {
+		return spec, errors.New("app workspace and its reconciled namespace are required")
 	}
 	if row.Desired != "running" && row.Desired != "stopped" {
 		return spec, errors.New("desired must be running, stopped or deleted")
@@ -386,13 +395,14 @@ func lakeAppRowBindings(row *LakeAppRow, services []LakeService) (*oramav1alpha1
 	for _, id := range sortedUnique(desired.Services) {
 		var matched *LakeService
 		for i := range services {
-			if services[i].ID == id && services[i].CustomerID == row.CustomerID && services[i].Desired == serviceDesiredPresent {
+			if services[i].ID == id && services[i].CustomerID == row.CustomerID &&
+				services[i].WorkspaceID == row.WorkspaceID && services[i].Desired == serviceDesiredPresent {
 				matched = &services[i]
 				break
 			}
 		}
 		if matched == nil || !validAppServiceName(matched.Name) || names[matched.Name] {
-			return nil, errors.New("service binding must name an active same-customer service with a unique filename")
+			return nil, errors.New("service binding must name an active service in the same workspace with a unique filename")
 		}
 		names[matched.Name] = true
 		bindings.Services = append(bindings.Services, id)
