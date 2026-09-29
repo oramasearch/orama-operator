@@ -140,8 +140,8 @@ func zettaLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 func zettaPodLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 	labels := zettaLabels(z)
 	// LakeApp egress is label-scoped to the exact managed service. Preserve only the Lake service
-	// identity labels on pods. The StatefulSet selector deliberately remains zettaLabels: changing
-	// that immutable selector would break adopted workspace clusters.
+	// identity labels on pods. The StatefulSet selector deliberately remains zettaLabels because it
+	// is immutable after cluster creation.
 	for _, key := range []string{serviceLakeLabel, serviceIDLabel, serviceKindLabel, serviceCustomerLabel, workspaceIDLabel, workspaceLabel} {
 		if value := z.Labels[key]; value != "" {
 			labels[key] = value

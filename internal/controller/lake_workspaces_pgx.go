@@ -17,17 +17,19 @@ var errWorkspacesTableMissing = errors.New("the workspaces table is not installe
 // LakeWorkspaceRow is lake's desired workspace row and the observation last written by the
 // operator. The SQL contract is owned by lake#265/lake#311.
 type LakeWorkspaceRow struct {
-	ID                 string
-	CustomerID         string
-	Name               string
-	Environment        string
-	Desired            string
-	Generation         int64
-	Phase              string
-	ObservedGeneration int64
-	Message            string
-	Namespace          string
-	ZettaServiceID     string
+	ID                     string
+	CustomerID             string
+	Name                   string
+	Environment            string
+	Desired                string
+	Generation             int64
+	Phase                  string
+	ObservedGeneration     int64
+	Message                string
+	Namespace              string
+	ZettaServiceID         string
+	ZettaServiceGeneration int64
+	ZettaServiceStatus     *LakeServiceStatus
 }
 
 type LakeWorkspaceStatus struct {
@@ -51,6 +53,7 @@ func (row *LakeWorkspaceRow) status() LakeWorkspaceStatus {
 type LakeWorkspacesStore interface {
 	ListWorkspaces(context.Context) ([]LakeWorkspaceRow, error)
 	UpdateWorkspaceStatus(context.Context, *LakeWorkspaceRow, LakeWorkspaceStatus) (bool, error)
+	UpsertServiceStatus(context.Context, LakeServiceStatus) error
 	Close(context.Context) error
 }
 
@@ -68,12 +71,16 @@ func openPgxWorkspacesStore(ctx context.Context, uri string) (LakeWorkspacesStor
 	return &pgxWorkspacesStore{pgxServiceStore: store.(*pgxServiceStore)}, nil
 }
 
-const listWorkspacesSQL = `SELECT id::text, customer_id::text, name, environment, desired, generation,
- COALESCE(phase, ''), COALESCE(observed_generation, 0), COALESCE(message, ''),
- COALESCE(namespace, ''), COALESCE(zetta_service_id::text, '')
- FROM workspaces
- WHERE NOT (desired = 'deleted' AND COALESCE(phase, '') = 'Deleted')
- ORDER BY created_at, id`
+const listWorkspacesSQL = `SELECT w.id::text, w.customer_id::text, w.name, w.environment, w.desired, w.generation,
+ COALESCE(w.phase, ''), COALESCE(w.observed_generation, 0), COALESCE(w.message, ''),
+ COALESCE(w.namespace, ''), COALESCE(w.zetta_service_id::text, ''), COALESCE(s.generation, 0),
+ ss.service_id IS NOT NULL, COALESCE(ss.phase, ''), COALESCE(ss.message, ''),
+ COALESCE(ss.endpoint, ''), COALESCE(ss.observed_generation, 0)
+ FROM workspaces w
+ LEFT JOIN services s ON s.id = w.zetta_service_id
+ LEFT JOIN service_status ss ON ss.service_id = w.zetta_service_id
+ WHERE NOT (w.desired = 'deleted' AND COALESCE(w.phase, '') = 'Deleted')
+ ORDER BY w.created_at, w.id`
 
 func (s *pgxWorkspacesStore) ListWorkspaces(ctx context.Context) ([]LakeWorkspaceRow, error) {
 	rows, err := s.db.Query(ctx, listWorkspacesSQL)
@@ -84,6 +91,8 @@ func (s *pgxWorkspacesStore) ListWorkspaces(ctx context.Context) ([]LakeWorkspac
 	var result []LakeWorkspaceRow
 	for rows.Next() {
 		var row LakeWorkspaceRow
+		var hasServiceStatus bool
+		var serviceStatus LakeServiceStatus
 		if err := rows.Scan(
 			&row.ID,
 			&row.CustomerID,
@@ -96,8 +105,18 @@ func (s *pgxWorkspacesStore) ListWorkspaces(ctx context.Context) ([]LakeWorkspac
 			&row.Message,
 			&row.Namespace,
 			&row.ZettaServiceID,
+			&row.ZettaServiceGeneration,
+			&hasServiceStatus,
+			&serviceStatus.Phase,
+			&serviceStatus.Message,
+			&serviceStatus.Endpoint,
+			&serviceStatus.ObservedGeneration,
 		); err != nil {
 			return nil, errors.New("cannot decode workspaces row")
+		}
+		if hasServiceStatus {
+			serviceStatus.ServiceID = row.ZettaServiceID
+			row.ZettaServiceStatus = &serviceStatus
 		}
 		result = append(result, row)
 	}

@@ -21,6 +21,7 @@ const serviceStoreConnectTimeout = 10 * time.Second
 // listServicesSQL reads every service with its status, oldest first, leaving out history
 // (absent and already Deleted).
 const listServicesSQL = `SELECT s.id::text, s.customer_id::text, s.workspace_id::text, COALESCE(w.namespace, ''),
+       COALESCE(w.zetta_service_id::text, ''),
        s.kind, s.name, s.slug, s.is_default, s.spec::text,
        s.desired, s.generation, st.service_id IS NOT NULL,
        COALESCE(st.phase, ''), COALESCE(st.message, ''), COALESCE(st.endpoint, ''),
@@ -78,9 +79,11 @@ func (s *pgxServiceStore) ListServices(ctx context.Context) ([]LakeService, erro
 	var services []LakeService
 	for rows.Next() {
 		var svc LakeService
+		var workspaceZettaServiceID string
 		var hasStatus bool
 		var status LakeServiceStatus
 		if err := rows.Scan(&svc.ID, &svc.CustomerID, &svc.WorkspaceID, &svc.WorkspaceNamespace,
+			&workspaceZettaServiceID,
 			&svc.Kind, &svc.Name, &svc.Slug, &svc.IsDefault, &svc.Spec,
 			&svc.Desired, &svc.Generation, &hasStatus,
 			&status.Phase, &status.Message, &status.Endpoint, &status.ObservedGeneration); err != nil {
@@ -90,6 +93,7 @@ func (s *pgxServiceStore) ListServices(ctx context.Context) ([]LakeService, erro
 			status.ServiceID = svc.ID
 			svc.Status = &status
 		}
+		svc.WorkspaceZetta = svc.ID == workspaceZettaServiceID
 		services = append(services, svc)
 	}
 	return services, rows.Err()

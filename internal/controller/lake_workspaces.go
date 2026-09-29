@@ -192,6 +192,10 @@ func (r *LakeWorkspacesReconciler) syncLakeWorkspaces(
 				continue
 			}
 			changing = changing || rowChanging
+			if err := writeWorkspaceZettaServiceStatus(ctx, store, lake, row, status); err != nil {
+				logf.FromContext(ctx).Error(err, "workspace Zetta service status write deferred", "lake", lake.Name, "workspace", row.ID)
+				changing = true
+			}
 			if status == row.status() {
 				continue
 			}
@@ -207,6 +211,59 @@ func (r *LakeWorkspacesReconciler) syncLakeWorkspaces(
 		}
 	}
 	return changing
+}
+
+func writeWorkspaceZettaServiceStatus(
+	ctx context.Context,
+	store LakeWorkspacesStore,
+	lake *oramav1alpha1.Lake,
+	row *LakeWorkspaceRow,
+	workspaceStatus LakeWorkspaceStatus,
+) error {
+	if row.ZettaServiceID == "" || row.ZettaServiceGeneration == 0 {
+		return nil
+	}
+	status := LakeServiceStatus{
+		ServiceID:          row.ZettaServiceID,
+		Message:            workspaceStatus.Message,
+		ObservedGeneration: row.ZettaServiceGeneration,
+	}
+	endpoint := func() string {
+		clusterName := lakeWorkspaceZettaName(lake, row)
+		return fmt.Sprintf("http://%s-zetta.%s.svc.cluster.local:%d", clusterName, workspaceStatus.Namespace, zettaAPIPort)
+	}
+	switch workspaceStatus.Phase {
+	case WorkspacePhaseReady:
+		status.Phase = ServicePhaseReady
+		status.Message = "service ready"
+		status.Endpoint = endpoint()
+	case WorkspacePhasePending:
+		status.Phase = ServicePhaseProvisioning
+		if workspaceStatus.Message == "waiting for the workspace Zetta cluster" {
+			status.Endpoint = endpoint()
+		}
+	case WorkspacePhaseFailed:
+		status.Phase = ServicePhaseFailed
+	case WorkspacePhaseStopping, WorkspacePhaseDeleting:
+		status.Phase = ServicePhaseDeleting
+		status.Endpoint = endpoint()
+	case WorkspacePhaseStopped:
+		status.Phase = ServicePhaseDeleted
+		status.Message = "workspace Zetta stopped"
+	case WorkspacePhaseDeleted:
+		status.Phase = ServicePhaseDeleted
+		status.Message = "workspace Zetta deleted"
+	default:
+		return nil
+	}
+	if row.ZettaServiceStatus != nil && *row.ZettaServiceStatus == status {
+		return nil
+	}
+	if err := store.UpsertServiceStatus(ctx, status); err != nil {
+		return err
+	}
+	row.ZettaServiceStatus = &status
+	return nil
 }
 
 func (r *LakeWorkspacesReconciler) liveWorkspaceCount(
@@ -943,17 +1000,20 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 	operatorSchema := false
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		if cluster.ResourceVersion != "" && cluster.Labels[workspaceLabel] != row.ID {
-			return fmt.Errorf("OramaZettaCluster %s/%s is not owned by workspace %s", namespace, namespace, row.ID)
+			return fmt.Errorf("OramaZettaCluster %s/%s is not owned by workspace %s", namespace, clusterName, row.ID)
 		}
+		creating := cluster.ResourceVersion == ""
 		cluster.Labels = workspaceLabels(lake, row)
 		if row.ZettaServiceID != "" {
 			cluster.Labels[serviceIDLabel] = row.ZettaServiceID
 			cluster.Labels[serviceKindLabel] = serviceKindZetta
 		}
 		cluster.Spec.Replicas = workspaceZettaReplicas
-		cluster.Spec.Image = lake.Spec.Workspaces.Image
+		cluster.Spec.Image = serviceZettaImage(lake)
 		cluster.Spec.PullSecretName = lake.Spec.PullSecretName
-		cluster.Spec.Storage = lake.Spec.Workspaces.Storage
+		if creating {
+			cluster.Spec.Storage = lake.Spec.Workspaces.Storage
+		}
 		cluster.Spec.Resources = serviceZettaResources(lake)
 		cluster.Spec.Env = append([]corev1.EnvVar(nil), lake.Spec.Services.ZettaEnv...)
 		cluster.Spec.IngressEnabled = false

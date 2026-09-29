@@ -39,14 +39,18 @@ func TestLakeWorkspacesPgxStoreAgainstPostgres(t *testing.T) {
 	if _, err := tx.Exec(ctx, string(fixture)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := tx.Exec(ctx, `INSERT INTO services (id, generation) VALUES ($1, 9)`, testWorkspaceZettaID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO workspaces
  (id, customer_id, name, environment, desired, generation, zetta_service_id)
- VALUES ($1, $2, 'Production', 'prod', 'running', 3, NULL)`, testWorkspaceID, testWorkspaceCustomer); err != nil {
+	 VALUES ($1, $2, 'Production', 'prod', 'running', 3, $3)`, testWorkspaceID, testWorkspaceCustomer, testWorkspaceZettaID); err != nil {
 		t.Fatal(err)
 	}
 	store := &pgxWorkspacesStore{pgxServiceStore: &pgxServiceStore{db: tx}}
 	rows, err := store.ListWorkspaces(ctx)
-	if err != nil || len(rows) != 1 || rows[0].ID != testWorkspaceID || rows[0].Phase != "" || rows[0].ZettaServiceID != "" {
+	if err != nil || len(rows) != 1 || rows[0].ID != testWorkspaceID || rows[0].Phase != "" ||
+		rows[0].ZettaServiceID != testWorkspaceZettaID || rows[0].ZettaServiceGeneration != 9 || rows[0].ZettaServiceStatus != nil {
 		t.Fatalf("workspace rows = %+v, %v", rows, err)
 	}
 	row := &rows[0]
@@ -69,6 +73,20 @@ func TestLakeWorkspacesPgxStoreAgainstPostgres(t *testing.T) {
 	}
 	if updated, err := store.UpdateWorkspaceStatus(ctx, row, status); err != nil || updated {
 		t.Fatal("stale workspace status overwrote newer desired state")
+	}
+	serviceStatus := LakeServiceStatus{
+		ServiceID:          testWorkspaceZettaID,
+		Phase:              ServicePhaseReady,
+		Message:            "service ready",
+		Endpoint:           "http://prod-ws-123e4567e89b-zetta.prod-ws-123e4567e89b.svc.cluster.local:4800",
+		ObservedGeneration: 9,
+	}
+	if err := store.UpsertServiceStatus(ctx, serviceStatus); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = store.ListWorkspaces(ctx)
+	if err != nil || len(rows) != 1 || rows[0].ZettaServiceStatus == nil || *rows[0].ZettaServiceStatus != serviceStatus {
+		t.Fatalf("service status did not round trip: %+v, %v", rows, err)
 	}
 	if _, err := tx.Exec(ctx, "DROP TABLE workspaces"); err != nil {
 		t.Fatal(err)
