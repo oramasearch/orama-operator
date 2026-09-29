@@ -54,6 +54,11 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "pod-template"},
 		Spec: oramav1alpha1.LakeSpec{
 			Image: "oramasearch/lake:test",
+			Apps: oramav1alpha1.LakeAppsSpec{
+				Enabled:  true,
+				Wildcard: "apps.example.com",
+			},
+			Builds: oramav1alpha1.LakeBuildsSpec{Enabled: true},
 			Store: oramav1alpha1.LakeStoreSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			},
@@ -100,5 +105,49 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 	}
 	if deployment.Spec.Strategy.RollingUpdate != nil {
 		t.Fatalf("Recreate deployment has rollingUpdate settings: %+v", deployment.Spec.Strategy.RollingUpdate)
+	}
+	assertEnvValueOnce(t, deployment, "LAKE_APPS_WILDCARD", "apps.example.com")
+	assertEnvValueOnce(t, deployment, "LAKE_INTERNAL_URL", "http://lake-pod-template.lake-dev.svc:80")
+
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(lake), lake); err != nil {
+		t.Fatal(err)
+	}
+	lake.Spec.Apps.Wildcard = "managed.example.com"
+	lake.Spec.Env = []corev1.EnvVar{{Name: "LAKE_APPS_WILDCARD", Value: "override.example.com"}}
+	if err := kubeClient.Update(ctx, lake); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.reconcileLakeDeployment(
+		ctx,
+		lake,
+		"lake-dev",
+		"lake-pod-template",
+		lake.Spec.Image,
+		"lake-pod-template-store",
+		labels,
+		1,
+		lakeDefaultPort,
+		sealing,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := kubeClient.Get(ctx, key, deployment); err != nil {
+		t.Fatal(err)
+	}
+	assertEnvValueOnce(t, deployment, "LAKE_APPS_WILDCARD", "override.example.com")
+}
+
+func assertEnvValueOnce(t *testing.T, deployment *appsv1.Deployment, name, want string) {
+	t.Helper()
+	count := 0
+	value := ""
+	for _, variable := range deployment.Spec.Template.Spec.Containers[0].Env {
+		if variable.Name == name {
+			count++
+			value = variable.Value
+		}
+	}
+	if count != 1 || value != want {
+		t.Fatalf("%s count = %d, value = %q, want one value %q", name, count, value, want)
 	}
 }

@@ -154,7 +154,9 @@ The Lake-level settings are:
 
 - `spec.apps.enabled`: opt-in synchronization from the Lake control Postgres;
 - `spec.apps.runtimeImage`: the private `oramasearch/app-runtime` image used in runtime mode;
-- `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`;
+- `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`; when apps are
+  enabled, the operator also injects it into lake as `LAKE_APPS_WILDCARD` so lake can validate and
+  create app hosts;
 - `spec.apps.ingressClass`: the app Ingress class, defaulting to `nginx`.
 
 An image-mode app sets `spec.image` to an immutable `name@sha256:<64 hex>` reference. Its optional
@@ -166,6 +168,12 @@ the desired row `generation`, and `tokenHashes` acknowledging credentials regist
 Only SHA-256 hashes appear here. `bindings.serviceNames` records the service IDs' resolved names
 for mount filenames. Standalone CRs omit `sync` and keep their explicit Secret references.
 There is no `spec.apps.buildkit`; build Jobs belong to #195 and `spec.builds`.
+
+An explicit `LAKE_APPS_WILDCARD` entry in `spec.env` takes precedence over the managed value. The
+operator renders exactly one entry, which preserves the production workaround while allowing it to
+be removed after rollout. Lake also reads the optional `LAKE_APPS_PER_CUSTOMER` and
+`LAKE_APP_REPLICAS_PER_CUSTOMER` limits directly from `spec.env`; the Lake CR has no corresponding
+fields.
 
 `source.entrypoint` is optional. An empty value omits `APP_ENTRYPOINT` so app-runtime reads
 the entrypoint from the app's own `app.toml`; an explicit value overrides that file.

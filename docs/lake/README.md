@@ -82,8 +82,10 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 6. **Deployment + disruption budget** `lake-<name>` — `spec.image` run as built, `spec.args`, port
    `spec.port` (default 4900), readiness `GET /readyz`, liveness `GET /healthz`,
    `spec.replicas`, resource defaults or `spec.resources`, `imagePullSecrets` from
-   `spec.pullSecretName`, and operator env including `LAKE_STORE_ROOT=/var/lib/lake/store` plus
-   `spec.env` entries whose names do not conflict with operator-owned variables. Pods run as
+   `spec.pullSecretName`, and operator env including `LAKE_STORE_ROOT=/var/lib/lake/store`,
+   `LAKE_APPS_WILDCARD` when apps are enabled, and `LAKE_INTERNAL_URL` when builds or agents need
+   lake's in-cluster address, plus `spec.env` entries whose names do not conflict with
+   operator-owned variables. Pods run as
    uid/gid 10001 with the restricted container baseline. The Deployment uses `Recreate`, so an
    old pod releases a ReadWriteOnce store before its replacement can attach the volume on another
    node. Replicated Deployments get a
@@ -304,8 +306,10 @@ Lake opens one libliquid store per customer below
 `spec.env` accepts Kubernetes `EnvVar` entries, including `valueFrom` references. Entries follow
 the operator's variables in the container spec. The operator ignores custom entries named
 `LAKE_ADMIN_TOKEN`, `LAKE_INSTANCE_KEK`, `LAKE_CONTROL_DB_URI`, `LAKE_CONTROL_DB_PASSWORD`,
-`LAKE_DATA_PLANE_URL`, `LAKE_DATA_PLANE_TOKEN`, `LAKE_SEALING_PUBLIC_KEY`, `LAKE_SEALING_KID`, or `LAKE_STORE_ROOT`, so the reconciled Secret and
-volume contracts always win.
+`LAKE_DATA_PLANE_URL`, `LAKE_DATA_PLANE_TOKEN`, `LAKE_INTERNAL_URL`,
+`LAKE_SEALING_PUBLIC_KEY`, `LAKE_SEALING_KID`, or `LAKE_STORE_ROOT`, so the reconciled Secret,
+Service, and volume contracts always win. `LAKE_APPS_WILDCARD` is the exception: an explicit entry
+wins over `spec.apps.wildcard`, and the operator renders it only once.
 
 Lake reads these configurable variables:
 

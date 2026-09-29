@@ -964,6 +964,12 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		"LAKE_SERVICE_DIR":         {},
 		"LAKE_STORE_ROOT":          {},
 	}
+	var explicitAppsWildcard *corev1.EnvVar
+	for i := range lake.Spec.Env {
+		if lake.Spec.Env[i].Name == "LAKE_APPS_WILDCARD" {
+			explicitAppsWildcard = &lake.Spec.Env[i]
+		}
+	}
 	env := []corev1.EnvVar{
 		{Name: "LAKE_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: lakeAdminSecret(lake.Name)},
@@ -972,6 +978,13 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		{Name: "LAKE_STORE_ROOT", Value: lakeStorePath},
 		{Name: "LAKE_SEALING_PUBLIC_KEY", Value: base64.RawURLEncoding.EncodeToString(sealing.PublicKey)},
 		{Name: "LAKE_SEALING_KID", Value: sealing.KID},
+	}
+	if explicitAppsWildcard != nil {
+		env = append(env, *explicitAppsWildcard.DeepCopy())
+		reserved["LAKE_APPS_WILDCARD"] = struct{}{}
+	} else if lake.Spec.Apps.Enabled {
+		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_WILDCARD", Value: lake.Spec.Apps.Wildcard})
+		reserved["LAKE_APPS_WILDCARD"] = struct{}{}
 	}
 	if lakePostgresEnabled(lake) {
 		env = append(env, corev1.EnvVar{
@@ -1025,6 +1038,12 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		// Service endpoints are in service_status; this directory holds each Ready service's
 		// connection as <slug>.json.
 		env = append(env, corev1.EnvVar{Name: lakeServiceDirEnv, Value: lakeServicesMountPath})
+	}
+	if lake.Spec.Builds.Enabled && !agentsEnabled(lake) {
+		env = append(env, corev1.EnvVar{
+			Name:  "LAKE_INTERNAL_URL",
+			Value: lakeInternalURL(lake, lakeNamespace(lake)),
+		})
 	}
 	// Its agents (lake_agents.go): where the library agents are, lake's own in-cluster address,
 	// the model, and the token lake presents to agent services.
