@@ -943,7 +943,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatalf("PostgresSchema not created: %v", err)
 	}
 	if ps.Spec.ConnectionSecretRef.Name != "lake-hello-controldb-app" || ps.Spec.ConnectionSecretRef.Key != "uri" ||
-		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "app_forward_auth_guard" ||
+		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "agent_task_leases_guard" ||
 		ps.Spec.Version != lakeSchemaVersion() {
 		t.Errorf("PostgresSchema spec = %+v", ps.Spec)
 	}
