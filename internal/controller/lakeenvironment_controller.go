@@ -407,7 +407,7 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentWorkload(
 	deployment := &appsv1.Deployment{ObjectMeta: environmentObjectMeta(environment, name, namespace)}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
 		deployment.Labels = labels
-		deployment.Annotations = map[string]string{environmentOwnerAnnotation: environmentOwner(environment)}
+		deployment.Annotations = withOwnedAnnotation(deployment.Annotations, environmentOwnerAnnotation, environmentOwner(environment))
 		deployment.Spec.Replicas = &replicas
 		deployment.Spec.RevisionHistoryLimit = &revisionHistoryLimit
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}

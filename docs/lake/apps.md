@@ -289,6 +289,11 @@ is always https because TLS ends at the edge proxy. The handoff and cookie are s
 
 ## Status and events
 
+The operator sets only its own owner annotation on the app Deployment and keeps every other
+key. The Deployment controller owns `deployment.kubernetes.io/revision`, and a Deployment bumps
+`metadata.generation` on annotation changes, so replacing the map made the two rewrite each other
+forever and the rollout never reported observed (#230).
+
 Status is deep-compared before every write. `Ready` requires the Deployment controller to have
 observed the Deployment's own `metadata.generation` and every desired replica to be updated and
 available; the independent `LakeApp` generation is not a rollout marker. Pod status takes priority

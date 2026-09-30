@@ -1091,7 +1091,7 @@ func (r *LakeAppReconciler) reconcileLakeAppWorkload(ctx context.Context, lake *
 	deployment := &appsv1.Deployment{ObjectMeta: lakeAppObjectMeta(app, workloadName, namespace)}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
 		deployment.Labels = labels
-		deployment.Annotations = map[string]string{lakeAppOwnerAnnotation: lakeAppOwner(app)}
+		deployment.Annotations = withOwnedAnnotation(deployment.Annotations, lakeAppOwnerAnnotation, lakeAppOwner(app))
 		deployment.Spec.Replicas = &replicas
 		deployment.Spec.RevisionHistoryLimit = &revisionHistoryLimit
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
