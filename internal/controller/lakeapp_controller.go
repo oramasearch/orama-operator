@@ -1158,6 +1158,12 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 		if auth == oramav1alpha1.LakeAppAuthLake {
 			ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] = lakeAppAuthURL(lake, app)
 			ingress.Annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = "X-Orama-User,X-Orama-Space"
+			// Lake answers the auth call with the app-scoped session cookie, and a browser without
+			// one is sent to Lake's sign-in handoff (lake#407).
+			ingress.Annotations["nginx.ingress.kubernetes.io/auth-always-set-cookie"] = "true"
+			if signin := lakeAppAuthSignin(lake, app); signin != "" {
+				ingress.Annotations["nginx.ingress.kubernetes.io/auth-signin"] = signin
+			}
 		}
 		ingress.Spec.IngressClassName = &ingressClass
 		ingress.Spec.Rules = []networkingv1.IngressRule{{
@@ -1210,6 +1216,19 @@ func lakeAppAuthURL(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) string
 		baseURL += "/w/" + app.Spec.Sync.WorkspaceID
 	}
 	return baseURL + "/v1/apps/auth"
+}
+
+// lakeAppAuthSignin is Lake's public /apps/authorize handoff. The return URL is always https:
+// TLS ends at the edge proxy, so nginx's own $scheme would say http.
+func lakeAppAuthSignin(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) string {
+	if !lake.Spec.IngressEnabled || lake.Spec.Host == "" {
+		return ""
+	}
+	query := "rd=https://$host$escaped_request_uri"
+	if app.Spec.Sync != nil && app.Spec.Sync.ID != "" {
+		query = "app=" + app.Spec.Sync.ID + "&" + query
+	}
+	return "https://" + lake.Spec.Host + "/apps/authorize?" + query
 }
 
 func lakeAppUsesWildcard(lake *oramav1alpha1.Lake, host string) bool {
