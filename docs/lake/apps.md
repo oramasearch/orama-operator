@@ -280,6 +280,11 @@ when the Lake itself has no public ingress.
 `http://lake-<lake>.<namespace>.svc.cluster.local:80[/w/<workspace id>]/v1/apps/auth`. The fully
 qualified Service name is required by ingress-nginx's resolver. Lake verifies the browser's session
 and space membership before the request reaches the app. `auth: public` omits the annotation.
+It also sets `auth-always-set-cookie: "true"`, so the app-scoped session cookie Lake returns from
+the auth call reaches the browser. When the Lake has public ingress (`ingressEnabled` and `host`),
+`auth-signin` sends a browser without that cookie to
+`https://<lake host>/apps/authorize?app=<app id>&rd=https://$host$escaped_request_uri`. The return URL
+is always https because TLS ends at the edge proxy. The handoff and cookie are specified in lake#407.
 
 ## Status and events
 

@@ -463,6 +463,23 @@ func assertSyncedAppDelivery(t *testing.T, h *appsSyncHarness) {
 	if ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] != wantAuthURL {
 		t.Fatalf("auth-url = %q, want %q", ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"], wantAuthURL)
 	}
+	if ingress.Annotations["nginx.ingress.kubernetes.io/auth-always-set-cookie"] != "true" {
+		t.Fatalf("auth-always-set-cookie missing: %#v", ingress.Annotations)
+	}
+}
+
+func TestLakeAppAuthSigninUsesLakePublicHost(t *testing.T) {
+	app := &oramav1alpha1.LakeApp{Spec: oramav1alpha1.LakeAppSpec{Sync: &oramav1alpha1.LakeAppSync{ID: testWorkspaceID}}}
+	lake := &oramav1alpha1.Lake{}
+	if got := lakeAppAuthSignin(lake, app); got != "" {
+		t.Fatalf("signin without public ingress = %q, want empty", got)
+	}
+	lake.Spec.IngressEnabled = true
+	lake.Spec.Host = "lake.example.test"
+	want := "https://lake.example.test/apps/authorize?app=" + testWorkspaceID + "&rd=https://$host$escaped_request_uri"
+	if got := lakeAppAuthSignin(lake, app); got != want {
+		t.Fatalf("signin = %q, want %q", got, want)
+	}
 }
 
 func assertSyncedAppSteady(t *testing.T, h *appsSyncHarness) {
