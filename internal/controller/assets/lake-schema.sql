@@ -2,7 +2,7 @@
 --
 -- SOURCE OF TRUTH: oramasearch/lake, db/schema.sql. The operator vendors a byte-identical copy at
 -- internal/controller/assets/lake-schema.sql and applies it to each Lake's Postgres through a
--- PostgresSchema (one transaction, guarded on the `workspace_data_plane_guard` table, versioned by
+-- PostgresSchema (one transaction, guarded on the `app_forward_auth_guard` table, versioned by
 -- content hash).
 -- Keep the two files identical; the operator's version string changes exactly when this does.
 --
@@ -2058,3 +2058,43 @@ CREATE TABLE IF NOT EXISTS workspaces_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO schema_migrations (version) VALUES ('0039_workspaces') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0040_active_repository_names: tombstoned repositories retain their historical names without
+-- reserving those names. Apps, services, stores and workspaces already limit their name indexes
+-- to live desired states.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE repositories DROP CONSTRAINT IF EXISTS repository_name_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS repository_name_unique
+    ON repositories (customer_id, name) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS repository_names_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0040_active_repository_names')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0041_app_forward_auth: short-lived, single-use handoff codes for Lake-protected apps. The
+-- browser receives the random code; only its SHA-256 digest is retained as control-plane state.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS app_authorization_codes (
+    code_hash  char(64)    PRIMARY KEY,
+    app_id     uuid        NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+    user_id    uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    host       text        NOT NULL,
+    expires_at timestamptz NOT NULL DEFAULT now() + interval '60 seconds',
+    used_at    timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT app_authorization_codes_hash_check CHECK (code_hash ~ '^[0-9a-f]{64}$')
+);
+CREATE INDEX IF NOT EXISTS app_authorization_codes_expiry_idx
+    ON app_authorization_codes (expires_at);
+CREATE INDEX IF NOT EXISTS memberships_app_auth_idx
+    ON memberships (organization_id, principal_type, principal_id);
+
+CREATE TABLE IF NOT EXISTS app_forward_auth_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0041_app_forward_auth')
+    ON CONFLICT DO NOTHING;
