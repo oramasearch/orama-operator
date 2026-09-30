@@ -2098,3 +2098,29 @@ CREATE TABLE IF NOT EXISTS app_forward_auth_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0041_app_forward_auth')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0042_agent_task_leases: renewable claims and bounded retry after a claimant stops responding.
+-- Only claim/dispatch state lives here; retry event payloads are published to the workspace.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE agent_task_status ADD COLUMN IF NOT EXISTS lease_until timestamptz;
+ALTER TABLE agent_task_status ADD COLUMN IF NOT EXISTS lease_seconds integer NOT NULL DEFAULT 600
+    CHECK (lease_seconds BETWEEN 60 AND 3600);
+ALTER TABLE agent_task_status ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 1
+    CHECK (attempts BETWEEN 1 AND 3);
+ALTER TABLE agent_task_status ADD COLUMN IF NOT EXISTS retry_notice_pending boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS agent_task_status_lease_idx
+    ON agent_task_status (lease_until) WHERE phase = 'Running';
+CREATE INDEX IF NOT EXISTS agent_task_status_retry_notice_idx
+    ON agent_task_status (task_id) WHERE retry_notice_pending;
+
+-- Adopt existing in-flight tasks once, including rows with no recorded start time. Reapplying
+-- the schema must never extend an active claim or reset its attempt counter.
+UPDATE agent_task_status SET lease_until = now() + interval '10 minutes'
+    WHERE phase = 'Running' AND lease_until IS NULL;
+
+CREATE TABLE IF NOT EXISTS agent_task_leases_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0042_agent_task_leases')
+    ON CONFLICT DO NOTHING;

@@ -846,6 +846,7 @@ UNION ALL SELECT 'workspace_data_plane_guard=' || count(*) FROM workspace_data_p
 UNION ALL SELECT 'workspaces_guard=' || count(*) FROM workspaces_guard
 UNION ALL SELECT 'repository_names_guard=' || count(*) FROM repository_names_guard
 UNION ALL SELECT 'app_forward_auth_guard=' || count(*) FROM app_forward_auth_guard
+UNION ALL SELECT 'agent_task_leases_guard=' || count(*) FROM agent_task_leases_guard
 UNION ALL SELECT 'auth_app_guard=' || count(*) FROM auth_app_guard
 UNION ALL SELECT 'drive_guard=' || count(*) FROM drive_guard
 UNION ALL SELECT 'forge_guard=' || count(*) FROM forge_guard
