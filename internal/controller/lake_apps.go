@@ -320,6 +320,10 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 	if spec.Auth == "" {
 		spec.Auth = oramav1alpha1.LakeAppAuthLake
 	}
+	// Lake's apps table stores public access as 'none' (its app_auth_check allows lake|none).
+	if spec.Auth == "none" {
+		spec.Auth = oramav1alpha1.LakeAppAuthPublic
+	}
 	if spec.Auth != "lake" && spec.Auth != "public" {
 		return spec, errors.New("auth must be lake or public")
 	}

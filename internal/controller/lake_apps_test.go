@@ -682,3 +682,21 @@ func TestLakeAppsRefuseForeignCRForUpdateAndDelete(t *testing.T) {
 		}
 	}
 }
+
+func TestLakeAppRowAuthNoneIsPublic(t *testing.T) {
+	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod"}, Spec: oramav1alpha1.LakeSpec{Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "apps.example.test"}}}
+	row := testLakeAppRow()
+	services := []LakeService{{ID: testPostgresID, CustomerID: row.CustomerID, WorkspaceID: row.WorkspaceID, Name: "db", Desired: "present"}}
+	row.Auth = "none"
+	spec, err := lakeAppRowSpec(lake, &row, services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Auth != oramav1alpha1.LakeAppAuthPublic {
+		t.Fatalf("auth = %q, want public", spec.Auth)
+	}
+	row.Auth = "anyone"
+	if _, err := lakeAppRowSpec(lake, &row, services); err == nil {
+		t.Fatal("unknown auth accepted")
+	}
+}
