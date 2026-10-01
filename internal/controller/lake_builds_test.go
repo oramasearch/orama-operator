@@ -159,6 +159,14 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 		ephemeralLimit.String() != "20Gi" {
 		t.Fatalf("builder pod is not hardened and bounded: %+v", pod)
 	}
+	// Rootless BuildKit maps its user namespace through setuid newuidmap/newgidmap: escalation
+	// and SETUID/SETGID only, everything else dropped, and no OCI process sandbox in a pod.
+	security := container.SecurityContext
+	if security.AllowPrivilegeEscalation == nil || !*security.AllowPrivilegeEscalation ||
+		security.Capabilities == nil || len(security.Capabilities.Drop) != 1 || security.Capabilities.Drop[0] != "ALL" ||
+		len(security.Capabilities.Add) != 2 || security.RunAsNonRoot == nil || !*security.RunAsNonRoot {
+		t.Fatalf("builder security context = %+v", security)
+	}
 	if len(pod.ImagePullSecrets) != 1 || pod.ImagePullSecrets[0].Name != buildPullSecretName {
 		t.Fatalf("builder imagePullSecrets = %+v", pod.ImagePullSecrets)
 	}
@@ -169,6 +177,7 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 	for _, name := range []string{
 		"LAKE_URL", "BUILD_ID", "REPOSITORY", "REVISION", "CONTEXT", "DOCKERFILE", "TARGET",
 		"BUILD_ARGS", "BUILD_ARG_ALLOW", "SOURCE_TOKEN", "PUSH_TOKEN", "EVENTS_TOKEN", "CACHE_REF", "DOCKER_CONFIG",
+		"BUILDKITD_FLAGS",
 	} {
 		if _, ok := env[name]; !ok {
 			t.Errorf("builder env is missing %s", name)
