@@ -368,3 +368,26 @@ func TestParseLakeBuildResultRequiresFinalJSONLine(t *testing.T) {
 		t.Fatal("accepted result JSON before the final stdout line")
 	}
 }
+
+func TestBuildEgressReachesLakeOnItsContainerPort(t *testing.T) {
+	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "lake"}}
+	lakePort := func(rules []networkingv1.NetworkPolicyEgressRule) int {
+		for _, rule := range rules {
+			for _, peer := range rule.To {
+				if peer.PodSelector != nil && peer.PodSelector.MatchLabels["app.kubernetes.io/name"] == "lake" {
+					return rule.Ports[0].Port.IntValue()
+				}
+			}
+		}
+		return 0
+	}
+	// Policy ports match pod ports: lake listens on 4900 behind Service port 80.
+	if got := lakePort(buildEgressRules(lake)); got != lakeDefaultPort {
+		t.Fatalf("lake egress port = %d, want %d", got, lakeDefaultPort)
+	}
+	custom := int32(8443)
+	lake.Spec.Port = &custom
+	if got := lakePort(buildEgressRules(lake)); got != 8443 {
+		t.Fatalf("lake egress port = %d, want 8443", got)
+	}
+}
