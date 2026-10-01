@@ -102,7 +102,8 @@ no service-account token, and receives no host mounts.
 The namespace has default-deny ingress and egress. A second NetworkPolicy permits:
 
 - cluster DNS on TCP/UDP 53;
-- Lake pods in `spec.namespace` on TCP 80 for source, registry, and event REST;
+- Lake pods in `spec.namespace` on their container port (`spec.port`, default 4900; NetworkPolicy
+  ports match pod ports, not the Service port 80) for source, registry, and event REST;
 - public TCP 80/443 for package indexes, excluding private, loopback, link-local, and metadata
   address ranges. Kubernetes NetworkPolicy cannot select public endpoints by DNS name, so the
   public rule is the narrow portable expression of package-index access.

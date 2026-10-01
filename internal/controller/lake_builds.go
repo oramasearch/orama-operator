@@ -360,7 +360,9 @@ func buildEgressRules(lake *oramav1alpha1.Lake) []networkingv1.NetworkPolicyEgre
 					"app.kubernetes.io/name": "lake", "app.kubernetes.io/instance": lake.Name,
 				}},
 			}},
-			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: buildPort(lakeServicePort)}},
+			// NetworkPolicy ports match the pod's port, not the Service port: lake listens on its
+			// container port (spec.port, default 4900) behind Service port 80.
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: buildPort(lakeContainerPort(lake))}},
 		},
 		{
 			To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{
@@ -377,6 +379,13 @@ func buildEgressRules(lake *oramav1alpha1.Lake) []networkingv1.NetworkPolicyEgre
 			},
 		},
 	}
+}
+
+func lakeContainerPort(lake *oramav1alpha1.Lake) int {
+	if lake.Spec.Port != nil {
+		return int(*lake.Spec.Port)
+	}
+	return lakeDefaultPort
 }
 
 func buildPort(port int) *intstr.IntOrString {
