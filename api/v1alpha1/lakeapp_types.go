@@ -94,6 +94,7 @@ type LakeAppTokenHashes struct {
 	// +nullable
 	Zetta  *string `json:"zetta"`
 	Events string  `json:"events"`
+	Pull   string  `json:"pull"`
 }
 
 // LakeAppSync identifies the desired row managed by the Lake apps sync.

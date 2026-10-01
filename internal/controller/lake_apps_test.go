@@ -117,7 +117,7 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 	ctx := context.Background()
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "apps-test", UID: types.UID("test-lake")},
-		Spec: oramav1alpha1.LakeSpec{Image: "oramasearch/lake:test", Namespace: "lake", Apps: oramav1alpha1.LakeAppsSpec{
+		Spec: oramav1alpha1.LakeSpec{Image: "oramasearch/lake:test", Namespace: "lake", Host: "lake.example.test", PullSecretName: "docker-pull", Apps: oramav1alpha1.LakeAppsSpec{
 			Enabled: true, Wildcard: "apps.example.test", RuntimeImage: "oramasearch/app-runtime:0.1.0",
 		}},
 	}
@@ -140,10 +140,17 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 		ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: "lake"},
 		Data:       map[string][]byte{testPostgresID: []byte(`{"uri":"postgresql://user:private@db/app"}`)},
 	}
+	pullSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "docker-pull", Namespace: "lake"},
+		Type:       corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			corev1.DockerConfigJsonKey: []byte(`{"auths":{"https://index.docker.io/v1/":{"username":"hub","password":"hub-token"}}}`),
+		},
+	}
 	if err := controllerutil.SetControllerReference(lake, connections, kubeClient.Scheme()); err != nil {
 		t.Fatal(err)
 	}
-	for _, object := range []client.Object{credentials, connections} {
+	for _, object := range []client.Object{credentials, connections, pullSecret} {
 		if err := kubeClient.Create(ctx, object); err != nil {
 			t.Fatal(err)
 		}
@@ -410,7 +417,7 @@ func assertSyncedAppDelivery(t *testing.T, h *appsSyncHarness) {
 	if err := h.client.Get(h.ctx, key, &tokens); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(h.store.rows[0].TokenHashes, lakeAppTokenHashes(&tokens)) || len(tokens.Data) != 3 {
+	if !reflect.DeepEqual(h.store.rows[0].TokenHashes, lakeAppTokenHashes(&tokens)) || len(tokens.Data) != 4 {
 		t.Fatal("registered hashes do not match generated tokens")
 	}
 	encoded, err := json.Marshal(app)
@@ -426,6 +433,10 @@ func assertSyncedAppDelivery(t *testing.T, h *appsSyncHarness) {
 	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: key.Namespace, Name: lakeAppWorkloadObjectName(app)}, &deployment); err != nil {
 		t.Fatal(err)
 	}
+	if len(deployment.Spec.Template.Spec.ImagePullSecrets) != 1 || deployment.Spec.Template.Spec.ImagePullSecrets[0].Name != lakeAppPullName(app) {
+		t.Fatalf("app pod pull Secret = %+v", deployment.Spec.Template.Spec.ImagePullSecrets)
+	}
+	assertSyncedAppPullSecret(t, h, app, &tokens)
 	env := deployment.Spec.Template.Spec.Containers[0].Env
 	assertLakeAppEnv(t, env, "APP_TOKEN", "")
 	assertLakeAppEnv(t, env, "EVENTS_TOKEN", "")
@@ -465,6 +476,33 @@ func assertSyncedAppDelivery(t *testing.T, h *appsSyncHarness) {
 	}
 	if ingress.Annotations["nginx.ingress.kubernetes.io/auth-always-set-cookie"] != "true" {
 		t.Fatalf("auth-always-set-cookie missing: %#v", ingress.Annotations)
+	}
+}
+
+func assertSyncedAppPullSecret(t *testing.T, h *appsSyncHarness, app *oramav1alpha1.LakeApp, tokens *corev1.Secret) {
+	t.Helper()
+	var pullSecret corev1.Secret
+	key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppPullName(app)}
+	if err := h.client.Get(h.ctx, key, &pullSecret); err != nil {
+		t.Fatal(err)
+	}
+	if pullSecret.Type != corev1.SecretTypeDockerConfigJson || len(pullSecret.Data) != 1 {
+		t.Fatalf("merged pull Secret type/key count = %q/%d", pullSecret.Type, len(pullSecret.Data))
+	}
+	var config struct {
+		Auths map[string]struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(pullSecret.Data[corev1.DockerConfigJsonKey], &config); err != nil {
+		t.Fatal(err)
+	}
+	if auth := config.Auths["https://index.docker.io/v1/"]; auth.Username != "hub" || auth.Password != "hub-token" {
+		t.Fatalf("Docker Hub auth was not preserved: %+v", auth)
+	}
+	if auth := config.Auths[h.lake.Spec.Host]; auth.Username != "app" || auth.Password != string(tokens.Data["pull"]) {
+		t.Fatal("Lake registry auth does not use the generated pull token")
 	}
 }
 
@@ -587,6 +625,7 @@ func assertSyncedAppRotation(t *testing.T, h *appsSyncHarness) {
 	if err := h.client.Get(h.ctx, key, &tokens); err != nil {
 		t.Fatal(err)
 	}
+	oldPullToken := string(tokens.Data["pull"])
 	before := h.store.rows[0].TokenHashes.DeepCopy()
 	if err := h.client.Delete(h.ctx, &tokens); err != nil {
 		t.Fatal(err)
@@ -606,6 +645,13 @@ func assertSyncedAppRotation(t *testing.T, h *appsSyncHarness) {
 	if reflect.DeepEqual(before, h.store.rows[0].TokenHashes) {
 		t.Fatal("rotation did not replace the hashes")
 	}
+	if err := h.client.Get(h.ctx, key, &tokens); err != nil {
+		t.Fatal(err)
+	}
+	if string(tokens.Data["pull"]) == oldPullToken {
+		t.Fatal("rotation retained the old pull token")
+	}
+	assertSyncedAppPullSecret(t, h, app, &tokens)
 }
 
 func TestLakeAppsOrphansAndReadFailures(t *testing.T) {

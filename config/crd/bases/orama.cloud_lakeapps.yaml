@@ -388,6 +388,8 @@ spec:
                     properties:
                       events:
                         type: string
+                      pull:
+                        type: string
                       source:
                         type: string
                       zetta:
@@ -395,6 +397,7 @@ spec:
                         type: string
                     required:
                     - events
+                    - pull
                     - source
                     - zetta
                     type: object

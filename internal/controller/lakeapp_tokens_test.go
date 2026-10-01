@@ -10,13 +10,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/go-logr/logr/funcr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -72,14 +75,57 @@ func TestLakeAppsTokensRemoveUnboundZetta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, events := string(secret.Data["source"]), string(secret.Data["events"])
+	source := string(secret.Data["source"])
+	events := string(secret.Data["events"])
+	pull := string(secret.Data["pull"])
 	app.Spec.Bindings.Zetta = nil
 	secret, err = h.apps.reconcileLakeAppTokens(h.ctx, app, lakeAppNamespace(app))
 	if err != nil || len(secret.Data["zetta"]) != 0 || lakeAppTokenHashes(secret).Zetta != nil {
 		t.Fatal("unbound workspace token was retained")
 	}
-	if string(secret.Data["source"]) != source || string(secret.Data["events"]) != events {
+	if string(secret.Data["source"]) != source || string(secret.Data["events"]) != events || string(secret.Data["pull"]) != pull {
 		t.Fatal("unbinding rotated unrelated credentials")
+	}
+}
+
+func TestMergedLakeAppPullSecretSanitizesInvalidSource(t *testing.T) {
+	scheme := newLakeAppScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&oramav1alpha1.LakeApp{}).Build()
+	h := newAppsSyncHarness(t, c)
+	h.converge()
+	app := h.app()
+	var source corev1.Secret
+	key := client.ObjectKey{Namespace: app.Namespace, Name: h.lake.Spec.PullSecretName}
+	if err := c.Get(h.ctx, key, &source); err != nil {
+		t.Fatal(err)
+	}
+	plaintext := "must-not-appear-in-status-or-logs"
+	source.Data[corev1.DockerConfigJsonKey] = []byte(`{"auths":{"registry.example.test":{"password":"` + plaintext + `"}}`)
+	if err := c.Update(h.ctx, &source); err != nil {
+		t.Fatal(err)
+	}
+	var logs strings.Builder
+	logger := funcr.New(func(prefix, args string) {
+		logs.WriteString(prefix)
+		logs.WriteString(args)
+	}, funcr.Options{})
+	ctx := logf.IntoContext(h.ctx, logger)
+	if _, err := h.apps.Reconcile(ctx, ctrl.Request{NamespacedName: h.key}); err != nil {
+		t.Fatal(err)
+	}
+	app = h.app()
+	status, err := json.Marshal(app.Status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := ""
+	for _, condition := range app.Status.Conditions {
+		if condition.Type == "Ready" {
+			reason = condition.Reason
+		}
+	}
+	if reason != "PullSecretInvalid" || strings.Contains(string(status), plaintext) || strings.Contains(logs.String(), plaintext) {
+		t.Fatal("pull credential was exposed or the sanitized failure was not reported")
 	}
 }
 
