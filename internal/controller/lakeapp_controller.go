@@ -636,7 +636,19 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 	if mode == oramav1alpha1.LakeAppModeImage && app.Spec.PullSecretName != "" {
 		pullName = app.Spec.PullSecretName
 	}
-	if pullName != "" {
+	if app.Spec.Sync != nil && (pullName != "" || lake.Spec.Host != "") {
+		data, reason, message, err := r.mergedLakeAppPullSecret(ctx, lake, app, namespace, pullName)
+		if err != nil || reason != "" {
+			return result, reason, message, err
+		}
+		targetName := lakeAppPullName(app)
+		if err := r.copyLakeAppSecret(ctx, app, namespace, targetName, corev1.SecretTypeDockerConfigJson, data); err != nil {
+			return result, "", "", err
+		}
+		wanted[targetName] = true
+		result.PullName = targetName
+		addLakeAppSecretDigest(digests, targetName, data)
+	} else if pullName != "" {
 		source, reason, message, err := r.lakeAppSourceSecret(ctx, app, pullName)
 		if err != nil || reason != "" {
 			return result, reason, message, err
@@ -654,6 +666,75 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 	}
 	result.Digest = lakeAppSecretDigest(digests)
 	return result, "", "", nil
+}
+
+func (r *LakeAppReconciler) mergedLakeAppPullSecret(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	app *oramav1alpha1.LakeApp,
+	namespace string,
+	sourceName string,
+) (map[string][]byte, string, string, error) {
+	var source *corev1.Secret
+	if sourceName != "" {
+		found, reason, message, err := r.lakeAppSourceSecret(ctx, app, sourceName)
+		if err != nil || reason != "" {
+			return nil, reason, message, err
+		}
+		source = found
+	}
+	var tokens corev1.Secret
+	tokensKey := client.ObjectKey{Namespace: namespace, Name: lakeAppTokensName(app)}
+	if err := r.Get(ctx, tokensKey, &tokens); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, "", "", err
+		}
+		return nil, "TokenRegistrationPending", "waiting for app token hashes to be registered in Lake", nil
+	}
+	if !lakeAppOwnsTokens(app, &tokens) || len(tokens.Data["pull"]) == 0 {
+		return nil, "TokenRegistrationPending", "waiting for app token hashes to be registered in Lake", nil
+	}
+	config, ok := mergeLakeAppDockerConfig(source, lake.Spec.Host, tokens.Data["pull"])
+	if !ok {
+		return nil, "PullSecretInvalid", fmt.Sprintf("pull Secret %q has invalid dockerconfigjson data", sourceName), nil
+	}
+	return map[string][]byte{corev1.DockerConfigJsonKey: config}, "", "", nil
+}
+
+func mergeLakeAppDockerConfig(source *corev1.Secret, host string, token []byte) ([]byte, bool) {
+	config := map[string]json.RawMessage{}
+	if source != nil {
+		raw, found := source.Data[corev1.DockerConfigJsonKey]
+		if !found || json.Unmarshal(raw, &config) != nil || config == nil {
+			return nil, false
+		}
+	}
+	auths := map[string]json.RawMessage{}
+	if raw, found := config["auths"]; found {
+		if json.Unmarshal(raw, &auths) != nil || auths == nil {
+			return nil, false
+		}
+	}
+	if host != "" {
+		credentials, err := json.Marshal(map[string]string{
+			"username": "app",
+			"password": string(token),
+		})
+		if err != nil {
+			return nil, false
+		}
+		auths[host] = credentials
+	}
+	encodedAuths, err := json.Marshal(auths)
+	if err != nil {
+		return nil, false
+	}
+	config["auths"] = encodedAuths
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
 }
 
 type lakeAppEnvironmentSecretSource struct {

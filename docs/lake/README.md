@@ -34,8 +34,9 @@ collision-free resource names; standalone CRs retain a private namespace. Apps h
 private-by-default ingress, scoped data bindings, and live rollout events. The CR contract and resource lifecycle are in
 [`apps.md`](apps.md). With `spec.apps.enabled`, a dedicated controller follows lake's `apps`
 table using the Services DSN, `lake_apps` notifications and a 60-second fallback list. It registers
-generated token hashes, returns current rollout status, handles stopped/deleted rows and orphans,
-and owns one proxied apps wildcard DNS record. Builds remain separate in #195.
+generated source, Zetta, event and registry-pull token hashes, merges the pull token with the Lake's
+existing Docker config for each app pod, returns current rollout status, handles stopped/deleted rows
+and orphans, and owns one proxied apps wildcard DNS record. Builds remain separate in #195.
 
 With `spec.builds.enabled`, lake writes a queued image-build row and the operator runs one isolated
 rootless BuildKit Job for it in a per-space namespace. Source, push, and event credentials are

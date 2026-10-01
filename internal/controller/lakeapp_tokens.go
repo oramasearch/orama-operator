@@ -43,7 +43,7 @@ func (r *LakeAppReconciler) reconcileLakeAppTokens(ctx context.Context, app *ora
 		if secret.Data == nil {
 			secret.Data = map[string][]byte{}
 		}
-		keys := []string{"source", "events"}
+		keys := []string{"source", "events", "pull"}
 		if app.Spec.Bindings != nil && app.Spec.Bindings.Zetta != nil {
 			keys = append(keys, "zetta")
 		} else {
@@ -70,12 +70,13 @@ func lakeAppOwnsTokens(app *oramav1alpha1.LakeApp, secret *corev1.Secret) bool {
 }
 
 func lakeAppTokenHashes(secret *corev1.Secret) *oramav1alpha1.LakeAppTokenHashes {
-	if len(secret.Data["source"]) == 0 || len(secret.Data["events"]) == 0 {
+	if len(secret.Data["source"]) == 0 || len(secret.Data["events"]) == 0 || len(secret.Data["pull"]) == 0 {
 		return nil
 	}
 	hashes := &oramav1alpha1.LakeAppTokenHashes{
 		Source: credentialDigest(string(secret.Data["source"])),
 		Events: credentialDigest(string(secret.Data["events"])),
+		Pull:   credentialDigest(string(secret.Data["pull"])),
 	}
 	if token := secret.Data["zetta"]; len(token) != 0 {
 		hash := credentialDigest(string(token))

@@ -73,7 +73,11 @@ func TestLakeAppsPgxStoreAgainstPostgres(t *testing.T) {
 		t.Fatalf("nullable row decoding failed: %v", err)
 	}
 	row := &rows[0]
-	hashes := &oramav1alpha1.LakeAppTokenHashes{Source: credentialDigest("source"), Events: credentialDigest("events")}
+	hashes := &oramav1alpha1.LakeAppTokenHashes{
+		Source: credentialDigest("source"),
+		Events: credentialDigest("events"),
+		Pull:   credentialDigest("pull"),
+	}
 	if updated, err := store.UpdateAppTokenHashes(ctx, row, hashes); err != nil || !updated {
 		t.Fatalf("register hashes: %v", err)
 	}

@@ -102,11 +102,11 @@ Allowed database phases are `Pending`, `Deploying`, `Running`, `Degraded`, `Stop
 
 The app controller generates independent 32-byte random tokens, encoded as hex, once in Secret
 `app-<first 12 app UUID hex>-tokens` in the workspace namespace. Its ownership includes the LakeApp UID, so a Secret
-from another app incarnation cannot be adopted. `source` and `events` always exist; `zetta` exists
+from another app incarnation cannot be adopted. `source`, `events` and `pull` always exist; `zetta` exists
 only with a workspace binding. The sync writes their SHA-256 hex digests as:
 
 ```json
-{"source":"<sha256 hex>","zetta":null,"events":"<sha256 hex>"}
+{"source":"<sha256 hex>","zetta":null,"events":"<sha256 hex>","pull":"<sha256 hex>"}
 ```
 
 When bound, `zetta` is its SHA-256 hex digest instead of null. A workload starts only after the
@@ -121,7 +121,9 @@ Lake hashes each bearer and enforces its purpose against the current row:
 
 - `source`: `repository_tree` / `repository_file` reads for this repository and revision only;
 - `zetta`: `workspace_query` / read-only `workspace_sql` for this customer and its declared scopes;
-- `events`: `publish_app_event` for this app only, publishing to `app-events.<app id>`.
+- `events`: `publish_app_event` for this app only, publishing to `app-events.<app id>`;
+- `pull`: Basic-auth registry reads with username `app`, limited to manifests and blobs in
+  `<space>/<app name>`; it cannot read another app or cache repository and cannot push.
 
 Runtime pods receive `APP_TOKEN` from the app token Secret's `source` key. The Zetta token is copied to the local
 binding Secret and mounted at `/var/run/orama/bindings/zetta`. `EVENTS_TOKEN` comes from
@@ -186,9 +188,13 @@ The Lake-level settings are:
 - `spec.apps.ingressClass`: the app Ingress class, defaulting to `nginx`.
 
 An image-mode app sets `spec.image` to an immutable `name@sha256:<64 hex>` reference. Its optional
-`spec.pullSecretName` overrides the Lake's pull Secret. The source pull Secret always remains in the
-Lake namespace; the controller copies it into the workspace namespace for synchronized apps or
-the private app namespace for standalone CRs.
+`spec.pullSecretName` overrides the Lake's pull Secret. For synchronized apps, the controller
+creates a `kubernetes.io/dockerconfigjson` Secret whose `auths` preserve the selected source
+Secret entries and add `spec.host` with username `app` and the generated `pull` token as password.
+The Deployment names this merged Secret in `imagePullSecrets`; deleting the app token Secret
+rotates both the registered pull-token hash and the password in the merged Secret. The source pull
+Secret always remains in the Lake namespace. Standalone CRs retain the original copy behavior into
+their private namespace because they do not have operator-generated synchronized-app tokens.
 
 The apps sync sets `spec.sync` on its Lake-owned CRs: the immutable app `id`, `customerId` and
 `workspaceId`, the operator-written `workspaceNamespace`, the desired row `generation`, and
@@ -251,8 +257,9 @@ Standalone apps retain their direct workspace/bus Zetta policies. No general int
 
 The pod runs as uid/gid 10001, drops all capabilities, prevents privilege escalation, uses runtime
 default seccomp, has a read-only root filesystem, disables its Kubernetes token and service links,
-and gets a size-limited `emptyDir` at `/tmp`. Private pull credentials are copied into the workload
-namespace. Runtime env includes `WORKSPACE_ID`, and `LAKE_URL`, auth and event URLs use Lake's
+and gets a size-limited `emptyDir` at `/tmp`. Synchronized-app pull credentials exist only in the
+merged workload-namespace Docker config Secret; the public Lake host password is never copied into
+the CR, pod template, status or logs. Runtime env includes `WORKSPACE_ID`, and `LAKE_URL`, auth and event URLs use Lake's
 `/w/<workspace id>` route. The selected binding values appear as files at:
 
 ```text
@@ -327,8 +334,9 @@ CR to workload, hashes before startup, FQDN ingress authentication, status retur
 source rollouts whose app and Deployment generations differ, return to `Running` and ready,
 stop/start, credential rotation with a failed DB write, namespace finalization and Deleted
 acknowledgement.
-Unit cases cover failed-list orphan safety, foreign ownership/bindings, DNS changes and ingress
-class selection, listener enable/disable, the schema gate and fallback interval, and HTTP events.
+Unit cases cover failed-list orphan safety, foreign ownership/bindings, merged pull-Secret contents
+and malformed-input sanitization, DNS changes and ingress class selection, listener enable/disable,
+the schema gate and fallback interval, and HTTP events.
 The original standalone lifecycle suite retains its create, rollback and pod-failure coverage:
 
 ```sh
