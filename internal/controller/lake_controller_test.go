@@ -136,6 +136,33 @@ func TestLakeReconcileCreatesWorkloads(t *testing.T) {
 	}
 }
 
+func TestLakeEnvIncludesManagedAppsRuntimeImage(t *testing.T) {
+	lake := &oramav1alpha1.Lake{
+		Spec: oramav1alpha1.LakeSpec{
+			Apps: oramav1alpha1.LakeAppsSpec{
+				Enabled:      true,
+				RuntimeImage: "oramasearch/app-runtime:0.1.0",
+			},
+			Env: []corev1.EnvVar{{
+				Name:  "LAKE_APPS_RUNTIME_IMAGE",
+				Value: "unmanaged.example/app-runtime:latest",
+			}},
+		},
+	}
+	env := lakeEnv(lake, lakeSealingMaterial{})
+	count := 0
+	value := ""
+	for _, variable := range env {
+		if variable.Name == "LAKE_APPS_RUNTIME_IMAGE" {
+			count++
+			value = variable.Value
+		}
+	}
+	if count != 1 || value != lake.Spec.Apps.RuntimeImage {
+		t.Fatalf("LAKE_APPS_RUNTIME_IMAGE count = %d, value = %q", count, value)
+	}
+}
+
 func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
 	s := newLakeScheme(t)
 	two := int32(2)

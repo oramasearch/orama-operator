@@ -90,7 +90,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    `spec.port` (default 4900), readiness `GET /readyz`, liveness `GET /healthz`,
    `spec.replicas`, resource defaults or `spec.resources`, `imagePullSecrets` from
    `spec.pullSecretName`, and operator env including `LAKE_STORE_ROOT=/var/lib/lake/store`,
-   `LAKE_APPS_WILDCARD` when apps are enabled, and `LAKE_INTERNAL_URL` when builds or agents need
+   `LAKE_APPS_WILDCARD` and `LAKE_APPS_RUNTIME_IMAGE` when apps are enabled, and `LAKE_INTERNAL_URL` when builds or agents need
    lake's in-cluster address, plus `spec.env` entries whose names do not conflict with
    operator-owned variables. Pods run as
    uid/gid 10001 with the restricted container baseline. The Deployment uses `Recreate`, so an
@@ -165,7 +165,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     retain data and deleted rows remove the namespace. See [`workspaces.md`](workspaces.md).
 17. **In-cluster builds** (opt-in: `spec.builds.enabled`) — queued rows in the Lake control
     Postgres become one `oramasearch/lake-builder` Job each in a deterministic per-space namespace,
-    with scoped credentials, network isolation, resource/deadline/retention bounds, per-Lake and
+    with scoped credentials, the Lake pull Secret mounted read-only for private base images,
+    network isolation, resource/deadline/retention bounds, per-Lake and
     per-space concurrency, registry cache, progress events, and terminal digest/size status. See
     [`builds.md`](builds.md).
 

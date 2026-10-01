@@ -55,8 +55,9 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 		Spec: oramav1alpha1.LakeSpec{
 			Image: "oramasearch/lake:test",
 			Apps: oramav1alpha1.LakeAppsSpec{
-				Enabled:  true,
-				Wildcard: "apps.example.com",
+				Enabled:      true,
+				Wildcard:     "apps.example.com",
+				RuntimeImage: "oramasearch/app-runtime:0.1.0",
 			},
 			Builds: oramav1alpha1.LakeBuildsSpec{Enabled: true},
 			Store: oramav1alpha1.LakeStoreSpec{
@@ -112,6 +113,7 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 		t.Fatalf("pod fsGroupChangePolicy = %+v, want %q", securityContext, corev1.FSGroupChangeOnRootMismatch)
 	}
 	assertEnvValueOnce(t, deployment, "LAKE_APPS_WILDCARD", "apps.example.com")
+	assertEnvValueOnce(t, deployment, "LAKE_APPS_RUNTIME_IMAGE", "oramasearch/app-runtime:0.1.0")
 	assertEnvValueOnce(t, deployment, "LAKE_INTERNAL_URL", "http://lake-pod-template.lake-dev.svc:80")
 
 	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(lake), lake); err != nil {
