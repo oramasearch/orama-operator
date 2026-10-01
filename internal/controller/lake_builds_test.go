@@ -177,7 +177,7 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 	for _, name := range []string{
 		"LAKE_URL", "BUILD_ID", "REPOSITORY", "REVISION", "CONTEXT", "DOCKERFILE", "TARGET",
 		"BUILD_ARGS", "BUILD_ARG_ALLOW", "SOURCE_TOKEN", "PUSH_TOKEN", "EVENTS_TOKEN", "CACHE_REF", "DOCKER_CONFIG",
-		"BUILDKITD_FLAGS",
+		"BUILDKITD_FLAGS", "BASE_REGISTRY_AUTH",
 	} {
 		if _, ok := env[name]; !ok {
 			t.Errorf("builder env is missing %s", name)
@@ -185,6 +185,30 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 	}
 	if env["CACHE_REF"].Value != "lake-registry.lake.svc:80/space-one/cache/app" {
 		t.Fatalf("CACHE_REF = %q", env["CACHE_REF"].Value)
+	}
+	if env["BASE_REGISTRY_AUTH"].Value != buildBaseAuthPath {
+		t.Fatalf("BASE_REGISTRY_AUTH = %q", env["BASE_REGISTRY_AUTH"].Value)
+	}
+	authMountFound := false
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == buildBaseAuthVolume {
+			authMountFound = mount.MountPath == buildBaseAuthDir && mount.ReadOnly
+		}
+	}
+	if !authMountFound {
+		t.Fatalf("base registry auth mount = %+v", container.VolumeMounts)
+	}
+	authVolumeFound := false
+	for _, volume := range pod.Volumes {
+		if volume.Name == buildBaseAuthVolume && volume.Secret != nil {
+			authVolumeFound = volume.Secret.SecretName == buildPullSecretName &&
+				len(volume.Secret.Items) == 1 &&
+				volume.Secret.Items[0].Key == corev1.DockerConfigJsonKey &&
+				volume.Secret.Items[0].Path == ".dockerconfigjson"
+		}
+	}
+	if !authVolumeFound {
+		t.Fatalf("base registry auth volume = %+v", pod.Volumes)
 	}
 	h.poll()
 	if err := h.client.Get(context.Background(), jobKey, &job); err != nil {
@@ -210,6 +234,35 @@ func TestLakeBuildRowCreatesIsolatedJobAndReportsSuccess(t *testing.T) {
 	h.poll()
 	if len(store.buildUpdates) != writes {
 		t.Fatal("steady terminal build rewrote its row")
+	}
+}
+
+func TestLakeBuildWithoutPullSecretOmitsBaseRegistryAuth(t *testing.T) {
+	lake := buildTestLake()
+	lake.Spec.PullSecretName = ""
+	build := testBuild(testBuildID, testBuildTarget)
+	target, err := parseBuildTarget(build.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := buildPod(lake, &build, target, buildLabels(lake, &build, target))
+	if len(pod.ImagePullSecrets) != 0 {
+		t.Fatalf("imagePullSecrets = %+v", pod.ImagePullSecrets)
+	}
+	for _, variable := range pod.Containers[0].Env {
+		if variable.Name == "BASE_REGISTRY_AUTH" {
+			t.Fatalf("unexpected BASE_REGISTRY_AUTH = %q", variable.Value)
+		}
+	}
+	for _, mount := range pod.Containers[0].VolumeMounts {
+		if mount.Name == buildBaseAuthVolume {
+			t.Fatalf("unexpected base registry auth mount = %+v", mount)
+		}
+	}
+	for _, volume := range pod.Volumes {
+		if volume.Name == buildBaseAuthVolume {
+			t.Fatalf("unexpected base registry auth volume = %+v", volume)
+		}
 	}
 }
 

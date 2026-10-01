@@ -30,7 +30,11 @@ spec:
 
 `builderImage` is required when builds are enabled. The operator copies the Lake's image pull Secret
 into each build namespace as the Lake-owned Secret `builder-pull`; the builder Job references that
-local copy because Kubernetes image pull Secrets cannot cross namespaces. Resource entries override
+local copy because Kubernetes image pull Secrets cannot cross namespaces. The same Secret is mounted
+read-only at `/etc/lake-builder/pull/.dockerconfigjson` and identified by `BASE_REGISTRY_AUTH`, so
+lake-builder can merge private base-image credentials into its writable Docker configuration. When
+`spec.pullSecretName` is empty, the Job gets no pull-secret reference, auth mount, or
+`BASE_REGISTRY_AUTH`. Resource entries override
 the bounded defaults shown above one key at a time, so CPU, memory, and ephemeral-storage remain
 bounded when a partial override is supplied. Concurrency defaults to four active Jobs for the Lake
 and two for one registry space. Both configured limits must be positive. Registry cache
@@ -82,6 +86,7 @@ The Job receives the lake-builder contract exactly as environment variables:
 | `SOURCE_TOKEN` / `PUSH_TOKEN` / `EVENTS_TOKEN` | Secret key references |
 | `CACHE_REF` | `<registry>/<space>/cache/<name>`, or empty when caching is disabled |
 | `DOCKER_CONFIG` | writable `/home/user/.docker` |
+| `BASE_REGISTRY_AUTH` | read-only `/etc/lake-builder/pull/.dockerconfigjson` when the Lake has `spec.pullSecretName`; omitted otherwise |
 
 lake-builder fetches the repository tree and files from Lake REST at the pinned revision, validates
 every build argument against `BUILD_ARG_ALLOW`, runs rootless BuildKit through

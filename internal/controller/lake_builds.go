@@ -64,6 +64,9 @@ const (
 	buildDefaultDeny      = "build-default-deny"
 	buildPullSecretName   = "builder-pull"
 	buildDockerConfigPath = "/home/user/.docker"
+	buildBaseAuthVolume   = "base-registry-auth"
+	buildBaseAuthDir      = "/etc/lake-builder/pull"
+	buildBaseAuthPath     = buildBaseAuthDir + "/.dockerconfigjson"
 )
 
 var (
@@ -427,7 +430,7 @@ func buildCacheRef(build *LakeBuild, target buildTarget, enabled bool) string {
 
 func buildEnv(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget) []corev1.EnvVar {
 	secret := buildTokenSecretName(build.ID)
-	return []corev1.EnvVar{
+	env := []corev1.EnvVar{
 		{Name: "LAKE_URL", Value: lakeInternalURL(lake, lakeNamespace(lake))},
 		{Name: "BUILD_ID", Value: build.ID},
 		{Name: "REPOSITORY", Value: build.Repository},
@@ -446,6 +449,10 @@ func buildEnv(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget) []
 		// sandbox; the pod's user namespace is the isolation boundary instead.
 		{Name: "BUILDKITD_FLAGS", Value: "--oci-worker-no-process-sandbox"},
 	}
+	if lake.Spec.PullSecretName != "" {
+		env = append(env, corev1.EnvVar{Name: "BASE_REGISTRY_AUTH", Value: buildBaseAuthPath})
+	}
+	return env
 }
 
 func buildPod(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget, labels map[string]string) corev1.PodSpec {
@@ -501,6 +508,21 @@ func buildPod(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget, la
 	}
 	if lake.Spec.PullSecretName != "" {
 		pod.ImagePullSecrets = []corev1.LocalObjectReference{{Name: buildPullSecretName}}
+		pod.Containers[0].VolumeMounts = append(pod.Containers[0].VolumeMounts, corev1.VolumeMount{
+			Name:      buildBaseAuthVolume,
+			MountPath: buildBaseAuthDir,
+			ReadOnly:  true,
+		})
+		pod.Volumes = append(pod.Volumes, corev1.Volume{
+			Name: buildBaseAuthVolume,
+			VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+				SecretName: buildPullSecretName,
+				Items: []corev1.KeyToPath{{
+					Key:  corev1.DockerConfigJsonKey,
+					Path: ".dockerconfigjson",
+				}},
+			}},
+		})
 	}
 	return pod
 }

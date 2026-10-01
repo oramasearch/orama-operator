@@ -953,6 +953,7 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		"LAKE_AGENT_ENDPOINTS":     {},
 		"LAKE_AGENT_MODEL":         {},
 		"LAKE_AGENT_SERVICE_TOKEN": {},
+		"LAKE_APPS_RUNTIME_IMAGE":  {},
 		"LAKE_INTERNAL_URL":        {},
 		"LAKE_CONTROL_DB_PASSWORD": {},
 		"LAKE_CONTROL_DB_URI":      {},
@@ -985,6 +986,9 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 	} else if lake.Spec.Apps.Enabled {
 		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_WILDCARD", Value: lake.Spec.Apps.Wildcard})
 		reserved["LAKE_APPS_WILDCARD"] = struct{}{}
+	}
+	if lake.Spec.Apps.Enabled {
+		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_RUNTIME_IMAGE", Value: lake.Spec.Apps.RuntimeImage})
 	}
 	if lakePostgresEnabled(lake) {
 		env = append(env, corev1.EnvVar{

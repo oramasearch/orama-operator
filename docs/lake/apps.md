@@ -177,6 +177,9 @@ The Lake-level settings are:
 
 - `spec.apps.enabled`: opt-in synchronization from the Lake control Postgres;
 - `spec.apps.runtimeImage`: the private `oramasearch/app-runtime` image used in runtime mode;
+- when apps are enabled, the operator passes that value to lake as `LAKE_APPS_RUNTIME_IMAGE`, so
+  lake's generated build Dockerfile uses the configured private base image rather than an implicit
+  Docker Hub library image;
 - `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`; when apps are
   enabled, the operator also injects it into lake as `LAKE_APPS_WILDCARD` so lake can validate and
   create app hosts;
