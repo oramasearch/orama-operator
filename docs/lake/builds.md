@@ -96,8 +96,12 @@ instead of adopting it. The namespace uses Pod Security `restricted` audit/warn 
 enforcement. Kubernetes Pod Security Admission has no per-pod exception: both restricted and
 baseline reject the unconfined seccomp and AppArmor profiles rootless BuildKit requires. The
 namespace is not tenant-writable, and only the builder container receives those two exceptions; it
-still runs as non-root uid/gid 1000, cannot escalate privileges, drops every Linux capability, has
-no service-account token, and receives no host mounts.
+still runs as non-root uid/gid 1000, drops every Linux capability except `SETUID` and `SETGID`, has
+no service-account token, and receives no host mounts. Privilege escalation is allowed only because
+rootlesskit maps the build's user namespace through the setuid `newuidmap`/`newgidmap` helpers;
+without it (and those two capabilities in the bounding set) BuildKit fails with `newuidmap …
+operation not permitted`. `BUILDKITD_FLAGS=--oci-worker-no-process-sandbox` is set because a pod
+cannot mount the unmasked `/proc` the OCI process sandbox needs; the user namespace is the boundary.
 
 The namespace has default-deny ingress and egress. A second NetworkPolicy permits:
 

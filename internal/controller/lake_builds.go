@@ -442,6 +442,9 @@ func buildEnv(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget) []
 		secretEnv("EVENTS_TOKEN", secret, buildTokenEventsKey),
 		{Name: "CACHE_REF", Value: buildCacheRef(build, target, buildCacheEnabled(lake))},
 		{Name: "DOCKER_CONFIG", Value: buildDockerConfigPath},
+		// Rootless BuildKit in a pod cannot mount an unmasked /proc for the OCI worker's process
+		// sandbox; the pod's user namespace is the isolation boundary instead.
+		{Name: "BUILDKITD_FLAGS", Value: "--oci-worker-no-process-sandbox"},
 	}
 }
 
@@ -467,13 +470,19 @@ func buildPod(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget, la
 			Env:       buildEnv(lake, build, target),
 			Resources: buildResources(lake),
 			SecurityContext: &corev1.SecurityContext{
-				RunAsNonRoot:             &yes,
-				RunAsUser:                &user,
-				RunAsGroup:               &group,
-				AllowPrivilegeEscalation: &no,
-				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-				SeccompProfile:           unconfinedSeccomp,
-				AppArmorProfile:          unconfinedAppArmor,
+				RunAsNonRoot: &yes,
+				RunAsUser:    &user,
+				RunAsGroup:   &group,
+				// rootlesskit maps the build's user namespace through the setuid newuidmap and
+				// newgidmap helpers, which need escalation and CAP_SETUID/CAP_SETGID in the
+				// bounding set; every other capability stays dropped.
+				AllowPrivilegeEscalation: &yes,
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+					Add:  []corev1.Capability{"SETUID", "SETGID"},
+				},
+				SeccompProfile:  unconfinedSeccomp,
+				AppArmorProfile: unconfinedAppArmor,
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "workspace", MountPath: "/workspace"},
