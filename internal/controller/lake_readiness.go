@@ -40,8 +40,11 @@ func lakeDeploymentReadiness(deployment *appsv1.Deployment, desired int32) lakeC
 			return lakeComponentReadiness{"Degraded", "ProgressDeadlineExceeded", "Deployment progress deadline exceeded: " + condition.Message}
 		}
 	}
+	// A surge rollout keeps old pods serving until the new ones are ready, so Ready also waits
+	// for every old pod to leave (replicas == updatedReplicas), as kubectl rollout status does.
 	if desired > 0 && deployment.Status.ReadyReplicas >= desired &&
-		deployment.Status.UpdatedReplicas >= desired && deployment.Status.AvailableReplicas >= desired {
+		deployment.Status.UpdatedReplicas >= desired && deployment.Status.AvailableReplicas >= desired &&
+		deployment.Status.Replicas <= deployment.Status.UpdatedReplicas {
 		return lakeComponentReadiness{phase: "Ready"}
 	}
 	return lakeComponentReadiness{

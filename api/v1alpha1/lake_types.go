@@ -69,6 +69,10 @@ type LakeSpec struct {
 	// +optional
 	Store LakeStoreSpec `json:"store,omitempty"`
 
+	// Rollout controls how a pod-template change replaces lake pods (operator#243).
+	// +optional
+	Rollout LakeRolloutSpec `json:"rollout,omitempty"`
+
 	// Env appends lake-specific environment variables after the operator-managed variables.
 	// Operator-managed names take precedence and conflicting entries are ignored.
 	// +optional
@@ -369,6 +373,19 @@ type LakeDeploySyncSpec struct {
 }
 
 // LakeStoreSpec describes the persistent libliquid store root for a Lake.
+// LakeRolloutSpec controls pod replacement on a pod-template change.
+type LakeRolloutSpec struct {
+	// OverlapOnSharedStore lets a single-replica Lake whose store claim is ReadWriteOnce (or
+	// missing) start its replacement pod beside the running one: RollingUpdate with maxSurge 1 and
+	// maxUnavailable 0, and required pod affinity on kubernetes.io/hostname so the new pod mounts
+	// the volume already attached to that node. For the overlap, two lake processes open the same
+	// store root. Off by default, which keeps Recreate and its restart gap, until running two
+	// processes on one store is proven safe. ReadWriteMany stores always surge; ReadWriteOncePod
+	// stores always recreate, since a second pod can never mount them.
+	// +optional
+	OverlapOnSharedStore bool `json:"overlapOnSharedStore,omitempty"`
+}
+
 type LakeStoreSpec struct {
 	// Size requested for an operator-created claim. It is used only when the claim is first
 	// created; later changes do not replace or resize the data volume.
