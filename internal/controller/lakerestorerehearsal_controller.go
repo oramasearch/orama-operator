@@ -848,6 +848,7 @@ UNION ALL SELECT 'repository_names_guard=' || count(*) FROM repository_names_gua
 UNION ALL SELECT 'app_forward_auth_guard=' || count(*) FROM app_forward_auth_guard
 UNION ALL SELECT 'agent_task_leases_guard=' || count(*) FROM agent_task_leases_guard
 UNION ALL SELECT 'agent_launch_workspaces_guard=' || count(*) FROM agent_launch_workspaces_guard
+UNION ALL SELECT 'store_workspaces_guard=' || count(*) FROM store_workspaces_guard
 UNION ALL SELECT 'auth_app_guard=' || count(*) FROM auth_app_guard
 UNION ALL SELECT 'drive_guard=' || count(*) FROM drive_guard
 UNION ALL SELECT 'forge_guard=' || count(*) FROM forge_guard
