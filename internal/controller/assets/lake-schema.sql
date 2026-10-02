@@ -2200,3 +2200,52 @@ CREATE TABLE IF NOT EXISTS agent_launch_workspaces_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0043_agent_launch_workspaces')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0044_store_workspaces: a store belongs to one workspace (lake#465). The operator places a
+-- store's claim in the namespace of its workspace and reads `stores.workspace_id` to find it;
+-- without the column it could read no store at all, so no store was created or deleted. Lake
+-- lists, hands out and deletes a workspace's own stores only. Names stay unique per space, as
+-- for services and apps.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS workspace_id uuid REFERENCES workspaces(id);
+CREATE INDEX IF NOT EXISTS stores_workspace_idx ON stores (workspace_id, created_at);
+
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0044_store_workspaces') THEN
+        -- Earlier stores name no workspace. Assign them only where the space has exactly one live
+        -- workspace, and record every outcome, as 0043 did. The routing trigger below would
+        -- refuse the assignment as a change of workspace; it is created again afterwards.
+        DROP TRIGGER IF EXISTS store_workspace_routing ON stores;
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'stores', o.id, o.customer_id, w.id,
+                   CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
+            FROM stores o LEFT JOIN workspaces w ON w.customer_id = o.customer_id
+                 AND w.desired <> 'deleted'
+                 AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = o.customer_id
+                      AND w2.desired <> 'deleted') = 1
+            WHERE o.workspace_id IS NULL ON CONFLICT DO NOTHING;
+        UPDATE stores o SET workspace_id = a.workspace_id FROM workspace_assignments a
+            WHERE a.object_table = 'stores' AND a.object_id = o.id
+              AND o.workspace_id IS NULL AND a.workspace_id IS NOT NULL;
+        FOR unresolved IN SELECT * FROM workspace_assignments
+                           WHERE workspace_id IS NULL AND object_table = 'stores' LOOP
+            RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%',
+                unresolved.object_table, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+-- New stores must name a live workspace of their own space; neither column changes afterwards.
+DROP TRIGGER IF EXISTS store_workspace_routing ON stores;
+CREATE TRIGGER store_workspace_routing BEFORE INSERT OR UPDATE ON stores
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+
+CREATE TABLE IF NOT EXISTS store_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0044_store_workspaces')
+    ON CONFLICT DO NOTHING;
