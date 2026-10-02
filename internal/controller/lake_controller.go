@@ -576,7 +576,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 	sealing lakeSealingMaterial,
 ) (*appsv1.Deployment, error) {
 	terminationGracePeriodSeconds := int64(lakeTerminationGracePeriodSeconds)
-	strategy, affinity := lakeRollout(replicas, storeAccessModes, labels)
+	strategy, affinity := lakeRollout(replicas, storeAccessModes, lake.Spec.Rollout.OverlapOnSharedStore, labels)
 	resources := resourceReqs("128Mi", "50m", "512Mi")
 	if lake.Spec.Resources != nil {
 		resources = lake.Spec.Resources.DeepCopy()
@@ -702,32 +702,40 @@ func lakeDrainPreStop() *corev1.Lifecycle {
 	}
 }
 
-// lakeRollout chooses how a pod-template change replaces lake pods. Every mode except
-// ReadWriteOncePod surges: the replacement must pass /readyz before an old pod is stopped
-// (maxUnavailable 0), so a change shows no gap in service.
+// lakeRollout chooses how a pod-template change replaces lake pods.
 //
-// A ReadWriteOnce store can be mounted by several pods only on the node that has it attached. A
-// single-replica Lake whose claim is not ReadWriteMany therefore requires its surge pod on the
-// node of the running lake pod (required pod affinity on kubernetes.io/hostname). The first pod
-// matches its own affinity term, so it schedules anywhere when no lake pod exists. If that node
-// cannot fit the surge pod, the rollout waits with the old pod still serving.
+// A ReadWriteMany store, and any multi-replica Lake (which needs one), surges: the replacement
+// must pass /readyz before an old pod stops (maxSurge 1, maxUnavailable 0), so a change shows no
+// gap in service.
 //
-// A ReadWriteOncePod store admits one pod only, so it keeps Recreate and its restart gap.
+// A single-replica Lake on a ReadWriteOnce claim (or a claim that does not exist yet) defaults to
+// Recreate. Surging there means two lake processes open the same store root for the overlap, and
+// that store holds data with no other copy; until that is proven safe, it is opt-in through
+// spec.rollout.overlapOnSharedStore. With the opt-in the Lake surges too, and the new pod gets
+// required pod affinity to its own pods on kubernetes.io/hostname, so it lands on the node with the
+// volume attached and mounts it beside the old pod. The first pod matches its own affinity term,
+// so it schedules anywhere when no lake pod exists. If that node cannot fit the surge pod, the
+// rollout waits with the old pod still serving.
 //
-// The result depends on the replica count and the claim's access modes, which are immutable on
-// a PersistentVolumeClaim; it never depends on observed pod state, so a second reconcile renders
-// the same template.
+// A ReadWriteOncePod claim admits one pod only, so it always recreates: a surge pod could never
+// mount it and the rollout would never finish.
+//
+// The result depends only on the spec and the claim's access modes, which are immutable on a
+// PersistentVolumeClaim, never on observed pod state, so a second reconcile renders the same
+// template.
 func lakeRollout(
 	replicas int32,
 	accessModes []corev1.PersistentVolumeAccessMode,
+	overlapOnSharedStore bool,
 	labels map[string]string,
 ) (appsv1.DeploymentStrategy, *corev1.Affinity) {
+	recreate := appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 	if hasAccessMode(accessModes, corev1.ReadWriteOncePod) {
-		return appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}, nil
+		return recreate, nil
 	}
 	maxSurge := intstr.FromInt32(1)
 	maxUnavailable := intstr.FromInt32(0)
-	strategy := appsv1.DeploymentStrategy{
+	surge := appsv1.DeploymentStrategy{
 		Type: appsv1.RollingUpdateDeploymentStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateDeployment{
 			MaxSurge:       &maxSurge,
@@ -735,13 +743,16 @@ func lakeRollout(
 		},
 	}
 	if replicas > 1 || hasAccessMode(accessModes, corev1.ReadWriteMany) {
-		return strategy, nil
+		return surge, nil
+	}
+	if !overlapOnSharedStore {
+		return recreate, nil
 	}
 	selector := map[string]string{}
 	for key, value := range labels {
 		selector[key] = value
 	}
-	return strategy, &corev1.Affinity{
+	return surge, &corev1.Affinity{
 		PodAffinity: &corev1.PodAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
 				LabelSelector: &metav1.LabelSelector{MatchLabels: selector},

@@ -226,7 +226,8 @@ func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
 		container.SecurityContext.Capabilities.Drop[0] != "ALL" {
 		t.Errorf("container security context = %+v", container.SecurityContext)
 	}
-	assertLakeServesThroughRollout(t, deployment)
+	assertLakeSurges(t, deployment)
+	assertLakeProbesAndDrain(t, deployment)
 	// The default ReadWriteMany store lets replicas run on any node: no co-location.
 	if deployment.Spec.Template.Spec.Affinity != nil {
 		t.Errorf("RWX multi-replica Lake has affinity %+v", deployment.Spec.Template.Spec.Affinity)
@@ -1291,10 +1292,8 @@ func TestLakePodRunsWithStoreFSGroup(t *testing.T) {
 	}
 }
 
-// assertLakeServesThroughRollout checks what keeps lake answering while a pod-template change
-// rolls out: a surge strategy that never removes a ready pod first, readiness on /readyz, a
-// startup probe that holds liveness off, and a shell-free preStop drain inside the grace period.
-func assertLakeServesThroughRollout(t *testing.T, deployment *appsv1.Deployment) {
+// assertLakeSurges checks a rollout that never removes a ready pod first.
+func assertLakeSurges(t *testing.T, deployment *appsv1.Deployment) {
 	t.Helper()
 	strategy := deployment.Spec.Strategy
 	if strategy.Type != appsv1.RollingUpdateDeploymentStrategyType || strategy.RollingUpdate == nil ||
@@ -1302,6 +1301,26 @@ func assertLakeServesThroughRollout(t *testing.T, deployment *appsv1.Deployment)
 		strategy.RollingUpdate.MaxSurge == nil || strategy.RollingUpdate.MaxSurge.IntValue() != 1 {
 		t.Errorf("deployment strategy = %+v, want RollingUpdate maxSurge 1 maxUnavailable 0", strategy)
 	}
+}
+
+// assertLakeRecreates checks the default for a single-replica Lake on a ReadWriteOnce store: the
+// old pod leaves before a new one starts, and nothing pins the pod to a node.
+func assertLakeRecreates(t *testing.T, deployment *appsv1.Deployment) {
+	t.Helper()
+	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType ||
+		deployment.Spec.Strategy.RollingUpdate != nil {
+		t.Errorf("deployment strategy = %+v, want Recreate", deployment.Spec.Strategy)
+	}
+	if deployment.Spec.Template.Spec.Affinity != nil {
+		t.Errorf("Recreate Lake has affinity %+v", deployment.Spec.Template.Spec.Affinity)
+	}
+}
+
+// assertLakeProbesAndDrain checks what shortens a restart and keeps readiness honest under any
+// strategy: readiness on /readyz, a startup probe that holds liveness off, and a shell-free
+// preStop drain inside the grace period.
+func assertLakeProbesAndDrain(t *testing.T, deployment *appsv1.Deployment) {
+	t.Helper()
 	container := deployment.Spec.Template.Spec.Containers[0]
 	if container.ReadinessProbe == nil || container.ReadinessProbe.HTTPGet == nil ||
 		container.ReadinessProbe.HTTPGet.Path != "/readyz" ||
@@ -1328,21 +1347,29 @@ func assertLakeServesThroughRollout(t *testing.T, deployment *appsv1.Deployment)
 
 func TestLakeRolloutByStoreAccessMode(t *testing.T) {
 	labels := map[string]string{"app.kubernetes.io/name": "lake", "app.kubernetes.io/instance": "x"}
+	rwo := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+	rwx := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}
+	rwop := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}
 	for _, test := range []struct {
 		name     string
 		replicas int32
 		modes    []corev1.PersistentVolumeAccessMode
+		overlap  bool
 		recreate bool
 		colocate bool
 	}{
-		{"single RWO co-locates the surge pod", 1, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, false, true},
-		{"missing existing claim co-locates", 1, nil, false, true},
-		{"single RWX surges anywhere", 1, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}, false, false},
-		{"multi RWX surges anywhere", 3, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}, false, false},
-		{"RWOP recreates", 1, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}, true, false},
+		{"single RWO recreates by default", 1, rwo, false, true, false},
+		{"missing existing claim recreates by default", 1, nil, false, true, false},
+		{"single RWO with the opt-in co-locates the surge pod", 1, rwo, true, false, true},
+		{"missing existing claim with the opt-in co-locates", 1, nil, true, false, true},
+		{"single RWX surges anywhere", 1, rwx, false, false, false},
+		{"single RWX ignores the opt-in", 1, rwx, true, false, false},
+		{"multi RWX surges anywhere", 3, rwx, false, false, false},
+		{"RWOP recreates", 1, rwop, false, true, false},
+		{"RWOP recreates even with the opt-in", 1, rwop, true, true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			strategy, affinity := lakeRollout(test.replicas, test.modes, labels)
+			strategy, affinity := lakeRollout(test.replicas, test.modes, test.overlap, labels)
 			if test.recreate {
 				if strategy.Type != appsv1.RecreateDeploymentStrategyType || strategy.RollingUpdate != nil {
 					t.Fatalf("strategy = %+v, want Recreate", strategy)

@@ -94,9 +94,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    `LAKE_APPS_WILDCARD` and `LAKE_APPS_RUNTIME_IMAGE` when apps are enabled, and `LAKE_INTERNAL_URL` when builds or agents need
    lake's in-cluster address, plus `spec.env` entries whose names do not conflict with
    operator-owned variables. Pods run as
-   uid/gid 10001 with the restricted container baseline. A spec change rolls the Deployment once,
-   as a surge that keeps the old pod serving until the new one is ready; see
-   [Rollouts](#rollouts). Replicated Deployments get a
+   uid/gid 10001 with the restricted container baseline. A spec change rolls the Deployment once;
+   how the pods are replaced depends on the store's access modes, see [Rollouts](#rollouts). Replicated Deployments get a
    `maxUnavailable: 1` PodDisruptionBudget and the default soft hostname spread, or
    `spec.topologySpreadConstraints` when supplied. Scaling to one replica removes the budget.
 7. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
@@ -458,30 +457,51 @@ agent bus) are refreshed by kubelet in place and never roll lake. The envtest
 `TestLakeSpecChangeRollsOnce` patches `spec.apps.runtimeImage` and checks that the generation steps
 once and that three more reconciles leave the template and generation unchanged.
 
-**No gap during a rollout.**
+**Pod replacement.**
+
+| Store | Strategy |
+|---|---|
+| ReadWriteMany (the default), or more than one replica | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0`: the new pod starts beside the old one, and the old pod stops only after the new one is ready. No gap. |
+| ReadWriteOnce, one replica (the AKS `Lake/prod` store, `managed-csi`) | `Recreate` by default: the old pod stops, then the new one starts. There is a restart gap. With `spec.rollout.overlapOnSharedStore: true` the Lake surges like the row above, with the co-location described below. |
+| ReadWriteOncePod | Always `Recreate`. A second pod can never mount the claim, so a surge would never finish. |
+
+**Why the single-replica ReadWriteOnce default is `Recreate`.** A surge on that store means two lake
+processes open the same store root for the overlap. That store holds data that is not backed up
+anywhere else, and nothing yet proves that two processes can safely share it. liquid's per-operation
+locks (`src/data.cpp`, `LOCK_EX | LOCK_NB`, which answers busy) and the transparency log's append lock
+serialize single operations. They do not prove that lake's caches, in-memory state and multi-step
+writes stay correct beside a second process. Before setting `overlapOnSharedStore` on a Lake whose
+store has no other copy, prove all of the following:
+
+- every write path in lake and libliquid that touches the store root either holds a cross-process
+  lock or is safe to interleave with another process's writes;
+- no state cached in a process (open stores, indexes, transparency checkpoints, sequence counters)
+  goes stale or gets overwritten when another process writes;
+- a concurrent-writer test runs two lake processes on one store root under write load across a
+  rollout and then verifies the store end to end;
+- a backup or a tested restore exists for that store, so a failure is recoverable.
+
+With `Recreate`, the probes and drain below still shorten the gap, and Lake `Ready` stays honest.
+
+**Probes and drain.**
 
 | Setting | Value | Why |
 |---|---|---|
-| Strategy | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` | The new pod starts beside the old one; the old pod stops only after the new one is ready. |
 | Readiness | `GET /readyz`, every 5 s, timeout 2 s, 3 failures | lake answers 200 only when its control store answers a ping, so traffic reaches a new pod only when it can serve. |
 | Startup | `GET /healthz`, every 5 s, 60 failures | Holds liveness off for up to five minutes while a cold start opens the store. |
 | Liveness | `GET /healthz`, every 20 s, timeout 3 s, 3 failures | Process liveness only. |
 | preStop | kubelet `sleep` action, 15 s | lake stops its HTTP server at once on SIGTERM, so the drain is this delay: the endpoint controller and nginx drop the pod while requests already routed to it finish. The built-in action needs no shell in the image. |
 | `terminationGracePeriodSeconds` | 45 | Covers the drain plus lake's shutdown. |
 
-**Store access modes.** A ReadWriteOnce volume can be mounted by several pods only on the node it is
-attached to. A single-replica Lake whose claim is not ReadWriteMany (the AKS `Lake/prod` store is
-ReadWriteOnce `managed-csi`) therefore gets required pod affinity to its own pods on
-`kubernetes.io/hostname`: the surge pod schedules onto the node of the running lake pod and mounts
-the already-attached volume. The first pod matches its own affinity term, so it schedules anywhere
+**Co-location with the opt-in.** A ReadWriteOnce volume can be mounted by several pods only on the
+node it is attached to. With `overlapOnSharedStore`, a single-replica Lake whose claim is not
+ReadWriteMany gets required pod affinity to its own pods on `kubernetes.io/hostname`. The surge pod
+schedules onto the node of the running lake pod and mounts the already-attached volume. The first pod matches its own affinity term, so it schedules anywhere
 when no lake pod exists. If that node cannot fit the surge pod, the new pod stays Pending, the old
 pod keeps serving, and the Deployment reports `ProgressDeadlineExceeded` after 600 s (the Lake shows
 `Degraded`); free capacity on that node or move the Lake by deleting its pod. A ReadWriteMany claim
-(the default) and multi-replica Lakes surge anywhere with no affinity. A ReadWriteOncePod claim
-admits one pod only, so it keeps `Recreate` and its restart gap.
-
-During the overlap two lake processes open the same store root, as replicas on a ReadWriteMany
-store always do.
+(the default) and multi-replica Lakes surge anywhere with no affinity, and the field has no effect
+on them. Toggling the field changes the pod template, so it causes one rollout.
 
 **Readiness of the Lake.** The Lake's `Ready` condition also waits until no old replica remains
 (`status.replicas` equals `status.updatedReplicas`), as `kubectl rollout status` does, so automation
@@ -509,10 +529,14 @@ kubectl get pods -n <namespace> -l app.kubernetes.io/name=lake
 
 Poll the public hostname for the whole restart, for example
 `while true; do curl -s -o /dev/null -w '%{http_code}\n' https://<host>/readyz; sleep 1; done`.
-The check passes when the replacement starts on the same node as the old pod (for a ReadWriteOnce
-store), mounts the store without a `Multi-Attach` error, becomes Ready before the old pod starts
-terminating, the poll shows no 503, and `kubectl get rs -n <namespace>` shows exactly one new
-ReplicaSet for the change. The PDB still has `maxUnavailable: 1` when the Lake has multiple
+In every mode, `kubectl get rs -n <namespace>` must show exactly one new ReplicaSet for the change,
+and the replacement must mount the store without a persistent `Multi-Attach` error.
+
+- `Recreate` (the single-replica ReadWriteOnce default): the old pod terminates before the
+  replacement is created, and the poll shows one short run of 503s for the restart gap.
+- Surge (ReadWriteMany, or with `overlapOnSharedStore`): the replacement becomes Ready before the old
+  pod starts terminating, and the poll shows no 503. On a ReadWriteOnce store it starts on the old
+  pod's node. The PDB still has `maxUnavailable: 1` when the Lake has multiple
 replicas.
 
 ## Current production instance

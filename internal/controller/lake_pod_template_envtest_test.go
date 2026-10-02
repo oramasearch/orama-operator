@@ -105,15 +105,10 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 	if err := kubeClient.Get(ctx, key, deployment); err != nil {
 		t.Fatal(err)
 	}
-	// The API server accepts and keeps the surge strategy, the co-location affinity, the probes
-	// and the sleep preStop action as rendered.
-	assertLakeServesThroughRollout(t, deployment)
-	affinity := deployment.Spec.Template.Spec.Affinity
-	if affinity == nil || affinity.PodAffinity == nil ||
-		len(affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution) != 1 ||
-		affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].TopologyKey != "kubernetes.io/hostname" {
-		t.Fatalf("single-replica RWO Lake affinity = %+v, want the surge pod on the running pod's node", affinity)
-	}
+	// By default a single-replica RWO Lake recreates; the API server keeps the probes and the
+	// sleep preStop action as rendered.
+	assertLakeRecreates(t, deployment)
+	assertLakeProbesAndDrain(t, deployment)
 	securityContext := deployment.Spec.Template.Spec.SecurityContext
 	if securityContext == nil || securityContext.FSGroupChangePolicy == nil ||
 		*securityContext.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
@@ -141,6 +136,33 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertEnvValueOnce(t, deployment, "LAKE_APPS_WILDCARD", "override.example.com")
+	assertLakeRecreates(t, deployment)
+
+	// The opt-in turns the same Lake into a co-located surge, and the API server keeps it.
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(lake), lake); err != nil {
+		t.Fatal(err)
+	}
+	lake.Spec.Rollout.OverlapOnSharedStore = true
+	if err := kubeClient.Update(ctx, lake); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.reconcileLakeDeployment(
+		ctx, lake, "lake-dev", "lake-pod-template", lake.Spec.Image, "lake-pod-template-store",
+		rwo, labels, 1, lakeDefaultPort, sealing,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := kubeClient.Get(ctx, key, deployment); err != nil {
+		t.Fatal(err)
+	}
+	assertLakeSurges(t, deployment)
+	assertLakeProbesAndDrain(t, deployment)
+	affinity := deployment.Spec.Template.Spec.Affinity
+	if affinity == nil || affinity.PodAffinity == nil ||
+		len(affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution) != 1 ||
+		affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].TopologyKey != "kubernetes.io/hostname" {
+		t.Fatalf("opted-in single-replica RWO Lake affinity = %+v, want the surge pod on the running pod's node", affinity)
+	}
 }
 
 // TestLakeSpecChangeRollsOnce is operator#243: patching spec.apps.runtimeImage must change the
@@ -148,9 +170,21 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 // from the real claim, as in Reconcile.
 func TestLakeSpecChangeRollsOnce(t *testing.T) {
 	kubeClient := startLakeEnvtest(t)
+	if err := kubeClient.Create(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lake-dev"}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("default Recreate", func(t *testing.T) {
+		lakeSpecChangeRollsOnce(t, kubeClient, "one-rollout", false)
+	})
+	t.Run("opt-in overlap", func(t *testing.T) {
+		lakeSpecChangeRollsOnce(t, kubeClient, "one-rollout-overlap", true)
+	})
+}
+
+func lakeSpecChangeRollsOnce(t *testing.T, kubeClient client.Client, name string, overlap bool) {
 	ctx := context.Background()
 	lake := &oramav1alpha1.Lake{
-		ObjectMeta: metav1.ObjectMeta{Name: "one-rollout"},
+		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: oramav1alpha1.LakeSpec{
 			Image: "oramasearch/lake:test",
 			Apps: oramav1alpha1.LakeAppsSpec{
@@ -161,10 +195,8 @@ func TestLakeSpecChangeRollsOnce(t *testing.T) {
 			Store: oramav1alpha1.LakeStoreSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			},
+			Rollout: oramav1alpha1.LakeRolloutSpec{OverlapOnSharedStore: overlap},
 		},
-	}
-	if err := kubeClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lake-dev"}}); err != nil {
-		t.Fatal(err)
 	}
 	if err := kubeClient.Create(ctx, lake); err != nil {
 		t.Fatal(err)
@@ -172,7 +204,7 @@ func TestLakeSpecChangeRollsOnce(t *testing.T) {
 	reconciler := &LakeReconciler{Client: kubeClient, Scheme: kubeClient.Scheme()}
 	labels := lakeTemplateLabels(lake)
 	sealing := lakeSealingMaterial{KID: "test-kid", PublicKey: make([]byte, 32)}
-	key := client.ObjectKey{Namespace: "lake-dev", Name: "lake-one-rollout"}
+	key := client.ObjectKey{Namespace: "lake-dev", Name: "lake-" + name}
 
 	// reconcile runs the store and Deployment steps the way Reconcile does, from a fresh read of
 	// the Lake, and returns the stored Deployment.
@@ -200,6 +232,11 @@ func TestLakeSpecChangeRollsOnce(t *testing.T) {
 	}
 
 	initial := reconcile()
+	if overlap {
+		assertLakeSurges(t, initial)
+	} else {
+		assertLakeRecreates(t, initial)
+	}
 	steady := reconcile()
 	if steady.Generation != initial.Generation ||
 		!apiequality.Semantic.DeepEqual(steady.Spec.Template, initial.Spec.Template) {
