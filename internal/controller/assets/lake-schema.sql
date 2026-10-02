@@ -2124,3 +2124,79 @@ CREATE TABLE IF NOT EXISTS agent_task_leases_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0042_agent_task_leases')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0043_agent_launch_workspaces: agent launches and cron schedules belong to one workspace
+-- (lake#442). The operator places a launch's Job, Deployment or CronJob in the namespace of the
+-- workspace that holds the agent and reads `workspace_id` to find it; without the column it could
+-- read no launch at all, so every launch stayed at phase ''. Lake lists a workspace's own runs
+-- and schedules only. `stop_reason` records why lake itself withdrew a launch: one the operator
+-- does not pick up within five minutes is withdrawn with a reason the person can read.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE agent_launches ADD COLUMN IF NOT EXISTS workspace_id uuid REFERENCES workspaces(id);
+ALTER TABLE agent_launches ADD COLUMN IF NOT EXISTS stop_reason text NOT NULL DEFAULT '';
+ALTER TABLE agent_cron_schedules ADD COLUMN IF NOT EXISTS workspace_id uuid
+    REFERENCES workspaces(id);
+CREATE INDEX IF NOT EXISTS agent_launches_workspace_idx
+    ON agent_launches (workspace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS agent_cron_schedules_workspace_idx
+    ON agent_cron_schedules (workspace_id, created_at);
+
+DO $$
+DECLARE
+    target_table text;
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations
+                   WHERE version = '0043_agent_launch_workspaces') THEN
+        -- Earlier rows name no workspace. Assign them only where the space has exactly one live
+        -- workspace, and record every outcome, as 0038 did. The routing triggers below would
+        -- refuse the assignment as a change of workspace; they are created again afterwards.
+        DROP TRIGGER IF EXISTS agent_launch_workspace_routing ON agent_launches;
+        DROP TRIGGER IF EXISTS agent_cron_schedule_workspace_routing ON agent_cron_schedules;
+        FOREACH target_table IN ARRAY ARRAY['agent_launches', 'agent_cron_schedules'] LOOP
+            EXECUTE format(
+                'INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+                 SELECT %L, o.id, o.customer_id, w.id,
+                        CASE WHEN w.id IS NULL THEN ''needs_selection'' ELSE ''sole_workspace'' END
+                 FROM %I o LEFT JOIN workspaces w ON w.customer_id = o.customer_id
+                      AND w.desired <> ''deleted''
+                      AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = o.customer_id
+                           AND w2.desired <> ''deleted'') = 1
+                 WHERE o.workspace_id IS NULL ON CONFLICT DO NOTHING', target_table, target_table);
+            EXECUTE format(
+                'UPDATE %I o SET workspace_id = a.workspace_id FROM workspace_assignments a
+                 WHERE a.object_table = %L AND a.object_id = o.id
+                       AND o.workspace_id IS NULL AND a.workspace_id IS NOT NULL',
+                target_table, target_table);
+        END LOOP;
+        -- A launch the operator never saw was blocked by the missing column. Running it now, long
+        -- after it was asked for, would surprise the person who asked: withdraw it with a reason.
+        UPDATE agent_launches l SET desired = 'absent', generation = generation + 1,
+               stop_reason = 'Timed out: the Orama operator did not start this run within '
+                             'five minutes.',
+               updated_at = now()
+         WHERE l.desired = 'present' AND l.created_at < now() - interval '5 minutes'
+           AND NOT EXISTS (SELECT 1 FROM agent_launch_status ls WHERE ls.launch_id = l.id);
+        FOR unresolved IN SELECT * FROM workspace_assignments
+                           WHERE workspace_id IS NULL
+                             AND object_table IN ('agent_launches', 'agent_cron_schedules') LOOP
+            RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%',
+                unresolved.object_table, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+-- New rows must name a live workspace of their own space; neither column changes afterwards.
+DROP TRIGGER IF EXISTS agent_launch_workspace_routing ON agent_launches;
+CREATE TRIGGER agent_launch_workspace_routing BEFORE INSERT OR UPDATE ON agent_launches
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+DROP TRIGGER IF EXISTS agent_cron_schedule_workspace_routing ON agent_cron_schedules;
+CREATE TRIGGER agent_cron_schedule_workspace_routing BEFORE INSERT OR UPDATE ON agent_cron_schedules
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+
+CREATE TABLE IF NOT EXISTS agent_launch_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0043_agent_launch_workspaces')
+    ON CONFLICT DO NOTHING;
