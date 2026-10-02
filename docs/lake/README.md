@@ -94,9 +94,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    `LAKE_APPS_WILDCARD` and `LAKE_APPS_RUNTIME_IMAGE` when apps are enabled, and `LAKE_INTERNAL_URL` when builds or agents need
    lake's in-cluster address, plus `spec.env` entries whose names do not conflict with
    operator-owned variables. Pods run as
-   uid/gid 10001 with the restricted container baseline. The Deployment uses `Recreate`, so an
-   old pod releases a ReadWriteOnce store before its replacement can attach the volume on another
-   node. Replicated Deployments get a
+   uid/gid 10001 with the restricted container baseline. A spec change rolls the Deployment once,
+   as a surge that keeps the old pod serving until the new one is ready; see
+   [Rollouts](#rollouts). Replicated Deployments get a
    `maxUnavailable: 1` PodDisruptionBudget and the default soft hostname spread, or
    `spec.topologySpreadConstraints` when supplied. Scaling to one replica removes the budget.
 7. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
@@ -428,11 +428,8 @@ the scheduler still reserves CPU through the request.
 Lake's unauthenticated operational routes drive distinct probes: `GET /healthz` is liveness and
 `GET /readyz` is readiness, including control-store availability. The pod and container require
 non-root uid/gid 10001, disable privilege escalation, drop every Linux capability, and use the
-runtime-default seccomp profile. A five-second pre-stop drain and 30-second termination grace
-period let lake finish in-flight work. The Deployment uses `Recreate`: Kubernetes stops every old
-pod before starting replacements, so an RWO store can detach from the old node and attach to a new
-one without a surge pod deadlock. A single-replica Lake is unavailable during this handoff;
-readiness and rollout automation must allow for that planned restart gap.
+runtime-default seccomp profile. Rollout behavior, probes and the drain are in
+[Rollouts](#rollouts).
 The pod's `fsGroupChangePolicy: OnRootMismatch` applies the store's group ownership only when its
 root does not already match gid 10001, avoiding a full recursive ownership pass on every mount.
 
@@ -447,7 +444,52 @@ in the Lake namespace to render `spec.tls`, enable HTTPS redirect, and terminate
 nginx. For Cloudflare Origin CA, switch the zone to Full (strict) only after the origin certificate
 is present and the Ingress answers HTTPS.
 
-### Rollout-restart check
+### Rollouts
+
+One Lake spec change produces exactly one Deployment rollout, and lake keeps answering while it
+runs ([operator#243](https://github.com/oramasearch/orama-operator/issues/243)).
+
+**One rollout per change.** The pod template is computed from the Lake spec, the sealing key and the
+store claim's access modes only. Nothing in it comes from status, time, observed pods or a hash of
+a Secret that changes later, and claim access modes are immutable, so a reconcile after the change
+renders the same template and the Deployment generation moves once. Schema gating holds the whole
+update until the schema has applied; it never applies half of it. Mounted Secrets (services,
+agent bus) are refreshed by kubelet in place and never roll lake. The envtest
+`TestLakeSpecChangeRollsOnce` patches `spec.apps.runtimeImage` and checks that the generation steps
+once and that three more reconciles leave the template and generation unchanged.
+
+**No gap during a rollout.**
+
+| Setting | Value | Why |
+|---|---|---|
+| Strategy | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` | The new pod starts beside the old one; the old pod stops only after the new one is ready. |
+| Readiness | `GET /readyz`, every 5 s, timeout 2 s, 3 failures | lake answers 200 only when its control store answers a ping, so traffic reaches a new pod only when it can serve. |
+| Startup | `GET /healthz`, every 5 s, 60 failures | Holds liveness off for up to five minutes while a cold start opens the store. |
+| Liveness | `GET /healthz`, every 20 s, timeout 3 s, 3 failures | Process liveness only. |
+| preStop | kubelet `sleep` action, 15 s | lake stops its HTTP server at once on SIGTERM, so the drain is this delay: the endpoint controller and nginx drop the pod while requests already routed to it finish. The built-in action needs no shell in the image. |
+| `terminationGracePeriodSeconds` | 45 | Covers the drain plus lake's shutdown. |
+
+**Store access modes.** A ReadWriteOnce volume can be mounted by several pods only on the node it is
+attached to. A single-replica Lake whose claim is not ReadWriteMany (the AKS `Lake/prod` store is
+ReadWriteOnce `managed-csi`) therefore gets required pod affinity to its own pods on
+`kubernetes.io/hostname`: the surge pod schedules onto the node of the running lake pod and mounts
+the already-attached volume. The first pod matches its own affinity term, so it schedules anywhere
+when no lake pod exists. If that node cannot fit the surge pod, the new pod stays Pending, the old
+pod keeps serving, and the Deployment reports `ProgressDeadlineExceeded` after 600 s (the Lake shows
+`Degraded`); free capacity on that node or move the Lake by deleting its pod. A ReadWriteMany claim
+(the default) and multi-replica Lakes surge anywhere with no affinity. A ReadWriteOncePod claim
+admits one pod only, so it keeps `Recreate` and its restart gap.
+
+During the overlap two lake processes open the same store root, as replicas on a ReadWriteMany
+store always do.
+
+**Readiness of the Lake.** The Lake's `Ready` condition also waits until no old replica remains
+(`status.replicas` equals `status.updatedReplicas`), as `kubectl rollout status` does, so automation
+that waits on the Lake does not report a rollout complete while the old pod is still draining. A
+change made before the operator has reconciled it is still invisible to the Lake's status; compare
+the `Ready` condition's `observedGeneration` with `metadata.generation` before trusting it.
+
+### Rollout check
 
 Run this after deploying the controller change to AKS. The Lake must be Ready and its public
 hostname must already be healthy.
@@ -465,13 +507,13 @@ kubectl rollout status deployment/lake-<name> -n <namespace>
 kubectl get pods -n <namespace> -l app.kubernetes.io/name=lake
 ```
 
-Watch events during the restart. The check passes when every old pod terminates before a replacement
-is created, the replacement attaches the store without a persistent `Multi-Attach` error, and the
-Lake returns to Ready. A short readiness failure is expected for one replica. The PDB still has
-`maxUnavailable: 1` when the Lake has multiple replicas.
-
-The earlier issue #122 zero-failure rolling-restart check is superseded by this RWO-safe restart
-check: `Recreate` deliberately allows a readiness gap instead of starting a surge pod.
+Poll the public hostname for the whole restart, for example
+`while true; do curl -s -o /dev/null -w '%{http_code}\n' https://<host>/readyz; sleep 1; done`.
+The check passes when the replacement starts on the same node as the old pod (for a ReadWriteOnce
+store), mounts the store without a `Multi-Attach` error, becomes Ready before the old pod starts
+terminating, the poll shows no 503, and `kubectl get rs -n <namespace>` shows exactly one new
+ReplicaSet for the change. The PDB still has `maxUnavailable: 1` when the Lake has multiple
+replicas.
 
 ## Current production instance
 

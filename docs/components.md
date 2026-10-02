@@ -544,7 +544,7 @@ and reuses this operator's CNPG, PostgresSchema and Cloudflare DNS paths.
 | Secret | `lake-<name>-instance-kek` | yes | root wrapping key for lake's customer KEKs, minted once while Postgres is enabled |
 | Secret | `lake-<name>-sealing-key` | yes | active and retained X25519 private keys; public recipient is published in Lake status and injected into lake |
 | PersistentVolumeClaim | `spec.store.existingClaim` or `lake-<name>-store` | only the generated claim | generated once from size/class/modes and preserved across store spec changes; mounted at `/var/lib/lake/store` |
-| Deployment | `lake-<name>` | yes | resource defaults or `spec.resources`; `/healthz` liveness and `/readyz` readiness; non-root uid/gid 10001; zero-unavailable rolling update with pre-stop drain; default or configured topology spread; store mount and `LAKE_STORE_ROOT` |
+| Deployment | `lake-<name>` | yes | resource defaults or `spec.resources`; `/healthz` liveness and `/readyz` readiness; non-root uid/gid 10001; startup probe; zero-unavailable surge rollout (`Recreate` only for a ReadWriteOncePod store), co-located with the running pod for a single-replica non-RWX store; 15 s kubelet-sleep pre-stop drain in a 45 s grace period; default or configured topology spread; store mount and `LAKE_STORE_ROOT` |
 | PodDisruptionBudget | `lake-<name>` | yes | created only above one replica with `maxUnavailable: 1`; removed when scaled to one |
 | Service | `lake-<name>` | yes | ClusterIP 80 → `spec.port` |
 | `OramaZettaCluster` | `lake-<name>-zetta` | yes | `spec.zetta`, including `env`; data plane only, so operator-schema provisioning is off; deletion completes before the Lake finalizer is released |

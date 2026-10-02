@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -194,7 +195,7 @@ func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
 	if container.ReadinessProbe == nil || container.ReadinessProbe.HTTPGet == nil ||
 		container.ReadinessProbe.HTTPGet.Path != "/readyz" ||
 		container.ReadinessProbe.HTTPGet.Port.StrVal != "http" ||
-		container.ReadinessProbe.PeriodSeconds != 10 ||
+		container.ReadinessProbe.PeriodSeconds != 5 ||
 		container.ReadinessProbe.TimeoutSeconds != 2 ||
 		container.ReadinessProbe.FailureThreshold != 3 {
 		t.Errorf("readiness probe = %+v", container.ReadinessProbe)
@@ -225,14 +226,10 @@ func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
 		container.SecurityContext.Capabilities.Drop[0] != "ALL" {
 		t.Errorf("container security context = %+v", container.SecurityContext)
 	}
-	if container.Lifecycle == nil || container.Lifecycle.PreStop == nil ||
-		container.Lifecycle.PreStop.Exec == nil ||
-		strings.Join(container.Lifecycle.PreStop.Exec.Command, " ") != "sh -c sleep 5" {
-		t.Errorf("preStop lifecycle = %+v", container.Lifecycle)
-	}
-	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType ||
-		deployment.Spec.Strategy.RollingUpdate != nil {
-		t.Errorf("deployment strategy = %+v", deployment.Spec.Strategy)
+	assertLakeServesThroughRollout(t, deployment)
+	// The default ReadWriteMany store lets replicas run on any node: no co-location.
+	if deployment.Spec.Template.Spec.Affinity != nil {
+		t.Errorf("RWX multi-replica Lake has affinity %+v", deployment.Spec.Template.Spec.Affinity)
 	}
 	constraints := deployment.Spec.Template.Spec.TopologySpreadConstraints
 	if len(constraints) != 1 || constraints[0].MaxSkew != 1 ||
@@ -1291,5 +1288,85 @@ func TestLakePodRunsWithStoreFSGroup(t *testing.T) {
 	sc := &corev1.PodSecurityContext{FSGroup: ptrInt64(lakeRunAsGroup), FSGroupChangePolicy: ptrFSGroupChangePolicy(corev1.FSGroupChangeOnRootMismatch)}
 	if sc.FSGroup == nil || *sc.FSGroup != 10001 || sc.FSGroupChangePolicy == nil || *sc.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch {
 		t.Fatalf("unexpected security context %+v", sc)
+	}
+}
+
+// assertLakeServesThroughRollout checks what keeps lake answering while a pod-template change
+// rolls out: a surge strategy that never removes a ready pod first, readiness on /readyz, a
+// startup probe that holds liveness off, and a shell-free preStop drain inside the grace period.
+func assertLakeServesThroughRollout(t *testing.T, deployment *appsv1.Deployment) {
+	t.Helper()
+	strategy := deployment.Spec.Strategy
+	if strategy.Type != appsv1.RollingUpdateDeploymentStrategyType || strategy.RollingUpdate == nil ||
+		strategy.RollingUpdate.MaxUnavailable == nil || strategy.RollingUpdate.MaxUnavailable.IntValue() != 0 ||
+		strategy.RollingUpdate.MaxSurge == nil || strategy.RollingUpdate.MaxSurge.IntValue() != 1 {
+		t.Errorf("deployment strategy = %+v, want RollingUpdate maxSurge 1 maxUnavailable 0", strategy)
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if container.ReadinessProbe == nil || container.ReadinessProbe.HTTPGet == nil ||
+		container.ReadinessProbe.HTTPGet.Path != "/readyz" ||
+		container.ReadinessProbe.HTTPGet.Port.StrVal != "http" ||
+		container.ReadinessProbe.PeriodSeconds != 5 {
+		t.Errorf("readiness probe = %+v", container.ReadinessProbe)
+	}
+	if container.StartupProbe == nil || container.StartupProbe.HTTPGet == nil ||
+		container.StartupProbe.HTTPGet.Path != "/healthz" ||
+		container.StartupProbe.PeriodSeconds*container.StartupProbe.FailureThreshold < 300 {
+		t.Errorf("startup probe = %+v", container.StartupProbe)
+	}
+	if container.Lifecycle == nil || container.Lifecycle.PreStop == nil ||
+		container.Lifecycle.PreStop.Exec != nil || container.Lifecycle.PreStop.Sleep == nil ||
+		container.Lifecycle.PreStop.Sleep.Seconds != lakePreStopDrainSeconds {
+		t.Errorf("preStop lifecycle = %+v", container.Lifecycle)
+	}
+	grace := deployment.Spec.Template.Spec.TerminationGracePeriodSeconds
+	if grace == nil || *grace != lakeTerminationGracePeriodSeconds || *grace <= lakePreStopDrainSeconds {
+		t.Errorf("terminationGracePeriodSeconds = %v, want %d (> the %ds drain)",
+			grace, lakeTerminationGracePeriodSeconds, lakePreStopDrainSeconds)
+	}
+}
+
+func TestLakeRolloutByStoreAccessMode(t *testing.T) {
+	labels := map[string]string{"app.kubernetes.io/name": "lake", "app.kubernetes.io/instance": "x"}
+	for _, test := range []struct {
+		name     string
+		replicas int32
+		modes    []corev1.PersistentVolumeAccessMode
+		recreate bool
+		colocate bool
+	}{
+		{"single RWO co-locates the surge pod", 1, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, false, true},
+		{"missing existing claim co-locates", 1, nil, false, true},
+		{"single RWX surges anywhere", 1, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}, false, false},
+		{"multi RWX surges anywhere", 3, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}, false, false},
+		{"RWOP recreates", 1, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			strategy, affinity := lakeRollout(test.replicas, test.modes, labels)
+			if test.recreate {
+				if strategy.Type != appsv1.RecreateDeploymentStrategyType || strategy.RollingUpdate != nil {
+					t.Fatalf("strategy = %+v, want Recreate", strategy)
+				}
+			} else if strategy.Type != appsv1.RollingUpdateDeploymentStrategyType ||
+				strategy.RollingUpdate.MaxUnavailable.IntValue() != 0 ||
+				strategy.RollingUpdate.MaxSurge.IntValue() != 1 {
+				t.Fatalf("strategy = %+v, want surge without unavailability", strategy)
+			}
+			if !test.colocate {
+				if affinity != nil {
+					t.Fatalf("affinity = %+v, want none", affinity)
+				}
+				return
+			}
+			if affinity == nil || affinity.PodAffinity == nil ||
+				len(affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution) != 1 {
+				t.Fatalf("affinity = %+v, want one required pod-affinity term", affinity)
+			}
+			term := affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0]
+			if term.TopologyKey != "kubernetes.io/hostname" || term.LabelSelector == nil ||
+				!reflect.DeepEqual(term.LabelSelector.MatchLabels, labels) {
+				t.Fatalf("affinity term = %+v", term)
+			}
+		})
 	}
 }

@@ -268,6 +268,10 @@ func TestLakeReadinessDeploymentCounts(t *testing.T) {
 		{"partially updated", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 2, UpdatedReplicas: 1, AvailableReplicas: 2}},
 		{"unavailable", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 2, UpdatedReplicas: 2, AvailableReplicas: 1}},
 		{"unready", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 1, UpdatedReplicas: 2, AvailableReplicas: 2}},
+		// A surge rollout with the new pods ready while an old pod still runs is not done.
+		{"old pod still serving", appsv1.DeploymentStatus{
+			ObservedGeneration: 2, Replicas: 3, ReadyReplicas: 3, UpdatedReplicas: 2, AvailableReplicas: 3,
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

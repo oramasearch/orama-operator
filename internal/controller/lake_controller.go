@@ -223,7 +223,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile Zetta data plane: %w", err)
 	}
-	claimName, err := r.reconcileLakeStore(ctx, &lake, ns, labels)
+	claimName, storeAccessModes, err := r.reconcileLakeStore(ctx, &lake, ns, labels)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile store: %w", err)
 	}
@@ -278,7 +278,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	schemaReady := schemaReadiness.phase == "Ready"
 	deploy := &appsv1.Deployment{}
 	if schemaReady {
-		deploy, err = r.reconcileLakeDeployment(ctx, &lake, ns, name, image, claimName, labels, replicas, port, sealing)
+		deploy, err = r.reconcileLakeDeployment(
+			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing,
+		)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment: %w", err)
 		}
@@ -567,12 +569,14 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 	name string,
 	image string,
 	claimName string,
+	storeAccessModes []corev1.PersistentVolumeAccessMode,
 	labels map[string]string,
 	replicas int32,
 	port int32,
 	sealing lakeSealingMaterial,
 ) (*appsv1.Deployment, error) {
-	terminationGracePeriodSeconds := int64(30)
+	terminationGracePeriodSeconds := int64(lakeTerminationGracePeriodSeconds)
+	strategy, affinity := lakeRollout(replicas, storeAccessModes, labels)
 	resources := resourceReqs("128Mi", "50m", "512Mi")
 	if lake.Spec.Resources != nil {
 		resources = lake.Spec.Resources.DeepCopy()
@@ -590,9 +594,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 		deployment.Labels = labels
 		deployment.Spec.Replicas = &replicas
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
-		deployment.Spec.Strategy = appsv1.DeploymentStrategy{
-			Type: appsv1.RecreateDeploymentStrategyType,
-		}
+		deployment.Spec.Strategy = strategy
 		deployment.Spec.Template.ObjectMeta.Labels = labels
 		deployment.Spec.Template.Spec = corev1.PodSpec{
 			SecurityContext: &corev1.PodSecurityContext{
@@ -604,6 +606,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 			},
 			TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
 			TopologySpreadConstraints:     lakeTopologySpreadConstraints(lake, replicas, labels),
+			Affinity:                      affinity,
 			Containers: []corev1.Container{{
 				Name:            "lake",
 				Image:           image,
@@ -612,12 +615,16 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 				Env:             lakeEnv(lake, sealing),
 				Resources:       *resources,
 				SecurityContext: containerSecurityContext,
-				Lifecycle:       drainPreStop(),
+				Lifecycle:       lakeDrainPreStop(),
 				VolumeMounts: []corev1.VolumeMount{{
 					Name:      lakeStoreVolume,
 					MountPath: lakeStorePath,
 				}},
-				ReadinessProbe: lakeHTTPProbe("/readyz", 10, 2, 3),
+				// /readyz answers 200 only once lake's control store answers a ping, so a new pod
+				// receives traffic only when it can serve it. /healthz is process liveness; the
+				// startup probe holds liveness off while a cold start opens the store.
+				StartupProbe:   lakeHTTPProbe("/healthz", 5, 3, 60),
+				ReadinessProbe: lakeHTTPProbe("/readyz", 5, 2, 3),
 				LivenessProbe:  lakeHTTPProbe("/healthz", 20, 3, 3),
 			}},
 			Volumes: []corev1.Volume{{
@@ -674,6 +681,83 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 		return controllerutil.SetControllerReference(lake, deployment, r.Scheme)
 	})
 	return deployment, err
+}
+
+const (
+	// lakePreStopDrainSeconds keeps a terminating lake serving while the endpoint controller and
+	// the ingress drop it, and while requests already routed to it finish. lake stops its HTTP
+	// server immediately on SIGTERM, so this delay is the drain.
+	lakePreStopDrainSeconds = 15
+	// lakeTerminationGracePeriodSeconds covers the drain plus lake's own shutdown.
+	lakeTerminationGracePeriodSeconds = 45
+)
+
+// lakeDrainPreStop uses the kubelet's built-in sleep action, so the drain does not depend on a
+// shell in the lake image.
+func lakeDrainPreStop() *corev1.Lifecycle {
+	return &corev1.Lifecycle{
+		PreStop: &corev1.LifecycleHandler{
+			Sleep: &corev1.SleepAction{Seconds: lakePreStopDrainSeconds},
+		},
+	}
+}
+
+// lakeRollout chooses how a pod-template change replaces lake pods. Every mode except
+// ReadWriteOncePod surges: the replacement must pass /readyz before an old pod is stopped
+// (maxUnavailable 0), so a change shows no gap in service.
+//
+// A ReadWriteOnce store can be mounted by several pods only on the node that has it attached. A
+// single-replica Lake whose claim is not ReadWriteMany therefore requires its surge pod on the
+// node of the running lake pod (required pod affinity on kubernetes.io/hostname). The first pod
+// matches its own affinity term, so it schedules anywhere when no lake pod exists. If that node
+// cannot fit the surge pod, the rollout waits with the old pod still serving.
+//
+// A ReadWriteOncePod store admits one pod only, so it keeps Recreate and its restart gap.
+//
+// The result depends on the replica count and the claim's access modes, which are immutable on
+// a PersistentVolumeClaim; it never depends on observed pod state, so a second reconcile renders
+// the same template.
+func lakeRollout(
+	replicas int32,
+	accessModes []corev1.PersistentVolumeAccessMode,
+	labels map[string]string,
+) (appsv1.DeploymentStrategy, *corev1.Affinity) {
+	if hasAccessMode(accessModes, corev1.ReadWriteOncePod) {
+		return appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}, nil
+	}
+	maxSurge := intstr.FromInt32(1)
+	maxUnavailable := intstr.FromInt32(0)
+	strategy := appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxSurge:       &maxSurge,
+			MaxUnavailable: &maxUnavailable,
+		},
+	}
+	if replicas > 1 || hasAccessMode(accessModes, corev1.ReadWriteMany) {
+		return strategy, nil
+	}
+	selector := map[string]string{}
+	for key, value := range labels {
+		selector[key] = value
+	}
+	return strategy, &corev1.Affinity{
+		PodAffinity: &corev1.PodAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+				LabelSelector: &metav1.LabelSelector{MatchLabels: selector},
+				TopologyKey:   "kubernetes.io/hostname",
+			}},
+		},
+	}
+}
+
+func hasAccessMode(modes []corev1.PersistentVolumeAccessMode, mode corev1.PersistentVolumeAccessMode) bool {
+	for _, candidate := range modes {
+		if candidate == mode {
+			return true
+		}
+	}
+	return false
 }
 
 func lakeHTTPProbe(path string, periodSeconds, timeoutSeconds, failureThreshold int32) *corev1.Probe {
@@ -842,26 +926,34 @@ func (r *LakeReconciler) reconcileLakeStore(
 	lake *oramav1alpha1.Lake,
 	ns string,
 	lbls map[string]string,
-) (string, error) {
+) (string, []corev1.PersistentVolumeAccessMode, error) {
 	claimName := lakeStoreClaimName(lake)
-	if lake.Spec.Store.ExistingClaim != "" {
-		return claimName, nil
-	}
-
 	pvc := &corev1.PersistentVolumeClaim{}
 	key := client.ObjectKey{Namespace: ns, Name: claimName}
+	if lake.Spec.Store.ExistingClaim != "" {
+		// The rollout follows the claim's real access modes. A missing claim reports none; no
+		// lake pod can start until it exists.
+		if err := r.Get(ctx, key, pvc); err != nil {
+			if apierrors.IsNotFound(err) {
+				return claimName, nil, nil
+			}
+			return "", nil, err
+		}
+		return claimName, pvc.Spec.AccessModes, nil
+	}
+
 	if err := r.Get(ctx, key, pvc); err == nil {
 		if !metav1.IsControlledBy(pvc, lake) {
-			return "", fmt.Errorf(
+			return "", nil, fmt.Errorf(
 				"persistent volume claim %s/%s already exists and is not controlled by Lake %s; set spec.store.existingClaim to use it",
 				ns,
 				claimName,
 				lake.Name,
 			)
 		}
-		return claimName, nil
+		return claimName, pvc.Spec.AccessModes, nil
 	} else if !apierrors.IsNotFound(err) {
-		return "", err
+		return "", nil, err
 	}
 
 	size := lake.Spec.Store.Size.DeepCopy()
@@ -889,12 +981,12 @@ func (r *LakeReconciler) reconcileLakeStore(
 		pvc.Spec.StorageClassName = &lake.Spec.Store.StorageClassName
 	}
 	if err := controllerutil.SetControllerReference(lake, pvc, r.Scheme); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := r.Create(ctx, pvc); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return claimName, nil
+	return claimName, pvc.Spec.AccessModes, nil
 }
 
 func (r *LakeReconciler) lakeStoreStatus(
