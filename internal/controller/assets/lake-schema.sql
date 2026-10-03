@@ -3400,3 +3400,97 @@ CREATE TABLE IF NOT EXISTS workspace_deletions_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0065_workspace_deletions')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0066_assign_unrouted_repositories: the reviewed assignment 0051 left to a later migration
+-- (decision 54 S14, lake#513, docs/api/repositories.md#the-owning-workspace). Each repository
+-- that still names no workspace (live or tombstoned) is assigned its space's only live workspace
+-- when the space now has exactly one; a space with several or none is left alone and reported
+-- with RAISE WARNING. It runs once. On dev it assigns the `liquid` repository to the workspace
+-- created for its space.
+--
+-- The routing trigger refuses any change of workspace_id. Rather than drop it, as 0051 did,
+-- enforce_workspace_routing honors one exception: on repositories, NULL to a live workspace of
+-- the same space while the transaction-local setting lake.repository_assignment is
+-- '0066_assign_unrouted_repositories'. This block sets it, makes the updates and clears it, so
+-- the trigger refuses every other change before, during (for any other row or table) and after.
+--
+-- Each assignment is recorded in workspace_assignments: the repository's routing row
+-- (object_table repositories) changes from needs_selection to sole_workspace, and the owner of
+-- its description, if 0064 recorded one, from needs_selection to repository_workspace, the
+-- outcome copy_workspace_records gives it. The other needs_selection rows that follow a
+-- repository's workspace (forge records, platform environments) are resolved by their copy.
+-- ---------------------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION enforce_workspace_routing() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        IF TG_TABLE_NAME = 'repositories' AND OLD.workspace_id IS NULL
+           AND NEW.workspace_id IS NOT NULL AND NEW.customer_id IS NOT DISTINCT FROM OLD.customer_id
+           AND current_setting('lake.repository_assignment', true)
+               = '0066_assign_unrouted_repositories' THEN
+            -- The reviewed assignment of migration 0066: checked as an insert is, below.
+            NULL;
+        ELSIF NEW.workspace_id IS DISTINCT FROM OLD.workspace_id OR
+           NEW.customer_id IS DISTINCT FROM OLD.customer_id THEN
+            RAISE EXCEPTION 'workspace_id and customer_id are immutable' USING ERRCODE = '23514';
+        ELSE
+            RETURN NEW;
+        END IF;
+    END IF;
+    IF NEW.workspace_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM workspaces WHERE id = NEW.workspace_id AND customer_id = NEW.customer_id
+            AND desired <> 'deleted'
+    ) THEN
+        RAISE EXCEPTION 'workspace_id must name a workspace in this space' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END $$;
+
+DO $$
+DECLARE
+    candidate record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations
+                   WHERE version = '0066_assign_unrouted_repositories') THEN
+        PERFORM set_config('lake.repository_assignment', '0066_assign_unrouted_repositories', true);
+        FOR candidate IN
+            SELECT r.id, r.customer_id, r.name, count(w.id) AS live,
+                   (array_agg(w.id ORDER BY w.created_at))[1] AS workspace_id
+            FROM repositories r
+                 LEFT JOIN workspaces w ON w.customer_id = r.customer_id AND w.desired <> 'deleted'
+            WHERE r.workspace_id IS NULL
+            GROUP BY r.id, r.customer_id, r.name
+            ORDER BY r.id
+        LOOP
+            IF candidate.live <> 1 THEN
+                RAISE WARNING 'workspace_id requires selection: table=repositories, object=%, customer=%, live_workspaces=%',
+                    candidate.id, candidate.customer_id, candidate.live;
+                CONTINUE;
+            END IF;
+            UPDATE repositories SET workspace_id = candidate.workspace_id
+                WHERE id = candidate.id AND workspace_id IS NULL;
+            INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id,
+                                               outcome)
+                VALUES ('repositories', candidate.id, candidate.customer_id,
+                        candidate.workspace_id, 'sole_workspace')
+                ON CONFLICT (object_table, object_id) DO UPDATE
+                    SET workspace_id = EXCLUDED.workspace_id, outcome = EXCLUDED.outcome,
+                        recorded_at = now()
+                    WHERE workspace_assignments.workspace_id IS NULL;
+            UPDATE workspace_assignments
+                SET workspace_id = candidate.workspace_id, outcome = 'repository_workspace',
+                    recorded_at = now()
+                WHERE object_table = 'repository_descriptions' AND object_id = candidate.id
+                  AND workspace_id IS NULL AND outcome = 'needs_selection';
+            RAISE NOTICE 'repository assigned its sole workspace: repository=% (%), customer=%, workspace=%',
+                candidate.id, candidate.name, candidate.customer_id, candidate.workspace_id;
+        END LOOP;
+        PERFORM set_config('lake.repository_assignment', '', true);
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS assign_unrouted_repositories_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0066_assign_unrouted_repositories')
+    ON CONFLICT DO NOTHING;
