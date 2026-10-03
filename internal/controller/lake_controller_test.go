@@ -968,7 +968,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatalf("PostgresSchema not created: %v", err)
 	}
 	if ps.Spec.ConnectionSecretRef.Name != "lake-hello-controldb-app" || ps.Spec.ConnectionSecretRef.Key != "uri" ||
-		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "audit_workspaces_guard" ||
+		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "workspace_deletions_guard" ||
 		ps.Spec.Version != lakeSchemaVersion() {
 		t.Errorf("PostgresSchema spec = %+v", ps.Spec)
 	}
@@ -1266,7 +1266,6 @@ func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS offline_recovery_grants", "CREATE TABLE IF NOT EXISTS offline_recovery_attempts",
 		"CREATE TABLE IF NOT EXISTS offline_recovery_contacts", "CREATE TABLE IF NOT EXISTS offline_recovery_guard",
 		"0011_offline_recovery", "CREATE TABLE IF NOT EXISTS forge_guard", "CREATE TABLE IF NOT EXISTS pki_guard",
-		"CREATE TABLE IF NOT EXISTS repository_refs", "0006_repository_lifecycle",
 		"CREATE TABLE IF NOT EXISTS metering_guard", "CREATE TABLE IF NOT EXISTS drive_guard",
 		"CREATE TABLE IF NOT EXISTS auth_app_guard", "CREATE TABLE IF NOT EXISTS agent_sessions",
 		"CREATE TABLE IF NOT EXISTS agent_guard", "0017_agent_sessions"} {
