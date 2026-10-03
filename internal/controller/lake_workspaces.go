@@ -6,6 +6,7 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -61,6 +62,9 @@ const (
 	workspaceInternetName    = "allow-internet-https"
 	workspaceDefaultPlanName = "default"
 	workspaceZettaReplicas   = int32(1)
+
+	workspaceWaitingZettaMessage = "waiting for the workspace Zetta cluster"
+	workspaceDeliveringMessage   = "delivering the connection"
 )
 
 var workspacePublicIPExceptions = []string{
@@ -229,8 +233,7 @@ func writeWorkspaceZettaServiceStatus(
 		ObservedGeneration: row.ZettaServiceGeneration,
 	}
 	endpoint := func() string {
-		clusterName := lakeWorkspaceZettaName(lake, row)
-		return fmt.Sprintf("http://%s-zetta.%s.svc.cluster.local:%d", clusterName, workspaceStatus.Namespace, zettaAPIPort)
+		return workspaceZettaEndpoint(lakeWorkspaceZettaName(lake, row), workspaceStatus.Namespace)
 	}
 	switch workspaceStatus.Phase {
 	case WorkspacePhaseReady:
@@ -239,7 +242,7 @@ func writeWorkspaceZettaServiceStatus(
 		status.Endpoint = endpoint()
 	case WorkspacePhasePending:
 		status.Phase = ServicePhaseProvisioning
-		if workspaceStatus.Message == "waiting for the workspace Zetta cluster" {
+		if workspaceStatus.Message == workspaceWaitingZettaMessage || workspaceStatus.Message == workspaceDeliveringMessage {
 			status.Endpoint = endpoint()
 		}
 	case WorkspacePhaseFailed:
@@ -367,8 +370,85 @@ func lakeWorkspaceNamespace(row *LakeWorkspaceRow) (string, error) {
 }
 
 func lakeWorkspaceZettaName(lake *oramav1alpha1.Lake, row *LakeWorkspaceRow) string {
-	hex := strings.ReplaceAll(row.ID, "-", "")
+	return workspaceZettaClusterName(lake, row.ID)
+}
+
+// workspaceZettaClusterName is <lake>-ws-<first 12 hex of the workspace id>, or "" for an id too
+// short to name one.
+func workspaceZettaClusterName(lake *oramav1alpha1.Lake, workspaceID string) string {
+	hex := strings.ReplaceAll(workspaceID, "-", "")
+	if len(hex) < 12 {
+		return ""
+	}
 	return serviceResourceName(lake.Name, "ws-"+hex[:12])
+}
+
+// workspaceZettaEndpoint is the in-cluster client URL of a workspace Zetta.
+func workspaceZettaEndpoint(clusterName, namespace string) string {
+	return fmt.Sprintf("http://%s-zetta.%s.svc.cluster.local:%d", clusterName, namespace, zettaAPIPort)
+}
+
+// workspaceZettaCredential reads the connection of a workspace's Zetta from its namespace: the
+// <slug>.json value lake reads from the services Secret. credential is nil until the cluster is
+// Ready and its admin Secret holds a token; pending is true while a live, Lake-controlled cluster
+// is still on its way there. A missing, foreign or terminating cluster is neither. The services
+// poll writes the credential (it is the one writer of that Secret); the workspace reconciler
+// reports the workspace Ready only once the Secret holds the same bytes.
+func workspaceZettaCredential(
+	ctx context.Context,
+	reader client.Reader,
+	lake *oramav1alpha1.Lake,
+	workspaceID string,
+	namespace string,
+) (credential []byte, pending bool, err error) {
+	clusterName := workspaceZettaClusterName(lake, workspaceID)
+	if clusterName == "" || len(validation.IsDNS1123Label(namespace)) != 0 {
+		return nil, false, nil
+	}
+	cluster := &oramav1alpha1.OramaZettaCluster{}
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: clusterName}, cluster); err != nil {
+		return nil, false, client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(cluster, lake) || cluster.Labels[workspaceLabel] != workspaceID || !cluster.DeletionTimestamp.IsZero() {
+		return nil, false, nil
+	}
+	if cluster.Status.Phase != "Ready" || cluster.Status.ReadyNodes < workspaceZettaReplicas {
+		return nil, true, nil
+	}
+	var admin corev1.Secret
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: clusterName + "-zetta-admin"}, &admin); err != nil {
+		return nil, true, client.IgnoreNotFound(err)
+	}
+	token := string(admin.Data["token"])
+	if token == "" {
+		return nil, true, nil
+	}
+	credential, err = zettaCredential(workspaceZettaEndpoint(clusterName, namespace), token)
+	return credential, false, err
+}
+
+// workspaceConnectionDelivered reports whether lake-<lake>-services holds the workspace Zetta's
+// current connection under its service id. A workspace with no Zetta service row has nothing to
+// deliver.
+func (r *LakeWorkspacesReconciler) workspaceConnectionDelivered(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	row *LakeWorkspaceRow,
+	namespace string,
+) (bool, error) {
+	if row.ZettaServiceID == "" {
+		return true, nil
+	}
+	credential, _, err := workspaceZettaCredential(ctx, r.Client, lake, row.ID, namespace)
+	if err != nil || credential == nil {
+		return false, err
+	}
+	var secret corev1.Secret
+	key := client.ObjectKey{Namespace: lakeNamespace(lake), Name: lakeServicesSecret(lake.Name)}
+	if err := r.apiReader().Get(ctx, key, &secret); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	return bytes.Equal(secret.Data[row.ZettaServiceID], credential), nil
 }
 
 func workspaceLabels(lake *oramav1alpha1.Lake, row *LakeWorkspaceRow) map[string]string {
@@ -429,11 +509,21 @@ func (r *LakeWorkspacesReconciler) reconcileRunningWorkspace(
 		return status, true, err
 	}
 	if cluster.Status.Phase == "Ready" && cluster.Status.ReadyNodes >= workspaceZettaReplicas {
+		// Ready means lake can reach the Zetta: its connection is in the services Secret, which
+		// the services poll writes (operator#264).
+		delivered, err := r.workspaceConnectionDelivered(ctx, lake, row, name)
+		if err != nil {
+			return status, true, err
+		}
+		if !delivered {
+			status.Message = workspaceDeliveringMessage
+			return status, true, nil
+		}
 		status.Phase = WorkspacePhaseReady
 		status.Message = "workspace ready"
 		return status, false, nil
 	}
-	status.Message = "waiting for the workspace Zetta cluster"
+	status.Message = workspaceWaitingZettaMessage
 	return status, true, nil
 }
 

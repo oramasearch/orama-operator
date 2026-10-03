@@ -34,7 +34,8 @@ import (
 // OramaZettaCluster or CloudNativePG Cluster named <lake>-<slug> per present service, deletes absent
 // ones, copies each Ready service's connection into Secret lake-<lake>-services, and writes what it
 // observed to service_status. The workspace reconciler exclusively owns the Zetta service named by
-// workspaces.zetta_service_id, so this poll skips that row. The other kinds of the catalog (decision
+// workspaces.zetta_service_id and its status, so this poll never writes that Zetta; it only copies
+// its connection into the services Secret, of which it is the one writer. The other kinds of the catalog (decision
 // 47: Kafka, ClickHouse, TiDB, Cassandra, Valkey) are written for their upstream operators by
 // lake_service_catalog.go, and SQLite, DuckDB and Polars (decision 47, amended; lake#195), which the
 // operator runs itself behind lake-sqlite, lake-duckdb and lake-polars, go through the same code
@@ -113,7 +114,8 @@ type LakeService struct {
 	Desired    string
 	Generation int64
 	// WorkspaceZetta is true when this service is the Zetta named by its workspace's
-	// zetta_service_id. LakeWorkspacesReconciler is its only resource and status writer.
+	// zetta_service_id. LakeWorkspacesReconciler is its only resource and status writer; the
+	// services poll only delivers its connection into the services Secret.
 	WorkspaceZetta bool
 	// Status is the current service_status row, nil when the operator has written none.
 	Status *LakeServiceStatus
@@ -434,7 +436,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 	workspaceZettaIDs := map[string]bool{}
 	preservedSlugs := map[string]bool{}
 	preservedAliases := map[string]string{}
-	var present []*LakeService
+	var present, workspaceZettas []*LakeService
 	workspaceNamespaces := map[string]bool{}
 	for i := range services {
 		svc := &services[i]
@@ -445,6 +447,7 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 			workspaceZettaIDs[svc.ID] = true
 			preservedSlugs[svc.Slug] = true
 			preservedAliases[svc.ID] = svc.Slug
+			workspaceZettas = append(workspaceZettas, svc)
 			continue
 		}
 		switch svc.Desired {
@@ -502,6 +505,25 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		results[svc.ID] = result
 		if result.credential != nil {
 			credentials[svc.Slug] = result.credential
+		}
+	}
+
+	// The workspace reconciler owns a workspace's Zetta and its status, but this poll is the one
+	// writer of the services Secret, so it delivers that Zetta's connection too: read-only, from the
+	// cluster and admin Secret in the workspace namespace (operator#264). The workspace reconciler
+	// reports the workspace Ready only once the connection is here.
+	for _, svc := range workspaceZettas {
+		credential, pending, err := workspaceZettaCredential(ctx, r.Client, lake, svc.WorkspaceID, svc.WorkspaceNamespace)
+		if err != nil {
+			log.Error(err, "workspace Zetta connection deferred", "service", svc.ID, "workspace", svc.WorkspaceID)
+			changing = true
+			continue
+		}
+		if pending {
+			changing = true
+		}
+		if credential != nil {
+			credentials[svc.Slug] = credential
 		}
 	}
 
@@ -766,16 +788,22 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 	if token == "" {
 		return result, nil
 	}
-	credential, err := json.Marshal(struct {
-		Kind     string `json:"kind"`
-		Endpoint string `json:"endpoint"`
-		Token    string `json:"token"`
-	}{serviceKindZetta, endpoint, token})
+	credential, err := zettaCredential(endpoint, token)
 	if err != nil {
 		return serviceResult{}, err
 	}
 	result.credential = credential
 	return result, nil
+}
+
+// zettaCredential is the <slug>.json connection lake reads for a Zetta: its in-cluster endpoint
+// and admin bearer token.
+func zettaCredential(endpoint, token string) ([]byte, error) {
+	return json.Marshal(struct {
+		Kind     string `json:"kind"`
+		Endpoint string `json:"endpoint"`
+		Token    string `json:"token"`
+	}{serviceKindZetta, endpoint, token})
 }
 
 func newCNPGCluster(namespace, name string) *unstructured.Unstructured {

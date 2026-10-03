@@ -5,7 +5,8 @@ security boundary for customer workloads and credentials; it is not a naming con
 the operator side of [lake#265](https://github.com/oramasearch/lake/issues/265) and
 [operator#190](https://github.com/oramasearch/orama-operator/issues/190). The workspace reconciler
 is the only writer of that workspace's `OramaZettaCluster`; the managed-services poll explicitly
-excludes the service named by `workspaces.zetta_service_id`.
+excludes the service named by `workspaces.zetta_service_id`, except to deliver its connection into
+`lake-<lake>-services`.
 
 ## Control-Postgres contract
 
@@ -76,9 +77,24 @@ the forced private reachability settings remain reconciled normally.
 The managed-services query also reads each joined workspace's `zetta_service_id`. A Zetta row
 whose ID matches is excluded from service resource reconciliation, deletion, status writes and
 the services quota. Every other row in that workspace, including Postgres and additional Zetta
-services, remains managed by the services poll in the workspace namespace. An existing connection
-document for the excluded row is preserved in `lake-<lake>-services`; the services poll does not
-regenerate or remove it.
+services, remains managed by the services poll in the workspace namespace.
+
+### Connection delivery (operator#264)
+
+The services poll is the one writer of `lake-<lake>-services`, so it also delivers the workspace
+Zetta's connection, read-only: once the cluster `<lake>-ws-<12 hex>` in the row's joined workspace
+namespace is Lake-controlled, labelled with the workspace, `Ready` with its one node, and its
+`<cluster>-zetta-admin` Secret holds a token, the poll writes
+`{"kind":"zetta","endpoint":"http://<cluster>-zetta.<namespace>.svc.cluster.local:4800","token":…}`
+under `<slug>.json` and under the service id. While such a cluster is still starting the poll keeps
+its fast (2 s) cadence. A connection that cannot be read keeps the key already there.
+
+The workspace reconciler reports the workspace `Ready` (and its Zetta `service_status` `Ready`) only
+once the Secret holds that same connection under the service id. Until then the workspace stays
+`Pending` with *delivering the connection*, the service `Provisioning` with its endpoint, and both
+reconcilers poll every 2 s. Before this, the poll only preserved keys written by the pre-#219
+adoption path, so every workspace created after 2026-09-29 was `Ready` with no connection and lake
+answered `workspace_not_ready` for it.
 
 ## Namespace security profile
 

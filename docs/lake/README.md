@@ -150,7 +150,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     [lake-sqlite](lake-sqlite.md), [lake-duckdb](lake-duckdb.md) or [lake-polars](lake-polars.md),
     controlled by the Lake; a kind whose upstream operator is not installed fails only its own
     services. The poll excludes the workspace's own `zetta_service_id`, whose cluster and
-    `service_status` are owned by the workspace reconciler. Ready services' connections go to
+    `service_status` are owned by the workspace reconciler, except that it writes that Zetta's
+    connection too (operator#264). Ready services' connections go to
     Secret `lake-<name>-services` (key `<slug>.json`), mounted at `/var/run/lake/services` with
     `LAKE_SERVICE_DIR`; data-plane resources live in the row's joined workspace namespace and
     `service_status` is upserted on change. An absent service is deleted with its
@@ -160,7 +161,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     restricted `<environment>-ws-<id>` namespaces with quota, explicit network flows, localized
     pull credentials and one workspace Zetta. The workspace reconciler is that Zetta's only spec
     writer, uses the services image fallback, preserves creation-time storage, and writes its
-    `service_status`. Services, stores, user agents and synchronized apps with that required
+    `service_status`, Ready only once the services poll has delivered its connection. Services, stores, user agents and synchronized apps with that required
     `workspace_id` also run there. Status writes are generation guarded; stopped rows
     retain data and deleted rows remove the namespace. See [`workspaces.md`](workspaces.md).
 17. **In-cluster builds** (opt-in: `spec.builds.enabled`) — queued rows in the Lake control
