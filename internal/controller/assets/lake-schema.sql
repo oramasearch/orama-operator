@@ -2682,3 +2682,186 @@ CREATE TABLE IF NOT EXISTS forge_record_workspaces_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0054_forge_record_workspaces')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0055_application_user_workspaces: an application's users (lake#353) and organizations
+-- (lake#354) live in the workspace Zetta of the application's workspace
+-- (auth_applications.workspace_id, 0049; docs/api/apps.md, docs/architecture/
+-- workspace-records.md). Lake no longer writes or reads auth_app_users or auth_app_organizations;
+-- the operator's one-shot copy (copy_workspace_records) moves each row into its workspace, with
+-- the claims that keep a pool user's email, and an organization's TAAP identity and name, unique
+-- within the application, and verifies it.
+--
+-- Each row's owner is recorded in workspace_assignments: its application's workspace
+-- (application_workspace), needs_selection while the application has none, or workspace_deleted
+-- when that workspace was deleted (the rows went with it and do not hold the copy back). A user
+-- row's id is md5(application id, newline, user id) as a UUID, since auth_app_users has no id
+-- column. Nothing is dropped here; a later migration drops both tables once the copy has been
+-- verified on every environment. The users rows and the pool's credentials and sessions stay:
+-- they are lake's own accounts (lake#320, lake#322, lake#323 move those).
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations
+                   WHERE version = '0055_application_user_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT r.object_table, r.object_id, a.customer_id,
+                   CASE WHEN w.desired = 'deleted' THEN NULL ELSE a.workspace_id END,
+                   CASE WHEN a.workspace_id IS NULL THEN 'needs_selection'
+                        WHEN w.desired = 'deleted' THEN 'workspace_deleted'
+                        ELSE 'application_workspace' END
+            FROM (SELECT 'auth_app_users' AS object_table,
+                         md5(u.application_id::text || E'\n' || u.user_id::text)::uuid AS object_id,
+                         u.application_id
+                  FROM auth_app_users u
+                  UNION ALL
+                  SELECT 'auth_app_organizations', o.id, o.application_id
+                  FROM auth_app_organizations o) r
+                 JOIN auth_applications a ON a.id = r.application_id
+                 LEFT JOIN workspaces w ON w.id = a.workspace_id
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments WHERE workspace_id IS NULL
+                           AND object_table IN ('auth_app_users', 'auth_app_organizations') LOOP
+            RAISE WARNING 'application % not copied (%): object=%, customer=%',
+                unresolved.object_table, unresolved.outcome, unresolved.object_id,
+                unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS application_user_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0055_application_user_workspaces')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0056_application_credential_workspaces: an application's signing keys (lake#352) and its
+-- lifecycle webhooks with their signing secrets (lake#355) live in the workspace Zetta of the
+-- application's workspace (auth_applications.workspace_id, 0049; docs/api/apps.md,
+-- docs/architecture/workspace-records.md). Lake no longer writes or reads auth_app_signing_keys
+-- or auth_app_webhooks; the operator's one-shot copy (copy_workspace_records) moves each
+-- application's keys (one key ring record per application) and each webhook into that workspace
+-- and verifies it. The private keys and secrets move as the envelopes these tables hold and stay
+-- inside the sealed records; the copy never opens them.
+--
+-- Each key ring's owner (object_id = the application) and each webhook's owner is recorded in
+-- workspace_assignments: the application's workspace (application_workspace), needs_selection
+-- while the application has none (it is reported, and resolved by the copy once the application
+-- is assigned), or workspace_deleted when that workspace is gone (its records went with it and do
+-- not hold the copy back). Nothing is dropped here; a later migration drops both tables once the
+-- copy has been verified on every environment.
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations
+                   WHERE version = '0056_application_credential_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT c.object_table, c.object_id, a.customer_id,
+                   CASE WHEN w.desired = 'deleted' THEN NULL ELSE a.workspace_id END,
+                   CASE WHEN a.workspace_id IS NULL THEN 'needs_selection'
+                        WHEN w.desired = 'deleted' THEN 'workspace_deleted'
+                        ELSE 'application_workspace' END
+            FROM (SELECT DISTINCT 'auth_app_signing_keys' AS object_table,
+                         application_id AS object_id, application_id
+                  FROM auth_app_signing_keys
+                  UNION ALL
+                  SELECT 'auth_app_webhooks', id, application_id FROM auth_app_webhooks) c
+                 JOIN auth_applications a ON a.id = c.application_id
+                 LEFT JOIN workspaces w ON w.id = a.workspace_id
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments WHERE workspace_id IS NULL
+                           AND object_table IN ('auth_app_signing_keys', 'auth_app_webhooks') LOOP
+            RAISE WARNING 'application credential not copied (%): table=%, object=%, customer=%',
+                unresolved.outcome, unresolved.object_table, unresolved.object_id,
+                unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS application_credential_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0056_application_credential_workspaces')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0057_secret_workspaces: secrets live in the workspace Zetta of their mount (lake#328, #329,
+-- #330, #331, #332; docs/api/secrets.md, docs/architecture/workspace-records.md). A mount now
+-- belongs to one workspace of its customer's space, chosen at creation (create_secret_mount takes
+-- workspace_id) and never changed. The mount, its secret entries and versions, its named
+-- encryption keys and every data key are sealed records of that workspace's Zetta
+-- (lake_secrets_mounts, lake_secrets_entries, lake_secrets_versions,
+-- lake_secrets_encryption_keys, lake_secrets_data_keys); lake no longer writes or reads the five
+-- 0009 tables, which the operator's one-shot copy (copy_workspace_records) moves and verifies.
+--
+-- secret_mount_routes is the content-free route that remains: which workspace holds which mount,
+-- with the space and organization the policy graph needs. It names no mount name, secret name,
+-- value or key. The envelope is unchanged: LAKE_INSTANCE_KEK wraps the customer KEK (keystore,
+-- lake#324), the customer KEK wraps each data key, and the data keys seal the secrets. keystore
+-- gains the KEK a rotation replaced, kept until every workspace data key has been rewrapped.
+-- secrets_dynamic_leases stays (lake#362); it loses its foreign key to secrets_mounts, since a new
+-- mount has no row there.
+--
+-- A legacy mount is owned by the only live workspace of its space (sole_workspace) and gets its
+-- route here; every other mount is needs_selection and is reported. Its entries, versions, keys
+-- and data keys go where it goes and have no assignment rows of their own. Nothing is dropped; a
+-- later migration drops the five tables once the copy has been verified on every environment.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS secret_mount_routes (
+    mount_id        uuid        PRIMARY KEY,
+    customer_id     uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    organization_id uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    workspace_id    uuid        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS secret_mount_routes_workspace_idx
+    ON secret_mount_routes (customer_id, workspace_id, created_at DESC);
+
+-- A route names a live workspace of its own space; neither column changes afterwards.
+DROP TRIGGER IF EXISTS secret_mount_route_workspace_routing ON secret_mount_routes;
+CREATE TRIGGER secret_mount_route_workspace_routing BEFORE INSERT OR UPDATE ON secret_mount_routes
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+
+ALTER TABLE keystore ADD COLUMN IF NOT EXISTS previous_wrapped_key bytea;
+ALTER TABLE keystore ADD COLUMN IF NOT EXISTS previous_version integer;
+
+ALTER TABLE secrets_dynamic_leases DROP CONSTRAINT IF EXISTS secrets_dynamic_leases_mount_id_fkey;
+
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0057_secret_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'secrets_mounts', m.id, m.customer_id, w.id,
+                   CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
+            FROM secrets_mounts m LEFT JOIN workspaces w ON w.customer_id = m.customer_id
+                 AND w.desired <> 'deleted'
+                 AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = m.customer_id
+                      AND w2.desired <> 'deleted') = 1
+            ON CONFLICT DO NOTHING;
+        INSERT INTO secret_mount_routes (mount_id, customer_id, organization_id, workspace_id)
+            SELECT m.id, m.customer_id, m.organization_id, a.workspace_id
+            FROM secrets_mounts m JOIN workspace_assignments a
+                 ON a.object_table = 'secrets_mounts' AND a.object_id = m.id
+                 JOIN workspaces w ON w.id = a.workspace_id AND w.customer_id = m.customer_id
+                 AND w.desired <> 'deleted'
+            ON CONFLICT (mount_id) DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments
+                           WHERE workspace_id IS NULL AND object_table = 'secrets_mounts' LOOP
+            RAISE WARNING 'secret mount not copied (%): mount=%, customer=%',
+                unresolved.outcome, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS secret_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0057_secret_workspaces')
+    ON CONFLICT DO NOTHING;
