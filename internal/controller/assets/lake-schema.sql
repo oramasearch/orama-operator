@@ -2523,3 +2523,61 @@ CREATE TABLE IF NOT EXISTS drop_ask_messages_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0050_drop_ask_messages')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0051_repository_workspaces: a repository belongs to one workspace (lake#315, part 1: routing).
+-- repositories.workspace_id is a content-free routing pointer, like stores.workspace_id (0044):
+-- it names the workspace whose Zetta will hold the repository's metadata and content when they
+-- move (lake#315 part 2, lake#341 for forge records, lake#380 for the store). create_repository,
+-- import_repository and import_github_repository require it. Nothing moves here.
+--
+-- A repository of a space with exactly one live workspace is assigned it; every other repository
+-- is recorded as needs_selection and reported. New repositories go through
+-- enforce_workspace_routing (trigger repository_workspace_routing): the workspace must be a live
+-- workspace of the repository's own space, and neither the workspace nor the space changes
+-- afterwards, so a repository is no longer transferred between spaces. As for 0038, an unresolved
+-- row is assigned only by an explicitly reviewed migration.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS workspace_id uuid REFERENCES workspaces(id);
+CREATE INDEX IF NOT EXISTS repositories_workspace_idx ON repositories (workspace_id, created_at);
+
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0051_repository_workspaces') THEN
+        -- Earlier repositories name no workspace. Assign them only where the space has exactly one
+        -- live workspace, and record every outcome, tombstoned repositories included, as 0044
+        -- did. The routing trigger below would refuse the assignment as a change of workspace; it
+        -- is created again afterwards.
+        DROP TRIGGER IF EXISTS repository_workspace_routing ON repositories;
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'repositories', o.id, o.customer_id, w.id,
+                   CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
+            FROM repositories o LEFT JOIN workspaces w ON w.customer_id = o.customer_id
+                 AND w.desired <> 'deleted'
+                 AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = o.customer_id
+                      AND w2.desired <> 'deleted') = 1
+            WHERE o.workspace_id IS NULL ON CONFLICT DO NOTHING;
+        UPDATE repositories o SET workspace_id = a.workspace_id FROM workspace_assignments a
+            WHERE a.object_table = 'repositories' AND a.object_id = o.id
+              AND o.workspace_id IS NULL AND a.workspace_id IS NOT NULL;
+        FOR unresolved IN SELECT * FROM workspace_assignments
+                           WHERE workspace_id IS NULL AND object_table = 'repositories' LOOP
+            RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%',
+                unresolved.object_table, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+-- New repositories must name a live workspace of their own space; neither column changes
+-- afterwards.
+DROP TRIGGER IF EXISTS repository_workspace_routing ON repositories;
+CREATE TRIGGER repository_workspace_routing BEFORE INSERT OR UPDATE ON repositories
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+
+CREATE TABLE IF NOT EXISTS repository_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0051_repository_workspaces')
+    ON CONFLICT DO NOTHING;
