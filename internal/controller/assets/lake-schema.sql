@@ -2249,3 +2249,42 @@ CREATE TABLE IF NOT EXISTS store_workspaces_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0044_store_workspaces')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0045_ask_message_workspaces: Ask Orama conversations live in the workspace Zetta that owns them
+-- (lake#370, docs/architecture/workspace-records.md). Lake no longer writes or reads
+-- ask_messages; the operator's one-shot copy (copy_workspace_records) moves each row into its
+-- workspace and verifies it. This migration only records each row's owner: a space with exactly
+-- one live workspace owns its rows, every other row is recorded as needs_selection, and a row with
+-- no space is reported. No column is added and nothing is dropped; a later migration drops the
+-- table once the copy has been verified on every environment.
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0045_ask_message_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'ask_messages', m.id, m.customer_id, w.id,
+                   CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
+            FROM ask_messages m LEFT JOIN workspaces w ON w.customer_id = m.customer_id
+                 AND w.desired <> 'deleted'
+                 AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = m.customer_id
+                      AND w2.desired <> 'deleted') = 1
+            WHERE m.customer_id IS NOT NULL ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments
+                           WHERE workspace_id IS NULL AND object_table = 'ask_messages' LOOP
+            RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%',
+                unresolved.object_table, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+        FOR unresolved IN SELECT id FROM ask_messages WHERE customer_id IS NULL LOOP
+            RAISE WARNING 'ask message has no space and is not copied: object=%', unresolved.id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS ask_message_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0045_ask_message_workspaces')
+    ON CONFLICT DO NOTHING;
