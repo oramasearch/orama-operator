@@ -10,7 +10,7 @@ the operator runs itself — [SQLite](#sqlite-decision-47-amended),
 [DuckDB and Polars](#duckdb-and-polars-lake195)), writes what it observed to `service_status`, and
 hands lake each service's connection through one mounted Secret. The exception is the Zetta named
 by a workspace's `zetta_service_id`: the workspace reconciler owns that cluster and its
-`service_status`, while this poll skips it. The authoritative contract is
+`service_status`, while this poll only delivers its connection into the services Secret. The authoritative contract is
 lake's
 [`docs/control-plane/services.md`](https://github.com/oramasearch/lake/blob/aee5cdada63cb6fed886c67a6fff86123b742bf5/docs/control-plane/services.md)
 (liquid-bridge decisions 46 and 47, amended; lake#195; lake branch `feat/duckdb-polars-kinds`); this page is the
@@ -121,8 +121,12 @@ environment names remain authoritative; each child reports ignored collisions th
 
 `listServicesSQL` selects `w.zetta_service_id` beside every service row. When a Zetta service ID
 matches, the services poll does not create, update, delete or write status for that row, and does
-not count its cluster against `spec.services.maxServices`. It preserves an existing slug connection
-and ID alias in the services Secret without minting a replacement. The workspace reconciler owns
+not count its cluster against `spec.services.maxServices`. It does write that Zetta's connection
+(slug key and ID alias) into the services Secret, read from the workspace cluster and its admin
+Secret once the cluster is Ready, because this poll is the Secret's one writer; the workspace
+reconciler reports Ready only once the connection is there
+([operator#264](https://github.com/oramasearch/orama-operator/issues/264);
+[`workspaces.md`](workspaces.md#connection-delivery-operator264)). The workspace reconciler owns
 the child spec, creation-time storage and comparison-gated `service_status` endpoint.
 
 Anything else already holding the name fails the service and is never modified or deleted:

@@ -245,17 +245,46 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 	if err := kube.Status().Update(ctx, &cluster); err != nil {
 		t.Fatal(err)
 	}
+	// A Ready cluster is not a Ready workspace until lake can reach it: the services poll must
+	// have delivered its connection (operator#264).
+	if changing := reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows); !changing {
+		t.Fatal("workspace without a delivered connection stopped polling")
+	}
+	if store.rows[0].Phase != WorkspacePhasePending || store.rows[0].Message != workspaceDeliveringMessage {
+		t.Fatalf("undelivered workspace status = %+v", store.rows[0])
+	}
+	if got := store.serviceUpserts[len(store.serviceUpserts)-1]; got.Phase != ServicePhaseProvisioning ||
+		got.Message != workspaceDeliveringMessage ||
+		got.Endpoint != "http://prod-ws-123e4567e89b-zetta.prod-ws-123e4567e89b.svc.cluster.local:4800" {
+		t.Fatalf("undelivered service status = %+v", got)
+	}
+	if err := kube.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: testWorkspaceName + "-zetta-admin", Namespace: testWorkspaceName},
+		Data:       map[string][]byte{"token": []byte("workspace-admin-token")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	credential, pending, err := workspaceZettaCredential(ctx, kube, lake, testWorkspaceID, testWorkspaceName)
+	if err != nil || pending || credential == nil {
+		t.Fatalf("workspace credential = %s, pending %v, err %v", credential, pending, err)
+	}
+	if err := kube.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: lakeServicesSecret(lake.Name), Namespace: lakeNamespace(lake)},
+		Data:       map[string][]byte{testWorkspaceZettaID: credential},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if changing := reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows); changing {
 		t.Fatal("ready workspace remained changing")
 	}
-	if store.rows[0].Phase != WorkspacePhaseReady || store.writes != 2 {
+	if store.rows[0].Phase != WorkspacePhaseReady || store.writes != 3 {
 		t.Fatalf("ready status = %+v, writes %d", store.rows[0], store.writes)
 	}
 	if got := store.serviceUpserts[len(store.serviceUpserts)-1]; got.Phase != ServicePhaseReady || got.Message != "service ready" {
 		t.Fatalf("ready service status = %+v", got)
 	}
 	serviceWrites := len(store.serviceUpserts)
-	if changing := reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows); changing || store.writes != 2 {
+	if changing := reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows); changing || store.writes != 3 {
 		t.Fatalf("steady workspace changed or rewrote status: changing %v writes %d", changing, store.writes)
 	}
 	if len(store.serviceUpserts) != serviceWrites {
