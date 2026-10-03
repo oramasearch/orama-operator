@@ -855,6 +855,7 @@ UNION ALL SELECT 'drop_ask_messages_guard=' || count(*) FROM drop_ask_messages_g
 UNION ALL SELECT 'repository_workspaces_guard=' || count(*) FROM repository_workspaces_guard
 UNION ALL SELECT 'metering_workspaces_guard=' || count(*) FROM metering_workspaces_guard
 UNION ALL SELECT 'forge_record_workspaces_guard=' || count(*) FROM forge_record_workspaces_guard
+UNION ALL SELECT 'secret_workspaces_guard=' || count(*) FROM secret_workspaces_guard
 UNION ALL SELECT 'drive_share_link_workspaces_guard=' || count(*) FROM drive_share_link_workspaces_guard
 UNION ALL SELECT 'stream_owner_workspaces_guard=' || count(*) FROM stream_owner_workspaces_guard
 UNION ALL SELECT 'opportunity_workspaces_guard=' || count(*) FROM opportunity_workspaces_guard
