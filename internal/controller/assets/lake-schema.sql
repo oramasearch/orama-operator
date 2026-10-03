@@ -3060,3 +3060,121 @@ CREATE TABLE IF NOT EXISTS platform_workspaces_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0060_platform_workspaces')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0061_application_authorization_code_workspaces: an application's one-use OIDC authorization
+-- codes (lake#363) live in the workspace Zetta of the application's workspace
+-- (auth_applications.workspace_id, 0049; docs/api/apps.md, docs/architecture/workspace-records.md),
+-- in the collection lake_auth_app_authorization_codes: issued with if_absent, redeemed by a delete
+-- at the revision read, so a code is redeemed at most once, and expired by the collection's
+-- five-minute retention. Lake no longer writes or reads auth_app_authorization_codes; the
+-- operator's one-shot copy (copy_workspace_records) moves each live code into that workspace and
+-- verifies it. (app_authorization_codes, lake's own protected-app forward-auth handoff, is
+-- multitenancy and stays.)
+--
+-- Only live codes (unused, unexpired) have an owner to record; used and expired codes are never
+-- copied. Each live code's owner is recorded in workspace_assignments under md5(code_hash) as a
+-- UUID: the application's workspace (application_workspace), needs_selection while the application
+-- has none (reported, and resolved by the copy once the application is assigned), or
+-- workspace_deleted when that workspace is gone. Nothing is dropped here; a later migration drops
+-- the table once the copy has been verified on every environment.
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations
+                   WHERE version = '0061_application_authorization_code_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'auth_app_authorization_codes', md5(c.code_hash)::uuid, a.customer_id,
+                   CASE WHEN w.desired = 'deleted' THEN NULL ELSE a.workspace_id END,
+                   CASE WHEN a.workspace_id IS NULL THEN 'needs_selection'
+                        WHEN w.desired = 'deleted' THEN 'workspace_deleted'
+                        ELSE 'application_workspace' END
+            FROM auth_app_authorization_codes c
+                 JOIN auth_applications a ON a.id = c.application_id
+                 LEFT JOIN workspaces w ON w.id = a.workspace_id
+            WHERE c.used_at IS NULL AND c.expires_at > now()
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments WHERE workspace_id IS NULL
+                           AND object_table = 'auth_app_authorization_codes' LOOP
+            RAISE WARNING 'application authorization code not copied (%): object=%, customer=%',
+                unresolved.outcome, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS application_authorization_code_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0061_application_authorization_code_workspaces')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0062_agent_task_workspaces: what a person or an agent wrote for an agent task (its request body,
+-- the agent's messages and its answer) lives in the workspace Zetta of the task's workspace
+-- (lake#374, lake#375; agent_tasks.workspace_id, 0038; docs/api/agent-bus.md, docs/architecture/
+-- workspace-records.md), one sealed record per task in lake_agent_tasks. Lake no longer writes or
+-- reads agent_tasks.body, agent_task_status.message or agent_task_status.result; the operator's
+-- one-shot copy (copy_workspace_records, collection agent_tasks) moves each task's content into
+-- its workspace and verifies it.
+--
+-- agent_tasks and agent_task_status stay as the content-free dispatch rows the agent bus, the
+-- claim and its lease (0042) use without reading a workspace: ids, space, workspace, agent, kind,
+-- conversation, scopes, deadline, who asked, phase, the claim's credential hash, lease, attempts
+-- and the pending-notice flag. Two columns are added:
+--   agent_tasks.parent_task_id: the task whose agent asked for this one (lake#451), which used to
+--     be read out of the body; it routes a delegated turn's progress to the asking turn.
+--   agent_task_status.notice: lake's own notice for a task it reclaimed or failed (a retry, a
+--     final failure after three expiries, or nobody picking it up), never text a person or an
+--     agent wrote. It outranks the agent's message until the agent's next event clears it.
+-- Existing rows get both from what they hold. New rows leave body '{}', message '' and result
+-- null.
+--
+-- Each task that still holds content has its owner recorded in workspace_assignments under
+-- object_table agent_task_content (0038 recorded the tasks' routing under agent_tasks): its own
+-- workspace (task_workspace), needs_selection when it names none, or workspace_deleted when that
+-- workspace is gone (its records went with it). Nothing is dropped here; a later migration clears
+-- or drops the three content columns once the copy has been verified on every environment.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS parent_task_id uuid;
+ALTER TABLE agent_task_status ADD COLUMN IF NOT EXISTS notice text NOT NULL DEFAULT '';
+
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0062_agent_task_workspaces') THEN
+        UPDATE agent_tasks SET parent_task_id = (body->>'parent_task_id')::uuid
+            WHERE parent_task_id IS NULL
+              AND body->>'parent_task_id' ~*
+                  '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+        -- Lake's own notices, as the bus loop wrote them into message (0042).
+        UPDATE agent_task_status SET notice = message
+            WHERE notice = ''
+              AND (message LIKE 'the agent stopped responding%'
+                   OR message LIKE 'No agent picked this up within % seconds.');
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'agent_task_content', t.id, t.customer_id,
+                   CASE WHEN w.desired <> 'deleted' THEN w.id END,
+                   CASE WHEN t.workspace_id IS NULL OR w.id IS NULL THEN 'needs_selection'
+                        WHEN w.desired = 'deleted' THEN 'workspace_deleted'
+                        ELSE 'task_workspace' END
+            FROM agent_tasks t LEFT JOIN agent_task_status ts ON ts.task_id = t.id
+                 LEFT JOIN workspaces w ON w.id = t.workspace_id AND w.customer_id = t.customer_id
+            WHERE t.body <> '{}'::jsonb OR COALESCE(ts.message, '') <> ''
+                  OR COALESCE(ts.result, 'null'::jsonb) <> 'null'::jsonb
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments WHERE workspace_id IS NULL
+                           AND object_table = 'agent_task_content' LOOP
+            RAISE WARNING 'agent task content not copied (%): task=%, customer=%',
+                unresolved.outcome, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS agent_task_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0062_agent_task_workspaces')
+    ON CONFLICT DO NOTHING;
