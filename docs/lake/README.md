@@ -465,21 +465,18 @@ once and that three more reconciles leave the template and generation unchanged.
 | ReadWriteOnce, one replica (the AKS `Lake/prod` store, `managed-csi`) | `Recreate` by default: the old pod stops, then the new one starts. There is a restart gap. With `spec.rollout.overlapOnSharedStore: true` the Lake surges like the row above, with the co-location described below. |
 | ReadWriteOncePod | Always `Recreate`. A second pod can never mount the claim, so a surge would never finish. |
 
-**Why the single-replica ReadWriteOnce default is `Recreate`.** A surge on that store means two lake
-processes open the same store root for the overlap. That store holds data that is not backed up
-anywhere else, and nothing yet proves that two processes can safely share it. liquid's per-operation
-locks (`src/data.cpp`, `LOCK_EX | LOCK_NB`, which answers busy) and the transparency log's append lock
-serialize single operations. They do not prove that lake's caches, in-memory state and multi-step
-writes stay correct beside a second process. Before setting `overlapOnSharedStore` on a Lake whose
-store has no other copy, prove all of the following:
-
-- every write path in lake and libliquid that touches the store root either holds a cross-process
-  lock or is safe to interleave with another process's writes;
-- no state cached in a process (open stores, indexes, transparency checkpoints, sequence counters)
-  goes stale or gets overwritten when another process writes;
-- a concurrent-writer test runs two lake processes on one store root under write load across a
-  rollout and then verifies the store end to end;
-- a backup or a tested restore exists for that store, so a failure is recoverable.
+**Why `overlapOnSharedStore` is an opt-in, and when it is safe.** A surge on a single-replica
+ReadWriteOnce store starts a second lake process on the same store root while the first drains.
+Two processes writing one liquid store corrupt it (lake#467). Since lake#479 (lake PR #480, lake
+`c7d24d6` and later) lake never lets that happen: the new process binds and reports Ready while it
+waits (bounded, `LAKE_STORE_OWNER_WAIT_SECONDS`, default 90 s) for the old one to release
+`.lake-owner.lock` and liquid's `store.lock` (liquid#321), holding store-touching requests rather
+than answering 503; the old process drains (`LAKE_DRAIN_SECONDS`, default 20 s) and releases both.
+Older lake images refuse to start beside a running lake, so the surge would never finish: set the
+opt-in only on a Lake whose image includes lake#479. It stays opt-in so a Lake on an older image keeps
+`Recreate`. Dev (`Lake/prod`) runs with it on since 2026-10-03; a rollout restart there answered 129
+of 129 one-second polls with 200 (slowest held request 29.5 s; the successor waited 23 s and opened
+the store in 13 s).
 
 With `Recreate`, the probes and drain below still shorten the gap, and Lake `Ready` stays honest.
 
@@ -487,10 +484,10 @@ With `Recreate`, the probes and drain below still shorten the gap, and Lake `Rea
 
 | Setting | Value | Why |
 |---|---|---|
-| Readiness | `GET /readyz`, every 5 s, timeout 2 s, 3 failures | lake answers 200 only when its control store answers a ping, so traffic reaches a new pod only when it can serve. |
+| Readiness | `GET /readyz`, every 5 s, timeout 2 s, 3 failures | lake answers 200 when its control store answers and its store root is open, or while a live predecessor holds the store (it then holds store-touching requests until the hand-off); 503 on a cold open without a predecessor, after a failure, and after SIGTERM. |
 | Startup | `GET /healthz`, every 5 s, 60 failures | Holds liveness off for up to five minutes while a cold start opens the store. |
 | Liveness | `GET /healthz`, every 20 s, timeout 3 s, 3 failures | Process liveness only. |
-| preStop | kubelet `sleep` action, 15 s | lake stops its HTTP server at once on SIGTERM, so the drain is this delay: the endpoint controller and nginx drop the pod while requests already routed to it finish. The built-in action needs no shell in the image. |
+| preStop | kubelet `sleep` action, 15 s | Lets the endpoint controller and nginx drop the pod before lake gets SIGTERM; lake then reports 503 on `/readyz`, drains in-flight requests for up to `LAKE_DRAIN_SECONDS` (20 s), closes its stores and releases the store locks. 15 + 20 s fits the 45 s grace period. The built-in action needs no shell in the image. |
 | `terminationGracePeriodSeconds` | 45 | Covers the drain plus lake's shutdown. |
 
 **Co-location with the opt-in.** A ReadWriteOnce volume can be mounted by several pods only on the
