@@ -2639,3 +2639,46 @@ CREATE TABLE IF NOT EXISTS metering_workspaces_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0053_metering_workspaces')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0054_forge_record_workspaces: forge records (issues, issue comments, reviews, review comments,
+-- releases, webhooks, webhook deliveries, branch protection rules, exports and GitHub import
+-- reports) live in the workspace Zetta of their repository's workspace (lake#341,
+-- docs/api/forge.md, docs/architecture/workspace-records.md). Lake no longer writes or reads
+-- forge_records; the operator's one-shot copy (copy_workspace_records) moves each row into its
+-- workspace and verifies it.
+--
+-- Each row's owner is its repository's workspace (repositories.workspace_id, 0051), recorded in
+-- workspace_assignments as repository_workspace. A row whose repository has no workspace yet is
+-- needs_selection and is reported; the copy assigns it once the repository is assigned. A row
+-- whose repository's workspace was deleted is workspace_deleted: it went with that workspace and
+-- does not hold the copy back. Nothing is dropped here; a later migration drops forge_records once
+-- the copy has been verified on every environment.
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0054_forge_record_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'forge_records', f.id, r.customer_id,
+                   CASE WHEN w.desired = 'deleted' THEN NULL ELSE r.workspace_id END,
+                   CASE WHEN r.workspace_id IS NULL THEN 'needs_selection'
+                        WHEN w.desired = 'deleted' THEN 'workspace_deleted'
+                        ELSE 'repository_workspace' END
+            FROM forge_records f JOIN repositories r ON r.id = f.repository_id
+                 LEFT JOIN workspaces w ON w.id = r.workspace_id
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments
+                           WHERE workspace_id IS NULL AND object_table = 'forge_records' LOOP
+            RAISE WARNING 'forge record not copied (%): object=%, customer=%',
+                unresolved.outcome, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS forge_record_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0054_forge_record_workspaces')
+    ON CONFLICT DO NOTHING;
