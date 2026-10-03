@@ -3178,3 +3178,134 @@ CREATE TABLE IF NOT EXISTS agent_task_workspaces_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0062_agent_task_workspaces')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0063_audit_workspaces: lake's audit splits by subject (decision 52, lake#317, lake#318,
+-- docs/api/audit.md#which-log). Control-plane and identity events stay in this table's central
+-- hash chain. Events about a workspace's data go to that workspace's own audit, the sealed
+-- collection lake_audit_events of its Zetta, chained there; lake no longer writes them here.
+--
+-- The events recorded here before the split that are about a workspace's data are copied there
+-- by the operator's one-shot copy (copy_workspace_records, collection audit_events), keeping
+-- their id, signature and central predecessor. Their owners are recorded in workspace_assignments
+-- (object_table 'audit_events'): an event whose action is one of the workspace capabilities below
+-- (or a push, a branch protection decision or a deployment phase), and that was not refused for
+-- want of authority, goes to the workspace it names, found from its details (`workspace_id`,
+-- `repository_id`, `repository`) or its object (a repository, app, build, secret mount or agent
+-- task). event_workspace: copied there. workspace_deleted: that workspace is gone, so the event
+-- stays here. Every other event stays here, and the count is reported: control-plane events, and
+-- workspace events that do not name their workspace (most capability events recorded before the
+-- split name only `capability/<name>`). Nothing moves out of this table
+-- here; audit_events is append-only, and a later migration may replace a copied row's content by
+-- a digest-only row so the central chain still verifies.
+--
+-- audit_retention stays: it governs this central log (lake#318). A workspace's audit is kept
+-- until the workspace is deleted (the collection's retention_ms is 0).
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    tally record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0063_audit_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'audit_events', r.id, w.customer_id,
+                   CASE WHEN w.desired = 'deleted' THEN NULL ELSE w.id END,
+                   CASE WHEN w.desired = 'deleted' THEN 'workspace_deleted'
+                        ELSE 'event_workspace' END
+            FROM (SELECT e.id, e.customer_id, COALESCE(
+                      CASE WHEN e.details->>'workspace_id' ~ '^[0-9a-f-]{36}$'
+                           THEN (e.details->>'workspace_id')::uuid END,
+                      (SELECT p.workspace_id FROM repositories p
+                        WHERE p.id = substring(e.object FROM '^repository/([0-9a-f-]{36})')::uuid),
+                      (SELECT p.workspace_id FROM repositories p
+                        WHERE p.id::text = COALESCE(e.details->>'repository_id',
+                                                    e.details->>'repository')),
+                      (SELECT a.workspace_id FROM apps a
+                        WHERE a.id = substring(e.object FROM '^app/([0-9a-f-]{36})')::uuid),
+                      (SELECT b.workspace_id FROM builds b
+                        WHERE b.id = substring(e.object FROM '^build/([0-9a-f-]{36})')::uuid),
+                      (SELECT m.workspace_id FROM secret_mount_routes m
+                        WHERE m.mount_id =
+                              substring(e.object FROM '^secret_mount/([0-9a-f-]{36})')::uuid),
+                      (SELECT t.workspace_id FROM agent_tasks t
+                        WHERE t.id = substring(e.object FROM '^agent_task/([0-9a-f-]{36})')::uuid))
+                      AS workspace_id
+                  FROM audit_events e
+                  WHERE e.action = ANY (ARRAY[
+            'agent_turn', 'app_logs', 'application_jwks', 'attach_model_provenance',
+            'bind_service_to_app', 'browse_stream', 'build_app', 'build_image', 'build_logs',
+            'cancel_build', 'change_diff', 'claim_agent_task', 'commit_repository_files',
+            'compare_runs', 'confirm_solution', 'connect_service', 'create_agent_from_proposal',
+            'create_app', 'create_application_organization', 'create_application_webhook',
+            'create_domain', 'create_drive_folder', 'create_drive_share_link',
+            'create_encryption_key', 'create_issue', 'create_issue_comment', 'create_pipeline',
+            'create_projects_from_opportunities', 'create_release', 'create_repository',
+            'create_review', 'create_review_comment', 'create_secret_mount', 'create_service',
+            'create_service_and_bind_to_app', 'create_store', 'create_stream', 'create_webhook',
+            'decrypt', 'delete_app', 'delete_application_organization', 'delete_application_user',
+            'delete_domain', 'delete_drive_path', 'delete_repository', 'delete_secret_versions',
+            'delete_service', 'delete_store', 'delete_stream', 'delete_stream_messages',
+            'deliver_webhook', 'deploy_app', 'deployment_phase', 'derive_encryption_key',
+            'destroy_secret_versions', 'diff_drive_versions', 'dismiss_opportunity',
+            'download_drive_file', 'download_drive_share_link', 'drive_browse', 'drive_conflict',
+            'drive_effective_access', 'drive_history', 'drive_preview', 'edit_pipeline',
+            'encrypt', 'environment_logs', 'export_application_user', 'export_repository',
+            'find_missing', 'get_agent_task', 'get_app', 'get_application', 'get_artifact',
+            'get_ask_conversation', 'get_build', 'get_change', 'get_dataset',
+            'get_encryption_key', 'get_environment', 'get_experiment_analysis',
+            'get_experiment_study', 'get_model', 'get_pipeline', 'get_repository',
+            'get_run_metrics', 'get_secret_mount', 'get_stream', 'hmac',
+            'import_github_repository', 'import_repository', 'issue_application_jwt',
+            'launch_agent', 'list_agent_launches', 'list_agent_schedules',
+            'list_application_organizations', 'list_application_users',
+            'list_application_webhook_events', 'list_application_webhooks', 'list_apps',
+            'list_artifacts', 'list_branch_protections', 'list_builds', 'list_changes',
+            'list_conflicts', 'list_datasets', 'list_deployments', 'list_encryption_keys',
+            'list_environments', 'list_experiment_trials', 'list_experiments', 'list_exports',
+            'list_issue_comments', 'list_issues', 'list_opportunities', 'list_releases',
+            'list_repositories', 'list_review_comments', 'list_reviews', 'list_runs',
+            'list_secret_mounts', 'list_stores', 'list_streams', 'list_webhook_deliveries',
+            'list_webhooks', 'map_review_anchors', 'move_drive_path', 'predict',
+            'prepare_repository_upload', 'preview_drive_share_link', 'promote_trial',
+            'publish_agent_event', 'publish_app_event', 'publish_build_event',
+            'publish_stream_message', 'pull', 'push', 'push_change', 'put_secret', 'read_chunk',
+            'read_secret', 'receive_agent_events', 'receive_agent_tasks', 'receive_app_events',
+            'receive_build_events', 'reference_update', 'refs', 'register_application',
+            'reindex_artifacts', 'rename_repository', 'replicate_repository', 'repository_file',
+            'repository_refs', 'repository_tree', 'resolve_conflict', 'resolve_dataset_file',
+            'resolve_drive_share_link', 'resolve_model_file', 'restart_app',
+            'restore_drive_version', 'retry_application_webhook', 'retry_webhook_delivery',
+            'revoke_drive_share_link', 'rewrap', 'rollback_app', 'rotate_application_signing_key',
+            'rotate_encryption_key', 'run_pipeline', 'scale_app', 'schedule_agent',
+            'search_index', 'secret_metadata', 'service_connection', 'set_app_auth',
+            'set_app_env', 'set_app_zetta_binding', 'set_branch_protection',
+            'set_environment_env', 'set_repository_visibility', 'share_drive_folder', 'sign',
+            'stage_repository_file', 'start_app', 'start_solution', 'start_study',
+            'stop_agent_launch', 'stop_app', 'stop_experiment_trial', 'stop_study',
+            'store_connection', 'suspend_application_user', 'tail_experiment_events',
+            'transfer_repository', 'unbind_service_from_app', 'undelete_secret_versions',
+            'unschedule_agent', 'unset_app_env', 'unset_environment_env',
+            'update_application_organization', 'update_application_theme', 'update_issue',
+            'update_review', 'update_stream', 'update_stream_message', 'upload_chunks',
+            'upload_drive_files', 'verify', 'verify_model_provenance', 'workspace_act',
+            'workspace_openapi', 'workspace_query', 'workspace_sql'])
+                    AND (e.outcome <> 'denied' OR e.kind LIKE 'forge.branch_protection.%')) r
+            JOIN workspaces w ON w.id = r.workspace_id
+                             AND (r.customer_id IS NULL OR w.customer_id = r.customer_id)
+            ON CONFLICT DO NOTHING;
+        FOR tally IN SELECT outcome, count(*) AS events FROM workspace_assignments
+                      WHERE object_table = 'audit_events' GROUP BY outcome ORDER BY outcome LOOP
+            RAISE WARNING 'audit events (%): %', tally.outcome, tally.events;
+        END LOOP;
+        RAISE WARNING 'audit events staying central: %',
+            (SELECT count(*) FROM audit_events e
+              WHERE NOT EXISTS (SELECT 1 FROM workspace_assignments a
+                                 WHERE a.object_table = 'audit_events' AND a.object_id = e.id));
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS audit_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0063_audit_workspaces')
+    ON CONFLICT DO NOTHING;
