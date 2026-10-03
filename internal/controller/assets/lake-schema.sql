@@ -2581,3 +2581,61 @@ CREATE TABLE IF NOT EXISTS repository_workspaces_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0051_repository_workspaces')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0053_metering_workspaces: repository usage lives in the workspace Zetta of the repository's
+-- workspace (lake#348, lake#349, docs/api/metering.md, docs/architecture/workspace-records.md).
+-- Lake no longer writes or reads metering_usage or metering_build_records: transfer is counted
+-- in memory and added to each workspace's hourly record off the request path, every build
+-- result is one record in its repository's workspace, and repository storage is measured live on
+-- each read and not recorded per hour (lake#380 makes stores per workspace). The operator's
+-- one-shot copy (copy_workspace_records) moves each row's transfer and each build record into
+-- its workspace and verifies it.
+--
+-- This migration only records each row's owner: a space with exactly one live workspace owns its
+-- rows; every other row is recorded as needs_selection and reported. A usage row's id is
+-- md5(customer_id, hour as YYYY-MM-DDTHH:MI:SSZ) and a build row's md5(customer_id, result_id),
+-- joined by a newline, as a UUID, since neither table has an id column. Usage rows without
+-- transfer carry only the retired storage gauge and build compute (which the build records hold),
+-- so they are not assigned or copied. No column is added and nothing is dropped; a later
+-- migration drops both tables once the copy has been verified on every environment.
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0053_metering_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'metering_usage',
+                   md5(m.customer_id::text || E'\n' ||
+                       to_char(m.hour AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))::uuid,
+                   m.customer_id, w.id,
+                   CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
+            FROM metering_usage m LEFT JOIN workspaces w ON w.customer_id = m.customer_id
+                 AND w.desired <> 'deleted'
+                 AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = m.customer_id
+                      AND w2.desired <> 'deleted') = 1
+            WHERE m.transfer_in_bytes > 0 OR m.transfer_out_bytes > 0
+            ON CONFLICT DO NOTHING;
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'metering_build_records', md5(b.customer_id::text || E'\n' || b.result_id)::uuid,
+                   b.customer_id, w.id,
+                   CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
+            FROM metering_build_records b LEFT JOIN workspaces w ON w.customer_id = b.customer_id
+                 AND w.desired <> 'deleted'
+                 AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = b.customer_id
+                      AND w2.desired <> 'deleted') = 1
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments WHERE workspace_id IS NULL
+                           AND object_table IN ('metering_usage', 'metering_build_records') LOOP
+            RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%',
+                unresolved.object_table, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS metering_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0053_metering_workspaces')
+    ON CONFLICT DO NOTHING;
