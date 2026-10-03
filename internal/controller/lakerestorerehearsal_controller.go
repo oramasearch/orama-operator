@@ -859,6 +859,7 @@ UNION ALL SELECT 'secret_workspaces_guard=' || count(*) FROM secret_workspaces_g
 UNION ALL SELECT 'platform_workspaces_guard=' || count(*) FROM platform_workspaces_guard
 UNION ALL SELECT 'agent_task_workspaces_guard=' || count(*) FROM agent_task_workspaces_guard
 UNION ALL SELECT 'audit_workspaces_guard=' || count(*) FROM audit_workspaces_guard
+UNION ALL SELECT 'workspace_deletions_guard=' || count(*) FROM workspace_deletions_guard
 UNION ALL SELECT 'drive_share_link_workspaces_guard=' || count(*) FROM drive_share_link_workspaces_guard
 UNION ALL SELECT 'stream_owner_workspaces_guard=' || count(*) FROM stream_owner_workspaces_guard
 UNION ALL SELECT 'opportunity_workspaces_guard=' || count(*) FROM opportunity_workspaces_guard
