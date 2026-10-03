@@ -2865,3 +2865,198 @@ CREATE TABLE IF NOT EXISTS secret_workspaces_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0057_secret_workspaces')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0058_secret_lease_workspaces: dynamic-secret leases live in the workspace Zetta of their mount
+-- (lake#362; docs/api/secrets.md#dynamic-leases). Each lease is a sealed record of
+-- lake_secrets_dynamic_leases in its mount's workspace, keyed by the lease id: role, the generated
+-- credential sealed with the mount data key (unchanged since 0057), expiry, renewals, revocation.
+-- Lake no longer writes or reads secrets_dynamic_leases, which the operator's one-shot copy
+-- (copy_workspace_records, collection secrets_dynamic_leases) moves and verifies.
+--
+-- secret_lease_routes is what stays central, and it is dispatch only: which workspace holds a
+-- lease (so renew and revoke, which name only the lease, reach it without asking every
+-- workspace) and when the expiry loop must next look at it. It names no role, value or
+-- ciphertext. due_at is a hint that is never later than the expiry in the workspace record; the
+-- loop claims due rows with FOR UPDATE SKIP LOCKED, settles each lease in its workspace with a
+-- conditional write, and sets due_at to NULL once the lease is revoked or expired there.
+--
+-- A legacy lease follows its mount: the mount's route (secret_mount_routes) names its workspace,
+-- and the copy writes its route and record. A lease whose mount has no route is reported here and
+-- waits for its mount's assignment. Nothing is dropped; a later migration drops
+-- secrets_dynamic_leases once the copy has been verified on every environment.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS secret_lease_routes (
+    lease_id     uuid        PRIMARY KEY,
+    mount_id     uuid        NOT NULL REFERENCES secret_mount_routes(mount_id) ON DELETE CASCADE,
+    customer_id  uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    workspace_id uuid        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    due_at       timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS secret_lease_routes_due_idx
+    ON secret_lease_routes (due_at) WHERE due_at IS NOT NULL;
+
+-- A route names a live workspace of its own space; neither column changes afterwards.
+DROP TRIGGER IF EXISTS secret_lease_route_workspace_routing ON secret_lease_routes;
+CREATE TRIGGER secret_lease_route_workspace_routing BEFORE INSERT OR UPDATE ON secret_lease_routes
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations
+                   WHERE version = '0058_secret_lease_workspaces') THEN
+        FOR unresolved IN
+            SELECT l.id, l.mount_id FROM secrets_dynamic_leases l
+            WHERE NOT EXISTS (SELECT 1 FROM secret_mount_routes r WHERE r.mount_id = l.mount_id)
+        LOOP
+            RAISE WARNING 'dynamic secret lease not copied (needs_selection): lease=%, mount=%',
+                unresolved.id, unresolved.mount_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS secret_lease_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0058_secret_lease_workspaces')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0059_application_settings_workspaces: an application's settings (its name, allowed origins,
+-- redirect URIs and hosted-page theme) live in the workspace Zetta of the application's workspace
+-- (lake#351; auth_applications.workspace_id, 0049; docs/api/apps.md, docs/architecture/
+-- workspace-records.md), one sealed record per application in lake_auth_applications. Lake no
+-- longer writes or reads those four columns; the operator's one-shot copy
+-- (copy_workspace_records, collection auth_applications) moves each application's settings into
+-- its workspace and verifies them.
+--
+-- auth_applications stays as the content-free routing row that finds an application before its
+-- workspace is read: id, customer_id (its space), pool_id (the pool its sessions name),
+-- custom_sign_in_domain (the host a hosted page is requested on, unique across lake),
+-- workspace_id (0049), created_at and updated_at. New rows leave the four settings columns NULL:
+-- they lose NOT NULL and their defaults here, and a row without a name holds none of them. A row
+-- with a name is one whose settings the copy moves.
+--
+-- Each application that still holds settings has its owner recorded in workspace_assignments
+-- under object_table auth_application_settings (0049 already recorded the applications' routing
+-- under auth_applications): its application's workspace (application_workspace), needs_selection
+-- while it has none, or workspace_deleted when that workspace is gone (its records went with it).
+-- Nothing is dropped here; a later migration drops the four columns once the copy has been
+-- verified on every environment.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE auth_applications ALTER COLUMN name DROP NOT NULL;
+ALTER TABLE auth_applications ALTER COLUMN allowed_origins DROP NOT NULL;
+ALTER TABLE auth_applications ALTER COLUMN redirect_uris DROP NOT NULL;
+ALTER TABLE auth_applications ALTER COLUMN redirect_uris DROP DEFAULT;
+ALTER TABLE auth_applications ALTER COLUMN theme DROP NOT NULL;
+ALTER TABLE auth_applications ALTER COLUMN theme DROP DEFAULT;
+ALTER TABLE auth_applications DROP CONSTRAINT IF EXISTS auth_applications_settings_check;
+ALTER TABLE auth_applications ADD CONSTRAINT auth_applications_settings_check CHECK (
+    name IS NOT NULL OR (allowed_origins IS NULL AND redirect_uris IS NULL AND theme IS NULL));
+
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations
+                   WHERE version = '0059_application_settings_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'auth_application_settings', a.id, a.customer_id,
+                   CASE WHEN w.desired = 'deleted' THEN NULL ELSE a.workspace_id END,
+                   CASE WHEN a.workspace_id IS NULL THEN 'needs_selection'
+                        WHEN w.desired = 'deleted' THEN 'workspace_deleted'
+                        ELSE 'application_workspace' END
+            FROM auth_applications a LEFT JOIN workspaces w ON w.id = a.workspace_id
+            WHERE a.name IS NOT NULL
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments WHERE workspace_id IS NULL
+                           AND object_table = 'auth_application_settings' LOOP
+            RAISE WARNING 'application settings not copied (%): application=%, customer=%',
+                unresolved.outcome, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS application_settings_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0059_application_settings_workspaces')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0060_platform_workspaces: repository environments and the platform mirror live in the workspace
+-- Zetta of their repository's workspace (lake#358, lake#359, docs/api/platform.md,
+-- docs/architecture/workspace-records.md). Lake no longer writes or reads platform_environments or
+-- platform_mirror; the operator's one-shot copy (copy_workspace_records) moves each row into its
+-- workspace and verifies it.
+--
+-- An environment's id is now md5(repository id, newline, name) as a UUID, which lake computes the
+-- same way. Its `environment` policy object stays here with its grants, and takes that id as its
+-- external id, so lake finds it from the repository and the name without reading the workspace.
+-- An object is renamed only when no other environment object already has that id.
+--
+-- Each row's owner is its repository's workspace (repositories.workspace_id, 0051), recorded in
+-- workspace_assignments as repository_workspace: an environment under its row id, a mirror row
+-- under md5(kind, newline, key). A row whose repository has no workspace yet is needs_selection and
+-- is reported; the copy assigns it once the repository is assigned. A row whose repository's
+-- workspace was deleted is workspace_deleted: it went with that workspace and does not hold the
+-- copy back. A mirror row naming no repository lake has is reported and not assigned. Nothing is
+-- dropped here; a later migration drops both tables once the copy has been verified on every
+-- environment.
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0060_platform_workspaces') THEN
+        UPDATE objects o
+           SET external_id = md5(e.repository_id::text || E'\n' || e.name)::uuid::text,
+               updated_at = now()
+          FROM platform_environments e
+         WHERE o.id = e.object_id
+           AND o.external_id <> md5(e.repository_id::text || E'\n' || e.name)::uuid::text
+           AND NOT EXISTS (SELECT 1 FROM objects t
+                            WHERE t.object_type = 'environment'
+                              AND t.external_id = md5(e.repository_id::text || E'\n' || e.name)::uuid::text);
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'platform_environments', e.id, r.customer_id,
+                   CASE WHEN w.desired = 'deleted' THEN NULL ELSE r.workspace_id END,
+                   CASE WHEN r.workspace_id IS NULL THEN 'needs_selection'
+                        WHEN w.desired = 'deleted' THEN 'workspace_deleted'
+                        ELSE 'repository_workspace' END
+            FROM platform_environments e JOIN repositories r ON r.id = e.repository_id
+                 LEFT JOIN workspaces w ON w.id = r.workspace_id
+            ON CONFLICT DO NOTHING;
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'platform_mirror', md5(m.kind || E'\n' || m.key)::uuid, r.customer_id,
+                   CASE WHEN w.desired = 'deleted' THEN NULL ELSE r.workspace_id END,
+                   CASE WHEN r.workspace_id IS NULL THEN 'needs_selection'
+                        WHEN w.desired = 'deleted' THEN 'workspace_deleted'
+                        ELSE 'repository_workspace' END
+            FROM platform_mirror m JOIN repositories r ON r.id::text = m.value->>'repository'
+                 LEFT JOIN workspaces w ON w.id = r.workspace_id
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments
+                           WHERE workspace_id IS NULL
+                             AND object_table IN ('platform_environments', 'platform_mirror') LOOP
+            RAISE WARNING 'platform row not copied (%): table=%, object=%, customer=%',
+                unresolved.outcome, unresolved.object_table, unresolved.object_id,
+                unresolved.customer_id;
+        END LOOP;
+        FOR unresolved IN SELECT m.kind, m.key FROM platform_mirror m
+                           WHERE NOT EXISTS (SELECT 1 FROM repositories r
+                                              WHERE r.id::text = m.value->>'repository') LOOP
+            RAISE WARNING 'platform mirror row not copied (unknown_repository): kind=%, key=%',
+                unresolved.kind, unresolved.key;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS platform_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0060_platform_workspaces')
+    ON CONFLICT DO NOTHING;
