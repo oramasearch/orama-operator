@@ -2288,3 +2288,231 @@ CREATE TABLE IF NOT EXISTS ask_message_workspaces_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0045_ask_message_workspaces')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0046_opportunity_workspaces: Design → Opportunities live in the workspace Zetta of the workspace
+-- their scan ran in (lake#376, docs/architecture/workspace-records.md). Lake no longer writes or
+-- reads opportunities; the operator's one-shot copy (copy_workspace_records) moves each row into
+-- its workspace and verifies it. This migration only records each row's owner: the workspace the
+-- scan's agent task names owns its rows (task_workspace); a task that names none falls back to a
+-- space with exactly one live workspace (sole_workspace); a task whose workspace is deleted is
+-- recorded as deleted_workspace and every other row as needs_selection, both without a workspace.
+-- No column is added and nothing is dropped; a later migration drops the table once the copy has
+-- been verified on every environment.
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0046_opportunity_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'opportunities', o.id, o.customer_id,
+                   CASE WHEN t.workspace_id IS NULL THEN w.id WHEN tw.id IS NOT NULL THEN tw.id END,
+                   CASE WHEN tw.id IS NOT NULL THEN 'task_workspace'
+                        WHEN t.workspace_id IS NOT NULL THEN 'deleted_workspace'
+                        WHEN w.id IS NOT NULL THEN 'sole_workspace'
+                        ELSE 'needs_selection' END
+            FROM opportunities o JOIN agent_tasks t ON t.id = o.task_id
+                 LEFT JOIN workspaces tw ON tw.id = t.workspace_id
+                      AND tw.customer_id = o.customer_id AND tw.desired <> 'deleted'
+                 LEFT JOIN workspaces w ON w.customer_id = o.customer_id
+                      AND w.desired <> 'deleted'
+                      AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = o.customer_id
+                           AND w2.desired <> 'deleted') = 1
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments
+                           WHERE workspace_id IS NULL AND object_table = 'opportunities' LOOP
+            RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%, outcome=%',
+                unresolved.object_table, unresolved.object_id, unresolved.customer_id,
+                unresolved.outcome;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS opportunity_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0046_opportunity_workspaces')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0047_stream_owner_workspaces: topic creators live in the workspace Zetta whose topic they
+-- describe (lake#379, docs/control-plane/streams.md, docs/architecture/workspace-records.md).
+-- Lake no longer writes or reads stream_owners; the operator's one-shot copy
+-- (copy_workspace_records) moves each row into its workspace and verifies it. Each row already
+-- names its workspace, so this migration only records it: a row whose workspace is live in the
+-- same space is owned by it, a row whose workspace was deleted is recorded as workspace_deleted
+-- (its topic went with that incarnation, so there is nothing to copy), and any other row is
+-- recorded as unknown_workspace and reported. A row's object_id is
+-- md5(customer_id, workspace_id, topic) as a UUID, since the table has no id column. No column is
+-- added and nothing is dropped; a later migration drops the table once the copy has been verified
+-- on every environment.
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0047_stream_owner_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'stream_owners',
+                   md5(s.customer_id::text || E'\n' || s.workspace_id || E'\n' || s.topic)::uuid,
+                   s.customer_id,
+                   CASE WHEN w.desired <> 'deleted' THEN w.id END,
+                   CASE WHEN w.id IS NULL THEN 'unknown_workspace'
+                        WHEN w.desired = 'deleted' THEN 'workspace_deleted'
+                        ELSE 'recorded_workspace' END
+            FROM stream_owners s LEFT JOIN workspaces w ON w.id::text = s.workspace_id
+                 AND w.customer_id = s.customer_id
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments
+                           WHERE workspace_id IS NULL AND object_table = 'stream_owners' LOOP
+            RAISE WARNING 'stream owner is not copied (%): object=%, customer=%',
+                unresolved.outcome, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS stream_owner_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0047_stream_owner_workspaces')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0048_drive_share_link_workspaces: drive share links live in the workspace Zetta that holds them
+-- (lake#350, docs/api/sharing.md, docs/architecture/workspace-records.md). A new link's token
+-- names its workspace and record, so resolving it needs no central lookup. Lake no longer writes
+-- or reads drive_share_links; the operator's one-shot copy (copy_workspace_records) moves each row
+-- into its workspace and verifies it. This migration records each row's owner (the only live
+-- workspace of the repository's space; otherwise needs_selection) and, for each assigned row, a
+-- content-free route from the token digest a pre-move token presents to the workspace and record
+-- key. The route holds no path, role, expiry or creator, and outlives the later migration that
+-- drops drive_share_links. Nothing is dropped here.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS drive_share_link_routes (
+    token_hash   text        PRIMARY KEY,
+    link_id      uuid        NOT NULL UNIQUE,
+    workspace_id uuid        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    recorded_at  timestamptz NOT NULL DEFAULT now()
+);
+
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations
+                   WHERE version = '0048_drive_share_link_workspaces') THEN
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'drive_share_links', l.id, r.customer_id, w.id,
+                   CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
+            FROM drive_share_links l JOIN repositories r ON r.id = l.repository_id
+                 LEFT JOIN workspaces w ON w.customer_id = r.customer_id
+                 AND w.desired <> 'deleted'
+                 AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = r.customer_id
+                      AND w2.desired <> 'deleted') = 1
+            ON CONFLICT DO NOTHING;
+        INSERT INTO drive_share_link_routes (token_hash, link_id, workspace_id)
+            SELECT l.token_hash, l.id, a.workspace_id
+            FROM drive_share_links l JOIN workspace_assignments a
+                 ON a.object_table = 'drive_share_links' AND a.object_id = l.id
+            WHERE a.workspace_id IS NOT NULL
+            ON CONFLICT (token_hash) DO UPDATE SET workspace_id = EXCLUDED.workspace_id;
+        FOR unresolved IN SELECT * FROM workspace_assignments
+                           WHERE workspace_id IS NULL AND object_table = 'drive_share_links' LOOP
+            RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%',
+                unresolved.object_table, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS drive_share_link_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0048_drive_share_link_workspaces')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0049_application_webhook_workspaces: an application's lifecycle events and their delivery
+-- attempts live in the workspace Zetta of the application's workspace (lake#356, lake#357,
+-- docs/architecture/workspace-records.md). Lake no longer writes or reads
+-- auth_app_webhook_events or auth_app_webhook_deliveries; the operator's one-shot copy
+-- (copy_workspace_records) moves each row into its workspace and verifies it.
+--
+-- auth_applications gains workspace_id, the routing pointer that names which workspace an
+-- application's events belong to: content-free multitenancy, like stores.workspace_id (0044).
+-- register_application requires it; it is set once and never changes. An application whose space
+-- has exactly one live workspace is assigned it here; every other application is recorded as
+-- needs_selection and may be assigned once (NULL to a workspace of its space) after review.
+--
+-- Each event row's owner is recorded in workspace_assignments: its application's workspace, or
+-- needs_selection. A delivery attempt has no row of its own there; it always goes where its event
+-- goes. No table is dropped; a later migration drops both once the copy has been verified on
+-- every environment.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE auth_applications ADD COLUMN IF NOT EXISTS workspace_id uuid REFERENCES workspaces(id);
+CREATE INDEX IF NOT EXISTS auth_applications_workspace_idx ON auth_applications (workspace_id);
+
+-- New applications name a live workspace of their own space; a legacy application without one may
+-- be assigned once. Neither the workspace nor the space changes afterwards.
+CREATE OR REPLACE FUNCTION enforce_application_workspace() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        IF NEW.customer_id IS DISTINCT FROM OLD.customer_id OR
+           (OLD.workspace_id IS NOT NULL AND NEW.workspace_id IS DISTINCT FROM OLD.workspace_id) THEN
+            RAISE EXCEPTION 'workspace_id and customer_id are immutable' USING ERRCODE = '23514';
+        END IF;
+        -- Any other change keeps the assignment as it was, including none yet.
+        IF NEW.workspace_id IS NOT DISTINCT FROM OLD.workspace_id THEN
+            RETURN NEW;
+        END IF;
+    END IF;
+    IF NEW.workspace_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM workspaces WHERE id = NEW.workspace_id AND customer_id = NEW.customer_id
+            AND desired <> 'deleted'
+    ) THEN
+        RAISE EXCEPTION 'workspace_id must name a workspace in this space' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END $$;
+
+DO $$
+DECLARE
+    unresolved record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations
+                   WHERE version = '0049_application_webhook_workspaces') THEN
+        DROP TRIGGER IF EXISTS application_workspace_routing ON auth_applications;
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'auth_applications', a.id, a.customer_id, w.id,
+                   CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
+            FROM auth_applications a LEFT JOIN workspaces w ON w.customer_id = a.customer_id
+                 AND w.desired <> 'deleted'
+                 AND (SELECT count(*) FROM workspaces w2 WHERE w2.customer_id = a.customer_id
+                      AND w2.desired <> 'deleted') = 1
+            WHERE a.workspace_id IS NULL ON CONFLICT DO NOTHING;
+        UPDATE auth_applications a SET workspace_id = s.workspace_id FROM workspace_assignments s
+            WHERE s.object_table = 'auth_applications' AND s.object_id = a.id
+              AND a.workspace_id IS NULL AND s.workspace_id IS NOT NULL;
+        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
+            SELECT 'auth_app_webhook_events', e.id, a.customer_id, a.workspace_id,
+                   CASE WHEN a.workspace_id IS NULL THEN 'needs_selection'
+                        ELSE 'application_workspace' END
+            FROM auth_app_webhook_events e JOIN auth_applications a ON a.id = e.application_id
+            ON CONFLICT DO NOTHING;
+        FOR unresolved IN SELECT * FROM workspace_assignments WHERE workspace_id IS NULL
+                           AND object_table IN ('auth_applications', 'auth_app_webhook_events') LOOP
+            RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%',
+                unresolved.object_table, unresolved.object_id, unresolved.customer_id;
+        END LOOP;
+    END IF;
+END $$;
+
+DROP TRIGGER IF EXISTS application_workspace_routing ON auth_applications;
+CREATE TRIGGER application_workspace_routing BEFORE INSERT OR UPDATE ON auth_applications
+    FOR EACH ROW EXECUTE FUNCTION enforce_application_workspace();
+
+CREATE TABLE IF NOT EXISTS application_webhook_workspaces_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0049_application_webhook_workspaces')
+    ON CONFLICT DO NOTHING;
