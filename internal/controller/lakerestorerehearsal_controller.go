@@ -873,6 +873,12 @@ UNION ALL SELECT 'offline_recovery_guard=' || count(*) FROM offline_recovery_gua
 UNION ALL SELECT 'pki_guard=' || count(*) FROM pki_guard
 UNION ALL SELECT 'secrets_guard=' || count(*) FROM secrets_guard
 UNION ALL SELECT 'sso_federation_guard=' || count(*) FROM sso_federation_guard
+UNION ALL SELECT 'application_user_workspaces_guard=' || count(*) FROM application_user_workspaces_guard
+UNION ALL SELECT 'application_credential_workspaces_guard=' || count(*) FROM application_credential_workspaces_guard
+UNION ALL SELECT 'secret_lease_workspaces_guard=' || count(*) FROM secret_lease_workspaces_guard
+UNION ALL SELECT 'application_settings_workspaces_guard=' || count(*) FROM application_settings_workspaces_guard
+UNION ALL SELECT 'application_authorization_code_workspaces_guard=' || count(*) FROM application_authorization_code_workspaces_guard
+UNION ALL SELECT 'repository_records_guard=' || count(*) FROM repository_records_guard
 UNION ALL SELECT 'schema_version=' || max(version) FROM schema_migrations
 ORDER BY 1;
 `
