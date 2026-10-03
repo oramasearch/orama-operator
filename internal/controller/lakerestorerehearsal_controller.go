@@ -851,6 +851,7 @@ UNION ALL SELECT 'agent_launch_workspaces_guard=' || count(*) FROM agent_launch_
 UNION ALL SELECT 'store_workspaces_guard=' || count(*) FROM store_workspaces_guard
 UNION ALL SELECT 'ask_message_workspaces_guard=' || count(*) FROM ask_message_workspaces_guard
 UNION ALL SELECT 'application_webhook_workspaces_guard=' || count(*) FROM application_webhook_workspaces_guard
+UNION ALL SELECT 'drop_ask_messages_guard=' || count(*) FROM drop_ask_messages_guard
 UNION ALL SELECT 'drive_share_link_workspaces_guard=' || count(*) FROM drive_share_link_workspaces_guard
 UNION ALL SELECT 'stream_owner_workspaces_guard=' || count(*) FROM stream_owner_workspaces_guard
 UNION ALL SELECT 'opportunity_workspaces_guard=' || count(*) FROM opportunity_workspaces_guard

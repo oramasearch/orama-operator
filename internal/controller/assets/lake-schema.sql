@@ -1508,20 +1508,9 @@ CREATE TABLE IF NOT EXISTS agent_schedules (
 );
 CREATE INDEX IF NOT EXISTS agent_schedules_due_idx ON agent_schedules (next_run_at);
 
--- Ask Orama conversations: rendered by whichever replica serves the panel.
-CREATE TABLE IF NOT EXISTS ask_messages (
-    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_id uuid        NOT NULL,
-    customer_id     uuid        REFERENCES customers(id) ON DELETE CASCADE,
-    user_id         uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role            text        NOT NULL,
-    content         text        NOT NULL DEFAULT '',
-    payload         jsonb       NOT NULL DEFAULT 'null'::jsonb,
-    created_at      timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT ask_message_role_check CHECK (role IN ('user', 'assistant'))
-);
-CREATE INDEX IF NOT EXISTS ask_messages_conversation_idx
-    ON ask_messages (conversation_id, created_at);
+-- Ask Orama conversations were the ask_messages table here. They live in workspace Zettas
+-- (0045, lake#370) and 0050_drop_ask_messages drops the table, so it is no longer created: a
+-- rerun of this file must not bring it back.
 
 CREATE TABLE IF NOT EXISTS agents_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -2263,7 +2252,9 @@ DO $$
 DECLARE
     unresolved record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0045_ask_message_workspaces') THEN
+    -- The table exists only on a database that had it before 0045; 0050 drops it afterwards.
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0045_ask_message_workspaces')
+       AND to_regclass('ask_messages') IS NOT NULL THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT 'ask_messages', m.id, m.customer_id, w.id,
                    CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
@@ -2515,4 +2506,20 @@ CREATE TABLE IF NOT EXISTS application_webhook_workspaces_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO schema_migrations (version) VALUES ('0049_application_webhook_workspaces')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0050_drop_ask_messages: the retired ask_messages table is dropped (lake#483). Ask Orama
+-- conversations live in each workspace Zetta's lake_ask_messages collection (0045, lake#370); the
+-- operator's copy into them was verified on dev (15 of 15 rows, complete) before this migration.
+-- The workspace_assignments rows 0045 recorded for the table stay: they are the record of where
+-- each row went. The earlier CREATE TABLE above is gone and 0045's block runs only while the
+-- table exists, so a rerun of this file leaves it dropped.
+-- ---------------------------------------------------------------------------------------------
+DROP TABLE IF EXISTS ask_messages;
+
+CREATE TABLE IF NOT EXISTS drop_ask_messages_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0050_drop_ask_messages')
     ON CONFLICT DO NOTHING;
