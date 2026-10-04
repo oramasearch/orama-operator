@@ -46,6 +46,11 @@ export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)"
 go test ./...
 ```
 
+The same assets run the workspace envtests. `TestWorkspaceDatastorePoliciesAgainstAPIServer`
+(operator#268) checks that every workspace NetworkPolicy passes API validation, that the
+Kubernetes API egress rule matches the test API server's own `default/kubernetes` Service and
+Endpoints, and that a steady second pass rewrites no policy.
+
 The same assets run the Zetta environment passthrough case. It verifies custom env reaches the
 StatefulSet, reserved-name collisions appear in status, and an env change advances the StatefulSet
 generation so Kubernetes rolls the pods.

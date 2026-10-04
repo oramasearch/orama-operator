@@ -94,7 +94,11 @@ labels `orama.cloud/lake=<lake>`, `orama.cloud/service-id=<id>`, `orama.cloud/se
 For a Zetta service, the reconciler carries the Lake/service/kind/customer identity labels from the
 child `OramaZettaCluster` onto its pods without changing the StatefulSet's immutable selector.
 `LakeApp` NetworkPolicies use those labels to open workspace and explicit service egress to that
-target only. This section describes rows other than the workspace-owned Zetta.
+target only. The workspace namespace is default-deny, so the workspace reconciler also writes the
+narrow flows each datastore operator needs to reach its pods, and the API egress that CNPG,
+Strimzi's entity operator and TiDB discovery need
+([workspaces.md](workspaces.md#datastore-operator-flows-operator268), operator#268). This section
+describes rows other than the workspace-owned Zetta.
 
 | | Zetta (`kind = 'zetta'`) | Postgres (`kind = 'postgres'`) |
 |---|---|---|

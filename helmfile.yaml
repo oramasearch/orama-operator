@@ -25,6 +25,8 @@
 #   - K8ssandra            — Cassandra (Apache Cassandra images only). Needs cert-manager.
 #   - valkey-io            — Valkey. PREVIEW: upstream says "not ready for production".
 #   - cert-manager         — only because K8ssandra's webhooks need it.
+# The release namespaces below (and cnpg-system) are the peers of the workspace NetworkPolicies in
+# internal/controller/lake_workspace_datastore_policies.go (operator#268); move one, change both.
 
 repositories:
   - name: cnpg

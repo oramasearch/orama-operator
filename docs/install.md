@@ -112,6 +112,12 @@ All are pinned and cluster-scoped:
 | `k8ssandra-operator` | `k8ssandra/k8ssandra-operator` | 1.33.0 | `k8ssandra-operator` | Cassandra |
 | `valkey-operator` | `valkey/valkey-operator` | 0.6.0 | `valkey-operator-system` | Valkey — **preview**, upstream says not production-ready |
 
+These namespaces, and `cnpg-system` for CloudNativePG, are also the peers of the workspace
+NetworkPolicies that let each operator reach its pods in a default-deny workspace namespace
+([`lake/workspaces.md`](lake/workspaces.md#datastore-operator-flows-operator268)). Installing an
+operator into another namespace needs the matching change in
+`internal/controller/lake_workspace_datastore_policies.go`.
+
 ```sh
 helmfile -l tier=service-operators sync --wait --concurrency 1
 kubectl get deploy -A | grep -E 'strimzi|clickhouse|tidb|k8ssandra|cass-operator|valkey|cert-manager'

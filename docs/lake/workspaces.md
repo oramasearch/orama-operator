@@ -161,8 +161,10 @@ operator-owned AKS node-pool contract remains a separate platform decision.
 ## Allowed network flows
 
 Everything not listed is refused, including every other workspace, Lake's Postgres, the Kubernetes
-API Service and its backing endpoints, node and pod networks, RFC1918/private ranges, the metadata
-endpoint `169.254.169.254`, and non-DNS traffic to `kube-system`.
+API Service and its backing endpoints (for every pod except the datastore pods named in
+[Datastore operator flows](#datastore-operator-flows-operator268)), node and pod networks,
+RFC1918/private ranges, the metadata endpoint `169.254.169.254`, and non-DNS traffic to
+`kube-system`.
 
 | From | To | Ports | Why |
 |---|---|---|---|
@@ -173,6 +175,8 @@ endpoint `169.254.169.254`, and non-DNS traffic to `kube-system`.
 | workspace pod | CoreDNS pods in `kube-system` | UDP/TCP 53 | service discovery |
 | workspace pod | Lake pod in the Lake namespace | Lake container port | agents and applications call Lake's Service; the rule selects Lake pods rather than the namespace generally |
 | opted-in workspace pod | public IP addresses | TCP 443 | model-provider HTTPS; private, reserved, node, API-Service and metadata ranges are excluded |
+| datastore operator pod in its own namespace | the operand pods it manages | per kind, below | the CNPG, Altinity, TiDB, K8ssandra and Valkey operators reconcile their pods over the network |
+| CNPG pods, Strimzi entity operator, TiDB discovery | the Kubernetes API Service address and its endpoints | the Service port and each endpoint port | these pods read and write their own custom resources with their own ServiceAccount |
 
 Internet egress is denied by default. `spec.workspaces.overrides[<workspace UUID>].internetEgress`
 adds or removes the TCP 443 policy for that workspace alone. Before enabling it, the operator reads
@@ -180,6 +184,69 @@ the `default/kubernetes` Service and Endpoints plus every Node address and pod C
 as exclusions. If those reads fail, it refuses to create the internet policy; the base default-deny
 and narrow internal policies are installed before that calculation, and any older internet policy
 is removed so a stale exclusion list cannot remain active.
+
+## Datastore operator flows (operator#268)
+
+Lake's managed services run in the workspace namespace, but the operators that run them do not:
+CloudNativePG, Altinity, TiDB, K8ssandra, Strimzi and Valkey each run in their own namespace (the
+ones `helmfile.yaml` installs into). Under the namespace's default-deny, a Postgres service broke
+in two ways on dev: the CNPG initdb Job and instance manager timed out on `10.0.0.1:443`, and the
+CNPG operator could not reach the instance's status port (`Instance Status Extraction Error: HTTP
+communication issue`). The operator therefore writes one NetworkPolicy per flow below, in every
+workspace namespace. Each selects only the operand's own pod labels, and each ingress peer is the
+operator's namespace (by `kubernetes.io/metadata.name`) together with its pod labels. A policy
+whose kind is not in use selects no pod.
+
+| Policy | Selected pods | Peer | Ports | Why |
+|---|---|---|---|---|
+| `allow-cnpg-apiserver-egress` | `cnpg.io/cluster` exists (instances and the initdb/join Jobs) | Kubernetes API, see below | Service port + endpoint ports | initdb, the instance manager's `Cluster` reads, primary lease and status |
+| `allow-cnpg-operator-ingress` | `cnpg.io/podRole=instance` with `cnpg.io/cluster` | `cnpg-system`, `app.kubernetes.io/name=cloudnative-pg` | TCP 8000, 5432 | status extraction, promotion and switchover |
+| `allow-strimzi-apiserver-egress` | `strimzi.io/kind=Kafka`, `strimzi.io/component-type=entity-operator` | Kubernetes API | Service port + endpoint ports | the Topic and User Operators watch `KafkaTopic`/`KafkaUser` and write the user Secret the Kafka connection is read from |
+| `allow-tidb-discovery-apiserver-egress` | `app.kubernetes.io/component=discovery`, `app.kubernetes.io/managed-by=tidb-operator` | Kubernetes API | Service port + endpoint ports | discovery reads the `TidbCluster` to tell each PD how to join |
+| `allow-clickhouse-operator-ingress` | `clickhouse.altinity.com/app=chop` with `clickhouse.altinity.com/chi` | `clickhouse-system`, `app.kubernetes.io/name=altinity-clickhouse-operator` | TCP 8123 | host readiness and schema queries over HTTP |
+| `allow-clickhouse-keeper-operator-ingress` | `clickhouse-keeper.altinity.com/app=chop` with `clickhouse-keeper.altinity.com/chk` | the Altinity operator, as above | TCP 2181 | a replicated installation's root path is created in its Keeper |
+| `allow-tidb-pd-operator-ingress` | `app.kubernetes.io/component=pd`, `managed-by=tidb-operator` | `tidb-admin`, `app.kubernetes.io/name=tidb-operator`, `app.kubernetes.io/component=controller-manager` | TCP 2379 | PD members, health and store state |
+| `allow-tidb-tikv-operator-ingress` | `app.kubernetes.io/component=tikv`, `managed-by=tidb-operator` | the TiDB operator, as above | TCP 20180 | leader counts during an upgrade |
+| `allow-tidb-operator-ingress` | `app.kubernetes.io/component=tidb`, `managed-by=tidb-operator` | the TiDB operator, as above | TCP 4000, 10080 | sets the root password (`createPassword`) over SQL; health on the status port |
+| `allow-cassandra-operator-ingress` | `cassandra.datastax.com/cluster` exists | `k8ssandra-operator`, `app.kubernetes.io/name` in `cass-operator`, `k8ssandra-operator` | TCP 8080 | the management API: cass-operator starts every node through it (`MGMT_API_EXPLICIT_START`) |
+| `allow-valkey-operator-ingress` | `app.kubernetes.io/managed-by=valkey-operator` with `valkey.io/cluster` | `valkey-operator-system`, `app.kubernetes.io/name=valkey-operator` | TCP 6379 | cluster formation (`CLUSTER MEET`, slots, replication) and state reads |
+
+Strimzi needs no ingress policy from us: it writes its own `<cluster>-network-policy-kafka`, which
+already admits pods labelled `strimzi.io/kind=cluster-operator` from any namespace on the control
+plane (9090), replication (9091) and agent (8443) ports. That policy also opens the client listener
+(9092) to every source, because the Kafka builder sets no `networkPolicyPeers` on it; SCRAM
+authentication still applies, but the port is reachable from other namespaces.
+
+The operator namespaces and labels are constants in
+`internal/controller/lake_workspace_datastore_policies.go`, matching `helmfile.yaml` and the
+charts' Deployment labels. A cluster that installs one of these operators elsewhere must change
+them there.
+
+### The Kubernetes API address
+
+The API egress policies allow the `default/kubernetes` Service's ClusterIPs and every address in its
+Endpoints (ready and not ready) as single-address `ipBlock` peers, on the Service's port and every
+endpoint port. Both the Service address and the endpoint address are listed because a CNI may judge
+the connection before or after the Service address is translated. The operator reads both objects
+on every reconcile, so a moved API server address follows within one poll. If the Endpoints list no
+address, the policies are not written and the workspace retries: an egress rule with no destination
+would allow every destination.
+
+On the dev AKS cluster (`orama-production-cluster-01`, read 2026-10-03), the `kubernetes` Service is
+`10.0.0.1:443` and its Endpoints hold one address, `20.237.72.161:443`, the public address of the
+AKS-managed control plane. There is no API Server VNet integration and the cluster is not private.
+`konnectivity-agent` in `kube-system` carries traffic from the control plane to nodes (logs, exec,
+webhooks), not from pods to the API, so pods reach the API directly at `20.237.72.161:443`. The
+rule is therefore `10.0.0.1/32` and `20.237.72.161/32` on TCP 443. The network data plane is Azure
+CNI powered by Cilium 1.18 with kube-proxy replacement, which translates `10.0.0.1` to the endpoint
+at connect time. Cilium gives an API server outside the cluster an identity that keeps its CIDR
+labels (`resolveLabels` in `pkg/ipcache/metadata.go` drops them only for nodes and other in-cluster
+entities), so an `ipBlock` selects it. A self-hosted API server on the cluster's nodes would also
+need Cilium's `policy-cidr-match-mode: nodes`.
+
+Reaching the API is not authorization. The CNPG, Strimzi and TiDB pods use the ServiceAccounts and
+namespace Roles their operators create. Every other workspace pod still has no route to the API and
+no token.
 
 ## Quota plans
 
