@@ -3496,6 +3496,25 @@ INSERT INTO schema_migrations (version) VALUES ('0066_assign_unrouted_repositori
     ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------------------------------
+-- 0067_workspace_store: a workspace's liquid store moves into its workspace Zetta (decision 54
+-- S1-S3, lake#380, docs/architecture/workspace-store.md). The bytes (packs, index runs, repository
+-- state, all encrypted with the workspace's data key) live in bucket `lake_store` of the workspace
+-- Zetta; PostgreSQL keeps only this content-free switch. While store_moved_at is NULL the
+-- workspace's repositories are served from its space's store on lake's volume
+-- (<LAKE_STORE_ROOT>/<space>/store); move_workspace_store `switch` copies what is new, verifies
+-- every repository and sets it, after which they are served from the workspace store and the
+-- space's store stays on the volume, read-only, until Steve approves removing it. The operator
+-- does not read the column.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS store_moved_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS workspace_store_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0067_workspace_store')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
 -- 0068_oci_repository_routes: the registry splits (decision 54 S4-S6, lake#383 phase A,
 -- docs/api/registry.md#where-a-tenant-image-lives). A tenant OCI repository (`<space>/<name>`,
 -- `<space>/cache/<name>`) belongs to one workspace: its manifests and tags are sealed records in
