@@ -126,6 +126,7 @@ func newWorkspaceHarness(t *testing.T, lake *oramav1alpha1.Lake, objects ...clie
 		Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{"registry.example.test":{}}}`)},
 	}}
 	all = append(all, objects...)
+	all = append(all, defaultKubernetesAPIObjects(objects)...)
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(all...).
@@ -137,6 +138,52 @@ func newWorkspaceHarness(t *testing.T, lake *oramav1alpha1.Lake, objects ...clie
 		APIReader:         c,
 		OperatorNamespace: "orama-system",
 	}, c
+}
+
+// defaultKubernetesAPIObjects is the default/kubernetes Service and Endpoints a real API server
+// always has, unless the test supplies its own.
+func defaultKubernetesAPIObjects(objects []client.Object) []client.Object {
+	var service, endpoints bool
+	for _, object := range objects {
+		if object.GetNamespace() != "default" || object.GetName() != "kubernetes" {
+			continue
+		}
+		switch object.(type) {
+		case *corev1.Service:
+			service = true
+		case *corev1.Endpoints:
+			endpoints = true
+		}
+	}
+	var defaults []client.Object
+	if !service {
+		defaults = append(defaults, testKubernetesService())
+	}
+	if !endpoints {
+		defaults = append(defaults, testKubernetesEndpoints("20.237.72.161", 443))
+	}
+	return defaults
+}
+
+func testKubernetesService() *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
+		Spec: corev1.ServiceSpec{
+			ClusterIP:  "10.0.0.1",
+			ClusterIPs: []string{"10.0.0.1"},
+			Ports:      []corev1.ServicePort{{Name: "https", Port: 443, Protocol: corev1.ProtocolTCP}},
+		},
+	}
+}
+
+func testKubernetesEndpoints(ip string, port int32) *corev1.Endpoints {
+	return &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
+		Subsets: []corev1.EndpointSubset{{
+			Addresses: []corev1.EndpointAddress{{IP: ip}},
+			Ports:     []corev1.EndpointPort{{Name: "https", Port: port, Protocol: corev1.ProtocolTCP}},
+		}},
+	}
 }
 
 func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
@@ -198,8 +245,8 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 	if err := kube.List(ctx, &policies, client.InNamespace(testWorkspaceName)); err != nil {
 		t.Fatal(err)
 	}
-	if len(policies.Items) != 5 {
-		t.Fatalf("network policies = %d, want 5", len(policies.Items))
+	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients); len(policies.Items) != want {
+		t.Fatalf("network policies = %d, want %d", len(policies.Items), want)
 	}
 	for _, policy := range policies.Items {
 		if policy.Name == workspaceInternetName {
@@ -353,6 +400,9 @@ func TestLakeWorkspaceInternetFailureStillInstallsDefaultDeny(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: workspaceInternetName, Namespace: testWorkspaceName},
 	}
 	reconciler, kube := newWorkspaceHarness(t, lake, staleInternet)
+	if err := kube.Delete(ctx, testKubernetesService()); err != nil {
+		t.Fatal(err)
+	}
 	store := &fakeWorkspacesStore{rows: []LakeWorkspaceRow{testWorkspaceRow("running")}}
 	if changing := reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows); !changing {
 		t.Fatal("a workspace with an unavailable internet exclusion source did not retry")

@@ -46,7 +46,10 @@ cache, and reports its digest, size, progress, and failures. See [`builds.md`](b
 With `spec.workspaces.enabled`, the operator follows lake's `workspaces` table and creates one
 restricted namespace and Zetta data plane per workspace. Default-deny network policy, restricted
 Pod Security Admission, tokenless service accounts, plan quotas and local credentials make the
-namespace the trust boundary; see [`workspaces.md`](workspaces.md). Each workspace Zetta's
+namespace the trust boundary; see [`workspaces.md`](workspaces.md). Narrow per-kind policies let
+the datastore operators reach their pods there, and let CNPG, Strimzi's entity operator and TiDB
+discovery reach the Kubernetes API
+([workspaces.md](workspaces.md#datastore-operator-flows-operator268), operator#268). Each workspace Zetta's
 volumes grow in place from lake's `workspaces.storage_gi` and never shrink; the operator reports
 the observed size on the workspace row ([workspaces.md](workspaces.md#workspace-volume-size-operator259),
 operator#259).

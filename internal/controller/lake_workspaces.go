@@ -809,11 +809,26 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 		workspaceDNSPolicy(namespace, labels),
 		workspaceLakeEgressPolicy(lake, namespace, labels),
 	}
+	for _, allowance := range workspaceOperatorIngresses {
+		policies = append(policies, workspaceOperatorIngressPolicy(allowance, namespace, labels))
+	}
 	for _, desired := range policies {
 		if err := r.reconcileWorkspaceNetworkPolicy(ctx, labels, desired); err != nil {
 			return err
 		}
 	}
+	// Both remaining policies depend on the Kubernetes API address; each is attempted so a failure
+	// of one never leaves the other stale.
+	apiErr := r.reconcileWorkspaceAPIServerPolicies(ctx, namespace, labels)
+	return errors.Join(apiErr, r.reconcileWorkspaceInternet(ctx, namespace, labels, internet))
+}
+
+func (r *LakeWorkspacesReconciler) reconcileWorkspaceInternet(
+	ctx context.Context,
+	namespace string,
+	labels map[string]string,
+	internet bool,
+) error {
 	if internet {
 		policy, err := r.workspaceInternetPolicy(ctx, namespace, labels)
 		if err != nil {
