@@ -882,6 +882,7 @@ UNION ALL SELECT 'secret_lease_workspaces_guard=' || count(*) FROM secret_lease_
 UNION ALL SELECT 'application_settings_workspaces_guard=' || count(*) FROM application_settings_workspaces_guard
 UNION ALL SELECT 'application_authorization_code_workspaces_guard=' || count(*) FROM application_authorization_code_workspaces_guard
 UNION ALL SELECT 'repository_records_guard=' || count(*) FROM repository_records_guard
+UNION ALL SELECT 'workspace_store_guard=' || count(*) FROM workspace_store_guard
 UNION ALL SELECT 'schema_version=' || max(version) FROM schema_migrations
 ORDER BY 1;
 `
