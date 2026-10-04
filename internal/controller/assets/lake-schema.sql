@@ -3494,3 +3494,102 @@ CREATE TABLE IF NOT EXISTS assign_unrouted_repositories_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0066_assign_unrouted_repositories')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0068_oci_repository_routes: the registry splits (decision 54 S4-S6, lake#383 phase A,
+-- docs/api/registry.md#where-a-tenant-image-lives). A tenant OCI repository (`<space>/<name>`,
+-- `<space>/cache/<name>`) belongs to one workspace: its manifests and tags are sealed records in
+-- that workspace Zetta's lake_oci_manifests and lake_oci_tags, and this table is the content-free
+-- route lake resolves before it reads any workspace, so an image keeps its address. A route holds
+-- only the space, the repository name below it and the workspace, with its timestamps: no
+-- manifest, digest or tag. It is written when a build first pushes its own target (`<image>` or
+-- `cache/<image>`, from the build row's workspace) or by create_image_repository (an explicit
+-- workspace_id); there is no default workspace. A route never changes
+-- (enforce_oci_repository_route); the cascade that deletes a workspace (0065) deletes its routes,
+-- and the operator's unroute_image_repository removes a wrong one. npm, Python, debuginfod and legacy one-component OCI
+-- repositories stay with the instance and have no route. Blobs stay in the instance registry
+-- until phase B (lake#380) moves them into the workspace store.
+--
+-- Each tenant repository whose owner is unambiguous gets its route here: a name that the apps and
+-- builds of exactly one live workspace of the space use is routed there, both `<name>` and
+-- `cache/<name>`. A name several workspaces use is reported (RAISE WARNING) and routed by an
+-- operator with create_image_repository. The registry's files are not visible to SQL, so the
+-- operator's one-shot copy (copy_workspace_records, collection oci_tags) routes the repositories it
+-- finds there by the same rule, then by the space's only live workspace, and reports the rest as
+-- unresolved.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS oci_repository_routes (
+    customer_id  uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    name         text        NOT NULL CHECK (length(regexp_replace(name, '^cache/', '')) <= 190 AND name ~
+                     '^(cache/)?[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'),
+    workspace_id uuid        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (customer_id, name)
+);
+CREATE INDEX IF NOT EXISTS oci_repository_routes_workspace_idx
+    ON oci_repository_routes (workspace_id);
+
+CREATE OR REPLACE FUNCTION enforce_oci_repository_route() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        IF NEW.customer_id IS DISTINCT FROM OLD.customer_id OR NEW.name IS DISTINCT FROM OLD.name
+           OR NEW.workspace_id IS DISTINCT FROM OLD.workspace_id THEN
+            RAISE EXCEPTION 'an image route never changes' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM workspaces WHERE id = NEW.workspace_id AND customer_id = NEW.customer_id
+            AND desired <> 'deleted'
+    ) THEN
+        RAISE EXCEPTION 'workspace_id must name a live workspace in this space' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS oci_repository_route_routing ON oci_repository_routes;
+CREATE TRIGGER oci_repository_route_routing BEFORE INSERT OR UPDATE ON oci_repository_routes
+    FOR EACH ROW EXECUTE FUNCTION enforce_oci_repository_route();
+
+DO $$
+DECLARE
+    candidate record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0068_oci_repository_routes') THEN
+        FOR candidate IN
+            WITH used AS (
+                SELECT a.customer_id, a.workspace_id, a.name FROM apps a
+                WHERE a.desired <> 'deleted'
+                UNION
+                SELECT b.customer_id, b.workspace_id,
+                       substring(b.target FROM '^[^/]+/[^/]+/([^/:]+):[^/:]+$')
+                FROM builds b JOIN customers c ON c.id = b.customer_id
+                WHERE b.workspace_id IS NOT NULL AND split_part(b.target, '/', 2) = c.name
+            )
+            SELECT u.customer_id, u.name, count(DISTINCT u.workspace_id) AS owners,
+                   (array_agg(DISTINCT u.workspace_id))[1] AS workspace_id
+            FROM used u JOIN workspaces w ON w.id = u.workspace_id
+                 AND w.customer_id = u.customer_id AND w.desired <> 'deleted'
+            WHERE u.name ~ '^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$' AND length(u.name) <= 190
+            GROUP BY u.customer_id, u.name
+            ORDER BY u.customer_id, u.name
+        LOOP
+            IF candidate.owners <> 1 THEN
+                RAISE WARNING 'image repository needs a workspace: customer=%, name=%, workspaces=%',
+                    candidate.customer_id, candidate.name, candidate.owners;
+                CONTINUE;
+            END IF;
+            INSERT INTO oci_repository_routes (customer_id, name, workspace_id)
+                VALUES (candidate.customer_id, candidate.name, candidate.workspace_id),
+                       (candidate.customer_id, 'cache/' || candidate.name, candidate.workspace_id)
+                ON CONFLICT DO NOTHING;
+        END LOOP;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS oci_repository_routes_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0068_oci_repository_routes')
+    ON CONFLICT DO NOTHING;

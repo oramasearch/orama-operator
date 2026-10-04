@@ -112,8 +112,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `assign_unrouted_repositories_guard` from
-   `0066_assign_unrouted_repositories`, version = hash of the SQL plus guard. A changed hash automatically
+   `oramasearch/lake` `db/schema.sql`), guard table = `oci_repository_routes_guard` from
+   `0068_oci_repository_routes`, version = hash of the SQL plus guard. A changed hash automatically
    replaces the obsolete migration Job, waiting for its pods to stop. Deployment creation and
    updates wait for Applied at the desired version and generation; existing pods retain their
    previous workload spec while the schema applies. Re-vendoring and native envtest proof are in
