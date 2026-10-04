@@ -50,6 +50,13 @@ The same assets run the Zetta environment passthrough case. It verifies custom e
 StatefulSet, reserved-name collisions appear in status, and an env change advances the StatefulSet
 generation so Kubernetes rolls the pods.
 
+The Lake volume snapshot envtests (`TestVolumeSnapshots*`, operator#260) also load the upstream
+`snapshot.storage.k8s.io` CRDs from `internal/controller/testdata/snapshot-crds/` (external-snapshotter
+v8.2.0, the version on the dev cluster; refresh from that project's `client/config/crd/` when the
+cluster's version changes). The volume snapshot and workspace pgx stores run their SQL against
+`testdata/lake-workspaces.sql` inside a rolled-back transaction when
+`LAKE_WORKSPACES_TEST_POSTGRES_URI` is set.
+
 The Lake schema proof also needs local Postgres and `psql`, `createdb`, and `dropdb` on `PATH`.
 Set `LAKE_SCHEMA_TEST_POSTGRES=1` and `PGUSER` to your local role; the suite creates fresh databases
 on `127.0.0.1:5432` and drops only those it created. With this opt-in, missing envtest assets are

@@ -212,6 +212,20 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Lake")
 		os.Exit(1)
 	}
+	volumeSnapshotsListener := controller.NewLakeVolumeSnapshotsListener(mgr.GetClient())
+	if err = mgr.Add(volumeSnapshotsListener); err != nil {
+		setupLog.Error(err, "unable to add the lake volume snapshots listener")
+		os.Exit(1)
+	}
+	if err = (&controller.LakeVolumeSnapshotsReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
+		Events:    volumeSnapshotsListener.Events,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeVolumeSnapshots")
+		os.Exit(1)
+	}
 	if err = (&controller.LakeRestoreRehearsalReconciler{
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),

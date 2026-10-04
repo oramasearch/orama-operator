@@ -271,6 +271,12 @@ registry access.
 - **RBAC and image compatibility:** the manager must watch only kinds installed by the matching
   chart and allowed by its ClusterRole. Cache-sync failures in logs require checking those grants
   and the CRDs; registry credentials cannot fix them.
+- **Volume snapshots and growth (operator#259, operator#260):** the ClusterRole reads
+  `storageclasses` and manages `snapshot.storage.k8s.io` snapshots, classes and contents (never
+  deleting a class or a content). Those grants are harmless where the snapshot CRDs are absent; a
+  Lake's `spec.snapshots.enabled` then reports the missing CRDs in lake's `volume_snapshot_status`.
+  The `Lake` CRD gains `spec.snapshots`, so apply `chart/crds/` before upgrading. See
+  [`lake/volume-snapshots.md`](lake/volume-snapshots.md).
 - **Multi-region:** install one operator and one v1 CR per cluster, with one primary and the
   others using the read role. Supply `spec.peers` and the external connectivity, certificates,
   ingress, and Cloudflare credentials appropriate to that deployment; use the read-tier sample

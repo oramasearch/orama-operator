@@ -30,13 +30,25 @@ type LakeWorkspaceRow struct {
 	ZettaServiceID         string
 	ZettaServiceGeneration int64
 	ZettaServiceStatus     *LakeServiceStatus
+	// StorageGi is the desired size of each of the workspace Zetta's volumes in GiB (lake
+	// migration 0069, operator#259); lake's trigger keeps it from decreasing.
+	StorageGi         int32
+	StorageGiObserved int32
+	StoragePhase      string
+	StorageMessage    string
 }
 
+// LakeWorkspaceStatus is what the operator writes on the workspace row. The storage fields are
+// the volumes' observation: the smallest claim capacity in GiB, Pending | Resizing | Ready |
+// Failed, and why.
 type LakeWorkspaceStatus struct {
 	Phase              string
 	ObservedGeneration int64
 	Message            string
 	Namespace          string
+	StorageGiObserved  int32
+	StoragePhase       string
+	StorageMessage     string
 }
 
 func (row *LakeWorkspaceRow) status() LakeWorkspaceStatus {
@@ -45,6 +57,9 @@ func (row *LakeWorkspaceRow) status() LakeWorkspaceStatus {
 		ObservedGeneration: row.ObservedGeneration,
 		Message:            row.Message,
 		Namespace:          row.Namespace,
+		StorageGiObserved:  row.StorageGiObserved,
+		StoragePhase:       row.StoragePhase,
+		StorageMessage:     row.StorageMessage,
 	}
 }
 
@@ -75,7 +90,8 @@ const listWorkspacesSQL = `SELECT w.id::text, w.customer_id::text, w.name, w.env
  COALESCE(w.phase, ''), COALESCE(w.observed_generation, 0), COALESCE(w.message, ''),
  COALESCE(w.namespace, ''), COALESCE(w.zetta_service_id::text, ''), COALESCE(s.generation, 0),
  ss.service_id IS NOT NULL, COALESCE(ss.phase, ''), COALESCE(ss.message, ''),
- COALESCE(ss.endpoint, ''), COALESCE(ss.observed_generation, 0)
+ COALESCE(ss.endpoint, ''), COALESCE(ss.observed_generation, 0),
+ w.storage_gi, w.storage_gi_observed, w.storage_phase, w.storage_message
  FROM workspaces w
  LEFT JOIN services s ON s.id = w.zetta_service_id
  LEFT JOIN service_status ss ON ss.service_id = w.zetta_service_id
@@ -111,6 +127,10 @@ func (s *pgxWorkspacesStore) ListWorkspaces(ctx context.Context) ([]LakeWorkspac
 			&serviceStatus.Message,
 			&serviceStatus.Endpoint,
 			&serviceStatus.ObservedGeneration,
+			&row.StorageGi,
+			&row.StorageGiObserved,
+			&row.StoragePhase,
+			&row.StorageMessage,
 		); err != nil {
 			return nil, errors.New("cannot decode workspaces row")
 		}
@@ -135,7 +155,8 @@ func workspacesReadError(err error) error {
 }
 
 const updateWorkspaceStatusSQL = `UPDATE workspaces
- SET phase=$5, observed_generation=$6, message=$7, namespace=$8, updated_at=now()
+ SET phase=$5, observed_generation=$6, message=$7, namespace=$8,
+ storage_gi_observed=$9, storage_phase=$10, storage_message=$11, updated_at=now()
  WHERE id=$1::uuid AND customer_id=$2::uuid AND generation=$3 AND desired=$4`
 
 func (s *pgxWorkspacesStore) UpdateWorkspaceStatus(
@@ -154,6 +175,9 @@ func (s *pgxWorkspacesStore) UpdateWorkspaceStatus(
 		status.ObservedGeneration,
 		status.Message,
 		status.Namespace,
+		status.StorageGiObserved,
+		status.StoragePhase,
+		status.StorageMessage,
 	)
 	if err != nil {
 		return false, errors.New("cannot update workspaces row")

@@ -800,6 +800,35 @@ spec:
                       then to the OramaZettaCluster default.
                     type: string
                 type: object
+              snapshots:
+                description: |-
+                  Snapshots takes scheduled CSI snapshots of lake's store volume and of every workspace Zetta's
+                  volumes from lake's volume_snapshot_policies table, keeps the newest of each, and reports
+                  them in volume_snapshot_status (operator#260). Requires the control-plane Postgres and the
+                  snapshot.storage.k8s.io CRDs. See docs/lake/volume-snapshots.md.
+                properties:
+                  className:
+                    default: lake-retain
+                    description: |-
+                      ClassName is the VolumeSnapshotClass every snapshot names. The operator creates it when it
+                      is absent, for Driver with deletionPolicy Retain, so deleting a snapshot, a workspace or its
+                      namespace never deletes the snapshot's contents. An existing class is used as it is, and is
+                      refused unless its deletionPolicy is Retain.
+                    minLength: 1
+                    type: string
+                  driver:
+                    default: disk.csi.azure.com
+                    description: |-
+                      Driver is the CSI driver of a class the operator creates. It must be the driver of the
+                      volumes it snapshots.
+                    type: string
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled reconciles lake's volume_snapshot_policies table. Disabling stops new snapshots and
+                      pruning; it never deletes a snapshot.
+                    type: boolean
+                type: object
               store:
                 description: |-
                   Store configures the persistent root shared by all lake replicas. When ExistingClaim is

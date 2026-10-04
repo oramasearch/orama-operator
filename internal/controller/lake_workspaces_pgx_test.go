@@ -49,7 +49,7 @@ func TestLakeWorkspacesPgxStoreAgainstPostgres(t *testing.T) {
 	}
 	store := &pgxWorkspacesStore{pgxServiceStore: &pgxServiceStore{db: tx}}
 	rows, err := store.ListWorkspaces(ctx)
-	if err != nil || len(rows) != 1 || rows[0].ID != testWorkspaceID || rows[0].Phase != "" ||
+	if err != nil || len(rows) != 1 || rows[0].ID != testWorkspaceID || rows[0].Phase != "" || rows[0].StorageGi != 5 ||
 		rows[0].ZettaServiceID != testWorkspaceZettaID || rows[0].ZettaServiceGeneration != 9 || rows[0].ZettaServiceStatus != nil {
 		t.Fatalf("workspace rows = %+v, %v", rows, err)
 	}
@@ -59,6 +59,9 @@ func TestLakeWorkspacesPgxStoreAgainstPostgres(t *testing.T) {
 		ObservedGeneration: row.Generation,
 		Message:            "workspace ready",
 		Namespace:          testWorkspaceName,
+		StorageGiObserved:  5,
+		StoragePhase:       WorkspaceStorageReady,
+		StorageMessage:     "1 volume at 5 GiB",
 	}
 	updated, err := store.UpdateWorkspaceStatus(ctx, row, status)
 	if err != nil || !updated {

@@ -69,10 +69,37 @@ workspace namespace and owns its complete desired spec. Its image is
 Resources and Zetta environment variables continue to come from the shared workspace/service
 settings. Replicas remain one.
 
-Storage size and class are copied from `spec.workspaces.storage` only when the child is created.
-Later settings changes do not rewrite the child claim template because the StatefulSet
-`volumeClaimTemplates` field is immutable. Image, resources, environment, pull credentials and
-the forced private reachability settings remain reconciled normally.
+Storage class is copied from `spec.workspaces.storage`; the size comes from lake (next section).
+Image, resources, environment, pull credentials and the forced private reachability settings
+remain reconciled normally.
+
+### Workspace volume size (operator#259)
+
+Lake's `workspaces.storage_gi` (migration `0069`, default 5, never decreasing: lake's trigger
+refuses a smaller value, and `set_workspace_storage` advances the row's generation) is the desired
+size of each of the workspace Zetta's volumes. Decision 54 puts the workspace's liquid store,
+tenant images and search index on that volume, so it has to grow with the workspace.
+
+- **On create** the child `OramaZettaCluster` gets `storage.size` = `storage_gi` GiB.
+  `spec.workspaces.storage.size` is used only for a row without one.
+- **On a larger value** the reconciler patches `spec.resources.requests.storage` of each claim
+  `data-<cluster>-zetta-<n>` in the workspace namespace (the claim, not the StatefulSet's
+  immutable template), and raises the child's `storage.size` to match. It never rewrites the
+  template: the `OramaZettaCluster` controller keeps an existing StatefulSet's claim templates as
+  they are, so a replica added later starts at the template's size and is grown by the same patch.
+  Azure disks grow online; the pod is not restarted.
+- **Observation.** On every pass the reconciler writes, with the workspace's phase and in the same
+  generation-guarded update, `storage_gi_observed` (the smallest claim capacity in GiB),
+  `storage_phase` and `storage_message`: `Pending` before the claim exists, `Resizing` while a
+  claim's `status.capacity` is below its request (with `file system resize pending` when the
+  claim says so; the pass requeues fast), and `Ready` once every claim has reached it.
+- **Never shrink.** A `storage_gi` below a claim's request is ignored; the claim and the recorded
+  size stay, and the message says *volumes never shrink*.
+- **Failed.** A claim whose storage class (or the cluster default) lacks `allowVolumeExpansion`,
+  or a patch the API server refuses (the plan's `requests.storage` quota, for example), is
+  `storage_phase: Failed` with the reason. The workspace's own phase is unaffected: its Zetta
+  keeps serving at the old size.
+- Stopped and deleted workspaces keep the last storage observation.
 
 The managed-services query also reads each joined workspace's `zetta_service_id`. A Zetta row
 whose ID matches is excluded from service resource reconciliation, deletion, status writes and
@@ -227,3 +254,19 @@ An envtest alternates the workspace and services polls and proves the child gene
 the services image wins, creation-time storage is preserved, and `service_status` is written once
 per transition. The SQL adapter uses `internal/controller/testdata/lake-workspaces.sql`; lake owns
 the production migration, so the fixture is intentionally not copied into the vendored lake schema.
+
+## Verify volume growth on dev (operator#259)
+
+After the operator and lake `0069` are deployed: call lake's `set_workspace_storage` for one
+workspace (for example 5 to 10 GiB), then
+
+```sh
+kubectl -n <environment>-ws-<id> get pvc data-<cluster>-zetta-0 -o jsonpath='{.spec.resources.requests.storage} {.status.capacity.storage}{"\n"}'
+kubectl -n <environment>-ws-<id> exec <cluster>-zetta-0 -- df -h /data
+```
+
+The claim's request and capacity reach the new size, `df` inside the running Zetta pod shows it
+without a restart (Azure disk online expansion), and lake's `get_workspace` shows
+`storage_phase: Ready` with `storage_gi_observed` at the new size. Record the observation in the
+deployment record. The envtests `TestWorkspaceStorage*` cover the growth to 20 GiB, the ignored
+decrease and a class without expansion.

@@ -824,7 +824,14 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 	if z.Spec.Storage.StorageClassName != "" {
 		pvc.Spec.StorageClassName = &z.Spec.Storage.StorageClassName
 	}
-	sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{pvc}
+	// A StatefulSet's claim templates are immutable: the API server refuses an update that changes
+	// them. Once the StatefulSet exists its templates are kept as they are, so a later
+	// spec.storage change (a workspace grown by lake's storage_gi, operator#259) never blocks the
+	// rest of this reconcile. Existing claims are grown in place by whoever raised the size; a
+	// replica added later starts at the template's size.
+	if sts.ResourceVersion == "" || len(sts.Spec.VolumeClaimTemplates) == 0 {
+		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{pvc}
+	}
 
 	// hostNetwork makes :7777/:4800 reachable at the k8s node's own address — the simplest way for a
 	// node to be dialable by siblings in other clusters (esp. a single-node cluster).

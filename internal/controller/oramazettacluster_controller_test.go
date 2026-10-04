@@ -457,3 +457,32 @@ func TestReconcileZettaIngressGate(t *testing.T) {
 		}
 	})
 }
+
+// TestZettaStatefulSetKeepsItsClaimTemplate is operator#259: a StatefulSet's claim templates are
+// immutable, so a larger spec.storage.size (a workspace grown by lake's storage_gi) sets the
+// template only on create and leaves an existing StatefulSet's template as it was; the claims
+// themselves are grown in place.
+func TestZettaStatefulSetKeepsItsClaimTemplate(t *testing.T) {
+	r := &OramaZettaClusterReconciler{Scheme: zettaTestScheme(t)}
+	z := newZettaTestCluster()
+	z.Spec.Storage.Size = "5Gi"
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "z0-zetta", Namespace: "orama-system"}}
+	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), "", nil); err != nil {
+		t.Fatalf("mutateZettaStatefulSet: %v", err)
+	}
+	size := func() string {
+		quantity := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		return quantity.String()
+	}
+	if got := size(); got != "5Gi" {
+		t.Fatalf("new StatefulSet template = %s, want 5Gi", got)
+	}
+	sts.ResourceVersion = "1"
+	z.Spec.Storage.Size = "20Gi"
+	if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), "", nil); err != nil {
+		t.Fatalf("mutateZettaStatefulSet: %v", err)
+	}
+	if got := size(); got != "5Gi" {
+		t.Fatalf("existing StatefulSet template changed to %s; the API server refuses that update", got)
+	}
+}
