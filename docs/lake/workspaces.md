@@ -92,14 +92,21 @@ tenant images and search index on that volume, so it has to grow with the worksp
   generation-guarded update, `storage_gi_observed` (the smallest claim capacity in GiB),
   `storage_phase` and `storage_message`: `Pending` before the claim exists, `Resizing` while a
   claim's `status.capacity` is below its request (with `file system resize pending` when the
-  claim says so; the pass requeues fast), and `Ready` once every claim has reached it.
+  claim says so, and that a restart of the Zetta pod may be needed once it has been pending for
+  over 15 minutes; the pass requeues fast), and `Ready` once every claim has reached it.
+- **Quota.** The workspace ResourceQuota's `requests.storage` is the plan's value plus
+  `storage_gi` × replicas: the plan's value is headroom for the namespace's other claims (services,
+  stores), and growing the workspace volume past it is never refused by the quota.
 - **Never shrink.** A `storage_gi` below a claim's request is ignored; the claim and the recorded
   size stay, and the message says *volumes never shrink*.
 - **Failed.** A claim whose storage class (or the cluster default) lacks `allowVolumeExpansion`,
   or a patch the API server refuses (the plan's `requests.storage` quota, for example), is
   `storage_phase: Failed` with the reason. The workspace's own phase is unaffected: its Zetta
   keeps serving at the old size.
-- Stopped and deleted workspaces keep the last storage observation.
+- Stopped and deleted workspaces keep the last storage observation, except that a stopped workspace
+  whose `storage_gi` is above the observed size reports `Pending` (*the volume was not checked
+  while the workspace is stopped*); it grows when it runs.
+- `spec.workspaces.storage.size` is deprecated: with the 0069 schema every row has `storage_gi`.
 
 The managed-services query also reads each joined workspace's `zetta_service_id`. A Zetta row
 whose ID matches is excluded from service resource reconciliation, deletion, status writes and

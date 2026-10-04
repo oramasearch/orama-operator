@@ -326,7 +326,10 @@ type LakeWorkspacesSpec struct {
 	// +optional
 	Image string `json:"image,omitempty"`
 
-	// Storage configures every workspace Zetta cluster's persistent data volume.
+	// Storage configures every workspace Zetta cluster's persistent data volume. StorageClassName is
+	// the class of every workspace volume. Size is deprecated and ignored once lake's schema has
+	// workspaces.storage_gi (migration 0069): each workspace's size comes from that column, whose
+	// default for new workspaces is lake's (5 GiB); Size applies only to a row without one.
 	// +kubebuilder:default={size:"5Gi"}
 	// +optional
 	Storage OramaZettaStorage `json:"storage,omitempty"`

@@ -9,6 +9,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -219,5 +220,73 @@ func TestWorkspaceStorageOnAFixedClassFails(t *testing.T) {
 	}
 	if row.Phase == WorkspacePhaseFailed {
 		t.Fatal("a volume that cannot grow failed the whole workspace")
+	}
+}
+
+// Review of #267, item 5: the workspace ResourceQuota's requests.storage is the plan's headroom plus
+// the workspace Zetta's own volumes, so a grow past the plan's 100Gi is not capped.
+func TestWorkspaceStorageGrowsPastThePlanQuota(t *testing.T) {
+	h := newWorkspaceStorageHarness(t, 5)
+	h.poll()
+	h.createClaim("managed-csi", "5Gi")
+	h.grow(150)
+	h.poll()
+	if request := h.request(); request != "150Gi" {
+		t.Fatalf("claim request = %q, want 150Gi", request)
+	}
+	quota := &corev1.ResourceQuota{}
+	if err := h.kube.Get(context.Background(), client.ObjectKey{Namespace: testWorkspaceName, Name: workspaceProfileName}, quota); err != nil {
+		t.Fatal(err)
+	}
+	storage := quota.Spec.Hard[corev1.ResourceRequestsStorage]
+	if want := resource.MustParse("250Gi"); storage.Cmp(want) != 0 {
+		t.Fatalf("quota requests.storage = %s, want 250Gi (100Gi plan headroom + 150Gi volume)", storage.String())
+	}
+}
+
+// Review of #267, item 6: a stopped workspace whose desired size is above the observed one reports
+// Pending, not the stale Ready.
+func TestWorkspaceStorageOfAStoppedWorkspaceIsPending(t *testing.T) {
+	h := newWorkspaceStorageHarness(t, 5)
+	h.poll()
+	h.createClaim("managed-csi", "5Gi")
+	h.poll()
+	if row := h.row(); row.StoragePhase != WorkspaceStorageReady {
+		t.Fatalf("storage before stopping = %+v", row)
+	}
+	h.store.rows[0].Desired = "stopped"
+	h.grow(30)
+	h.poll()
+	row := h.row()
+	if row.StoragePhase != WorkspaceStoragePending || row.StorageGiObserved != 5 ||
+		!strings.Contains(row.StorageMessage, "stopped") || !strings.Contains(row.StorageMessage, "30 GiB") {
+		t.Fatalf("storage of a stopped workspace grown to 30 GiB = %+v", row)
+	}
+}
+
+// Review of #267, resize nit: a file system resize pending past the deadline says a pod restart may
+// be needed, and stays Resizing.
+func TestWorkspaceStorageResizePendingTooLongSaysSo(t *testing.T) {
+	h := newWorkspaceStorageHarness(t, 5)
+	h.poll()
+	h.createClaim("managed-csi", "5Gi")
+	h.grow(20)
+	h.poll()
+	ctx := context.Background()
+	claim := &corev1.PersistentVolumeClaim{}
+	if err := h.kube.Get(ctx, h.claim, claim); err != nil {
+		t.Fatal(err)
+	}
+	claim.Status.Conditions = []corev1.PersistentVolumeClaimCondition{{
+		Type: corev1.PersistentVolumeClaimFileSystemResizePending, Status: corev1.ConditionTrue,
+		LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Hour)),
+	}}
+	if err := h.kube.Status().Update(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	h.poll()
+	row := h.row()
+	if row.StoragePhase != WorkspaceStorageResizing || !strings.Contains(row.StorageMessage, "restart of the Zetta pod") {
+		t.Fatalf("storage with a stuck file system resize = %+v", row)
 	}
 }

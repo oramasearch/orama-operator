@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -34,6 +35,10 @@ const (
 	gibibyte = int64(1) << 30
 
 	defaultStorageClassAnnotation = "storageclass.kubernetes.io/is-default-class"
+
+	// fileSystemResizeDeadline is how long a claim may report FileSystemResizePending before the
+	// message says a pod restart may be needed. It stays Resizing either way.
+	fileSystemResizeDeadline = 15 * time.Minute
 )
 
 // workspaceStorageGi is the row's desired size in GiB. A row without one (a fake, or a schema
@@ -74,6 +79,35 @@ func workspaceZettaStorage(lake *oramav1alpha1.Lake, row *LakeWorkspaceRow, curr
 		storage.Size = desired.String()
 	}
 	return storage
+}
+
+// workspaceQuota is the plan's ResourceQuota with requests.storage raised by the workspace Zetta's
+// own volumes (storage_gi x replicas): the plan's value stays the headroom for the namespace's other
+// claims (services, stores), so growing the workspace volume is never capped by the plan. A plan
+// without requests.storage leaves storage unlimited.
+func workspaceQuota(lake *oramav1alpha1.Lake, row *LakeWorkspaceRow, plan oramav1alpha1.LakeWorkspacePlanSpec) corev1.ResourceList {
+	hard := plan.Quota.DeepCopy()
+	if hard == nil {
+		return hard
+	}
+	if headroom, ok := hard[corev1.ResourceRequestsStorage]; ok {
+		volumes := gibQuantity(workspaceStorageGi(lake, row) * int64(workspaceZettaReplicas))
+		headroom.Add(volumes)
+		hard[corev1.ResourceRequestsStorage] = headroom
+	}
+	return hard
+}
+
+// unobservedStorage is the storage observation for a pass that did not look at the volumes
+// (a stopped or deleted workspace, or one not reached): the last report, except that a desired
+// size above the observed one is Pending, never a stale Ready.
+func unobservedStorage(row *LakeWorkspaceRow) (int32, string, string) {
+	if row.Desired != "deleted" && row.StorageGi > 0 && row.StorageGi > row.StorageGiObserved {
+		return row.StorageGiObserved, WorkspaceStoragePending, fmt.Sprintf(
+			"the volume was not checked while the workspace is %s; it grows to %d GiB when it runs",
+			row.Desired, row.StorageGi)
+	}
+	return row.StorageGiObserved, row.StoragePhase, row.StorageMessage
 }
 
 // workspaceStorageObservation is what the operator writes in the workspace row's storage fields.
@@ -198,9 +232,14 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceStorage(
 		if capacity.Cmp(target) < 0 {
 			note := claim.Name
 			for _, condition := range claim.Status.Conditions {
-				if condition.Type == corev1.PersistentVolumeClaimFileSystemResizePending && condition.Status == corev1.ConditionTrue {
-					note += " (file system resize pending)"
+				if condition.Type != corev1.PersistentVolumeClaimFileSystemResizePending || condition.Status != corev1.ConditionTrue {
+					continue
 				}
+				note += " (file system resize pending"
+				if since := condition.LastTransitionTime.Time; !since.IsZero() && r.now().Sub(since) > fileSystemResizeDeadline {
+					note += fmt.Sprintf(" for over %d minutes; a restart of the Zetta pod may be needed to finish it", int(fileSystemResizeDeadline.Minutes()))
+				}
+				note += ")"
 			}
 			resizing = append(resizing, note)
 		}

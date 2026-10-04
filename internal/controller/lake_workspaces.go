@@ -98,6 +98,15 @@ type LakeWorkspacesReconciler struct {
 	WorkspaceStores   LakeWorkspacesStoreOpener
 	Events            <-chan event.GenericEvent
 	OperatorNamespace string
+	// Now is the clock resize deadlines are judged by; nil means time.Now. Injected for tests.
+	Now func() time.Time
+}
+
+func (r *LakeWorkspacesReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 func (r *LakeWorkspacesReconciler) apiReader() client.Reader {
@@ -197,11 +206,7 @@ func (r *LakeWorkspacesReconciler) syncLakeWorkspaces(
 				continue
 			}
 			if status.StoragePhase == "" {
-				// The volumes were not observed on this pass (stopped, deleted, or not reached):
-				// keep what was last reported.
-				status.StorageGiObserved = row.StorageGiObserved
-				status.StoragePhase = row.StoragePhase
-				status.StorageMessage = row.StorageMessage
+				status.StorageGiObserved, status.StoragePhase, status.StorageMessage = unobservedStorage(row)
 			}
 			changing = changing || rowChanging
 			if err := writeWorkspaceZettaServiceStatus(ctx, store, lake, row, status); err != nil {
@@ -752,7 +757,7 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceProfile(
 	quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: workspaceProfileName, Namespace: namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, quota, func() error {
 		quota.Labels = labels
-		quota.Spec.Hard = plan.Quota.DeepCopy()
+		quota.Spec.Hard = workspaceQuota(lake, row, plan)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("reconcile workspace ResourceQuota: %w", err)
