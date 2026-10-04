@@ -98,6 +98,15 @@ type LakeWorkspacesReconciler struct {
 	WorkspaceStores   LakeWorkspacesStoreOpener
 	Events            <-chan event.GenericEvent
 	OperatorNamespace string
+	// Now is the clock resize deadlines are judged by; nil means time.Now. Injected for tests.
+	Now func() time.Time
+}
+
+func (r *LakeWorkspacesReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 func (r *LakeWorkspacesReconciler) apiReader() client.Reader {
@@ -113,6 +122,7 @@ func (r *LakeWorkspacesReconciler) apiReader() client.Reader {
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;secrets;resourcequotas;limitranges;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;endpoints;nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 
 func lakeWorkspacesEnabled(lake *oramav1alpha1.Lake) bool {
 	return lake.Spec.Workspaces.Enabled && lakePostgresEnabled(lake) && lake.DeletionTimestamp.IsZero()
@@ -195,6 +205,9 @@ func (r *LakeWorkspacesReconciler) syncLakeWorkspaces(
 				changing = true
 				continue
 			}
+			if status.StoragePhase == "" {
+				status.StorageGiObserved, status.StoragePhase, status.StorageMessage = unobservedStorage(row)
+			}
 			changing = changing || rowChanging
 			if err := writeWorkspaceZettaServiceStatus(ctx, store, lake, row, status); err != nil {
 				logf.FromContext(ctx).Error(err, "workspace Zetta service status write deferred", "lake", lake.Name, "workspace", row.ID)
@@ -212,6 +225,9 @@ func (r *LakeWorkspacesReconciler) syncLakeWorkspaces(
 			row.ObservedGeneration = status.ObservedGeneration
 			row.Message = status.Message
 			row.Namespace = status.Namespace
+			row.StorageGiObserved = status.StorageGiObserved
+			row.StoragePhase = status.StoragePhase
+			row.StorageMessage = status.StorageMessage
 		}
 	}
 	return changing
@@ -508,6 +524,16 @@ func (r *LakeWorkspacesReconciler) reconcileRunningWorkspace(
 	if err != nil {
 		return status, true, err
 	}
+	// The volumes grow independently of the workspace's phase: a Zetta keeps serving while its
+	// claims expand online (operator#259).
+	storageChanging := false
+	if storage, changing, err := r.reconcileWorkspaceStorage(ctx, lake, row, name, cluster); err != nil {
+		logf.FromContext(ctx).Error(err, "workspace storage deferred", "lake", lake.Name, "workspace", row.ID)
+		storageChanging = true
+	} else {
+		status.StorageGiObserved, status.StoragePhase, status.StorageMessage = storage.ObservedGi, storage.Phase, storage.Message
+		storageChanging = changing
+	}
 	if cluster.Status.Phase == "Ready" && cluster.Status.ReadyNodes >= workspaceZettaReplicas {
 		// Ready means lake can reach the Zetta: its connection is in the services Secret, which
 		// the services poll writes (operator#264).
@@ -521,7 +547,7 @@ func (r *LakeWorkspacesReconciler) reconcileRunningWorkspace(
 		}
 		status.Phase = WorkspacePhaseReady
 		status.Message = "workspace ready"
-		return status, false, nil
+		return status, storageChanging, nil
 	}
 	status.Message = workspaceWaitingZettaMessage
 	return status, true, nil
@@ -731,7 +757,7 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceProfile(
 	quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: workspaceProfileName, Namespace: namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, quota, func() error {
 		quota.Labels = labels
-		quota.Spec.Hard = plan.Quota.DeepCopy()
+		quota.Spec.Hard = workspaceQuota(lake, row, plan)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("reconcile workspace ResourceQuota: %w", err)
@@ -1101,9 +1127,9 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 		cluster.Spec.Replicas = workspaceZettaReplicas
 		cluster.Spec.Image = serviceZettaImage(lake)
 		cluster.Spec.PullSecretName = lake.Spec.PullSecretName
-		if creating {
-			cluster.Spec.Storage = lake.Spec.Workspaces.Storage
-		}
+		// Created at lake's storage_gi; later only ever raised, to keep the recorded size in step
+		// with the claims the storage reconcile grows (operator#259).
+		cluster.Spec.Storage = workspaceZettaStorage(lake, row, cluster.Spec.Storage, creating)
 		cluster.Spec.Resources = serviceZettaResources(lake)
 		cluster.Spec.Env = append([]corev1.EnvVar(nil), lake.Spec.Services.ZettaEnv...)
 		cluster.Spec.IngressEnabled = false

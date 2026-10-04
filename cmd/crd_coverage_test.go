@@ -58,8 +58,10 @@ func registeredKinds(t *testing.T) []string {
 	var kinds []string
 	for _, match := range reconcilerPattern.FindAllStringSubmatch(string(source), -1) {
 		kind := match[1]
-		// The row-intake reconcilers are additional controllers of Lake, not separate CRDs.
-		if kind == "LakeApps" || kind == "LakeWorkspaces" {
+		// The row-intake reconcilers are additional controllers of Lake, not separate CRDs. The
+		// volume snapshot reconciler reads snapshot.storage.k8s.io kinds uncached and watches only
+		// Lake, so a cluster without the snapshot CRDs does not stop the manager.
+		if kind == "LakeApps" || kind == "LakeWorkspaces" || kind == "LakeVolumeSnapshots" {
 			kind = "Lake"
 		}
 		kinds = append(kinds, kind)

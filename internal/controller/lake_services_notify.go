@@ -58,6 +58,15 @@ func NewLakeWorkspacesListener(c client.Client) *LakeServicesListener {
 	}
 }
 
+// NewLakeVolumeSnapshotsListener wakes the volume snapshot reconciler when lake changes a snapshot
+// policy (lake migration 0069 notifies lake_volume_snapshots), so a requested snapshot is taken
+// without waiting for the poll.
+func NewLakeVolumeSnapshotsListener(c client.Client) *LakeServicesListener {
+	return &LakeServicesListener{
+		Client: c, Events: make(chan event.GenericEvent, 64), enabled: lakeSnapshotsEnabled, channel: "lake_volume_snapshots",
+	}
+}
+
 // Start runs until ctx ends (a manager Runnable).
 func (l *LakeServicesListener) Start(ctx context.Context) error {
 	resync := l.Resync

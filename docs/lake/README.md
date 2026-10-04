@@ -46,7 +46,17 @@ cache, and reports its digest, size, progress, and failures. See [`builds.md`](b
 With `spec.workspaces.enabled`, the operator follows lake's `workspaces` table and creates one
 restricted namespace and Zetta data plane per workspace. Default-deny network policy, restricted
 Pod Security Admission, tokenless service accounts, plan quotas and local credentials make the
-namespace the trust boundary; see [`workspaces.md`](workspaces.md).
+namespace the trust boundary; see [`workspaces.md`](workspaces.md). Each workspace Zetta's
+volumes grow in place from lake's `workspaces.storage_gi` and never shrink; the operator reports
+the observed size on the workspace row ([workspaces.md](workspaces.md#workspace-volume-size-operator259),
+operator#259).
+
+With `spec.snapshots.enabled`, the operator follows lake's `volume_snapshot_policies` and takes
+scheduled CSI snapshots of lake's store volume and of every workspace Zetta's volumes through a
+`VolumeSnapshotClass` with `deletionPolicy: Retain`, keeps the newest `keep` of each, honors
+one-off requests and reports each target's newest snapshot in `volume_snapshot_status`.
+Snapshots outlive their workspace, and restoring one is a documented runbook, not automated
+([volume-snapshots.md](volume-snapshots.md), operator#260).
 
 With `spec.services.enabled`, lake runs managed services for its customers — Zetta, Postgres,
 the catalog of Kafka, ClickHouse, TiDB, Cassandra and Valkey (preview), and SQLite, DuckDB and
@@ -112,8 +122,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `oci_repository_routes_guard` from
-   `0068_oci_repository_routes`, version = hash of the SQL plus guard. A changed hash automatically
+   `oramasearch/lake` `db/schema.sql`), guard table = `workspace_volumes_guard` from
+   `0069_workspace_volumes`, version = hash of the SQL plus guard. A changed hash automatically
    replaces the obsolete migration Job, waiting for its pods to stop. Deployment creation and
    updates wait for Applied at the desired version and generation; existing pods retain their
    previous workload spec while the schema applies. Re-vendoring and native envtest proof are in
@@ -160,7 +170,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 16. **Workspace namespaces** (opt-in: `spec.workspaces.enabled`) — `workspaces` rows become
     restricted `<environment>-ws-<id>` namespaces with quota, explicit network flows, localized
     pull credentials and one workspace Zetta. The workspace reconciler is that Zetta's only spec
-    writer, uses the services image fallback, preserves creation-time storage, and writes its
+    writer, uses the services image fallback, creates it at lake's `storage_gi` and grows its
+    claims in place (never shrinking; operator#259), and writes its
     `service_status`, Ready only once the services poll has delivered its connection. Services, stores, user agents and synchronized apps with that required
     `workspace_id` also run there. Status writes are generation guarded; stopped rows
     retain data and deleted rows remove the namespace. See [`workspaces.md`](workspaces.md).
@@ -170,6 +181,11 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     network isolation, resource/deadline/retention bounds, per-Lake and
     per-space concurrency, registry cache, progress events, and terminal digest/size status. See
     [`builds.md`](builds.md).
+18. **Volume snapshots** (opt-in: `spec.snapshots.enabled`) — `volume_snapshot_policies` rows become
+    `VolumeSnapshot`s of the store claim and each workspace Zetta's claims through a `Retain`
+    `VolumeSnapshotClass` the operator creates when absent: on the cron schedule, at first sight and
+    on `requested_at`, pruned beyond `keep`, contents labelled with their target, and the newest
+    reported in `volume_snapshot_status`. See [`volume-snapshots.md`](volume-snapshots.md).
 
 **Status** reports overall service readiness through `phase` and `conditions[Ready]`, alongside
 Deployment replica counts, store binding, Postgres, schema, Zetta, backup, sealing, and data-service

@@ -25,5 +25,27 @@ CREATE TABLE IF NOT EXISTS workspaces (
     namespace text,
     zetta_service_id uuid,
     created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    storage_gi integer NOT NULL DEFAULT 5,
+    storage_gi_observed integer NOT NULL DEFAULT 0,
+    storage_phase text NOT NULL DEFAULT '',
+    storage_message text NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS volume_snapshot_policies (
+    target text PRIMARY KEY,
+    schedule text NOT NULL DEFAULT '0 3 * * *',
+    keep integer NOT NULL DEFAULT 7,
+    requested_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS volume_snapshot_status (
+    target text PRIMARY KEY,
+    snapshot_name text NOT NULL DEFAULT '',
+    ready_to_use boolean NOT NULL DEFAULT false,
+    snapshot_at timestamptz,
+    message text NOT NULL DEFAULT '',
     updated_at timestamptz NOT NULL DEFAULT now()
 );

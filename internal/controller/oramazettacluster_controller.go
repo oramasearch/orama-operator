@@ -824,7 +824,14 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 	if z.Spec.Storage.StorageClassName != "" {
 		pvc.Spec.StorageClassName = &z.Spec.Storage.StorageClassName
 	}
-	sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{pvc}
+	// A StatefulSet's claim templates are immutable: the API server refuses an update that changes
+	// them. Once the StatefulSet exists its templates are kept as they are, so a later
+	// spec.storage change (a workspace grown by lake's storage_gi, operator#259) never blocks the
+	// rest of this reconcile. Existing claims are grown in place by whoever raised the size; a
+	// replica added later starts at the template's size.
+	if sts.ResourceVersion == "" || len(sts.Spec.VolumeClaimTemplates) == 0 {
+		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{pvc}
+	}
 
 	// hostNetwork makes :7777/:4800 reachable at the k8s node's own address — the simplest way for a
 	// node to be dialable by siblings in other clusters (esp. a single-node cluster).
@@ -881,8 +888,10 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 	}
 	var sts appsv1.StatefulSet
 	ready := int32(0)
+	var storageCond *metav1.Condition
 	if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: stsName}, &sts); err == nil {
 		ready = sts.Status.ReadyReplicas
+		storageCond = zettaStorageTemplateCondition(z, &sts)
 	}
 
 	phase := "Progressing"
@@ -919,6 +928,15 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 		changed = true
 	}
 
+	if storageCond != nil {
+		storageCond.ObservedGeneration = z.Generation
+		if meta.SetStatusCondition(&z.Status.Conditions, *storageCond) {
+			changed = true
+		}
+	} else if meta.RemoveStatusCondition(&z.Status.Conditions, storageTemplateConditionType) {
+		changed = true
+	}
+
 	if !changed {
 		return nil // no change — don't touch the status subresource (anti-flap)
 	}
@@ -927,6 +945,45 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 	z.Status.Reachability, z.Status.Ephemeral, z.Status.WanAddress = reachability, z.Spec.Ephemeral, wanAddress
 	z.Status.IgnoredEnvVars = ignoredEnvVars
 	return r.Status().Update(ctx, z)
+}
+
+// storageTemplateConditionType reports a spec.storage the StatefulSet's immutable claim template
+// does not carry.
+const storageTemplateConditionType = "StorageTemplateCurrent"
+
+// zettaStorageTemplateCondition is nil while the StatefulSet's claim template matches spec.storage.
+// Otherwise it says the template is unchanged (it is immutable) and who grows the claims: the Lake
+// workspace reconciler for a workspace cluster, nobody for any other, whose claims keep their size
+// until they are grown by hand.
+func zettaStorageTemplateCondition(z *oramav1alpha1.OramaZettaCluster, sts *appsv1.StatefulSet) *metav1.Condition {
+	if len(sts.Spec.VolumeClaimTemplates) == 0 {
+		return nil
+	}
+	template := sts.Spec.VolumeClaimTemplates[0]
+	size := z.Spec.Storage.Size
+	if size == "" {
+		size = "10Gi"
+	}
+	wanted, err := resource.ParseQuantity(size)
+	current := template.Spec.Resources.Requests[corev1.ResourceStorage]
+	class := ""
+	if template.Spec.StorageClassName != nil {
+		class = *template.Spec.StorageClassName
+	}
+	if err == nil && wanted.Cmp(current) == 0 && (z.Spec.Storage.StorageClassName == "" || z.Spec.Storage.StorageClassName == class) {
+		return nil
+	}
+	message := fmt.Sprintf("spec.storage (size %s, class %q) differs from the StatefulSet's claim template (size %s, class %q), which is immutable and unchanged; ",
+		size, z.Spec.Storage.StorageClassName, current.String(), class)
+	if z.Labels[workspaceLabel] != "" {
+		message += "the Lake workspace reconciler grows the existing claims in place"
+	} else {
+		message += "existing claims keep their size until they are grown by hand"
+	}
+	return &metav1.Condition{
+		Type: storageTemplateConditionType, Status: metav1.ConditionFalse,
+		Reason: "ClaimTemplateUnchanged", Message: message,
+	}
 }
 
 func (r *OramaZettaClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {

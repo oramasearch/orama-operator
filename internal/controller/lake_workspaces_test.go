@@ -55,6 +55,9 @@ func (s *fakeWorkspacesStore) UpdateWorkspaceStatus(
 		candidate.ObservedGeneration = status.ObservedGeneration
 		candidate.Message = status.Message
 		candidate.Namespace = status.Namespace
+		candidate.StorageGiObserved = status.StorageGiObserved
+		candidate.StoragePhase = status.StoragePhase
+		candidate.StorageMessage = status.StorageMessage
 		s.writes++
 		s.updated = append(s.updated, status)
 		return true, nil

@@ -3593,3 +3593,112 @@ CREATE TABLE IF NOT EXISTS oci_repository_routes_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0068_oci_repository_routes')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0069_workspace_volumes: the operator's volumes (decision 54 S13, operator#259, operator#260,
+-- lake#380, docs/control-plane/schema.md#workspace-volumes-migration-0069_workspace_volumes).
+-- After lake#380 a workspace Zetta's volume holds the workspace's liquid store, its tenant images
+-- and its search index, and on a one-node workspace it is the only copy. These are desired state
+-- and observations only: the operator grows each workspace Zetta's claims and takes CSI snapshots
+-- from them, and it never talks to a workspace Zetta (decision 51).
+--
+-- workspaces.storage_gi is the desired size of each of the workspace Zetta's volumes, in GiB. It
+-- never decreases (enforce_workspace_storage_growth): an online-expanded block volume cannot
+-- shrink. The operator creates the OramaZettaCluster at this size, grows each existing claim in
+-- place, and reports storage_gi_observed (the smallest claim capacity it sees, in GiB),
+-- storage_phase (Pending | Resizing | Ready | Failed) and storage_message on the same row, as it
+-- reports the workspace's phase.
+--
+-- volume_snapshot_policies is content-free: a target (`store`, lake's own store volume, or a
+-- workspace id), a five-field cron schedule in UTC, how many snapshots to keep, and requested_at,
+-- a one-off request the operator honors when it is newer than the target's last snapshot. Every
+-- workspace gets the default policy when it is created; lake changes one only through
+-- request_volume_snapshot. volume_snapshot_status is written only by the operator: the target's
+-- last VolumeSnapshot, whether it is readyToUse, and when it was taken. Neither table has a
+-- foreign key to workspaces: a deleted workspace's retained snapshots, and what the operator last
+-- reported about them, outlive it (decision 54 S12).
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS storage_gi integer NOT NULL DEFAULT 5;
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS storage_gi_observed integer NOT NULL DEFAULT 0;
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS storage_phase text NOT NULL DEFAULT '';
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS storage_message text NOT NULL DEFAULT '';
+ALTER TABLE workspaces DROP CONSTRAINT IF EXISTS workspaces_storage_gi_check;
+ALTER TABLE workspaces ADD CONSTRAINT workspaces_storage_gi_check
+    CHECK (storage_gi BETWEEN 1 AND 32767);
+ALTER TABLE workspaces DROP CONSTRAINT IF EXISTS workspaces_storage_gi_observed_check;
+ALTER TABLE workspaces ADD CONSTRAINT workspaces_storage_gi_observed_check
+    CHECK (storage_gi_observed >= 0);
+ALTER TABLE workspaces DROP CONSTRAINT IF EXISTS workspaces_storage_phase_check;
+ALTER TABLE workspaces ADD CONSTRAINT workspaces_storage_phase_check
+    CHECK (storage_phase IN ('', 'Pending', 'Resizing', 'Ready', 'Failed'));
+
+CREATE OR REPLACE FUNCTION enforce_workspace_storage_growth() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.storage_gi < OLD.storage_gi THEN
+        RAISE EXCEPTION 'workspace storage never decreases: % GiB is below % GiB',
+            NEW.storage_gi, OLD.storage_gi USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS workspace_storage_growth ON workspaces;
+CREATE TRIGGER workspace_storage_growth BEFORE UPDATE OF storage_gi ON workspaces
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_storage_growth();
+
+CREATE TABLE IF NOT EXISTS volume_snapshot_policies (
+    target       text        PRIMARY KEY CHECK (target = 'store' OR target ~
+                     '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+    -- Minute, hour, day of month, month, day of week, in UTC. The default is daily at 03:00.
+    schedule     text        NOT NULL DEFAULT '0 3 * * *' CHECK (schedule ~
+                     '^[0-9*/,-]+ [0-9*/,-]+ [0-9*/,-]+ [0-9*/,-]+ [0-9*/,-]+$'),
+    keep         integer     NOT NULL DEFAULT 7 CHECK (keep BETWEEN 1 AND 100),
+    requested_at timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+-- Written only by the operator: one row per target, replaced on every observed change.
+CREATE TABLE IF NOT EXISTS volume_snapshot_status (
+    target        text        PRIMARY KEY,
+    snapshot_name text        NOT NULL DEFAULT '',
+    ready_to_use  boolean     NOT NULL DEFAULT false,
+    snapshot_at   timestamptz,
+    message       text        NOT NULL DEFAULT '',
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION add_workspace_snapshot_policy() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO volume_snapshot_policies (target) VALUES (NEW.id::text) ON CONFLICT DO NOTHING;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS workspace_snapshot_policy ON workspaces;
+CREATE TRIGGER workspace_snapshot_policy AFTER INSERT ON workspaces
+    FOR EACH ROW EXECUTE FUNCTION add_workspace_snapshot_policy();
+
+CREATE OR REPLACE FUNCTION notify_lake_volume_snapshots() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_notify('lake_volume_snapshots', NEW.target);
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS lake_volume_snapshots_changed ON volume_snapshot_policies;
+CREATE TRIGGER lake_volume_snapshots_changed AFTER INSERT OR UPDATE ON volume_snapshot_policies
+    FOR EACH ROW EXECUTE FUNCTION notify_lake_volume_snapshots();
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0069_workspace_volumes') THEN
+        INSERT INTO volume_snapshot_policies (target) VALUES ('store') ON CONFLICT DO NOTHING;
+        INSERT INTO volume_snapshot_policies (target)
+            SELECT id::text FROM workspaces WHERE desired <> 'deleted' ORDER BY created_at, id
+            ON CONFLICT DO NOTHING;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS workspace_volumes_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0069_workspace_volumes')
+    ON CONFLICT DO NOTHING;

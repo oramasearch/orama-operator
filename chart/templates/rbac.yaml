@@ -132,6 +132,22 @@ rules:
   - apiGroups: ["rabbitmq.com"]
     resources: ["rabbitmqclusters"]
     verbs: ["*"]
+  # Lake volumes (operator#259, operator#260, docs/lake/volume-snapshots.md): read storage classes
+  # to tell whether a workspace Zetta's claim can grow; create the Retain VolumeSnapshotClass, take
+  # and prune VolumeSnapshots, and label their bound contents. Never delete a class or a content.
+  # Read uncached, so a cluster without the snapshot CRDs only reports it in the status table.
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotclasses"]
+    verbs: ["get", "list", "watch", "create"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["get", "list", "watch", "patch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]

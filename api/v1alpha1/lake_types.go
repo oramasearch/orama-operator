@@ -166,6 +166,37 @@ type LakeSpec struct {
 	// credentials. Requires the control-plane Postgres. See docs/lake/workspaces.md.
 	// +optional
 	Workspaces LakeWorkspacesSpec `json:"workspaces,omitempty"`
+
+	// Snapshots takes scheduled CSI snapshots of lake's store volume and of every workspace Zetta's
+	// volumes from lake's volume_snapshot_policies table, keeps the newest of each, and reports
+	// them in volume_snapshot_status (operator#260). Requires the control-plane Postgres and the
+	// snapshot.storage.k8s.io CRDs. See docs/lake/volume-snapshots.md.
+	// +optional
+	Snapshots LakeSnapshotsSpec `json:"snapshots,omitempty"`
+}
+
+// LakeSnapshotsSpec configures the scheduled CSI snapshots of lake's volumes.
+type LakeSnapshotsSpec struct {
+	// Enabled reconciles lake's volume_snapshot_policies table. Disabling stops new snapshots and
+	// pruning; it never deletes a snapshot.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ClassName is the VolumeSnapshotClass every snapshot names. The operator creates it when it
+	// is absent, for Driver with deletionPolicy Retain, so deleting a snapshot, a workspace or its
+	// namespace never deletes the snapshot's contents. An existing class is used as it is, and is
+	// refused unless its deletionPolicy is Retain.
+	// +kubebuilder:default=lake-retain
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	ClassName string `json:"className,omitempty"`
+
+	// Driver is the CSI driver of a class the operator creates. It must be the driver of the
+	// volumes it snapshots.
+	// +kubebuilder:default=disk.csi.azure.com
+	// +optional
+	Driver string `json:"driver,omitempty"`
 }
 
 // LakeAppsSpec configures the shared settings used by LakeApp resources.
@@ -295,7 +326,10 @@ type LakeWorkspacesSpec struct {
 	// +optional
 	Image string `json:"image,omitempty"`
 
-	// Storage configures every workspace Zetta cluster's persistent data volume.
+	// Storage configures every workspace Zetta cluster's persistent data volume. StorageClassName is
+	// the class of every workspace volume. Size is deprecated and ignored once lake's schema has
+	// workspaces.storage_gi (migration 0069): each workspace's size comes from that column, whose
+	// default for new workspaces is lake's (5 GiB); Size applies only to a row without one.
 	// +kubebuilder:default={size:"5Gi"}
 	// +optional
 	Storage OramaZettaStorage `json:"storage,omitempty"`
