@@ -181,6 +181,9 @@ func (r *LakeVolumeSnapshotsReconciler) syncVolumeSnapshots(
 		return lakeVolumeSnapshotsChangingPoll
 	}
 	now := r.now()
+	if len(policies) > 0 && !policies[0].DBNow.IsZero() {
+		now = policies[0].DBNow.UTC()
+	}
 	wait := lakeVolumeSnapshotsPoll
 	for i := range policies {
 		policy := &policies[i]
@@ -295,8 +298,20 @@ func (s takenSnapshot) ready() bool {
 }
 
 func (s takenSnapshot) failure() string {
+	if s.ready() {
+		return ""
+	}
 	message, _, _ := unstructured.NestedString(s.object.Object, "status", "error", "message")
 	return message
+}
+
+// ownSnapshot reports whether this controller took the snapshot for this target of this Lake: the
+// labels it sets on every snapshot it creates. A hand-made snapshot, or another target's, is never
+// adopted, pruned or counted.
+func ownSnapshot(object *unstructured.Unstructured, lake *oramav1alpha1.Lake, target string) bool {
+	labels := object.GetLabels()
+	return labels[snapshotTargetLabel] == target && labels[workspaceLakeLabel] == lake.Name &&
+		labels[workspaceManagedByLabel] == "orama-operator"
 }
 
 // claimSnapshots lists the target's snapshots of one claim, oldest first.
@@ -315,7 +330,7 @@ func (r *LakeVolumeSnapshotsReconciler) claimSnapshots(
 	for i := range list.Items {
 		item := &list.Items[i]
 		source, _, _ := unstructured.NestedString(item.Object, "spec", "source", "persistentVolumeClaimName")
-		if source != claim || item.GetDeletionTimestamp() != nil {
+		if source != claim || item.GetDeletionTimestamp() != nil || !ownSnapshot(item, lake, target) {
 			continue
 		}
 		takenAt := item.GetCreationTimestamp().Time
@@ -347,7 +362,7 @@ func (r *LakeVolumeSnapshotsReconciler) takeSnapshot(
 	lake *oramav1alpha1.Lake,
 	namespace, target, claim string,
 	now time.Time,
-) (takenSnapshot, error) {
+) (takenSnapshot, string, error) {
 	snapshot := &unstructured.Unstructured{}
 	snapshot.SetGroupVersionKind(volumeSnapshotGVK)
 	snapshot.SetNamespace(namespace)
@@ -368,18 +383,25 @@ func (r *LakeVolumeSnapshotsReconciler) takeSnapshot(
 	if err := r.Create(ctx, snapshot); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			// Taken in this second already; the existing one stands.
+			// Only if it is this controller's live snapshot of this claim: a terminating,
+			// hand-made or foreign object of the same name is reported, never adopted.
 			existing := &unstructured.Unstructured{}
 			existing.SetGroupVersionKind(volumeSnapshotGVK)
 			if err := r.apiReader().Get(ctx, client.ObjectKeyFromObject(snapshot), existing); err != nil {
-				return takenSnapshot{}, err
+				return takenSnapshot{}, "", err
 			}
-			return takenSnapshot{object: existing, takenAt: now}, nil
+			source, _, _ := unstructured.NestedString(existing.Object, "spec", "source", "persistentVolumeClaimName")
+			if existing.GetDeletionTimestamp() != nil || !ownSnapshot(existing, lake, target) || source != claim {
+				return takenSnapshot{}, fmt.Sprintf("VolumeSnapshot %s/%s exists and is not this target's live snapshot; not adopted",
+					namespace, snapshot.GetName()), nil
+			}
+			return takenSnapshot{object: existing, takenAt: now}, "", nil
 		}
-		return takenSnapshot{}, err
+		return takenSnapshot{}, "", err
 	}
 	logf.FromContext(ctx).Info("took a volume snapshot", "lake", lake.Name, "target", target,
 		"snapshot", namespace+"/"+snapshot.GetName())
-	return takenSnapshot{object: snapshot, takenAt: now}, nil
+	return takenSnapshot{object: snapshot, takenAt: now}, "", nil
 }
 
 // labelSnapshotContent labels the VolumeSnapshotContent a snapshot is bound to with its target and
@@ -459,61 +481,205 @@ func (r *LakeVolumeSnapshotsReconciler) reconcileSnapshotTarget(
 	}
 	var newest *takenSnapshot
 	allReady := true
-	var failures []string
+	var notes []string
 	for _, claim := range claims {
 		snapshots, err := r.claimSnapshots(ctx, lake, namespace, policy.Target, claim)
 		if err != nil {
 			return status, false, true, time.Time{}, err
 		}
-		due := len(snapshots) == 0
-		if !due {
-			latest := snapshots[len(snapshots)-1].takenAt
-			due = (policy.RequestedAt != nil && policy.RequestedAt.After(latest)) ||
-				!schedule.Next(latest).After(now)
+		requested, scheduled, scheduleProblem := snapshotDue(snapshots, policy.RequestedAt, schedule, now)
+		if scheduleProblem != "" {
+			notes = append(notes, scheduleProblem)
 		}
-		if due {
-			taken, err := r.takeSnapshot(ctx, lake, namespace, policy.Target, claim, now)
+		if requested || scheduled {
+			taken, problem, err := r.takeSnapshot(ctx, lake, namespace, policy.Target, claim, now)
 			if err != nil {
 				return status, false, true, time.Time{}, err
 			}
-			if len(snapshots) == 0 || snapshots[len(snapshots)-1].object.GetName() != taken.object.GetName() {
+			if problem != "" {
+				notes = append(notes, problem)
+			} else if len(snapshots) == 0 || snapshots[len(snapshots)-1].object.GetName() != taken.object.GetName() {
 				snapshots = append(snapshots, taken)
 			}
 		}
-		for len(snapshots) > keep {
-			oldest := snapshots[0]
-			if err := r.Delete(ctx, oldest.object); err != nil && !apierrors.IsNotFound(err) {
-				return status, false, true, time.Time{}, err
-			}
-			logf.FromContext(ctx).Info("pruned a volume snapshot beyond keep", "lake", lake.Name,
-				"target", policy.Target, "snapshot", namespace+"/"+oldest.object.GetName())
-			snapshots = snapshots[1:]
+		kept, pruneNotes, err := r.pruneSnapshots(ctx, lake, policy.Target, snapshots, keep)
+		if err != nil {
+			return status, false, true, time.Time{}, err
 		}
+		notes = append(notes, pruneNotes...)
+		snapshots = kept
 		for _, snapshot := range snapshots {
 			if err := r.labelSnapshotContent(ctx, lake, snapshot, policy.Target, claim); err != nil {
 				return status, false, true, time.Time{}, err
 			}
+		}
+		if len(snapshots) == 0 {
+			allReady = false
+			continue
 		}
 		last := snapshots[len(snapshots)-1]
 		if !last.ready() {
 			allReady = false
 		}
 		if message := last.failure(); message != "" {
-			failures = append(failures, last.object.GetName()+": "+message)
+			notes = append(notes, last.object.GetName()+": "+message)
 		}
 		if newest == nil || last.takenAt.After(newest.takenAt) {
 			newest = &last
 		}
-		if claimNext := schedule.Next(last.takenAt); next.IsZero() || claimNext.Before(next) {
+		if claimNext := schedule.Next(last.takenAt); !claimNext.IsZero() && (next.IsZero() || claimNext.Before(next)) {
 			next = claimNext
 		}
+	}
+	if newest == nil {
+		status.ReadyToUse = false
+		status.Message = strings.Join(notes, "; ")
+		return status, true, false, next, nil
 	}
 	takenAt := newest.takenAt
 	status.SnapshotName = newest.object.GetName()
 	status.SnapshotAt = &takenAt
 	status.ReadyToUse = allReady
-	status.Message = strings.Join(failures, "; ")
+	status.Message = strings.Join(notes, "; ")
 	return status, true, !allReady, next, nil
+}
+
+// snapshotDue says whether a claim needs a snapshot now: requested when lake's requested_at is newer
+// than the claim's last snapshot (both on Postgres's clock), scheduled when it has none yet or the
+// schedule's next time after the last has come. A schedule that never fires (its Next is zero, for
+// example February 31st) takes no scheduled snapshot and is reported; a request still works.
+func snapshotDue(snapshots []takenSnapshot, requestedAt *time.Time, schedule cron.Schedule, now time.Time) (requested, scheduled bool, problem string) {
+	const never = "schedule never fires; no scheduled snapshot is taken"
+	if len(snapshots) == 0 {
+		requested = requestedAt != nil
+		if schedule.Next(now).IsZero() {
+			return requested, false, never
+		}
+		return requested, true, ""
+	}
+	latest := snapshots[len(snapshots)-1].takenAt
+	requested = requestedAt != nil && requestedAt.After(latest)
+	next := schedule.Next(latest)
+	if next.IsZero() {
+		return requested, false, never
+	}
+	return requested, !next.After(now), ""
+}
+
+// snapshotFailed reports a snapshot the snapshotter gave up on for now: not ready, with an error.
+func snapshotFailed(s takenSnapshot) bool { return s.failure() != "" }
+
+// pruneSnapshots bounds a claim's snapshots, which arrive oldest first. Only readyToUse snapshots
+// count toward keep, and the newest ready one is never deleted. Of the failed ones, the newest is
+// kept for diagnosis and older ones are deleted; a not-ready one without an error is in progress and
+// is kept unless a newer ready snapshot exists, when it is treated as stuck and deleted. Each
+// deletion goes through pruneSnapshot, which may decline it; a declined snapshot is kept and
+// reported. It answers the snapshots kept, oldest first.
+func (r *LakeVolumeSnapshotsReconciler) pruneSnapshots(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	target string,
+	snapshots []takenSnapshot,
+	keep int,
+) ([]takenSnapshot, []string, error) {
+	var ready, failed []int
+	newestReady := -1
+	for i, snapshot := range snapshots {
+		switch {
+		case snapshot.ready():
+			ready = append(ready, i)
+			newestReady = i
+		case snapshotFailed(snapshot):
+			failed = append(failed, i)
+		}
+	}
+	doomed := map[int]bool{}
+	if len(ready) > keep {
+		for _, i := range ready[:len(ready)-keep] {
+			doomed[i] = true
+		}
+	}
+	if len(failed) > 1 {
+		for _, i := range failed[:len(failed)-1] {
+			doomed[i] = true
+		}
+	}
+	for i, snapshot := range snapshots {
+		if !snapshot.ready() && !snapshotFailed(snapshot) && newestReady > i {
+			doomed[i] = true
+		}
+	}
+	var kept []takenSnapshot
+	var notes []string
+	for i, snapshot := range snapshots {
+		if !doomed[i] || i == newestReady {
+			kept = append(kept, snapshot)
+			continue
+		}
+		note, err := r.pruneSnapshot(ctx, lake, target, snapshot)
+		if err != nil {
+			return nil, nil, err
+		}
+		if note != "" {
+			notes = append(notes, note)
+			kept = append(kept, snapshot)
+		}
+	}
+	return kept, notes, nil
+}
+
+// pruneSnapshot deletes one of a live target's snapshots so that keep bounds what is really kept.
+// It reads the bound VolumeSnapshotContent first and touches only a content bound back to this
+// snapshot by the expected CSI driver; it switches that content to deletionPolicy Delete, so the
+// cloud snapshot goes with it, and then deletes the snapshot. The class stays Retain: a snapshot
+// never pruned (every one of a deleted workspace) keeps its contents. A snapshot without a bound
+// content is deleted only when it failed (nothing was retained); otherwise it is kept, and the
+// returned note says why.
+func (r *LakeVolumeSnapshotsReconciler) pruneSnapshot(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	target string,
+	snapshot takenSnapshot,
+) (string, error) {
+	name := snapshot.object.GetNamespace() + "/" + snapshot.object.GetName()
+	contentName, _, _ := unstructured.NestedString(snapshot.object.Object, "status", "boundVolumeSnapshotContentName")
+	if contentName == "" {
+		if !snapshotFailed(snapshot) {
+			return fmt.Sprintf("%s is not bound to a content yet; not pruned", name), nil
+		}
+	} else {
+		content := &unstructured.Unstructured{}
+		content.SetGroupVersionKind(volumeSnapshotContentGVK)
+		if err := r.apiReader().Get(ctx, client.ObjectKey{Name: contentName}, content); err != nil {
+			if apierrors.IsNotFound(err) {
+				return fmt.Sprintf("%s names content %s, which does not exist; not pruned", name, contentName), nil
+			}
+			return "", err
+		}
+		driver, _, _ := unstructured.NestedString(content.Object, "spec", "driver")
+		refName, _, _ := unstructured.NestedString(content.Object, "spec", "volumeSnapshotRef", "name")
+		refNamespace, _, _ := unstructured.NestedString(content.Object, "spec", "volumeSnapshotRef", "namespace")
+		if driver != lakeSnapshotDriver(lake) {
+			return fmt.Sprintf("%s is bound to content %s of driver %q, not %q; not pruned", name, contentName, driver, lakeSnapshotDriver(lake)), nil
+		}
+		if refName != snapshot.object.GetName() || refNamespace != snapshot.object.GetNamespace() {
+			return fmt.Sprintf("content %s is not bound back to %s; not pruned", contentName, name), nil
+		}
+		if policy, _, _ := unstructured.NestedString(content.Object, "spec", "deletionPolicy"); policy != "Delete" {
+			patch := client.MergeFrom(content.DeepCopy())
+			if err := unstructured.SetNestedField(content.Object, "Delete", "spec", "deletionPolicy"); err != nil {
+				return "", err
+			}
+			if err := r.Patch(ctx, content, patch); err != nil {
+				return "", err
+			}
+		}
+	}
+	if err := r.Delete(ctx, snapshot.object); err != nil && !apierrors.IsNotFound(err) {
+		return "", err
+	}
+	logf.FromContext(ctx).Info("pruned a volume snapshot", "lake", lake.Name, "target", target, "snapshot", name)
+	return "", nil
 }
 
 func (r *LakeVolumeSnapshotsReconciler) SetupWithManager(mgr ctrl.Manager) error {

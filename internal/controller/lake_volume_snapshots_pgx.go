@@ -28,6 +28,10 @@ type LakeVolumeSnapshotPolicy struct {
 	WorkspaceDesired   string
 	WorkspaceNamespace string
 	Status             *LakeVolumeSnapshotStatus
+	// DBNow is Postgres's now() when the list was read: the one clock requested_at, schedules and
+	// the snapshots' recorded instants are judged by, so the operator's clock skew cannot make a
+	// request look already honored.
+	DBNow time.Time
 }
 
 // LakeVolumeSnapshotStatus is one volume_snapshot_status row, written only by the operator.
@@ -70,7 +74,7 @@ func openPgxVolumeSnapshotsStore(ctx context.Context, uri string) (LakeVolumeSna
 const listVolumeSnapshotPoliciesSQL = `SELECT p.target, p.schedule, p.keep, p.requested_at,
  COALESCE(w.desired, ''), COALESCE(w.namespace, ''),
  st.target IS NOT NULL, COALESCE(st.snapshot_name, ''), COALESCE(st.ready_to_use, false),
- st.snapshot_at, COALESCE(st.message, '')
+ st.snapshot_at, COALESCE(st.message, ''), now()
  FROM volume_snapshot_policies p
  LEFT JOIN workspaces w ON w.id::text = p.target
  LEFT JOIN volume_snapshot_status st ON st.target = p.target
@@ -99,6 +103,7 @@ func (s *pgxVolumeSnapshotsStore) ListVolumeSnapshotPolicies(ctx context.Context
 			&status.ReadyToUse,
 			&status.SnapshotAt,
 			&status.Message,
+			&policy.DBNow,
 		); err != nil {
 			return nil, errors.New("cannot decode volume snapshot policy row")
 		}

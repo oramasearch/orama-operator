@@ -48,15 +48,28 @@ seconds (every 10 while a snapshot is not ready). On each pass:
    namespace (running or stopped workspaces; a stopped workspace keeps its claims). A deleted
    workspace, or one lake no longer has, is left alone: nothing is taken or pruned, and its status
    row stays.
-3. **Take.** A claim gets a `VolumeSnapshot` named `<claim>-<UTC timestamp>` (for example
+3. **Take.** Every time is judged by Postgres's `now()`, read with the policies, never the
+   operator's clock, so clock skew cannot make a request look honored. A claim gets a `VolumeSnapshot` named `<claim>-<UTC timestamp>` (for example
    `data-prod-ws-6bb777ba498a-zetta-0-20261004t030000z`) in its namespace when it has none, when
    the schedule's next time after its last snapshot has come, or when `requested_at` is newer than
-   its last snapshot. Each is labelled `orama.cloud/snapshot-target=<target>`,
+   its last snapshot. A schedule that never fires (February 31st) takes no scheduled snapshot and is
+   reported in the status; a request still takes one. An existing object with the new snapshot's
+   name is adopted only if it is this target's live snapshot of that claim; a terminating, hand-made
+   or foreign one is reported and left alone. Each is labelled `orama.cloud/snapshot-target=<target>`,
    `orama.cloud/lake=<lake>` and `app.kubernetes.io/managed-by=orama-operator`, and annotated with
    the exact instant (`orama.cloud/snapshot-at`) and claim. It has no owner reference.
-4. **Prune.** The oldest of a claim's snapshots beyond `keep` are deleted. The class's `Retain`
-   policy keeps the deleted snapshot's `VolumeSnapshotContent` and the Azure snapshot; removing
-   those is a separate, explicit action (below).
+4. **Prune.** Only the operator's own snapshots of this target are considered (its labels); a
+   hand-made snapshot, or another target's, in the same namespace is never adopted, counted or
+   deleted. Only `readyToUse` snapshots count toward `keep`, and the newest ready one is never
+   deleted, even at `keep: 1`. Of the failed ones (not ready, with `status.error`), the newest is
+   kept for diagnosis and older ones are deleted; one still in progress is kept until a newer one is
+   ready. Before a snapshot is deleted the operator reads its bound `VolumeSnapshotContent` and
+   touches it only if it is bound back to that snapshot by the expected driver; it then patches the
+   content to `deletionPolicy: Delete`, so the Azure snapshot is deleted with it and `keep` bounds
+   what is really kept. A snapshot whose content is not bound yet, missing, of another driver or
+   bound elsewhere is not pruned, and the status message says why. Snapshots of a deleted workspace
+   are never pruned, so their contents keep the class's `Retain`: the class stays `Retain` as the
+   safety net for workspace deletion.
 5. **Label contents.** Each bound `VolumeSnapshotContent` is labelled with the target and annotated
    with its snapshot's namespace, name, claim and instant, so it can be found after its snapshot or
    namespace is gone.
@@ -68,8 +81,9 @@ Deleting a workspace deletes its namespace, and with it the `VolumeSnapshot` obj
 contents and the Azure snapshots stay (`Retain`), labelled with the workspace id.
 
 RBAC: `volumesnapshotclasses` get/list/watch/create, `volumesnapshots` get/list/watch/create/delete,
-`volumesnapshotcontents` get/list/watch/patch, and `storageclasses` get/list/watch for volume growth.
-The operator never deletes a class or a content.
+`volumesnapshotcontents` get/list/watch/patch (the label and the `deletionPolicy: Delete` switch of a
+pruned snapshot's content), and `storageclasses` get/list/watch for volume growth. The operator never
+deletes a class or a content; the snapshot controller deletes a pruned content once it is `Delete`.
 
 ## Finding a snapshot
 

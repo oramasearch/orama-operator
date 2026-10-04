@@ -28,11 +28,18 @@ import (
 type fakeVolumeSnapshotsStore struct {
 	policies []LakeVolumeSnapshotPolicy
 	writes   int
+	// now is Postgres's now() as the list reports it.
+	now func() time.Time
 }
 
 func (s *fakeVolumeSnapshotsStore) ListVolumeSnapshotPolicies(context.Context) ([]LakeVolumeSnapshotPolicy, error) {
 	out := make([]LakeVolumeSnapshotPolicy, len(s.policies))
 	copy(out, s.policies)
+	if s.now != nil {
+		for i := range out {
+			out[i].DBNow = s.now()
+		}
+	}
 	return out, nil
 }
 
@@ -135,7 +142,7 @@ func newSnapshotHarness(t *testing.T) *snapshotHarness {
 		{Target: snapshotStoreTarget, Schedule: "0 3 * * *", Keep: 2},
 		{Target: testWorkspaceID, Schedule: "0 3 * * *", Keep: 3,
 			WorkspaceDesired: "running", WorkspaceNamespace: testWorkspaceName},
-	}}
+	}, now: func() time.Time { return h.clock }}
 	h.reconciler = &LakeVolumeSnapshotsReconciler{
 		Client:    kube,
 		Scheme:    scheme,
@@ -189,39 +196,82 @@ func (h *snapshotHarness) names(namespace string) []string {
 	return names
 }
 
-// bind stands in for the CSI snapshotter: every snapshot in namespace is bound to a content that
-// is ready to use.
+// bind stands in for the CSI snapshotter: every snapshot in namespace that is neither ready nor
+// failed is bound to a content that is ready to use.
 func (h *snapshotHarness) bind(namespace string) {
 	h.t.Helper()
-	ctx := context.Background()
 	for _, item := range h.snapshots(namespace) {
-		if ready, _, _ := unstructured.NestedBool(item.Object, "status", "readyToUse"); ready {
-			continue
-		}
-		contentName := "snapcontent-" + string(item.GetUID())
-		content := &unstructured.Unstructured{}
-		content.SetGroupVersionKind(volumeSnapshotContentGVK)
-		content.SetName(contentName)
-		content.Object["spec"] = map[string]interface{}{
-			"deletionPolicy":          snapshotRetainPolicy,
-			"driver":                  "disk.csi.azure.com",
-			"volumeSnapshotClassName": "lake-retain",
-			"source":                  map[string]interface{}{"volumeHandle": "/subscriptions/x/disks/" + item.GetName()},
-			"volumeSnapshotRef": map[string]interface{}{
-				"name": item.GetName(), "namespace": namespace, "uid": string(item.GetUID()),
-			},
-		}
-		if err := h.kube.Create(ctx, content); err != nil {
-			h.t.Fatal(err)
-		}
-		item.Object["status"] = map[string]interface{}{
-			"boundVolumeSnapshotContentName": contentName,
-			"readyToUse":                     true,
-		}
-		if err := h.kube.Status().Update(ctx, &item); err != nil {
-			h.t.Fatal(err)
+		ready, _, _ := unstructured.NestedBool(item.Object, "status", "readyToUse")
+		failed, _, _ := unstructured.NestedString(item.Object, "status", "error", "message")
+		if !ready && failed == "" {
+			h.bindOne(namespace, item.GetName(), "disk.csi.azure.com")
 		}
 	}
+}
+
+func (h *snapshotHarness) snapshot(namespace, name string) *unstructured.Unstructured {
+	h.t.Helper()
+	item := &unstructured.Unstructured{}
+	item.SetGroupVersionKind(volumeSnapshotGVK)
+	if err := h.kube.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: name}, item); err != nil {
+		h.t.Fatal(err)
+	}
+	return item
+}
+
+// bindOne binds one snapshot to a ready content of driver.
+func (h *snapshotHarness) bindOne(namespace, name, driver string) string {
+	h.t.Helper()
+	ctx := context.Background()
+	item := h.snapshot(namespace, name)
+	contentName := "snapcontent-" + string(item.GetUID())
+	content := &unstructured.Unstructured{}
+	content.SetGroupVersionKind(volumeSnapshotContentGVK)
+	content.SetName(contentName)
+	content.Object["spec"] = map[string]interface{}{
+		"deletionPolicy":          snapshotRetainPolicy,
+		"driver":                  driver,
+		"volumeSnapshotClassName": "lake-retain",
+		"source":                  map[string]interface{}{"volumeHandle": "/subscriptions/x/disks/" + item.GetName()},
+		"volumeSnapshotRef": map[string]interface{}{
+			"name": item.GetName(), "namespace": namespace, "uid": string(item.GetUID()),
+		},
+	}
+	if err := h.kube.Create(ctx, content); err != nil {
+		h.t.Fatal(err)
+	}
+	item.Object["status"] = map[string]interface{}{
+		"boundVolumeSnapshotContentName": contentName,
+		"readyToUse":                     true,
+	}
+	if err := h.kube.Status().Update(ctx, item); err != nil {
+		h.t.Fatal(err)
+	}
+	return contentName
+}
+
+// fail marks one snapshot as failed by the snapshotter: not ready, with an error and no content.
+func (h *snapshotHarness) fail(namespace, name string) {
+	h.t.Helper()
+	item := h.snapshot(namespace, name)
+	item.Object["status"] = map[string]interface{}{
+		"readyToUse": false,
+		"error":      map[string]interface{}{"message": "disk is busy"},
+	}
+	if err := h.kube.Status().Update(context.Background(), item); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *snapshotHarness) contentPolicy(name string) string {
+	h.t.Helper()
+	content := &unstructured.Unstructured{}
+	content.SetGroupVersionKind(volumeSnapshotContentGVK)
+	if err := h.kube.Get(context.Background(), client.ObjectKey{Name: name}, content); err != nil {
+		h.t.Fatal(err)
+	}
+	policy, _, _ := unstructured.NestedString(content.Object, "spec", "deletionPolicy")
+	return policy
 }
 
 func (h *snapshotHarness) contents() []unstructured.Unstructured {
@@ -318,6 +368,9 @@ func TestVolumeSnapshotsAreTakenOnScheduleAndOnRequestAndPruned(t *testing.T) {
 		h.bind(lakeNamespace(h.lake))
 		h.bind(testWorkspaceName)
 	}
+	// Only ready snapshots count toward keep: the last one counts once it is ready.
+	h.clock = h.clock.Add(time.Minute)
+	h.poll()
 	store := h.names(lakeNamespace(h.lake))
 	if len(store) != 2 || store[1] != h.storeClaim+"-20261007t030005z" {
 		t.Fatalf("store snapshots after pruning = %v", store)
@@ -326,10 +379,29 @@ func TestVolumeSnapshotsAreTakenOnScheduleAndOnRequestAndPruned(t *testing.T) {
 	if len(workspace) != 3 || workspace[0] != h.wsClaim+"-20261005t030005z" {
 		t.Fatalf("workspace snapshots after pruning = %v", workspace)
 	}
-	for _, content := range h.contents() {
-		if spec, _, _ := unstructured.NestedString(content.Object, "spec", "deletionPolicy"); spec != "Retain" {
-			t.Fatalf("content %s would be deleted with its snapshot", content.GetName())
+	// keep bounds what is really kept: a pruned snapshot's content is switched to Delete so the
+	// cloud snapshot goes with it; every kept one stays Retain.
+	live := map[string]bool{}
+	for _, namespace := range []string{lakeNamespace(h.lake), testWorkspaceName} {
+		for _, item := range h.snapshots(namespace) {
+			bound, _, _ := unstructured.NestedString(item.Object, "status", "boundVolumeSnapshotContentName")
+			live[bound] = true
 		}
+	}
+	deleted := 0
+	for _, content := range h.contents() {
+		policy, _, _ := unstructured.NestedString(content.Object, "spec", "deletionPolicy")
+		switch {
+		case live[content.GetName()] && policy != "Retain":
+			t.Fatalf("kept snapshot's content %s is %s", content.GetName(), policy)
+		case !live[content.GetName()] && policy != "Delete":
+			t.Fatalf("pruned snapshot's content %s is %s, want Delete", content.GetName(), policy)
+		case !live[content.GetName()]:
+			deleted++
+		}
+	}
+	if deleted != 5 {
+		t.Fatalf("contents switched to Delete = %d, want 5 (three of the store, two of the workspace)", deleted)
 	}
 
 	// A one-off request newer than the last snapshot takes one at once, outside the schedule.
@@ -338,16 +410,17 @@ func TestVolumeSnapshotsAreTakenOnScheduleAndOnRequestAndPruned(t *testing.T) {
 	h.store.policy(testWorkspaceID).RequestedAt = &requested
 	h.poll()
 	workspace = h.names(testWorkspaceName)
-	if len(workspace) != 3 || workspace[2] != h.wsClaim+"-20261007t093000z" {
-		t.Fatalf("workspace snapshots after a request = %v", workspace)
+	if len(workspace) != 4 || workspace[3] != h.wsClaim+"-20261007t093000z" {
+		t.Fatalf("workspace snapshots after a request = %v (a not-ready one does not count toward keep)", workspace)
 	}
 	if status := h.store.policy(testWorkspaceID).Status; status.SnapshotName != h.wsClaim+"-20261007t093000z" || status.ReadyToUse {
 		t.Fatalf("status after a request = %+v", status)
 	}
+	h.bind(testWorkspaceName)
 	h.clock = h.clock.Add(time.Minute)
 	h.poll()
-	if workspace := h.names(testWorkspaceName); len(workspace) != 3 {
-		t.Fatalf("an honored request was honored again: %v", workspace)
+	if workspace := h.names(testWorkspaceName); len(workspace) != 3 || workspace[2] != h.wsClaim+"-20261007t093000z" {
+		t.Fatalf("an honored request was honored again, or keep was not applied: %v", workspace)
 	}
 	if names := h.names(lakeNamespace(h.lake)); len(names) != 2 {
 		t.Fatalf("a workspace request snapshotted the store: %v", names)
@@ -390,7 +463,8 @@ func TestVolumeSnapshotsOutliveTheirWorkspace(t *testing.T) {
 	if !found {
 		t.Fatal("the deleted workspace's retained content cannot be found by its target label")
 	}
-	if names := h.names(lakeNamespace(h.lake)); len(names) != 2 {
+	// The store kept its own schedule; none of its snapshots is ready, so none counts toward keep.
+	if names := h.names(lakeNamespace(h.lake)); len(names) != 4 {
 		t.Fatalf("the store kept its own schedule: %v", names)
 	}
 }
@@ -425,5 +499,165 @@ func TestVolumeSnapshotsRefuseAClassThatDeletesContents(t *testing.T) {
 	if status := h.store.policy("423e4567-e89b-42d3-a456-426614174000").Status; status == nil ||
 		status.Message != "the workspace has no namespace yet" {
 		t.Fatalf("namespaceless workspace status = %+v", status)
+	}
+}
+
+// Review of #267, item 1: only ready snapshots count toward keep, and the newest ready one is never
+// deleted, even at keep=1; of the failed ones the newest is kept for diagnosis and older ones are
+// deleted; a not-ready one still in progress is kept until a newer one is ready.
+func TestVolumeSnapshotsPruneOnlyReadyOnesTowardKeep(t *testing.T) {
+	h := newSnapshotHarness(t)
+	policy := h.store.policy(testWorkspaceID)
+	policy.Keep = 1
+	h.store.policies = h.store.policies[1:] // the workspace alone
+	day := func(d int) string {
+		return h.wsClaim + time.Date(2026, 10, d, 3, 0, 5, 0, time.UTC).Format("-20060102t150405z")
+	}
+
+	h.clock = time.Date(2026, 10, 3, 3, 0, 5, 0, time.UTC)
+	h.poll()
+	first := h.bindOne(testWorkspaceName, day(3), "disk.csi.azure.com")
+	for d := 4; d <= 6; d++ {
+		h.clock = time.Date(2026, 10, d, 3, 0, 5, 0, time.UTC)
+		h.poll()
+		if d < 6 {
+			h.fail(testWorkspaceName, day(d))
+		}
+	}
+	h.clock = h.clock.Add(time.Minute)
+	h.poll()
+	// The ready day 3 (keep=1), the newest failed day 5, the in-progress day 6; day 4 pruned.
+	if got := strings.Join(h.names(testWorkspaceName), ","); got != strings.Join([]string{day(3), day(5), day(6)}, ",") {
+		t.Fatalf("snapshots = %s", got)
+	}
+	if status := h.store.policy(testWorkspaceID).Status; status.SnapshotName != day(6) || status.ReadyToUse {
+		t.Fatalf("status = %+v", status)
+	}
+
+	newest := h.bindOne(testWorkspaceName, day(6), "disk.csi.azure.com")
+	h.clock = h.clock.Add(time.Minute)
+	h.poll()
+	if got := strings.Join(h.names(testWorkspaceName), ","); got != strings.Join([]string{day(5), day(6)}, ",") {
+		t.Fatalf("snapshots after day 6 is ready = %s", got)
+	}
+	if h.contentPolicy(first) != "Delete" || h.contentPolicy(newest) != "Retain" {
+		t.Fatalf("content policies: pruned %s, newest %s", h.contentPolicy(first), h.contentPolicy(newest))
+	}
+	if status := h.store.policy(testWorkspaceID).Status; status.SnapshotName != day(6) || !status.ReadyToUse {
+		t.Fatalf("status after day 6 is ready = %+v", status)
+	}
+}
+
+// Review of #267, items 4 and the AlreadyExists nit: a hand-made snapshot, another target's, and an
+// unlabelled object squatting on the next snapshot's name are never adopted, counted or pruned;
+// this controller's own snapshot bound to a content of another driver is not pruned, and the status
+// says so.
+func TestVolumeSnapshotsTouchOnlyTheirOwnSnapshots(t *testing.T) {
+	h := newSnapshotHarness(t)
+	ctx := context.Background()
+	h.store.policy(testWorkspaceID).Keep = 1
+	h.store.policies = h.store.policies[1:]
+	create := func(name string, labels map[string]string) string {
+		item := &unstructured.Unstructured{}
+		item.SetGroupVersionKind(volumeSnapshotGVK)
+		item.SetNamespace(testWorkspaceName)
+		item.SetName(name)
+		item.SetLabels(labels)
+		item.Object["spec"] = map[string]interface{}{
+			"volumeSnapshotClassName": "lake-retain",
+			"source":                  map[string]interface{}{"persistentVolumeClaimName": h.wsClaim},
+		}
+		if err := h.kube.Create(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		return h.bindOne(testWorkspaceName, name, "disk.csi.azure.com")
+	}
+	manual := create("manual-backup", nil)
+	other := create("other-target", map[string]string{
+		snapshotTargetLabel: "523e4567-e89b-42d3-a456-426614174000", workspaceLakeLabel: h.lake.Name,
+		workspaceManagedByLabel: "orama-operator",
+	})
+
+	h.clock = time.Date(2026, 10, 3, 3, 0, 5, 0, time.UTC)
+	h.poll()
+	ours := h.wsClaim + "-20261003t030005z"
+	foreign := h.bindOne(testWorkspaceName, ours, "other.csi.example.com")
+	// Squat on the next snapshot's name with an unlabelled object.
+	squat := h.wsClaim + "-20261004t030005z"
+	create(squat, nil)
+
+	h.clock = time.Date(2026, 10, 4, 3, 0, 5, 0, time.UTC)
+	h.poll()
+	status := h.store.policy(testWorkspaceID).Status
+	if !strings.Contains(status.Message, "not adopted") || status.SnapshotName != ours {
+		t.Fatalf("status with a squatter = %+v", status)
+	}
+	if got := h.snapshot(testWorkspaceName, squat).GetLabels(); len(got) != 0 {
+		t.Fatalf("the squatter was adopted: %v", got)
+	}
+
+	h.clock = time.Date(2026, 10, 5, 3, 0, 5, 0, time.UTC)
+	h.poll()
+	h.bindOne(testWorkspaceName, h.wsClaim+"-20261005t030005z", "disk.csi.azure.com")
+	h.clock = h.clock.Add(time.Minute)
+	h.poll()
+	names := strings.Join(h.names(testWorkspaceName), ",")
+	for _, name := range []string{"manual-backup", "other-target", squat, ours} {
+		if !strings.Contains(names, name) {
+			t.Fatalf("%s was pruned: %s", name, names)
+		}
+	}
+	for _, content := range []string{manual, other, foreign} {
+		if h.contentPolicy(content) != "Retain" {
+			t.Fatalf("content %s was switched to %s", content, h.contentPolicy(content))
+		}
+	}
+	if status := h.store.policy(testWorkspaceID).Status; !strings.Contains(status.Message, "other.csi.example.com") ||
+		!strings.Contains(status.Message, "not pruned") {
+		t.Fatalf("status does not report the declined prune: %+v", status)
+	}
+}
+
+// Review of #267, item 2: a schedule that never fires (February 31st) takes no scheduled snapshot
+// and says so; a requested_at request still takes one, once.
+func TestVolumeSnapshotsScheduleThatNeverFires(t *testing.T) {
+	h := newSnapshotHarness(t)
+	h.store.policies = h.store.policies[1:]
+	h.store.policy(testWorkspaceID).Schedule = "0 0 31 2 *"
+	h.poll()
+	if names := h.names(testWorkspaceName); len(names) != 0 {
+		t.Fatalf("a schedule that never fires took %v", names)
+	}
+	if status := h.store.policy(testWorkspaceID).Status; status == nil || !strings.Contains(status.Message, "never fires") {
+		t.Fatalf("status = %+v", status)
+	}
+	requested := h.clock.Add(-time.Second)
+	h.store.policy(testWorkspaceID).RequestedAt = &requested
+	h.poll()
+	h.clock = h.clock.Add(time.Hour)
+	h.poll()
+	if names := h.names(testWorkspaceName); len(names) != 1 {
+		t.Fatalf("snapshots after one request = %v", names)
+	}
+	if status := h.store.policy(testWorkspaceID).Status; !strings.Contains(status.Message, "never fires") {
+		t.Fatalf("status after the request = %+v", status)
+	}
+}
+
+// Review of #267, clock skew: requested_at, schedules and recorded instants are judged by Postgres's
+// now(), not the operator's clock, so an operator an hour ahead still honors a request made after
+// the last snapshot.
+func TestVolumeSnapshotsJudgeRequestsByThePostgresClock(t *testing.T) {
+	h := newSnapshotHarness(t)
+	h.store.policies = h.store.policies[1:]
+	h.reconciler.Now = func() time.Time { return h.clock.Add(time.Hour) }
+	h.poll()
+	h.bind(testWorkspaceName)
+	h.clock = h.clock.Add(10 * time.Minute)
+	requested := h.clock.Add(-time.Second)
+	h.store.policy(testWorkspaceID).RequestedAt = &requested
+	h.poll()
+	if names := h.names(testWorkspaceName); len(names) != 2 || names[1] != h.wsClaim+"-20261003t121000z" {
+		t.Fatalf("snapshots after a request with a skewed operator clock = %v", names)
 	}
 }
