@@ -792,6 +792,7 @@ func verificationJobSpec(sourceHost string, restoredHost string, secretName stri
 		{Name: "PGUSER", ValueFrom: rehearsalSecretKey(secretName, "username")},
 		{Name: "PGPASSWORD", ValueFrom: rehearsalSecretKey(secretName, "password")},
 		{Name: "QUERY", Value: postgresVerificationQuery},
+		{Name: "MIGRATIONS_QUERY", Value: postgresMissingMigrationsQuery},
 	}
 	if restoredHost != "" {
 		env = append(env, corev1.EnvVar{Name: "RESTORED_HOST", Value: restoredHost})
@@ -820,7 +821,9 @@ func rehearsalSecretKey(name string, key string) *corev1.EnvVarSource {
 	}}
 }
 
-const postgresVerificationQuery = `
+// postgresGuardCountQuery counts every lake guard table. A guard missing on either side fails the
+// query; TestLakeSchemaMatchesVendoredSource checks every guard in the vendored schema is listed.
+const postgresGuardCountQuery = `
 SELECT 'agent_guard=' || count(*) FROM agent_guard
 UNION ALL SELECT 'settings_guard=' || count(*) FROM settings_guard
 UNION ALL SELECT 'platform_guard=' || count(*) FROM platform_guard
@@ -883,17 +886,51 @@ UNION ALL SELECT 'application_settings_workspaces_guard=' || count(*) FROM appli
 UNION ALL SELECT 'application_authorization_code_workspaces_guard=' || count(*) FROM application_authorization_code_workspaces_guard
 UNION ALL SELECT 'repository_records_guard=' || count(*) FROM repository_records_guard
 UNION ALL SELECT 'workspace_store_guard=' || count(*) FROM workspace_store_guard
-UNION ALL SELECT 'schema_version=' || max(version) FROM schema_migrations
-ORDER BY 1;
 `
+
+// postgresMissingMigrationsQuery returns, space-separated, every migration the vendored lake schema
+// records that the database's schema_migrations lacks, or an empty string. A guard count and the
+// newest version cannot show a migration numbered before the newest one that was never applied
+// (#271), and a restore copies the gap, so the comparison alone passes; this names it.
+var postgresMissingMigrationsQuery = missingMigrationsQuery(schemaMigrationVersions(lakeSchemaSQL))
+
+// postgresVerificationQuery is compared between the live and the restored database.
+var postgresVerificationQuery = postgresGuardCountQuery +
+	"UNION ALL SELECT 'missing_migrations=' || (" + postgresMissingMigrationsQuery + ")\n" +
+	"UNION ALL SELECT 'schema_version=' || max(version) FROM schema_migrations\n" +
+	"ORDER BY 1;\n"
+
+func missingMigrationsQuery(versions []string) string {
+	if len(versions) == 0 {
+		return "SELECT ''"
+	}
+	values := make([]string, len(versions))
+	for i, version := range versions {
+		values[i] = "('" + version + "')"
+	}
+	return "SELECT coalesce(string_agg(v, ' ' ORDER BY v), '') FROM (VALUES " + strings.Join(values, ", ") +
+		") AS expected(v) WHERE NOT EXISTS (SELECT 1 FROM schema_migrations m WHERE m.version = expected.v)"
+}
 
 const postgresRestoreVerificationScript = `
 psql --host="$SOURCE_HOST" --dbname=lake --tuples-only --no-align --command "$QUERY" > /tmp/source
 psql --host="$RESTORED_HOST" --dbname=lake --tuples-only --no-align --command "$QUERY" > /tmp/restored
+for side in source restored; do
+  if ! grep -qx 'missing_migrations=' /tmp/$side; then
+    echo "$side database lacks migrations recorded in the vendored lake schema:"
+    grep '^missing_migrations=' /tmp/$side
+    exit 1
+  fi
+done
 diff -u /tmp/source /tmp/restored
 `
 
 const postgresConnectionVerificationScript = `
+missing=$(psql --host="$SOURCE_HOST" --dbname=lake --tuples-only --no-align --command "$MIGRATIONS_QUERY")
+if [ -n "$missing" ]; then
+  echo "database lacks migrations recorded in the vendored lake schema: $missing"
+  exit 1
+fi
 psql --host="$SOURCE_HOST" --dbname=lake --tuples-only --no-align --command "SELECT max(version) FROM schema_migrations"
 `
 

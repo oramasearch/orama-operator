@@ -92,8 +92,35 @@ It refuses to replace another resource's Job. A same-version failed Job remains 
 explicitly retried by deleting that Job; changing the desired version replaces it automatically.
 
 The schema remains Applying while a Job is running or being replaced. Applied records the
-completed Job's version, and steady reconciliation does not rewrite status. A database already
-at `0021` makes the migration Job exit successfully without executing the SQL file.
+completed Job's version, and steady reconciliation does not rewrite status.
+
+### When the Job skips the file
+
+The Job skips the SQL file only when both hold:
+
+1. the guard table exists; and
+2. every `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')` in the mounted file names a
+   version present in the database's `schema_migrations`.
+
+It then prints `schema already applied (<guard> present, every schema_migrations row recorded) —
+nothing to do`. If any recorded version is missing, it prints `<guard> present but
+schema_migrations lacks: <versions>` and applies the whole file in one transaction, exactly as on a
+fresh database. Every lake migration is idempotent and its one-time data changes check their own
+`schema_migrations` row, so the migrations already present are no-ops.
+
+The guard alone was not enough
+([#271](https://github.com/oramasearch/orama-operator/issues/271)). On 2026-10-05 lake's
+`0067_workspace_store` merged after `0068` and `0069` had applied on dev. The vendored file contained
+0067, but the Job saw `workspace_volumes_guard` (0069) and printed `schema already applied
+(workspace_volumes_guard present) — nothing to do`, so the PostgresSchema reported `Applied` without
+0067. Dev was repaired by hand.
+
+The guard check stays. A database with the guard but no `schema_migrations` table, and a schema file
+that records no migrations (the v1 dashboard schema), keep the guard-only behavior. The Job extracts
+versions with `sed`; `schemaMigrationVersions` in Go uses the same pattern, and
+`TestSchemaMigrationSedMatchesGo` checks both find the same versions in the vendored file.
+`LakeRestoreRehearsal` uses the Go list to fail a restore, upgrade or failover rehearsal whose
+database lacks any of them ([Postgres data-service rehearsals](data-services/postgres.md)).
 
 Lake reconciles the control DB and schema before creating or updating its Deployment and
 disruption budget. It requires the desired schema version, the observed current generation,
@@ -118,6 +145,8 @@ When lake adds a migration:
 
 2. Record that commit and SHA-256 in `internal/controller/assets/lake-schema.source.json`.
    Set `lakeSchemaGuardTable` in `lake_controller.go` to the newest migration's completion table.
+   Each migration must record itself with `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`
+   on a line of its own: the Job and the rehearsal both read those lines to decide what is applied.
    The hash includes the guard. Confirm the entire combined SQL remains safe to reapply and that
    the guard becomes visible only after the migration commits. Add the guard to the Postgres
    rehearsal verification query and extend the schema proof for the migration's actual effects.
@@ -148,13 +177,21 @@ python3 hack/check-lake-schema.py
 ```
 
 The envtest suite creates fresh databases at `127.0.0.1:5432` and drops only those it created.
-It covers a pre-0021 database, an already-updated database, and upgrade from a retained completed
-0020 Job. It checks the parent column, cascading foreign key, index, migration marker, one-time
+It covers a pre-0021 database, an already-updated database, upgrade from a retained completed
+0020 Job, and a database holding `workspace_volumes_guard` with 0067's column, completion table and
+`schema_migrations` row removed (`guard_present_earlier_migration_missing`), which must re-apply the
+file, restore 0067 and leave earlier one-time migrations alone. Every case checks that
+`schema_migrations` ends with exactly the versions the file records. It checks the parent column, cascading foreign key, index, migration marker, one-time
 API/static token revocation, unchanged browser sessions, and stable status after success.
 Because envtest has no kubelet or Job controller, the test executes the actual rendered Job
 command with local `psql`, substituting only the ConfigMap mount path, and reports its exit
 success through Job.status. It also completes foreground deletion after verifying that request;
 there are no Kubernetes pods in this native harness.
+
+`TestPgMigrationScriptDecidesFromEveryMigration` runs in the ordinary suite without Postgres: it
+executes the rendered Job script against a stub `psql` that answers the missing-migration query from
+the versions the script actually sent. It covers a fresh database, a guard with 0067 missing, a fully
+recorded database, a guard without `schema_migrations`, and a file that records no migrations.
 
 `TestLakeSchemaGatesWorkloadRollout` uses the fake API client to check first startup, image-update
 ordering, failed/pending schema status, stale versions, stale generations, and a missing success
@@ -172,3 +209,7 @@ The regression was run before the fix: the rendered command printed
 failed with `PostgresSchema reported Applied with parent_session_id missing (column count 0)`.
 The fixed tree applies the file before reporting Applied; the already-updated case prints
 `schema already applied (custodial_identity_guard present)` and preserves new tokens.
+
+The #271 regression was run before the fix by restoring the guard-only decision in the rendered
+script: `guard_present_earlier_migration_missing` failed with `missing migration was not re-applied`
+and the stub-`psql` case reported `applied = false, want true`. With the fix both pass.

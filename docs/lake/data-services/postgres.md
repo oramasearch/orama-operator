@@ -43,8 +43,17 @@ After CNPG is healthy, a `postgres:18-alpine` Job queries all schema guard table
 `schema_migrations` version in both live and recovered databases, including
 `services_guard` from `0024_services`, `service_catalog_guard` from `0025_service_catalog`,
 `sqlite_services_guard` from `0026_sqlite_services`, `analytics_services_guard` from
-`0027_analytics_services` and `stores_guard` from `0028_stores`. Success marks both `backup` and
-`restore` as `tested`. Either outcome removes every scratch object.
+`0027_analytics_services` and `stores_guard` from `0028_stores`. The same query lists, as
+`missing_migrations=`, every migration recorded in the vendored lake schema
+(`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`) that the database's `schema_migrations`
+lacks. The Job fails if that list is non-empty on either side, before comparing. Comparison alone
+cannot see a gap present in both databases, and neither the guard counts nor the newest version show
+an earlier-numbered migration that never applied: on 2026-10-05, `0067_workspace_store` merged after
+`0068` and `0069` had applied, and the newest version stayed `0069`
+([#271](https://github.com/oramasearch/orama-operator/issues/271)). Run a rehearsal after the Lake
+schema reports `Applied` at the operator's vendored version, or the check reports the migrations the
+pending Job is about to apply. Success marks both `backup` and `restore` as `tested`. Either outcome
+removes every scratch object.
 
 ## Upgrade
 
@@ -78,7 +87,8 @@ CNPG's healthy instance list, selects a non-primary instance deterministically, 
 same status transition as `kubectl cnpg promote`. It waits until CNPG reports that target as the
 healthy current primary, then runs a Job in the Lake namespace using the existing CNPG application
 Secret and `-rw` Service. The query checks that the schema remains reachable through the
-application connection contract.
+application connection contract and that `schema_migrations` holds every migration the vendored lake
+schema records.
 
 ```yaml
 apiVersion: orama.cloud/v1alpha1
