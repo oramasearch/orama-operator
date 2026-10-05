@@ -31,8 +31,11 @@ type PostgresSchemaSpec struct {
 	// the prior Job after its pods stop, then re-runs the guarded combined schema.
 	Version string `json:"version"`
 
-	// GuardTable is a `public` table whose existence means the schema is already applied — the
-	// idempotency guard, so a re-run is a no-op instead of a duplicate apply.
+	// GuardTable is a `public` table that must exist for the schema to count as already applied.
+	// When the schema file records migrations (`INSERT INTO schema_migrations (version) VALUES
+	// ('NNNN_…')`), every one of them must also be in the database's `schema_migrations`; a guard
+	// alone cannot see an earlier-numbered migration that merged later (#271). Without that table,
+	// or for a file that records none, the guard alone decides.
 	// +kubebuilder:default=crawler_configs
 	// +optional
 	GuardTable string `json:"guardTable,omitempty"`

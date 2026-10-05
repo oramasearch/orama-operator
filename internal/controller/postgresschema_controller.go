@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -156,8 +157,29 @@ func (r *PostgresSchemaReconciler) ensureMigrationJob(ctx context.Context, ps *o
 	return job, nil
 }
 
-// pgMigrationJobSpec builds the idempotent migration Job: wait for the DB, skip if the guard table
-// already exists, else apply the whole schema in one transaction (all-or-nothing).
+// schemaMigrationPattern matches a schema file's migration records,
+// `INSERT INTO schema_migrations (version) VALUES ('NNNN_name')`. The Job script extracts the same
+// lines with pgSchemaMigrationSed; TestSchemaMigrationSedMatchesGo keeps the two in step.
+var schemaMigrationPattern = regexp.MustCompile(`(?m)^[ \t]*INSERT INTO schema_migrations \(version\) VALUES \('([0-9]{4}_[A-Za-z0-9_]+)'\)`)
+
+// pgSchemaMigrationSed prints each migration version a schema file records, one per line.
+const pgSchemaMigrationSed = `sed -n "s/^[[:space:]]*INSERT INTO schema_migrations (version) VALUES ('\([0-9][0-9][0-9][0-9]_[A-Za-z0-9_]*\)').*/\1/p"`
+
+// schemaMigrationVersions returns the migration versions a schema file records, in file order.
+func schemaMigrationVersions(sql string) []string {
+	var versions []string
+	for _, match := range schemaMigrationPattern.FindAllStringSubmatch(sql, -1) {
+		versions = append(versions, match[1])
+	}
+	return versions
+}
+
+// pgMigrationJobSpec builds the idempotent migration Job: wait for the DB, skip only if the guard
+// table exists AND every migration the schema file records is present in schema_migrations, else
+// apply the whole schema in one transaction (all-or-nothing). The guard alone is not enough: a
+// migration numbered before the guard's can merge after it (#271), and the guard then hides it.
+// A database with the guard but no schema_migrations table, and a schema file that records no
+// migrations, keep the guard-only behavior.
 func pgMigrationJobSpec(ps *oramav1alpha1.PostgresSchema) batchv1.JobSpec {
 	guard := ps.Spec.GuardTable
 	if guard == "" {
@@ -172,7 +194,19 @@ func pgMigrationJobSpec(ps *oramav1alpha1.PostgresSchema) batchv1.JobSpec {
 echo "postgres-schema: waiting for the database..."
 until psql "$DATABASE_URL" -c 'SELECT 1' >/dev/null 2>&1; do sleep 3; done
 if psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.` + guard + `')" | grep -q ` + guard + `; then
-  echo "schema already applied (` + guard + ` present) — nothing to do"; exit 0
+  expected=$(` + pgSchemaMigrationSed + ` ` + schemaFile + `)
+  if [ -z "$expected" ]; then
+    echo "schema already applied (` + guard + ` present) — nothing to do"; exit 0
+  fi
+  if ! psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.schema_migrations')" | grep -q schema_migrations; then
+    echo "schema already applied (` + guard + ` present, no schema_migrations table) — nothing to do"; exit 0
+  fi
+  values=$(printf "('%s')," $expected)
+  missing=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT string_agg(v, ' ' ORDER BY v) FROM (VALUES ${values%,}) AS expected(v) WHERE NOT EXISTS (SELECT 1 FROM schema_migrations m WHERE m.version = expected.v)")
+  if [ -z "$missing" ]; then
+    echo "schema already applied (` + guard + ` present, every schema_migrations row recorded) — nothing to do"; exit 0
+  fi
+  echo "` + guard + ` present but schema_migrations lacks: $missing"
 fi
 echo "applying schema (version ` + ps.Spec.Version + `)..."
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f ` + schemaFile + `

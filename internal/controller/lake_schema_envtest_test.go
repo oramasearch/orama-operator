@@ -68,21 +68,57 @@ func TestLakeSchemaEnvtest(t *testing.T) {
 			}
 			proof.sql(initialSQL)
 			proof.seedSessions()
-			lakeReconciler := &LakeReconciler{Client: c, Scheme: scheme}
-			if err := lakeReconciler.reconcileLakeControlDBSchema(proof.ctx, proof.lake, proof.lake.Spec.Namespace, nil); err != nil {
-				t.Fatal(err)
-			}
-			proof.reconciler = &PostgresSchemaReconciler{Client: c, Scheme: scheme}
-			proof.reconcile("Applying")
-			output := proof.runJob()
-			if alreadyApplied != strings.Contains(output, "schema already applied (stores_guard present)") {
+			output := proof.applyLakeSchema(scheme)
+			skipped := strings.Contains(output, "schema already applied ("+lakeSchemaGuardTable+" present, every schema_migrations row recorded)")
+			if alreadyApplied != skipped || alreadyApplied == strings.Contains(output, "applying schema") {
 				t.Fatalf("unexpected guard behavior: %s", output)
 			}
-			proof.reconcile("Applied")
 			proof.verifyAttenuation(alreadyApplied)
 			proof.verifySteadyStatus()
 		})
 	}
+	// #271: 0067 merged after 0068 and 0069 had applied. The database holds the newest guard but
+	// lacks 0067's column, completion table and schema_migrations row; the Job must apply the file.
+	t.Run("guard_present_earlier_migration_missing", func(t *testing.T) {
+		proof := newLakeSchemaProof(t, c)
+		proof.sql(lakeSchemaSQL)
+		proof.seedSessions()
+		proof.sql(`ALTER TABLE workspaces DROP COLUMN store_moved_at;
+DROP TABLE workspace_store_guard;
+DELETE FROM schema_migrations WHERE version = '0067_workspace_store';`)
+		output := proof.applyLakeSchema(scheme)
+		if !strings.Contains(output, lakeSchemaGuardTable+" present but schema_migrations lacks: 0067_workspace_store") ||
+			!strings.Contains(output, "applying schema") || strings.Contains(output, "schema already applied") {
+			t.Fatalf("missing migration was not re-applied: %s", output)
+		}
+		if got := proof.sql("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'workspaces' AND column_name = 'store_moved_at'"); got != "1" {
+			t.Fatalf("workspaces.store_moved_at count = %s", got)
+		}
+		if got := proof.sql("SELECT to_regclass('public.workspace_store_guard') IS NOT NULL"); got != "t" {
+			t.Fatal("workspace_store_guard missing after re-apply")
+		}
+		if got := proof.sql("SELECT count(*) FROM schema_migrations WHERE version = '0067_workspace_store'"); got != "1" {
+			t.Fatalf("0067 schema_migrations rows = %s", got)
+		}
+		proof.verifyAttenuation(true)
+		proof.verifySteadyStatus()
+		t.Log("0067 re-applied under an existing 0069 guard; earlier one-time migrations did not re-run")
+	})
+}
+
+// applyLakeSchema creates the Lake's schema resources, runs the rendered migration Job against the
+// proof database and returns its output, checking the phase before and after.
+func (p *lakeSchemaProof) applyLakeSchema(scheme *runtime.Scheme) string {
+	p.t.Helper()
+	lakeReconciler := &LakeReconciler{Client: p.client, Scheme: scheme}
+	if err := lakeReconciler.reconcileLakeControlDBSchema(p.ctx, p.lake, p.lake.Spec.Namespace, nil); err != nil {
+		p.t.Fatal(err)
+	}
+	p.reconciler = &PostgresSchemaReconciler{Client: p.client, Scheme: scheme}
+	p.reconcile("Applying")
+	output := p.runJob()
+	p.reconcile("Applied")
+	return output
 }
 
 func testLakeSchemaUpgrade(t *testing.T, c client.Client, scheme *runtime.Scheme) {
@@ -275,7 +311,7 @@ func (p *lakeSchemaProof) runJob() string {
 	p.t.Setenv("DATABASE_URL", p.uri)
 	output := runSchemaCommand(p.t, command[0], command[1], script)
 	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "schema already") || strings.HasPrefix(line, "applying schema") || strings.HasPrefix(line, "postgres-schema:") {
+		if strings.HasPrefix(line, "schema already") || strings.HasPrefix(line, "applying schema") || strings.HasPrefix(line, "postgres-schema:") || strings.Contains(line, "schema_migrations lacks") {
 			p.t.Log(line)
 		}
 	}
@@ -297,8 +333,18 @@ func (p *lakeSchemaProof) verifyAttenuation(alreadyApplied bool) {
 	if got := p.sql("SELECT count(*) FROM pg_constraint WHERE conrelid = 'sessions'::regclass AND contype = 'f' AND conname = 'sessions_parent_session_id_fkey' AND confdeltype = 'c'"); got != "1" {
 		p.t.Fatalf("parent session cascading foreign key count = %s", got)
 	}
-	if got := p.sql("SELECT max(version) FROM schema_migrations"); got != "0028_stores" {
-		p.t.Fatalf("newest migration = %s", got)
+	versions := schemaMigrationVersions(lakeSchemaSQL)
+	newest := versions[0]
+	for _, version := range versions {
+		if version > newest {
+			newest = version
+		}
+	}
+	if got := p.sql("SELECT max(version) FROM schema_migrations"); got != newest {
+		p.t.Fatalf("newest migration = %s, want %s", got, newest)
+	}
+	if got := p.sql("SELECT count(*) FROM schema_migrations"); got != fmt.Sprint(len(versions)) {
+		p.t.Fatalf("schema_migrations rows = %s, want %d", got, len(versions))
 	}
 	wantRevoked := "2"
 	if alreadyApplied {

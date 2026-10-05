@@ -126,7 +126,10 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
    `oramasearch/lake` `db/schema.sql`), guard table = `workspace_volumes_guard` from
-   `0069_workspace_volumes`, version = hash of the SQL plus guard. A changed hash automatically
+   `0069_workspace_volumes`, version = hash of the SQL plus guard. The Job skips the file only when
+   the guard exists **and** every `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')` in it
+   is present in the database's `schema_migrations`; otherwise it applies the whole idempotent file,
+   so a migration that merges out of order (0067 after 0068 and 0069, #271) still applies. A changed hash automatically
    replaces the obsolete migration Job, waiting for its pods to stop. Deployment creation and
    updates wait for Applied at the desired version and generation; existing pods retain their
    previous workload spec while the schema applies. Re-vendoring and native envtest proof are in

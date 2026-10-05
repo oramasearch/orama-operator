@@ -257,7 +257,7 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.connectionSecretRef` | `{ name, key }` — Secret + key holding the Postgres connection URI (the CNPG `<cr>-controldb-app` Secret, key `uri`). Missing = safe no-op (waits). |
 | `spec.schemaConfigMapRef` | `{ name, key }` — ConfigMap + key holding the schema SQL (applied all-or-nothing in one transaction). |
 | `spec.version` | Schema version recorded in `.status.appliedVersion` once applied. A change automatically replaces the prior Job with foreground deletion, waiting for its pods before starting the guarded apply. Lake hashes SQL plus guard; the dashboard hashes SQL. |
-| `spec.guardTable` | A `public` table whose existence means the schema is already applied (idempotency guard). Default `crawler_configs`. |
+| `spec.guardTable` | A `public` table that must exist for the Job to skip the apply. Default `crawler_configs`. When the schema file records migrations (`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`), the Job also requires every one of them in the database's `schema_migrations`, and otherwise applies the whole idempotent file ([#271](https://github.com/oramasearch/orama-operator/issues/271)). With no `schema_migrations` table, or a file that records none, the guard alone decides. |
 | `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `ReplacingMigrationJob` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
@@ -329,7 +329,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.postgres.backup` | Opt-in (`enabled`, default `false`) CNPG Barman object-store backup. `schedule` defaults to six-field `0 0 3 * * *`; `retention` defaults to `30d`; `destination.bucket` and `secretRef.name` are required when enabled. `destination.path` defaults to `lake-<name>/controldb`; `endpointURL` defaults to the Secret's `s3ApiEndpoint`. The Secret must be in `spec.namespace` and contain `s3ApiEndpoint`, `accessKeyId`, and `secretAccessKey`. The operator configures gzip WAL compression and creates owned `lake-<name>-controldb-backup` `ScheduledBackup` resources. See [`lake/backups.md`](lake/backups.md). |
 | _(admin token — automatic)_ | Secret **`lake-<name>-admin`** (key `token`, 64 hex), minted once and preserved, owned by the Lake; injected as `LAKE_ADMIN_TOKEN`. lake requires it as `Authorization: Bearer` on every `/v1` capability except `server_info` and on MCP tool calls. Retrieve: `kubectl get secret lake-<name>-admin -n <ns> -o jsonpath='{.data.token}' \| base64 -d`. |
 | _(sealing key — automatic)_ | Secret **`lake-<name>-sealing-key`** holds the current and still-needed prior X25519 private keys. Only the active public key and `kid` are injected into lake. See [`lake/sealed-secrets.md`](lake/sealed-secrets.md). |
-| _(schema — automatic)_ | With Postgres on, the Lake owns a `lake-<name>-controldb-migrations` ConfigMap holding lake's control-plane schema (vendored byte-identical from `oramasearch/lake` `db/schema.sql`) and a `lake-<name>-controldb-schema` **`PostgresSchema`** that applies it in one transaction, guarded on the newest migration table (`stores_guard` for `0028_stores`) and versioned by a hash of SQL plus guard. Schema completion gates Deployment creation and updates. Re-vendor lake `db/schema.sql` unchanged, update the pinned source and guard, and run the checks in [the schema guide](lake/schema.md). Incremental migrations remain #126. |
+| _(schema — automatic)_ | With Postgres on, the Lake owns a `lake-<name>-controldb-migrations` ConfigMap holding lake's control-plane schema (vendored byte-identical from `oramasearch/lake` `db/schema.sql`) and a `lake-<name>-controldb-schema` **`PostgresSchema`** that applies it in one transaction, guarded on the newest migration table (`workspace_volumes_guard` for `0069_workspace_volumes`) plus every migration the file records being present in `schema_migrations`, and versioned by a hash of SQL plus guard. Schema completion gates Deployment creation and updates. Re-vendor lake `db/schema.sql` unchanged, update the pinned source and guard, and run the checks in [the schema guide](lake/schema.md). Incremental migrations remain #126. |
 | `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. The Ingress permits `64m` request bodies and disables request/response buffering for Lake's streaming transfers. |
 | `spec.tls.secretName` | Optional `kubernetes.io/tls` Secret in `spec.namespace`. With ingress enabled and a host set, renders the Ingress TLS host and enables nginx HTTPS redirect. Empty is the backward-compatible HTTP-only default. |
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
@@ -464,10 +464,12 @@ verification. Sample:
 
 Runs and records a Lake data-service lifecycle rehearsal. The spec is immutable. Restore and
 upgrade recover a selected CNPG object-store backup into an isolated scratch namespace, compare
-guard-table row counts and the newest schema migration with the live database, and delete every
+guard-table row counts, the migrations missing from `schema_migrations` and the newest schema migration
+with the live database, fail when either side lacks a migration the vendored lake schema records, and delete every
 scratch object after success or failure. Upgrade changes the scratch Cluster image before
 verification. Failover requests a CNPG switchover on the live replicated control DB and verifies
-the existing application Secret still connects through the write Service.
+the existing application Secret still connects through the write Service and that the database
+holds every migration the vendored lake schema records.
 
 | Field | Purpose |
 |---|---|

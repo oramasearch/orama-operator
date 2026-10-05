@@ -117,8 +117,10 @@ supersedes. It is now a reconciled `PostgresSchema` CRD:
 
 **Version changes:** the controller foreground-deletes an obsolete migration Job, waits for its
 pods to stop, and creates a replacement. Status stays `Applying` during replacement and records
-`Applied` only for the completed desired Job. The combined SQL still uses a guard to skip an
-already-applied schema; Lake hashes both SQL and its latest migration guard
+`Applied` only for the completed desired Job. The combined SQL is skipped only when the guard table
+exists and every migration the file records (`INSERT INTO schema_migrations …`) is in the database's
+`schema_migrations` ([#271](https://github.com/oramasearch/orama-operator/issues/271)); Lake hashes
+both SQL and its latest migration guard
 ([schema guide](lake/schema.md)). True incremental migrations remain #126. **Least-privilege Postgres roles** (CNPG
 `managed.roles`: one login role per service instead of the shared `oramacore` owner, per the #40
 refinement + principle #4) is also a separate slice.

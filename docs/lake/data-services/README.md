@@ -13,12 +13,13 @@ has no successful result, while `none` means the current configuration cannot pr
 Postgres rehearsals are cluster-scoped `LakeRestoreRehearsal` objects. Restore and upgrade require
 enabled backups and create an isolated, deterministically named namespace. The controller copies
 only the CNPG application credentials and object-store credentials required by the rehearsal,
-recovers the selected backup, compares every guard-table row count and the newest
-`schema_migrations` version with the live control DB, records the result, and deletes the scratch
+recovers the selected backup, compares every guard-table row count, the migrations missing from
+`schema_migrations` and the newest `schema_migrations` version with the live control DB, fails when
+either database lacks a migration the vendored lake schema records, records the result, and deletes the scratch
 Cluster, Secrets, Job, and Namespace. Upgrade changes `spec.imageName` on that recovered Cluster
 before verification. Failover requires two or more instances, requests a CNPG switchover to a
 healthy replica, then connects through the existing `lake-<name>-controldb-app` Secret and `-rw`
-Service before recording success.
+Service and checks that every vendored migration is recorded before recording success.
 
 Examples and the operational procedure are in [Postgres data-service rehearsals](postgres.md).
 

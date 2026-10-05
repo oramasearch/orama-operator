@@ -94,8 +94,9 @@ kubectl get lrr prod-postgres-restore-20260905 -w
 kubectl get lake prod -o jsonpath='{.status.dataServices}' | jq
 ```
 
-The controller pins the selected Barman backup ID, recovers it, compares guard-table counts and the
-schema version with the live database, records success or failure, and deletes the scratch
+The controller pins the selected Barman backup ID, recovers it, compares guard-table counts, the
+migrations missing from `schema_migrations` and the schema version with the live database, fails if
+either side lacks a migration the vendored lake schema records, records success or failure, and deletes the scratch
 resources. See [Postgres data-service rehearsals](data-services/postgres.md) for restore, upgrade,
 and failover details.
 
