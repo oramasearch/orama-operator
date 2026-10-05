@@ -35,7 +35,7 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
-| `controlDB` | data-store | PlanetScale → CloudNativePG |
+| `controlDB` | data-store; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
 | `analytics` | data-store | ClickHouse |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |

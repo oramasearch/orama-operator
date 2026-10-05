@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -76,13 +77,12 @@ func TestBrokerTopologyStreamRetentionMatchesOramaCore(t *testing.T) {
 	}
 }
 
-// TestDashboardDbMigrateGatedOnSchemaOwnership is the regression for the dashboard crash-loop
-// (Postgres 42710, "type already exists"): when the operator owns the control-DB schema (in-cluster
-// controlDB → reconcileControlDBMigrations applies it via a PostgresSchema Job), the dashboard must
-// NOT also run its own drizzle-kit db-migrate — the double-apply collides. It runs its own migrate
-// ONLY for an external control DB (where the operator manages no PostgresSchema).
-func TestDashboardDbMigrateGatedOnSchemaOwnership(t *testing.T) {
-	hasDbMigrateInit := func(o *oramav1alpha1.OramaCloudV1) bool {
+// TestDashboardNeverMigratesControlDB guards the shared production PlanetScale (orama-bridge#142):
+// the dashboard runs no db-migrate in either mode. In-cluster, the operator's PostgresSchema owns the
+// schema (a second migrate collides, Postgres 42710); external, the database's owner runs migrations.
+// External mode must also read DATABASE_URL from credentialsSecretRef, not the in-cluster CNPG Secret.
+func TestDashboardNeverMigratesControlDB(t *testing.T) {
+	dashboard := func(o *oramav1alpha1.OramaCloudV1) *appsv1.Deployment {
 		s := ocv1TestScheme(t)
 		cl := fake.NewClientBuilder().WithScheme(s).Build()
 		r := &OramaCloudV1Reconciler{Client: cl, Scheme: s}
@@ -93,30 +93,55 @@ func TestDashboardDbMigrateGatedOnSchemaOwnership(t *testing.T) {
 		if err := cl.Get(context.Background(), types.NamespacedName{Name: "v1-dashboard", Namespace: "orama-system"}, dep); err != nil {
 			t.Fatalf("get dashboard Deployment: %v", err)
 		}
-		for _, ic := range dep.Spec.Template.Spec.InitContainers {
-			if ic.Name == "db-migrate" {
-				return true
+		return dep
+	}
+	databaseURLSecret := func(dep *appsv1.Deployment) string {
+		for _, c := range dep.Spec.Template.Spec.Containers {
+			for _, e := range c.Env {
+				if e.Name == "DATABASE_URL" && e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+					return e.ValueFrom.SecretKeyRef.Name
+				}
 			}
 		}
-		return false
+		return ""
 	}
 
-	// in-cluster controlDB → the operator's PostgresSchema owns the schema → NO dashboard db-migrate.
 	inCluster := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
 		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
 	})
-	if hasDbMigrateInit(inCluster) {
-		t.Error("in-cluster controlDB: dashboard must NOT run db-migrate (PostgresSchema owns the schema — double-apply → Postgres 42710)")
-	}
-
-	// external controlDB → no operator-managed PostgresSchema → dashboard runs its own migrate.
 	external := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
+		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external",
+			CredentialsSecretRef: &corev1.LocalObjectReference{Name: "planetscale"}}
+	})
+	for name, oc := range map[string]*oramav1alpha1.OramaCloudV1{"in-cluster": inCluster, "external": external} {
+		if n := len(dashboard(oc).Spec.Template.Spec.InitContainers); n != 0 {
+			t.Errorf("%s controlDB: dashboard has %d init containers, want none (no db-migrate)", name, n)
+		}
+	}
+	if got := databaseURLSecret(dashboard(inCluster)); got != "v1-controldb-app" {
+		t.Errorf("in-cluster DATABASE_URL secret = %q, want v1-controldb-app", got)
+	}
+	if got := databaseURLSecret(dashboard(external)); got != "planetscale" {
+		t.Errorf("external DATABASE_URL secret = %q, want planetscale (credentialsSecretRef)", got)
+	}
+}
+
+// TestExternalControlDBRequiresCredentials: an external control DB without credentialsSecretRef
+// fails the reconcile (Degraded) instead of starting clients against a Secret that doesn't exist.
+func TestExternalControlDBRequiresCredentials(t *testing.T) {
+	s := ocv1TestScheme(t)
+	r := &OramaCloudV1Reconciler{Client: fake.NewClientBuilder().WithScheme(s).Build(), Scheme: s}
+	oc := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external", Endpoint: "pg.example.com:5432"}
 	})
-	if !hasDbMigrateInit(external) {
-		t.Error("external controlDB: dashboard SHOULD run its own db-migrate (operator manages no PostgresSchema)")
+	if err := r.reconcileControlDB(context.Background(), oc); err == nil {
+		t.Error("external controlDB without credentialsSecretRef: want an error")
+	}
+	oc.Spec.Components.ControlDB.CredentialsSecretRef = &corev1.LocalObjectReference{Name: "planetscale"}
+	if err := r.reconcileControlDB(context.Background(), oc); err != nil {
+		t.Errorf("external controlDB with credentialsSecretRef: %v", err)
 	}
 }
 

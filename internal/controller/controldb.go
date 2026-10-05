@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
+	"fmt"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -42,17 +43,34 @@ const controlDBName = "oramacore" // database + owner
 // secret, or their queries fail with the wrong password (#32).
 func controlDBAppSecret(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-controldb-app" }
 
-// pgPasswordEnv sources the CNPG-generated owner password into env var `name` (#32).
-func pgPasswordEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
-	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-		LocalObjectReference: corev1.LocalObjectReference{Name: controlDBAppSecret(oc)}, Key: "password"}}}
+// controlDBExternal reports whether the control DB is an external database (e.g. the shared
+// production PlanetScale) that the operator connects to but does not provision or migrate.
+func controlDBExternal(oc *oramav1alpha1.OramaCloudV1) bool {
+	return oc.Spec.Components.ControlDB.Mode == "external"
 }
 
-// pgURIEnv sources the CNPG-generated connection URI (postgresql://owner:pw@<cr>-controldb-rw:5432/db)
-// into env var `name` (#32) — avoids hand-building a URL around a placeholder password.
+// controlDBSecret is the Secret every control-DB client reads its connection from: the CNPG
+// owner Secret in-cluster, or spec.components.controlDB.credentialsSecretRef when external. Both
+// carry the same keys (`uri`, `password`), so consumers don't care which mode is active.
+// reconcileControlDB rejects an external DB without a credentialsSecretRef before any consumer runs.
+func controlDBSecret(oc *oramav1alpha1.OramaCloudV1) string {
+	if ref := oc.Spec.Components.ControlDB.CredentialsSecretRef; controlDBExternal(oc) && ref != nil {
+		return ref.Name
+	}
+	return controlDBAppSecret(oc)
+}
+
+// pgPasswordEnv sources the control-DB password into env var `name` (#32).
+func pgPasswordEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
+	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: controlDBSecret(oc)}, Key: "password"}}}
+}
+
+// pgURIEnv sources the control-DB connection URI into env var `name` (#32) — avoids hand-building
+// a URL around a placeholder password.
 func pgURIEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
 	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-		LocalObjectReference: corev1.LocalObjectReference{Name: controlDBAppSecret(oc)}, Key: "uri"}}}
+		LocalObjectReference: corev1.LocalObjectReference{Name: controlDBSecret(oc)}, Key: "uri"}}}
 }
 
 // reconcileControlDB provisions the control-plane Postgres (PlanetScale in prod) as a
@@ -61,8 +79,14 @@ func pgURIEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
 // Requires the CloudNativePG operator to be installed (see helmfile).
 func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	db := oc.Spec.Components.ControlDB
-	if db.Mode == "external" {
-		return nil // external DB — the operator manages nothing to tear down
+	if controlDBExternal(oc) {
+		// External DB: the operator provisions nothing and applies no schema; whoever owns the
+		// database runs its migrations. Clients need the credentials Secret, so fail loudly here
+		// (Degraded) rather than let them start against the in-cluster Secret that doesn't exist.
+		if db.CredentialsSecretRef == nil || db.CredentialsSecretRef.Name == "" {
+			return fmt.Errorf("controlDB mode=external requires credentialsSecretRef (a Secret with keys uri and password)")
+		}
+		return nil
 	}
 	if !db.Enabled {
 		return r.teardownControlDB(ctx, oc) // disable ≠ leave running (#23)
