@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS repositories (
     id          uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
     customer_id uuid         NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
     name        varchar(256) NOT NULL,
-    description text         NOT NULL DEFAULT '',
+    -- description was a column here; 0070_drop_moved_tables dropped it (lake#315 part 2).
     visibility  text         NOT NULL DEFAULT 'private',
     created_at  timestamptz  NOT NULL DEFAULT now(),
     updated_at  timestamptz  NOT NULL DEFAULT now(),
@@ -470,85 +470,10 @@ ALTER TABLE keystore ADD COLUMN IF NOT EXISTS customer_id uuid REFERENCES custom
 CREATE UNIQUE INDEX IF NOT EXISTS keystore_customer_id_unique
     ON keystore (customer_id) WHERE customer_id IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS secrets_mounts (
-    id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
-    customer_id     uuid         NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    organization_id uuid         NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    name            varchar(256) NOT NULL,
-    description     text         NOT NULL DEFAULT '',
-    created_at      timestamptz  NOT NULL DEFAULT now(),
-    updated_at      timestamptz  NOT NULL DEFAULT now(),
-    CONSTRAINT secrets_mounts_name_format
-        CHECK (name ~ '^[a-z0-9]([a-z0-9-]{0,254}[a-z0-9])?$'),
-    CONSTRAINT secrets_mounts_scope_name_unique UNIQUE (customer_id, organization_id, name)
-);
-CREATE INDEX IF NOT EXISTS secrets_mounts_organization_id_idx
-    ON secrets_mounts (organization_id, created_at DESC);
-DROP TRIGGER IF EXISTS secrets_mounts_set_updated_at ON secrets_mounts;
-CREATE TRIGGER secrets_mounts_set_updated_at BEFORE UPDATE ON secrets_mounts
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-CREATE TABLE IF NOT EXISTS secrets_entries (
-    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    mount_id        uuid        NOT NULL REFERENCES secrets_mounts(id) ON DELETE CASCADE,
-    name            text        NOT NULL,
-    current_version bigint      NOT NULL DEFAULT 0,
-    custom_metadata jsonb       NOT NULL DEFAULT '{}'::jsonb,
-    created_at      timestamptz NOT NULL DEFAULT now(),
-    updated_at      timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT secrets_entries_name_check CHECK (length(name) BETWEEN 1 AND 1024),
-    CONSTRAINT secrets_entries_mount_name_unique UNIQUE (mount_id, name)
-);
-CREATE INDEX IF NOT EXISTS secrets_entries_mount_id_idx
-    ON secrets_entries (mount_id, created_at DESC);
-DROP TRIGGER IF EXISTS secrets_entries_set_updated_at ON secrets_entries;
-CREATE TRIGGER secrets_entries_set_updated_at BEFORE UPDATE ON secrets_entries
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-CREATE TABLE IF NOT EXISTS secrets_versions (
-    entry_id     uuid        NOT NULL REFERENCES secrets_entries(id) ON DELETE CASCADE,
-    version      bigint      NOT NULL,
-    ciphertext   text,
-    created_at   timestamptz NOT NULL DEFAULT now(),
-    deleted_at   timestamptz,
-    destroyed_at timestamptz,
-    PRIMARY KEY (entry_id, version),
-    CONSTRAINT secrets_versions_number_check CHECK (version > 0),
-    CONSTRAINT secrets_versions_destroyed_check
-        CHECK (destroyed_at IS NULL OR (ciphertext IS NULL AND deleted_at IS NOT NULL))
-);
-
-CREATE TABLE IF NOT EXISTS secrets_encryption_keys (
-    id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
-    mount_id        uuid         NOT NULL REFERENCES secrets_mounts(id) ON DELETE CASCADE,
-    name            varchar(256) NOT NULL,
-    derived_from_id uuid         REFERENCES secrets_encryption_keys(id) ON DELETE RESTRICT,
-    current_version bigint       NOT NULL DEFAULT 1,
-    created_at      timestamptz  NOT NULL DEFAULT now(),
-    updated_at      timestamptz  NOT NULL DEFAULT now(),
-    CONSTRAINT secrets_encryption_keys_name_format
-        CHECK (name ~ '^[a-z0-9]([a-z0-9-]{0,254}[a-z0-9])?$'),
-    CONSTRAINT secrets_encryption_keys_version_check CHECK (current_version > 0),
-    CONSTRAINT secrets_encryption_keys_mount_name_unique UNIQUE (mount_id, name)
-);
-CREATE INDEX IF NOT EXISTS secrets_encryption_keys_mount_id_idx
-    ON secrets_encryption_keys (mount_id, created_at DESC);
-DROP TRIGGER IF EXISTS secrets_encryption_keys_set_updated_at ON secrets_encryption_keys;
-CREATE TRIGGER secrets_encryption_keys_set_updated_at BEFORE UPDATE ON secrets_encryption_keys
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-CREATE TABLE IF NOT EXISTS secrets_data_keys (
-    customer_id uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    owner_kind  text        NOT NULL,
-    owner_id    uuid        NOT NULL,
-    key_version bigint      NOT NULL,
-    wrapped_key text        NOT NULL,
-    created_at  timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (owner_kind, owner_id, key_version),
-    CONSTRAINT secrets_data_keys_owner_kind_check CHECK (owner_kind IN ('mount', 'encryption')),
-    CONSTRAINT secrets_data_keys_version_check CHECK (key_version > 0)
-);
-CREATE INDEX IF NOT EXISTS secrets_data_keys_customer_id_idx ON secrets_data_keys (customer_id);
+-- The mounts, entries, versions, named encryption keys and data keys were the secrets_mounts,
+-- secrets_entries, secrets_versions, secrets_encryption_keys and secrets_data_keys tables here.
+-- They live in workspace Zettas (0057, lake#328-#332) and 0070_drop_moved_tables drops the
+-- tables, so they are no longer created: a rerun of this file must not bring them back.
 
 CREATE TABLE IF NOT EXISTS secrets_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -762,24 +687,8 @@ INSERT INTO schema_migrations (version) VALUES ('0011_offline_recovery') ON CONF
 -- Forge, export, and GitHub import (migration 0012): a versioned value per
 -- durable forge fact. Review anchors remain values so libliquid map_anchor can
 -- replace the temporary line mapping without changing persistent columns.
-CREATE TABLE IF NOT EXISTS forge_records (
-    id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    repository_id uuid        NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-    kind          text        NOT NULL,
-    value         jsonb       NOT NULL,
-    created_at    timestamptz NOT NULL DEFAULT now(),
-    updated_at    timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT forge_records_kind_check CHECK (kind IN (
-        'issue', 'issue_comment', 'review', 'review_comment', 'release',
-        'webhook', 'webhook_delivery', 'branch_protection', 'export', 'github_import'
-    )),
-    CONSTRAINT forge_records_value_check CHECK (jsonb_typeof(value) = 'object')
-);
-CREATE INDEX IF NOT EXISTS forge_records_repository_kind_created_idx
-    ON forge_records (repository_id, kind, created_at DESC);
-DROP TRIGGER IF EXISTS forge_records_set_updated_at ON forge_records;
-CREATE TRIGGER forge_records_set_updated_at BEFORE UPDATE ON forge_records
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+-- Forge records were the forge_records table here. They live in workspace Zettas (0054,
+-- lake#341) and 0070_drop_moved_tables drops the table, so it is no longer created.
 
 CREATE TABLE IF NOT EXISTS forge_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -891,25 +800,9 @@ INSERT INTO schema_migrations (version) VALUES ('0013_pki') ON CONFLICT DO NOTHI
 -- Metering (migration 0014): hourly customer usage and an idempotency ledger for build compute.
 -- Stored bytes are a gauge; transfer and compute values are counters.
 -- ---------------------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS metering_usage (
-    customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    hour               timestamptz NOT NULL,
-    stored_bytes       bigint      NOT NULL DEFAULT 0 CHECK (stored_bytes >= 0),
-    transfer_in_bytes  bigint      NOT NULL DEFAULT 0 CHECK (transfer_in_bytes >= 0),
-    transfer_out_bytes bigint      NOT NULL DEFAULT 0 CHECK (transfer_out_bytes >= 0),
-    compute_seconds    bigint      NOT NULL DEFAULT 0 CHECK (compute_seconds >= 0),
-    PRIMARY KEY (customer_id, hour),
-    CONSTRAINT metering_usage_hour_check CHECK (hour = date_trunc('hour', hour))
-);
-
-CREATE TABLE IF NOT EXISTS metering_build_records (
-    customer_id     uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    result_id       text        NOT NULL,
-    hour            timestamptz NOT NULL,
-    compute_seconds bigint     NOT NULL CHECK (compute_seconds >= 0),
-    PRIMARY KEY (customer_id, result_id),
-    CONSTRAINT metering_build_records_hour_check CHECK (hour = date_trunc('hour', hour))
-);
+-- Usage was the metering_usage and metering_build_records tables here. It lives in workspace
+-- Zettas (0053, lake#348, lake#349) and 0070_drop_moved_tables drops the tables, so they are no
+-- longer created.
 
 CREATE TABLE IF NOT EXISTS metering_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -921,24 +814,9 @@ INSERT INTO schema_migrations (version) VALUES ('0014_metering') ON CONFLICT DO 
 -- Drive sharing (migration 0015): expiring, scoped link capabilities over path policy objects.
 -- Direct recipient shares remain ordinary grants on the same objects.
 -- ---------------------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS drive_share_links (
-    id                    uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    repository_id         uuid        NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-    object_id             uuid        NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
-    node_id               text        NOT NULL,
-    path                  text        NOT NULL,
-    role                  text        NOT NULL,
-    token_hash            text        NOT NULL UNIQUE,
-    expires_at            timestamptz NOT NULL,
-    revoked_at            timestamptz,
-    created_by_taap_id    text        NOT NULL,
-    created_at            timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT drive_share_links_role_check CHECK (role IN ('read', 'write')),
-    CONSTRAINT drive_share_links_node_check CHECK (length(node_id) = 32),
-    CONSTRAINT drive_share_links_expiry_check CHECK (expires_at > created_at)
-);
-CREATE INDEX IF NOT EXISTS drive_share_links_repository_object_idx
-    ON drive_share_links (repository_id, object_id, created_at DESC);
+-- Share links were the drive_share_links table here. They live in workspace Zettas (0048,
+-- lake#350) and 0070_drop_moved_tables drops the table, so it is no longer created;
+-- drive_share_link_routes (0048) stays.
 
 CREATE TABLE IF NOT EXISTS drive_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -969,18 +847,11 @@ CREATE TABLE IF NOT EXISTS auth_applications (
     id                    uuid        PRIMARY KEY,
     customer_id           uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
     pool_id               text        NOT NULL UNIQUE,
-    name                  text        NOT NULL,
-    allowed_origins       jsonb       NOT NULL,
-    redirect_uris         jsonb       NOT NULL DEFAULT '[]'::jsonb,
+    -- name, allowed_origins, redirect_uris and theme were columns here; they live in the
+    -- application's workspace Zetta (0059, lake#351) and 0070_drop_moved_tables dropped them.
     custom_sign_in_domain text,
-    theme                 jsonb       NOT NULL DEFAULT '{}'::jsonb,
     created_at            timestamptz NOT NULL DEFAULT now(),
-    updated_at            timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT auth_applications_name_check CHECK (length(name) BETWEEN 1 AND 256),
-    CONSTRAINT auth_applications_origins_check CHECK (
-        jsonb_typeof(allowed_origins) = 'array' AND jsonb_array_length(allowed_origins) > 0),
-    CONSTRAINT auth_applications_redirects_check CHECK (jsonb_typeof(redirect_uris) = 'array'),
-    CONSTRAINT auth_applications_theme_check CHECK (jsonb_typeof(theme) = 'object')
+    updated_at            timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS auth_applications_custom_domain_unique
     ON auth_applications (lower(custom_sign_in_domain))
@@ -991,92 +862,11 @@ DROP TRIGGER IF EXISTS auth_applications_set_updated_at ON auth_applications;
 CREATE TRIGGER auth_applications_set_updated_at BEFORE UPDATE ON auth_applications
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
-CREATE TABLE IF NOT EXISTS auth_app_signing_keys (
-    application_id uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
-    kid            text        NOT NULL UNIQUE,
-    version        integer     NOT NULL CHECK (version > 0),
-    encrypted_seed text        NOT NULL,
-    public_key     text        NOT NULL,
-    current        boolean     NOT NULL DEFAULT true,
-    retired_at     timestamptz,
-    created_at     timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (application_id, version)
-);
-CREATE UNIQUE INDEX IF NOT EXISTS auth_app_signing_keys_current_unique
-    ON auth_app_signing_keys (application_id) WHERE current;
-
-CREATE TABLE IF NOT EXISTS auth_app_users (
-    application_id uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
-    user_id        uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    status         text        NOT NULL DEFAULT 'active',
-    created_at     timestamptz NOT NULL DEFAULT now(),
-    updated_at     timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (application_id, user_id),
-    CONSTRAINT auth_app_users_status_check CHECK (status IN ('active', 'suspended'))
-);
-CREATE INDEX IF NOT EXISTS auth_app_users_status_idx
-    ON auth_app_users (application_id, status, created_at DESC);
-DROP TRIGGER IF EXISTS auth_app_users_set_updated_at ON auth_app_users;
-CREATE TRIGGER auth_app_users_set_updated_at BEFORE UPDATE ON auth_app_users
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-CREATE TABLE IF NOT EXISTS auth_app_organizations (
-    id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
-    taap_id        text        NOT NULL,
-    name           text        NOT NULL,
-    metadata       jsonb       NOT NULL DEFAULT '{}'::jsonb,
-    created_at     timestamptz NOT NULL DEFAULT now(),
-    updated_at     timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT auth_app_organizations_taap_unique UNIQUE (application_id, taap_id),
-    CONSTRAINT auth_app_organizations_name_unique UNIQUE (application_id, name),
-    CONSTRAINT auth_app_organizations_metadata_check CHECK (jsonb_typeof(metadata) = 'object')
-);
-DROP TRIGGER IF EXISTS auth_app_organizations_set_updated_at ON auth_app_organizations;
-CREATE TRIGGER auth_app_organizations_set_updated_at BEFORE UPDATE ON auth_app_organizations
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-CREATE TABLE IF NOT EXISTS auth_app_webhooks (
-    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id   uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
-    url              text        NOT NULL,
-    events           text[]      NOT NULL,
-    encrypted_secret text        NOT NULL,
-    enabled          boolean     NOT NULL DEFAULT true,
-    created_at       timestamptz NOT NULL DEFAULT now(),
-    updated_at       timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT auth_app_webhooks_events_check CHECK (cardinality(events) > 0)
-);
-CREATE INDEX IF NOT EXISTS auth_app_webhooks_application_idx
-    ON auth_app_webhooks (application_id, created_at DESC);
-DROP TRIGGER IF EXISTS auth_app_webhooks_set_updated_at ON auth_app_webhooks;
-CREATE TRIGGER auth_app_webhooks_set_updated_at BEFORE UPDATE ON auth_app_webhooks
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-CREATE TABLE IF NOT EXISTS auth_app_webhook_events (
-    id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    application_id uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
-    event          text        NOT NULL,
-    payload        jsonb       NOT NULL,
-    created_at     timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT auth_app_webhook_events_payload_check CHECK (jsonb_typeof(payload) = 'object')
-);
-CREATE INDEX IF NOT EXISTS auth_app_webhook_events_application_idx
-    ON auth_app_webhook_events (application_id, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS auth_app_webhook_deliveries (
-    id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id   uuid        NOT NULL REFERENCES auth_app_webhook_events(id) ON DELETE CASCADE,
-    webhook_id uuid        NOT NULL REFERENCES auth_app_webhooks(id) ON DELETE CASCADE,
-    attempt    integer     NOT NULL CHECK (attempt > 0),
-    status     integer     NOT NULL DEFAULT 0,
-    signature  text        NOT NULL,
-    error      text        NOT NULL DEFAULT '',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT auth_app_webhook_deliveries_attempt_unique UNIQUE (event_id, webhook_id, attempt)
-);
-CREATE INDEX IF NOT EXISTS auth_app_webhook_deliveries_event_idx
-    ON auth_app_webhook_deliveries (event_id, created_at);
+-- Signing keys, users, organizations, webhooks, events and deliveries were the
+-- auth_app_signing_keys, auth_app_users, auth_app_organizations, auth_app_webhooks,
+-- auth_app_webhook_events and auth_app_webhook_deliveries tables here. They live in the
+-- application's workspace Zetta (0049, 0055, 0056; lake#352-#357) and 0070_drop_moved_tables
+-- drops the tables, so they are no longer created.
 
 CREATE TABLE IF NOT EXISTS auth_app_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -1133,28 +923,9 @@ INSERT INTO schema_migrations (version) VALUES ('0018_settings_surface') ON CONF
 -- Lake observed. Zetta remains the append-only deployment authority; this mirror keeps pages
 -- available during an operator-control outage.
 -- ---------------------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS platform_environments (
-    id            uuid        PRIMARY KEY,
-    repository_id uuid        NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-    name          text        NOT NULL,
-    object_id     uuid        NOT NULL UNIQUE REFERENCES objects(id) ON DELETE CASCADE,
-    created_at    timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT platform_environments_repository_name_unique UNIQUE (repository_id, name),
-    CONSTRAINT platform_environments_name_check CHECK (length(name) BETWEEN 1 AND 256)
-);
-CREATE INDEX IF NOT EXISTS platform_environments_repository_idx
-    ON platform_environments (repository_id, name);
-
-CREATE TABLE IF NOT EXISTS platform_mirror (
-    kind    text        NOT NULL,
-    key     text        NOT NULL,
-    value   jsonb       NOT NULL,
-    seen_at timestamptz NOT NULL,
-    PRIMARY KEY (kind, key),
-    CONSTRAINT platform_mirror_kind_check
-        CHECK (kind IN ('deployment', 'environment_env', 'domain')),
-    CONSTRAINT platform_mirror_value_check CHECK (jsonb_typeof(value) = 'object')
-);
+-- Environments and the mirror were the platform_environments and platform_mirror tables here.
+-- They live in workspace Zettas (0060, lake#358, lake#359) and 0070_drop_moved_tables drops the
+-- tables, so they are no longer created; each environment's policy object stays.
 
 CREATE TABLE IF NOT EXISTS platform_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -1173,18 +944,9 @@ CREATE TABLE IF NOT EXISTS identity_taap_assertions (
     used_at      timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS auth_app_authorization_codes (
-    code_hash      text        PRIMARY KEY,
-    application_id uuid        NOT NULL REFERENCES auth_applications(id) ON DELETE CASCADE,
-    user_id        uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    redirect_uri   text        NOT NULL,
-    code_challenge text        NOT NULL,
-    nonce          text        NOT NULL,
-    expires_at     timestamptz NOT NULL DEFAULT now() + interval '5 minutes',
-    used_at        timestamptz
-);
-CREATE INDEX IF NOT EXISTS auth_app_authorization_codes_live_idx
-    ON auth_app_authorization_codes (application_id, expires_at) WHERE used_at IS NULL;
+-- One-use OIDC authorization codes were the auth_app_authorization_codes table here. They live
+-- in the application's workspace Zetta (0061, lake#363) and 0070_drop_moved_tables drops the
+-- table, so it is no longer created.
 
 ALTER TABLE pki_certificates ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
 ALTER TABLE pki_certificates DROP CONSTRAINT IF EXISTS pki_certificates_profile_check;
@@ -1194,21 +956,9 @@ ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_kind_check;
 ALTER TABLE sessions ADD CONSTRAINT sessions_kind_check
     CHECK (kind IN ('browser', 'api_token', 'static', 'admin', 'taap'));
 
-CREATE TABLE IF NOT EXISTS secrets_dynamic_leases (
-    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    mount_id        uuid        NOT NULL REFERENCES secrets_mounts(id) ON DELETE CASCADE,
-    role            text        NOT NULL,
-    encrypted_value text        NOT NULL,
-    expires_at      timestamptz NOT NULL,
-    revoked_at      timestamptz,
-    renewals        integer     NOT NULL DEFAULT 0,
-    created_at      timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT secrets_dynamic_leases_role_check CHECK (length(role) BETWEEN 1 AND 256),
-    CONSTRAINT secrets_dynamic_leases_expiry_check CHECK (expires_at > created_at),
-    CONSTRAINT secrets_dynamic_leases_renewals_check CHECK (renewals >= 0)
-);
-CREATE INDEX IF NOT EXISTS secrets_dynamic_leases_mount_idx
-    ON secrets_dynamic_leases (mount_id, created_at DESC);
+-- Dynamic leases were the secrets_dynamic_leases table here. They live in workspace Zettas (0058,
+-- lake#362) and 0070_drop_moved_tables drops the table, so it is no longer created;
+-- secret_lease_routes (0058) stays.
 
 CREATE TABLE IF NOT EXISTS identity_exit_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -1595,9 +1345,8 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
     -- What asked: ask, factory, discover, pipeline or api; and the conversation it belongs to.
     kind                 text        NOT NULL DEFAULT 'api',
     conversation_id      uuid,
-    -- The body the agent receives when it claims the task; "{{credential}}" is replaced by the
-    -- task's credential, which lake hands over once and never stores.
-    body                 jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    -- The request (body) the agent receives is the task's record in its workspace Zetta (0062,
+    -- lake#374); 0070_drop_moved_tables dropped the retired body column.
     -- The lake capabilities the task's credential may call.
     scopes               text[]      NOT NULL,
     deadline_seconds     integer     NOT NULL DEFAULT 300,
@@ -1620,8 +1369,7 @@ CREATE INDEX IF NOT EXISTS agent_tasks_customer_idx ON agent_tasks (customer_id,
 CREATE TABLE IF NOT EXISTS agent_task_status (
     task_id             uuid        PRIMARY KEY REFERENCES agent_tasks(id) ON DELETE CASCADE,
     phase               text        NOT NULL DEFAULT '',
-    message             text        NOT NULL DEFAULT '',
-    result              jsonb       NOT NULL DEFAULT 'null'::jsonb,
+    -- message and result moved into the task's record (0062, lake#375); 0070 dropped them.
     credential_sha256   text        NOT NULL DEFAULT '',
     started_at          timestamptz,
     finished_at         timestamptz,
@@ -1631,26 +1379,8 @@ CREATE TABLE IF NOT EXISTS agent_task_status (
 
 -- Design → Opportunities (lake#269): what Auto-Suggest recommended, kept across scans. A scan task
 -- that finished writes its rows once; a person turns them into projects or dismisses them.
-CREATE TABLE IF NOT EXISTS opportunities (
-    id                 uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-    customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    task_id            uuid        NOT NULL REFERENCES agent_tasks(id) ON DELETE CASCADE,
-    rank               integer     NOT NULL DEFAULT 0,
-    intent             text        NOT NULL,
-    solution           text        NOT NULL DEFAULT '',
-    methodology        text        NOT NULL DEFAULT '',
-    why                text        NOT NULL DEFAULT '',
-    payload            jsonb       NOT NULL DEFAULT '{}'::jsonb,
-    -- new, project (made into a project), dismissed, or not_yet (Auto-Suggest declined it)
-    status             text        NOT NULL DEFAULT 'new',
-    project            text        NOT NULL DEFAULT '',
-    created_by_user_id uuid        REFERENCES users(id) ON DELETE SET NULL,
-    created_at         timestamptz NOT NULL DEFAULT now(),
-    updated_at         timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT opportunity_status_check CHECK (status IN ('new', 'project', 'dismissed', 'not_yet'))
-);
-CREATE INDEX IF NOT EXISTS opportunities_customer_idx ON opportunities (customer_id, created_at DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS opportunities_task_rank_idx ON opportunities (task_id, rank, status);
+-- Design → Opportunities were the opportunities table here. They live in workspace Zettas (0046,
+-- lake#376) and 0070_drop_moved_tables drops the table, so it is no longer created.
 
 CREATE TABLE IF NOT EXISTS agent_tasks_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -1819,13 +1549,8 @@ CREATE TABLE IF NOT EXISTS builds_guard (
 INSERT INTO schema_migrations (version) VALUES ('0036_builds') ON CONFLICT DO NOTHING;
 
 -- 0037_streams: creator ownership survives audit retention and workspace replacement (lake#301).
-CREATE TABLE IF NOT EXISTS stream_owners (
-    customer_id uuid NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    workspace_id text NOT NULL,
-    topic text NOT NULL,
-    created_by text NOT NULL,
-    PRIMARY KEY (customer_id, workspace_id, topic)
-);
+-- Topic creators were the stream_owners table here. They live in workspace Zettas (0047,
+-- lake#379) and 0070_drop_moved_tables drops the table, so it is no longer created.
 CREATE TABLE IF NOT EXISTS streams_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
 );
@@ -2290,7 +2015,8 @@ DO $$
 DECLARE
     unresolved record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0046_opportunity_workspaces') THEN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0046_opportunity_workspaces')
+       AND to_regclass('opportunities') IS NOT NULL THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT 'opportunities', o.id, o.customer_id,
                    CASE WHEN t.workspace_id IS NULL THEN w.id WHEN tw.id IS NOT NULL THEN tw.id END,
@@ -2338,7 +2064,8 @@ DO $$
 DECLARE
     unresolved record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0047_stream_owner_workspaces') THEN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0047_stream_owner_workspaces')
+       AND to_regclass('stream_owners') IS NOT NULL THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT 'stream_owners',
                    md5(s.customer_id::text || E'\n' || s.workspace_id || E'\n' || s.topic)::uuid,
@@ -2387,7 +2114,8 @@ DECLARE
     unresolved record;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_migrations
-                   WHERE version = '0048_drive_share_link_workspaces') THEN
+                   WHERE version = '0048_drive_share_link_workspaces')
+       AND to_regclass('drive_share_links') IS NOT NULL THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT 'drive_share_links', l.id, r.customer_id, w.id,
                    CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
@@ -2479,12 +2207,16 @@ BEGIN
         UPDATE auth_applications a SET workspace_id = s.workspace_id FROM workspace_assignments s
             WHERE s.object_table = 'auth_applications' AND s.object_id = a.id
               AND a.workspace_id IS NULL AND s.workspace_id IS NOT NULL;
-        INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
-            SELECT 'auth_app_webhook_events', e.id, a.customer_id, a.workspace_id,
-                   CASE WHEN a.workspace_id IS NULL THEN 'needs_selection'
-                        ELSE 'application_workspace' END
-            FROM auth_app_webhook_events e JOIN auth_applications a ON a.id = e.application_id
-            ON CONFLICT DO NOTHING;
+        -- 0070_drop_moved_tables drops the events table; a fresh database never has it.
+        IF to_regclass('auth_app_webhook_events') IS NOT NULL THEN
+            INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id,
+                                               outcome)
+                SELECT 'auth_app_webhook_events', e.id, a.customer_id, a.workspace_id,
+                       CASE WHEN a.workspace_id IS NULL THEN 'needs_selection'
+                            ELSE 'application_workspace' END
+                FROM auth_app_webhook_events e JOIN auth_applications a ON a.id = e.application_id
+                ON CONFLICT DO NOTHING;
+        END IF;
         FOR unresolved IN SELECT * FROM workspace_assignments WHERE workspace_id IS NULL
                            AND object_table IN ('auth_applications', 'auth_app_webhook_events') LOOP
             RAISE WARNING 'workspace_id requires selection: table=%, object=%, customer=%',
@@ -2599,7 +2331,8 @@ DO $$
 DECLARE
     unresolved record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0053_metering_workspaces') THEN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0053_metering_workspaces')
+       AND to_regclass('metering_usage') IS NOT NULL THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT 'metering_usage',
                    md5(m.customer_id::text || E'\n' ||
@@ -2654,7 +2387,8 @@ DO $$
 DECLARE
     unresolved record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0054_forge_record_workspaces') THEN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0054_forge_record_workspaces')
+       AND to_regclass('forge_records') IS NOT NULL THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT 'forge_records', f.id, r.customer_id,
                    CASE WHEN w.desired = 'deleted' THEN NULL ELSE r.workspace_id END,
@@ -2700,7 +2434,8 @@ DECLARE
     unresolved record;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_migrations
-                   WHERE version = '0055_application_user_workspaces') THEN
+                   WHERE version = '0055_application_user_workspaces')
+       AND to_regclass('auth_app_users') IS NOT NULL THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT r.object_table, r.object_id, a.customer_id,
                    CASE WHEN w.desired = 'deleted' THEN NULL ELSE a.workspace_id END,
@@ -2754,7 +2489,8 @@ DECLARE
     unresolved record;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_migrations
-                   WHERE version = '0056_application_credential_workspaces') THEN
+                   WHERE version = '0056_application_credential_workspaces')
+       AND to_regclass('auth_app_signing_keys') IS NOT NULL THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT c.object_table, c.object_id, a.customer_id,
                    CASE WHEN w.desired = 'deleted' THEN NULL ELSE a.workspace_id END,
@@ -2825,13 +2561,15 @@ CREATE TRIGGER secret_mount_route_workspace_routing BEFORE INSERT OR UPDATE ON s
 ALTER TABLE keystore ADD COLUMN IF NOT EXISTS previous_wrapped_key bytea;
 ALTER TABLE keystore ADD COLUMN IF NOT EXISTS previous_version integer;
 
-ALTER TABLE secrets_dynamic_leases DROP CONSTRAINT IF EXISTS secrets_dynamic_leases_mount_id_fkey;
+ALTER TABLE IF EXISTS secrets_dynamic_leases
+    DROP CONSTRAINT IF EXISTS secrets_dynamic_leases_mount_id_fkey;
 
 DO $$
 DECLARE
     unresolved record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0057_secret_workspaces') THEN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0057_secret_workspaces')
+       AND to_regclass('secrets_mounts') IS NOT NULL THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT 'secrets_mounts', m.id, m.customer_id, w.id,
                    CASE WHEN w.id IS NULL THEN 'needs_selection' ELSE 'sole_workspace' END
@@ -2902,7 +2640,8 @@ DECLARE
     unresolved record;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_migrations
-                   WHERE version = '0058_secret_lease_workspaces') THEN
+                   WHERE version = '0058_secret_lease_workspaces')
+       AND to_regclass('secrets_dynamic_leases') IS NOT NULL THEN
         FOR unresolved IN
             SELECT l.id, l.mount_id FROM secrets_dynamic_leases l
             WHERE NOT EXISTS (SELECT 1 FROM secret_mount_routes r WHERE r.mount_id = l.mount_id)
@@ -2942,22 +2681,33 @@ INSERT INTO schema_migrations (version) VALUES ('0058_secret_lease_workspaces')
 -- Nothing is dropped here; a later migration drops the four columns once the copy has been
 -- verified on every environment.
 -- ---------------------------------------------------------------------------------------------
-ALTER TABLE auth_applications ALTER COLUMN name DROP NOT NULL;
-ALTER TABLE auth_applications ALTER COLUMN allowed_origins DROP NOT NULL;
-ALTER TABLE auth_applications ALTER COLUMN redirect_uris DROP NOT NULL;
-ALTER TABLE auth_applications ALTER COLUMN redirect_uris DROP DEFAULT;
-ALTER TABLE auth_applications ALTER COLUMN theme DROP NOT NULL;
-ALTER TABLE auth_applications ALTER COLUMN theme DROP DEFAULT;
-ALTER TABLE auth_applications DROP CONSTRAINT IF EXISTS auth_applications_settings_check;
-ALTER TABLE auth_applications ADD CONSTRAINT auth_applications_settings_check CHECK (
-    name IS NOT NULL OR (allowed_origins IS NULL AND redirect_uris IS NULL AND theme IS NULL));
+-- 0070_drop_moved_tables drops the four columns, and a fresh database never has them.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'auth_applications'
+                  AND column_name = 'name') THEN
+        ALTER TABLE auth_applications ALTER COLUMN name DROP NOT NULL;
+        ALTER TABLE auth_applications ALTER COLUMN allowed_origins DROP NOT NULL;
+        ALTER TABLE auth_applications ALTER COLUMN redirect_uris DROP NOT NULL;
+        ALTER TABLE auth_applications ALTER COLUMN redirect_uris DROP DEFAULT;
+        ALTER TABLE auth_applications ALTER COLUMN theme DROP NOT NULL;
+        ALTER TABLE auth_applications ALTER COLUMN theme DROP DEFAULT;
+        ALTER TABLE auth_applications DROP CONSTRAINT IF EXISTS auth_applications_settings_check;
+        ALTER TABLE auth_applications ADD CONSTRAINT auth_applications_settings_check CHECK (
+            name IS NOT NULL OR (allowed_origins IS NULL AND redirect_uris IS NULL AND theme IS NULL));
+    END IF;
+END $$;
 
 DO $$
 DECLARE
     unresolved record;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_migrations
-                   WHERE version = '0059_application_settings_workspaces') THEN
+                   WHERE version = '0059_application_settings_workspaces')
+       AND EXISTS (SELECT 1 FROM information_schema.columns
+                      WHERE table_schema = current_schema() AND table_name = 'auth_applications'
+                        AND column_name = 'name') THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT 'auth_application_settings', a.id, a.customer_id,
                    CASE WHEN w.desired = 'deleted' THEN NULL ELSE a.workspace_id END,
@@ -3006,7 +2756,8 @@ DO $$
 DECLARE
     unresolved record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0060_platform_workspaces') THEN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0060_platform_workspaces')
+       AND to_regclass('platform_environments') IS NOT NULL THEN
         UPDATE objects o
            SET external_id = md5(e.repository_id::text || E'\n' || e.name)::uuid::text,
                updated_at = now()
@@ -3079,7 +2830,8 @@ DECLARE
     unresolved record;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM schema_migrations
-                   WHERE version = '0061_application_authorization_code_workspaces') THEN
+                   WHERE version = '0061_application_authorization_code_workspaces')
+       AND to_regclass('auth_app_authorization_codes') IS NOT NULL THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT 'auth_app_authorization_codes', md5(c.code_hash)::uuid, a.customer_id,
                    CASE WHEN w.desired = 'deleted' THEN NULL ELSE a.workspace_id END,
@@ -3139,7 +2891,10 @@ DO $$
 DECLARE
     unresolved record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0062_agent_task_workspaces') THEN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0062_agent_task_workspaces')
+       AND EXISTS (SELECT 1 FROM information_schema.columns
+                      WHERE table_schema = current_schema() AND table_name = 'agent_tasks'
+                        AND column_name = 'body') THEN
         UPDATE agent_tasks SET parent_task_id = (body->>'parent_task_id')::uuid
             WHERE parent_task_id IS NULL
               AND body->>'parent_task_id' ~*
@@ -3337,7 +3092,10 @@ DO $$
 DECLARE
     unresolved record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0064_repository_records') THEN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0064_repository_records')
+       AND EXISTS (SELECT 1 FROM information_schema.columns
+                      WHERE table_schema = current_schema() AND table_name = 'repositories'
+                        AND column_name = 'description') THEN
         INSERT INTO workspace_assignments (object_table, object_id, customer_id, workspace_id, outcome)
             SELECT 'repository_descriptions', r.id, r.customer_id,
                    CASE WHEN w.desired = 'deleted' THEN NULL ELSE r.workspace_id END,
@@ -3720,4 +3478,253 @@ CREATE TABLE IF NOT EXISTS workspace_volumes_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO schema_migrations (version) VALUES ('0069_workspace_volumes')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0070_drop_moved_tables: the retired copies of workspace data are dropped (lake#311, decision 54).
+-- Each moved into the workspace Zetta of its owner through the operator's one-shot copy
+-- (copy_workspace_records, docs/architecture/workspace-records.md), which the coordinator reports
+-- was run and verified on dev for every collection below, and lake reads and writes none of them:
+--   opportunities (0046, lake#376); stream_owners (0047, lake#379); drive_share_links (0048,
+--   lake#350; drive_share_link_routes stays); auth_app_webhook_events and
+--   auth_app_webhook_deliveries (0049, lake#356, lake#357); metering_usage and
+--   metering_build_records (0053, lake#348, lake#349); forge_records (0054, lake#341);
+--   auth_app_users and auth_app_organizations (0055, lake#353, lake#354); auth_app_signing_keys and
+--   auth_app_webhooks (0056, lake#352, lake#355); secrets_mounts, secrets_entries,
+--   secrets_versions, secrets_encryption_keys and secrets_data_keys (0057, lake#328-#332;
+--   secret_mount_routes stays); secrets_dynamic_leases (0058, lake#362; secret_lease_routes
+--   stays); platform_environments and platform_mirror (0060, lake#358, lake#359; each
+--   environment's policy object stays); auth_app_authorization_codes (0061, lake#363);
+--   and the content columns of three routing rows: auth_applications name, allowed_origins,
+--   redirect_uris and theme (0059, lake#351), agent_tasks.body with agent_task_status.message and
+--   result (0062, lake#374, lake#375), and repositories.description (0064, lake#315 part 2).
+-- Nothing else is dropped. What stays central by decision stays: identity (50), the operator's
+-- desired state (51), audit_events (52: the split copied the events about a workspace's data and
+-- left the central chain intact, so no row or column of it is removed), and the keystore, agent
+-- sessions and SSO logs (53). The workspace_assignments rows the earlier migrations recorded
+-- stay: they are the record of where each row went.
+--
+-- The first block refuses the whole migration while any row of a table about to be dropped has
+-- no recorded workspace owner: no workspace_assignments row with a workspace, unless its outcome
+-- says the workspace was deleted (workspace_deleted, or deleted_workspace as 0046 spelled it).
+-- Mirror rows naming no repository, expired codes and usage rows without transfer do not count;
+-- for the secrets tables, a mount without a route counts. The check proves an owner was
+-- recorded, not that a copy ran: copy_workspace_records plan, copy and verify, with a lake image
+-- built before this migration, are a manual gate before applying it. When it refuses, either run
+-- that copy for each table named with the previous image (oramasearch/lake:20261005a), resolving
+-- its unresolved rows, and apply again; or, on a development environment and only with the
+-- owner's approval, delete the named rows and apply again. Every statement is idempotent and the
+-- earlier CREATEs and migration blocks no longer make these tables or columns, so a rerun of this
+-- file leaves them dropped.
+-- ---------------------------------------------------------------------------------------------
+DO $$
+DECLARE
+    open_rows text[] := '{}';
+    n bigint;
+BEGIN
+    IF to_regclass('opportunities') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM opportunities o
+            LEFT JOIN workspace_assignments a ON a.object_table = 'opportunities'
+                 AND a.object_id = o.id
+            WHERE a.workspace_id IS NULL
+              AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('opportunities=%s', n); END IF;
+    END IF;
+    IF to_regclass('stream_owners') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM stream_owners s
+            LEFT JOIN workspace_assignments a ON a.object_table = 'stream_owners'
+                 AND a.object_id = md5(s.customer_id::text || E'\n' || s.workspace_id || E'\n' ||
+                                       s.topic)::uuid
+            WHERE a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('stream_owners=%s', n); END IF;
+    END IF;
+    IF to_regclass('drive_share_links') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM drive_share_links l
+            LEFT JOIN workspace_assignments a ON a.object_table = 'drive_share_links'
+                 AND a.object_id = l.id
+            WHERE a.workspace_id IS NULL
+              AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('drive_share_links=%s', n); END IF;
+    END IF;
+    IF to_regclass('auth_app_webhook_events') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM auth_app_webhook_events e
+            LEFT JOIN workspace_assignments a ON a.object_table = 'auth_app_webhook_events'
+                 AND a.object_id = e.id
+            WHERE a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('auth_app_webhook_events=%s', n); END IF;
+    END IF;
+    IF to_regclass('metering_usage') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM metering_usage m
+            LEFT JOIN workspace_assignments a ON a.object_table = 'metering_usage'
+                 AND a.object_id = md5(m.customer_id::text || E'\n' ||
+                     to_char(m.hour AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))::uuid
+            WHERE (m.transfer_in_bytes > 0 OR m.transfer_out_bytes > 0)
+              AND a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('metering_usage=%s', n); END IF;
+    END IF;
+    IF to_regclass('metering_build_records') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM metering_build_records b
+            LEFT JOIN workspace_assignments a ON a.object_table = 'metering_build_records'
+                 AND a.object_id = md5(b.customer_id::text || E'\n' || b.result_id)::uuid
+            WHERE a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('metering_build_records=%s', n); END IF;
+    END IF;
+    IF to_regclass('forge_records') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM forge_records f
+            LEFT JOIN workspace_assignments a ON a.object_table = 'forge_records'
+                 AND a.object_id = f.id
+            WHERE a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('forge_records=%s', n); END IF;
+    END IF;
+    IF to_regclass('auth_app_users') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM auth_app_users u
+            LEFT JOIN workspace_assignments a ON a.object_table = 'auth_app_users'
+                 AND a.object_id = md5(u.application_id::text || E'\n' || u.user_id::text)::uuid
+            WHERE a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('auth_app_users=%s', n); END IF;
+    END IF;
+    IF to_regclass('auth_app_organizations') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM auth_app_organizations o
+            LEFT JOIN workspace_assignments a ON a.object_table = 'auth_app_organizations'
+                 AND a.object_id = o.id
+            WHERE a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('auth_app_organizations=%s', n); END IF;
+    END IF;
+    IF to_regclass('auth_app_signing_keys') IS NOT NULL THEN
+        SELECT count(DISTINCT k.application_id) INTO n FROM auth_app_signing_keys k
+            LEFT JOIN workspace_assignments a ON a.object_table = 'auth_app_signing_keys'
+                 AND a.object_id = k.application_id
+            WHERE a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('auth_app_signing_keys=%s', n); END IF;
+    END IF;
+    IF to_regclass('auth_app_webhooks') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM auth_app_webhooks h
+            LEFT JOIN workspace_assignments a ON a.object_table = 'auth_app_webhooks'
+                 AND a.object_id = h.id
+            WHERE a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('auth_app_webhooks=%s', n); END IF;
+    END IF;
+    IF to_regclass('auth_app_authorization_codes') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM auth_app_authorization_codes c
+            LEFT JOIN workspace_assignments a ON a.object_table = 'auth_app_authorization_codes'
+                 AND a.object_id = md5(c.code_hash)::uuid
+            WHERE c.used_at IS NULL AND c.expires_at > now()
+              AND a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN
+            open_rows := open_rows || format('auth_app_authorization_codes=%s', n);
+        END IF;
+    END IF;
+    -- Every secrets row goes where its mount's route says (0057); a lease names its mount too.
+    IF to_regclass('secrets_mounts') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM secrets_mounts m
+            LEFT JOIN workspace_assignments a ON a.object_table = 'secrets_mounts'
+                 AND a.object_id = m.id
+            WHERE NOT EXISTS (SELECT 1 FROM secret_mount_routes r WHERE r.mount_id = m.id)
+              AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('secrets_mounts=%s', n); END IF;
+    END IF;
+    IF to_regclass('secrets_dynamic_leases') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM secrets_dynamic_leases l
+            LEFT JOIN workspace_assignments a ON a.object_table = 'secrets_mounts'
+                 AND a.object_id = l.mount_id
+            WHERE NOT EXISTS (SELECT 1 FROM secret_mount_routes r WHERE r.mount_id = l.mount_id)
+              AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('secrets_dynamic_leases=%s', n); END IF;
+    END IF;
+    IF to_regclass('platform_environments') IS NOT NULL THEN
+        SELECT count(*) INTO n FROM platform_environments e
+            LEFT JOIN workspace_assignments a ON a.object_table = 'platform_environments'
+                 AND a.object_id = e.id
+            WHERE a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('platform_environments=%s', n); END IF;
+    END IF;
+    IF to_regclass('platform_mirror') IS NOT NULL THEN
+        -- A row naming no repository lake has (unknown_repository) has no owner and does not count.
+        SELECT count(*) INTO n FROM platform_mirror m
+            JOIN repositories r ON r.id::text = m.value->>'repository'
+            LEFT JOIN workspace_assignments a ON a.object_table = 'platform_mirror'
+                 AND a.object_id = md5(m.kind || E'\n' || m.key)::uuid
+            WHERE a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('platform_mirror=%s', n); END IF;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'auth_applications'
+                  AND column_name = 'name') THEN
+        SELECT count(*) INTO n FROM auth_applications p
+            LEFT JOIN workspace_assignments a ON a.object_table = 'auth_application_settings'
+                 AND a.object_id = p.id
+            WHERE p.name IS NOT NULL
+              AND a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('auth_application_settings=%s', n); END IF;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'agent_tasks'
+                  AND column_name = 'body') THEN
+        SELECT count(*) INTO n FROM agent_tasks t
+            LEFT JOIN agent_task_status ts ON ts.task_id = t.id
+            LEFT JOIN workspace_assignments a ON a.object_table = 'agent_task_content'
+                 AND a.object_id = t.id
+            WHERE (t.body <> '{}'::jsonb OR COALESCE(ts.message, '') <> ''
+                   OR COALESCE(ts.result, 'null'::jsonb) <> 'null'::jsonb)
+              AND a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('agent_task_content=%s', n); END IF;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'repositories'
+                  AND column_name = 'description') THEN
+        SELECT count(*) INTO n FROM repositories r
+            LEFT JOIN workspace_assignments a ON a.object_table = 'repository_descriptions'
+                 AND a.object_id = r.id
+            WHERE r.description <> ''
+              AND a.workspace_id IS NULL AND COALESCE(a.outcome, '') NOT IN ('workspace_deleted', 'deleted_workspace');
+        IF n > 0 THEN open_rows := open_rows || format('repository_descriptions=%s', n); END IF;
+    END IF;
+    IF cardinality(open_rows) > 0 THEN
+        RAISE EXCEPTION '0070_drop_moved_tables: rows without a recorded workspace owner: %',
+            array_to_string(open_rows, ', ')
+            USING HINT = 'Nothing was dropped. This lake no longer has the copier: either run '
+                         'copy_workspace_records plan, copy and verify for each collection named '
+                         'with the previous lake image (oramasearch/lake:20261005a or any image '
+                         'built before migration 0070), resolve its unresolved rows, and apply '
+                         'the schema again; or, on a development environment and only with the '
+                         'owner''s approval (it destroys data), delete the named rows and apply '
+                         'the schema again.';
+    END IF;
+END $$;
+
+DROP TABLE IF EXISTS opportunities;
+DROP TABLE IF EXISTS stream_owners;
+DROP TABLE IF EXISTS drive_share_links;
+DROP TABLE IF EXISTS auth_app_webhook_deliveries;
+DROP TABLE IF EXISTS auth_app_webhook_events;
+DROP TABLE IF EXISTS auth_app_webhooks;
+DROP TABLE IF EXISTS auth_app_signing_keys;
+DROP TABLE IF EXISTS auth_app_organizations;
+DROP TABLE IF EXISTS auth_app_users;
+DROP TABLE IF EXISTS auth_app_authorization_codes;
+DROP TABLE IF EXISTS metering_usage;
+DROP TABLE IF EXISTS metering_build_records;
+DROP TABLE IF EXISTS forge_records;
+DROP TABLE IF EXISTS secrets_dynamic_leases;
+DROP TABLE IF EXISTS secrets_versions;
+DROP TABLE IF EXISTS secrets_entries;
+DROP TABLE IF EXISTS secrets_encryption_keys;
+DROP TABLE IF EXISTS secrets_data_keys;
+DROP TABLE IF EXISTS secrets_mounts;
+DROP TABLE IF EXISTS platform_mirror;
+DROP TABLE IF EXISTS platform_environments;
+ALTER TABLE auth_applications DROP CONSTRAINT IF EXISTS auth_applications_settings_check;
+ALTER TABLE auth_applications DROP COLUMN IF EXISTS name;
+ALTER TABLE auth_applications DROP COLUMN IF EXISTS allowed_origins;
+ALTER TABLE auth_applications DROP COLUMN IF EXISTS redirect_uris;
+ALTER TABLE auth_applications DROP COLUMN IF EXISTS theme;
+ALTER TABLE agent_tasks DROP COLUMN IF EXISTS body;
+ALTER TABLE agent_task_status DROP COLUMN IF EXISTS message;
+ALTER TABLE agent_task_status DROP COLUMN IF EXISTS result;
+ALTER TABLE repositories DROP COLUMN IF EXISTS description;
+
+CREATE TABLE IF NOT EXISTS drop_moved_tables_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0070_drop_moved_tables')
     ON CONFLICT DO NOTHING;
