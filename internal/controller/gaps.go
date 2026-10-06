@@ -24,6 +24,11 @@ import (
 // analyticsProcessorConfigYAML renders the config the `server` binary reads (config.rs). It
 // connects to ClickHouse + Postgres at startup, so these are the real in-cluster endpoints.
 // Secret values are __PLACEHOLDER__s the render init container substitutes — never in the CM.
+//
+// oramacores lists every OramaCore whose reader side logs search events (#55). Searches land on
+// the reader Service, so it comes first; the writer pod runs a reader side too and is drained so
+// nothing it logged is stranded. Both authenticate with the master key, which the engine config
+// sets as reader_side.analytics.api_key (oramacoreConfigYAML).
 func analyticsProcessorConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	n := oc.Name
 	return fmt.Sprintf(`clickhouse:
@@ -36,7 +41,11 @@ func analyticsProcessorConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
   aggregated_search_table: oramacore_analytics_search_aggregated
 create_tables: true
 oramacores:
-  - name: oramacore_1
+  - name: oramacore-reader
+    api_url: http://%s-reader/v1/analytics
+    api_key: __MASTER_API_KEY__
+    enabled: true
+  - name: oramacore-writer
     api_url: http://%s-writer:8080/v1/analytics
     api_key: __MASTER_API_KEY__
     enabled: true
@@ -45,7 +54,7 @@ postgres:
   schema: analytics
   runs_table: runs
   delta: 60m
-`, n, n, controlDBName, n, controlDBName)
+`, n, n, n, controlDBName, n, controlDBName)
 }
 
 // reconcileAnalyticsProcessor deploys analytics-processor (#5): the worker that pulls

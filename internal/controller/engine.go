@@ -121,6 +121,12 @@ func (r *OramaCloudV1Reconciler) reconcileEngineConfig(ctx context.Context, oc *
 // engine Secret at pod start, so no credential ever sits in the ConfigMap. OramaCore
 // can't take it from env — config's ORAMACORE_ override splits on "_" and can't reach
 // the nested writer_side.master_api_key.
+//
+// reader_side.analytics (#55) turns on OramaCore's search-event log: without it the reader
+// records nothing and GET /v1/analytics answers 500, so analytics-processor imports zero rows.
+// Its api_key is the same __MASTER_API_KEY__ placeholder, because that is the key the
+// processor polls with (analyticsProcessorConfigYAML). metadata_from_headers mirrors the prod
+// reader configs: the Cloudflare request headers become per-event metadata.
 func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	ep := "CPUExecutionProvider"
 	if oc.Spec.Components.Engine.Writer.GPU {
@@ -180,6 +186,23 @@ reader_side:
     data_dir: /app/.data/reader
     insert_batch_commit_size: 50000000
     commit_interval: 1m
+  analytics:
+    api_key: "__MASTER_API_KEY__"
+    metadata_from_headers:
+      - header: user-agent
+        metadata_key: ua
+      - header: CF-Connecting-IP
+        metadata_key: ip
+      - header: CF-IPCountry
+        metadata_key: country
+      - header: continent
+        metadata_key: continent
+      - header: colo
+        metadata_key: colo
+      - header: latitude
+        metadata_key: latitude
+      - header: longitude
+        metadata_key: longitude
 ai_server:
   scheme: http
   host: %s
@@ -280,8 +303,8 @@ func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	}
 }
 
-// renderConfigInit substitutes the MASTER_API_KEY (from the engine Secret, via envFrom)
-// into the config.yaml template (from the ConfigMap) and writes the rendered file to the
+// renderConfigInit substitutes the MASTER_API_KEY (from the engine Secret, via envFrom;
+// both writer_side.master_api_key and reader_side.analytics.api_key) into the config.yaml template (from the ConfigMap) and writes the rendered file to the
 // shared rendered-config emptyDir that the OramaCore container reads via CONFIG_PATH.
 // This keeps the credential out of the ConfigMap while leaving the reviewable config in
 // one. (The key must be sed-safe — no '#', '&', '\' — which holds for base64url/hex API
