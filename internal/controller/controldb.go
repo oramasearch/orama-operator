@@ -23,9 +23,10 @@ import (
 )
 
 // dashboardSchemaSQL is the control-plane Postgres schema — the dashboard's Drizzle migrations
-// (0000..0007, journal order) vendored from oramasearch/dashboard .drizzle. The operator applies it
+// (0000..0008, journal order) vendored from oramasearch/dashboard .drizzle. The operator applies it
 // because the dashboard image ships no .drizzle and nothing else runs the migrations (operator#34).
-// Re-sync when the dashboard schema changes; then delete the migrate Job to re-apply.
+// Re-sync when the dashboard schema changes; the content hash changes, so the PostgresSchema
+// controller replaces the Job, which still skips a database that already has the guard table.
 //
 //go:embed assets/dashboard-schema.sql
 var dashboardSchemaSQL string
@@ -35,6 +36,11 @@ var dashboardSchemaSQL string
 var cnpgClusterGVK = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "Cluster"}
 
 const controlDBName = "oramacore" // database + owner
+
+// controlDBSchemaGuardTable is created by migration 0000. The migration Job skips the apply when it
+// exists, so the schema applies once, to an empty database; a database migrated from an older
+// vendored file keeps that schema (the file's 0000..0007 statements are not idempotent).
+const controlDBSchemaGuardTable = "crawler_configs"
 
 // controlDBAppSecret is the Secret CloudNativePG generates for the control-DB owner — it holds
 // the REAL generated password + a ready-made connection `uri` (keys: password, uri, user, host,
@@ -137,7 +143,7 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBMigrations(ctx context.Contex
 		return err
 	}
 
-	// crawler_configs is created by migration 0000; with --single-transaction it exists iff the whole
+	// The guard is created by migration 0000; with --single-transaction it exists iff the whole
 	// schema applied, so it's a correct "already migrated" guard. The version is a content hash of the
 	// schema SQL so it changes exactly when the vendored schema does (auditable in `.status`).
 	ps := &oramav1alpha1.PostgresSchema{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-controldb-schema", Namespace: oc.Namespace}}
@@ -147,7 +153,7 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBMigrations(ctx context.Contex
 			ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: controlDBAppSecret(oc), Key: "uri"},
 			SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: cmName, Key: "schema.sql"},
 			Version:             schemaVersion(dashboardSchemaSQL),
-			GuardTable:          "crawler_configs",
+			GuardTable:          controlDBSchemaGuardTable,
 			Image:               "postgres:16-alpine",
 		}
 		return controllerutil.SetControllerReference(oc, ps, r.Scheme)

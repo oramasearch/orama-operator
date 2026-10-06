@@ -19,7 +19,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
-| **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica); + an owned **`PostgresSchema`** applying the dashboard's Drizzle schema | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
+| **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica); + an owned **`PostgresSchema`** applying the dashboard's Drizzle schema (migrations 0000..0008, guard `crawler_configs`) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
 | **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data) | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
 | **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
@@ -237,6 +237,14 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
 - `mode: external` skips creation (the app uses the external endpoint). Owner ref on
   the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs).
+- **Schema** — `assets/dashboard-schema.sql` is the dashboard's `.drizzle` migrations 0000..0008
+  concatenated in journal order (19 tables), applied on the primary by the `<cr>-controldb-schema`
+  `PostgresSchema` in one transaction, guarded on `crawler_configs` (created by 0000). A fresh control
+  DB gets all of 0000..0008. A database that already has `crawler_configs` is left as is, so one built
+  from an older vendored file does not receive 0008's tables; recreate the control DB (dev) or apply
+  `0008_bouncy_ravenous.sql` by hand, which is fully guarded and safe to re-run. 0008 adds the
+  `teams.subscription_plan_id` foreign key, so on a database with existing `teams` rows the default
+  `subscription_plans` row must exist first.
 
 **Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
