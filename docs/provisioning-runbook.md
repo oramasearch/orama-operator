@@ -121,7 +121,7 @@ kubectl create secret generic v1-engine -n orama-system \
   --from-literal=ANTHROPIC_API_KEY='sk-ant-...' \
   --from-literal=HF_TOKEN='hf_...'
 # then bounce the consumer so it re-reads:
-kubectl rollout restart statefulset/v1-writer deploy/v1-reader -n orama-system
+kubectl rollout restart statefulset/v1-writer statefulset/v1-reader -n orama-system
 ```
 
 > **QStash / Upstash:** the operator points `QSTASH_URL` at the **in-cluster RabbitMQ**

@@ -219,6 +219,8 @@ echo "postgres-schema: done"`
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyNever,
+				NodeSelector:  ps.Spec.NodeSelector,
+				Tolerations:   ps.Spec.Tolerations,
 				Containers: []corev1.Container{{
 					Name:            "migrate",
 					Image:           image, // ships psql

@@ -298,7 +298,7 @@ func (r *LakeRestoreRehearsalReconciler) ensureScratchResources(
 	ctx context.Context,
 	rehearsal *oramav1alpha1.LakeRestoreRehearsal,
 	lake *oramav1alpha1.Lake,
-	backupConfig lakeBackupConfig,
+	backupConfig cnpgBackupConfig,
 	backup *unstructured.Unstructured,
 	sourceImage string,
 ) error {
@@ -368,7 +368,7 @@ func (r *LakeRestoreRehearsalReconciler) ensureScratchCluster(
 	ctx context.Context,
 	rehearsal *oramav1alpha1.LakeRestoreRehearsal,
 	lake *oramav1alpha1.Lake,
-	backupConfig lakeBackupConfig,
+	backupConfig cnpgBackupConfig,
 	backup *unstructured.Unstructured,
 	sourceImage string,
 ) error {
@@ -405,7 +405,7 @@ func (r *LakeRestoreRehearsalReconciler) ensureScratchCluster(
 			map[string]interface{}{
 				"name": sourceName,
 				"barmanObjectStore": map[string]interface{}{
-					"destinationPath": fmt.Sprintf("s3://%s/%s", strings.Trim(backupConfig.Bucket, "/"), strings.Trim(backupConfig.Path, "/")),
+					"destinationPath": backupConfig.destinationPath(),
 					"endpointURL":     backupConfig.Endpoint,
 					"serverName":      sourceName,
 					"s3Credentials": map[string]interface{}{

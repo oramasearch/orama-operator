@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
+| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -73,9 +73,10 @@ secret only). Everything is owner-referenced → GC'd with the CR.
 Owner-GC only fires on CR *deletion*; so when a `components.<x>.enabled` toggle flips off, the
 reconciler actively **prunes** that component's owned resources by label
 (`internal/controller/teardown.go` — `teardownByComponent`), covering Deployments/StatefulSets/
-Services/ConfigMaps/Secrets/PDBs/Ingresses/Jobs (and the CNPG `Cluster` for `controlDB`). StatefulSet
-PVCs are left behind (data preserved). Idempotent — `enable → disable → enable` round-trips cleanly
-(validated on AKS: disabling `docs` pruned it, re-enabling restored it, `Ready 22/22`).
+Services/ConfigMaps/Secrets/PDBs/Ingresses/Jobs/HPAs (and the CNPG `Cluster` + `ScheduledBackup` for
+`controlDB`, unless `spec.deletionProtection` is on). StatefulSet PVCs are left behind (data
+preserved). Idempotent — `enable → disable → enable` round-trips cleanly (validated on AKS: disabling
+`docs` pruned it, re-enabling restored it, `Ready 22/22`).
 
 - **JWT keypair (real, generated)** — the operator generates a **real RSA-2048
   keypair** once (create-if-absent) into `<cr>-jwt` (private + public, for the
@@ -155,13 +156,32 @@ caught the two capability exceptions above before merge (drop-ALL had crash-loop
 Driven by `spec.region.role`:
 
 - **Writer** (primary only) — a `StatefulSet` (1 replica) running `oramasearch/oramacore`,
-  a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
+  a `volumeClaimTemplate` for `/app/.data` sized by `writer.storage` (default `10Gi`), and
+  `writer.nodeSelector`/`writer.tolerations` (each falls back to `spec.placement`). Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
-- **Readers** (primary + read tiers) — a `Deployment` (`reader.replicas`) with the
-  `oramacore` container **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
-  127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set.
-  Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
+- **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` (`reader.replicas`,
+  `podManagementPolicy: Parallel`) with the `oramacore` container **+ an Envoy sidecar**
+  (`envoyproxy/envoy:v1.31.2`, `:80 → 127.0.0.1:8080`, from the generated `envoy.yaml`) when
+  `engine.envoy` is set. Service on `:80` (→ Envoy, or → `:8080` if Envoy is off). Each reader
+  has its own `data` PVC (`reader.storage`, default `10Gi`) at `/app/.data`, holding its index and
+  the last replication-stream offset it applied; a restarted or rescheduled reader resumes from
+  that offset ([orama-bridge#141](https://github.com/oramasearch/orama-bridge/issues/141)). The
+  readers used an `emptyDir` before, so every new reader replayed `oramacore-operations` from
+  offset 0, and once the stream passed its 5 GB retention a new reader silently served a partial
+  index. A brand-new reader (scale-up, or a lost PVC) still builds from the stream, so the same
+  retention limit applies to it.
+  - **Moving an existing stack:** a CR reconciled before #141 has a reader `Deployment` with the
+    same name and labels. The operator creates the StatefulSet next to it, keeps the Deployment
+    serving (the Service selects both), and deletes the Deployment once every StatefulSet reader is
+    Ready. Until then `status.components[reader]` sums both (e.g. `3/6`, not ready). The new
+    readers replay the stream from offset 0 once, so this move has the same retention limit as any
+    new reader: check the stream still holds the full history before upgrading a stack whose
+    stream has passed 5 GB.
+  - **Autoscaling:** `reader.hpa` makes the operator own a `HorizontalPodAutoscaler` on the
+    StatefulSet (CPU utilization; defaults min = `replicas`, max = 2 × min, 70%). While it is set the
+    operator leaves the replica count to the HPA. Scale-down keeps the removed readers' PVCs (the
+    StatefulSet default), so a later scale-up reuses them.
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
   **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
@@ -199,8 +219,8 @@ Driven by `spec.region.role`:
   shares the config, so its reader side logs too (it serves no search traffic, so normally nothing).
   analytics-processor's `oramacores` lists the reader Service first and the writer second, both
   with the master key. **Open gaps:** the reader Service load-balances, so one `POST /import` drains
-  only the reader pod it lands on; other pods' events wait for a later import and are lost if the
-  pod restarts first (the reader data dir is an `emptyDir`). Nothing in-cluster calls `/import` yet.
+  only the reader pod it lands on; other pods' events wait for a later import (the reader data dir
+  is on the reader's PVC, so they survive a restart). Nothing in-cluster calls `/import` yet.
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
   BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets
@@ -215,8 +235,8 @@ Driven by `spec.region.role`:
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**
   get `maxUnavailable: 1` (roll one at a time, keep the rest serving).
 
-**Validated on AKS (2026-07-08):** applying a `primary` CR created the writer STS
-(+ dynamically-provisioned PVC), the reader Deployment, both Services, and the
+**Validated on AKS (2026-07-08, before the readers became a StatefulSet):** applying a `primary`
+CR created the writer STS (+ dynamically-provisioned PVC), the reader Deployment, both Services, and the
 ConfigMap; the CR reaches **`Phase=Ready`** once every owned workload is ready — a status
 roll-up over the live Deployment/StatefulSet + CNPG readiness (`internal/controller/status.go`,
 [#37](https://github.com/oramasearch/orama-operator/issues/37)). Phase is
@@ -234,8 +254,7 @@ while the rendered file in the pod holds the real value.
 > **Follow-ups:** the `embeddings` ai-server image is built by the bridge's
 > [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
 > tooling (`oramasearch/embeddings-server-py:{cpu,gpu}-latest`, private Docker Hub — the tag
-> is auto-picked from `writer.gpu`; just set `spec.images.pullSecretName`); RabbitMQ
-> writer→reader replication (currently in-memory transport, single-node); HPA + the
+> is auto-picked from `writer.gpu`; just set `spec.images.pullSecretName`); the
 > reader→primary-writer endpoint on read tiers.
 
 ## controlDB (`internal/controller/controldb.go`)
@@ -245,11 +264,26 @@ provisioned as an **unstructured** object so the operator stays decoupled from C
 Go types/version. Requires the CNPG operator (installed via the helmfile).
 
 - **Primary** — a fresh cluster, `spec.instances` from the profile (light 1 / medium
-  2 / heavy 3), `10Gi` storage, `bootstrap.initdb` creating the `oramacore` database.
+  2 / heavy 3), storage from `controlDB.storage` (default `10Gi` on the default StorageClass;
+  CNPG grows the PVCs in place when the StorageClass allows expansion), `bootstrap.initdb`
+  creating the `oramacore` database. `spec.placement` becomes the Cluster's
+  `spec.affinity.{nodeSelector,tolerations}`, which CNPG puts on every instance pod.
 - **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** streaming
   from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
 - `mode: external` skips creation (the app uses the external endpoint). Owner ref on
   the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs).
+- **Deletion protection** — with `spec.deletionProtection` the `Cluster` and its `ScheduledBackup`
+  carry **no** owner reference (the operator removes an existing one), so deleting the CR leaves the
+  database running; `controlDB.enabled: false` also leaves both in place (released from the CR), and
+  re-enabling adopts the same `Cluster`. To really remove a protected database, turn protection off
+  first, or delete the `Cluster` by hand.
+- **Backups** (`controlDB.backup`, opt-in, primary only) — the `Lake`'s Barman support, shared code
+  in `cnpg_backup.go`: the Cluster gets `spec.backup.barmanObjectStore` (gzip WAL, `retentionPolicy`)
+  pointing at `s3://<bucket>/<namespace>/<name>/controldb` by default, and the operator owns a
+  `ScheduledBackup` `<cr>-controldb-backup` (six-field cron, default `0 0 3 * * *`, first backup
+  immediately). The CR's `BackupReady` condition reports the newest CNPG `Backup`; an invalid config
+  (no bucket, missing Secret or key) is reported there and configures nothing. R2 setup and the
+  verification commands are the same as in [lake/backups.md](lake/backups.md).
 - **Schema** — `assets/dashboard-schema.sql` is the dashboard's `.drizzle` migrations 0000..0008
   concatenated in journal order (19 tables), applied on the primary by the `<cr>-controldb-schema`
   `PostgresSchema` in one transaction, guarded on `crawler_configs` (created by 0000). A fresh control
@@ -264,7 +298,8 @@ primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the C
 CNPG bootstrapped Postgres; deleting the CR GC'd the cluster + its pods.
 
 > **Follow-ups:** the replica cluster's `streaming_replica` credentials/secret wiring;
-> exposing storage size + the DB name as CR fields; a Service alias the app can use.
+> exposing the DB name as a CR field; a Service alias the app can use; a restore rehearsal for the
+> control DB like `LakeRestoreRehearsal`.
 
 ## Data stores — cache / broker / analytics / search (`internal/controller/datastore.go`)
 
@@ -286,9 +321,21 @@ and reference the primary's endpoint). Images are overridable via
 StatefulSets + Services + PVCs; **all four pods booted `1/1`**; deleting the CR
 removed the workloads.
 
-> **PVC retention:** StatefulSet PVCs are **retained** on delete (the k8s default —
-> data is left in place, not auto-deleted). Orphaned PVCs are cleaned up manually.
-> (A configurable `delete`-on-teardown option can be added later.)
+> **PVC size + retention:** each store's PVC is sized by its `storage` (`size`, default `10Gi`;
+> `storageClassName`, default the cluster default). StatefulSet PVCs are **retained** on delete
+> (the k8s default — data is left in place, not auto-deleted); `spec.deletionProtection` makes that
+> explicit on every StatefulSet (`persistentVolumeClaimRetentionPolicy: Retain/Retain`) so a cluster
+> with a different default can't delete them. Orphaned PVCs are cleaned up manually.
+
+### Resizing a data volume
+
+`volumeClaimTemplates` are immutable, so the operator applies a `storage` change only when it
+creates a StatefulSet; an existing StatefulSet keeps the template it was created with (the reconcile
+does not fail). To grow a running component's volume, expand each PVC (`kubectl patch pvc
+data-<cr>-<component>-<n>` with the new `spec.resources.requests.storage`) on a StorageClass with
+`allowVolumeExpansion`; the AKS built-in `managed-csi*` classes allow it. Set the same size in the CR
+so a recreated StatefulSet matches. A different StorageClass needs a data migration and is not
+automated.
 
 Each store also gets the **workload-hardening baseline** (startup/readiness/liveness TCP probes, a
 per-container securityContext, requests + a generous per-store memory limit, a `60s` grace period,
@@ -311,6 +358,18 @@ host is set)**.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
 - **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`.
+
+Every app container is pulled `Always` when its image is a tag (dev tags such as `v1-sandbox` are
+re-pushed) and `IfNotPresent` when it is digest-pinned (`repo@sha256:…` via
+`spec.images.overrides`), so a pinned production stack never depends on the registry to restart a
+pod.
+
+**Node placement.** `spec.placement.{nodeSelector,tolerations}` is applied to every pod the operator
+creates for the CR: apps, data stores, the engine (writer, readers, embeddings), the demo-seed Job,
+the control-DB `PostgresSchema` migration Job (through `PostgresSchema.spec.nodeSelector/
+tolerations`) and the CNPG instances (through the Cluster's `spec.affinity`). The writer's own
+`nodeSelector` / `tolerations` each replace the CR-level value when set, and the GPU embeddings pod
+follows the writer. Without `spec.placement` every pod renders as before.
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.

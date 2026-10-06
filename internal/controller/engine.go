@@ -10,12 +10,15 @@ import (
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -112,9 +115,11 @@ func (r *OramaCloudV1Reconciler) reconcileEngineConfig(ctx context.Context, oc *
 }
 
 // oramacoreConfigYAML renders a VALID OramaCore config (http / writer_side /
-// reader_side / ai_server) matching oramacore/config-docker.yaml. The embeddings
-// ai-server is a co-located sidecar at 127.0.0.1:50051. writer/reader use in-memory
-// transport (single-node); RabbitMQ replication is a follow-up.
+// reader_side / ai_server) matching oramacore/config-docker.yaml. The embeddings ai-server is the
+// shared <cr>-embeddings Deployment (#14). The writer replicates to the readers over the RabbitMQ
+// stream oramacore-operations on the broker Service (#41); each reader persists its index and the
+// last stream offset it applied under reader_side.config.data_dir, which sits on the reader's PVC
+// (#141), so a replaced reader resumes from that offset instead of replaying the stream from 0.
 //
 // master_api_key is a __MASTER_API_KEY__ placeholder here (this string lives in a
 // ConfigMap): the render-config init container substitutes the real value from the
@@ -270,8 +275,9 @@ func (r *OramaCloudV1Reconciler) reconcileEmbeddings(ctx context.Context, oc *or
 			}
 			c.Resources.Limits[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse("1")
 			// Pin to the GPU node the writer would otherwise have used.
-			nodeSelector = w.NodeSelector
-			tolerations = w.Tolerations
+			nodeSelector, tolerations = writerPlacement(oc)
+		} else {
+			nodeSelector, tolerations = podPlacement(oc)
 		}
 		dep.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
@@ -354,19 +360,21 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		}
 		// The GPU belongs to the shared embeddings Deployment (#14), not the writer — OramaCore
 		// is CPU; the embedding model is the GPU consumer (see reconcileEmbeddings).
+		nodeSelector, tolerations := writerPlacement(oc)
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets:              imagePullSecrets(oc),
-				NodeSelector:                  w.NodeSelector,
-				Tolerations:                   w.Tolerations,
+				NodeSelector:                  nodeSelector,
+				Tolerations:                   tolerations,
 				InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc)},
 				Containers:                    []corev1.Container{c},
 				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
 				TerminationGracePeriodSeconds: int64Ptr(writerGracePeriodSeconds),
 			},
 		}
-		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC()}
+		setVolumeClaimTemplates(sts, dataPVC(w.Storage))
+		applyPVCRetention(oc, sts)
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err
@@ -381,6 +389,13 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 	return r.upsertPDB(ctx, oc, name, "writer", 0)
 }
 
+// reconcileReaders runs the readers as a StatefulSet with one `data` PVC per reader (#141). The
+// reader keeps its index and the last replication-stream offset it applied on that volume, so a
+// rescheduled or replaced reader resumes where it stopped. With the emptyDir readers used before,
+// every new reader replayed the stream from offset 0, and once the stream outgrew its 5 GB
+// retention (brokerOperationsStreamMaxBytes) a new reader silently served a partial index.
+// Pods are managed in parallel (readers are independent) and spec.components.engine.reader.hpa,
+// when set, scales the StatefulSet through an owned HorizontalPodAutoscaler.
 func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	name := oc.Name + "-reader"
 	lbls := labelsFor(oc, "reader")
@@ -391,11 +406,17 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 	}
 	useEnvoy := oc.Spec.Components.Engine.Envoy
 
-	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
-		dep.Labels = lbls
-		dep.Spec.Replicas = int32Ptr(replicas)
-		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
+		sts.Labels = lbls
+		// With an HPA the autoscaler owns the replica count after creation; writing it here would
+		// fight every scale decision.
+		if rd.HPA == nil || sts.Spec.Replicas == nil {
+			sts.Spec.Replicas = int32Ptr(replicas)
+		}
+		sts.Spec.ServiceName = name
+		sts.Spec.PodManagementPolicy = appsv1.ParallelPodManagement
+		sts.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 		c := oramacoreContainer(oc)
 		if rd.Resources != nil {
 			c.Resources = *rd.Resources
@@ -410,24 +431,35 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		if useEnvoy {
 			containers = append(containers, envoySidecar())
 		}
+		nodeSelector, tolerations := podPlacement(oc)
 		podSpec := corev1.PodSpec{
 			ImagePullSecrets:              imagePullSecrets(oc),
+			NodeSelector:                  nodeSelector,
+			Tolerations:                   tolerations,
 			InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc)},
 			Containers:                    containers,
-			Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume(), dataEmptyDir()},
+			Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
 			TerminationGracePeriodSeconds: int64Ptr(readerGracePeriodSeconds),
 		}
 		// Spread readers across nodes when there's more than one (soft — a single-node sandbox still
 		// schedules; a real cluster honors it). #18.
-		if replicas > 1 {
+		if replicas > 1 || rd.HPA != nil {
 			podSpec.TopologySpreadConstraints = spreadConstraints(lbls)
 		}
-		dep.Spec.Template = corev1.PodTemplateSpec{
+		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec:       podSpec,
 		}
-		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
+		setVolumeClaimTemplates(sts, dataPVC(rd.Storage))
+		applyPVCRetention(oc, sts)
+		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
+		return err
+	}
+	if err := r.retireReaderDeployment(ctx, oc, sts); err != nil {
+		return err
+	}
+	if err := r.reconcileReaderHPA(ctx, oc, name, lbls, replicas); err != nil {
 		return err
 	}
 	target := int32(oramacorePort)
@@ -440,6 +472,63 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 	}
 	// Readers can lose one at a time during disruptions (keeps the rest serving).
 	return r.upsertPDB(ctx, oc, name, "reader", 1)
+}
+
+// retireReaderDeployment removes the emptyDir reader Deployment that CRs reconciled before #141
+// ran under the same name. It is deleted only once every StatefulSet reader is Ready, so the
+// reader Service (which selects both by their shared labels) keeps serving through the switch;
+// the new readers build their index from the stream while the old ones still answer queries.
+func (r *OramaCloudV1Reconciler) retireReaderDeployment(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, sts *appsv1.StatefulSet) error {
+	old := &appsv1.Deployment{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: sts.Name}, old); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if want := replicasOf(sts.Spec.Replicas); want == 0 || sts.Status.ReadyReplicas < want {
+		return nil // the StatefulSet isn't serving yet; keep the old readers up
+	}
+	log.FromContext(ctx).Info("retiring the emptyDir reader Deployment; StatefulSet readers are ready", "name", sts.Name)
+	return deleteIfExists(ctx, r.Client, old)
+}
+
+// reconcileReaderHPA owns a HorizontalPodAutoscaler on the reader StatefulSet when
+// spec.components.engine.reader.hpa is set, and removes it when unset. Defaults: minReplicas =
+// reader.replicas, maxReplicas = 2 × minReplicas, targetCPUUtilization = 70%.
+func (r *OramaCloudV1Reconciler) reconcileReaderHPA(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name string, lbls map[string]string, replicas int32) error {
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
+	spec := oc.Spec.Components.Engine.Reader.HPA
+	if spec == nil {
+		return deleteIfExists(ctx, r.Client, hpa)
+	}
+	minReplicas := spec.MinReplicas
+	if minReplicas == 0 {
+		minReplicas = replicas
+	}
+	maxReplicas := spec.MaxReplicas
+	if maxReplicas == 0 {
+		maxReplicas = 2 * minReplicas
+	}
+	maxReplicas = max(maxReplicas, minReplicas)
+	cpu := spec.TargetCPUUtilization
+	if cpu == 0 {
+		cpu = 70
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, hpa, func() error {
+		hpa.Labels = lbls
+		hpa.Spec = autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{APIVersion: "apps/v1", Kind: "StatefulSet", Name: name},
+			MinReplicas:    int32Ptr(minReplicas),
+			MaxReplicas:    maxReplicas,
+			Metrics: []autoscalingv2.MetricSpec{{
+				Type: autoscalingv2.ResourceMetricSourceType,
+				Resource: &autoscalingv2.ResourceMetricSource{
+					Name:   corev1.ResourceCPU,
+					Target: autoscalingv2.MetricTarget{Type: autoscalingv2.UtilizationMetricType, AverageUtilization: int32Ptr(cpu)},
+				},
+			}},
+		}
+		return controllerutil.SetControllerReference(oc, hpa, r.Scheme)
+	})
+	return err
 }
 
 // ---- shared builders ----
@@ -513,19 +602,38 @@ func configVolume(oc *oramav1alpha1.OramaCloudV1) corev1.Volume {
 	}
 }
 
-func dataEmptyDir() corev1.Volume {
-	return corev1.Volume{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
-}
+// defaultDataVolumeSize sizes a component's data PVC when its storage.size is unset.
+const defaultDataVolumeSize = "10Gi"
 
-func dataPVC() corev1.PersistentVolumeClaim {
-	return corev1.PersistentVolumeClaim{
+// dataPVC is the `data` volumeClaimTemplate for a StatefulSet, sized by the component's storage
+// spec (default 10Gi on the cluster default StorageClass).
+func dataPVC(v oramav1alpha1.VolumeSpec) corev1.PersistentVolumeClaim {
+	size := resource.MustParse(defaultDataVolumeSize)
+	if v.Size != nil {
+		size = *v.Size
+	}
+	pvc := corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "data"},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+				Requests: corev1.ResourceList{corev1.ResourceStorage: size},
 			},
 		},
+	}
+	if v.StorageClassName != "" {
+		pvc.Spec.StorageClassName = strPtr(v.StorageClassName)
+	}
+	return pvc
+}
+
+// setVolumeClaimTemplates sets a StatefulSet's volumeClaimTemplates only when the operator creates
+// it. The API server refuses any later change to them, and a refused update would fail every
+// reconcile step after this one, so an existing StatefulSet keeps the templates it was created
+// with. Resizing a running component's volume is a PVC expansion; see docs/components.md.
+func setVolumeClaimTemplates(sts *appsv1.StatefulSet, pvcs ...corev1.PersistentVolumeClaim) {
+	if sts.ResourceVersion == "" {
+		sts.Spec.VolumeClaimTemplates = pvcs
 	}
 }
 

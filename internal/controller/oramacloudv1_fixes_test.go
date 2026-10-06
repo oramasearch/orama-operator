@@ -104,7 +104,7 @@ func TestDashboardDbMigrateGatedOnSchemaOwnership(t *testing.T) {
 	// in-cluster controlDB → the operator's PostgresSchema owns the schema → NO dashboard db-migrate.
 	inCluster := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
-		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
+		o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}}
 	})
 	if hasDbMigrateInit(inCluster) {
 		t.Error("in-cluster controlDB: dashboard must NOT run db-migrate (PostgresSchema owns the schema — double-apply → Postgres 42710)")
@@ -113,7 +113,7 @@ func TestDashboardDbMigrateGatedOnSchemaOwnership(t *testing.T) {
 	// external controlDB → no operator-managed PostgresSchema → dashboard runs its own migrate.
 	external := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
-		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external", Endpoint: "pg.example.com:5432"}
+		o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external", Endpoint: "pg.example.com:5432"}}
 	})
 	if !hasDbMigrateInit(external) {
 		t.Error("external controlDB: dashboard SHOULD run its own db-migrate (operator manages no PostgresSchema)")
