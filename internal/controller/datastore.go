@@ -45,6 +45,8 @@ type dataStoreDef struct {
 	// the engine's SIGTERM flush (fsync the AOF, checkpoint parts, persist queues) so k8s doesn't
 	// SIGKILL mid-write and corrupt state. Workload hardening (#18).
 	gracePeriodSeconds int64
+	// storage sizes the data PVC; the zero value is 10Gi on the default StorageClass.
+	storage oramav1alpha1.VolumeSpec
 }
 
 // reconcileDataStore provisions (or skips) one data store per its DataStoreSpec.
@@ -59,6 +61,7 @@ func (r *OramaCloudV1Reconciler) reconcileDataStore(ctx context.Context, oc *ora
 	if spec.Placement == "central" && oc.Spec.Region.Role == "read" {
 		return nil
 	}
+	def.storage = spec.Storage
 	return r.provisionStatefulSet(ctx, oc, def)
 }
 
@@ -138,16 +141,20 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 			SecurityContext: dataStoreSecurityContext(), // root-entrypoint chown needs CHOWN/SETUID (#18)
 			VolumeMounts:    mounts,
 		}
+		nodeSelector, tolerations := podPlacement(oc)
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets:              imagePullSecrets(oc),
+				NodeSelector:                  nodeSelector,
+				Tolerations:                   tolerations,
 				Containers:                    []corev1.Container{c},
 				Volumes:                       volumes,
 				TerminationGracePeriodSeconds: int64Ptr(grace),
 			},
 		}
-		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC()}
+		setVolumeClaimTemplates(sts, dataPVC(def.storage))
+		applyPVCRetention(oc, sts)
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err

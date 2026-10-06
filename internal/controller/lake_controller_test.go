@@ -1018,9 +1018,9 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
 		Spec: oramav1alpha1.LakeSpec{
 			Image: "oramasearch/lake:v1-sandbox",
-			Postgres: oramav1alpha1.LakePostgresSpec{Backup: oramav1alpha1.LakePostgresBackupSpec{
+			Postgres: oramav1alpha1.LakePostgresSpec{Backup: oramav1alpha1.PostgresBackupSpec{
 				Enabled: &enabled,
-				Destination: oramav1alpha1.LakePostgresBackupDestination{
+				Destination: oramav1alpha1.PostgresBackupDestination{
 					Bucket: "lake-backups",
 				},
 				SecretRef: corev1.LocalObjectReference{Name: "r2"},
@@ -1175,7 +1175,7 @@ func TestLakeDataServiceStatusRequiresFailoverForReplicatedPostgres(t *testing.T
 		Spec: oramav1alpha1.LakeSpec{
 			Postgres: oramav1alpha1.LakePostgresSpec{
 				Instances: &two,
-				Backup: oramav1alpha1.LakePostgresBackupSpec{
+				Backup: oramav1alpha1.PostgresBackupSpec{
 					Enabled: &enabled,
 				},
 			},
@@ -1204,12 +1204,12 @@ func TestLakeDataServiceStatusRequiresFailoverForReplicatedPostgres(t *testing.T
 func TestLakeReconcileRejectsInvalidBackupConfigInStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		backup oramav1alpha1.LakePostgresBackupSpec
+		backup oramav1alpha1.PostgresBackupSpec
 		reason string
 	}{
-		{name: "missing bucket", backup: oramav1alpha1.LakePostgresBackupSpec{}, reason: "BackupBucketRequired"},
-		{name: "missing Secret reference", backup: oramav1alpha1.LakePostgresBackupSpec{
-			Destination: oramav1alpha1.LakePostgresBackupDestination{Bucket: "lake-backups"},
+		{name: "missing bucket", backup: oramav1alpha1.PostgresBackupSpec{}, reason: "BackupBucketRequired"},
+		{name: "missing Secret reference", backup: oramav1alpha1.PostgresBackupSpec{
+			Destination: oramav1alpha1.PostgresBackupDestination{Bucket: "lake-backups"},
 		}, reason: "BackupSecretRequired"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

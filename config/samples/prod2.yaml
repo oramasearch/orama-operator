@@ -1,0 +1,94 @@
+# Prod 2 — Orama Cloud v1 on Kubernetes for customer traffic (orama-bridge#141). The same v1 software as
+# Prod 1, in namespace orama-prod2 on the dedicated node pool `prod2`, under orama.ing. Production rules
+# apply: do not apply this to a sandbox, and check Prod 2 after every operator upgrade.
+#
+# Not part of config/samples/kustomization.yaml, so `kubectl apply -k config/samples` never applies it.
+#
+# Placeholders to replace before the first apply (everything else is the decided Prod 2 shape):
+#   - storage sizes: set from the orama-bridge#138 measurements;
+#   - the backup bucket and its credentials Secret (keys s3ApiEndpoint, accessKeyId, secretAccessKey,
+#     created in orama-prod2 out of Git; see docs/lake/backups.md for the R2 token procedure);
+#   - images.overrides: one `repo@sha256:<digest>` per component, from build/images/build-manifest.tsv.
+#
+# Prereqs in orama-prod2 before the CR first reconciles:
+#   - the image pull Secret `oramasearch-dockerhub`;
+#   - `prod2-jwt` and `prod2-jwt-pub` holding Prod 1's JWT keypair (ensureJWTSecrets is create-if-absent,
+#     so it keeps them and Prod 1 and Prod 2 accept each other's tokens);
+#   - the Cloudflare control-plane Secret `cloudflare-api-token` (token, zoneID, accountID).
+#
+# Hostnames: app.orama.ing and docs.orama.ing are the dashboard/docs hosts below. The readers
+# (prod2.cluster.orama.ing) and the writer (writer.prod2.cluster.orama.ing) have no host field on the
+# CR; they are published through CloudflareDNSRecord resources.
+apiVersion: orama.cloud/v1alpha1
+kind: OramaCloudV1
+metadata:
+  name: prod2
+  namespace: orama-prod2
+spec:
+  region:
+    name: prod2
+    role: primary
+  profile: medium                      # single-tenant prod: 2 CNPG instances
+  # Keep the control DB and the writer/reader volumes through CR deletion and component disable.
+  deletionProtection: true
+  # Every operator-created pod (apps, stores, engine, Jobs, CNPG instances) runs on the prod2 pool.
+  placement:
+    nodeSelector:
+      agentpool: prod2
+    tolerations:
+      - { key: agentpool, operator: Equal, value: prod2, effect: NoSchedule }
+  idp:
+    provider: none
+  images:
+    registry: oramasearch
+    pullSecretName: oramasearch-dockerhub
+    # Pin each component by digest; digest-pinned refs are pulled IfNotPresent. For example:
+    # overrides:
+    #   oramacore: oramasearch/oramacore@sha256:<digest>
+    #   embeddings: oramasearch/oramacore-ai-server@sha256:<digest>
+    #   dashboard: oramasearch/dashboard@sha256:<digest>
+    #   docs: oramasearch/docs@sha256:<digest>
+  llm:
+    default: groq
+    providers:
+      - { name: groq, models: [llama-3.3-70b-versatile] }
+  cloudflare:
+    enabled: true
+    apiTokenSecretRef: { name: cloudflare-api-token }
+    manageDNS: true
+    manageLoadBalancers: false         # one region
+  components:
+    engine:
+      enabled: true
+      writer:
+        gpu: false                     # the prod2 pool has no GPU nodes; CPU embeddings
+        storage: { size: 256Gi, storageClassName: managed-csi-premium }   # placeholder size (#138)
+      reader:
+        replicas: 2
+        storage: { size: 256Gi, storageClassName: managed-csi-premium }   # placeholder size (#138)
+      envoy: true
+    dashboard: { enabled: true, host: app.orama.ing }
+    docs:      { enabled: true, host: docs.orama.ing }
+    controlDB:
+      enabled: true
+      mode: in-cluster
+      storage: { size: 50Gi, storageClassName: managed-csi-premium }      # placeholder size (#138)
+      backup:
+        enabled: true
+        schedule: "0 0 3 * * *"        # 03:00:00 daily (six-field CNPG cron)
+        retention: 30d
+        destination:
+          bucket: orama-prod2-controldb-backups   # placeholder bucket name
+        secretRef:
+          name: orama-prod2-backup-r2             # placeholder Secret name
+    analytics:  { enabled: true, mode: in-cluster, storage: { size: 50Gi, storageClassName: managed-csi-premium } }
+    cache:      { enabled: true, mode: in-cluster }
+    broker:     { enabled: true, mode: in-cluster, storage: { size: 20Gi, storageClassName: managed-csi-premium } }
+    search:     { enabled: true, mode: in-cluster }
+    # Component set mirrors full-stack.yaml.
+    ingestion:  { enabled: true, harvest: true }
+    disco:      { enabled: true }
+    workers:    { enabled: true, replicas: 2 }
+    searchWorkers: { enabled: true }
+    analyticsProcessor: { enabled: true }
+    pgAdmin:    { enabled: true }
