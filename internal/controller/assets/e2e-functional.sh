@@ -387,14 +387,10 @@ readk POST "$SC/mcp" '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 assert_jq 'any(.result.tools[]?; .name=="search")' "MCP tools/list exposes 'search'"
 
 # =============================================================================
-section "18. ANALYTICS (best-effort — needs a configured analytics key)"
+section "18. ANALYTICS (reader_side.analytics.api_key = the master key, operator#55)"
 # =============================================================================
 req GET "$READER/v1/analytics" "$MASTER"
-case "$CODE" in
-  2*) assert_ok "GET /v1/analytics (analytics key accepted)";;
-  401|403) skip "analytics key not configured on reader" "reader_side.analytics.api_key unset — track as operator gap";;
-  *) skip "analytics endpoint returned HTTP $CODE";;
-esac
+assert_ok "GET /v1/analytics (analytics key accepted)"
 
 # =============================================================================
 section "19. ANSWER / RAG (best-effort — automatic path blocked by operator#43)"

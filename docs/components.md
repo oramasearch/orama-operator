@@ -28,7 +28,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
 | **disco** | `internal/controller/disco.go` | `Deployment` (DISCO + embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
-| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — pulls `/v1/analytics` → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
+| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — pulls `/v1/analytics` from the reader Service and the writer (master key) → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
 | **cloudflare** | `internal/controller/cloudflare.go` | CF DNS record via the CF API (safe no-op until configured) | 🟡 **implemented** (not live-tested) |
@@ -188,6 +188,19 @@ Driven by `spec.region.role`:
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
   `ORAMACORE_` provider splits on `_`). All children set an owner reference to the CR, so
   deleting the CR cascade-deletes them.
+- **Analytics** ([#55](https://github.com/oramasearch/orama-operator/issues/55)) — the config sets
+  `reader_side.analytics`, so each pod logs search events under `<reader data_dir>/analytics_new`
+  and serves them once through `GET /v1/analytics` (read-and-erase). Without the block the endpoint
+  answers 500 and analytics-processor imports nothing. `api_key` is the same `__MASTER_API_KEY__`
+  placeholder the `render-config` init container fills, because that is the key analytics-processor
+  polls with. `metadata_from_headers` mirrors the prod reader configs (`user-agent`,
+  `CF-Connecting-IP`, `CF-IPCountry`, `continent`, `colo`, `latitude`, `longitude` → `ua`, `ip`,
+  `country`, …). Prod sets the block on readers only and with a dedicated key; here the writer
+  shares the config, so its reader side logs too (it serves no search traffic, so normally nothing).
+  analytics-processor's `oramacores` lists the reader Service first and the writer second, both
+  with the master key. **Open gaps:** the reader Service load-balances, so one `POST /import` drains
+  only the reader pod it lands on; other pods' events wait for a later import and are lost if the
+  pod restarts first (the reader data dir is an `emptyDir`). Nothing in-cluster calls `/import` yet.
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
   BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets
