@@ -7,6 +7,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -56,6 +57,40 @@ type OramaCloudV1Spec struct {
 	// fresh install answers queries out of the box.
 	// +optional
 	DemoSeed bool `json:"demoSeed,omitempty"`
+
+	// Placement pins every pod the operator creates for this CR (apps, data stores, engine,
+	// Jobs, and the CNPG control-DB instances) to a node pool. The writer's own
+	// nodeSelector/tolerations, when set, replace these for the writer.
+	// +optional
+	Placement PlacementSpec `json:"placement,omitempty"`
+
+	// DeletionProtection keeps the stack's data through CR deletion and component disable: the
+	// CNPG control-DB Cluster (and its ScheduledBackup) carry no owner reference and are never
+	// deleted by the operator, and every StatefulSet sets
+	// persistentVolumeClaimRetentionPolicy Retain/Retain. Default false.
+	// +optional
+	DeletionProtection bool `json:"deletionProtection,omitempty"`
+}
+
+// PlacementSpec is node placement applied to every operator-created pod.
+type PlacementSpec struct {
+	// NodeSelector is merged into each pod's nodeSelector.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// Tolerations are added to each pod.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+}
+
+// VolumeSpec sizes one persistent data volume (a StatefulSet volumeClaimTemplate or the CNPG
+// instance storage).
+type VolumeSpec struct {
+	// Size of the volume. Default 10Gi.
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+	// StorageClassName for the PVC; empty uses the cluster default StorageClass.
+	// +optional
+	StorageClassName string `json:"storageClassName,omitempty"`
 }
 
 // RegionSpec selects the cluster role.
@@ -94,7 +129,9 @@ type ImagesSpec struct {
 	// +kubebuilder:default="latest"
 	Tag string `json:"tag,omitempty"`
 	// Overrides maps a component key ("oramacore", "dashboard", "disco", ...) to a
-	// full image ref, bypassing registry/tag for that component.
+	// full image ref, bypassing registry/tag for that component. A digest-pinned ref
+	// (`repo@sha256:<digest>` or `repo:tag@sha256:<digest>`) is pulled IfNotPresent;
+	// a tag-only ref of an operator-built app is pulled Always.
 	// +optional
 	Overrides map[string]string `json:"overrides,omitempty"`
 	// PullSecretName is a docker-registry Secret (in the CR's namespace) used to pull
@@ -173,7 +210,7 @@ type ComponentsSpec struct {
 	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
-	ControlDB DataStoreSpec  `json:"controlDB,omitempty"` // Postgres control plane
+	ControlDB ControlDBSpec  `json:"controlDB,omitempty"` // Postgres control plane (CNPG)
 	PgAdmin   Toggle         `json:"pgAdmin,omitempty"`   // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
 	Cache     DataStoreSpec  `json:"cache,omitempty"`     // Redis (+ QStash shim)
 	Broker    DataStoreSpec  `json:"broker,omitempty"`    // RabbitMQ
@@ -218,16 +255,27 @@ type WriterSpec struct {
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	// Storage sizes the writer's data PVC (default 10Gi, cluster default StorageClass).
+	// volumeClaimTemplates are immutable, so changing it on a running writer is refused by the
+	// API server; see docs/components.md for the resize procedure.
+	// +optional
+	Storage VolumeSpec `json:"storage,omitempty"`
 }
 
 type ReaderSpec struct {
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
-	// HPA autoscales readers on load when set.
+	// HPA autoscales readers on load when set: the operator owns a HorizontalPodAutoscaler
+	// targeting the reader StatefulSet and stops setting its replica count.
 	// +optional
 	HPA *HPASpec `json:"hpa,omitempty"`
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// Storage sizes each reader's data PVC (default 10Gi, cluster default StorageClass). The
+	// reader keeps its index and stream offset there, so a replaced reader resumes instead of
+	// replaying the replication stream from offset 0.
+	// +optional
+	Storage VolumeSpec `json:"storage,omitempty"`
 }
 
 type HPASpec struct {
@@ -298,6 +346,21 @@ type DataStoreSpec struct {
 	// Mode=external. Binary-side right-sizing (Redis maxmemory, etc.) is tracked in #42.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+	// when Mode=external.
+	// +optional
+	Storage VolumeSpec `json:"storage,omitempty"`
+}
+
+// ControlDBSpec is the control-plane Postgres: a DataStoreSpec (run as a CNPG Cluster when
+// in-cluster) plus opt-in object-store backups.
+type ControlDBSpec struct {
+	DataStoreSpec `json:",inline"`
+	// Backup configures scheduled CNPG Barman object-store backups of the control DB. The
+	// credentials Secret lives in the CR's namespace. The default prefix is
+	// <namespace>/<name>/controldb.
+	// +optional
+	Backup PostgresBackupSpec `json:"backup,omitempty"`
 }
 
 // Toggle is a simple on/off component.
