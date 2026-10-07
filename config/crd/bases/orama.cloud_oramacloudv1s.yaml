@@ -141,8 +141,10 @@ spec:
                       operator/chart), pointed at an external endpoint, or centrally located.
                     properties:
                       credentialsSecretRef:
-                        description: CredentialsSecretRef (ExternalSecret-materialized)
-                          when Mode=external.
+                        description: |-
+                          CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
+                          required and must hold keys `uri` (connection URI) and `password`; the operator connects its
+                          clients with it but never provisions or migrates an external control DB.
                         properties:
                           name:
                             default: ""
@@ -333,8 +335,10 @@ spec:
                       operator/chart), pointed at an external endpoint, or centrally located.
                     properties:
                       credentialsSecretRef:
-                        description: CredentialsSecretRef (ExternalSecret-materialized)
-                          when Mode=external.
+                        description: |-
+                          CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
+                          required and must hold keys `uri` (connection URI) and `password`; the operator connects its
+                          clients with it but never provisions or migrates an external control DB.
                         properties:
                           name:
                             default: ""
@@ -460,8 +464,10 @@ spec:
                       operator/chart), pointed at an external endpoint, or centrally located.
                     properties:
                       credentialsSecretRef:
-                        description: CredentialsSecretRef (ExternalSecret-materialized)
-                          when Mode=external.
+                        description: |-
+                          CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
+                          required and must hold keys `uri` (connection URI) and `password`; the operator connects its
+                          clients with it but never provisions or migrates an external control DB.
                         properties:
                           name:
                             default: ""
@@ -640,8 +646,10 @@ spec:
                             x-kubernetes-map-type: atomic
                         type: object
                       credentialsSecretRef:
-                        description: CredentialsSecretRef (ExternalSecret-materialized)
-                          when Mode=external.
+                        description: |-
+                          CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
+                          required and must hold keys `uri` (connection URI) and `password`; the operator connects its
+                          clients with it but never provisions or migrates an external control DB.
                         properties:
                           name:
                             default: ""
@@ -1402,8 +1410,10 @@ spec:
                       operator/chart), pointed at an external endpoint, or centrally located.
                     properties:
                       credentialsSecretRef:
-                        description: CredentialsSecretRef (ExternalSecret-materialized)
-                          when Mode=external.
+                        description: |-
+                          CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
+                          required and must hold keys `uri` (connection URI) and `password`; the operator connects its
+                          clients with it but never provisions or migrates an external control DB.
                         properties:
                           name:
                             default: ""
