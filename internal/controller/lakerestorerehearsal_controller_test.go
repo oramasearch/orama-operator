@@ -205,9 +205,9 @@ func newRehearsalFixture(t *testing.T, operation string, instances int32) *rehea
 			Image:     "oramasearch/lake:test",
 			Postgres: oramav1alpha1.LakePostgresSpec{
 				Instances: &instances,
-				Backup: oramav1alpha1.LakePostgresBackupSpec{
+				Backup: oramav1alpha1.PostgresBackupSpec{
 					Enabled: &enabled,
-					Destination: oramav1alpha1.LakePostgresBackupDestination{
+					Destination: oramav1alpha1.PostgresBackupDestination{
 						Bucket: "lake-backups",
 						Path:   "lake-test/controldb",
 					},

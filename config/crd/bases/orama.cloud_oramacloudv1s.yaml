@@ -244,6 +244,23 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -421,6 +438,23 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -533,14 +567,84 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
                   controlDB:
                     description: |-
-                      DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
-                      operator/chart), pointed at an external endpoint, or centrally located.
+                      ControlDBSpec is the control-plane Postgres: a DataStoreSpec (run as a CNPG Cluster when
+                      in-cluster) plus opt-in object-store backups.
                     properties:
+                      backup:
+                        description: |-
+                          Backup configures scheduled CNPG Barman object-store backups of the control DB. The
+                          credentials Secret lives in the CR's namespace. The default prefix is
+                          <namespace>/<name>/controldb.
+                        properties:
+                          destination:
+                            description: Destination identifies the object-store location.
+                              Bucket is required when Enabled is true.
+                            properties:
+                              bucket:
+                                description: Bucket is the object-store bucket name.
+                                  Required when backups are enabled.
+                                type: string
+                              endpointURL:
+                                description: EndpointURL overrides the Secret's s3ApiEndpoint.
+                                type: string
+                              path:
+                                description: |-
+                                  Path is the bucket prefix. Empty defaults to lake-<name>/controldb for a Lake and
+                                  <namespace>/<name>/controldb for an OramaCloudV1.
+                                type: string
+                            type: object
+                          enabled:
+                            default: false
+                            description: Enabled turns on the CNPG Barman object store
+                              and ScheduledBackup. Default false.
+                            type: boolean
+                          retention:
+                            default: 30d
+                            description: Retention is the Barman retentionPolicy.
+                            type: string
+                          schedule:
+                            default: 0 0 3 * * *
+                            description: Schedule is a six-field CNPG cron expression.
+                            type: string
+                          secretRef:
+                            description: |-
+                              SecretRef names the R2/S3 credentials Secret in the Cluster's namespace. It is required when
+                              Enabled is true and must contain s3ApiEndpoint, accessKeyId, and secretAccessKey.
+                            properties:
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        type: object
                       credentialsSecretRef:
                         description: |-
                           CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
@@ -644,6 +748,23 @@ spec:
                               otherwise to an implementation-defined value. Requests cannot exceed Limits.
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
+                        type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
                         type: object
                     required:
                     - enabled
@@ -858,7 +979,9 @@ spec:
                       reader:
                         properties:
                           hpa:
-                            description: HPA autoscales readers on load when set.
+                            description: |-
+                              HPA autoscales readers on load when set: the operator owns a HorizontalPodAutoscaler
+                              targeting the reader StatefulSet and stops setting its replica count.
                             properties:
                               maxReplicas:
                                 format: int32
@@ -929,6 +1052,24 @@ spec:
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
                             type: object
+                          storage:
+                            description: |-
+                              Storage sizes each reader's data PVC (default 10Gi, cluster default StorageClass). The
+                              reader keeps its index and stream offset there, so a replaced reader resumes instead of
+                              replaying the replication stream from offset 0.
+                            properties:
+                              size:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: Size of the volume. Default 10Gi.
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              storageClassName:
+                                description: StorageClassName for the PVC; empty uses
+                                  the cluster default StorageClass.
+                                type: string
+                            type: object
                         type: object
                       writer:
                         properties:
@@ -998,6 +1139,24 @@ spec:
                                   otherwise to an implementation-defined value. Requests cannot exceed Limits.
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
+                            type: object
+                          storage:
+                            description: |-
+                              Storage sizes the writer's data PVC (default 10Gi, cluster default StorageClass).
+                              volumeClaimTemplates are immutable, so changing it on a running writer is refused by the
+                              API server; see docs/components.md for the resize procedure.
+                            properties:
+                              size:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: Size of the volume. Default 10Gi.
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              storageClassName:
+                                description: StorageClassName for the PVC; empty uses
+                                  the cluster default StorageClass.
+                                type: string
                             type: object
                           tolerations:
                             items:
@@ -1354,6 +1513,23 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -1497,6 +1673,13 @@ spec:
                     - enabled
                     type: object
                 type: object
+              deletionProtection:
+                description: |-
+                  DeletionProtection keeps the stack's data through CR deletion and component disable: the
+                  CNPG control-DB Cluster (and its ScheduledBackup) carry no owner reference and are never
+                  deleted by the operator, and every StatefulSet sets
+                  persistentVolumeClaimRetentionPolicy Retain/Retain. Default false.
+                type: boolean
               demoSeed:
                 description: |-
                   DemoSeed, when true, has the operator seed a demo project + index so a
@@ -1600,7 +1783,9 @@ spec:
                       type: string
                     description: |-
                       Overrides maps a component key ("oramacore", "dashboard", "disco", ...) to a
-                      full image ref, bypassing registry/tag for that component.
+                      full image ref, bypassing registry/tag for that component. A digest-pinned ref
+                      (`repo@sha256:<digest>` or `repo:tag@sha256:<digest>`) is pulled IfNotPresent;
+                      a tag-only ref of an operator-built app is pulled Always.
                     type: object
                   pullSecretName:
                     description: |-
@@ -1694,6 +1879,57 @@ spec:
                   - name
                   type: object
                 type: array
+              placement:
+                description: |-
+                  Placement pins every pod the operator creates for this CR (apps, data stores, engine,
+                  Jobs, and the CNPG control-DB instances) to a node pool. The writer's own
+                  nodeSelector/tolerations, when set, replace these for the writer.
+                properties:
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: NodeSelector is merged into each pod's nodeSelector.
+                    type: object
+                  tolerations:
+                    description: Tolerations are added to each pod.
+                    items:
+                      description: |-
+                        The pod this Toleration is attached to tolerates any taint that matches
+                        the triple <key,value,effect> using the matching operator <operator>.
+                      properties:
+                        effect:
+                          description: |-
+                            Effect indicates the taint effect to match. Empty means match all taint effects.
+                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                          type: string
+                        key:
+                          description: |-
+                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                          type: string
+                        operator:
+                          description: |-
+                            Operator represents a key's relationship to the value.
+                            Valid operators are Exists and Equal. Defaults to Equal.
+                            Exists is equivalent to wildcard for value, so that a pod can
+                            tolerate all taints of a particular category.
+                          type: string
+                        tolerationSeconds:
+                          description: |-
+                            TolerationSeconds represents the period of time the toleration (which must be
+                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                            it is not set, which means tolerate the taint forever (do not evict). Zero and
+                            negative values will be treated as 0 (evict immediately) by the system.
+                          format: int64
+                          type: integer
+                        value:
+                          description: |-
+                            Value is the taint value the toleration matches to.
+                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          type: string
+                      type: object
+                    type: array
+                type: object
               profile:
                 default: light
                 description: |-

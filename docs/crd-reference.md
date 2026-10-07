@@ -4,8 +4,9 @@ One umbrella CR per cluster describes an entire regional v1 deployment. Source o
 truth: [`../api/v1alpha1/oramacloudv1_types.go`](../api/v1alpha1/oramacloudv1_types.go)
 (regenerate this doc's tables when the types change). Samples:
 [`../config/samples/primary-us-east.yaml`](../config/samples/primary-us-east.yaml) (a primary
-region) and [`../config/samples/read-eu.yaml`](../config/samples/read-eu.yaml) (a read tier
-pointing at the primary); the full sample list is in
+region), [`../config/samples/read-eu.yaml`](../config/samples/read-eu.yaml) (a read tier
+pointing at the primary) and [`../config/samples/prod2.yaml`](../config/samples/prod2.yaml) (the
+customer-serving Prod 2 shape, never applied by the sample kustomization); the full sample list is in
 [install.md](install.md#3-deploy-a-v1-stack-single-cluster-quickstart).
 
 ## Top-level `spec`
@@ -16,26 +17,39 @@ pointing at the primary); the full sample list is in
 | `region.role` | enum | `primary` | `primary` (write path + stateful stores) or `read` (regional read tier). |
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
-| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. |
+| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. **Digest pinning:** an override may be `repo@sha256:<digest>` (or `repo:tag@sha256:<digest>`); the operator-built apps (dashboard, docs, workers, …) then pull `IfNotPresent` instead of `Always`. Other containers keep Kubernetes' default policy, which is already `IfNotPresent` for a digest. |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
 | `llm.default` | enum | `groq` | Provider used when a request doesn't name one. |
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
+| `placement.nodeSelector` | map | — | Added to every pod the operator creates for the CR: apps, data stores, writer, readers, embeddings, the demo-seed Job, the control-DB `PostgresSchema` migration Job, and the CNPG instances (through the Cluster's `spec.affinity`). `engine.writer.nodeSelector`, when set, replaces it for the writer (and the GPU embeddings pod). Unset = no selector, as before. |
+| `placement.tolerations` | list | — | Same scope as `placement.nodeSelector`; `engine.writer.tolerations`, when set, replaces it for the writer. |
+| `deletionProtection` | bool | false | Keep the data through CR deletion and component disable. The CNPG control-DB `Cluster` and its `ScheduledBackup` get **no owner reference** (an existing one is removed), so deleting the CR leaves them; `controlDB.enabled: false` keeps them too, and re-enabling adopts the same Cluster. Every operator StatefulSet (writer, readers, stores) gets `persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`. Off: as before (CR deletion garbage-collects the Cluster; disable deletes it). |
 
 ## `spec.components`
 
 Every component has `enabled`. Data stores also have `mode: in-cluster|external`,
-`placement: local|central`, `replicate`, and `endpoint`/`credentialsSecretRef`.
+`placement: local|central`, `replicate`, `endpoint`/`credentialsSecretRef`, and
+`storage` (below).
+
+**`storage`** (a `VolumeSpec`) sizes a persistent volume: `size` (quantity, default `10Gi`) and
+`storageClassName` (default: the cluster default StorageClass). It exists on `engine.writer`,
+`engine.reader`, every data store (`analytics`, `cache`, `broker`, `search`) and `controlDB`, where it
+becomes the CNPG Cluster's `spec.storage.{size,storageClass}`. The StatefulSet volumes take it when
+the operator **creates** the StatefulSet: `volumeClaimTemplates` are immutable, so a later change is
+ignored for an existing StatefulSet (resize an existing PVC by expanding it; see
+[components.md](components.md#resizing-a-data-volume)). CNPG applies a `controlDB.storage.size`
+increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations}`, `reader.{replicas,hpa,resources}`, `envoy` | OramaCore writer + readers + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `reader.{replicas,hpa,resources,storage}`, `envoy` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
-| `controlDB` | data-store; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
+| `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
 | `analytics` | data-store | ClickHouse |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
@@ -45,6 +59,35 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 
 `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
+
+`engine.reader.hpa` (`minReplicas` default `reader.replicas`, `maxReplicas` default
+2 × `minReplicas`, `targetCPUUtilization` default `70`) makes the operator own a
+`HorizontalPodAutoscaler` `<cr>-reader` on the reader StatefulSet; while it is set the operator
+sets the StatefulSet's replica count only when creating it. Clearing `hpa` deletes the HPA.
+
+### `controlDB.backup`
+
+Opt-in CNPG Barman object-store backups of the control DB, the same `PostgresBackupSpec` the
+`Lake` uses (`spec.postgres.backup`; procedure in [lake/backups.md](lake/backups.md)). Only an
+in-cluster, non-replica control DB is backed up.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Configure the Cluster's `spec.backup.barmanObjectStore` and own a `ScheduledBackup` `<cr>-controldb-backup` (`immediate: true`, Backups owned by the ScheduledBackup). |
+| `schedule` | `0 0 3 * * *` | Six-field CNPG cron. |
+| `retention` | `30d` | Barman `retentionPolicy`. |
+| `destination.bucket` | — | Required when enabled. |
+| `destination.path` | `<namespace>/<name>/controldb` | Bucket prefix; give each cluster its own when sharing a bucket. |
+| `destination.endpointURL` | the Secret's `s3ApiEndpoint` | S3 endpoint override. |
+| `secretRef.name` | — | Required when enabled: a Secret in the CR's namespace with `s3ApiEndpoint`, `accessKeyId`, `secretAccessKey`. |
+
+`status.conditions[BackupReady]` is present only while backups are enabled: `True`
+(`BackupCompleted`) once the ScheduledBackup exists and the newest CNPG Backup completed; otherwise
+`False` with `ScheduledBackupPending`, `BackupPending`, `BackupNotCompleted`, or, for an invalid
+config, `BackupBucketRequired` / `BackupSecretRequired` / `BackupSecretNotFound` /
+`InvalidBackupSecret` (nothing is configured in CNPG until the config is valid). It does not change
+the stack's `phase`. While backups are enabled a Ready stack re-reads backup status every 5 minutes;
+unchanged reads write nothing.
 
 ## `OramaCloudV1E2ETest` (separate CRD)
 
@@ -259,6 +302,7 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.version` | Schema version recorded in `.status.appliedVersion` once applied. A change automatically replaces the prior Job with foreground deletion, waiting for its pods before starting the guarded apply. Lake hashes SQL plus guard; the dashboard hashes SQL. |
 | `spec.guardTable` | A `public` table that must exist for the Job to skip the apply. Default `crawler_configs`. When the schema file records migrations (`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`), the Job also requires every one of them in the database's `schema_migrations`, and otherwise applies the whole idempotent file ([#271](https://github.com/oramasearch/orama-operator/issues/271)). With no `schema_migrations` table, or a file that records none, the guard alone decides. |
 | `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
+| `spec.nodeSelector` / `spec.tolerations` | Placement for the migration Job's pod. `OramaCloudV1` copies its `spec.placement` here. Applies to Jobs created after the change. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `ReplacingMigrationJob` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
 

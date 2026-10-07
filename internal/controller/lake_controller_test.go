@@ -970,7 +970,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatalf("PostgresSchema not created: %v", err)
 	}
 	if ps.Spec.ConnectionSecretRef.Name != "lake-hello-controldb-app" || ps.Spec.ConnectionSecretRef.Key != "uri" ||
-		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "workspace_volumes_guard" ||
+		ps.Spec.SchemaConfigMapRef.Name != "lake-hello-controldb-migrations" || ps.Spec.GuardTable != "drop_moved_tables_guard" ||
 		ps.Spec.Version != lakeSchemaVersion() {
 		t.Errorf("PostgresSchema spec = %+v", ps.Spec)
 	}
@@ -1018,9 +1018,9 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "hello"},
 		Spec: oramav1alpha1.LakeSpec{
 			Image: "oramasearch/lake:v1-sandbox",
-			Postgres: oramav1alpha1.LakePostgresSpec{Backup: oramav1alpha1.LakePostgresBackupSpec{
+			Postgres: oramav1alpha1.LakePostgresSpec{Backup: oramav1alpha1.PostgresBackupSpec{
 				Enabled: &enabled,
-				Destination: oramav1alpha1.LakePostgresBackupDestination{
+				Destination: oramav1alpha1.PostgresBackupDestination{
 					Bucket: "lake-backups",
 				},
 				SecretRef: corev1.LocalObjectReference{Name: "r2"},
@@ -1175,7 +1175,7 @@ func TestLakeDataServiceStatusRequiresFailoverForReplicatedPostgres(t *testing.T
 		Spec: oramav1alpha1.LakeSpec{
 			Postgres: oramav1alpha1.LakePostgresSpec{
 				Instances: &two,
-				Backup: oramav1alpha1.LakePostgresBackupSpec{
+				Backup: oramav1alpha1.PostgresBackupSpec{
 					Enabled: &enabled,
 				},
 			},
@@ -1204,12 +1204,12 @@ func TestLakeDataServiceStatusRequiresFailoverForReplicatedPostgres(t *testing.T
 func TestLakeReconcileRejectsInvalidBackupConfigInStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		backup oramav1alpha1.LakePostgresBackupSpec
+		backup oramav1alpha1.PostgresBackupSpec
 		reason string
 	}{
-		{name: "missing bucket", backup: oramav1alpha1.LakePostgresBackupSpec{}, reason: "BackupBucketRequired"},
-		{name: "missing Secret reference", backup: oramav1alpha1.LakePostgresBackupSpec{
-			Destination: oramav1alpha1.LakePostgresBackupDestination{Bucket: "lake-backups"},
+		{name: "missing bucket", backup: oramav1alpha1.PostgresBackupSpec{}, reason: "BackupBucketRequired"},
+		{name: "missing Secret reference", backup: oramav1alpha1.PostgresBackupSpec{
+			Destination: oramav1alpha1.PostgresBackupDestination{Bucket: "lake-backups"},
 		}, reason: "BackupSecretRequired"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1261,9 +1261,6 @@ func TestLakeSchemaMatchesVendoredSource(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS customers", "CREATE TABLE IF NOT EXISTS repositories", "CREATE TABLE IF NOT EXISTS objects",
 		"CREATE TABLE IF NOT EXISTS teams", "CREATE TABLE IF NOT EXISTS memberships", "CREATE TABLE IF NOT EXISTS grants",
 		"CREATE TABLE IF NOT EXISTS audit_events", "CREATE TABLE IF NOT EXISTS invitations", "customer_type_check",
-		"customer_name_unique", "customer_name_format", "0004_organizations_policy", "CREATE TABLE IF NOT EXISTS secrets_mounts",
-		"CREATE TABLE IF NOT EXISTS secrets_versions", "CREATE TABLE IF NOT EXISTS secrets_encryption_keys",
-		"CREATE TABLE IF NOT EXISTS secrets_data_keys", "CREATE TABLE IF NOT EXISTS secrets_guard",
 		"0009_secrets", "CREATE TABLE IF NOT EXISTS sso_providers", "CREATE TABLE IF NOT EXISTS sso_federation_guard",
 		"CREATE TABLE IF NOT EXISTS offline_recovery_grants", "CREATE TABLE IF NOT EXISTS offline_recovery_attempts",
 		"CREATE TABLE IF NOT EXISTS offline_recovery_contacts", "CREATE TABLE IF NOT EXISTS offline_recovery_guard",

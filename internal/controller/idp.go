@@ -50,6 +50,7 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 		return err
 	}
 	lbls := labelsFor(oc, "demo-seed")
+	nodeSelector, tolerations := podPlacement(oc)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace, Labels: lbls},
 		Spec: batchv1.JobSpec{
@@ -58,6 +59,8 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 				ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 				Spec: corev1.PodSpec{
 					ImagePullSecrets: imagePullSecrets(oc),
+					NodeSelector:     nodeSelector,
+					Tolerations:      tolerations,
 					RestartPolicy:    corev1.RestartPolicyOnFailure,
 					Containers: []corev1.Container{{
 						Name:  "seed",
