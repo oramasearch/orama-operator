@@ -41,7 +41,7 @@ func (r *OramaCloudV1Reconciler) teardownByComponent(ctx context.Context, oc *or
 		for _, list := range []client.ObjectList{
 			&appsv1.DeploymentList{}, &appsv1.StatefulSetList{}, &corev1.ServiceList{},
 			&corev1.ConfigMapList{}, &corev1.SecretList{}, &policyv1.PodDisruptionBudgetList{},
-			&networkingv1.IngressList{}, &batchv1.JobList{}, &autoscalingv2.HorizontalPodAutoscalerList{},
+			&networkingv1.IngressList{}, &batchv1.JobList{}, &batchv1.CronJobList{}, &autoscalingv2.HorizontalPodAutoscalerList{},
 		} {
 			if err := r.List(ctx, list, ns, sel); err != nil {
 				return fmt.Errorf("teardown %s: list: %w", comp, err)

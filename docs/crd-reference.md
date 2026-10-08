@@ -17,6 +17,8 @@ customer-serving Prod 2 shape, never applied by the sample kustomization); the f
 | `region.role` | enum | `primary` | `primary` (write path + stateful stores) or `read` (regional read tier). |
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
+| `idp.configSecretRef` | Secret reference | — | With `provider: firebase`, required dashboard server keys: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. Other providers retain their existing behavior. |
+| `jwtIssuer` | string | `orama-cloud` | Dashboard signing issuer and writer JWKS provider's accepted issuer (maximum 128 characters). |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. **Digest pinning:** an override may be `repo@sha256:<digest>` (or `repo:tag@sha256:<digest>`); the operator-built apps (dashboard, docs, workers, …) then pull `IfNotPresent` instead of `Always`. Other containers keep Kubernetes' default policy, which is already `IfNotPresent` for a digest. |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
@@ -45,12 +47,13 @@ increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `reader.{replicas,hpa,resources,storage}`, `envoy` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `engine` | `writer.gpu`, `writer.{host,jwt,resources,nodeSelector,tolerations,storage}`, `reader.{host,replicas,hpa,resources,storage}`, `envoy` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
-| `analytics` | data-store | ClickHouse |
+| `analytics` | data-store; external mode requires an HTTP(S) `endpoint` and `credentialsSecretRef` with `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` for the dashboard/processor | ClickHouse (Prod 2 keeps ClickHouse Cloud) |
+| `analyticsProcessor` | `resources`, `import.{enabled,schedule}` | Analytics import server and opt-in CronJob |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
 | `search` | data-store | Typesense hosted-search |
@@ -64,6 +67,57 @@ L40S). `workers` bundles all ported CF workers into one image → one Deployment
 2 × `minReplicas`, `targetCPUUtilization` default `70`) makes the operator own a
 `HorizontalPodAutoscaler` `<cr>-reader` on the reader StatefulSet; while it is set the operator
 sets the StatefulSet's replica count only when creating it. Clearing `hpa` deletes the HPA.
+
+### Prod 2 auth and public endpoints
+
+| Field under `spec.components` | Default | Purpose |
+|---|---|---|
+| `engine.writer.host` | empty | Writer Ingress → `<cr>-writer:8080`, primary region only. |
+| `engine.reader.host` | empty | Reader Ingress → `<cr>-reader:80`, through Envoy when enabled, direct reader otherwise. |
+| `engine.writer.jwt` | unset | Enables `writer_side.jwt.providers` in OramaCore. Unset preserves the existing engine config without JWT. |
+| `engine.writer.jwt.jwksURL` | required when `jwt` is set | HTTP(S) dashboard JWKS URL; Prod 2 uses `https://app.orama.ing/api/.well-known/jwks.json`. |
+| `engine.writer.jwt.audience` | required when `jwt` is set | Exact `clusterWriterUrl` that the dashboard uses as the JWT audience; Prod 2 uses `https://writer.prod2.cluster.orama.ing`. Maximum 128 characters. |
+
+With `cloudflare.enabled`, `manageDNS` and `apiTokenSecretRef` configured, the dashboard, writer
+and reader each get an owned proxied `CloudflareDNSRecord` after their Ingress receives an address.
+Removing a host or disabling DNS deletes its owned child record; the DNS controller's finalizer
+handles external cleanup. Existing CRs gain no writer/reader ingress until their hosts are set.
+
+`idp.provider: firebase` injects the three server variables through required Secret key references.
+The operator creates no Firebase credentials and no longer seeds the unused `FIREBASE_SERVICE_ACCOUNT`
+placeholder. With the default `none`, it adds no Firebase variables. Browser Firebase configuration
+belongs to the dashboard image; authorizing `app.orama.ing` in Firebase remains a separately approved
+production change. The operator generates Prod 2's own RSA keypair once through `ensureJWTSecrets`;
+no shared Prod 1 keypair is needed. A missing public-only Secret is recovered from the preserved pair
+without rotation. JWT configuration changes roll the init-rendered engine config. The CRD's new
+`jwtIssuer` default also supplies an explicit dashboard environment variable with the same value;
+existing dashboards may roll once when that default is first served.
+The dashboard token endpoint reads writer/reader URLs from control-DB cluster rows; their copy must
+use the exact Prod 2 URLs. The operator does not rewrite those rows.
+
+### `analyticsProcessor.import`
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Own `<cr>-analytics-import`, a CronJob that sends `POST /import` to the processor Service on port 8080. Requires engine, analytics and controlDB enabled. |
+| `schedule` | `*/5 * * * *` | Five-field cron in UTC (`timeZone: Etc/UTC`); validated before scheduling. |
+
+A new stack opting in creates a headless governing reader Service `<cr>-reader-headless` alongside
+the normal customer-facing reader Service. The processor polls each reader ordinal on its own port
+8080, including HPA-driven replicas, plus the writer's reader side on the primary. Configuration
+changes roll the processor through a deterministic config hash; ordinary unscheduled configurations
+retain their existing reader-Service polling. The processor now gets that hash annotation even
+without a schedule, so upgrading an existing processor rolls it once.
+
+Existing reader StatefulSets retain their immutable `serviceName`. Enabling imports on a legacy
+`<cr>-reader` governing Service returns a visible prerequisite error and creates no schedule.
+A separately reviewed reader migration is required first; the operator never deletes/recreates the
+StatefulSet to change this field. Disabling imports removes the schedule but keeps a headless Service
+already governing live readers. Disabling the processor removes its Deployment, config and schedule.
+Invalid prerequisites remove a previous schedule and degrade reconciliation. Trigger pods inherit
+placement and pull secrets, mount no service-account token or credentials, forbid concurrent Jobs,
+and make no automatic request retries. See [components.md](components.md#analytics-import) for
+listener/image requirements and failure limits.
 
 ### `controlDB.backup`
 

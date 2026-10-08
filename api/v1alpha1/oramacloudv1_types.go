@@ -30,6 +30,11 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:default={provider: none}
 	IDP IDPSpec `json:"idp,omitempty"`
 
+	// JWTIssuer is shared by dashboard token signing and writer verification.
+	// +kubebuilder:default="orama-cloud"
+	// +kubebuilder:validation:MaxLength=128
+	JWTIssuer string `json:"jwtIssuer,omitempty"`
+
 	// Images sets the default registry/tag and per-component image overrides.
 	// Defaults reuse the published oramasearch/* images.
 	Images ImagesSpec `json:"images,omitempty"`
@@ -112,7 +117,8 @@ type IDPSpec struct {
 	Provider string `json:"provider"`
 
 	// ConfigSecretRef points at an ExternalSecret-materialized secret holding the
-	// provider config (e.g. Firebase service account, Clerk keys). Ignored for "none".
+	// provider config. For firebase, the dashboard reads FIREBASE_PROJECT_ID,
+	// FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY from this Secret. Ignored for "none".
 	// +optional
 	ConfigSecretRef *corev1.LocalObjectReference `json:"configSecretRef,omitempty"`
 
@@ -219,7 +225,7 @@ type ComponentsSpec struct {
 	Workers   WorkersSpec    `json:"workers,omitempty"`   // the ported CF workers (one bundled image)
 
 	// Additional v1 components (gap fill — techops-docs issues #5–#7):
-	AnalyticsProcessor Toggle `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
+	AnalyticsProcessor AnalyticsProcessorSpec `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
 	// Deprecated: oramasearch-app (api.askorama.ai, the legacy "old dashboard") just redirects to
 	// the new app, so it is NOT run in-cluster — the reconciler is unwired (operator#35). Field
 	// kept for API compatibility; setting it has no effect.
@@ -241,6 +247,13 @@ type EngineSpec struct {
 }
 
 type WriterSpec struct {
+	// Host publishes the writer through an owned Ingress and optional Cloudflare DNS.
+	// Empty keeps the writer internal.
+	// +optional
+	Host string `json:"host,omitempty"`
+	// JWT enables the dashboard JWKS provider. Unset preserves the existing config without JWT.
+	// +optional
+	JWT *WriterJWTSpec `json:"jwt,omitempty"`
 	// GPU requests nvidia.com/gpu for the writer's BUILT-IN embeddings generation
 	// (ONNX Runtime + CUDA; prod: L40S). Set false to use CPU embeddings or a remote
 	// embeddings server. (This is the main reason a GPU node is needed at all; the
@@ -262,7 +275,38 @@ type WriterSpec struct {
 	Storage VolumeSpec `json:"storage,omitempty"`
 }
 
+// WriterJWTSpec matches OramaCore's dashboard JWKS provider.
+type WriterJWTSpec struct {
+	// JWKSURL is the dashboard's JWKS endpoint, e.g. https://app.orama.ing/api/.well-known/jwks.json.
+	// +kubebuilder:validation:Pattern=`^https?://`
+	JWKSURL string `json:"jwksURL"`
+	// Audience must match the exact clusterWriterUrl used by the dashboard's token endpoint.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	Audience string `json:"audience"`
+}
+
+// AnalyticsProcessorSpec configures the processor and its opt-in import trigger.
+type AnalyticsProcessorSpec struct {
+	Toggle `json:",inline"`
+	// Import schedules POST /import. Unset leaves the processor unscheduled, as before.
+	// +optional
+	Import AnalyticsImportSpec `json:"import,omitempty"`
+}
+
+type AnalyticsImportSpec struct {
+	// Enabled opts in to an owned CronJob. Requires engine, analytics and controlDB enabled.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Schedule is a five-field CronJob schedule in UTC.
+	// +kubebuilder:default="*/5 * * * *"
+	Schedule string `json:"schedule,omitempty"`
+}
+
 type ReaderSpec struct {
+	// Host publishes reads through an owned Ingress and optional Cloudflare DNS.
+	// +optional
+	Host string `json:"host,omitempty"`
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
 	// HPA autoscales readers on load when set: the operator owns a HorizontalPodAutoscaler
@@ -339,7 +383,8 @@ type DataStoreSpec struct {
 	Endpoint string `json:"endpoint,omitempty"`
 	// CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
 	// required and must hold keys `uri` (connection URI) and `password`; the operator connects its
-	// clients with it but never provisions or migrates an external control DB.
+	// clients with it but never provisions or migrates an external control DB. External analytics
+	// uses `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` for the dashboard and processor.
 	// +optional
 	CredentialsSecretRef *corev1.LocalObjectReference `json:"credentialsSecretRef,omitempty"`
 	// Resources overrides the store's pod resources (requests + memory limit). When unset the

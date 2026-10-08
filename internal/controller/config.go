@@ -11,6 +11,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -41,6 +42,13 @@ func llmDefault(oc *oramav1alpha1.OramaCloudV1) string {
 		return oc.Spec.LLM.Default
 	}
 	return "groq"
+}
+
+func jwtIssuer(oc *oramav1alpha1.OramaCloudV1) string {
+	if oc.Spec.JWTIssuer != "" {
+		return oc.Spec.JWTIssuer
+	}
+	return "orama-cloud"
 }
 
 func configMapName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-config" }
@@ -83,7 +91,7 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 			"KC_HTTP_ENABLED":             "true",
 			"KC_PROXY_HEADERS":            "xforwarded",
 			"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
-			"JWT_ISSUER":                  "orama-cloud",
+			"JWT_ISSUER":                  jwtIssuer(oc),
 		}
 		// Connection hints for the in-cluster control DB only. An external DB's address lives in
 		// its credentials Secret (`uri`); no running component reads these keys.
@@ -106,8 +114,9 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 // not a placeholder.
 func (r *OramaCloudV1Reconciler) ensureJWTSecrets(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	jwtName := oc.Name + "-jwt"
-	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: jwtName}, &corev1.Secret{}); err == nil {
-		return nil // already generated — never rotate here
+	jwt := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: jwtName}, jwt); err == nil {
+		return r.ensureJWTPublicSecret(ctx, oc, jwt) // recover a missing public Secret; never rotate
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -124,26 +133,48 @@ func (r *OramaCloudV1Reconciler) ensureJWTSecrets(ctx context.Context, oc *orama
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
 
 	// dashboard: private + public (it signs the writer JWT)
-	jwt := &corev1.Secret{
+	jwt = &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: jwtName, Namespace: oc.Namespace, Labels: labelsFor(oc, "jwt")},
 		StringData: map[string]string{"JWT_PRIVATE_KEY": string(privPEM), "JWT_PUBLIC_KEY": string(pubPEM)},
 	}
 	if err := controllerutil.SetControllerReference(oc, jwt, r.Scheme); err != nil {
 		return err
 	}
-	if err := r.Create(ctx, jwt); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	if err := r.Create(ctx, jwt); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		// A concurrent reconciler won creation; use its pair, never this discarded pair.
+		if err := r.Get(ctx, client.ObjectKeyFromObject(jwt), jwt); err != nil {
+			return err
+		}
 	}
+	return r.ensureJWTPublicSecret(ctx, oc, jwt)
+}
 
-	// engine: public only (it verifies)
-	jwtPub := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: jwtName + "-pub", Namespace: oc.Namespace, Labels: labelsFor(oc, "jwt")},
-		StringData: map[string]string{"JWT_PUBLIC_KEY": string(pubPEM)},
-	}
-	if err := controllerutil.SetControllerReference(oc, jwtPub, r.Scheme); err != nil {
+// Recover interrupted generation or a lost public-only Secret from the preserved signing pair.
+func (r *OramaCloudV1Reconciler) ensureJWTPublicSecret(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, jwt *corev1.Secret) error {
+	name := jwt.Name + "-pub"
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, &corev1.Secret{}); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
-	if err := r.Create(ctx, jwtPub); err != nil && !apierrors.IsAlreadyExists(err) {
+	publicKey := string(jwt.Data["JWT_PUBLIC_KEY"])
+	if publicKey == "" {
+		publicKey = jwt.StringData["JWT_PUBLIC_KEY"]
+	}
+	if publicKey == "" {
+		return fmt.Errorf("JWT signing Secret %s is missing JWT_PUBLIC_KEY", jwt.Name)
+	}
+	pub := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace, Labels: labelsFor(oc, "jwt")},
+		StringData: map[string]string{"JWT_PUBLIC_KEY": publicKey},
+	}
+	if err := controllerutil.SetControllerReference(oc, pub, r.Scheme); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, pub); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 	return nil
@@ -230,14 +261,13 @@ func componentSecretData(component string) map[string]string {
 			// (the dashboard signs the OramaCore writer JWT); JWT_ISSUER is in the config.
 			// POSTGRES_PASSWORD is sourced from the CNPG-generated <cr>-controldb-app Secret via
 			// an explicit env in reconcileDashboard (#32) — not the dummy. Redis is passwordless.
-			"MASTER_API_KEY":           "dev-master-api-key",
-			"CLICKHOUSE_PASSWORD":      "dev-clickhouse-password",
-			"FIREBASE_SERVICE_ACCOUNT": "dev-firebase-service-account-json",
-			"STRIPE_SECRET_KEY":        "dev-stripe-secret-key",
-			"STRIPE_WEBHOOK_SECRET":    "dev-stripe-webhook-secret",
-			"AIRBYTE_CLIENT_SECRET":    "dev-airbyte-client-secret",
-			"RESEND_API_KEY":           "dev-resend-api-key",
-			"SLACK_TOKEN":              "dev-slack-token",
+			"MASTER_API_KEY":        "dev-master-api-key",
+			"CLICKHOUSE_PASSWORD":   "dev-clickhouse-password",
+			"STRIPE_SECRET_KEY":     "dev-stripe-secret-key",
+			"STRIPE_WEBHOOK_SECRET": "dev-stripe-webhook-secret",
+			"AIRBYTE_CLIENT_SECRET": "dev-airbyte-client-secret",
+			"RESEND_API_KEY":        "dev-resend-api-key",
+			"SLACK_TOKEN":           "dev-slack-token",
 		}
 	case "workers": // the CF workers bundle — RAG answer path + telemetry
 		return map[string]string{

@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
+| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; optional writer/reader Ingresses; engine `ConfigMap` with opt-in dashboard JWKS | ✅ **done** (validated on AKS) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; **never migrates the control DB** — in-cluster, the operator's owned `PostgresSchema` applies the schema (a second Drizzle migrate collides, Postgres `42710`); external, the database's owner runs migrations ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)) | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -28,7 +28,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
 | **disco** | `internal/controller/disco.go` | `Deployment` (DISCO + embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
-| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — pulls `/v1/analytics` from the reader Service and the writer (master key) → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
+| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service + config; opt-in owned import CronJob polls every reader ordinal and the primary writer → ClickHouse | 🟡 **implemented**, unit-tested; scheduled import not live-tested ([orama-bridge#155](https://github.com/oramasearch/orama-bridge/issues/155)) |
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
 | **cloudflare** | `internal/controller/cloudflare.go` | CF DNS record via the CF API (safe no-op until configured) | 🟡 **implemented** (not live-tested) |
@@ -82,7 +82,13 @@ preserved). Idempotent — `enable → disable → enable` round-trips cleanly (
   keypair** once (create-if-absent) into `<cr>-jwt` (private + public, for the
   **dashboard** to sign the OramaCore writer JWT) and `<cr>-jwt-pub` (public **only**,
   for the **engine** to verify). Least-privilege: the engine never receives the
-  private key. `JWT_ISSUER` is non-secret (in the ConfigMap).
+  private key. `JWT_ISSUER` is non-secret (`spec.jwtIssuer`, default `orama-cloud`, in the ConfigMap).
+  Prod 2 generates its own pair; it does not copy Prod 1's signing keys. If the public-only
+  Secret is lost or generation was interrupted, the operator recovers it from the preserved signing
+  Secret without rotating that pair. The optional writer JWT
+  provider fetches the dashboard's JWKS endpoint with the configured issuer and audience.
+  The new CRD issuer default adds an explicit dashboard environment variable with the same
+  `orama-cloud` value; an existing dashboard may roll once when this default is first served.
 
 **Validated on AKS (2026-07-08):** per-component secrets are generated (the
 `search-secret` holds only `TYPESENSE_API_KEY`, **not** the Cloudflare token); the
@@ -217,10 +223,9 @@ Driven by `spec.region.role`:
   `CF-Connecting-IP`, `CF-IPCountry`, `continent`, `colo`, `latitude`, `longitude` → `ua`, `ip`,
   `country`, …). Prod sets the block on readers only and with a dedicated key; here the writer
   shares the config, so its reader side logs too (it serves no search traffic, so normally nothing).
-  analytics-processor's `oramacores` lists the reader Service first and the writer second, both
-  with the master key. **Open gaps:** the reader Service load-balances, so one `POST /import` drains
-  only the reader pod it lands on; other pods' events wait for a later import (the reader data dir
-  is on the reader's PVC, so they survive a restart). Nothing in-cluster calls `/import` yet.
+  With scheduled imports enabled, analytics-processor's `oramacores` lists each reader ordinal
+  through its headless governing Service, then the writer on the primary, all with the master key.
+  The unscheduled default retains reader-Service polling. See [Analytics import](#analytics-import).
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
   BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets
@@ -365,6 +370,13 @@ host is set)**.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
 - **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`.
+  With `idp.provider: firebase`, it gets `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL` and
+  `FIREBASE_PRIVATE_KEY` through required keys in `idp.configSecretRef`, replacing the unused
+  service-account JSON dummy. The default `none` adds no Firebase variables. The referenced Secret
+  is never copied into a ConfigMap or another Secret. Missing references degrade reconciliation;
+  missing Secret keys block pod startup. Existing component Secrets may retain the unused old key.
+  External ClickHouse uses `analytics.endpoint` as `CLICKHOUSE_HOST` and the referenced
+  `CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD`; in-cluster wiring retains its existing defaults.
 
 Every app container is pulled `Always` when its image is a tag (dev tags such as `v1-sandbox` are
 re-pushed) and `IfNotPresent` when it is digest-pinned (`repo@sha256:…` via
@@ -409,17 +421,70 @@ Routed through the shared `reconcileApp` builder, so it inherits the workload-ha
 
 ## Cloudflare (`cloudflare.go`) — 🟡 implemented, not live-tested
 
-Cloudflare stays the permanent edge/geo-LB; the operator reconciles CF **DNS** via the
-CF API (raw HTTP): it upserts a proxied record pointing `dashboard.host` at this
-cluster's ingress address. **Safe no-op** unless fully configured — `enabled` +
-`apiTokenSecretRef` → a Secret with keys `token` + `zoneID` + `accountID` + `manageDNS` + a resolvable
-ingress target. The no-op path is validated on AKS (loop stays green with `enabled`
-but no token).
+Cloudflare stays the permanent edge/geo-LB. The operator owns `<cr>-dashboard-dns`,
+`<cr>-writer-dns` and `<cr>-reader-dns` `CloudflareDNSRecord` CRs for their configured public hosts.
+Each record points at its own Ingress's assigned IP or hostname, with proxying enabled. The child
+controller makes the API call; the main reconciler only writes desired resources. It waits for an
+Ingress address and preserves an existing record while a replacement address is pending.
 
-> **Follow-ups:** validate against a live Cloudflare account; add **Load Balancing**
-> (geo-steered pools + health checks across the regional clusters — the actual
-> geo-LB); deprovision records on teardown; surface the managed hostnames beyond just
-> the dashboard.
+Creation requires `enabled`, `manageDNS`, `apiTokenSecretRef` (keys `token`, `zoneID`, `accountID`)
+and an enabled component with a host. Clearing a host, disabling the component or disabling managed
+DNS deletes the owned child record; its finalizer removes external DNS. A foreign resource is never
+deleted on this path. A provisioned host or credential-reference change finalizes the old child
+before recreating its resource name, so name-based upsert cannot orphan the old record. Keep the
+old Cloudflare credential Secret available through finalization. Prod 2's hosts are `app.orama.ing`, `collections.orama.ing` and
+`writer.prod2.cluster.orama.ing`. Engine hosts reuse the dashboard's nginx ingress-class behavior.
+
+These endpoint and DNS changes are unit-tested as of 2026-10-07 and have not been applied to AKS or
+Cloudflare. Prod 1's records remain read-only; this work makes no production calls.
+
+## Analytics import
+
+`spec.components.analyticsProcessor.import.enabled` owns a CronJob `<cr>-analytics-import`, which
+uses the existing `curlimages/curl:8.10.1` helper image to call
+`POST http://<cr>-analytics-processor:8080/import`. It follows CR placement and pull secrets, has
+resource limits and the container hardening baseline, and mounts neither credentials nor a
+service-account token. The default schedule is every five minutes, in UTC. `Forbid` prevents
+concurrent Jobs; request retries and Job retries are off because imports drain reader logs.
+HTTP failures fail the Job, with a 10-second connect timeout, 240-second request timeout and
+300-second Job deadline. Histories retain one successful/failed Job each, with a one-hour TTL.
+The stack's readiness still measures workloads; import failures are visible in Job status/logs.
+A timed-out HTTP request may leave the server finishing an import, so check that run before
+manually triggering another. Importer delivery guarantees remain those of the source processor.
+
+The processor is one Deployment with an init-rendered YAML config. Every new opted-in reader stack
+uses `<cr>-reader-headless` as the StatefulSet's governing Service and polls
+`http://<cr>-reader-<ordinal>.<cr>-reader-headless.<namespace>.svc:8080/v1/analytics` for every current
+desired replica. The normal `<cr>-reader:80` Service continues to serve customer reads. StatefulSet
+scale events, including HPA changes, update the list and the processor's config-hash annotation,
+so a rollout applies the new config. This hash also adds one initial rollout for an existing
+unscheduled processor; its polling behavior otherwise stays the same. Both engine and processor
+Secrets must carry the same analytics `MASTER_API_KEY`.
+
+An existing reader StatefulSet keeps its immutable governing Service name. If it still uses
+`<cr>-reader`, enabling imports fails visibly before creating Jobs; migrate its reader topology
+under a separate reviewed change first. The operator does not delete/recreate readers to do this.
+Disabling imports removes the CronJob and retains the live governing headless Service. Disabling
+the processor removes its workload, config and schedule. Missing enabled engine/analytics/controlDB,
+a bad schedule or a legacy governing Service removes any previous schedule and returns a reconcile
+error. External ClickHouse requires an HTTP(S) endpoint without embedded credentials and a referenced
+Secret holding `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD`; the processor renders those credentials
+in its private volume. Prod 2 keeps ClickHouse Cloud, with no new in-cluster ClickHouse store.
+`create_tables: true` is unchanged: use the separately provisioned Prod 2 analytics destination and
+check its grants/table compatibility before deployment; this is no authorization to alter Prod 1.
+
+**Source evidence (read 2026-10-07):** upstream
+[analytics server at `11a6c2d`](https://github.com/oramasearch/analytics-processor/blob/11a6c2dd5c6db86bed2c617940c09b43d36e2c62/src/bin/server.rs)
+binds `127.0.0.1:8888`. The existing bridge
+[Dockerfile at `8ae627b`](https://github.com/oramasearch/orama-cloud-v1-bridge/blob/8ae627bcbbc200e1f201ffb68e66cf65a46d0a97/build/images/analytics-processor/Dockerfile)
+patches it to `0.0.0.0:8080` and asserts the patch before compiling. The operator requires an image
+built with that listener contract; an unpatched upstream image cannot serve its Service or probes.
+No source repo changes or image builds were made for this issue. Writer JWT rendering follows
+[OramaCore's provider schema at `983442f`](https://github.com/oramasearch/oramacore/blob/983442f2984d95dee9c09447a03f4228a574eebd/src/auth/jwt_manager.rs);
+Firebase Secret keys and the exact JWT audience follow the
+[dashboard at `9507a1a`](https://github.com/oramasearch/dashboard/blob/9507a1a592a32da7be8d543d7bf0df6f70a08f4f/src/app/api/user/jwt/route.ts)
+and its `src/lib/auth/firebase-admin.ts`. Unit tests cover rendering, ownership, scheduling,
+scaling, disable and prerequisite behavior; live importer, DNS and sign-in validation remain pending.
 
 ## Zetta elastic capacity (`zetta_capacity.go`) — 🟡 implemented, opt-in, not live-tested
 
@@ -518,8 +583,6 @@ install** too. Opt-in via `OramaZettaCluster.spec.capacity.karpenter.install` (d
 > (`orama_control.scale_requests`); drain-safe, quorum-aware scale-down; multi-cluster
 > placement policy (per-operator identity already namespaces the state); consent-trail
 > integration (`add_nodes` / `approve_consent`); live validation on an EKS + AKS-NAP cluster.
-> **Follow-ups:** validate against a live Cloudflare account; deprovision records on
-> teardown; surface the managed hostnames beyond just the dashboard.
 
 ## Cloudflare global Load Balancer (`cloudflareloadbalancer_controller.go`) — 🟡 implemented, not live-tested
 
