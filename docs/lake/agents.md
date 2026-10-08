@@ -22,11 +22,15 @@ and reports back, as it does for services and stores.
 
 Agents are on when `runtimeImage` or `library` is set.
 
+Every agent pod resolves with `ndots:2` and is handed lake and agent addresses as full Service
+names (`<svc>.<ns>.svc.cluster.local`), so they resolve on the first query; see
+[DNS](README.md#dns-ndots-2-on-lake-agent-and-app-pods).
+
 ## The Agent Library
 
 Each `library` entry is a Deployment and a ClusterIP Service `<lake>-<key>` on port 8080 in
 `spec.namespace`, controlled by the Lake and labelled `orama.cloud/library-agent`, probed on
-`/healthz`. Its pod gets `LAKE_URL` (lake's in-cluster Service, `http://lake-<lake>.<ns>.svc:80`),
+`/healthz`. Its pod gets `LAKE_URL` (lake's in-cluster Service, `http://lake-<lake>.<ns>.svc.cluster.local:80`),
 `AGENT_SERVICE_TOKEN`, its own agent-bus credential as `AGENT_BUS_TOKEN` with its key as
 `AGENT_BUS_AGENT`, `OPENAI_API_KEY` from `openaiSecretName`, and the model as `AGENT_MODEL`,
 `ASK_ORAMA_MODEL`, `PROJECT_MODEL` and `AUTOSUGGEST_MODEL`. An entry removed from the list is
@@ -36,7 +40,7 @@ lake learns where they are through its own environment:
 
 | lake env | Value |
 |---|---|
-| `LAKE_AGENT_ENDPOINTS` | `key=http://<lake>-<key>.<ns>.svc:8080,...`, sorted |
+| `LAKE_AGENT_ENDPOINTS` | `key=http://<lake>-<key>.<ns>.svc.cluster.local:8080,...`, sorted |
 | `LAKE_INTERNAL_URL` | lake's in-cluster address, handed to agents |
 | `LAKE_AGENT_MODEL` | `spec.agents.model` |
 | `LAKE_AGENT_SERVICE_TOKEN` | from Secret `lake-<lake>-agent-service-token` (key `token`, 32 random bytes, minted once), the bearer lake presents to every agent service |
@@ -73,7 +77,7 @@ fallback. For each present launch:
    `credential_sha256` is cleared, so its credential stops resolving; its outcome is kept after the
    Job is garbage-collected.
 3. **`service`** — a Deployment and Service `<lake>-<slug>` from `runtimeImage`, `AGENT_MODE=service`,
-   `AGENT_SERVICE_TOKEN`. `Ready` with `endpoint = http://<lake>-<slug>.<ns>.svc:8080` once a replica is
+   `AGENT_SERVICE_TOKEN`. `Ready` with `endpoint = http://<lake>-<slug>.<ns>.svc.cluster.local:8080` once a replica is
    available; `Pending` until then.
 
 **Agent pods never carry the Lake's `app.kubernetes.io/name` and `instance`**: those are the selector
