@@ -62,7 +62,7 @@ func fullStackOCV1(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCl
 func reconcileOCV1(t *testing.T, oc *oramav1alpha1.OramaCloudV1, objs ...client.Object) (client.Client, *OramaCloudV1Reconciler) {
 	t.Helper()
 	s := ocv1TestScheme(t)
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(append(objs, oc)...).WithStatusSubresource(oc).Build()
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(append(objs, oc)...).WithStatusSubresource(oc, &oramav1alpha1.CloudflareDNSRecord{}).Build()
 	r := &OramaCloudV1Reconciler{Client: cl, Scheme: s}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(oc)}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -627,6 +627,16 @@ func TestProd2SampleMatchesDecisions(t *testing.T) {
 		t.Errorf("hosts = %s, %s", c.Dashboard.Host, c.Docs.Host)
 	case b.Enabled == nil || !*b.Enabled || b.Destination.Bucket == "" || b.SecretRef.Name == "":
 		t.Errorf("control-DB backup = %+v", b)
+	case oc.Spec.IDP.Provider != "firebase" || oc.Spec.IDP.ConfigSecretRef == nil || oc.Spec.IDP.ConfigSecretRef.Name != "prod2-firebase":
+		t.Errorf("Firebase provider/reference = %+v", oc.Spec.IDP)
+	case c.Engine.Reader.Host != "collections.orama.ing" || c.Engine.Writer.Host != "writer.prod2.cluster.orama.ing":
+		t.Errorf("engine public endpoints are incorrect")
+	case c.Engine.Writer.JWT == nil || c.Engine.Writer.JWT.JWKSURL != "https://app.orama.ing/api/.well-known/jwks.json" || c.Engine.Writer.JWT.Audience != "https://writer.prod2.cluster.orama.ing" || oc.Spec.JWTIssuer != "orama-cloud":
+		t.Errorf("Prod 2 JWT config is incorrect")
+	case c.Analytics.Mode != "external" || c.Analytics.CredentialsSecretRef == nil || c.Analytics.CredentialsSecretRef.Name != "prod2-clickhouse":
+		t.Errorf("ClickHouse must stay external with referenced credentials")
+	case !c.AnalyticsProcessor.Import.Enabled || c.AnalyticsProcessor.Import.Schedule != "*/5 * * * *":
+		t.Errorf("scheduled analytics import is missing")
 	case c.ControlDB.Mode != "in-cluster" || !c.Engine.Enabled:
 		t.Errorf("controlDB mode %q engine %v", c.ControlDB.Mode, c.Engine.Enabled)
 	}
