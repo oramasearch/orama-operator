@@ -116,7 +116,8 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 	}
 	assertEnvValueOnce(t, deployment, "LAKE_APPS_WILDCARD", "apps.example.com")
 	assertEnvValueOnce(t, deployment, "LAKE_APPS_RUNTIME_IMAGE", "oramasearch/app-runtime:0.1.0")
-	assertEnvValueOnce(t, deployment, "LAKE_INTERNAL_URL", "http://lake-pod-template.lake-dev.svc:80")
+	assertEnvValueOnce(t, deployment, "LAKE_INTERNAL_URL", "http://lake-pod-template.lake-dev.svc.cluster.local:80")
+	assertLakeNdots(t, "lake", deployment.Spec.Template.Spec)
 
 	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(lake), lake); err != nil {
 		t.Fatal(err)
@@ -162,6 +163,69 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 		len(affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution) != 1 ||
 		affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0].TopologyKey != "kubernetes.io/hostname" {
 		t.Fatalf("opted-in single-replica RWO Lake affinity = %+v, want the surge pod on the running pod's node", affinity)
+	}
+}
+
+// TestLakePodsNdotsEnvtest is operator#276: lake's, agents' and apps' pods resolve with ndots:2, so
+// a Service's full name is tried as given first, and the API server stores the option as rendered.
+func TestLakePodsNdotsEnvtest(t *testing.T) {
+	kubeClient := startLakeEnvtest(t)
+	ctx := context.Background()
+	if err := kubeClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lake-dns"}}); err != nil {
+		t.Fatal(err)
+	}
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "dns"},
+		Spec: oramav1alpha1.LakeSpec{
+			Image:  "oramasearch/lake:test",
+			Agents: oramav1alpha1.LakeAgentsSpec{RuntimeImage: "oramasearch/agent-runtime:test"},
+			Apps:   oramav1alpha1.LakeAppsSpec{RuntimeImage: "oramasearch/app-runtime:test"},
+		},
+	}
+	app := &oramav1alpha1.LakeApp{
+		ObjectMeta: metav1.ObjectMeta{Name: "dns-app", Namespace: "lake-dns"},
+		Spec:       oramav1alpha1.LakeAppSpec{Port: 8080},
+	}
+	pods := map[string]corev1.PodSpec{
+		"agent-service": agentPodSpec(lake, "oramasearch/agent-ask-orama:test", agentBaseEnv(lake, "lake-dns"), true),
+		"agent-job":     agentJobPod(lake, agentBaseEnv(lake, "lake-dns")),
+		"app":           lakeAppPodSpec(lake, app, lakeAppSecrets{}),
+	}
+	for name, pod := range pods {
+		labels := map[string]string{"app.kubernetes.io/name": name}
+		pod.RestartPolicy = corev1.RestartPolicyAlways
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "lake-dns"},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: labels},
+				Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: pod},
+			},
+		}
+		if err := kubeClient.Create(ctx, deployment); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		stored := &appsv1.Deployment{}
+		if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(deployment), stored); err != nil {
+			t.Fatal(err)
+		}
+		assertLakeNdots(t, name, stored.Spec.Template.Spec)
+	}
+	for _, env := range agentBaseEnv(lake, "lake-dns") {
+		if env.Name == "LAKE_URL" && env.Value != "http://lake-dns.lake-dns.svc.cluster.local:80" {
+			t.Fatalf("agent LAKE_URL = %q, want the Service's full name", env.Value)
+		}
+	}
+}
+
+func assertLakeNdots(t *testing.T, name string, pod corev1.PodSpec) {
+	t.Helper()
+	if pod.DNSPolicy != "" && pod.DNSPolicy != corev1.DNSClusterFirst {
+		t.Fatalf("%s dnsPolicy = %q, want ClusterFirst", name, pod.DNSPolicy)
+	}
+	config := pod.DNSConfig
+	if config == nil || len(config.Nameservers) != 0 || len(config.Searches) != 0 || len(config.Options) != 1 ||
+		config.Options[0].Name != "ndots" || config.Options[0].Value == nil || *config.Options[0].Value != "2" {
+		t.Fatalf("%s dnsConfig = %+v, want only options [{ndots 2}]", name, config)
 	}
 }
 

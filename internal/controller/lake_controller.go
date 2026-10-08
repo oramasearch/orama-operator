@@ -597,6 +597,8 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 		deployment.Spec.Strategy = strategy
 		deployment.Spec.Template.ObjectMeta.Labels = labels
 		deployment.Spec.Template.Spec = corev1.PodSpec{
+			// ndots:2, so the full Service names lake dials resolve on the first query.
+			DNSConfig: lakePodDNSConfig(),
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot:        boolPtr(true),
 				RunAsUser:           ptrInt64(lakeRunAsUser),

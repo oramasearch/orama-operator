@@ -257,7 +257,7 @@ Standalone apps retain their direct workspace/bus Zetta policies. No general int
 
 The pod runs as uid/gid 10001, drops all capabilities, prevents privilege escalation, uses runtime
 default seccomp, has a read-only root filesystem, disables its Kubernetes token and service links,
-and gets a size-limited `emptyDir` at `/tmp`. Synchronized-app pull credentials exist only in the
+gets a size-limited `emptyDir` at `/tmp`, and resolves with `ndots:2` so the full Service names it dials resolve on the first query ([DNS](README.md#dns-ndots-2-on-lake-agent-and-app-pods)). Synchronized-app pull credentials exist only in the
 merged workload-namespace Docker config Secret; the public Lake host password is never copied into
 the CR, pod template, status or logs. Runtime env includes `WORKSPACE_ID`, and `LAKE_URL`, auth and event URLs use Lake's
 `/w/<workspace id>` route. The selected binding values appear as files at:

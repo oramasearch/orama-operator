@@ -455,6 +455,49 @@ runtime-default seccomp profile. Rollout behavior, probes and the drain are in
 The pod's `fsGroupChangePolicy: OnRootMismatch` applies the store's group ownership only when its
 root does not already match gid 10001, avoiding a full recursive ownership pass on every mount.
 
+### DNS: ndots 2 on lake, agent and app pods
+
+Lake's pod, every agent pod (library Deployments, user-agent services, launch Jobs and scheduled
+runs) and every app pod carry `dnsConfig.options: [{name: ndots, value: "2"}]`, keeping the
+`ClusterFirst` nameservers and search list ([operator#276](https://github.com/oramasearch/orama-operator/issues/276)).
+The kubelet default is `ndots:5`, so a Service's full name, `<svc>.<ns>.svc.cluster.local` (four
+dots), was first tried under every search domain, A and AAAA each, including the node's cloud host
+domain that CoreDNS forwards off the cluster. On dev that cost about 18 ms per lookup (5–32 ms)
+against 2–7 ms for the absolute name. With `ndots:2` a name with two or more dots is tried as given
+first: a Service's full name resolves on the first query, and an external name such as
+`api.openai.com` no longer walks the search list. Short names (`<svc>`, `<svc>.<ns>`) still use
+the search list as before.
+
+Because a two-dot name is now tried as given first, every in-cluster URL the operator hands these
+pods is the Service's full name: `LAKE_INTERNAL_URL`, an agent's `LAKE_URL`,
+`LAKE_AGENT_ENDPOINTS` and a user agent's endpoint are `<svc>.<ns>.svc.cluster.local`, no longer
+`<svc>.<ns>.svc`. The data plane URL, workspace Zetta connections, service connections and the
+apps' auth and event URLs were already full names. Because `LAKE_INTERNAL_URL` is the build
+registry authority, a build requested after this change targets
+`lake-<name>.<ns>.svc.cluster.local/...`; rows already written keep their target, which still
+resolves.
+
+The other choice, writing every URL as an absolute name with a trailing dot, was rejected: it
+covers only the names the operator writes (not CloudNativePG's `uri`, names lake derives itself,
+or what an agent or app builds), and a trailing dot changes the `Host` header and the TLS
+server name, which lake's request-origin and app-host derivation, libpq's `verify-full` host check
+and the catalog clients would each have to accept.
+
+To measure from inside lake's pod (`getent` resolves through the pod's own resolver; each run
+includes starting `getent`):
+
+```sh
+NS=lake; POD=$(kubectl -n $NS get pod -l app.kubernetes.io/name=lake -o name | head -1)
+kubectl -n $NS exec $POD -- cat /etc/resolv.conf   # options ndots:2 after the change
+for name in lake-prod-zetta-zetta.lake.svc.cluster.local lake-prod-zetta-zetta.lake.svc.cluster.local.; do
+  kubectl -n $NS exec $POD -- sh -c "for i in 1 2 3 4 5 6 7 8 9 10; do
+    s=\$(date +%s%N); getent ahosts $name >/dev/null; e=\$(date +%s%N); echo \$(( (e-s)/1000 ))us; done" | sed "s|^|$name |"
+done
+```
+
+Before the change the first name takes about 18 ms and the trailing-dot name 2–7 ms; after it
+both take the trailing-dot time.
+
 When `spec.replicas` is greater than one, the operator creates `PodDisruptionBudget lake-<name>`
 with `maxUnavailable: 1`. It also defaults `spec.topologySpreadConstraints` to a soft
 `kubernetes.io/hostname` spread. Supply the field to replace that list; an explicit empty list

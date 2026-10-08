@@ -71,10 +71,10 @@ func TestLakeTellsLakeWhereItsAgentsAre(t *testing.T) {
 	lake := agentsTestLake()
 	env := lakeAgentEnv(lake, "lake")
 	if got := envValue(t, env, "LAKE_AGENT_ENDPOINTS").Value; got !=
-		"agent-ask-orama=http://prod-agent-ask-orama.lake.svc:8080,agent-project=http://prod-agent-project.lake.svc:8080" {
+		"agent-ask-orama=http://prod-agent-ask-orama.lake.svc.cluster.local:8080,agent-project=http://prod-agent-project.lake.svc.cluster.local:8080" {
 		t.Fatalf("LAKE_AGENT_ENDPOINTS = %q", got)
 	}
-	if got := envValue(t, env, "LAKE_INTERNAL_URL").Value; got != "http://lake-prod.lake.svc:80" {
+	if got := envValue(t, env, "LAKE_INTERNAL_URL").Value; got != "http://lake-prod.lake.svc.cluster.local:80" {
 		t.Fatalf("LAKE_INTERNAL_URL = %q", got)
 	}
 	if ref := envValue(t, env, "LAKE_AGENT_SERVICE_TOKEN").ValueFrom.SecretKeyRef; ref.Name != "lake-prod-agent-service-token" {
@@ -140,7 +140,7 @@ func TestLibraryAgentsRunAsDeploymentsAndLeaveWhenUnlisted(t *testing.T) {
 	if container.Image != "oramasearch/agent-ask-orama:test" {
 		t.Fatalf("image %q", container.Image)
 	}
-	if envValue(t, container.Env, "LAKE_URL").Value != "http://lake-prod.lake.svc:80" {
+	if envValue(t, container.Env, "LAKE_URL").Value != "http://lake-prod.lake.svc.cluster.local:80" {
 		t.Fatal("agents reach lake in-cluster")
 	}
 	if ref := envValue(t, container.Env, "AGENT_BUS_TOKEN").ValueFrom.SecretKeyRef; ref.Name != "lake-prod-agent-bus" || ref.Key != "agent-ask-orama" {
@@ -270,7 +270,7 @@ func TestAServiceLaunchIsReadyWhenItsDeploymentIs(t *testing.T) {
 	}
 	h.poll()
 	status := store.launchStatus(t)
-	if status.Phase != AgentPhaseReady || status.Endpoint != "http://prod-al-666666666666.lake.svc:8080" {
+	if status.Phase != AgentPhaseReady || status.Endpoint != "http://prod-al-666666666666.lake.svc.cluster.local:8080" {
 		t.Fatalf("status %+v", status)
 	}
 

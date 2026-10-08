@@ -1146,6 +1146,7 @@ func lakeAppPodSpec(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, secret
 	pod := corev1.PodSpec{
 		AutomountServiceAccountToken: &noToken,
 		EnableServiceLinks:           &noLinks,
+		DNSConfig:                    lakePodDNSConfig(),
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsNonRoot:   &nonRoot,
 			RunAsUser:      &user,
