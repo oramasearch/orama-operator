@@ -17,8 +17,11 @@ KARPENTER_VERSION="${KARPENTER_VERSION:-1.13.0}"
 NAMESPACE="${KARPENTER_NAMESPACE:-kube-system}"
 OUT_DIR="$(cd "$(dirname "$0")/.." && pwd)/internal/controller/assets/karpenter/v${KARPENTER_VERSION}"
 
-# Placeholders the operator substitutes at apply time from the CR (bytes.ReplaceAll in
-# zetta_capacity_install.go). Keep these EXACTLY in sync with that reconciler.
+# Placeholders for the two per-CR values. The operator never replaces them as text: it parses the bundle,
+# then sets the CR's values on the ServiceAccount annotation and the controller's CLUSTER_NAME env var,
+# each of which must hold its placeholder (zetta_capacity_install_render.go, operator#79). Keep these
+# EXACTLY in sync with that file. If a new version adds, removes or renames an object, update
+# karpenterControllerObjects / karpenterCRDNames there AND the resourceNames in chart/templates/rbac.yaml.
 CLUSTER_NAME_PLACEHOLDER="__CLUSTER_NAME__"
 ROLE_ARN_PLACEHOLDER="__CONTROLLER_ROLE_ARN__"
 
@@ -46,7 +49,7 @@ strip_helm_noise() { sed -e '/^Pulled: /d' -e '/^Digest: /d'; }
   echo "# Karpenter controller install — vendored from the upstream karpenter Helm chart, pinned."
   echo "# Version: ${KARPENTER_VERSION}   Chart: oci://public.ecr.aws/karpenter/karpenter   Namespace: ${NAMESPACE}"
   echo "# Regenerate: hack/fetch-karpenter-manifests.sh   (do NOT hand-edit)"
-  echo "# Two placeholders are substituted by the operator at apply time from spec.capacity.karpenter:"
+  echo "# Two fields hold placeholders the operator sets on the parsed objects from spec.capacity.karpenter:"
   echo "#   ${CLUSTER_NAME_PLACEHOLDER}        <- installClusterName  (AWS settings.clusterName)"
   echo "#   ${ROLE_ARN_PLACEHOLDER} <- controllerRoleARN   (IRSA role on the controller ServiceAccount)"
   helm template karpenter oci://public.ecr.aws/karpenter/karpenter \

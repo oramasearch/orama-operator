@@ -287,6 +287,13 @@ type KarpenterCapacity struct {
 	// resources (AWS `settings.clusterName` — the tagged subnets / security-groups / interruption queue).
 	// REQUIRED when `install` is true on EKS; empty ⇒ `KarpenterInstalled=False,
 	// Reason=InstallClusterNameRequired`. Ignored when `install` is false.
+	//
+	// Must be a valid EKS cluster name: 1-100 characters, a letter or digit first, then letters, digits,
+	// hyphens or underscores (operator#79). The API server enforces this pattern, and the reconciler checks
+	// it again (a CR written before the pattern existed is refused with `KarpenterInstalled=False,
+	// Reason=InvalidInstallSpec`), because the value is written into the Karpenter controller Deployment.
+	// +kubebuilder:validation:MaxLength=100
+	// +kubebuilder:validation:Pattern=`^[0-9A-Za-z][A-Za-z0-9\-_]{0,99}$`
 	// +optional
 	InstallClusterName string `json:"installClusterName,omitempty"`
 
@@ -297,6 +304,13 @@ type KarpenterCapacity struct {
 	// `KarpenterInstalled=False, Reason=CloudIdentityMissing` and the controller is NOT deployed (no
 	// crash-loop). This is the CONTROLLER identity only; the launched NODES get their own instance
 	// profile via the platform-owned NodeClass (NodeClassRef). Ignored when `install` is false.
+	//
+	// Must be an IAM role ARN in the aws, aws-cn or aws-us-gov partition:
+	// `arn:<partition>:iam::<12-digit account>:role/<path and name>`, where the path and name use only
+	// the characters IAM allows (operator#79). The API server enforces this pattern, and the reconciler
+	// checks it again (`KarpenterInstalled=False, Reason=InvalidInstallSpec`).
+	// +kubebuilder:validation:MaxLength=550
+	// +kubebuilder:validation:Pattern=`^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_\-/]{1,512}$`
 	// +optional
 	ControllerRoleARN string `json:"controllerRoleARN,omitempty"`
 }

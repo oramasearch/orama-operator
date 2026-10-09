@@ -398,8 +398,20 @@ install** too. Opt-in via `OramaZettaCluster.spec.capacity.karpenter.install` (d
   Deployment + Service + PDB) — and applies each document as an `unstructured` object via **server-side
   apply** (`client.Apply` + force-ownership). **No Karpenter Go types are vendored** (same decoupling as
   the NodePool reconcile). Re-vendor with [`hack/fetch-karpenter-manifests.sh`](../hack/fetch-karpenter-manifests.sh)
-  (a reproducible `helm template` of the upstream OCI charts); two placeholders
-  (`__CLUSTER_NAME__` / `__CONTROLLER_ROLE_ARN__`) are substituted per-CR at apply time.
+  (a reproducible `helm template` of the upstream OCI charts). Two fields carry placeholders
+  (`__CLUSTER_NAME__` / `__CONTROLLER_ROLE_ARN__`); they are **never replaced as text**
+  ([operator#79](https://github.com/oramasearch/orama-operator/issues/79)). The reconciler parses the
+  template first, then sets the CR's values as structured fields: the ServiceAccount's
+  `eks.amazonaws.com/role-arn` annotation and the controller container's `CLUSTER_NAME` env var, each
+  found by kind, name and field path and required to hold its placeholder. The rendered bundle must be
+  exactly the expected 13 objects (`karpenterControllerObjects` in
+  `internal/controller/zetta_capacity_install_render.go`) and the CRD bundle exactly the 4 Karpenter
+  CRDs, or nothing is applied.
+- **Validated inputs** — `installClusterName` must match the EKS cluster-name rule and
+  `controllerRoleARN` must be an IAM role ARN. The CRD schema refuses anything else at admission, and the
+  reconciler checks again (a CR stored before the patterns existed): an invalid value gives
+  `KarpenterInstalled=False, Reason=InvalidInstallSpec` on every cloud, before the finalizer or any object
+  is written.
 - **Cloud-gated** — the cloud is detected from a node's `providerID`:
   - **bare-metal / k0s** (no cloud providerID) ⇒ no-op, `KarpenterInstalled=False, Reason=BareMetalNoCloud`.
   - **AKS** ⇒ no-op, `Reason=ManagedByAKSNAP` — Node Auto Provisioning already deploys and manages
@@ -416,16 +428,22 @@ install** too. Opt-in via `OramaZettaCluster.spec.capacity.karpenter.install` (d
   (`orama.cloud/karpenter-install`) that removes the operator-managed controller resources only when **no
   other** `OramaZettaCluster` still requests the install. **The CRDs are applied but never deleted** on
   teardown — deleting a Karpenter CRD cascades to every `NodePool`/`NodeClaim` in the cluster.
-- **Status** — a `KarpenterInstalled` condition (`BareMetalNoCloud` / `ManagedByAKSNAP` / `UnsupportedCloud`
+- **Status** — a `KarpenterInstalled` condition (`InvalidInstallSpec` / `BareMetalNoCloud` / `ManagedByAKSNAP` / `UnsupportedCloud`
   / `CloudIdentityMissing` / `InstallClusterNameRequired` → `InstallProgressing` → `Installed`), written
   only on change (anti-flap).
 
-> **RBAC (install):** `apiextensions.k8s.io/customresourcedefinitions`
-> (`get;list;watch;create;update;patch` — **no `delete`**, CRDs aren't GC'd) and
-> `rbac.authorization.k8s.io` `clusterroles`/`clusterrolebindings`/`roles`/`rolebindings`
-> (`…;delete;bind;escalate` — creating RBAC that grants Karpenter's broad permissions needs `bind` +
-> `escalate`, since the operator doesn't itself carry every node/pod grant). ServiceAccounts, Deployments,
-> Services and PDBs the install creates are already granted. Mirrored into `chart/templates/rbac.yaml`.
+> **RBAC (install):** `apiextensions.k8s.io/customresourcedefinitions` — `get;list;watch` on all,
+> `create;update;patch` only on the 4 Karpenter CRD names (**no `delete`**, CRDs aren't GC'd). And
+> `rbac.authorization.k8s.io` — `get;list;watch` on all roles and bindings; `create;update;patch;delete`
+> plus `bind;escalate` **only on the bundle's names** (`clusterroles` karpenter, karpenter-admin,
+> karpenter-core; `clusterrolebindings` karpenter, karpenter-core; `roles` and `rolebindings` karpenter,
+> karpenter-dns). Creating RBAC that grants Karpenter's broad permissions needs `bind` + `escalate`, since
+> the operator doesn't itself carry every node/pod grant; scoping them by `resourceNames` means the
+> operator cannot create, bind or escalate any other role, binding or CRD (operator#79,
+> `TestKarpenterInstallEnvtest` proves both halves against a real API server). ServiceAccounts,
+> Deployments, Services and PDBs the install creates are already granted. Mirrored into
+> `chart/templates/rbac.yaml`; `TestChartKarpenterRBACMatchesBundle` keeps the names in step with the
+> bundle, so re-vendoring a Karpenter version that renames an object fails until both are updated.
 
 > **Follow-ups (later slices of #69):** the Zetta→operator signal channel
 > (`orama_control.scale_requests`); drain-safe, quorum-aware scale-down; multi-cluster

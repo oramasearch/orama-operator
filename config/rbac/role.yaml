@@ -61,12 +61,22 @@ rules:
   resources:
   - customresourcedefinitions
   verbs:
-  - create
   - get
   - list
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resourceNames:
+  - ec2nodeclasses.karpenter.k8s.aws
+  - nodeclaims.karpenter.sh
+  - nodeoverlays.karpenter.sh
+  - nodepools.karpenter.sh
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - create
   - patch
   - update
-  - watch
 - apiGroups:
   - apps
   resources:
@@ -321,21 +331,68 @@ rules:
   - update
 - apiGroups:
   - rbac.authorization.k8s.io
+  resourceNames:
+  - karpenter
+  - karpenter-core
+  resources:
+  - clusterrolebindings
+  verbs:
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
   resources:
   - clusterrolebindings
   - clusterroles
   - rolebindings
   - roles
   verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - karpenter
+  - karpenter-admin
+  - karpenter-core
+  resources:
+  - clusterroles
+  verbs:
   - bind
   - create
   - delete
   - escalate
-  - get
-  - list
   - patch
   - update
-  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - karpenter
+  - karpenter-dns
+  resources:
+  - rolebindings
+  verbs:
+  - create
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - karpenter
+  - karpenter-dns
+  resources:
+  - roles
+  verbs:
+  - bind
+  - create
+  - delete
+  - escalate
+  - patch
+  - update
 - apiGroups:
   - snapshot.storage.k8s.io
   resources:

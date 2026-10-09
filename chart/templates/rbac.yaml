@@ -185,12 +185,37 @@ rules:
   # prevention) since the operator doesn't itself carry every node/pod grant. CRDs are applied but
   # never deleted (no `delete` — deleting a Karpenter CRD cascades to all NodePools/NodeClaims).
   # (ServiceAccounts/Deployments/Services/PDBs the install also creates are already granted above.)
+  # Every write, bind and escalate is scoped by resourceNames to the objects of the vendored Karpenter
+  # bundle (karpenterControllerObjects / karpenterCRDNames in
+  # internal/controller/zetta_capacity_install_render.go), so the operator cannot create, update or bind
+  # any other role, binding or CRD (operator#79). Reads stay unscoped. Re-vendoring a Karpenter version
+  # that renames an object needs these lists updated; TestChartKarpenterRBACMatchesBundle checks it.
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    resourceNames: ["ec2nodeclasses.karpenter.k8s.aws", "nodeclaims.karpenter.sh", "nodeoverlays.karpenter.sh", "nodepools.karpenter.sh"]
+    verbs: ["create", "update", "patch"]
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "bind", "escalate"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["karpenter", "karpenter-admin", "karpenter-core"]
+    verbs: ["create", "update", "patch", "delete", "bind", "escalate"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    resourceNames: ["karpenter", "karpenter-core"]
+    verbs: ["create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    resourceNames: ["karpenter", "karpenter-dns"]
+    verbs: ["create", "update", "patch", "delete", "bind", "escalate"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    resourceNames: ["karpenter", "karpenter-dns"]
+    verbs: ["create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
