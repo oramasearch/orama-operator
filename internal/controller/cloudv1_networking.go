@@ -24,7 +24,8 @@ func (r *OramaCloudV1Reconciler) deleteCloudV1Owned(ctx context.Context, oc *ora
 	if !metav1.IsControlledBy(obj, oc) {
 		return fmt.Errorf("refusing to delete unowned %T %s", obj, obj.GetName())
 	}
-	return client.IgnoreNotFound(r.Delete(ctx, obj))
+	uid, version := obj.GetUID(), obj.GetResourceVersion()
+	return client.IgnoreNotFound(r.Delete(ctx, obj, client.Preconditions{UID: &uid, ResourceVersion: &version}))
 }
 
 func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
