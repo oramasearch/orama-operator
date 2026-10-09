@@ -124,8 +124,16 @@ type OramaZettaClusterReconciler struct {
 // permissions requires the operator hold `bind` + `escalate` on roles/bindings (RBAC
 // privilege-escalation prevention) since the operator doesn't itself carry every node/pod grant. CRDs
 // are applied but never deleted (no `delete` verb — deleting a CRD cascades to all NodePools/NodeClaims).
-//+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update;patch
-//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings;roles;rolebindings,verbs=get;list;watch;create;update;patch;delete;bind;escalate
+// Every write, bind and escalate is scoped by resourceNames to the vendored bundle's objects
+// (karpenterControllerObjects, karpenterCRDNames), so the operator cannot create or bind any other role,
+// binding or CRD (operator#79). Reads stay unscoped.
+//+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
+//+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=create;update;patch,resourceNames=ec2nodeclasses.karpenter.k8s.aws;nodeclaims.karpenter.sh;nodeoverlays.karpenter.sh;nodepools.karpenter.sh
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings;roles;rolebindings,verbs=get;list;watch
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=create;update;patch;delete;bind;escalate,resourceNames=karpenter;karpenter-admin;karpenter-core
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=create;update;patch;delete,resourceNames=karpenter;karpenter-core
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=create;update;patch;delete;bind;escalate,resourceNames=karpenter;karpenter-dns
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=create;update;patch;delete,resourceNames=karpenter;karpenter-dns
 
 func zettaLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 	return map[string]string{

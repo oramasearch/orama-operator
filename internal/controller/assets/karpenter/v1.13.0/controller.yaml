@@ -1,7 +1,7 @@
 # Karpenter controller install — vendored from the upstream karpenter Helm chart, pinned.
 # Version: 1.13.0   Chart: oci://public.ecr.aws/karpenter/karpenter   Namespace: kube-system
 # Regenerate: hack/fetch-karpenter-manifests.sh   (do NOT hand-edit)
-# Two placeholders are substituted by the operator at apply time from spec.capacity.karpenter:
+# Two fields hold placeholders the operator sets on the parsed objects from spec.capacity.karpenter:
 #   __CLUSTER_NAME__        <- installClusterName  (AWS settings.clusterName)
 #   __CONTROLLER_ROLE_ARN__ <- controllerRoleARN   (IRSA role on the controller ServiceAccount)
 ---

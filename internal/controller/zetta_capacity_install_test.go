@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -94,27 +93,5 @@ func TestEmbeddedKarpenterController(t *testing.T) {
 		if kinds[k] == 0 {
 			t.Errorf("controller bundle missing a %s", k)
 		}
-	}
-}
-
-// TestKarpenterPlaceholderSubstitution asserts both placeholders are present in the vendored bundle and
-// that substitution replaces them with no placeholder residue (a broken substitution would silently ship
-// `__CLUSTER_NAME__` to the API server).
-func TestKarpenterPlaceholderSubstitution(t *testing.T) {
-	for _, ph := range []string{installClusterNamePlaceholder, installRoleARNPlaceholder} {
-		if !bytes.Contains(karpenterControllerManifests, []byte(ph)) {
-			t.Fatalf("vendored controller bundle is missing placeholder %q (re-run hack/fetch-karpenter-manifests.sh)", ph)
-		}
-	}
-	out := bytes.ReplaceAll(karpenterControllerManifests, []byte(installClusterNamePlaceholder), []byte("orama-eks-prod"))
-	out = bytes.ReplaceAll(out, []byte(installRoleARNPlaceholder), []byte("arn:aws:iam::123456789012:role/KarpenterController"))
-	if bytes.Contains(out, []byte("__")) && strings.Contains(string(out), "__CLUSTER_NAME__") {
-		t.Error("cluster-name placeholder survived substitution")
-	}
-	if !bytes.Contains(out, []byte("orama-eks-prod")) {
-		t.Error("substituted cluster name not found in output")
-	}
-	if !bytes.Contains(out, []byte("arn:aws:iam::123456789012:role/KarpenterController")) {
-		t.Error("substituted controller role ARN not found in output")
 	}
 }

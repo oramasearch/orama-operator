@@ -71,6 +71,7 @@ The install reconcile is **cloud-gated and prerequisite-guarded**. It detects th
 
 | `.status` condition | Reason | Meaning / action |
 |---|---|---|
+| `KarpenterInstalled=False` | `InvalidInstallSpec` | `installClusterName` or `controllerRoleARN` is not a valid EKS cluster name / IAM role ARN (the CRD refuses these at admission; this catches a CR stored before the patterns existed, [operator#79](https://github.com/oramasearch/orama-operator/issues/79)). Nothing is applied; fix the field. |
 | `KarpenterInstalled=False` | `BareMetalNoCloud` | No cloud provider — nothing to install. |
 | `KarpenterInstalled=False` | `ManagedByAKSNAP` | On AKS: enable NAP + use `enabled` (not `install`). |
 | `KarpenterInstalled=False` | `UnsupportedCloud` | Cloud detected but not an EKS self-install target — install Karpenter out-of-band and use `enabled`. |
@@ -94,8 +95,10 @@ kubectl get ozc <name> -o jsonpath='{.status.conditions[?(@.type=="KarpenterInst
   radius — and upstream likewise keeps CRDs out of normal chart GC. Remove them deliberately with `kubectl
   delete crd` if you truly intend to uninstall Karpenter cluster-wide.
 - Not live-tested yet — validating the self-install end-to-end needs an **EKS** (or AKS-NAP) cluster with
-  the cloud IAM prerequisites above. The vendored manifests and substitution are validated offline by
-  `go test ./internal/controller/...`.
+  the cloud IAM prerequisites above. The vendored manifests, the structured rendering of the two values
+  and the injection refusals are validated offline by `go test ./internal/controller/...`; with
+  `KUBEBUILDER_ASSETS` set, `TestKarpenterInstallEnvtest` also proves the CRD schema and the name-scoped
+  RBAC against a real API server ([operator#79](https://github.com/oramasearch/orama-operator/issues/79)).
 
 ## Pinned version
 
