@@ -94,14 +94,18 @@ func zettaNodeType(z *oramav1alpha1.OramaZettaCluster) string {
 // back, returning the DERIVED external peers (the wan endpoints of sibling slices) for the StatefulSet's
 // --peer rendering. Best-effort: on any Zetta error it returns whatever it derived (possibly nil) and never
 // fails the reconcile.
-func (r *OramaZettaClusterReconciler) reconcileZettaTopology(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, clientSvc, peerLBName, stsName string) []string {
+//
+// It returns the derived peers that passed validation, the derived addresses it DROPPED because they are not a
+// valid host:port (operator#279 — topology rows are written by every operator sharing the Zetta cluster, so
+// they are untrusted input), and whether the topology was actually read this round.
+func (r *OramaZettaClusterReconciler) reconcileZettaTopology(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, clientSvc, peerLBName, stsName string) (derivedPeers, droppedPeers []string, read bool) {
 	log := logf.FromContext(ctx)
 	// Auth is always enforced (zetta#799) — authenticate with the seeded admin token. If the Secret isn't
 	// present yet (race), skip this round and retry on the next reconcile. NEVER fall back to unauthenticated.
 	token, err := r.zettaAdminToken(ctx, z)
 	if err != nil {
 		log.V(1).Info("zetta topology deferred — admin token not ready", "err", err.Error())
-		return nil
+		return nil, nil, false
 	}
 	base := r.zettaBaseURL(z, clientSvc)
 	operator := r.operatorID(ctx)
@@ -114,7 +118,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaTopology(ctx context.Context
 	rows, err := zettaSQLQuery(ctx, base, token, "orama_control", selectTopologySQL(cluster))
 	if err != nil {
 		log.V(1).Info("zetta topology read deferred", "cluster", cluster, "err", err.Error())
-		return nil
+		return nil, nil, false
 	}
 	ownAddrs := map[string]bool{}
 	for _, a := range r.zettaWANAddresses(ctx, z, peerLBName, stsName) {
@@ -122,11 +126,12 @@ func (r *OramaZettaClusterReconciler) reconcileZettaTopology(ctx context.Context
 			ownAddrs[a] = true
 		}
 	}
-	derived := deriveExternalPeers(topoRowsFromSQL(rows), operator, cluster, ownAddrs)
+	derived, dropped := deriveValidExternalPeers(topoRowsFromSQL(rows), operator, cluster, ownAddrs)
+	r.noteDroppedTopologyPeers(log, z.Namespace+"/"+z.Name, cluster, dropped)
 	if len(derived) > 0 {
 		log.V(1).Info("derived cross-cluster zetta peers from topology", "cluster", cluster, "peers", derived)
 	}
-	return derived
+	return derived, dropped, true
 }
 
 // writeZettaTopology appends this slice's CHANGED wan-accessible node rows to orama_control.topology
@@ -254,6 +259,18 @@ func deriveExternalPeers(rows []topoRow, ourOperator, ourCluster string, ownAddr
 		out = append(out, row.address)
 	}
 	return out
+}
+
+// deriveValidExternalPeers is deriveExternalPeers followed by peer-address validation (operator#279): it
+// returns the derived peers that are a valid host:port, in order, and the derived addresses it dropped.
+// A topology row is untrusted input — any operator sharing the Zetta cluster can append one.
+func deriveValidExternalPeers(rows []topoRow, ourOperator, ourCluster string, ownAddrs map[string]bool) (valid, dropped []string) {
+	trimmed := make([]topoRow, len(rows))
+	for i, row := range rows {
+		row.address = strings.TrimSpace(row.address)
+		trimmed[i] = row
+	}
+	return splitValidPeers(deriveExternalPeers(trimmed, ourOperator, ourCluster, ownAddrs))
 }
 
 // topoRowsFromSQL maps the column→string result maps from zettaSQLQuery into topoRow values.

@@ -238,8 +238,8 @@ func TestZettaStatefulSetRendersReachabilityAndNodeType(t *testing.T) {
 		if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), "", nil); err != nil {
 			t.Fatalf("mutateZettaStatefulSet: %v", err)
 		}
-		c := sts.Spec.Template.Spec.Containers[0]
-		return c.Command[len(c.Command)-1]
+		// The node flags are container args since operator#279 (the script itself is constant).
+		return strings.Join(sts.Spec.Template.Spec.Containers[0].Args, " ")
 	}
 
 	// wan-accessible, not ephemeral → --node-type permanent, NO --dial-out-only.
@@ -283,7 +283,8 @@ func TestZettaStatefulSetRendersReachabilityAndNodeType(t *testing.T) {
 
 // TestZettaStatefulSetAlwaysSeedsAdminTokenNoRemovedFlags asserts the auth-companion behavior to zetta#799:
 // auth is MANDATORY and the flags --require-auth/--mcp-token/--cluster-plaintext were REMOVED (passing any
-// crashes the node). So the entrypoint must render --admin-token but NONE of the removed flags, and
+// crashes the node). So the entrypoint must render NONE of the removed flags (nor --admin-token: the token
+// stays in the environment, operator#279), and
 // ZETTA_ADMIN_TOKEN must be injected on every node UNCONDITIONALLY (even with spec.requireAuth unset), while
 // ZETTA_MCP_TOKEN is never injected.
 func TestZettaStatefulSetAlwaysSeedsAdminTokenNoRemovedFlags(t *testing.T) {
@@ -309,10 +310,11 @@ func TestZettaStatefulSetAlwaysSeedsAdminTokenNoRemovedFlags(t *testing.T) {
 		t.Error("ZETTA_MCP_TOKEN env still injected — --mcp-token was removed in zetta#799")
 	}
 
-	// The entrypoint renders --admin-token but NONE of the removed flags.
-	entry := c.Command[len(c.Command)-1]
-	if !strings.Contains(entry, "--admin-token") {
-		t.Error("entrypoint should render --admin-token (seeds the owner)")
+	// The entrypoint renders NONE of the removed flags, and no --admin-token either: the token stays in the
+	// environment, where the engine reads it, because argv is world-readable (operator#279).
+	entry := c.Command[len(c.Command)-1] + " " + strings.Join(c.Args, " ")
+	if strings.Contains(entry, "--admin-token") {
+		t.Error("entrypoint passes --admin-token — the token would be readable in /proc/<pid>/cmdline")
 	}
 	for _, removed := range []string{"--require-auth", "--mcp-token", "--cluster-plaintext"} {
 		if strings.Contains(entry, removed) {

