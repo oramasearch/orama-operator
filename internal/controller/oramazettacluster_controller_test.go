@@ -238,8 +238,8 @@ func TestZettaStatefulSetRendersReachabilityAndNodeType(t *testing.T) {
 		if err := r.mutateZettaStatefulSet(z, sts, "z0-zetta-headless", "z0-zetta", zettaLabels(z), "", nil); err != nil {
 			t.Fatalf("mutateZettaStatefulSet: %v", err)
 		}
-		c := sts.Spec.Template.Spec.Containers[0]
-		return c.Command[len(c.Command)-1]
+		// The node flags are container args since operator#279 (the script itself is constant).
+		return strings.Join(sts.Spec.Template.Spec.Containers[0].Args, " ")
 	}
 
 	// wan-accessible, not ephemeral → --node-type permanent, NO --dial-out-only.

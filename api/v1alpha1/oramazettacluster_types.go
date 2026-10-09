@@ -117,6 +117,15 @@ type OramaZettaClusterSpec struct {
 	// hosts) — the route table (operator#70). Each is appended as a `--peer` flag so this node's nodes
 	// dial them and join the shared Zetta cluster. Zetta is the mesh (gossip relays transitively), so a
 	// connected dial-graph is enough; NAT'd nodes just list a reachable sibling here.
+	//
+	// Each entry must be exactly `host:port`: a DNS name, an IPv4 address or a bracketed IPv6 address
+	// (`[fd00::1]:7777`), and a port from 1 to 65535 (operator#279). The API server refuses anything else;
+	// the controller re-checks (for CRs written before this rule) and, on an invalid entry, leaves the
+	// StatefulSet unchanged and sets `PeerAddressesValid=False`. Peers reach Zetta as process arguments,
+	// never as shell text.
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=261
+	// +kubebuilder:validation:items:Pattern=`^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|\[[0-9A-Fa-f:]+\]):([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$`
 	// +optional
 	ExternalPeers []string `json:"externalPeers,omitempty"`
 
@@ -151,7 +160,10 @@ type OramaZettaClusterSpec struct {
 	// `.status.wanAddress` (e.g. a Tailscale/WireGuard address, a stable public IP, or a DNS name). When
 	// empty, the operator derives the address from `spec.hostNetwork` (the node's host IP) or
 	// `spec.exposePeerLoadBalancer` (the cloud LB's public IP). Ignored unless reachability is
-	// wan-accessible.
+	// wan-accessible. Validated like `spec.externalPeers` (a DNS name, IPv4, `[IPv6]` or a bare IPv6 literal,
+	// with an optional port 1-65535); an invalid value is refused the same way (operator#279).
+	// +kubebuilder:validation:MaxLength=261
+	// +kubebuilder:validation:Pattern=`^(([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|\[[0-9A-Fa-f:]+\])(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7})$`
 	// +optional
 	WanAddress string `json:"wanAddress,omitempty"`
 
