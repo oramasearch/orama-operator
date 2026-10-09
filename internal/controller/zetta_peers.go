@@ -7,6 +7,8 @@ package controller
 
 import (
 	"fmt"
+
+	"github.com/go-logr/logr"
 	"net"
 	"regexp"
 	"sort"
@@ -63,7 +65,10 @@ const zettaEntrypointName = "zetta-entrypoint"
 //
 //	--headless --data-dir /data --listen 0.0.0.0:<peer> --mcp-listen 0.0.0.0:<api> <node flags>
 //	[--peer <seed> (ordinal != 0)] [--peer <external peer>]... [--advertise <this node's addr>]
-//	[--admin-token <token>]
+//
+// The earlier entrypoint also appended `--admin-token <token>`. That put the token in the process's argv,
+// which every process on the node can read; the engine reads ZETTA_ADMIN_TOKEN from its environment when the
+// flag is absent, so the flag is gone (operator#279).
 var zettaEntrypointScript = fmt.Sprintf(`set -eu
 ORD="${POD_NAME##*-}"   # NOT $HOSTNAME — under hostNetwork that is the node's name, not the pod's
 PEER_PORT=%[2]d
@@ -106,9 +111,10 @@ if [ -n "$ADV" ]; then
   if [ "$FIELDS" = "1" ]; then MINE="$ADV"; else MINE=$(printf '%%s\n' "$ADV" | cut -d, -f$((ORD+1))); fi
   if [ -n "$MINE" ]; then set -- "$@" --advertise "$MINE"; fi
 fi
+# The admin token is NOT a flag: argv is world-readable (/proc/<pid>/cmdline), so the engine reads it from
+# ZETTA_ADMIN_TOKEN in its environment (operator#279).
 printf 'zetta node %%s (ordinal %%s): zetta %%s%%s%%s\n' "$POD_NAME" "$ORD" "$*" \
-  "${ZETTA_CLUSTER_TOKEN:+ [join-token via env ****]}" "${ZETTA_ADMIN_TOKEN:+ --admin-token ****}"
-if [ -n "${ZETTA_ADMIN_TOKEN:-}" ]; then set -- "$@" --admin-token "$ZETTA_ADMIN_TOKEN"; fi
+  "${ZETTA_CLUSTER_TOKEN:+ [join-token via env ****]}" "${ZETTA_ADMIN_TOKEN:+ [admin-token via env ****]}"
 exec zetta "$@"`, zettaDataDir, zettaPeerPort, zettaAPIPort, zettaSeedEnv, zettaArgsSeparator)
 
 // zettaNodeFlags are the per-slice engine flags (zetta#803/#810): --node-type from spec.ephemeral, and
@@ -144,6 +150,9 @@ var peerDNSLabel = `[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?`
 // same grammar admits. It is the host half of the CRD pattern on spec.externalPeers items.
 var peerHostnameRE = regexp.MustCompile(`^` + peerDNSLabel + `(\.` + peerDNSLabel + `)*$`)
 
+// The error never contains the value itself (callers quote it with quoteForStatus), so a hostile value
+// cannot put raw bytes such as newlines into a log line or a condition message.
+//
 // validateZettaPeerAddress accepts exactly `host:port`: host is a DNS name, an IPv4 address or a bracketed
 // IPv6 address (no zone), port is decimal 1-65535. Everything else — spaces, quotes, shell metacharacters,
 // newlines, an empty host, a missing port — is refused.
@@ -156,23 +165,23 @@ func validateZettaPeerAddress(addr string) error {
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("not host:port: %v", err)
+		return fmt.Errorf("not host:port")
 	}
 	if !isDecimalPort(port) {
-		return fmt.Errorf("port %q is not a number from 1 to 65535", port)
+		return fmt.Errorf("port is not a number from 1 to 65535")
 	}
 	if strings.HasPrefix(addr, "[") {
 		ip := net.ParseIP(host)
 		if ip == nil || ip.To4() != nil || strings.Contains(host, ".") {
-			return fmt.Errorf("bracketed host %q is not an IPv6 address", host)
+			return fmt.Errorf("bracketed host is not an IPv6 address")
 		}
 		return nil
 	}
 	if strings.Contains(host, ":") {
-		return fmt.Errorf("IPv6 host %q must be bracketed", host)
+		return fmt.Errorf("an IPv6 host must be bracketed")
 	}
 	if len(host) > 253 || !peerHostnameRE.MatchString(host) {
-		return fmt.Errorf("host %q is not a DNS name or IP address", host)
+		return fmt.Errorf("host is not a DNS name or IP address")
 	}
 	return nil
 }
@@ -276,6 +285,22 @@ func boundedList(items []string) string {
 	return strings.Join(items[:max], "; ") + fmt.Sprintf("; and %d more", len(items)-max)
 }
 
+// peerAddressesConditionFor decides the condition for this round. When the topology was read (or the
+// datastore symbiosis is off) the condition reflects this round fully. When the read failed the topology
+// half is unknown: the current condition is kept, so a flaky read does not flap it — except a stale
+// InvalidSpecPeerAddress, which is cleared once the spec is valid again (nil = leave as is).
+func peerAddressesConditionFor(z *oramav1alpha1.OramaZettaCluster, specInvalid, droppedTopology []string, topologyRead bool) *metav1.Condition {
+	if len(specInvalid) > 0 || topologyRead {
+		c := peerAddressesCondition(specInvalid, droppedTopology)
+		return &c
+	}
+	if cur := meta.FindStatusCondition(z.Status.Conditions, peerAddressesConditionType); cur != nil && cur.Reason == "InvalidSpecPeerAddress" {
+		c := peerAddressesCondition(nil, nil)
+		return &c
+	}
+	return nil
+}
+
 // setPeerAddressesCondition applies cond (nil = leave the current condition as it is, used when the
 // topology could not be read this round) and reports whether the status changed.
 func setPeerAddressesCondition(z *oramav1alpha1.OramaZettaCluster, cond *metav1.Condition) bool {
@@ -284,4 +309,22 @@ func setPeerAddressesCondition(z *oramav1alpha1.OramaZettaCluster, cond *metav1.
 	}
 	cond.ObservedGeneration = z.Generation
 	return meta.SetStatusCondition(&z.Status.Conditions, *cond)
+}
+
+// noteDroppedTopologyPeers logs the topology peers dropped for one cluster, once per change of the dropped
+// set, so a steady hostile row does not produce a log line every reconcile.
+func (r *OramaZettaClusterReconciler) noteDroppedTopologyPeers(log logr.Logger, key, cluster string, dropped []string) {
+	quoted := make([]string, 0, len(dropped))
+	for _, p := range dropped {
+		quoted = append(quoted, quoteForStatus(p))
+	}
+	sort.Strings(quoted)
+	fingerprint := strings.Join(quoted, "\n")
+	if prev, ok := r.droppedPeersLog.Load(key); ok && prev.(string) == fingerprint {
+		return
+	}
+	r.droppedPeersLog.Store(key, fingerprint)
+	if len(dropped) > 0 {
+		log.Info("dropped invalid peer addresses read from the cross-cluster topology", "cluster", cluster, "dropped", quoted)
+	}
 }

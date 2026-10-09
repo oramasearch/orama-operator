@@ -98,8 +98,8 @@ Beyond deploying v1, this operator is becoming **symbiotic with Orama Zetta** (O
 - **Auth is mandatory ([zetta#799](https://github.com/oramasearch/zetta/issues/799)).** The engine gates
   every HTTP/MCP/SQL call on a bearer that resolves to a user — there is no unauthenticated/`--mcp-token`/
   `--cluster-plaintext` mode (those flags were removed; passing them crashes the node). So the operator
-  **always** mints + injects a seeded admin token (Secret `<name>-zetta-admin`, `--admin-token` on every
-  node) and **authenticates its own SQL client** — the state-sync client (`zetta_statesync.go`) and the
+  **always** mints + injects a seeded admin token (Secret `<name>-zetta-admin`, env `ZETTA_ADMIN_TOKEN` on every
+  node — never the `--admin-token` flag, whose value would be readable in the process argv, operator#279) and **authenticates its own SQL client** — the state-sync client (`zetta_statesync.go`) and the
   schema-provisioning curl Job (`zetta_controlplane.go`) send `Authorization: Bearer <admin>`.
   `spec.requireAuth`/`spec.mcpTokenAuth` are now **deprecated no-ops**; the target image must be
   auth-capable (post-#799).

@@ -127,13 +127,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaTopology(ctx context.Context
 		}
 	}
 	derived, dropped := deriveValidExternalPeers(topoRowsFromSQL(rows), operator, cluster, ownAddrs)
-	if len(dropped) > 0 {
-		quoted := make([]string, 0, len(dropped))
-		for _, p := range dropped {
-			quoted = append(quoted, quoteForStatus(p))
-		}
-		log.Info("dropped invalid peer addresses read from the cross-cluster topology", "cluster", cluster, "dropped", quoted)
-	}
+	r.noteDroppedTopologyPeers(log, z.Namespace+"/"+z.Name, cluster, dropped)
 	if len(derived) > 0 {
 		log.V(1).Info("derived cross-cluster zetta peers from topology", "cluster", cluster, "peers", derived)
 	}
@@ -271,7 +265,12 @@ func deriveExternalPeers(rows []topoRow, ourOperator, ourCluster string, ownAddr
 // returns the derived peers that are a valid host:port, in order, and the derived addresses it dropped.
 // A topology row is untrusted input — any operator sharing the Zetta cluster can append one.
 func deriveValidExternalPeers(rows []topoRow, ourOperator, ourCluster string, ownAddrs map[string]bool) (valid, dropped []string) {
-	return splitValidPeers(deriveExternalPeers(rows, ourOperator, ourCluster, ownAddrs))
+	trimmed := make([]topoRow, len(rows))
+	for i, row := range rows {
+		row.address = strings.TrimSpace(row.address)
+		trimmed[i] = row
+	}
+	return splitValidPeers(deriveExternalPeers(trimmed, ourOperator, ourCluster, ownAddrs))
 }
 
 // topoRowsFromSQL maps the column→string result maps from zettaSQLQuery into topoRow values.

@@ -46,6 +46,11 @@ var zettaManagedEnvNames = map[string]struct{}{
 	"ZETTA_CLUSTER_TOKEN": {},
 	"ZETTA_HOST_NETWORK":  {},
 	zettaSeedEnv:          {},
+	// The engine's own provisioning env (src/main.cpp, #749): ZETTA_SEED_PEER adds --peer seeds and
+	// ZETTA_DATA_DIR moves the data dir. The operator owns both (peers are validated, /data is the PVC), so
+	// spec.env may not set them (operator#279).
+	"ZETTA_SEED_PEER": {},
+	"ZETTA_DATA_DIR":  {},
 }
 
 // zettaCustomEnv returns accepted spec.env entries in authored order and a stable list of names the
@@ -89,6 +94,9 @@ type OramaZettaClusterReconciler struct {
 	topologyCache sync.Map
 	// operatorID{Once,Value} memoize this operator's unique identity (one per k8s cluster) so its state
 	// stays distinct in a Zetta cluster shared across k8s clusters.
+	// droppedPeersLog remembers, per cluster, the last set of invalid topology peers that was logged, so a
+	// steady hostile row is logged once per change rather than every reconcile (operator#279).
+	droppedPeersLog sync.Map
 	operatorIDOnce  sync.Once
 	operatorIDValue string
 }
@@ -356,7 +364,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	//      HTTP/MCP/SQL surface on a bearer that resolves to a user. A fresh node auto-generates an admin
 	//      credential the operator can't read, so the operator MUST seed a KNOWN one: it mints a 64-hex
 	//      admin token once into Secret `<name>-zetta-admin` (key `token`), injects it as
-	//      `ZETTA_ADMIN_TOKEN` → `--admin-token` (which seeds the owner), and authenticates its OWN Zetta
+	//      `ZETTA_ADMIN_TOKEN` (env; the engine seeds the owner from it), and authenticates its OWN Zetta
 	//      SQL client with it (zetta_statesync.go / zetta_controlplane.go) — otherwise the operator's SQL
 	//      sync 401s against the auth-on engine. Provisioned before the StatefulSet so its secretKeyRef
 	//      resolves; minted once, never rotated. spec.requireAuth / spec.mcpTokenAuth are now deprecated
@@ -448,13 +456,10 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	//      written before the CRD pattern, or one the pattern missed) is REFUSED: the StatefulSet below is
 	//      left exactly as it was, and PeerAddressesValid=False names the bad values. Invalid topology peers
 	//      were already dropped by reconcileZettaTopology and are only reported. When the topology could not
-	//      be read this round the condition is left as it is, so a flaky read does not flap it.
+	//      be read this round the condition is left as it is, so a flaky read does not flap it (a stale
+	//      InvalidSpecPeerAddress is still cleared once the spec is valid).
 	specInvalid := invalidSpecPeerAddresses(&z)
-	var peerCond *metav1.Condition
-	if len(specInvalid) > 0 || topologyRead {
-		c := peerAddressesCondition(specInvalid, droppedPeers)
-		peerCond = &c
-	}
+	peerCond := peerAddressesConditionFor(&z, specInvalid, droppedPeers, topologyRead)
 	if len(specInvalid) > 0 {
 		logf.FromContext(ctx).Info("refusing invalid peer addresses; the StatefulSet is left unchanged", "invalid", specInvalid)
 	}
@@ -510,7 +515,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 // reconcileZettaAdminToken ensures a Secret holding a 64-char (32-byte hex) ADMIN token exists for this
 // cluster. UNCONDITIONAL since zetta#799 made the engine's auth mandatory: the token is injected into the
-// node (ZETTA_ADMIN_TOKEN → `--admin-token`), which seeds it as the owner principal, AND it is the
+// node (env ZETTA_ADMIN_TOKEN, read by the engine — never a flag), which seeds it as the owner principal, AND it is the
 // credential the operator's OWN Zetta SQL client authenticates with (a fresh node otherwise auto-generates
 // an admin credential the operator can't read, and the auth-on engine 401s an unauthenticated client).
 // Idempotent — minted once and PRESERVED across reconciles (never rotated); the value is never logged
@@ -706,20 +711,21 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	// env var directly at boot and maps it to --join-token internally (src/main.cpp provisioning env). We
 	// keep it env-only on purpose — an unknown env var is safely ignored by an image that predates the
 	// feature, whereas an unknown FLAG would crash the node (as the sandbox image does for unknown flags).
-	// The `--admin-token` flag is appended AFTER the log line, which shows only a redacted "****", so no
-	// token ever lands in the pod log. Tokens are injected via env from their Secrets: ZETTA_CLUSTER_TOKEN
-	// (<name>-zetta-cluster, reconcileZettaClusterToken; every node) and ZETTA_ADMIN_TOKEN (<name>-zetta-admin,
-	// reconcileZettaAdminToken; every node) which seeds the owner. zetta#799 made auth MANDATORY and REMOVED
-	// `--require-auth`/`--mcp-token`/`--cluster-plaintext` — passing any of them is now an unknown-option
-	// error that crashes the node, so the entrypoint renders NONE of them (only `--admin-token`).
+	// The admin token is env-only too (operator#279): ZETTA_ADMIN_TOKEN, which the engine reads when
+	// `--admin-token` is absent, seeds the owner. A flag would put the token in the world-readable argv
+	// (/proc/<pid>/cmdline); the log line shows only a redacted "****". Tokens are injected via env from their
+	// Secrets: ZETTA_CLUSTER_TOKEN (<name>-zetta-cluster, reconcileZettaClusterToken; every node) and
+	// ZETTA_ADMIN_TOKEN (<name>-zetta-admin, reconcileZettaAdminToken; every node). zetta#799 made auth
+	// MANDATORY and REMOVED `--require-auth`/`--mcp-token`/`--cluster-plaintext` — passing any of them is now
+	// an unknown-option error that crashes the node, so the entrypoint renders NONE of them.
 	//
 	// Node-reachability + node-type flags (zetta#803/#810, zettaNodeFlags) — this is what makes the engine's
 	// CRDT node:<id> entry (and thus `system.nodes` + the reachability-aware dialer) reflect the slice's
 	// ACTUAL topology instead of the engine's permanent/wan-accessible DEFAULT. reachability and node_type are
 	// INDEPENDENT axes: `--dial-out-only` iff the slice's effective reachability is dial-out-only
 	// (zettaReachability — the single source of truth shared with status + topology); `--node-type
-	// ephemeral` iff spec.ephemeral, else `--node-type permanent`. These are FLAGS (not env), so — like
-	// `--admin-token` — they require the auth-capable image generation the operator already mandates.
+	// ephemeral` iff spec.ephemeral, else `--node-type permanent`. These are FLAGS (not env), so they require
+	// the auth-capable image generation the operator already mandates.
 	entryArgs := zettaEntrypointArgs(z, zettaPeerSet(z.Spec.ExternalPeers, derivedPeers))
 
 	zettaEnv := []corev1.EnvVar{
@@ -742,8 +748,8 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 			corev1.EnvVar{Name: "HOST_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"}}},
 		)
 	}
-	// Admin token → ZETTA_ADMIN_TOKEN on EVERY node (UNCONDITIONAL since zetta#799): the entrypoint renders
-	// `--admin-token` to seed the owner, and the operator's own SQL client authenticates with the same token.
+	// Admin token → ZETTA_ADMIN_TOKEN on EVERY node (UNCONDITIONAL since zetta#799): the engine reads it from
+	// its environment to seed the owner (never a flag — argv is world-readable, operator#279), and the operator's own SQL client authenticates with the same token.
 	zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{
 		SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-admin"}, Key: "token"}}})
 	// Per-node WAN advertise map (positional; field ORD+1 = this node's own routable addr) — a wan node

