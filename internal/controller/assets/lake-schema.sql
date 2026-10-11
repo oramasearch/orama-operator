@@ -3746,3 +3746,26 @@ CREATE TABLE IF NOT EXISTS secret_mount_owners_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0071_secret_mount_owners')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0072_usage_limits (lake#564): a customer's usage limits, one per dimension of usage
+-- (docs/api/metering.md#limits). A limit is a number in the dimension's unit, per UTC calendar
+-- month for a counted dimension, and the percentage of it from which lake warns. It is
+-- content-free account configuration, like customer_storage_quotas, which still holds the
+-- enforced repository storage limit; the usage it is compared with stays in each workspace Zetta.
+-- No price, plan or bill is kept here.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS customer_usage_limits (
+    customer_id  uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    dimension    text        NOT NULL CHECK (dimension ~ '^[a-z][a-z_]{0,63}$'),
+    limit_value  bigint      NOT NULL CHECK (limit_value > 0),
+    warn_percent smallint    NOT NULL DEFAULT 80 CHECK (warn_percent BETWEEN 1 AND 100),
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (customer_id, dimension)
+);
+
+CREATE TABLE IF NOT EXISTS usage_limits_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0072_usage_limits')
+    ON CONFLICT DO NOTHING;
