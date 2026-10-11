@@ -3944,3 +3944,21 @@ CREATE TABLE IF NOT EXISTS workload_resources_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0075_workload_resources')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0076_organization_deletion (lake#645, docs/api/organizations.md#deleting-an-organization): an
+-- organization can be deleted once its space holds no workspace. delete_organization removes its
+-- teams, memberships, invitations, SSO providers, federation issuers, recovery attempts and secret
+-- mount routes and the policy objects of its space and of itself (with every grant on them), and
+-- marks the organization and its space deleted. The rows stay, marked, because the central audit
+-- chain names the space (audit_events.customer_id is ON DELETE RESTRICT); lake never lists or
+-- reads a deleted one again, and its handle stays retired. Idempotent; drops nothing.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS organization_deletion_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0076_organization_deletion')
+    ON CONFLICT DO NOTHING;
