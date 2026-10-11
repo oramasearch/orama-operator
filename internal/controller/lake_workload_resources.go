@@ -51,6 +51,10 @@ const (
 	WorkloadKindApp         = "app"
 	WorkloadKindBuild       = "build"
 	WorkloadKindAgentLaunch = "agent_launch"
+	// WorkloadKindMethodologyRun is the sandbox pod of a workspace methodology's run (lake#655):
+	// the code's own pod, not the stage and collect pods around it.
+	WorkloadKindMethodologyRun = "methodology_run"
+
 	// WorkloadKindAgentCronRun is one Job an agent cron schedule's CronJob started (lake#658); its
 	// id is the agent_cron_runs id, the Job's uid.
 	WorkloadKindAgentCronRun = "agent_cron_run"
@@ -141,7 +145,7 @@ func (o WorkloadObject) live() bool {
 // keepsFinishedValues: a build's, a job launch's and a cron run's row keeps what its pods ran with
 // after they finish (pods 0), so lake can price the duration × resources.
 func (o WorkloadObject) keepsFinishedValues() bool {
-	return o.Kind == WorkloadKindBuild || o.Kind == WorkloadKindAgentCronRun ||
+	return o.Kind == WorkloadKindBuild || o.Kind == WorkloadKindMethodologyRun || o.Kind == WorkloadKindAgentCronRun ||
 		(o.Kind == WorkloadKindAgentLaunch && o.Subkind == agentLaunchModeJob)
 }
 
@@ -387,6 +391,12 @@ func (ix *workloadIndex) classify(pod *corev1.Pod) (workloadKey, bool) {
 	if id := podLabels[agentLaunchIDLabel]; id != "" {
 		return workloadKey{WorkloadKindAgentLaunch, id}, true
 	}
+	if id := podLabels[methodologyRunIDLabel]; id != "" {
+		if podLabels[methodologyRunLakeLabel] == ix.lake.Name && podLabels[methodologyRunRoleLabel] == methodologyRoleSandbox {
+			return workloadKey{WorkloadKindMethodologyRun, id}, true
+		}
+		return workloadKey{}, false
+	}
 	if podLabels[agentScheduleIDLabel] != "" {
 		// A cron run is its Job, which Kubernetes names on the Job's pods.
 		if uid := podLabels[jobControllerUIDLabel]; uid != "" {
@@ -515,6 +525,12 @@ func (r *LakeReconciler) reconcileWorkloadResources(ctx context.Context, lake *o
 			pods = append(pods, buildPods.Items[i])
 		}
 	}
+	var runPods corev1.PodList
+	if err := reader.List(ctx, &runPods, client.InNamespace(methodologyRunsNamespace(lake.Name)),
+		client.MatchingLabels{methodologyRunLakeLabel: lake.Name}); err != nil {
+		return fmt.Errorf("list methodology run pods: %w", err)
+	}
+	pods = append(pods, runPods.Items...)
 	jobs, err := r.workloadJobs(ctx, lake, namespaces)
 	if err != nil {
 		return err
@@ -580,8 +596,12 @@ func (r *LakeReconciler) reconcileWorkloadResources(ctx context.Context, lake *o
 		if key.kind == "" || !found || !podScheduled(pod) {
 			continue
 		}
-		// A pod counts only in its object's own namespace (a build in its build space).
-		if key.kind != WorkloadKindBuild && pod.Namespace != object.Namespace {
+		// A pod counts only in its object's own namespace (a build in its build space, a
+		// methodology run in the Lake's methodology-runs namespace).
+		if key.kind == WorkloadKindMethodologyRun && pod.Namespace != methodologyRunsNamespace(ix.lake.Name) {
+			continue
+		}
+		if key.kind != WorkloadKindBuild && key.kind != WorkloadKindMethodologyRun && pod.Namespace != object.Namespace {
 			continue
 		}
 		resources := podSpecResources(&pod.Spec, containerDefaults{})
@@ -668,6 +688,17 @@ func (r *LakeReconciler) workloadJobs(ctx context.Context, lake *oramav1alpha1.L
 		job := &launches.Items[i]
 		if id := job.Labels[agentLaunchIDLabel]; id != "" && namespaces[job.Namespace] && metav1.IsControlledBy(job, lake) {
 			out[workloadKey{WorkloadKindAgentLaunch, id}] = job
+		}
+	}
+	var methodologyRuns batchv1.JobList
+	if err := reader.List(ctx, &methodologyRuns, client.InNamespace(methodologyRunsNamespace(lake.Name)),
+		client.MatchingLabels{methodologyRunLakeLabel: lake.Name, methodologyRunRoleLabel: methodologyRoleSandbox}); err != nil {
+		return nil, fmt.Errorf("list methodology run Jobs: %w", err)
+	}
+	for i := range methodologyRuns.Items {
+		job := &methodologyRuns.Items[i]
+		if id := job.Labels[methodologyRunIDLabel]; id != "" && metav1.IsControlledBy(job, lake) {
+			out[workloadKey{WorkloadKindMethodologyRun, id}] = job
 		}
 	}
 	// A cron schedule's Jobs belong to its CronJob, which the Lake controls; a run is its Job's

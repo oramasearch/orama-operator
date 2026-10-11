@@ -423,6 +423,33 @@ spec:
                   torn down, even if Host is still set. Host names the endpoint; this bool is the on/off switch.
                   Same contract as OramaZettaCluster.
                 type: boolean
+              methodologies:
+                description: |-
+                  Methodologies runs a workspace's own methodologies, Python code in a workspace repository,
+                  as untrusted code (lake#655): each row of lake's methodology_runs table becomes a stage, a
+                  sandbox and a collect pod in the Lake's methodology-runs namespace. Needs Builds, which
+                  builds each methodology's image. See docs/lake/methodology-runs.md.
+                properties:
+                  runtimeImage:
+                    description: |-
+                      RuntimeImage is the private oramasearch/methodology-runtime image. Lake builds each
+                      methodology's image FROM it (LAKE_METHODOLOGY_RUNTIME_IMAGE), and the stage and collect
+                      pods run it unchanged. Empty turns methodology runs off: a run then fails with that reason.
+                    type: string
+                  storageClassName:
+                    description: StorageClassName is the work volume's storage class;
+                      empty uses the cluster default.
+                    type: string
+                  workVolumeSize:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      WorkVolumeSize is the size of each run's work volume, which carries the data in and the
+                      result and artifact out. Default 10Gi.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                type: object
               namespace:
                 default: lake-dev
                 description: Namespace the lake workloads are deployed into. Created

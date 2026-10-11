@@ -155,6 +155,10 @@ type LakeServiceStore interface {
 	// ran and has no workload_resources row (lake#658), for the backfill.
 	ListUnmeteredJobs(ctx context.Context) ([]WorkloadObject, error)
 	UpsertWorkloadResources(ctx context.Context, row WorkloadResources) error
+	// The methodology runs half (lake_methodology_runs.go, lake#655). ListMethodologyRuns returns
+	// errMethodologyRunsTableMissing while lake's schema is older than 0078_methodology_runs.
+	ListMethodologyRuns(ctx context.Context) ([]LakeMethodologyRun, error)
+	UpsertMethodologyRunStatus(ctx context.Context, status LakeMethodologyRunStatus) error
 	DeleteWorkloadResources(ctx context.Context, kind, id string) error
 	Close(ctx context.Context) error
 }
@@ -429,6 +433,16 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 		} else if err != nil {
 			log.Info("builds deferred: cannot read builds", "err", err.Error())
 		} else if r.reconcileLakeBuilds(passCtx, lake, store, builds) {
+			changing = true
+		}
+		// Methodology runs (lake_methodology_runs.go, lake#655) wait on builds, so they ride the
+		// builds switch. A schema without the table skips them.
+		runs, err := store.ListMethodologyRuns(passCtx)
+		if errors.Is(err, errMethodologyRunsTableMissing) {
+			log.Info("methodology runs skipped: " + err.Error())
+		} else if err != nil {
+			log.Info("methodology runs deferred: cannot read methodology runs", "err", err.Error())
+		} else if r.reconcileLakeMethodologyRuns(passCtx, lake, store, runs) {
 			changing = true
 		}
 	}

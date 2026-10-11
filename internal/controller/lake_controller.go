@@ -83,7 +83,7 @@ const (
 	lakeStorePath        = "/var/lib/lake/store"
 	lakeStoreVolume      = "store"
 	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
-	lakeSchemaGuardTable = "metered_jobs_guard"
+	lakeSchemaGuardTable = "methodology_runs_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
@@ -1055,22 +1055,23 @@ func (r *LakeReconciler) lakeStoreStatus(
 // lake with an incomplete data-plane configuration.
 func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.EnvVar {
 	reserved := map[string]struct{}{
-		"LAKE_ADMIN_TOKEN":         {},
-		"LAKE_AGENT_BUS_DIR":       {},
-		"LAKE_AGENT_ENDPOINTS":     {},
-		"LAKE_AGENT_MODEL":         {},
-		"LAKE_AGENT_SERVICE_TOKEN": {},
-		"LAKE_APPS_RUNTIME_IMAGE":  {},
-		"LAKE_INTERNAL_URL":        {},
-		"LAKE_CONTROL_DB_PASSWORD": {},
-		"LAKE_CONTROL_DB_URI":      {},
-		"LAKE_DATA_PLANE_TOKEN":    {},
-		"LAKE_DATA_PLANE_URL":      {},
-		"LAKE_INSTANCE_KEK":        {},
-		"LAKE_SEALING_KID":         {},
-		"LAKE_SEALING_PUBLIC_KEY":  {},
-		"LAKE_SERVICE_DIR":         {},
-		"LAKE_STORE_ROOT":          {},
+		"LAKE_ADMIN_TOKEN":               {},
+		"LAKE_AGENT_BUS_DIR":             {},
+		"LAKE_AGENT_ENDPOINTS":           {},
+		"LAKE_AGENT_MODEL":               {},
+		"LAKE_AGENT_SERVICE_TOKEN":       {},
+		"LAKE_APPS_RUNTIME_IMAGE":        {},
+		"LAKE_METHODOLOGY_RUNTIME_IMAGE": {},
+		"LAKE_INTERNAL_URL":              {},
+		"LAKE_CONTROL_DB_PASSWORD":       {},
+		"LAKE_CONTROL_DB_URI":            {},
+		"LAKE_DATA_PLANE_TOKEN":          {},
+		"LAKE_DATA_PLANE_URL":            {},
+		"LAKE_INSTANCE_KEK":              {},
+		"LAKE_SEALING_KID":               {},
+		"LAKE_SEALING_PUBLIC_KEY":        {},
+		"LAKE_SERVICE_DIR":               {},
+		"LAKE_STORE_ROOT":                {},
 	}
 	var explicitAppsWildcard *corev1.EnvVar
 	for i := range lake.Spec.Env {
@@ -1096,6 +1097,10 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 	}
 	if lake.Spec.Apps.Enabled {
 		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_RUNTIME_IMAGE", Value: lake.Spec.Apps.RuntimeImage})
+	}
+	// The base of every methodology's image build and the stage and collect pods' image (lake#655).
+	if methodologyRunsEnabled(lake) {
+		env = append(env, corev1.EnvVar{Name: "LAKE_METHODOLOGY_RUNTIME_IMAGE", Value: lake.Spec.Methodologies.RuntimeImage})
 	}
 	if lakePostgresEnabled(lake) {
 		env = append(env, corev1.EnvVar{

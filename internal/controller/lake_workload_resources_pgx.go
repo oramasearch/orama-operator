@@ -147,7 +147,15 @@ func (s *pgxServiceStore) ListWorkloadObjects(ctx context.Context, ids []string,
 		}
 		out = append(out, object)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Methodology runs (lake#655) are a separate read, so a schema before 0078 leaves the rest.
+	runs, err := s.listMethodologyRunObjects(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, runs...), nil
 }
 
 func (s *pgxServiceStore) ListUnmeteredJobs(ctx context.Context) ([]WorkloadObject, error) {

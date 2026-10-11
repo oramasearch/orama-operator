@@ -58,6 +58,12 @@ func (f *fakeServiceStore) ListWorkloadObjects(_ context.Context, ids []string, 
 			out = append(out, object)
 		}
 	}
+	// Methodology runs come back by id only, as listMethodologyRunObjectsSQL returns them.
+	for _, run := range f.methodologyRuns {
+		if wanted[run.ID] {
+			out = append(out, WorkloadObject{Kind: WorkloadKindMethodologyRun, ID: run.ID, Desired: run.Desired, Subkind: run.Mode, Slug: run.Slug})
+		}
+	}
 	return out, nil
 }
 
@@ -77,6 +83,9 @@ func (f *fakeServiceStore) ListUnmeteredJobs(context.Context) ([]WorkloadObject,
 func (f *fakeServiceStore) UpsertWorkloadResources(_ context.Context, row WorkloadResources) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.resourceUpsertErr != nil {
+		return f.resourceUpsertErr
+	}
 	f.resourceUpserts = append(f.resourceUpserts, row)
 	f.resources[row.key()] = row
 	return nil
