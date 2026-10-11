@@ -3728,3 +3728,21 @@ CREATE TABLE IF NOT EXISTS drop_moved_tables_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0070_drop_moved_tables')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0071_secret_mount_owners (lake#561): a secret mount's owner is the customer of its workspace
+-- (an account, such as an individual's personal space) or, as before, an organization inside that
+-- customer's namespace. A mount an account owns has no organization, so its route carries
+-- organization_id NULL, and its policy object hangs under the customer's object
+-- (customer → environment `secrets/<customer>` → secret_mount) instead of an organization's
+-- (organization → environment `secrets/<customer>/<organization>` → secret_mount). The route stays
+-- routing only: mount, space, owner and workspace, with no name, value or key. Existing rows are
+-- untouched; dropping a NOT NULL constraint is idempotent.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE secret_mount_routes ALTER COLUMN organization_id DROP NOT NULL;
+
+CREATE TABLE IF NOT EXISTS secret_mount_owners_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0071_secret_mount_owners')
+    ON CONFLICT DO NOTHING;
