@@ -146,6 +146,13 @@ type LakeServiceStore interface {
 	UpsertAgentScheduleRun(ctx context.Context, run LakeAgentScheduleRun) error
 	ListBuilds(ctx context.Context) ([]LakeBuild, error)
 	UpdateBuildStatus(ctx context.Context, status LakeBuildStatus) error
+	// The workload resources half (lake_workload_resources.go, lake#643). ListWorkloadResources
+	// returns errWorkloadResourcesTableMissing while lake's schema is older than
+	// 0075_workload_resources.
+	ListWorkloadResources(ctx context.Context) ([]WorkloadResources, error)
+	ListWorkloadObjects(ctx context.Context, ids []string, live bool) ([]WorkloadObject, error)
+	UpsertWorkloadResources(ctx context.Context, row WorkloadResources) error
+	DeleteWorkloadResources(ctx context.Context, kind, id string) error
 	Close(ctx context.Context) error
 }
 
@@ -420,6 +427,16 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 			log.Info("builds deferred: cannot read builds", "err", err.Error())
 		} else if r.reconcileLakeBuilds(passCtx, lake, store, builds) {
 			changing = true
+		}
+	}
+	// Workload resources (lake_workload_resources.go, lake#643) ride the same connection, at most
+	// once per workloadResourcesInterval. A schema without the table skips them.
+	if r.workloadResources.due(lake.UID, time.Now()) {
+		err := r.reconcileWorkloadResources(passCtx, lake, store)
+		if errors.Is(err, errWorkloadResourcesTableMissing) {
+			log.Info("workload resources skipped: " + err.Error())
+		} else if err != nil {
+			log.Info("workload resources deferred", "err", err.Error())
 		}
 	}
 	return changing
