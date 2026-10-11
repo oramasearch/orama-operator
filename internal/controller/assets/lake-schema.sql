@@ -3902,3 +3902,45 @@ CREATE TABLE IF NOT EXISTS payment_provider_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0074_payment_provider')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0075_workload_resources (lake#643, docs/api/metering.md#resources): compute is metered by the
+-- resources each workload is scheduled with, and priced as CPU, RAM, GPU and VRAM. Written only
+-- by the Orama operator: one row per workload (a workspace's engine, a managed service or store,
+-- an app, an image build, an agent launch) with the totals of its scheduled pods: each
+-- container's request, or its limit where it has no request, of CPU (millicores) and memory
+-- (bytes), its GPUs (`nvidia.com/gpu`), their class (`l4`, `a10g`, `a100`, `h100`, ...) and their
+-- memory. `pods` is how many of its pods are scheduled now; a build's or a job's row keeps what
+-- its pods ran with after they finish, with `pods` 0. Numbers only: no workspace content. Lake's
+-- owner loop reads them and records the resource-seconds in each workspace Zetta.
+--
+-- A price may have a class (a GPU class), so a dimension can carry one rate per class beside its
+-- default (class ''); an invoice line names the class it bills. Idempotent; drops nothing.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS workload_resources (
+    object_kind  text        NOT NULL CHECK (object_kind IN ('workspace', 'service', 'store', 'app',
+                                                             'build', 'agent_launch')),
+    object_id    uuid        NOT NULL,
+    pods         integer     NOT NULL DEFAULT 0 CHECK (pods >= 0),
+    cpu_millis   bigint      NOT NULL DEFAULT 0 CHECK (cpu_millis >= 0),
+    memory_bytes bigint      NOT NULL DEFAULT 0 CHECK (memory_bytes >= 0),
+    gpus         integer     NOT NULL DEFAULT 0 CHECK (gpus >= 0),
+    gpu_class    text        NOT NULL DEFAULT '' CHECK (gpu_class ~ '^([a-z0-9][a-z0-9-]{0,31})?$'),
+    vram_bytes   bigint      NOT NULL DEFAULT 0 CHECK (vram_bytes >= 0),
+    observed_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (object_kind, object_id)
+);
+
+ALTER TABLE billing_plan_prices ADD COLUMN IF NOT EXISTS class text NOT NULL DEFAULT ''
+    CHECK (class ~ '^([a-z0-9][a-z0-9-]{0,31})?$');
+ALTER TABLE billing_plan_prices DROP CONSTRAINT IF EXISTS billing_plan_prices_pkey;
+ALTER TABLE billing_plan_prices ADD CONSTRAINT billing_plan_prices_pkey
+    PRIMARY KEY (plan_id, dimension, class);
+ALTER TABLE billing_invoice_lines ADD COLUMN IF NOT EXISTS class text NOT NULL DEFAULT ''
+    CHECK (class ~ '^([a-z0-9][a-z0-9-]{0,31})?$');
+
+CREATE TABLE IF NOT EXISTS workload_resources_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0075_workload_resources')
+    ON CONFLICT DO NOTHING;
