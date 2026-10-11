@@ -29,13 +29,16 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Workload resources (lake#643; lake migration 0075_workload_resources; this repo's
-// docs/lake/workload-resources.md). lake prices compute by the resources each workload is
-// scheduled with, as CPU, RAM, GPU and VRAM. The operator is the only writer of
-// workload_resources: one row per workload of the Lake (a workspace's engine, a managed service,
-// an app, an image build, an agent launch) holding the totals of its pods that are scheduled now.
-// It runs on the control-rows poll over the same connection, at most once per
-// workloadResourcesInterval, and writes a row only when its numbers change.
+// Workload resources (lake#643, lake#658; lake migrations 0075_workload_resources and
+// 0077_metered_jobs; this repo's docs/lake/workload-resources.md). lake prices compute by the
+// resources each workload is scheduled with, as CPU, RAM, GPU and VRAM. The operator is the only
+// writer of workload_resources: one row per workload of the Lake (a workspace's engine, a managed
+// service, an app, an image build, an agent launch, an agent cron run) holding the totals of its
+// pods that are scheduled now. A job (a build, a job launch, a cron run) has its row from its Job's
+// pod template as soon as the Job exists, and one that finished without a row is backfilled from
+// the pod spec the operator schedules such jobs with. It runs on the control-rows poll over the
+// same connection, at most once per workloadResourcesInterval, and writes a row only when its
+// numbers change.
 //
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list
@@ -51,6 +54,14 @@ const (
 	// WorkloadKindMethodologyRun is the sandbox pod of a workspace methodology's run (lake#655):
 	// the code's own pod, not the stage and collect pods around it.
 	WorkloadKindMethodologyRun = "methodology_run"
+
+	// WorkloadKindAgentCronRun is one Job an agent cron schedule's CronJob started (lake#658); its
+	// id is the agent_cron_runs id, the Job's uid.
+	WorkloadKindAgentCronRun = "agent_cron_run"
+
+	// The labels Kubernetes puts on a Job's pods naming the Job's uid (the second is the older one).
+	jobControllerUIDLabel       = "batch.kubernetes.io/controller-uid"
+	legacyJobControllerUIDLabel = "controller-uid"
 
 	// workloadResourcesInterval is how often the pass runs per Lake. The control-rows poll runs
 	// every 15-20 seconds (2 while rows change); the contract asks for at least once a minute.
@@ -131,10 +142,10 @@ func (o WorkloadObject) live() bool {
 	return true
 }
 
-// keepsFinishedValues: a build's and a job launch's row keeps what its pods ran with after they
-// finish (pods 0), so lake can price the duration × resources.
+// keepsFinishedValues: a build's, a job launch's and a cron run's row keeps what its pods ran with
+// after they finish (pods 0), so lake can price the duration × resources.
 func (o WorkloadObject) keepsFinishedValues() bool {
-	return o.Kind == WorkloadKindBuild || o.Kind == WorkloadKindMethodologyRun ||
+	return o.Kind == WorkloadKindBuild || o.Kind == WorkloadKindMethodologyRun || o.Kind == WorkloadKindAgentCronRun ||
 		(o.Kind == WorkloadKindAgentLaunch && o.Subkind == agentLaunchModeJob)
 }
 
@@ -386,6 +397,16 @@ func (ix *workloadIndex) classify(pod *corev1.Pod) (workloadKey, bool) {
 		}
 		return workloadKey{}, false
 	}
+	if podLabels[agentScheduleIDLabel] != "" {
+		// A cron run is its Job, which Kubernetes names on the Job's pods.
+		if uid := podLabels[jobControllerUIDLabel]; uid != "" {
+			return workloadKey{WorkloadKindAgentCronRun, uid}, true
+		}
+		if uid := podLabels[legacyJobControllerUIDLabel]; uid != "" {
+			return workloadKey{WorkloadKindAgentCronRun, uid}, true
+		}
+		return workloadKey{}, false
+	}
 	if identity := podLabels[lakeAppIdentityLabel]; identity != "" {
 		if id, found := ix.apps[identity]; found {
 			return workloadKey{WorkloadKindApp, id}, true
@@ -550,6 +571,21 @@ func (r *LakeReconciler) reconcileWorkloadResources(ctx context.Context, lake *o
 			objects[workloadKey{object.Kind, object.ID}] = object
 		}
 	}
+	// Finished runs that have no row (lake#658): their pods and Job are gone, or they ran before
+	// the operator reported resources. They are backfilled from the pod spec the operator
+	// schedules such runs with, unless a pod or Job of theirs is seen below.
+	unmetered, err := store.ListUnmeteredJobs(ctx)
+	if err != nil {
+		return fmt.Errorf("read unmetered jobs: %w", err)
+	}
+	backfill := map[workloadKey]bool{}
+	for _, object := range unmetered {
+		key := workloadKey{object.Kind, object.ID}
+		if _, found := objects[key]; !found {
+			objects[key] = object
+		}
+		backfill[key] = true
+	}
 
 	totals := map[workloadKey]*workloadTotals{}
 	nodes := map[string]*corev1.Node{}
@@ -589,12 +625,18 @@ func (r *LakeReconciler) reconcileWorkloadResources(ctx context.Context, lake *o
 			if row, found := existing[key]; found {
 				row.Pods = 0
 				desired[key] = row
-			} else if job, found := jobs[key]; found && jobFinished(job) {
+			} else if job, found := jobs[key]; found {
+				// From the Job as soon as it exists (lake#658), so a run that finishes between two
+				// passes is still priced; its scheduled pods replace these numbers once seen.
 				row, err := r.jobTemplateResources(ctx, reader, key, job)
 				if err != nil {
 					return err
 				}
 				desired[key] = row
+			} else if backfill[key] {
+				if row, ok := scheduledJobResources(lake, key); ok {
+					desired[key] = row
+				}
 			}
 		case object.live():
 			desired[key] = WorkloadResources{Kind: key.kind, ID: key.id}
@@ -648,18 +690,49 @@ func (r *LakeReconciler) workloadJobs(ctx context.Context, lake *oramav1alpha1.L
 			out[workloadKey{WorkloadKindAgentLaunch, id}] = job
 		}
 	}
-	var runs batchv1.JobList
-	if err := reader.List(ctx, &runs, client.InNamespace(methodologyRunsNamespace(lake.Name)),
+	var methodologyRuns batchv1.JobList
+	if err := reader.List(ctx, &methodologyRuns, client.InNamespace(methodologyRunsNamespace(lake.Name)),
 		client.MatchingLabels{methodologyRunLakeLabel: lake.Name, methodologyRunRoleLabel: methodologyRoleSandbox}); err != nil {
 		return nil, fmt.Errorf("list methodology run Jobs: %w", err)
 	}
-	for i := range runs.Items {
-		job := &runs.Items[i]
+	for i := range methodologyRuns.Items {
+		job := &methodologyRuns.Items[i]
 		if id := job.Labels[methodologyRunIDLabel]; id != "" && metav1.IsControlledBy(job, lake) {
 			out[workloadKey{WorkloadKindMethodologyRun, id}] = job
 		}
 	}
+	// A cron schedule's Jobs belong to its CronJob, which the Lake controls; a run is its Job's
+	// uid, in one of the Lake's workspace namespaces.
+	var runs batchv1.JobList
+	if err := reader.List(ctx, &runs, client.HasLabels{agentScheduleIDLabel}); err != nil {
+		return nil, fmt.Errorf("list agent cron Jobs: %w", err)
+	}
+	for i := range runs.Items {
+		job := &runs.Items[i]
+		if job.UID != "" && namespaces[job.Namespace] {
+			out[workloadKey{WorkloadKindAgentCronRun, string(job.UID)}] = job
+		}
+	}
 	return out, nil
+}
+
+// scheduledJobResources is what the operator schedules a run of this kind with today: a build's
+// pod (buildResources, spec.builds.resources) or an agent Job's pod (agentJobPod), with pods 0. It
+// prices a finished run whose pods and Job were gone before any pass saw them (lake#658). Their
+// requests are explicit, so no LimitRange default applies; they ask for no GPU.
+func scheduledJobResources(lake *oramav1alpha1.Lake, key workloadKey) (WorkloadResources, bool) {
+	var spec corev1.PodSpec
+	switch key.kind {
+	case WorkloadKindBuild:
+		spec = buildPod(lake, &LakeBuild{ID: key.id}, buildTarget{}, nil)
+	case WorkloadKindAgentLaunch, WorkloadKindAgentCronRun:
+		spec = agentJobPod(lake, nil)
+	default:
+		return WorkloadResources{}, false
+	}
+	totals := &workloadTotals{}
+	totals.add(podSpecResources(&spec, containerDefaults{}), gpuInfo{})
+	return totals.row(key, 0), true
 }
 
 // workloadIndex reads the LakeApps (for their pods' identity label) and builds the service
@@ -706,13 +779,10 @@ func (r *LakeReconciler) workloadNode(ctx context.Context, reader client.Reader,
 	return node
 }
 
-func jobFinished(job *batchv1.Job) bool {
-	return job.Status.Succeeded > 0 || job.Status.Failed > 0
-}
-
-// jobTemplateResources is a finished Job's pod template's resources, for a run whose pods were
-// gone before the pass saw them: a container without request or limit counts the namespace's
-// LimitRange default. GPU class comes from the template's nodeSelector only.
+// jobTemplateResources is a Job's pod template's resources, for a run none of whose pods the pass
+// has seen scheduled: one just created, or one whose pods were gone before a pass saw them. A
+// container without request or limit counts the namespace's LimitRange default. GPU class comes
+// from the template's nodeSelector only.
 func (r *LakeReconciler) jobTemplateResources(ctx context.Context, reader client.Reader, key workloadKey, job *batchv1.Job) (WorkloadResources, error) {
 	defaults, err := namespaceContainerDefaults(ctx, reader, job.Namespace)
 	if err != nil {

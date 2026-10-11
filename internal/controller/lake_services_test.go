@@ -68,8 +68,11 @@ type fakeServiceStore struct {
 	// resources, objects, resourceUpserts and resourceDeletes are the workload resources half
 	// (lake_workload_resources_test.go). A nil resources map is a schema before
 	// 0075_workload_resources.
-	resources       map[workloadKey]WorkloadResources
-	objects         []WorkloadObject
+	resources map[workloadKey]WorkloadResources
+	objects   []WorkloadObject
+	// finished are the objects of finished runs (builds, job launches, cron runs), which
+	// ListUnmeteredJobs returns while they have no row (lake#658).
+	finished        []WorkloadObject
 	resourceUpserts []WorkloadResources
 	resourceDeletes []workloadKey
 	// runs and runStatusUpserts are the methodology runs half (lake_methodology_runs_test.go).

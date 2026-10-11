@@ -873,6 +873,7 @@ UNION ALL SELECT 'billing_guard=' || count(*) FROM billing_guard
 UNION ALL SELECT 'payment_provider_guard=' || count(*) FROM payment_provider_guard
 UNION ALL SELECT 'workload_resources_guard=' || count(*) FROM workload_resources_guard
 UNION ALL SELECT 'organization_deletion_guard=' || count(*) FROM organization_deletion_guard
+UNION ALL SELECT 'metered_jobs_guard=' || count(*) FROM metered_jobs_guard
 UNION ALL SELECT 'methodology_runs_guard=' || count(*) FROM methodology_runs_guard
 UNION ALL SELECT 'drive_share_link_workspaces_guard=' || count(*) FROM drive_share_link_workspaces_guard
 UNION ALL SELECT 'stream_owner_workspaces_guard=' || count(*) FROM stream_owner_workspaces_guard

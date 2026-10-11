@@ -2,9 +2,10 @@
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit cb798eb434fedb0b2fbb70cca4725a784db2650b](https://github.com/oramasearch/lake/blob/cb798eb434fedb0b2fbb70cca4725a784db2650b/db/schema.sql)
-(branch `vendor-0076-0078`: lake#645's `0076` and lake#655's `0078`). Its SHA-256 is
-`806ced8e79dc87a43077caf11e099e537bd7237beff6dcd24bf2b62d34f38907`.
+[`oramasearch/lake` commit 1355411e3ecb4e1299a4ebf9fd8120cb39fd07c8](https://github.com/oramasearch/lake/blob/1355411e3ecb4e1299a4ebf9fd8120cb39fd07c8/db/schema.sql)
+(branch `issue-655`, lake PR #691: lake `main`'s `0076_organization_deletion` and
+`0077_metered_jobs`, then lake#655's `0078_methodology_runs`). Its SHA-256 is
+`48c4329f500f0b6d0bfd0f359229b43ee1855a6381c823059dce2eda1597e30e`.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
@@ -14,9 +15,9 @@ The adjacent `lake-schema.source.json` records the repository, path, commit, and
 Migration `0078_methodology_runs` (lake#655) adds `methodology_runs` (written by lake),
 `methodology_run_status` (written by the operator: phase, exit code, the SHA-256 of each run's
 credential, the sandbox's start and finish) and the `methodology_run` kind of `workload_resources`,
-with guard `methodology_runs_guard`, now Lake's PostgresSchema guard. It is vendored from lake
-`cb798eb` on branch `vendor-0076-0078`, which carries `0076_organization_deletion` (lake#645) and
-`0078` in one file because neither is on lake `main` yet; re-pin to lake `main` once both land. The
+with guard `methodology_runs_guard`, now Lake's PostgresSchema guard; its kind check lists every
+kind `0077_metered_jobs` allows. It is vendored from lake `1355411` on the PR branch `issue-655`;
+re-pin to lake `main` once lake PR #691 lands. The
 operator runs methodology runs ([methodology-runs.md](methodology-runs.md)) and, until this schema
 has applied, skips them; the workload pass reads them by id and finds none.
 

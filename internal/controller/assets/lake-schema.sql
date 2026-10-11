@@ -3964,6 +3964,24 @@ INSERT INTO schema_migrations (version) VALUES ('0076_organization_deletion')
     ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------------------------------
+-- 0077_metered_jobs (lake#658, docs/api/metering.md#resources): every kind of usage is metered.
+-- An agent cron schedule's runs (agent_cron_runs) run pods like a job-mode launch, so the Orama
+-- operator reports each run's resources as `agent_cron_run` (object_id the run's id) and keeps
+-- them after its pods finish; lake charges each finished build, job launch and cron run once, in
+-- the run's workspace Zetta. Numbers only. Idempotent; drops nothing.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE workload_resources DROP CONSTRAINT IF EXISTS workload_resources_object_kind_check;
+ALTER TABLE workload_resources ADD CONSTRAINT workload_resources_object_kind_check
+    CHECK (object_kind IN ('workspace', 'service', 'store', 'app', 'build', 'agent_launch',
+                           'agent_cron_run'));
+
+CREATE TABLE IF NOT EXISTS metered_jobs_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0077_metered_jobs')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
 -- 0078_methodology_runs (lake#655, docs/api/methodologies.md#runs): a workspace's own
 -- methodology is Python code in one of its repositories, and it runs as untrusted code. Lake
 -- writes one methodology_runs row per run and NOTIFYs lake_services; the Orama operator waits for
@@ -3975,8 +3993,8 @@ INSERT INTO schema_migrations (version) VALUES ('0076_organization_deletion')
 -- for the run (`lmr.<run id>.<secret>`); the credential itself is never stored. Ids, images,
 -- resources and phases only: the parameters, data, metrics and artifact live in the workspace
 -- Zetta. `workload_resources` gains `methodology_run` (the run pod's resources, kept after it
--- finishes, as a build's are); `agent_cron_run` is listed too so the order of this migration and
--- 0076_metered_jobs does not matter. Idempotent; drops nothing.
+-- finishes, as a build's are), beside every kind 0077_metered_jobs allows. Idempotent; drops
+-- nothing.
 -- ---------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS methodology_runs (
     id                 uuid        PRIMARY KEY DEFAULT gen_random_uuid(),

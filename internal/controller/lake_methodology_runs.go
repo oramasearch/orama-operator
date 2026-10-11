@@ -954,3 +954,8 @@ func (r *LakeReconciler) reconcileLakeMethodologyRuns(ctx context.Context, lake 
 	}
 	return changing
 }
+
+// jobFinished reports whether a Job's one pod has ended, succeeded or failed (backoffLimit 0).
+func jobFinished(job *batchv1.Job) bool {
+	return job.Status.Succeeded > 0 || job.Status.Failed > 0
+}

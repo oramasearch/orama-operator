@@ -52,7 +52,39 @@ SELECT 'agent_launch', l.id::text, COALESCE(w.namespace, ''), l.desired, l.mode,
   FROM agent_launches l
   JOIN workspaces w ON w.id = l.workspace_id
  WHERE ($2::boolean AND l.mode = 'service' AND l.desired = 'present')
-    OR l.id = ANY($1::text[]::uuid[])`
+    OR l.id = ANY($1::text[]::uuid[])
+UNION ALL
+SELECT 'agent_cron_run', r.id::text, COALESCE(w.namespace, ''), s.desired, 'job', s.slug
+  FROM agent_cron_runs r
+  JOIN agent_cron_schedules s ON s.id = r.schedule_id
+  JOIN workspaces w ON w.id = s.workspace_id
+ WHERE r.id = ANY($1::text[]::uuid[])`
+
+// listUnmeteredJobsSQL reads the finished runs with no workload_resources row (lake#658): builds
+// and job-mode launches that Succeeded or Failed (a Cancelled build may never have run), and cron
+// runs that Succeeded or Failed. The operator backfills them from the pod spec it schedules such
+// runs with.
+const listUnmeteredJobsSQL = `SELECT 'build', b.id::text, '', b.desired, '', ''
+  FROM builds b
+ WHERE b.phase IN ('Succeeded', 'Failed')
+   AND NOT EXISTS (SELECT 1 FROM workload_resources x
+                    WHERE x.object_kind = 'build' AND x.object_id = b.id)
+UNION ALL
+SELECT 'agent_launch', l.id::text, COALESCE(w.namespace, ''), l.desired, l.mode, l.slug
+  FROM agent_launches l
+  JOIN workspaces w ON w.id = l.workspace_id
+  JOIN agent_launch_status st ON st.launch_id = l.id
+ WHERE l.mode = 'job' AND st.phase IN ('Succeeded', 'Failed')
+   AND NOT EXISTS (SELECT 1 FROM workload_resources x
+                    WHERE x.object_kind = 'agent_launch' AND x.object_id = l.id)
+UNION ALL
+SELECT 'agent_cron_run', r.id::text, COALESCE(w.namespace, ''), s.desired, 'job', s.slug
+  FROM agent_cron_runs r
+  JOIN agent_cron_schedules s ON s.id = r.schedule_id
+  JOIN workspaces w ON w.id = s.workspace_id
+ WHERE r.phase IN ('Succeeded', 'Failed')
+   AND NOT EXISTS (SELECT 1 FROM workload_resources x
+                    WHERE x.object_kind = 'agent_cron_run' AND x.object_id = r.id)`
 
 const upsertWorkloadResourcesSQL = `INSERT INTO workload_resources (object_kind, object_id, pods, cpu_millis, memory_bytes,
     gpus, gpu_class, vram_bytes, observed_at)
@@ -124,6 +156,24 @@ func (s *pgxServiceStore) ListWorkloadObjects(ctx context.Context, ids []string,
 		return nil, err
 	}
 	return append(out, runs...), nil
+}
+
+func (s *pgxServiceStore) ListUnmeteredJobs(ctx context.Context) ([]WorkloadObject, error) {
+	rows, err := s.db.Query(ctx, listUnmeteredJobsSQL)
+	if err != nil {
+		return nil, workloadResourcesTableError(err)
+	}
+	defer rows.Close()
+	var out []WorkloadObject
+	for rows.Next() {
+		var object WorkloadObject
+		if err := rows.Scan(&object.Kind, &object.ID, &object.Namespace, &object.Desired,
+			&object.Subkind, &object.Slug); err != nil {
+			return nil, err
+		}
+		out = append(out, object)
+	}
+	return out, rows.Err()
 }
 
 func (s *pgxServiceStore) UpsertWorkloadResources(ctx context.Context, row WorkloadResources) error {
