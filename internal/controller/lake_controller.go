@@ -65,6 +65,8 @@ type LakeReconciler struct {
 	ServiceEvents <-chan event.GenericEvent
 	// APIReader lists lake pods without a cache (no cluster-wide pod informer). Nil uses Client.
 	APIReader client.Reader
+	// workloadResources throttles the workload resources pass per Lake (lake#643).
+	workloadResources workloadResourcesClock
 	// Clientset reads a completed builder pod's final stdout lines through pods/log.
 	Clientset kubernetes.Interface
 	// BuildLogs substitutes the pods/log read in tests.
@@ -81,7 +83,7 @@ const (
 	lakeStorePath        = "/var/lib/lake/store"
 	lakeStoreVolume      = "store"
 	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
-	lakeSchemaGuardTable = "payment_provider_guard"
+	lakeSchemaGuardTable = "workload_resources_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;

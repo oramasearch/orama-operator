@@ -125,8 +125,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `payment_provider_guard` from
-   `0074_payment_provider`, version = hash of the SQL plus guard. The Job skips the file only when
+   `oramasearch/lake` `db/schema.sql`), guard table = `workload_resources_guard` from
+   `0075_workload_resources`, version = hash of the SQL plus guard. The Job skips the file only when
    the guard exists **and** every `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')` in it
    is present in the database's `schema_migrations`; otherwise it applies the whole idempotent file,
    so a migration that merges out of order (0067 after 0068 and 0069, #271) still applies. A changed hash automatically
@@ -192,6 +192,10 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     `VolumeSnapshotClass` the operator creates when absent: on the cron schedule, at first sight and
     on `requested_at`, pruned beyond `keep`, contents labelled with their target, and the newest
     reported in `volume_snapshot_status`. See [`volume-snapshots.md`](volume-snapshots.md).
+19. **Workload resources** (with the control-rows poll) — one `workload_resources` row per
+    workspace engine, managed service, app, build and agent launch: the CPU, memory, GPUs, GPU class
+    and VRAM its scheduled pods were given, which lake prices (lake#643). Written only on change;
+    a finished build or job keeps its values. See [`workload-resources.md`](workload-resources.md).
 
 **Status** reports overall service readiness through `phase` and `conditions[Ready]`, alongside
 Deployment replica counts, store binding, Postgres, schema, Zetta, backup, sealing, and data-service
@@ -611,4 +615,5 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 ## Open
 
 - #126 incremental migrations in `PostgresSchema`.
+- [`workload-resources.md`](workload-resources.md) — the `workload_resources` contract lake meters compute from: what each kind maps to, the effective-request arithmetic, GPU class and VRAM, and when a row is written, kept and deleted (lake#643).
 - [`agents.md`](agents.md) — the Agent Library's agents, the launches of user-created agents on agent-runtime, their cron schedules as CronJobs, and each library agent's own agent-bus credential (lake#228, lake#231, lake#244, lake#269).

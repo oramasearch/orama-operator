@@ -65,6 +65,13 @@ type fakeServiceStore struct {
 	// builds and buildUpdates are the in-cluster build half (lake_builds_test.go).
 	builds       []LakeBuild
 	buildUpdates []LakeBuildStatus
+	// resources, objects, resourceUpserts and resourceDeletes are the workload resources half
+	// (lake_workload_resources_test.go). A nil resources map is a schema before
+	// 0075_workload_resources.
+	resources       map[workloadKey]WorkloadResources
+	objects         []WorkloadObject
+	resourceUpserts []WorkloadResources
+	resourceDeletes []workloadKey
 }
 
 func (f *fakeServiceStore) ListBuilds(context.Context) ([]LakeBuild, error) {
