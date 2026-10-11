@@ -3862,3 +3862,43 @@ CREATE TABLE IF NOT EXISTS billing_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0073_billing')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0074_payment_provider (lake#620, decision 57): Stripe as the payment provider
+-- (docs/api/billing.md#stripe). The provider's id for each account (a Stripe Customer), kept once;
+-- where an invoice is paid (Stripe's hosted invoice page) and the provider's own state of it; and
+-- every provider notice (a Stripe webhook event) applied, by event id, so one is never applied
+-- twice. Ids, states and URLs only: no key, no card, no workspace content. Idempotent.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS billing_accounts (
+    customer_id          uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    provider             text        NOT NULL CHECK (provider ~ '^[a-z][a-z0-9_]{0,31}$'),
+    provider_customer_id text        NOT NULL CHECK (length(provider_customer_id) BETWEEN 1 AND 255),
+    created_at           timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (customer_id, provider)
+);
+
+ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS payment_url text NOT NULL DEFAULT ''
+    CHECK (length(payment_url) <= 2048);
+ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS provider_status text NOT NULL DEFAULT ''
+    CHECK (provider_status ~ '^[a-z_]{0,32}$');
+CREATE INDEX IF NOT EXISTS billing_invoices_by_provider_reference
+    ON billing_invoices (provider, provider_reference) WHERE provider_reference <> '';
+
+-- A provider's notice, recorded in the transaction that applies it: a second delivery of the
+-- same event id changes nothing. Kept like the invoices it moved.
+CREATE TABLE IF NOT EXISTS billing_payment_events (
+    provider    text        NOT NULL CHECK (provider ~ '^[a-z][a-z0-9_]{0,31}$'),
+    event_id    text        NOT NULL CHECK (length(event_id) BETWEEN 1 AND 255),
+    event_type  text        NOT NULL DEFAULT '' CHECK (length(event_type) <= 128),
+    reference   text        NOT NULL DEFAULT '' CHECK (length(reference) <= 256),
+    invoice_id  uuid,
+    received_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (provider, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS payment_provider_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0074_payment_provider')
+    ON CONFLICT DO NOTHING;
