@@ -621,12 +621,11 @@ func nowSecond() *time.Time {
 	return &at
 }
 
-// recordMethodologyResources writes the sandbox's resources as the run's workload_resources row,
-// with pods 0, the moment its code has finished: the row is what lake prices the run's minutes
-// at, and a short run may finish between two workload passes.
-func (r *LakeReconciler) recordMethodologyResources(ctx context.Context, store LakeServiceStore, run *LakeMethodologyRun, job *batchv1.Job) {
-	key := workloadKey{WorkloadKindMethodologyRun, run.ID}
-	pod := &corev1.Pod{ObjectMeta: job.Spec.Template.ObjectMeta, Spec: job.Spec.Template.Spec}
+// methodologyRunWorkload is the run's workload_resources row (pods 0): the CPU, memory, GPUs, GPU
+// class and VRAM of the sandbox pod the operator schedules for it, from that pod's spec, so it does
+// not depend on the pod still existing.
+func methodologyRunWorkload(spec corev1.PodSpec, id string) WorkloadResources {
+	pod := &corev1.Pod{Spec: spec}
 	resources := podSpecResources(&pod.Spec, containerDefaults{})
 	var gpu gpuInfo
 	if resources.gpus > 0 {
@@ -634,9 +633,23 @@ func (r *LakeReconciler) recordMethodologyResources(ctx context.Context, store L
 	}
 	totals := &workloadTotals{}
 	totals.add(resources, gpu)
-	if err := store.UpsertWorkloadResources(ctx, totals.row(key, 0)); err != nil && !errors.Is(err, errWorkloadResourcesTableMissing) {
-		logf.FromContext(ctx).Info("methodology run resources deferred", "run", run.ID, "err", err.Error())
+	return totals.row(workloadKey{WorkloadKindMethodologyRun, id}, 0)
+}
+
+// recordMethodologyResources writes the run's workload_resources row before its sandbox Job is
+// created (lake#655, as lake#658 does for builds and agent jobs): lake charges a finished run's
+// minutes at these numbers once, whether or not the operator ever saw its pod, so a run whose pod
+// and Job are gone before a workload pass is still charged. A row that cannot be written yet holds
+// the code back: no run starts unmetered. The workload pass replaces pods with the live count while
+// the pod runs and keeps these numbers after it finishes.
+func (r *LakeReconciler) recordMethodologyResources(ctx context.Context, store LakeServiceStore, run *LakeMethodologyRun, spec corev1.PodSpec) error {
+	if err := store.UpsertWorkloadResources(ctx, methodologyRunWorkload(spec, run.ID)); err != nil {
+		if errors.Is(err, errWorkloadResourcesTableMissing) {
+			return nil // a schema before 0075 meters nothing at all
+		}
+		return fmt.Errorf("record the run's resources: %w", err)
 	}
+	return nil
 }
 
 // reconcileMethodologyRun advances one present run and reports what the operator observed, and
@@ -748,9 +761,18 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 		return status, true, nil
 	}
 
-	// 2. run: the code that is not trusted.
+	// 2. run: the code that is not trusted. Its resources are recorded before its Job exists.
+	sandboxSpec := methodologySandboxPod(run, image)
+	existing := &batchv1.Job{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: methodologySandboxJob(run.Slug)}, existing); apierrors.IsNotFound(err) {
+		if err := r.recordMethodologyResources(ctx, store, run, sandboxSpec); err != nil {
+			return status, true, err
+		}
+	} else if err != nil {
+		return status, true, err
+	}
 	sandbox, _, err := r.ensureMethodologyJob(ctx, lake, ns, methodologySandboxJob(run.Slug),
-		methodologyLabels(lake, run, methodologyRoleSandbox), methodologySandboxPod(run, image), int64(run.TimeoutSeconds))
+		methodologyLabels(lake, run, methodologyRoleSandbox), sandboxSpec, int64(run.TimeoutSeconds))
 	if err != nil {
 		return status, true, err
 	}
@@ -783,7 +805,10 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 		if status.StartedAt == nil {
 			status.StartedAt = status.FinishedAt
 		}
-		r.recordMethodologyResources(ctx, store, run, sandbox)
+		// Written again at its end, from the Job it ran as, in case the row was removed.
+		if err := r.recordMethodologyResources(ctx, store, run, sandbox.Spec.Template.Spec); err != nil {
+			return status, true, err
+		}
 	}
 	if observed.exitCode != nil {
 		status.ExitCode = observed.exitCode
@@ -890,7 +915,9 @@ func (r *LakeReconciler) stopMethodologyRun(ctx context.Context, lake *oramav1al
 				if status.FinishedAt == nil {
 					status.FinishedAt = nowSecond()
 				}
-				r.recordMethodologyResources(ctx, store, run, sandbox)
+				if err := r.recordMethodologyResources(ctx, store, run, sandbox.Spec.Template.Spec); err != nil {
+					return status, err
+				}
 			}
 		} else if err != nil && !apierrors.IsNotFound(err) {
 			return status, err

@@ -83,6 +83,9 @@ func (f *fakeServiceStore) ListUnmeteredJobs(context.Context) ([]WorkloadObject,
 func (f *fakeServiceStore) UpsertWorkloadResources(_ context.Context, row WorkloadResources) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.resourceUpsertErr != nil {
+		return f.resourceUpsertErr
+	}
 	f.resourceUpserts = append(f.resourceUpserts, row)
 	f.resources[row.key()] = row
 	return nil

@@ -76,7 +76,7 @@ reads of that run's image only.
 | `Building` | the build is queued or running; no credential exists yet |
 | `Staging` | the stage pod is bringing the data in; the credential and its digest exist |
 | `Running` | the sandbox Job exists; `started_at` is set once its container has started |
-| `Collecting` | the code finished (any outcome); `finished_at` and `exit_code` are set and the sandbox's resources are written to `workload_resources` |
+| `Collecting` | the code finished (any outcome); `finished_at` and `exit_code` are set and the sandbox's resources are written to `workload_resources` again (they were first written before its Job was created) |
 | `Succeeded` | collect succeeded and the code exited 0 |
 | `Failed` | the build failed or was cancelled (*the methodology's image build failed: \<build message\>*), there was no build, the stage failed (*could not bring the data in*), the code exited non-zero (*the methodology's code exited with N*) or ran past its time limit (*… ran past its time limit (N seconds)*), or collect failed (*could not report the result to Lake*) |
 | `Stopped` | lake set `desired = absent` before the run finished |
@@ -85,6 +85,11 @@ A failed code is still collected, so its findings reach lake. `started_at` and `
 the sandbox container's own times (whole seconds, UTC); a sandbox killed at its deadline without a
 termination record ends at the Job's failure time; a stopped sandbox ends when it was stopped.
 Lake prices the run's minutes as `finished_at - started_at` times the `workload_resources` row.
+That row is written from the sandbox pod's spec **before its Job is created** (pods 0), so a run is
+metered whether or not any pod of it is ever observed: a short run, a Job removed by its TTL or an
+operator restart cannot leave it unpriced. A row that cannot be written holds the sandbox back
+until the next pass; no run's code starts unmetered. It is written again when the code finishes,
+and the workload pass sets the live pod count while the pod runs and keeps the numbers after.
 
 At a terminal phase the credential digest is cleared (the credential stops resolving in lake) and
 the Jobs, their pods, the two Secrets and the work volume are deleted; the namespace and its

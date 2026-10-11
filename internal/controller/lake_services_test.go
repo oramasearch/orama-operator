@@ -72,9 +72,10 @@ type fakeServiceStore struct {
 	objects   []WorkloadObject
 	// finished are the objects of finished runs (builds, job launches, cron runs), which
 	// ListUnmeteredJobs returns while they have no row (lake#658).
-	finished        []WorkloadObject
-	resourceUpserts []WorkloadResources
-	resourceDeletes []workloadKey
+	finished          []WorkloadObject
+	resourceUpserts   []WorkloadResources
+	resourceUpsertErr error
+	resourceDeletes   []workloadKey
 	// runs and runStatusUpserts are the methodology runs half (lake_methodology_runs_test.go).
 	// runsMissing makes ListMethodologyRuns fail as a schema before 0078_methodology_runs does.
 	methodologyRuns  []LakeMethodologyRun

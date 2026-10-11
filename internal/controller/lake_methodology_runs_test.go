@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -659,4 +660,68 @@ func TestMethodologyRunImageIsLakesPublicReferenceByDigest(t *testing.T) {
 	if got := methodologyRunsNamespace(strings.Repeat("a", 60)); len(got) > 63 {
 		t.Fatalf("namespace %q is too long", got)
 	}
+}
+
+// A run whose sandbox pod and Job are gone before any workload pass saw them (a short run, the Job's
+// TTL, an operator restart) is still charged (lake#655, as lake#658 for builds and agent jobs): its
+// workload_resources row is written from the sandbox pod spec before the Job is created, with no
+// pod involved, and the end of the run neither needs the pod nor loses the row.
+func TestARunWhosePodsAreGoneIsStillMetered(t *testing.T) {
+	h, store := newMethodologyHarness(t, false)
+	key := workloadKey{WorkloadKindMethodologyRun, testRunID}
+	store.setBuild(LakeMethodologyRunBuild{Desired: buildDesiredQueued, Phase: BuildPhaseSucceeded, Digest: testBuildDigest,
+		Target: "lake-prod.lake.svc/acme/churn-methodology:build-1"})
+	h.poll()
+	if _, found := store.resources[key]; found {
+		t.Fatal("nothing is recorded before the code is about to run")
+	}
+	h.finishJob(methodologyStageJob(testRunSlug), true)
+	h.poll()
+	row, found := store.resources[key]
+	if !found || row.Pods != 0 || row.CPUMillis != 2000 || row.MemoryBytes != 4<<30 || row.GPUs != 0 {
+		t.Fatalf("the run's resources are recorded as its sandbox Job is created: %+v (found %v)", row, found)
+	}
+	// The sandbox finishes and its pod is never seen: no pod exists in this harness at all.
+	h.finishJob(methodologySandboxJob(testRunSlug), true, batchv1.JobCondition{Type: batchv1.JobComplete,
+		Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(time.Date(2026, 10, 11, 12, 1, 0, 0, time.UTC))})
+	h.poll()
+	status := store.runStatus(t)
+	if status.Phase != MethodologyPhaseCollecting || status.StartedAt == nil || status.FinishedAt == nil {
+		t.Fatalf("a run with no observed pod still has its times: %+v", status)
+	}
+	// A workload pass after the Job and its pods are gone keeps the row for lake to charge.
+	if err := h.client.Delete(context.Background(), h.job(methodologySandboxJob(testRunSlug))); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reconciler.reconcileWorkloadResources(context.Background(), h.lake, h.store); err != nil {
+		t.Fatalf("reconcileWorkloadResources: %v", err)
+	}
+	if row, found := store.resources[key]; !found || row.CPUMillis != 2000 || row.MemoryBytes != 4<<30 {
+		t.Fatalf("the row survives the pass once the pod and Job are gone: %+v (found %v)", row, found)
+	}
+}
+
+// A row that cannot be written holds the code back: no run starts unmetered.
+func TestARunDoesNotStartUntilItsResourcesAreRecorded(t *testing.T) {
+	h, store := newMethodologyHarness(t, false)
+	store.setBuild(LakeMethodologyRunBuild{Desired: buildDesiredQueued, Phase: BuildPhaseSucceeded, Digest: testBuildDigest,
+		Target: "lake-prod.lake.svc/acme/churn-methodology:build-1"})
+	h.poll()
+	h.finishJob(methodologyStageJob(testRunSlug), true)
+	store.mu.Lock()
+	store.resourceUpsertErr = errors.New("connection reset")
+	store.mu.Unlock()
+	h.poll()
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testRunNS, Name: methodologySandboxJob(testRunSlug)},
+		&batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the sandbox waits for its row: %v", err)
+	}
+	store.mu.Lock()
+	store.resourceUpsertErr = nil
+	store.mu.Unlock()
+	h.poll()
+	if _, found := store.resources[workloadKey{WorkloadKindMethodologyRun, testRunID}]; !found {
+		t.Fatal("recorded on the next pass")
+	}
+	h.job(methodologySandboxJob(testRunSlug))
 }
