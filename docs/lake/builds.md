@@ -82,7 +82,7 @@ The Job receives the lake-builder contract exactly as environment variables:
 | `CONTEXT` / `DOCKERFILE` | source-relative build inputs |
 | `TARGET` | in-cluster Lake registry target |
 | `BUILD_ARGS` | the row's JSON object |
-| `BUILD_ARG_ALLOW` | `PYTHON_VERSION,APP_DEPS,APP_RUNTIME_IMAGE,METHODOLOGY_RUNTIME_IMAGE` (the last for a workspace methodology's image, lake#655) |
+| `BUILD_ARG_ALLOW` | `PYTHON_VERSION,APP_DEPS,APP_RUNTIME_IMAGE,METHODOLOGY_RUNTIME_IMAGE,METHODOLOGY_PACKAGES` (the last two for a workspace methodology's image, lake#655) |
 | `SOURCE_TOKEN` / `PUSH_TOKEN` / `EVENTS_TOKEN` | Secret key references |
 | `CACHE_REF` | `<registry>/<space>/cache/<name>`, or empty when caching is disabled |
 | `DOCKER_CONFIG` | writable `/home/user/.docker` |

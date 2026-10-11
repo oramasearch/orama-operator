@@ -31,7 +31,7 @@ Each run gets, in the Lake's namespace `lake-<lake>-methodology-runs`:
 |---|---|---|---|
 | **stage** (`<slug>-stage`) | `runtime_image` | `/opt/orama/bin/methodology stage --lake $(LAKE_URL) --run $(RUN_ID) --credential-file /var/run/orama/credential --out /work/in` | DNS and lake's pods only |
 | **run** (`<slug>-run`) | the built image | `/opt/orama/bin/methodology run --in /work/in --out /work/out --source /methodology` | nothing; with `network` true, DNS and the public internet only |
-| **collect** (`<slug>-collect`) | `runtime_image` | `/opt/orama/bin/methodology collect --lake $(LAKE_URL) --run $(RUN_ID) --credential-file /var/run/orama/credential --in /work/out` | DNS and lake's pods only |
+| **collect** (`<slug>-collect`) | `runtime_image` | `/opt/orama/bin/methodology collect --lake $(LAKE_URL) --run $(RUN_ID) --credential-file /var/run/orama/credential --in /work/out [--run-exit-code N]` (the sandbox's exit code once known) | DNS and lake's pods only |
 
 - `LAKE_URL` is lake's in-cluster Service (`http://lake-<lake>.<namespace>.svc.cluster.local:80`),
   `RUN_ID` the row's id, `HOME=/tmp`. The credential is a file from Secret `<slug>-credential`, never
@@ -98,7 +98,7 @@ policies stay. Status is written only when it changes.
 | `spec.methodologies.workVolumeSize` | each run's work volume, default `10Gi` |
 | `spec.methodologies.storageClassName` | its storage class, default the cluster's |
 
-Builds also accept the `METHODOLOGY_RUNTIME_IMAGE` build argument (`BUILD_ARG_ALLOW`), which lake's
+Builds also accept the `METHODOLOGY_RUNTIME_IMAGE` and `METHODOLOGY_PACKAGES` build arguments (`BUILD_ARG_ALLOW`), which lake's
 generated methodology Dockerfile builds `FROM`.
 
 ## Limits and follow-ups

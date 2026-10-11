@@ -500,7 +500,7 @@ func TestARunSucceedsOnlyAfterItsResultIsCollected(t *testing.T) {
 		t.Fatalf("the sandbox's resources are recorded once its code finishes: %+v", row)
 	}
 	collect := h.job(methodologyCollectJob(testRunSlug)).Spec.Template.Spec.Containers[0]
-	if got := strings.Join(collect.Command, " "); got != "/opt/orama/bin/methodology collect --lake $(LAKE_URL) --run $(RUN_ID) --credential-file /var/run/orama/credential --in /work/out" {
+	if got := strings.Join(collect.Command, " "); got != "/opt/orama/bin/methodology collect --lake $(LAKE_URL) --run $(RUN_ID) --credential-file /var/run/orama/credential --in /work/out --run-exit-code 0" {
 		t.Fatalf("collect command %q", got)
 	}
 	h.finishJob(methodologyCollectJob(testRunSlug), true)
@@ -530,6 +530,9 @@ func TestAFailingCodeIsStillCollectedThenFails(t *testing.T) {
 	h.poll()
 	if status := store.runStatus(t); status.Phase != MethodologyPhaseCollecting {
 		t.Fatalf("a failed run's findings are still reported: %+v", status)
+	}
+	if got := strings.Join(h.job(methodologyCollectJob(testRunSlug)).Spec.Template.Spec.Containers[0].Command, " "); !strings.HasSuffix(got, "--run-exit-code 3") {
+		t.Fatalf("collect is told the code's exit code: %q", got)
 	}
 	h.finishJob(methodologyCollectJob(testRunSlug), true)
 	h.poll()

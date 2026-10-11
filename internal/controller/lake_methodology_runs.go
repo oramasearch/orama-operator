@@ -445,10 +445,15 @@ func methodologyStagePod(lake *oramav1alpha1.Lake, run *LakeMethodologyRun) core
 		methodologyWorkClaim(run.Slug), methodologyPullSecret(run.Slug), methodologyCredentialSecret(run.Slug))
 }
 
-func methodologyCollectPod(lake *oramav1alpha1.Lake, run *LakeMethodologyRun) corev1.PodSpec {
-	return methodologyPod(run.RuntimeImage,
-		[]string{methodologyCLI, "collect", "--lake", "$(LAKE_URL)", "--run", "$(RUN_ID)",
-			"--credential-file", methodologyCredentialDir + "/" + methodologyCredentialFile, "--in", methodologyWorkPath + "/out"},
+// methodologyCollectPod reports the result; exitCode is the sandbox's, passed as --run-exit-code
+// when known, so the runtime reports a failed run as failed.
+func methodologyCollectPod(lake *oramav1alpha1.Lake, run *LakeMethodologyRun, exitCode *int32) corev1.PodSpec {
+	command := []string{methodologyCLI, "collect", "--lake", "$(LAKE_URL)", "--run", "$(RUN_ID)",
+		"--credential-file", methodologyCredentialDir + "/" + methodologyCredentialFile, "--in", methodologyWorkPath + "/out"}
+	if exitCode != nil {
+		command = append(command, "--run-exit-code", fmt.Sprint(*exitCode))
+	}
+	return methodologyPod(run.RuntimeImage, command,
 		methodologyTransferEnv(lake, run), methodologyTransferResources(),
 		methodologyWorkClaim(run.Slug), methodologyPullSecret(run.Slug), methodologyCredentialSecret(run.Slug))
 }
@@ -801,7 +806,7 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 
 	// 3. collect: report the result, whether the code succeeded or not.
 	collect, _, err := r.ensureMethodologyJob(ctx, lake, ns, methodologyCollectJob(run.Slug),
-		methodologyLabels(lake, run, methodologyRoleCollect), methodologyCollectPod(lake, run), methodologyTransferDeadline)
+		methodologyLabels(lake, run, methodologyRoleCollect), methodologyCollectPod(lake, run, status.ExitCode), methodologyTransferDeadline)
 	if err != nil {
 		return status, true, err
 	}
