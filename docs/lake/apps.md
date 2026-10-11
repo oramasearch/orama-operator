@@ -62,6 +62,31 @@ environment variables. Environment names must pass Kubernetes `IsEnvVarName`, Se
 be DNS-1123 subdomains, and keys must be valid Kubernetes Secret keys. Invalid input makes the row
 `Failed` with a stable validation message and creates no invalid `LakeApp` update.
 
+### Lake secret references (lake#625)
+
+A user's secret's source of truth is lake's secret store, sealed in its workspace Zetta; a
+Kubernetes Secret is only a projection. Lake now writes every new secret reference as
+`lake-secret://<mount id>/<secret name>#<field>` (the name may contain `/` and `#`; the field follows
+the last `#` and must be a Secret key), and refuses Kubernetes Secret names:
+
+```json
+{"DB_PASSWORD":"lake-secret://6f1c2a4e-0d3b-4c55-9a7e-1b2c3d4e5f60/payments/db#password"}
+```
+
+The row becomes a `spec.secretEnv[]` entry with `lakeSecret: {mount, name, field}` and a
+`secretKeyRef` naming `app-<first 12 app UUID hex>-lake-<12 hex of mount and name>` in the Lake
+namespace. For each lake secret the app reads, the LakeApp controller owns a `LakeSealedSecret`
+there (labelled `lake.orama.cloud/app-lake-secret`, owner annotation and a plain owner reference to
+the LakeApp; the Lake stays its controller) with `source: {type: lake, lake: {mount, name}}`. Lake's
+`mint_sealed_secret` answers the secret's fields sealed to the cluster's delivery key, the
+`LakeSealedSecret` controller writes the produced Secret, and the environment copy below carries the
+selected field into the workspace namespace. Until the first delivery the app is `Progressing` with
+reason `SecretDeliveryPending` and no workload is created; a failed delivery says why in the same
+reason. An unpinned lake source is delivered again every five minutes ([sealed
+secrets](sealed-secrets.md#rotation-of-a-lake-source)), so a new version changes the copy and the pod
+template's credential digest and the pods roll. Removing the reference deletes the
+`LakeSealedSecret`, its produced Secret and the copy.
+
 For one compatibility release, the operator also accepts the former JSON array of Secret names.
 Those whole Secrets retain their `envFrom` behavior through `spec.secretRefs`; new writers must use
 the object contract. Lake must authorize these references and detect secret env values before

@@ -420,7 +420,7 @@ private namespace. See the operational contract in
 | `spec.replicas` | Desired replicas, default `1`. Zero stops pods while retaining the app resources. |
 | `spec.resources` | App-container requests/limits; defaults to `100m`/`128Mi` requests and `1`/`1Gi` limits. |
 | `spec.env[]` | Literal `{name, value}` entries. Operator-managed runtime variables take precedence. |
-| `spec.secretEnv[]` | `{name, secretKeyRef: {name, key}}` entries. Each source Secret is read from the Lake namespace, only selected keys are copied into the isolated app namespace, and the Deployment uses `env[].valueFrom.secretKeyRef`. Operator-managed names take precedence; secret-backed values take precedence over literal `spec.env`. |
+| `spec.secretEnv[]` | `{name, secretKeyRef: {name, key}, lakeSecret?: {mount, name, field}}` entries. Each source Secret is read from the Lake namespace, only selected keys are copied into the isolated app namespace, and the Deployment uses `env[].valueFrom.secretKeyRef`. With `lakeSecret` (lake#625) the controller owns a `LakeSealedSecret` with a lake source that produces `secretKeyRef.name`, so the value comes from lake's secret store and follows its new versions ([apps](lake/apps.md#lake-secret-references-lake625)). Operator-managed names take precedence; secret-backed values take precedence over literal `spec.env`. |
 | `spec.secretRefs[]` | One-release legacy input: Lake-namespace whole Secrets copied into the app namespace and exposed through `envFrom`. New apps use `spec.secretEnv`. |
 | `spec.host` | Exact hostname. Empty derives `<app>.<Lake spec.apps.wildcard>`. |
 | `spec.auth` | `lake` (default) uses Lake's session authorization through nginx `auth-url`; `public` omits that gate. |
@@ -509,4 +509,5 @@ resource namespace, and `spec.template.name`. The output is labelled
 | `status.phase` | `Pending \| Ready \| Error`. Written only on a real transition. |
 | `status.unsealedAt` / `.kid` | Last successful produced-Secret update and the key that opened its record set. |
 | `status.lease` | Dynamic lease `{id, expiresAt, renewAt}`; no credential value. |
+| `status.mintedAt` / `.version` | For a lake source: the last delivery from lake and the secret version the Secret holds. An unpinned lake source is delivered again every five minutes. |
 | `status.conditions[Ready]` | `Delivered` or a stable refusal reason such as `UnsealFailed`, `SecretOwnershipConflict`, or `MintFailed`. |

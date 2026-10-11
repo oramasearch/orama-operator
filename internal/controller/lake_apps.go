@@ -458,6 +458,22 @@ func lakeAppRowSecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) er
 	}
 	sort.Strings(names)
 	for _, name := range names {
+		if reference, ok, err := parseLakeSecretReference(secretEnvironment[name]); ok || err != nil {
+			if err != nil {
+				return fmt.Errorf("secret_env_refs reference for %q: %w", name, err)
+			}
+			// The lake secret is the source of truth (lake#625): the LakeApp controller owns a
+			// LakeSealedSecret that produces this Secret in the Lake namespace, then copies the field.
+			spec.SecretEnv = append(spec.SecretEnv, oramav1alpha1.LakeAppSecretEnvironmentVariable{
+				Name: name,
+				SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{
+					Name: lakeAppLakeSecretName(spec.Sync, reference),
+					Key:  reference.Field,
+				},
+				LakeSecret: &reference,
+			})
+			continue
+		}
 		secretName, key, err := lakeAppSecretReference(name, secretEnvironment[name])
 		if err != nil {
 			return err
@@ -471,6 +487,46 @@ func lakeAppRowSecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) er
 		})
 	}
 	return nil
+}
+
+// lakeSecretScheme prefixes lake's reference to one field of one secret in a lake secret mount:
+// lake-secret://<mount id>/<secret name>#<field> (lake docs/api/web-apps.md). The name may contain
+// "/" and "#"; the field follows the last "#".
+const lakeSecretScheme = "lake-secret://"
+
+func parseLakeSecretReference(value string) (oramav1alpha1.LakeAppLakeSecretReference, bool, error) {
+	reference := oramav1alpha1.LakeAppLakeSecretReference{}
+	if !strings.HasPrefix(value, lakeSecretScheme) {
+		return reference, false, nil
+	}
+	rest := strings.TrimPrefix(value, lakeSecretScheme)
+	slash := strings.Index(rest, "/")
+	hash := strings.LastIndex(rest, "#")
+	if slash <= 0 || hash <= slash+1 || hash == len(rest)-1 {
+		return reference, true, errors.New("must be lake-secret://<mount id>/<name>#<field>")
+	}
+	reference.Mount = rest[:slash]
+	reference.Name = rest[slash+1 : hash]
+	reference.Field = rest[hash+1:]
+	if len(validation.IsConfigMapKey(reference.Field)) != 0 {
+		return reference, true, fmt.Errorf("field %q is not a Secret key", reference.Field)
+	}
+	return reference, true, nil
+}
+
+// lakeAppLakeSecretName is the Secret, in the Lake namespace, that the app's LakeSealedSecret for
+// one lake secret produces: one per app and secret, whichever fields the app reads from it.
+func lakeAppLakeSecretName(sync *oramav1alpha1.LakeAppSync, reference oramav1alpha1.LakeAppLakeSecretReference) string {
+	id := ""
+	if sync != nil {
+		id = sync.ID
+	}
+	hexID := strings.ReplaceAll(id, "-", "")
+	if len(hexID) < 12 {
+		hexID = fmt.Sprintf("%x", sha256.Sum256([]byte(id)))
+	}
+	secret := fmt.Sprintf("%x", sha256.Sum256([]byte(reference.Mount+"\x00"+reference.Name)))[:12]
+	return "app-" + hexID[:12] + "-lake-" + secret
 }
 
 func lakeAppRowLegacySecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) error {

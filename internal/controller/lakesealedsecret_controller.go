@@ -42,6 +42,10 @@ const (
 	serviceAccountTokenPath    = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	lakeMintSealedSecretRoute  = "/v1/mint_sealed_secret"
 	dynamicRenewalDefaultRatio = 3
+	// lakeSourceRefreshDefault is how often an unpinned lake source is delivered again, so a new
+	// version of the user's secret reaches its Secret (and the app that mounts it) without anyone
+	// editing the Secret (lake#625).
+	lakeSourceRefreshDefault = 5 * time.Minute
 )
 
 // LakeSealedSecretReconciler decrypts cluster-bound envelopes into owned Secrets.
@@ -54,6 +58,13 @@ type LakeSealedSecretReconciler struct {
 	ServiceAccountToken string
 	TokenPath           string
 	Now                 func() time.Time
+	// LakeSourceRefresh overrides lakeSourceRefreshDefault (tests).
+	LakeSourceRefresh time.Duration
+}
+
+// lakeDelivery is what one mint from lake reports beyond the records.
+type lakeDelivery struct {
+	Version int64
 }
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakesealedsecrets,verbs=get;list;watch;create;update;patch;delete
@@ -109,7 +120,7 @@ func (r *LakeSealedSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	records, lease, deliveryResult, err := r.recordsForDelivery(
+	records, lease, delivered, deliveryResult, err := r.recordsForDelivery(
 		ctx,
 		resource,
 		lake,
@@ -140,13 +151,29 @@ func (r *LakeSealedSecretReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.ready(ctx, resource, kid, lease, changed, now); err != nil {
+	if err := r.ready(ctx, resource, kid, lease, delivered, changed, now); err != nil {
 		return ctrl.Result{}, err
 	}
 	if resource.Spec.Source.Type == "dynamic" && lease != nil {
 		return ctrl.Result{RequeueAfter: lease.RenewAt.Sub(now)}, nil
 	}
+	if lakeSourceRefreshes(resource) {
+		return ctrl.Result{RequeueAfter: r.lakeSourceRefresh()}, nil
+	}
 	return ctrl.Result{}, nil
+}
+
+// lakeSourceRefreshes reports whether a resource follows its lake secret's current version.
+func lakeSourceRefreshes(resource *oramav1alpha1.LakeSealedSecret) bool {
+	return resource.Spec.Source.Type == "lake" && resource.Spec.Source.Lake != nil &&
+		resource.Spec.Source.Lake.Version == nil
+}
+
+func (r *LakeSealedSecretReconciler) lakeSourceRefresh() time.Duration {
+	if r.LakeSourceRefresh > 0 {
+		return r.LakeSourceRefresh
+	}
+	return lakeSourceRefreshDefault
 }
 
 func (r *LakeSealedSecretReconciler) ensureLakeOwner(
@@ -178,9 +205,9 @@ func (r *LakeSealedSecretReconciler) recordsForDelivery(
 	produced *corev1.Secret,
 	producedExists bool,
 	now time.Time,
-) (map[string]string, *oramav1alpha1.LakeSealedSecretLeaseStatus, *ctrl.Result, error) {
+) (map[string]string, *oramav1alpha1.LakeSealedSecretLeaseStatus, *lakeDelivery, *ctrl.Result, error) {
 	if resource.Spec.Source.Type == "literal" {
-		return resource.Spec.Data, nil, nil, nil
+		return resource.Spec.Data, nil, nil, nil, nil
 	}
 	lease := resource.Status.Lease
 	validSecret := producedExists && r.remoteSecretValid(produced, keySecret, resource)
@@ -189,21 +216,35 @@ func (r *LakeSealedSecretReconciler) recordsForDelivery(
 	if resource.Spec.Source.Type == "dynamic" && lease != nil && !now.Before(lease.RenewAt.Time) {
 		needsMint = true
 	}
+	refreshAt := time.Time{}
+	if lakeSourceRefreshes(resource) {
+		if resource.Status.MintedAt == nil {
+			needsMint = true
+		} else {
+			refreshAt = resource.Status.MintedAt.Add(r.lakeSourceRefresh())
+			if !now.Before(refreshAt) {
+				needsMint = true
+			}
+		}
+	}
 	if !needsMint {
 		result := ctrl.Result{}
 		if resource.Spec.Source.Type == "dynamic" && lease != nil {
 			result.RequeueAfter = lease.RenewAt.Sub(now)
 		}
-		return nil, nil, &result, nil
+		if !refreshAt.IsZero() {
+			result.RequeueAfter = refreshAt.Sub(now)
+		}
+		return nil, nil, nil, &result, nil
 	}
 	minted, err := r.mintSealedSecret(ctx, lake, resource)
 	if err != nil {
 		if _, statusErr := r.fail(ctx, resource, "MintFailed", err.Error()); statusErr != nil {
-			return nil, nil, nil, statusErr
+			return nil, nil, nil, nil, statusErr
 		}
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return minted.Data, minted.Lease, nil, nil
+	return minted.Data, minted.Lease, &lakeDelivery{Version: minted.Version}, nil, nil
 }
 
 func (r *LakeSealedSecretReconciler) reconcileProducedSecret(
@@ -403,8 +444,9 @@ type lakeMintRecipient struct {
 }
 
 type lakeMintResult struct {
-	Data  map[string]string                          `json:"data"`
-	Lease *oramav1alpha1.LakeSealedSecretLeaseStatus `json:"lease,omitempty"`
+	Data    map[string]string                          `json:"data"`
+	Lease   *oramav1alpha1.LakeSealedSecretLeaseStatus `json:"lease,omitempty"`
+	Version int64                                      `json:"version,omitempty"`
 }
 
 type lakeMintResponse struct {
@@ -414,8 +456,9 @@ type lakeMintResponse struct {
 }
 
 type lakeMintValue struct {
-	Data  map[string]string `json:"data"`
-	Lease *lakeMintLease    `json:"lease,omitempty"`
+	Data    map[string]string `json:"data"`
+	Lease   *lakeMintLease    `json:"lease,omitempty"`
+	Version int64             `json:"version,omitempty"`
 }
 
 type lakeMintLease struct {
@@ -462,6 +505,13 @@ func (r *LakeSealedSecretReconciler) mintSealedSecret(
 		return lakeMintResult{}, err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	// Lake delivers only to the operator: its credential is the Lake's admin bearer, which the
+	// operator minted (lake#625). The attestation stays in the body for a lake that verifies it.
+	bearer, err := r.lakeAdminToken(ctx, lake)
+	if err != nil {
+		return lakeMintResult{}, err
+	}
+	request.Header.Set("Authorization", "Bearer "+bearer)
 	response, err := r.httpClient().Do(request)
 	if err != nil {
 		return lakeMintResult{}, fmt.Errorf("call lake mint_sealed_secret: %w", err)
@@ -480,7 +530,7 @@ func (r *LakeSealedSecretReconciler) mintSealedSecret(
 		}
 		return lakeMintResult{}, fmt.Errorf("lake %s: %s", decoded.Error.Code, decoded.Error.Message)
 	}
-	result := lakeMintResult{Data: decoded.Value.Data}
+	result := lakeMintResult{Data: decoded.Value.Data, Version: decoded.Value.Version}
 	if len(result.Data) == 0 {
 		return lakeMintResult{}, errors.New("lake mint_sealed_secret returned no data")
 	}
@@ -573,6 +623,24 @@ func (r *LakeSealedSecretReconciler) serviceAccountToken() (string, error) {
 	return token, nil
 }
 
+// lakeAdminToken reads the Lake's admin bearer from the Secret the operator minted for it.
+func (r *LakeSealedSecretReconciler) lakeAdminToken(ctx context.Context, lake *oramav1alpha1.Lake) (string, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	secret := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: lakeWorkloadNamespace(lake), Name: lakeAdminSecret(lake.Name)}
+	if err := reader.Get(ctx, key, secret); err != nil {
+		return "", fmt.Errorf("read the Lake's admin Secret %s: %w", key, err)
+	}
+	token := strings.TrimSpace(string(secret.Data["token"]))
+	if token == "" {
+		return "", fmt.Errorf("the Lake's admin Secret %s has no token", key)
+	}
+	return token, nil
+}
+
 func (r *LakeSealedSecretReconciler) lakeBaseURL(lake *oramav1alpha1.Lake) string {
 	if r.LakeURL != "" {
 		return strings.TrimRight(r.LakeURL, "/")
@@ -603,6 +671,7 @@ func (r *LakeSealedSecretReconciler) ready(
 	resource *oramav1alpha1.LakeSealedSecret,
 	kid string,
 	lease *oramav1alpha1.LakeSealedSecretLeaseStatus,
+	delivered *lakeDelivery,
 	secretChanged bool,
 	now time.Time,
 ) error {
@@ -610,6 +679,11 @@ func (r *LakeSealedSecretReconciler) ready(
 	desired.Phase = "Ready"
 	desired.KID = kid
 	desired.Lease = lease
+	if delivered != nil && resource.Spec.Source.Type == "lake" {
+		mintedAt := metav1.NewTime(now)
+		desired.MintedAt = &mintedAt
+		desired.Version = delivered.Version
+	}
 	desired.ObservedGeneration = resource.Generation
 	if secretChanged || desired.UnsealedAt == nil {
 		unsealedAt := metav1.NewTime(now)
