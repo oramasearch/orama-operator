@@ -61,6 +61,19 @@ func (f *fakeServiceStore) ListWorkloadObjects(_ context.Context, ids []string, 
 	return out, nil
 }
 
+// ListUnmeteredJobs mirrors listUnmeteredJobsSQL: the finished runs with no row.
+func (f *fakeServiceStore) ListUnmeteredJobs(context.Context) ([]WorkloadObject, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []WorkloadObject
+	for _, object := range f.finished {
+		if _, found := f.resources[workloadKey{object.Kind, object.ID}]; !found {
+			out = append(out, object)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeServiceStore) UpsertWorkloadResources(_ context.Context, row WorkloadResources) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -545,6 +558,114 @@ func TestWorkloadResourcesFromAFinishedJobTemplate(t *testing.T) {
 	want := WorkloadResources{Kind: WorkloadKindAgentLaunch, ID: launchID, CPUMillis: 2100, MemoryBytes: 256 << 20}
 	if got := h.row(WorkloadKindAgentLaunch, launchID); got != want {
 		t.Errorf("job template resources = %+v, want %+v", got, want)
+	}
+}
+
+// lake#658: a job's row is written from its Job as soon as the Job exists, before any pod of it
+// is scheduled, so a run that finishes between two passes is still priced.
+func TestWorkloadResourcesFromAJobAsSoonAsItExists(t *testing.T) {
+	h, lake := wrHarness(t)
+	launchID := "aaaaaaaa-0000-4000-8000-0000000000fe"
+	h.store.mu.Lock()
+	h.store.objects = append(h.store.objects, WorkloadObject{Kind: WorkloadKindAgentLaunch, ID: launchID,
+		Namespace: wrWorkspaceNS, Desired: serviceDesiredPresent, Subkind: agentLaunchModeJob, Slug: "al-0000000000fe"})
+	h.store.mu.Unlock()
+	h.create(&batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: agentLaunchName(lake.Name, "al-0000000000fe"), Namespace: wrWorkspaceNS,
+			Labels: map[string]string{agentLaunchIDLabel: launchID}, OwnerReferences: lakeOwnerRef(lake)},
+		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: agentJobPod(lake, nil)}},
+	})
+	h.resourcesPass()
+	want := WorkloadResources{Kind: WorkloadKindAgentLaunch, ID: launchID, CPUMillis: 100, MemoryBytes: 256 << 20}
+	if got := h.row(WorkloadKindAgentLaunch, launchID); got != want {
+		t.Errorf("a new Job's row = %+v, want %+v (its template, no pods yet)", got, want)
+	}
+}
+
+// lake#658: an agent cron run is a workload: its pods (labelled with the schedule and, by
+// Kubernetes, their Job's uid) are its row while they run, and the row keeps their values after.
+func TestWorkloadResourcesReportsCronRuns(t *testing.T) {
+	h, lake := wrHarness(t)
+	runID := "cccccccc-0000-4000-8000-000000000001"
+	scheduleID := "dddddddd-0000-4000-8000-000000000001"
+	h.store.mu.Lock()
+	h.store.objects = append(h.store.objects, WorkloadObject{Kind: WorkloadKindAgentCronRun, ID: runID,
+		Namespace: wrWorkspaceNS, Desired: serviceDesiredPresent, Subkind: agentLaunchModeJob, Slug: "as-000000000001"})
+	h.store.mu.Unlock()
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "lake-as-000000000001-29000000", Namespace: wrWorkspaceNS,
+			UID: "cccccccc-0000-4000-8000-000000000001", Labels: map[string]string{agentScheduleIDLabel: scheduleID}},
+		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: agentJobPod(lake, nil)}},
+	}
+	h.create(job)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "nightly-run-0", Namespace: wrWorkspaceNS, Labels: map[string]string{
+			agentScheduleIDLabel: scheduleID, jobControllerUIDLabel: runID}},
+		Spec: corev1.PodSpec{NodeName: "node-a", Containers: []corev1.Container{
+			ctr("agent", rl("cpu", "300m", "memory", "512Mi"), nil)}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	h.create(pod)
+	// A pod of a schedule in another workspace's namespace counts for nothing.
+	h.create(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "foreign-run-0", Namespace: "elsewhere", Labels: map[string]string{
+			agentScheduleIDLabel: scheduleID, jobControllerUIDLabel: runID}},
+		Spec:   corev1.PodSpec{NodeName: "node-a", Containers: []corev1.Container{ctr("agent", rl("cpu", "4"), nil)}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	})
+	h.resourcesPass()
+	running := WorkloadResources{Kind: WorkloadKindAgentCronRun, ID: runID, Pods: 1, CPUMillis: 300, MemoryBytes: 512 << 20}
+	if got := h.row(WorkloadKindAgentCronRun, runID); got != running {
+		t.Errorf("running cron run = %+v, want %+v", got, running)
+	}
+	if err := h.client.Delete(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	h.resourcesPass()
+	running.Pods = 0
+	if got := h.row(WorkloadKindAgentCronRun, runID); got != running {
+		t.Errorf("finished cron run = %+v, want %+v (what it ran with)", got, running)
+	}
+}
+
+// lake#658: a finished build, job launch or cron run whose pods and Job are gone without a row
+// (they ran before the operator reported resources) is backfilled from the pod spec the operator
+// schedules such runs with, once; a steady pass then writes nothing and keeps the rows.
+func TestWorkloadResourcesBackfillsFinishedRunsFromTheScheduledPodSpec(t *testing.T) {
+	h, lake := wrHarness(t)
+	buildID := "bbbbbbbb-0000-4000-8000-0000000000a1"
+	launchID := "aaaaaaaa-0000-4000-8000-0000000000a2"
+	runID := "cccccccc-0000-4000-8000-0000000000a3"
+	finished := []WorkloadObject{
+		{Kind: WorkloadKindBuild, ID: buildID, Desired: "queued"},
+		{Kind: WorkloadKindAgentLaunch, ID: launchID, Namespace: wrWorkspaceNS, Desired: serviceDesiredPresent, Subkind: agentLaunchModeJob, Slug: "al-0000000000a2"},
+		{Kind: WorkloadKindAgentCronRun, ID: runID, Namespace: wrWorkspaceNS, Desired: serviceDesiredPresent, Subkind: agentLaunchModeJob, Slug: "as-0000000000a3"},
+	}
+	h.store.mu.Lock()
+	h.store.objects = append(h.store.objects, finished...)
+	h.store.finished = finished
+	h.store.mu.Unlock()
+	h.resourcesPass()
+
+	build := buildResources(lake)
+	wantBuild := WorkloadResources{Kind: WorkloadKindBuild, ID: buildID,
+		CPUMillis: build.Requests.Cpu().MilliValue(), MemoryBytes: build.Requests.Memory().Value()}
+	if got := h.row(WorkloadKindBuild, buildID); got != wantBuild {
+		t.Errorf("backfilled build = %+v, want %+v", got, wantBuild)
+	}
+	for _, key := range []workloadKey{{WorkloadKindAgentLaunch, launchID}, {WorkloadKindAgentCronRun, runID}} {
+		want := WorkloadResources{Kind: key.kind, ID: key.id, CPUMillis: 100, MemoryBytes: 256 << 20}
+		if got := h.row(key.kind, key.id); got != want {
+			t.Errorf("backfilled %s = %+v, want %+v", key.kind, got, want)
+		}
+	}
+	upserts := len(h.store.resourceUpserts)
+	h.resourcesPass()
+	if len(h.store.resourceUpserts) != upserts {
+		t.Errorf("a steady pass wrote %d rows", len(h.store.resourceUpserts)-upserts)
+	}
+	for _, key := range []workloadKey{{WorkloadKindBuild, buildID}, {WorkloadKindAgentLaunch, launchID}, {WorkloadKindAgentCronRun, runID}} {
+		h.row(key.kind, key.id) // still there
 	}
 }
 

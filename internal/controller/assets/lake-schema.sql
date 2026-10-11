@@ -3962,3 +3962,21 @@ CREATE TABLE IF NOT EXISTS organization_deletion_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0076_organization_deletion')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0077_metered_jobs (lake#658, docs/api/metering.md#resources): every kind of usage is metered.
+-- An agent cron schedule's runs (agent_cron_runs) run pods like a job-mode launch, so the Orama
+-- operator reports each run's resources as `agent_cron_run` (object_id the run's id) and keeps
+-- them after its pods finish; lake charges each finished build, job launch and cron run once, in
+-- the run's workspace Zetta. Numbers only. Idempotent; drops nothing.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE workload_resources DROP CONSTRAINT IF EXISTS workload_resources_object_kind_check;
+ALTER TABLE workload_resources ADD CONSTRAINT workload_resources_object_kind_check
+    CHECK (object_kind IN ('workspace', 'service', 'store', 'app', 'build', 'agent_launch',
+                           'agent_cron_run'));
+
+CREATE TABLE IF NOT EXISTS metered_jobs_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0077_metered_jobs')
+    ON CONFLICT DO NOTHING;
