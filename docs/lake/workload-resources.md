@@ -1,9 +1,11 @@
 # Workload resources
 
 lake meters compute by the resources each workload is **scheduled with** and prices it as CPU, RAM,
-GPU and VRAM minutes ([lake#643](https://github.com/oramasearch/lake/issues/643)). The operator is
-the only writer of the numbers: one row per workload of a Lake in that Lake's control Postgres,
-table `workload_resources` (lake migration `0075_workload_resources`). lake's owner loop reads the
+GPU and VRAM minutes ([lake#643](https://github.com/oramasearch/lake/issues/643)), and charges every
+finished build, agent job and agent cron run once
+([lake#658](https://github.com/oramasearch/lake/issues/658)). The operator is the only writer of
+the numbers: one row per workload of a Lake in that Lake's control Postgres, table
+`workload_resources` (lake migrations `0075_workload_resources` and `0076_metered_jobs`). lake's owner loop reads the
 rows and records the resource-seconds in each workspace's Zetta. The rows hold numbers only, never
 workspace content.
 
@@ -32,12 +34,12 @@ Code: `internal/controller/lake_workload_resources.go` (the pass and the arithme
 | `app` | `apps.id` | The `LakeApp` Deployment's pods, by `orama.cloud/lake-app-id` (the LakeApp's identity hash), mapped to the row through the LakeApp's `spec.sync.id`. |
 | `build` | `builds.id` | The build Job's pods, `orama.cloud/build-id` and `orama.cloud/build-lake=<lake>`, in the build space's namespace. |
 | `agent_launch` | `agent_launches.id` | The agent-runtime Job (mode `job`) or Deployment (mode `service`) pods, `orama.cloud/agent-launch-id`. |
+| `agent_cron_run` | `agent_cron_runs.id` (the Job's uid) | One Job an agent cron schedule's CronJob started (lake#658): pods with `orama.cloud/agent-schedule-id` and the Job uid Kubernetes puts on them (`batch.kubernetes.io/controller-uid`, or the older `controller-uid`), in the schedule's workspace namespace. |
 | `store` | `stores.id` | Never written: a store is a volume or a bucket and runs no pods. |
 
 A pod counts only in its own object's namespace (a build in its build space), so a label copied onto
 a pod in another workspace counts for nothing. Pods that match no row are ignored: the Lake's own
-pods, the Agent Library's agents, agent cron-schedule runs (`agent_cron_schedules` has no
-`object_kind`), and anything else in a workspace namespace.
+pods, the Agent Library's agents, and anything else in a workspace namespace.
 
 ## The numbers
 
@@ -69,16 +71,25 @@ otherwise); else 0.
 - **Long-running objects** (workspaces, services, apps, service-mode agent launches) have a row as
   long as lake wants them, with `pods` 0 and zeros when nothing is scheduled (a stopped workspace or
   app, a service still pending).
-- **A build or a job-mode agent launch** gets its row as soon as a pod of it is scheduled. When its
-  pods finish, the row keeps the last values it ran with and `pods` becomes 0, so lake can price
-  duration times resources. A run whose pods were gone before any pass saw them is recorded from its
-  finished Job's pod template, with `pods` 0: each container's request, its limit when it has none,
-  and the namespace's LimitRange default request (then default limit) when it has neither.
+- **A build, a job-mode agent launch or an agent cron run** gets its row **as soon as its Job
+  exists** (lake#658), from the Job's pod template with `pods` 0: each container's request, its
+  limit when it has none, and the namespace's LimitRange default request (then default limit) when
+  it has neither. So a run that starts and finishes between two passes is still priced. Once a pod
+  of it is scheduled, the row is that pod's numbers; when its pods finish, the row keeps the last
+  values it ran with and `pods` becomes 0, so lake can price duration times resources.
+- **Backfill** (lake#658). A finished run with no row and no Job left (it ran before the operator
+  reported resources, or its Job's one-hour TTL passed before a pass saw it) is listed by
+  `listUnmeteredJobsSQL`: builds and job launches that `Succeeded` or `Failed` (a `Cancelled` build
+  may never have run) and cron runs that `Succeeded` or `Failed`. Each gets a row from the pod spec
+  the operator schedules such runs with today (`scheduledJobResources`: `buildPod`'s
+  `buildResources`, i.e. `spec.builds.resources` or 500m and 1 GiB; `agentJobPod`'s 100m and
+  256 MiB), with `pods` 0. Their requests are explicit, so no LimitRange default applies. Lake then
+  charges each once, for how long it ran.
 - **Deletion**: a row is deleted once lake no longer has its object, or once the object is desired
   absent or deleted (`services.desired='absent'`, `workspaces`/`apps.desired='deleted'`,
-  service-mode `agent_launches.desired='absent'`) and none of its pods is scheduled. A build's and a
-  job launch's row stays until lake deletes the build or launch row, so a cancelled run is still
-  priced.
+  service-mode `agent_launches.desired='absent'`) and none of its pods is scheduled. A build's, a
+  job launch's and a cron run's row stays until lake deletes the build, launch or run row, so a
+  cancelled run is still priced.
 
 ## When it runs
 
@@ -100,7 +111,11 @@ ClusterRole already lists them).
   the arithmetic (requests, limit fallback, LimitRange defaults, init containers, sidecars, overhead,
   GPUs), GPU class normalization and the VRAM table, mapping pods of every kind to their objects on a
   fake API server, keeping a finished build's and job's values, the Job-template fallback, deletion,
-  and a steady pass writing nothing.
+  and a steady pass writing nothing; and (lake#658) a Job's row before any pod of it is scheduled
+  (`TestWorkloadResourcesFromAJobAsSoonAsItExists`), a cron run's pods and kept values, a foreign
+  namespace's ignored (`TestWorkloadResourcesReportsCronRuns`), and finished runs backfilled from
+  the scheduled pod spec once (`TestWorkloadResourcesBackfillsFinishedRunsFromTheScheduledPodSpec`).
 - `LAKE_SERVICES_TEST_POSTGRES=1 go test ./internal/controller/ -run TestServicesPgxStoreAgainstPostgres`:
   the SQL against the vendored schema on a real Postgres (listing, history by id, upsert, delete,
-  the `gpu_class` check, the missing-table error).
+  the `gpu_class` check, the missing-table error; lake#658: a cron run by id, the unmetered finished
+  runs and an `agent_cron_run` row that `0076_metered_jobs` accepts).

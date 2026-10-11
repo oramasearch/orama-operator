@@ -117,6 +117,53 @@ func checkWorkloadResourcesPgx(t *testing.T, ctx context.Context, tx pgx.Tx, sto
 		t.Fatalf("rows after delete = %+v, %v", rows, err)
 	}
 
+	// Finished runs without a row are the backfill (lake#658): a build and a job launch that
+	// finished, and a cron run; once a row is written, a run is no longer listed.
+	const (
+		scheduleID = "e0000000-0000-4000-8000-000000000003"
+		cronRunID  = "e0000000-0000-4000-8000-000000000004"
+	)
+	if _, err := tx.Exec(ctx, `UPDATE builds SET phase = 'Succeeded' WHERE id = $1`, testBuildID); err != nil {
+		t.Fatalf("finish build: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_launch_status (launch_id, phase) VALUES ($1, 'Failed')
+		ON CONFLICT (launch_id) DO UPDATE SET phase = 'Failed'`, jobAgent); err != nil {
+		t.Fatalf("finish job launch: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_cron_schedules (id, customer_id, workspace_id, agent_id, cron, scopes, slug)
+		VALUES ($1, $2, $3, 'agent', '0 3 * * *', ARRAY['read'], 'as-e00000000003')`, scheduleID, customerID, testWorkspaceID); err != nil {
+		t.Fatalf("seed schedule: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_cron_runs (id, schedule_id, job_name, phase) VALUES ($1, $2, 'nightly-1', 'Succeeded')`,
+		cronRunID, scheduleID); err != nil {
+		t.Fatalf("seed cron run: %v", err)
+	}
+	unmetered, err := store.ListUnmeteredJobs(ctx)
+	if err != nil {
+		t.Fatalf("unmetered jobs: %v", err)
+	}
+	var kinds []string
+	for _, object := range unmetered {
+		kinds = append(kinds, object.Kind+"/"+object.ID)
+		if object.Kind == WorkloadKindAgentCronRun && (object.Namespace != testWorkspaceName || object.Slug != "as-e00000000003") {
+			t.Errorf("cron run = %+v", object)
+		}
+	}
+	sort.Strings(kinds)
+	wantKinds := []string{"agent_cron_run/" + cronRunID, "agent_launch/" + jobAgent, "build/" + testBuildID}
+	if len(kinds) != len(wantKinds) || kinds[0] != wantKinds[0] || kinds[1] != wantKinds[1] || kinds[2] != wantKinds[2] {
+		t.Fatalf("unmetered = %v, want %v", kinds, wantKinds)
+	}
+	if err := store.UpsertWorkloadResources(ctx, WorkloadResources{Kind: WorkloadKindAgentCronRun, ID: cronRunID, CPUMillis: 100, MemoryBytes: 256 << 20}); err != nil {
+		t.Fatalf("cron run row (0076_metered_jobs): %v", err)
+	}
+	if unmetered, err = store.ListUnmeteredJobs(ctx); err != nil || len(unmetered) != 2 {
+		t.Fatalf("unmetered after a row = %+v, %v", unmetered, err)
+	}
+	if byID, err := store.ListWorkloadObjects(ctx, []string{cronRunID}, false); err != nil || len(byID) != 1 || byID[0].Kind != WorkloadKindAgentCronRun {
+		t.Fatalf("cron run by id = %+v, %v", byID, err)
+	}
+
 	// The table's checks hold the contract: a class the column refuses is refused.
 	bad, err := tx.Begin(ctx)
 	if err != nil {

@@ -151,6 +151,9 @@ type LakeServiceStore interface {
 	// 0075_workload_resources.
 	ListWorkloadResources(ctx context.Context) ([]WorkloadResources, error)
 	ListWorkloadObjects(ctx context.Context, ids []string, live bool) ([]WorkloadObject, error)
+	// ListUnmeteredJobs is every finished build, job-mode agent launch and agent cron run that
+	// ran and has no workload_resources row (lake#658), for the backfill.
+	ListUnmeteredJobs(ctx context.Context) ([]WorkloadObject, error)
 	UpsertWorkloadResources(ctx context.Context, row WorkloadResources) error
 	DeleteWorkloadResources(ctx context.Context, kind, id string) error
 	Close(ctx context.Context) error
