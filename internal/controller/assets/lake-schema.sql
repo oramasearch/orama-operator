@@ -3962,3 +3962,94 @@ CREATE TABLE IF NOT EXISTS organization_deletion_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0076_organization_deletion')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0078_methodology_runs (lake#655, docs/api/methodologies.md#runs): a workspace's own
+-- methodology is Python code in one of its repositories, and it runs as untrusted code. Lake
+-- writes one methodology_runs row per run and NOTIFYs lake_services; the Orama operator waits for
+-- the methodology's image build, then runs three pods: `stage` (the pristine runtime image, with
+-- the run's credential, egress to Lake only) writes the data bundle to the run's volume, `run`
+-- (the built image, no credential, no service account token, no network unless `network`) runs
+-- the code, and `collect` (the runtime image, with the credential) posts the result. The
+-- operator writes methodology_run_status, including the SHA-256 of the credential it generated
+-- for the run (`lmr.<run id>.<secret>`); the credential itself is never stored. Ids, images,
+-- resources and phases only: the parameters, data, metrics and artifact live in the workspace
+-- Zetta. `workload_resources` gains `methodology_run` (the run pod's resources, kept after it
+-- finishes, as a build's are); `agent_cron_run` is listed too so the order of this migration and
+-- 0076_metered_jobs does not matter. Idempotent; drops nothing.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS methodology_runs (
+    id                 uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    workspace_id       uuid        NOT NULL REFERENCES workspaces(id),
+    -- The workspace methodology's id in the workspace Zetta's registry (`W-<8 hex>`).
+    methodology_id     text        NOT NULL,
+    mode               text        NOT NULL,
+    -- The methodology's image build; the operator starts the run once it has succeeded.
+    build_id           uuid        REFERENCES builds(id) ON DELETE SET NULL,
+    -- The built image's pull reference with its digest; empty until known.
+    image              text        NOT NULL DEFAULT '',
+    -- The pristine methodology-runtime image the stage and collect pods run.
+    runtime_image      text        NOT NULL,
+    cpu_millis         integer     NOT NULL,
+    memory_bytes       bigint      NOT NULL,
+    gpus               integer     NOT NULL DEFAULT 0,
+    gpu_class          text        NOT NULL DEFAULT '',
+    timeout_seconds    integer     NOT NULL,
+    -- Whether the code may reach the internet (never cluster, private or metadata addresses).
+    network            boolean     NOT NULL DEFAULT false,
+    slug               text        NOT NULL UNIQUE,
+    desired            text        NOT NULL DEFAULT 'present',
+    generation         bigint      NOT NULL DEFAULT 1,
+    stop_reason        text        NOT NULL DEFAULT '',
+    created_by_user_id uuid        REFERENCES users(id) ON DELETE SET NULL,
+    created_by_taap_id text        NOT NULL DEFAULT '',
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT methodology_run_mode_check CHECK (mode IN ('validate', 'train')),
+    CONSTRAINT methodology_run_desired_check CHECK (desired IN ('present', 'absent')),
+    CONSTRAINT methodology_run_slug_format CHECK (slug ~ '^mr-[0-9a-f]{12}$'),
+    CONSTRAINT methodology_run_methodology_format CHECK (methodology_id ~ '^W-[0-9a-f]{8}$'),
+    CONSTRAINT methodology_run_resources_check CHECK (
+        cpu_millis > 0 AND memory_bytes > 0 AND gpus >= 0 AND timeout_seconds > 0
+    ),
+    CONSTRAINT methodology_run_gpu_class_check CHECK (gpu_class ~ '^([a-z0-9][a-z0-9-]{0,31})?$')
+);
+CREATE INDEX IF NOT EXISTS methodology_runs_workspace_idx
+    ON methodology_runs (workspace_id, methodology_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS methodology_runs_present_idx
+    ON methodology_runs (desired) WHERE desired = 'present';
+DROP TRIGGER IF EXISTS methodology_run_workspace_routing ON methodology_runs;
+CREATE TRIGGER methodology_run_workspace_routing BEFORE INSERT OR UPDATE ON methodology_runs
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+
+-- Written only by the operator: one row per run, replaced on every observed change.
+CREATE TABLE IF NOT EXISTS methodology_run_status (
+    run_id              uuid        PRIMARY KEY REFERENCES methodology_runs(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',
+    message             text        NOT NULL DEFAULT '',
+    exit_code           integer,
+    credential_sha256   text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    -- When the run pod (the untrusted code) started and finished; what lake charges for.
+    started_at          timestamptz,
+    finished_at         timestamptz,
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT methodology_run_phase_check CHECK (
+        phase IN ('', 'Building', 'Staging', 'Running', 'Collecting', 'Succeeded', 'Failed',
+                  'Stopped')
+    )
+);
+CREATE INDEX IF NOT EXISTS methodology_run_status_credential_idx
+    ON methodology_run_status (credential_sha256) WHERE credential_sha256 <> '';
+
+ALTER TABLE workload_resources DROP CONSTRAINT IF EXISTS workload_resources_object_kind_check;
+ALTER TABLE workload_resources ADD CONSTRAINT workload_resources_object_kind_check
+    CHECK (object_kind IN ('workspace', 'service', 'store', 'app', 'build', 'agent_launch',
+                           'agent_cron_run', 'methodology_run'));
+
+CREATE TABLE IF NOT EXISTS methodology_runs_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0078_methodology_runs')
+    ON CONFLICT DO NOTHING;

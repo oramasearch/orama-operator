@@ -58,6 +58,12 @@ func (f *fakeServiceStore) ListWorkloadObjects(_ context.Context, ids []string, 
 			out = append(out, object)
 		}
 	}
+	// Methodology runs come back by id only, as listMethodologyRunObjectsSQL returns them.
+	for _, run := range f.methodologyRuns {
+		if wanted[run.ID] {
+			out = append(out, WorkloadObject{Kind: WorkloadKindMethodologyRun, ID: run.ID, Desired: run.Desired, Subkind: run.Mode, Slug: run.Slug})
+		}
+	}
 	return out, nil
 }
 

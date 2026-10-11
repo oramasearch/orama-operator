@@ -94,6 +94,13 @@ type LakeSpec struct {
 	// +optional
 	Builds LakeBuildsSpec `json:"builds,omitempty"`
 
+	// Methodologies runs a workspace's own methodologies, Python code in a workspace repository,
+	// as untrusted code (lake#655): each row of lake's methodology_runs table becomes a stage, a
+	// sandbox and a collect pod in the Lake's methodology-runs namespace. Needs Builds, which
+	// builds each methodology's image. See docs/lake/methodology-runs.md.
+	// +optional
+	Methodologies LakeMethodologiesSpec `json:"methodologies,omitempty"`
+
 	// Sealing configures the X25519 cluster delivery key. The operator mints generation 1 when
 	// omitted. Increasing Generation rotates the public key while retaining private keys still
 	// needed by LakeSealedSecret resources.
@@ -247,6 +254,24 @@ type LakeBuildsSpec struct {
 	// +kubebuilder:default=true
 	// +optional
 	CacheEnabled *bool `json:"cacheEnabled,omitempty"`
+}
+
+// LakeMethodologiesSpec configures runs of workspace methodologies.
+type LakeMethodologiesSpec struct {
+	// RuntimeImage is the private oramasearch/methodology-runtime image. Lake builds each
+	// methodology's image FROM it (LAKE_METHODOLOGY_RUNTIME_IMAGE), and the stage and collect
+	// pods run it unchanged. Empty turns methodology runs off: a run then fails with that reason.
+	// +optional
+	RuntimeImage string `json:"runtimeImage,omitempty"`
+
+	// WorkVolumeSize is the size of each run's work volume, which carries the data in and the
+	// result and artifact out. Default 10Gi.
+	// +optional
+	WorkVolumeSize *resource.Quantity `json:"workVolumeSize,omitempty"`
+
+	// StorageClassName is the work volume's storage class; empty uses the cluster default.
+	// +optional
+	StorageClassName string `json:"storageClassName,omitempty"`
 }
 
 // LakeBuildConcurrencySpec sets independent build concurrency limits.

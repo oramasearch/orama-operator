@@ -32,6 +32,7 @@ Code: `internal/controller/lake_workload_resources.go` (the pass and the arithme
 | `app` | `apps.id` | The `LakeApp` Deployment's pods, by `orama.cloud/lake-app-id` (the LakeApp's identity hash), mapped to the row through the LakeApp's `spec.sync.id`. |
 | `build` | `builds.id` | The build Job's pods, `orama.cloud/build-id` and `orama.cloud/build-lake=<lake>`, in the build space's namespace. |
 | `agent_launch` | `agent_launches.id` | The agent-runtime Job (mode `job`) or Deployment (mode `service`) pods, `orama.cloud/agent-launch-id`. |
+| `methodology_run` | `methodology_runs.id` | The sandbox pod of a workspace methodology's run (`orama.cloud/methodology-run-id`, `orama.cloud/methodology-run-lake=<lake>`, role `sandbox`) in `lake-<lake>-methodology-runs`; never its stage or collect pod. Kept with `pods` 0 after it finishes; the run's reconciler also writes it the moment the code finishes, so a run shorter than a pass is still recorded ([methodology-runs.md](methodology-runs.md), lake#655). |
 | `store` | `stores.id` | Never written: a store is a volume or a bucket and runs no pods. |
 
 A pod counts only in its own object's namespace (a build in its build space), so a label copied onto

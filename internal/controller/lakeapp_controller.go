@@ -706,6 +706,12 @@ func (r *LakeAppReconciler) mergedLakeAppPullSecret(
 }
 
 func mergeLakeAppDockerConfig(source *corev1.Secret, host string, token []byte) ([]byte, bool) {
+	return mergeRegistryDockerConfig(source, host, "app", token)
+}
+
+// mergeRegistryDockerConfig adds lake's registry host, with a Basic username and token, to the
+// auths of a dockerconfigjson source Secret (which may be nil).
+func mergeRegistryDockerConfig(source *corev1.Secret, host, username string, token []byte) ([]byte, bool) {
 	config := map[string]json.RawMessage{}
 	if source != nil {
 		raw, found := source.Data[corev1.DockerConfigJsonKey]
@@ -721,7 +727,7 @@ func mergeLakeAppDockerConfig(source *corev1.Secret, host string, token []byte) 
 	}
 	if host != "" {
 		credentials, err := json.Marshal(map[string]string{
-			"username": "app",
+			"username": username,
 			"password": string(token),
 		})
 		if err != nil {

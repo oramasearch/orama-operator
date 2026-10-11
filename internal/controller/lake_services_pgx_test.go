@@ -216,6 +216,7 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 		t.Fatalf("stored build status = %s %s %d", phase, digest, size)
 	}
 	checkWorkloadResourcesPgx(t, ctx, tx, store, customerID)
+	checkMethodologyRunsPgx(t, ctx, tx, store, customerID)
 	refused, err := tx.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -2,14 +2,23 @@
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit ef485cd1a146874cd6443d4e88a7906e10d2d210](https://github.com/oramasearch/lake/blob/ef485cd1a146874cd6443d4e88a7906e10d2d210/db/schema.sql)
-(lake `main`, lake#242). Its SHA-256 is
-`d884440dafd60f843658419645cb1898ffc456f878336349558beea2fe95806e`.
+[`oramasearch/lake` commit cb798eb434fedb0b2fbb70cca4725a784db2650b](https://github.com/oramasearch/lake/blob/cb798eb434fedb0b2fbb70cca4725a784db2650b/db/schema.sql)
+(branch `vendor-0076-0078`: lake#645's `0076` and lake#655's `0078`). Its SHA-256 is
+`806ced8e79dc87a43077caf11e099e537bd7237beff6dcd24bf2b62d34f38907`.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
+
+Migration `0078_methodology_runs` (lake#655) adds `methodology_runs` (written by lake),
+`methodology_run_status` (written by the operator: phase, exit code, the SHA-256 of each run's
+credential, the sandbox's start and finish) and the `methodology_run` kind of `workload_resources`,
+with guard `methodology_runs_guard`, now Lake's PostgresSchema guard. It is vendored from lake
+`cb798eb` on branch `vendor-0076-0078`, which carries `0076_organization_deletion` (lake#645) and
+`0078` in one file because neither is on lake `main` yet; re-pin to lake `main` once both land. The
+operator runs methodology runs ([methodology-runs.md](methodology-runs.md)) and, until this schema
+has applied, skips them; the workload pass reads them by id and finds none.
 
 Migration `0030_agent_launches` (lake#231) adds `agent_launches` (written by lake),
 `agent_launch_status` (written by the operator, including the SHA-256 of each launch's credential),

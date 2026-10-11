@@ -72,6 +72,11 @@ type fakeServiceStore struct {
 	objects         []WorkloadObject
 	resourceUpserts []WorkloadResources
 	resourceDeletes []workloadKey
+	// runs and runStatusUpserts are the methodology runs half (lake_methodology_runs_test.go).
+	// runsMissing makes ListMethodologyRuns fail as a schema before 0078_methodology_runs does.
+	methodologyRuns  []LakeMethodologyRun
+	runStatusUpserts []LakeMethodologyRunStatus
+	runsMissing      bool
 }
 
 func (f *fakeServiceStore) ListBuilds(context.Context) ([]LakeBuild, error) {
