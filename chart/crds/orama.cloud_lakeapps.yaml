@@ -264,13 +264,40 @@ spec:
                   description: LakeAppSecretEnvironmentVariable exposes one Secret
                     key as an application environment variable.
                   properties:
+                    lakeSecret:
+                      description: |-
+                        LakeSecret, when set, is the source of truth: one field of one secret in a lake secret mount
+                        (lake#625). The controller owns a LakeSealedSecret with a lake source in the Lake namespace
+                        that produces SecretKeyRef.Name; lake answers it sealed to the cluster's key, and a new
+                        version reaches the app at the next delivery.
+                      properties:
+                        field:
+                          description: Field is the secret's field, delivered as the
+                            produced Secret's key of the same name.
+                          maxLength: 253
+                          pattern: ^[-._a-zA-Z0-9]+$
+                          type: string
+                        mount:
+                          description: Mount is the lake secret mount id.
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name is the secret's name in the mount.
+                          minLength: 1
+                          type: string
+                      required:
+                      - field
+                      - mount
+                      - name
+                      type: object
                     name:
                       description: Name is the application environment variable name.
                       pattern: ^[-._a-zA-Z][-._a-zA-Z0-9]*$
                       type: string
                     secretKeyRef:
-                      description: SecretKeyRef selects the source Secret and key
-                        in the Lake namespace.
+                      description: |-
+                        SecretKeyRef selects the source Secret and key in the Lake namespace. With LakeSecret set it
+                        names the Secret the controller's LakeSealedSecret produces there.
                       properties:
                         key:
                           description: Key is the source Secret data key.

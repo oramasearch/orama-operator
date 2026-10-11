@@ -138,8 +138,32 @@ type LakeAppSecretEnvironmentVariable struct {
 	// +kubebuilder:validation:Pattern=`^[-._a-zA-Z][-._a-zA-Z0-9]*$`
 	Name string `json:"name"`
 
-	// SecretKeyRef selects the source Secret and key in the Lake namespace.
+	// SecretKeyRef selects the source Secret and key in the Lake namespace. With LakeSecret set it
+	// names the Secret the controller's LakeSealedSecret produces there.
 	SecretKeyRef LakeAppSecretKeyReference `json:"secretKeyRef"`
+
+	// LakeSecret, when set, is the source of truth: one field of one secret in a lake secret mount
+	// (lake#625). The controller owns a LakeSealedSecret with a lake source in the Lake namespace
+	// that produces SecretKeyRef.Name; lake answers it sealed to the cluster's key, and a new
+	// version reaches the app at the next delivery.
+	// +optional
+	LakeSecret *LakeAppLakeSecretReference `json:"lakeSecret,omitempty"`
+}
+
+// LakeAppLakeSecretReference names one field of one secret in a lake secret mount.
+type LakeAppLakeSecretReference struct {
+	// Mount is the lake secret mount id.
+	// +kubebuilder:validation:MinLength=1
+	Mount string `json:"mount"`
+
+	// Name is the secret's name in the mount.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Field is the secret's field, delivered as the produced Secret's key of the same name.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[-._a-zA-Z0-9]+$`
+	Field string `json:"field"`
 }
 
 // LakeAppSpec defines one isolated application belonging to a Lake.

@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -100,7 +101,7 @@ func TestLakeSealedSecretLiteralDelivery(t *testing.T) {
 	resource.Spec.Data = map[string]string{"password": record}
 	resource.Spec.Source = oramav1alpha1.LakeSealedSecretSource{Type: "literal"}
 	client := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(lake, resource, keySecret).
+		WithObjects(lake, resource, keySecret, lakeAdminTokenSecret()).
 		WithStatusSubresource(lake, resource).
 		Build()
 	reconcileSealedSecret(t, client, scheme, resource.Name, nil)
@@ -157,7 +158,7 @@ func TestLakeSealedSecretRefusesUnknownKID(t *testing.T) {
 	resource.Spec.Data = map[string]string{"password": record}
 	resource.Spec.Source = oramav1alpha1.LakeSealedSecretSource{Type: "literal"}
 	client := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(lake, resource, keySecret).
+		WithObjects(lake, resource, keySecret, lakeAdminTokenSecret()).
 		WithStatusSubresource(lake, resource).
 		Build()
 	reconcileSealedSecret(t, client, scheme, resource.Name, nil)
@@ -271,12 +272,15 @@ func TestLakeSourceMintsSealedValue(t *testing.T) {
 		if mint.Attestation.Token != "projected-token" || mint.Source.Lake == nil || mint.Source.Lake.Mount != "production" {
 			t.Errorf("mint request = %+v", mint)
 		}
+		if request.Header.Get("Authorization") != "Bearer lake-admin-token" {
+			t.Errorf("mint was not authenticated with the Lake's admin bearer: %q", request.Header.Get("Authorization"))
+		}
 		record := referenceSealForMintRequest(t, mint, []byte("lake-value"), byte(calls))
 		_ = json.NewEncoder(writer).Encode(lakeMintResponse{OK: true, Value: lakeMintValue{Data: map[string]string{"token": record}}})
 	}))
 	defer server.Close()
 	client := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(lake, resource, keySecret).
+		WithObjects(lake, resource, keySecret, lakeAdminTokenSecret()).
 		WithStatusSubresource(lake, resource).
 		Build()
 	reconciler := &LakeSealedSecretReconciler{
@@ -327,7 +331,7 @@ func TestDynamicSourceRenewsBeforeTTL(t *testing.T) {
 	}))
 	defer server.Close()
 	client := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(lake, resource, keySecret).
+		WithObjects(lake, resource, keySecret, lakeAdminTokenSecret()).
 		WithStatusSubresource(lake, resource).
 		Build()
 	reconciler := &LakeSealedSecretReconciler{
@@ -621,4 +625,109 @@ func conditionReason(conditions []metav1.Condition, typ string) string {
 		}
 	}
 	return ""
+}
+
+func lakeAdminTokenSecret() *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: lakeAdminSecret("prod"), Namespace: "lake"},
+		Data:       map[string][]byte{"token": []byte("lake-admin-token")},
+	}
+}
+
+// An unpinned lake source follows its secret's current version (lake#625): delivered again every
+// refresh interval, with the version in status; a pinned one is not, and without the Lake's admin
+// Secret nothing is asked of lake.
+func TestLakeSourceFollowsTheSecretsCurrentVersion(t *testing.T) {
+	scheme := newSealedSecretScheme(t)
+	lake, resource, keySecret := remoteSealedSecretObjects(t, "lake")
+	current := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	version := int64(1)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		mint := decodeMintRequest(t, request)
+		value := fmt.Sprintf("value-v%d", version)
+		record := referenceSealForMintRequest(t, mint, []byte(value), byte(calls))
+		_ = json.NewEncoder(writer).Encode(lakeMintResponse{OK: true, Value: lakeMintValue{
+			Data: map[string]string{"token": record}, Version: version,
+		}})
+	}))
+	defer server.Close()
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(lake, resource, keySecret, lakeAdminTokenSecret()).
+		WithStatusSubresource(lake, resource).
+		Build()
+	reconciler := &LakeSealedSecretReconciler{
+		Client: kube, Scheme: scheme, LakeURL: server.URL, ServiceAccountToken: "projected-token",
+		LakeSourceRefresh: 5 * time.Minute,
+		Now:               func() time.Time { return current },
+	}
+	result := reconcileSealedSecret(t, kube, scheme, resource.Name, reconciler)
+	if calls != 1 || result.RequeueAfter != 5*time.Minute {
+		t.Fatalf("calls=%d requeue=%s", calls, result.RequeueAfter)
+	}
+	stored := &oramav1alpha1.LakeSealedSecret{}
+	if err := kube.Get(context.Background(), clientKey(resource.Name, resource.Namespace), stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.Version != 1 || stored.Status.MintedAt == nil || !stored.Status.MintedAt.Time.Equal(current) {
+		t.Fatalf("status = %+v", stored.Status)
+	}
+	// Within the interval nothing is asked; the requeue is the time left.
+	current = current.Add(2 * time.Minute)
+	result = reconcileSealedSecret(t, kube, scheme, resource.Name, reconciler)
+	if calls != 1 || result.RequeueAfter != 3*time.Minute {
+		t.Fatalf("early refresh: calls=%d requeue=%s", calls, result.RequeueAfter)
+	}
+	// A new version put in lake reaches the Secret at the next delivery.
+	version = 2
+	current = current.Add(3 * time.Minute)
+	reconcileSealedSecret(t, kube, scheme, resource.Name, reconciler)
+	produced := &corev1.Secret{}
+	if err := kube.Get(context.Background(), clientKey("database", "app"), produced); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || string(produced.Data["token"]) != "value-v2" {
+		t.Fatalf("rotation: calls=%d data=%q", calls, produced.Data["token"])
+	}
+	if err := kube.Get(context.Background(), clientKey(resource.Name, resource.Namespace), stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.Version != 2 {
+		t.Fatalf("status version = %d", stored.Status.Version)
+	}
+
+	// Pinned to a version: no refresh.
+	pinned := int64(2)
+	stored.Spec.Source.Lake.Version = &pinned
+	stored.Generation++
+	if err := kube.Update(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	reconcileSealedSecret(t, kube, scheme, resource.Name, reconciler)
+	pinnedCalls := calls
+	current = current.Add(time.Hour)
+	result = reconcileSealedSecret(t, kube, scheme, resource.Name, reconciler)
+	if calls != pinnedCalls || result.RequeueAfter != 0 {
+		t.Fatalf("pinned source refreshed: calls=%d requeue=%s", calls-pinnedCalls, result.RequeueAfter)
+	}
+}
+
+func TestLakeSourceNeedsTheLakesAdminSecret(t *testing.T) {
+	scheme := newSealedSecretScheme(t)
+	lake, resource, keySecret := remoteSealedSecretObjects(t, "lake")
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer server.Close()
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(lake, resource, keySecret).
+		WithStatusSubresource(lake, resource).
+		Build()
+	reconciler := &LakeSealedSecretReconciler{Client: kube, Scheme: scheme, LakeURL: server.URL, ServiceAccountToken: "projected-token"}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: clientKey(resource.Name, resource.Namespace)}); err == nil {
+		t.Fatal("minted without the Lake's admin Secret")
+	}
+	if calls != 0 {
+		t.Fatalf("lake was called %d times without a credential", calls)
+	}
 }
