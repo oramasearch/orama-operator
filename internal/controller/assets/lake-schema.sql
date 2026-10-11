@@ -3769,3 +3769,96 @@ CREATE TABLE IF NOT EXISTS usage_limits_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0072_usage_limits')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0073_billing (lake#564, decision 56): billing records, in the control plane as multitenancy
+-- (docs/api/billing.md). The price list (plans and a price per usage dimension, keyed on the
+-- dimension names usage_over_time answers), each account's plan over time, and the invoices lake
+-- issues with their line items and payment state. Usage itself stays in each workspace Zetta: a
+-- line item freezes only the quantity billed for one dimension over one period. No workspace
+-- content is kept here. Lake writes these rows only where billing is on (LAKE_BILLING=on).
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS billing_plans (
+    id          text        PRIMARY KEY CHECK (id ~ '^[a-z][a-z0-9-]{0,62}$'),
+    name        text        NOT NULL CHECK (length(name) BETWEEN 1 AND 128),
+    description text        NOT NULL DEFAULT '' CHECK (length(description) <= 1024),
+    currency    text        NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
+    -- The plan's fee for one UTC calendar month, in millionths of the currency's unit.
+    base_micros bigint      NOT NULL DEFAULT 0 CHECK (base_micros >= 0),
+    active      boolean     NOT NULL DEFAULT true,
+    position    integer     NOT NULL DEFAULT 0,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- One price per usage dimension of a plan: `unit_micros` for every `per` units of the dimension's
+-- unit beyond `included` units a month (overage). A dimension without a row is not charged.
+CREATE TABLE IF NOT EXISTS billing_plan_prices (
+    plan_id     text   NOT NULL REFERENCES billing_plans(id) ON DELETE CASCADE,
+    dimension   text   NOT NULL CHECK (dimension ~ '^[a-z][a-z_]{0,63}$'),
+    unit_micros bigint NOT NULL CHECK (unit_micros >= 0),
+    per         bigint NOT NULL DEFAULT 1 CHECK (per > 0),
+    included    bigint NOT NULL DEFAULT 0 CHECK (included >= 0),
+    PRIMARY KEY (plan_id, dimension)
+);
+
+-- An account's plan from the first day of a month: the plan of a month is the row with the latest
+-- `effective_from` on or before its first day. A change chosen mid-month starts the next month.
+CREATE TABLE IF NOT EXISTS billing_subscriptions (
+    customer_id    uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    effective_from date        NOT NULL CHECK (extract(day FROM effective_from) = 1),
+    plan_id        text        NOT NULL REFERENCES billing_plans(id),
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (customer_id, effective_from)
+);
+
+-- An issued invoice: one account, one month, one plan, and its payment state. An invoice is
+-- kept when its account is deleted (customer_id is not a foreign key): it is a financial record.
+CREATE TABLE IF NOT EXISTS billing_invoices (
+    id                 uuid        PRIMARY KEY,
+    number             bigserial   UNIQUE,
+    customer_id        uuid        NOT NULL,
+    period             text        NOT NULL CHECK (period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+    plan_id            text        NOT NULL,
+    plan_name          text        NOT NULL,
+    currency           text        NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
+    total_micros       bigint      NOT NULL CHECK (total_micros >= 0),
+    state              text        NOT NULL DEFAULT 'due' CHECK (state IN ('due', 'paid', 'void')),
+    provider           text        NOT NULL CHECK (provider ~ '^[a-z][a-z0-9_]{0,31}$'),
+    provider_reference text        NOT NULL DEFAULT '' CHECK (length(provider_reference) <= 256),
+    instructions       text        NOT NULL DEFAULT '' CHECK (length(instructions) <= 1024),
+    note               text        NOT NULL DEFAULT '' CHECK (length(note) <= 1024),
+    issued_at          timestamptz NOT NULL DEFAULT now(),
+    paid_at            timestamptz,
+    voided_at          timestamptz
+);
+-- At most one invoice an account and month that is not void.
+CREATE UNIQUE INDEX IF NOT EXISTS billing_invoices_one_per_period
+    ON billing_invoices (customer_id, period) WHERE state <> 'void';
+CREATE INDEX IF NOT EXISTS billing_invoices_by_customer
+    ON billing_invoices (customer_id, period DESC);
+
+-- An invoice's lines: the plan's fee, then one line per priced dimension with the quantity used
+-- in the period (the dimension's unit), what the plan includes, what is billed beyond it, the
+-- price and the amount. Numbers only.
+CREATE TABLE IF NOT EXISTS billing_invoice_lines (
+    invoice_id    uuid    NOT NULL REFERENCES billing_invoices(id) ON DELETE CASCADE,
+    position      integer NOT NULL CHECK (position >= 0),
+    kind          text    NOT NULL CHECK (kind IN ('plan', 'usage')),
+    dimension     text    NOT NULL DEFAULT '' CHECK (dimension ~ '^([a-z][a-z_]{0,63})?$'),
+    description   text    NOT NULL CHECK (length(description) BETWEEN 1 AND 256),
+    unit          text    NOT NULL DEFAULT '' CHECK (length(unit) <= 32),
+    quantity      bigint  NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+    included      bigint  NOT NULL DEFAULT 0 CHECK (included >= 0),
+    billable      bigint  NOT NULL DEFAULT 0 CHECK (billable >= 0),
+    unit_micros   bigint  NOT NULL DEFAULT 0 CHECK (unit_micros >= 0),
+    per           bigint  NOT NULL DEFAULT 1 CHECK (per > 0),
+    amount_micros bigint  NOT NULL CHECK (amount_micros >= 0),
+    PRIMARY KEY (invoice_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS billing_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0073_billing')
+    ON CONFLICT DO NOTHING;
