@@ -30,7 +30,7 @@ import (
 )
 
 // Workload resources (lake#643, lake#658; lake migrations 0075_workload_resources and
-// 0076_metered_jobs; this repo's docs/lake/workload-resources.md). lake prices compute by the
+// 0077_metered_jobs; this repo's docs/lake/workload-resources.md). lake prices compute by the
 // resources each workload is scheduled with, as CPU, RAM, GPU and VRAM. The operator is the only
 // writer of workload_resources: one row per workload of the Lake (a workspace's engine, a managed
 // service, an app, an image build, an agent launch, an agent cron run) holding the totals of its

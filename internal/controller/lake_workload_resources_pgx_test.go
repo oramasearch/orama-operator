@@ -155,7 +155,7 @@ func checkWorkloadResourcesPgx(t *testing.T, ctx context.Context, tx pgx.Tx, sto
 		t.Fatalf("unmetered = %v, want %v", kinds, wantKinds)
 	}
 	if err := store.UpsertWorkloadResources(ctx, WorkloadResources{Kind: WorkloadKindAgentCronRun, ID: cronRunID, CPUMillis: 100, MemoryBytes: 256 << 20}); err != nil {
-		t.Fatalf("cron run row (0076_metered_jobs): %v", err)
+		t.Fatalf("cron run row (0077_metered_jobs): %v", err)
 	}
 	if unmetered, err = store.ListUnmeteredJobs(ctx); err != nil || len(unmetered) != 2 {
 		t.Fatalf("unmetered after a row = %+v, %v", unmetered, err)

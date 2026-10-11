@@ -5,7 +5,7 @@ GPU and VRAM minutes ([lake#643](https://github.com/oramasearch/lake/issues/643)
 finished build, agent job and agent cron run once
 ([lake#658](https://github.com/oramasearch/lake/issues/658)). The operator is the only writer of
 the numbers: one row per workload of a Lake in that Lake's control Postgres, table
-`workload_resources` (lake migrations `0075_workload_resources` and `0076_metered_jobs`). lake's owner loop reads the
+`workload_resources` (lake migrations `0075_workload_resources` and `0077_metered_jobs`). lake's owner loop reads the
 rows and records the resource-seconds in each workspace's Zetta. The rows hold numbers only, never
 workspace content.
 
@@ -118,4 +118,4 @@ ClusterRole already lists them).
 - `LAKE_SERVICES_TEST_POSTGRES=1 go test ./internal/controller/ -run TestServicesPgxStoreAgainstPostgres`:
   the SQL against the vendored schema on a real Postgres (listing, history by id, upsert, delete,
   the `gpu_class` check, the missing-table error; lake#658: a cron run by id, the unmetered finished
-  runs and an `agent_cron_run` row that `0076_metered_jobs` accepts).
+  runs and an `agent_cron_run` row that `0077_metered_jobs` accepts).
