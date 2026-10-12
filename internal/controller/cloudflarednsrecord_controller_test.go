@@ -383,14 +383,14 @@ func TestCloudflareDNSRecordSpecZoneOverridesSecret(t *testing.T) {
 }
 
 func TestCloudflareZoneIDForHost(t *testing.T) {
-	zones := map[string]string{"orama.ing": "A", "orama.com": "B", "prod2.cluster.orama.ing": "C"}
+	zones := map[string]string{"orama.ing": "A", "orama.com": "B", "eu.cluster.orama.ing": "C"}
 	for host, want := range map[string]string{
-		"app.orama.ing":                  "A",
-		"app.orama.com":                  "B",
-		"orama.com":                      "B",
-		"writer.prod2.cluster.orama.ing": "C",
-		"notorama.com":                   "",
-		"app.example.net":                "",
+		"app.orama.ing":               "A",
+		"app.orama.com":               "B",
+		"orama.com":                   "B",
+		"writer.eu.cluster.orama.ing": "C",
+		"notorama.com":                "",
+		"app.example.net":             "",
 	} {
 		if got := cfZoneIDForHost(zones, host); got != want {
 			t.Errorf("%s: zone %q, want %q", host, got, want)

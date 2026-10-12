@@ -175,6 +175,12 @@ type ImagesSpec struct {
 	// build/images tooling pushes to. Attached to every pod the operator creates.
 	// +optional
 	PullSecretName string `json:"pullSecretName,omitempty"`
+	// RequireDigests, when true, fails the reconcile (Ready=False) while any enabled component's
+	// image resolved through registry/tag or overrides lacks `@sha256:<digest>`, so production never
+	// runs a floating tag. Data-store and helper images (Redis, busybox, curl, ...) are not checked.
+	// Default false: tag-only images such as `:latest` are allowed.
+	// +optional
+	RequireDigests bool `json:"requireDigests,omitempty"`
 }
 
 // LLMSpec configures the engine's language-model providers. v1 offers MULTIPLE providers at once

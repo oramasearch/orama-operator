@@ -70,6 +70,8 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}{
 		// Refuse conflicting Ingress hosts before anything is written (operator#313).
 		{"ingress hosts", func(_ context.Context, oc *oramav1alpha1.OramaCloudV1) error { return validateIngressHosts(oc) }},
+		// Refuse floating image tags before anything rolls when spec.images.requireDigests is set (#317).
+		{"image digests", func(_ context.Context, oc *oramav1alpha1.OramaCloudV1) error { return validateImageDigests(oc) }},
 		{"bootstrap", r.reconcileBootstrap}, // shared config + dummy secrets first
 		{"engine", r.reconcileEngine},
 		{"controlDB", r.reconcileControlDB},

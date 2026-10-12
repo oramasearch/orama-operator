@@ -2317,6 +2317,13 @@ spec:
                   registry:
                     default: oramasearch
                     type: string
+                  requireDigests:
+                    description: |-
+                      RequireDigests, when true, fails the reconcile (Ready=False) while any enabled component's
+                      image resolved through registry/tag or overrides lacks `@sha256:<digest>`, so production never
+                      runs a floating tag. Data-store and helper images (Redis, busybox, curl, ...) are not checked.
+                      Default false: tag-only images such as `:latest` are allowed.
+                    type: boolean
                   tag:
                     default: latest
                     type: string

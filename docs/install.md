@@ -249,8 +249,8 @@ its data stores. It is a partial smoke-test configuration, not a self-contained 
 dependencies running. [`primary-us-east.yaml`](../config/samples/primary-us-east.yaml) and
 [`read-eu.yaml`](../config/samples/read-eu.yaml) require the production and peer prerequisites.
 [`prod2.yaml`](../config/samples/prod2.yaml) is the customer-serving Prod 2 shape (node pool
-`prod2`, deletion protection, control-DB backups); its header lists the placeholders and Secrets to
-provide first, and it is not part of the sample kustomization.
+`prod2`, deletion protection, control-DB backups, `images.requireDigests`); its header lists the
+placeholders (including one image `<digest>` per enabled component) and Secrets to provide first, and it is not part of the sample kustomization.
 
 Image selection is independent of the manager chart values:
 

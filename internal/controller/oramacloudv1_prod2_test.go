@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -598,6 +599,20 @@ func TestNoPlacementRendersAsBefore(t *testing.T) {
 
 // --- 7. the Prod 2 sample ---
 
+// prod2WithDigests decodes the Prod 2 sample with each <digest> placeholder filled in.
+func prod2WithDigests(t *testing.T, raw []byte) *oramav1alpha1.OramaCloudV1 {
+	t.Helper()
+	js, err := utilyaml.ToJSON(bytes.ReplaceAll(raw, []byte("<digest>"), []byte(strings.Repeat("0", 64))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oc oramav1alpha1.OramaCloudV1
+	if err := json.Unmarshal(js, &oc); err != nil {
+		t.Fatal(err)
+	}
+	return &oc
+}
+
 // The sample must decode strictly into the API (no misspelt fields silently dropped) and carry the
 // decided Prod 2 shape.
 func TestProd2SampleMatchesDecisions(t *testing.T) {
@@ -628,10 +643,16 @@ func TestProd2SampleMatchesDecisions(t *testing.T) {
 		t.Errorf("control-DB backup = %+v", b)
 	case oc.Spec.IDP.Provider != "firebase" || oc.Spec.IDP.ConfigSecretRef == nil || oc.Spec.IDP.ConfigSecretRef.Name != "prod2-firebase":
 		t.Errorf("Firebase provider/reference = %+v", oc.Spec.IDP)
-	case c.Engine.Reader.Host != "collections.orama.ing" || c.Engine.Writer.Host != "writer.prod2.cluster.orama.ing":
+	case c.Engine.Reader.Host != "reader.orama.ing" || c.Engine.Writer.Host != "writer.orama.ing" || len(c.Dashboard.ExtraHosts) != 0:
 		t.Errorf("engine public endpoints are incorrect")
-	case c.Engine.Writer.JWT == nil || c.Engine.Writer.JWT.JWKSURL != "" || !slices.Equal(writerJWTAudiences(c.Engine.Writer.JWT), []string{"https://writer.prod2.cluster.orama.ing"}) || oc.Spec.JWTIssuer != "orama-cloud":
+	case c.Engine.Writer.JWT == nil || c.Engine.Writer.JWT.JWKSURL != "" || !slices.Equal(writerJWTAudiences(c.Engine.Writer.JWT), []string{"https://" + c.Engine.Writer.Host}) || oc.Spec.JWTIssuer != "https://app.orama.ing":
 		t.Errorf("Prod 2 JWT config is incorrect")
+	case !oc.Spec.Images.RequireDigests:
+		t.Errorf("Prod 2 must require digest-pinned images")
+	case validateImageDigests(&oc) == nil:
+		t.Errorf("the <digest> placeholders must be refused until replaced")
+	case validateImageDigests(prod2WithDigests(t, raw)) != nil:
+		t.Errorf("the sample must pin every component it enables: %v", validateImageDigests(prod2WithDigests(t, raw)))
 	case validateWriterJWT(&oc) != nil:
 		t.Errorf("Prod 2 writer JWT is refused: %v", validateWriterJWT(&oc))
 	case c.Analytics.Mode != "external" || c.Analytics.CredentialsSecretRef == nil || c.Analytics.CredentialsSecretRef.Name != "prod2-clickhouse":
