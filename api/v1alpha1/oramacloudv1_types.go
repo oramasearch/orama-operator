@@ -223,7 +223,8 @@ type WriterSpec struct {
 type ReaderSpec struct {
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
-	// HPA autoscales readers on load when set.
+	// HPA autoscales readers on load when set: the operator owns a HorizontalPodAutoscaler
+	// targeting the reader StatefulSet and stops setting its replica count.
 	// +optional
 	HPA *HPASpec `json:"hpa,omitempty"`
 	// +optional

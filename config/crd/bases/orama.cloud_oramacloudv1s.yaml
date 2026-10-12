@@ -850,7 +850,9 @@ spec:
                       reader:
                         properties:
                           hpa:
-                            description: HPA autoscales readers on load when set.
+                            description: |-
+                              HPA autoscales readers on load when set: the operator owns a HorizontalPodAutoscaler
+                              targeting the reader StatefulSet and stops setting its replica count.
                             properties:
                               maxReplicas:
                                 format: int32

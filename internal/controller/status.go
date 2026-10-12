@@ -35,30 +35,37 @@ func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *ora
 	ns := client.InNamespace(oc.Namespace)
 	var comps []oramav1alpha1.ComponentStatus
 
+	// Workloads sharing a component label count as one component, their replicas summed. That is
+	// normally one workload each; while the readers move from a Deployment to a StatefulSet (#141)
+	// both exist, and the reader is Ready only once both are fully available.
+	type replicaCount struct{ ready, want int32 }
+	workloads := map[string]replicaCount{}
+	add := func(name string, ready int32, want *int32) {
+		c := workloads[name]
+		c.ready += ready
+		c.want += replicasOf(want)
+		workloads[name] = c
+	}
 	var deps appsv1.DeploymentList
 	if err := r.List(ctx, &deps, ns, owned); err == nil {
 		for i := range deps.Items {
 			d := &deps.Items[i]
-			want := replicasOf(d.Spec.Replicas)
-			comps = append(comps, oramav1alpha1.ComponentStatus{
-				Name:   componentName(d.Labels, d.Name),
-				Ready:  want > 0 && d.Status.ReadyReplicas >= want,
-				Detail: fmt.Sprintf("%d/%d", d.Status.ReadyReplicas, want),
-			})
+			add(componentName(d.Labels, d.Name), d.Status.ReadyReplicas, d.Spec.Replicas)
 		}
 	}
-
 	var sts appsv1.StatefulSetList
 	if err := r.List(ctx, &sts, ns, owned); err == nil {
 		for i := range sts.Items {
 			s := &sts.Items[i]
-			want := replicasOf(s.Spec.Replicas)
-			comps = append(comps, oramav1alpha1.ComponentStatus{
-				Name:   componentName(s.Labels, s.Name),
-				Ready:  want > 0 && s.Status.ReadyReplicas >= want,
-				Detail: fmt.Sprintf("%d/%d", s.Status.ReadyReplicas, want),
-			})
+			add(componentName(s.Labels, s.Name), s.Status.ReadyReplicas, s.Spec.Replicas)
 		}
+	}
+	for name, c := range workloads {
+		comps = append(comps, oramav1alpha1.ComponentStatus{
+			Name:   name,
+			Ready:  c.want > 0 && c.ready >= c.want,
+			Detail: fmt.Sprintf("%d/%d", c.ready, c.want),
+		})
 	}
 
 	// CNPG control DB (unstructured Cluster). Best-effort — not-found counts as not-ready.
