@@ -95,6 +95,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # A Lake volume store's used space (lake#666): the kubelet's /stats/summary of the node running
+  # the pod that mounts it, read through the API server's node proxy. get only.
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
   # ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace UID — `get` only,
   # never list/watch, so the operator holds no cluster-wide Namespace informer. `create` is for the
   # Lake controllers create their Lake and rehearsal namespaces. LakeEnvironment update/delete is

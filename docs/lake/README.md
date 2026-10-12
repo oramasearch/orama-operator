@@ -72,7 +72,10 @@ through a mounted Secret ([services.md](services.md)). The same poll runs a cust
 (lake#196, lake#664): cluster volumes (one Lake-owned PersistentVolumeClaim each), the customer's
 own buckets on R2, S3, B2, GCS and Azure (one `LakeSealedSecret` delivering the workspace's
 credential each; the bucket itself is never touched) and Lake-run Zetta and Lake stores, each
-connection in the same Secret — [stores.md](stores.md).
+connection in the same Secret. Services and apps mount them (lake#666): a volume at a path in the
+pods the operator builds (apps and the sqlite, duckdb and polars services), a bucket as
+`STORE_<NAME>_*` variables, and the operator reports each volume's used space —
+[stores.md](stores.md).
 
 ## What a Lake reconciles into
 
@@ -127,8 +130,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `methodology_runs_guard` from
-   `0078_methodology_runs`, version = hash of the SQL plus guard. The Job skips the file only when
+   `oramasearch/lake` `db/schema.sql`), guard table = `store_mounts_guard` from
+   `0079_store_mounts`, version = hash of the SQL plus guard. The Job skips the file only when
    the guard exists **and** every `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')` in it
    is present in the database's `schema_migrations`; otherwise it applies the whole idempotent file,
    so a migration that merges out of order (0067 after 0068 and 0069, #271) still applies. A changed hash automatically

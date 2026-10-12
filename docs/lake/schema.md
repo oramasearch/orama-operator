@@ -2,20 +2,27 @@
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit 1355411e3ecb4e1299a4ebf9fd8120cb39fd07c8](https://github.com/oramasearch/lake/blob/1355411e3ecb4e1299a4ebf9fd8120cb39fd07c8/db/schema.sql)
-(branch `issue-655`, lake PR #691: lake `main`'s `0076_organization_deletion` and
-`0077_metered_jobs`, then lake#655's `0078_methodology_runs`). Its SHA-256 is
-`48c4329f500f0b6d0bfd0f359229b43ee1855a6381c823059dce2eda1597e30e`.
+[`oramasearch/lake` commit 78a22c51f425a6bb26a75ca5c1da274a8bd86a7a](https://github.com/oramasearch/lake/blob/78a22c51f425a6bb26a75ca5c1da274a8bd86a7a/db/schema.sql)
+(branch `issue-666`: lake `main` through `0078_methodology_runs`, then lake#666's
+`0079_store_mounts`). Its SHA-256 is
+`22ad36a945548382c4594c12025cfa4617954579742f8e09eebbc4deef57c70c`. Re-pin to lake `main` once
+lake#666 lands there.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
 
+Migration `0079_store_mounts` (lake#666) adds `store_mounts` (written by lake: which services and
+apps mount a store, at which path, read-only or not) and `store_status.used_bytes` /
+`used_bytes_at` (written by the operator), with guard `store_mounts_guard`, now Lake's
+PostgresSchema guard. Until it has applied, the operator mounts nothing and measures nothing
+([stores.md](stores.md#mounts-lake666)).
+
 Migration `0078_methodology_runs` (lake#655) adds `methodology_runs` (written by lake),
 `methodology_run_status` (written by the operator: phase, exit code, the SHA-256 of each run's
 credential, the sandbox's start and finish) and the `methodology_run` kind of `workload_resources`,
-with guard `methodology_runs_guard`, now Lake's PostgresSchema guard; its kind check lists every
+with guard `methodology_runs_guard` (Lake's PostgresSchema guard until `0079`); its kind check lists every
 kind `0077_metered_jobs` allows. It is vendored from lake `1355411` on the PR branch `issue-655`;
 re-pin to lake `main` once lake PR #691 lands. The
 operator runs methodology runs ([methodology-runs.md](methodology-runs.md)) and, until this schema

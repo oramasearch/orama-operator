@@ -113,16 +113,40 @@ func (r *LakeAppsReconciler) pollLakeApps(ctx context.Context, lake *oramav1alph
 		log.Info("apps deferred: service identities unavailable")
 		return false
 	}
-	return r.syncLakeApps(passCtx, lake, store, rows, services)
+	// The stores apps mount (lake#666). Without the store_mounts table (a schema before 0079) no
+	// app mounts any; once it exists, a failed read defers the apps, so a transient read never
+	// takes a mount out of an app's pods.
+	var storeRows lakeAppStoreRows
+	mounts, err := store.ListStoreMounts(passCtx)
+	switch {
+	case errors.Is(err, errStoreMountsTableMissing):
+	case err != nil:
+		log.Info("apps deferred: store mounts unavailable")
+		return false
+	default:
+		stores, err := store.ListStores(passCtx)
+		if err != nil {
+			log.Info("apps deferred: stores unavailable")
+			return false
+		}
+		storeRows = lakeAppStoreRows{stores: stores, mounts: mounts}
+	}
+	return r.syncLakeApps(passCtx, lake, store, rows, services, storeRows)
 }
 
-func (r *LakeAppsReconciler) syncLakeApps(ctx context.Context, lake *oramav1alpha1.Lake, store LakeAppsStore, rows []LakeAppRow, services []LakeService) bool {
+// lakeAppStoreRows are the stores and store_mounts rows of one apps pass.
+type lakeAppStoreRows struct {
+	stores []LakeStore
+	mounts []LakeStoreMount
+}
+
+func (r *LakeAppsReconciler) syncLakeApps(ctx context.Context, lake *oramav1alpha1.Lake, store LakeAppsStore, rows []LakeAppRow, services []LakeService, storeRows lakeAppStoreRows) bool {
 	keep := make(map[string]bool, len(rows))
 	changing := false
 	for i := range rows {
 		row := &rows[i]
 		keep[row.ID] = true
-		status, err := r.syncLakeAppRow(ctx, lake, store, row, services)
+		status, err := r.syncLakeAppRow(ctx, lake, store, row, services, storeRows)
 		if err != nil {
 			logf.FromContext(ctx).Info("app reconciliation deferred", "lake", lake.Name, "app", row.ID)
 			changing = true
@@ -160,7 +184,7 @@ func lakeAppRowName(lake string, row *LakeAppRow) string {
 	return "app-" + hash + "-" + row.ID
 }
 
-func (r *LakeAppsReconciler) syncLakeAppRow(ctx context.Context, lake *oramav1alpha1.Lake, store LakeAppsStore, row *LakeAppRow, services []LakeService) (LakeAppRowStatus, error) {
+func (r *LakeAppsReconciler) syncLakeAppRow(ctx context.Context, lake *oramav1alpha1.Lake, store LakeAppsStore, row *LakeAppRow, services []LakeService, storeRows lakeAppStoreRows) (LakeAppRowStatus, error) {
 	status := LakeAppRowStatus{Phase: "Pending", Message: "waiting for the LakeApp controller", ObservedGeneration: row.Generation}
 	if _, err := uuid.Parse(row.ID); err != nil || row.ID != strings.ToLower(row.ID) || len(row.ID) != 36 {
 		status.Phase, status.Message = "Failed", "app id must be a canonical UUID"
@@ -186,6 +210,7 @@ func (r *LakeAppsReconciler) syncLakeAppRow(ctx context.Context, lake *oramav1al
 		status.Phase, status.Message = "Failed", err.Error()
 		return status, nil
 	}
+	spec.Stores = lakeAppRowStores(lake, row, storeRows)
 	if exists && !app.DeletionTimestamp.IsZero() {
 		status.Message = "waiting for previous app teardown"
 		return status, nil
@@ -348,6 +373,25 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 	resources := lakeAppResources(&oramav1alpha1.LakeApp{})
 	spec.Resources = &resources
 	return spec, nil
+}
+
+// lakeAppRowStores is the stores the app mounts, from store_mounts: a volume of the app's
+// workspace as its claim, a bucket as its connection and the Lake-namespace Secret its credential
+// was delivered to.
+func lakeAppRowStores(lake *oramav1alpha1.Lake, row *LakeAppRow, storeRows lakeAppStoreRows) []oramav1alpha1.LakeAppStoreMount {
+	resolved := withoutReservedPaths(
+		resolveStoreMounts(lake, storeRows.stores, storeRows.mounts, StoreMountKindApp, row.ID, row.CustomerID, row.WorkspaceID),
+		"/tmp", lakeAppBindingsPath)
+	var out []oramav1alpha1.LakeAppStoreMount
+	for _, mount := range resolved {
+		out = append(out, oramav1alpha1.LakeAppStoreMount{
+			ID: mount.StoreID, Name: mount.Name, Slug: mount.Slug, Type: mount.Type, Provider: mount.Provider,
+			ClaimName: mount.Claim, MountPath: mount.MountPath, ReadOnly: mount.ReadOnly,
+			Bucket: mount.Bucket, Endpoint: mount.Endpoint, Region: mount.Region, Prefix: mount.Prefix,
+			SecretName: mount.Secret,
+		})
+	}
+	return out
 }
 
 func lakeAppRowSource(row *LakeAppRow, spec *oramav1alpha1.LakeAppSpec) error {

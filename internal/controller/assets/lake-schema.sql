@@ -4071,3 +4071,36 @@ CREATE TABLE IF NOT EXISTS methodology_runs_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0078_methodology_runs')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0079_store_mounts (lake#666, docs/control-plane/storage.md#mounts): which services and apps
+-- mount a store, and how much of a store is used. lake writes store_mounts when a service or an
+-- app is created or edited with `stores`, bumps the workload's generation and NOTIFYs
+-- lake_services; the operator mounts each store into the workload's pods and writes
+-- store_status.used_bytes (bytes in use, beside the size asked for) when it can measure it.
+-- Content-free desired state: ids, a path and a flag.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS store_mounts (
+    store_id    uuid        NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    object_kind text        NOT NULL,
+    object_id   uuid        NOT NULL,
+    -- Where a volume is mounted in the workload's containers; a bucket's mount is its
+    -- connection as environment variables and has no path ('').
+    mount_path  text        NOT NULL DEFAULT '',
+    read_only   boolean     NOT NULL DEFAULT false,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_id, object_kind, object_id),
+    CONSTRAINT store_mount_kind_check CHECK (object_kind IN ('service', 'app')),
+    CONSTRAINT store_mount_path_check
+        CHECK (mount_path = '' OR mount_path ~ '^/[A-Za-z0-9._/-]{1,255}$')
+);
+CREATE INDEX IF NOT EXISTS store_mounts_object_idx ON store_mounts (object_kind, object_id);
+
+ALTER TABLE store_status ADD COLUMN IF NOT EXISTS used_bytes bigint;
+ALTER TABLE store_status ADD COLUMN IF NOT EXISTS used_bytes_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS store_mounts_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0079_store_mounts')
+    ON CONFLICT DO NOTHING;

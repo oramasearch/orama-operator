@@ -54,6 +54,14 @@ type fakeServiceStore struct {
 	storeUpserts  []LakeStoreStatus
 	storesMissing bool
 	storesErr     error
+	// storeMounts, storeUsage and usedBytesWrites are the store mounts half
+	// (lake_store_mounts_test.go). storeMountsMissing makes ListStoreMounts and ListStoreUsage fail
+	// as a schema before 0079_store_mounts does; storeMountsErr fails ListStoreMounts any other way.
+	storeMounts        []LakeStoreMount
+	storeMountsMissing bool
+	storeMountsErr     error
+	storeUsage         map[string]LakeStoreUsage
+	usedBytesWrites    []LakeStoreUsageWrite
 	// launches and launchUpserts are the agent launches half (lake_agents_test.go).
 	launches      []LakeAgentLaunch
 	launchUpserts []LakeAgentLaunchStatus

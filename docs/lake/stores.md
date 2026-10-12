@@ -1,4 +1,4 @@
-# Lake customer stores (lake#196, lake#664)
+# Lake customer stores (lake#196, lake#664, lake#666)
 
 A lake customer's **stores** — buckets, filesystems, network filesystems and volumes — follow the
 [managed-services](services.md) model: lake writes the `stores` table in its control Postgres and
@@ -174,22 +174,91 @@ name that is not the store's is never deleted: the store is `Deleted` with the m
 in place`. A store of an unavailable pair has nothing to delete but a connection. A `Deleted` store
 is history and is skipped. Deleting the Lake garbage-collects the claims it controls.
 
+## Mounts (lake#666)
+
+Migration `0079_store_mounts` adds `store_mounts` (written by lake: `store_id`, `object_kind`
+`service` | `app`, `object_id`, `mount_path`, `read_only`) and `store_status.used_bytes` /
+`used_bytes_at` (written by the operator). lake writes a mount when a service or app is created or
+edited with `stores`, bumps the workload's generation and notifies `lake_services`. The operator
+mounts each store into the pods **it builds** for that workload (`internal/controller/lake_store_mounts.go`):
+
+| Store | What the workload's containers get |
+|---|---|
+| a volume (`volume` / `cluster`) | its claim `<lake>-<slug>` as volume `store-<slug>`, mounted at `mount_path`, `readOnly` when `read_only`. ReadWriteOnce: lake lets one workload mount it |
+| a cloud bucket (`r2`, `s3`, `b2`, `gcs`, `azure`) | `STORE_<NAME>_BUCKET`, `_ENDPOINT`, `_REGION`, `_PREFIX` as values, and `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, `_SESSION_TOKEN`, `_ACCOUNT_KEY`, `_SAS_TOKEN` through an optional `secretKeyRef` to a copy of the delivered credential. `<NAME>` is the store name upper-cased, `-` as `_` |
+| a Lake-run store (`zetta`, `lake`) | nothing: lake refuses to mount one, and a row is skipped |
+
+**Which workloads.** Apps (`LakeApp`) and the wrapper service kinds whose pod template the operator
+owns: `sqlite`, `duckdb`, `polars`. lake refuses the others. A row is skipped (and logged) when
+its store is absent, of another workspace or account, not mountable, a volume without a valid
+absolute path, or at a path the container already uses (`/data` and `/tmp` for the wrapper
+services, `/tmp` and the bindings path for apps) or that an earlier store took.
+
+**Bucket credentials.** The delivered Secret `<lake>-<slug>` lives in the Lake namespace and is
+read only when it is controlled by the store's own `LakeSealedSecret` (the Lake's, with this store's
+id). Only the five credential fields are copied:
+
+- for a **service**, the services poll keeps one copy per workspace namespace,
+  `<lake>-<slug>-credentials`, controlled by the Lake and labelled `orama.cloud/store-id` and
+  `orama.cloud/store-credentials: "true"`; a copy no present service mounts is deleted. A foreign
+  Secret of that name is never overwritten;
+- for an **app**, the LakeApp controller copies it as `app-<id>-store-<slug>` beside the app's
+  other Secrets, exactly as it copies a [lake secret reference](apps.md#lake-secret-references-lake625);
+  the app waits (`StoreCredentialPending`) until every mounted bucket's credential is delivered.
+
+**Rolling.** A change of mounts changes the pod template; a new credential version changes the
+template's digest (`orama.cloud/store-credentials-digest` on a wrapper service,
+`orama.cloud/lake-app-credential-hash` on an app). Either rolls the pods. A workload with no mount
+keeps its template byte for byte, so this release rolls nothing that does not mount a store.
+
+**Transient reads.** Before `0079` (no table) nothing is mounted and nothing is measured. Once the
+table exists, a failed `store_mounts` or `stores` read leaves every wrapper service as it is for
+that pass (other services carry on), and defers the apps pass, so a transient read never takes a
+mount out of running pods.
+
+**Network.** A workspace namespace is default-deny. A workload that reads a cloud bucket needs
+outbound HTTPS, which is the workspace's `spec.workspaces.overrides[<id>].internetEgress`
+([workspaces.md](workspaces.md)); the operator does not open it because a store is mounted.
+
+**One volume, several pods.** A `polars` service with more than one instance mounting a volume
+runs its pods on the node that has the volume attached; a pod scheduled elsewhere stays `Pending`
+(ReadWriteOnce).
+
+## Used space (lake#666)
+
+For each `Ready` volume store mounted by a running pod, the operator reads the kubelet's stats
+summary of that pod's node (`GET /api/v1/nodes/<node>/proxy/stats/summary`, the volume whose
+`pvcRef` is the store's claim) and writes `store_status.used_bytes` and `used_bytes_at`
+(`internal/controller/lake_store_usage.go`). It measures at most once a minute per Lake, and
+writes a store's row only when the value moved by more than 1 MiB or 15 minutes passed since the
+last write. A store not mounted, or a node whose stats cannot be read, keeps what it had (null
+until first measured). The status upsert never touches these columns.
+
 ## RBAC
 
-Nothing new: the manager already has `persistentvolumeclaims` and `lakesealedsecrets` `get, list,
-watch, create, update, patch, delete` (the kubebuilder markers in `lake_controller.go` and
+The manager has `persistentvolumeclaims` and `lakesealedsecrets` `get, list, watch, create, update,
+patch, delete` (the kubebuilder markers in `lake_controller.go` and
 `lakesealedsecret_controller.go`, and the chart ClusterRole). The Lake already `Owns`
-`LakeSealedSecret`, so a delivery turning Ready wakes the Lake at once.
+`LakeSealedSecret`, so a delivery turning Ready wakes the Lake at once. **New for lake#666:**
+`nodes/proxy` `get` (marked in `lake_controller.go`, granted in `chart/templates/rbac.yaml`) for
+the kubelet's volume stats; pods `list` was already granted.
+
+## SQL (lake's operator contract test)
+
+Every statement here is copied into lake `tests/test_operator_contract.cpp`:
+`listStoresSQL` and `upsertStoreStatusSQL` (stores), and for lake#666 `listStoreMountsSQL`,
+`listStoreUsageSQL` and `updateStoreUsedBytesSQL` (`internal/controller/lake_stores_pgx.go`).
 
 ## Schema
 
-The vendored schema is lake `db/schema.sql` at `9aa6141`, and the Lake's PostgresSchema guard is
-`stores_guard`, the completion table of `0028_stores` ([schema.md](schema.md)).
+The vendored schema is lake `db/schema.sql` at `78a22c5` (lake branch `issue-666`, with
+`0079_store_mounts`), and the Lake's PostgresSchema guard is `store_mounts_guard`
+([schema.md](schema.md)).
 
 ## How to verify
 
 ```sh
-go test ./internal/controller/ -run Stores
+go test ./internal/controller/ -run 'Stores|StoreMounts|StoreUsed|ResolveStore|ParseKubelet'
 # A bucket's delivery and Secret on a cluster:
 kubectl -n lake get lss,secret -l orama.cloud/store-id
 # The pgx SQL against the vendored schema on a local Postgres, inside a rolled-back transaction:
@@ -214,7 +283,18 @@ delivery error shown in the message, a foreign delivery refused and left in plac
 foreign Secret never making the store Ready, deletion through `Deleting` to `Deleted` with the
 delivery the only thing ever deleted (the bucket is never touched), invalid specs creating nothing,
 and the four Lake-run pairs `Ready` at once with no Kubernetes resource and `Deleted` without a
-delete. `lake_stores_pgx_test.go` (opt-in) runs the SQL, including the missing-table
+delete. `lake_store_mounts_test.go` covers a sqlite service mounting a volume (claim, path,
+read-only) and a bucket (every variable, the optional credential references, the copy holding only
+the credential fields), a steady pass making no update, a new credential changing the template
+digest, unmounting the bucket removing its variables, digest and copy, a workload without mounts
+(and a schema before 0079) keeping its template, a failed mounts read leaving the service as it is
+while others carry on, what the resolver leaves out, the used-space rules (first write, under and
+over 1 MiB, the 15-minute refresh, the once-a-minute rate, no stats or no pod writing nothing, no
+measurement before 0079) and parsing the kubelet's summary. The apps envtest
+(`TestLakeAppsEnvtestLifecycle`, `lake_apps_store_mounts_test.go`) runs a volume and a bucket through
+the apps sync and the LakeApp controller on a real API server: the spec, the pod's volume, mount,
+`fsGroup` and variables, the credential copy, `StoreCredentialPending` before delivery, a rotation
+rolling the app, and unmounting. `lake_stores_pgx_test.go` (opt-in) runs the SQL, including the missing-table
 error, on a real Postgres.
 
 ## How to change

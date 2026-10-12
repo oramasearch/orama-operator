@@ -110,6 +110,19 @@ An occupied name belonging to a different owner or customer fails without adopti
 `name` is a DNS label. An empty row host becomes `<name>.<wildcard>`; a supplied host must be one
 label beneath that suffix. Lake is responsible for reserving unique app hosts.
 
+### Store mounts (lake#666)
+
+The sync reads lake's `store_mounts` rows for the app (with the `stores` they name) and writes them
+to `spec.stores[]`: a volume of the app's workspace as `{claimName, mountPath, readOnly}`, a bucket
+as `{bucket, endpoint, region, prefix, secretName}`. The LakeApp controller mounts a volume's claim
+at its path (and gives the pod `fsGroup` 10001 so the app's user can write it), and gives a bucket's
+connection as `STORE_<NAME>_*` variables whose credential fields read a copy of the store's
+delivered Secret, made the same way as a lake secret reference's copy; a new credential version
+rolls the pods through the credential hash. The app waits with `StoreCredentialPending` until
+every mounted bucket's credential is delivered. Only a synchronized app may carry `spec.stores`
+(`StoresRequireSync`). Reading a bucket needs the workspace's internet egress. The whole of it is
+[stores.md](stores.md#mounts-lake666).
+
 ### Lifecycle and returned status
 
 | Desired state | Reconciliation and reported state |

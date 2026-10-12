@@ -83,3 +83,83 @@ func (s *pgxServiceStore) UpsertStoreStatus(ctx context.Context, status LakeStor
 		status.StoreID, status.Phase, status.Message, status.Endpoint, status.ObservedGeneration)
 	return err
 }
+
+// The store mounts half (lake migration 0079_store_mounts, lake#666).
+
+// listStoreMountsSQL reads every mount joined to its store; the poll keeps the present ones.
+const listStoreMountsSQL = `SELECT m.store_id::text, m.object_kind, m.object_id::text, m.mount_path, m.read_only,
+       s.slug, s.type, s.provider, s.name, s.desired
+  FROM store_mounts m
+  JOIN stores s ON s.id = m.store_id
+ ORDER BY m.object_kind, m.object_id, s.name, m.store_id`
+
+// listStoreUsageSQL reads the used space the operator last wrote.
+const listStoreUsageSQL = `SELECT store_id::text, used_bytes, used_bytes_at
+  FROM store_status
+ WHERE used_bytes IS NOT NULL`
+
+// updateStoreUsedBytesSQL writes a store's used space beside its status.
+const updateStoreUsedBytesSQL = `UPDATE store_status
+   SET used_bytes = $2, used_bytes_at = now()
+ WHERE store_id = $1::uuid`
+
+// pgUndefinedColumn is SQLSTATE 42703, undefined_column: store_status before 0079 has no
+// used_bytes.
+const pgUndefinedColumn = "42703"
+
+// storeMountsTableError turns a missing store_mounts table or used_bytes column into
+// errStoreMountsTableMissing.
+func storeMountsTableError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && (pgErr.Code == pgUndefinedTable || pgErr.Code == pgUndefinedColumn) {
+		return errStoreMountsTableMissing
+	}
+	return err
+}
+
+func (s *pgxServiceStore) ListStoreMounts(ctx context.Context) ([]LakeStoreMount, error) {
+	rows, err := s.db.Query(ctx, listStoreMountsSQL)
+	if err != nil {
+		return nil, storeMountsTableError(err)
+	}
+	defer rows.Close()
+	var mounts []LakeStoreMount
+	for rows.Next() {
+		var m LakeStoreMount
+		if err := rows.Scan(&m.StoreID, &m.ObjectKind, &m.ObjectID, &m.MountPath, &m.ReadOnly,
+			&m.Slug, &m.Type, &m.Provider, &m.Name, &m.Desired); err != nil {
+			return nil, err
+		}
+		mounts = append(mounts, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, storeMountsTableError(err)
+	}
+	return mounts, nil
+}
+
+func (s *pgxServiceStore) ListStoreUsage(ctx context.Context) (map[string]LakeStoreUsage, error) {
+	rows, err := s.db.Query(ctx, listStoreUsageSQL)
+	if err != nil {
+		return nil, storeMountsTableError(err)
+	}
+	defer rows.Close()
+	usage := map[string]LakeStoreUsage{}
+	for rows.Next() {
+		var id string
+		var u LakeStoreUsage
+		if err := rows.Scan(&id, &u.UsedBytes, &u.At); err != nil {
+			return nil, err
+		}
+		usage[id] = u
+	}
+	if err := rows.Err(); err != nil {
+		return nil, storeMountsTableError(err)
+	}
+	return usage, nil
+}
+
+func (s *pgxServiceStore) UpdateStoreUsedBytes(ctx context.Context, storeID string, usedBytes int64) error {
+	_, err := s.db.Exec(ctx, updateStoreUsedBytesSQL, storeID, usedBytes)
+	return storeMountsTableError(err)
+}

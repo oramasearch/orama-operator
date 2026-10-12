@@ -67,6 +67,11 @@ type LakeReconciler struct {
 	APIReader client.Reader
 	// workloadResources throttles the workload resources pass per Lake (lake#643).
 	workloadResources workloadResourcesClock
+	// VolumeStats reads the kubelet's volume stats for a store's used space (lake#666). Nil reads
+	// them through Clientset's node proxy; with neither, used space is not reported.
+	VolumeStats VolumeStatsReader
+	// storeUsage throttles the used-space measurement per Lake.
+	storeUsage storeUsageClock
 	// Clientset reads a completed builder pod's final stdout lines through pods/log.
 	Clientset kubernetes.Interface
 	// BuildLogs substitutes the pods/log read in tests.
@@ -83,7 +88,7 @@ const (
 	lakeStorePath        = "/var/lib/lake/store"
 	lakeStoreVolume      = "store"
 	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
-	lakeSchemaGuardTable = "methodology_runs_guard"
+	lakeSchemaGuardTable = "store_mounts_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
@@ -166,6 +171,7 @@ type lakeBackupConfig struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;patch
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
+// +kubebuilder:rbac:groups="",resources=nodes/proxy,verbs=get
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=postgresschemas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
