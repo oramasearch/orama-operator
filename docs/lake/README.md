@@ -69,8 +69,10 @@ Polars: it writes the
 Operator, K8ssandra, valkey-operator), or StatefulSet of [lake-sqlite](lake-sqlite.md), [lake-duckdb](lake-duckdb.md) or
 [lake-polars](lake-polars.md) per service, writes `service_status`, and hands lake each connection
 through a mounted Secret ([services.md](services.md)). The same poll runs a customer's **stores**
-(lake#196; phase 1: cluster volumes, one
-Lake-owned PersistentVolumeClaim each, connection in the same Secret) — [stores.md](stores.md).
+(lake#196, lake#664): cluster volumes (one Lake-owned PersistentVolumeClaim each), the customer's
+own buckets on R2, S3, B2, GCS and Azure (one `LakeSealedSecret` delivering the workspace's
+credential each; the bucket itself is never touched) and Lake-run Zetta and Lake stores, each
+connection in the same Secret — [stores.md](stores.md).
 
 ## What a Lake reconciles into
 

@@ -121,6 +121,8 @@ Secret holds, and the reconcile requeues for the time left. A source pinned to a
 only when its Secret is missing or drifted, its generation changes, or the sealing key rotates.
 Anything that mounts the produced Secret sees the new value when it is rewritten; LakeApp copies
 carry a credential digest that rolls the app's pods (see [apps](apps.md#lake-secret-references-lake625)).
+A bucket store owns one too, `<lake>-<slug>` in the Lake namespace, delivering the bucket's
+credential from the workspace's secret store (see [stores](stores.md#customer-buckets-lake664)).
 
 ### Dynamic secret
 
