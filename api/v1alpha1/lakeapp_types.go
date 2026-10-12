@@ -138,8 +138,32 @@ type LakeAppSecretEnvironmentVariable struct {
 	// +kubebuilder:validation:Pattern=`^[-._a-zA-Z][-._a-zA-Z0-9]*$`
 	Name string `json:"name"`
 
-	// SecretKeyRef selects the source Secret and key in the Lake namespace.
+	// SecretKeyRef selects the source Secret and key in the Lake namespace. With LakeSecret set it
+	// names the Secret the controller's LakeSealedSecret produces there.
 	SecretKeyRef LakeAppSecretKeyReference `json:"secretKeyRef"`
+
+	// LakeSecret, when set, is the source of truth: one field of one secret in a lake secret mount
+	// (lake#625). The controller owns a LakeSealedSecret with a lake source in the Lake namespace
+	// that produces SecretKeyRef.Name; lake answers it sealed to the cluster's key, and a new
+	// version reaches the app at the next delivery.
+	// +optional
+	LakeSecret *LakeAppLakeSecretReference `json:"lakeSecret,omitempty"`
+}
+
+// LakeAppLakeSecretReference names one field of one secret in a lake secret mount.
+type LakeAppLakeSecretReference struct {
+	// Mount is the lake secret mount id.
+	// +kubebuilder:validation:MinLength=1
+	Mount string `json:"mount"`
+
+	// Name is the secret's name in the mount.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Field is the secret's field, delivered as the produced Secret's key of the same name.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[-._a-zA-Z0-9]+$`
+	Field string `json:"field"`
 }
 
 // LakeAppSpec defines one isolated application belonging to a Lake.
@@ -231,6 +255,66 @@ type LakeAppSpec struct {
 	// and app use it to publish to app-events.<app>.
 	// +optional
 	EventsSecretRef *corev1.LocalObjectReference `json:"eventsSecretRef,omitempty"`
+
+	// Stores are the workspace's stores the app mounts (lake#666), written by the apps sync from
+	// lake's store_mounts table; only a synchronized app may carry them. A volume is its claim
+	// mounted at mountPath; a bucket is its connection as STORE_<NAME>_* environment variables, with
+	// the credential fields copied from secretName.
+	// +kubebuilder:validation:MaxItems=32
+	// +optional
+	Stores []LakeAppStoreMount `json:"stores,omitempty"`
+}
+
+// LakeAppStoreMount is one store an app mounts.
+type LakeAppStoreMount struct {
+	// ID is the store's id in lake.
+	// +kubebuilder:validation:MinLength=1
+	ID string `json:"id"`
+
+	// Name is the store's name; a bucket's environment variables are STORE_<NAME>_* with the name
+	// upper-cased and "-" as "_".
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]{0,30}$`
+	Name string `json:"name"`
+
+	// Slug is the store's slug, st- and 12 hex digits.
+	// +kubebuilder:validation:Pattern=`^st-[0-9a-f]{12}$`
+	Slug string `json:"slug"`
+
+	// Type is volume or object.
+	// +kubebuilder:validation:Enum=volume;object
+	Type string `json:"type"`
+
+	// Provider is the store's provider (cluster for a volume; r2, s3, b2, gcs or azure for a bucket).
+	// +kubebuilder:validation:MinLength=1
+	Provider string `json:"provider"`
+
+	// ClaimName is a volume's PersistentVolumeClaim in the app's workspace namespace.
+	// +optional
+	ClaimName string `json:"claimName,omitempty"`
+
+	// MountPath is where a volume is mounted in the app's container.
+	// +kubebuilder:validation:Pattern=`^/[A-Za-z0-9._/-]{1,255}$`
+	// +optional
+	MountPath string `json:"mountPath,omitempty"`
+
+	// ReadOnly mounts a volume read-only.
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
+
+	// Bucket, Endpoint, Region and Prefix are a bucket's connection.
+	// +optional
+	Bucket string `json:"bucket,omitempty"`
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+	// +optional
+	Region string `json:"region,omitempty"`
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
+
+	// SecretName is the Secret, in this LakeApp's namespace, that the store's LakeSealedSecret
+	// delivered with the bucket's credential fields.
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
 }
 
 // LakeAppStatus is the observed state of an application.

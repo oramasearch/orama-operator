@@ -54,6 +54,14 @@ type fakeServiceStore struct {
 	storeUpserts  []LakeStoreStatus
 	storesMissing bool
 	storesErr     error
+	// storeMounts, storeUsage and usedBytesWrites are the store mounts half
+	// (lake_store_mounts_test.go). storeMountsMissing makes ListStoreMounts and ListStoreUsage fail
+	// as a schema before 0080_store_mounts does; storeMountsErr fails ListStoreMounts any other way.
+	storeMounts        []LakeStoreMount
+	storeMountsMissing bool
+	storeMountsErr     error
+	storeUsage         map[string]LakeStoreUsage
+	usedBytesWrites    []LakeStoreUsageWrite
 	// launches and launchUpserts are the agent launches half (lake_agents_test.go).
 	launches      []LakeAgentLaunch
 	launchUpserts []LakeAgentLaunchStatus
@@ -65,6 +73,34 @@ type fakeServiceStore struct {
 	// builds and buildUpdates are the in-cluster build half (lake_builds_test.go).
 	builds       []LakeBuild
 	buildUpdates []LakeBuildStatus
+	// resources, objects, resourceUpserts and resourceDeletes are the workload resources half
+	// (lake_workload_resources_test.go). A nil resources map is a schema before
+	// 0075_workload_resources.
+	resources map[workloadKey]WorkloadResources
+	objects   []WorkloadObject
+	// finished are the objects of finished runs (builds, job launches, cron runs), which
+	// ListUnmeteredJobs returns while they have no row (lake#658).
+	finished          []WorkloadObject
+	resourceUpserts   []WorkloadResources
+	resourceUpsertErr error
+	resourceDeletes   []workloadKey
+	// runs and runStatusUpserts are the methodology runs half (lake_methodology_runs_test.go).
+	// runsMissing makes ListMethodologyRuns fail as a schema before 0078_methodology_runs does.
+	methodologyRuns  []LakeMethodologyRun
+	runStatusUpserts []LakeMethodologyRunStatus
+	runsMissing      bool
+	// appTransfer is the app transfer half (lake_app_transfer_test.go), by app and hour.
+	// appTransferMissing is a schema before 0081_app_transfer; appTransferErr fails the write.
+	appTransfer        map[string]AppTransfer
+	appTransferMissing bool
+	appTransferErr     error
+	appTransferCalls   int
+	// deployments and deploymentStatusUpserts are the served methodology models half
+	// (lake_methodology_deployments_test.go). deploymentsMissing makes ListMethodologyDeployments
+	// fail as a schema before 0083_methodology_deployments does.
+	deployments             []LakeMethodologyDeployment
+	deploymentStatusUpserts []LakeMethodologyDeploymentStatus
+	deploymentsMissing      bool
 }
 
 func (f *fakeServiceStore) ListBuilds(context.Context) ([]LakeBuild, error) {

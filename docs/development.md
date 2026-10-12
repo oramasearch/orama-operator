@@ -51,6 +51,11 @@ The same assets run the workspace envtests. `TestWorkspaceDatastorePoliciesAgain
 Kubernetes API egress rule matches the test API server's own `default/kubernetes` Service and
 Endpoints, and that a steady second pass rewrites no policy.
 
+The same assets run `TestKarpenterInstallEnvtest` (operator#79), with RBAC authorization on: the
+`OramaZettaCluster` CRD schema refuses an injected, overlong or malformed `installClusterName` /
+`controllerRoleARN`; the chart's own ServiceAccount and ClusterRole install and remove the Karpenter
+bundle; and the same identity is forbidden to create or bind any role, binding or CRD outside it.
+
 The same assets run the Zetta environment passthrough case. It verifies custom env reaches the
 StatefulSet, reserved-name collisions appear in status, and an env change advances the StatefulSet
 generation so Kubernetes rolls the pods.

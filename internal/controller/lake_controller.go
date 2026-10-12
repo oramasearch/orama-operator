@@ -64,6 +64,18 @@ type LakeReconciler struct {
 	ServiceEvents <-chan event.GenericEvent
 	// APIReader lists lake pods without a cache (no cluster-wide pod informer). Nil uses Client.
 	APIReader client.Reader
+	// workloadResources throttles the workload resources pass per Lake (lake#643), and the app
+	// transfer pass with it (lake#661).
+	workloadResources workloadResourcesClock
+	// VolumeStats reads the kubelet's volume stats for a store's used space (lake#666). Nil reads
+	// them through Clientset's node proxy; with neither, used space is not reported.
+	VolumeStats VolumeStatsReader
+	// storeUsage throttles the used-space measurement per Lake.
+	storeUsage storeUsageClock
+	// appTransfer holds the ingress controllers' last byte counters per Lake (lake#661).
+	appTransfer appTransferState
+	// AppTransferScrape substitutes reading an ingress controller pod's metrics in tests.
+	AppTransferScrape func(ctx context.Context, pod *corev1.Pod) (map[ingressKey]ingressBytes, bool, error)
 	// Clientset reads a completed builder pod's final stdout lines through pods/log.
 	Clientset kubernetes.Interface
 	// BuildLogs substitutes the pods/log read in tests.
@@ -80,7 +92,7 @@ const (
 	lakeStorePath        = "/var/lib/lake/store"
 	lakeStoreVolume      = "store"
 	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
-	lakeSchemaGuardTable = "drop_moved_tables_guard"
+	lakeSchemaGuardTable = "methodology_deployments_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
@@ -144,6 +156,7 @@ func lakeZettaAdminSecret(name string) string {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;patch
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
+// +kubebuilder:rbac:groups="",resources=nodes/proxy,verbs=get
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=postgresschemas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
@@ -577,6 +590,8 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 		deployment.Spec.Strategy = strategy
 		deployment.Spec.Template.ObjectMeta.Labels = labels
 		deployment.Spec.Template.Spec = corev1.PodSpec{
+			// ndots:2, so the full Service names lake dials resolve on the first query.
+			DNSConfig: lakePodDNSConfig(),
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot:        boolPtr(true),
 				RunAsUser:           ptrInt64(lakeRunAsUser),
@@ -1031,22 +1046,23 @@ func (r *LakeReconciler) lakeStoreStatus(
 // lake with an incomplete data-plane configuration.
 func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.EnvVar {
 	reserved := map[string]struct{}{
-		"LAKE_ADMIN_TOKEN":         {},
-		"LAKE_AGENT_BUS_DIR":       {},
-		"LAKE_AGENT_ENDPOINTS":     {},
-		"LAKE_AGENT_MODEL":         {},
-		"LAKE_AGENT_SERVICE_TOKEN": {},
-		"LAKE_APPS_RUNTIME_IMAGE":  {},
-		"LAKE_INTERNAL_URL":        {},
-		"LAKE_CONTROL_DB_PASSWORD": {},
-		"LAKE_CONTROL_DB_URI":      {},
-		"LAKE_DATA_PLANE_TOKEN":    {},
-		"LAKE_DATA_PLANE_URL":      {},
-		"LAKE_INSTANCE_KEK":        {},
-		"LAKE_SEALING_KID":         {},
-		"LAKE_SEALING_PUBLIC_KEY":  {},
-		"LAKE_SERVICE_DIR":         {},
-		"LAKE_STORE_ROOT":          {},
+		"LAKE_ADMIN_TOKEN":               {},
+		"LAKE_AGENT_BUS_DIR":             {},
+		"LAKE_AGENT_ENDPOINTS":           {},
+		"LAKE_AGENT_MODEL":               {},
+		"LAKE_AGENT_SERVICE_TOKEN":       {},
+		"LAKE_APPS_RUNTIME_IMAGE":        {},
+		"LAKE_METHODOLOGY_RUNTIME_IMAGE": {},
+		"LAKE_INTERNAL_URL":              {},
+		"LAKE_CONTROL_DB_PASSWORD":       {},
+		"LAKE_CONTROL_DB_URI":            {},
+		"LAKE_DATA_PLANE_TOKEN":          {},
+		"LAKE_DATA_PLANE_URL":            {},
+		"LAKE_INSTANCE_KEK":              {},
+		"LAKE_SEALING_KID":               {},
+		"LAKE_SEALING_PUBLIC_KEY":        {},
+		"LAKE_SERVICE_DIR":               {},
+		"LAKE_STORE_ROOT":                {},
 	}
 	var explicitAppsWildcard *corev1.EnvVar
 	for i := range lake.Spec.Env {
@@ -1072,6 +1088,10 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 	}
 	if lake.Spec.Apps.Enabled {
 		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_RUNTIME_IMAGE", Value: lake.Spec.Apps.RuntimeImage})
+	}
+	// The base of every methodology's image build and the stage and collect pods' image (lake#655).
+	if methodologyRunsEnabled(lake) {
+		env = append(env, corev1.EnvVar{Name: "LAKE_METHODOLOGY_RUNTIME_IMAGE", Value: lake.Spec.Methodologies.RuntimeImage})
 	}
 	if lakePostgresEnabled(lake) {
 		env = append(env, corev1.EnvVar{

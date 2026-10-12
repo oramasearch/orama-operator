@@ -45,6 +45,12 @@ var zettaManagedEnvNames = map[string]struct{}{
 	"ZETTA_ADVERTISE_MAP": {},
 	"ZETTA_CLUSTER_TOKEN": {},
 	"ZETTA_HOST_NETWORK":  {},
+	zettaSeedEnv:          {},
+	// The engine's own provisioning env (src/main.cpp, #749): ZETTA_SEED_PEER adds --peer seeds and
+	// ZETTA_DATA_DIR moves the data dir. The operator owns both (peers are validated, /data is the PVC), so
+	// spec.env may not set them (operator#279).
+	"ZETTA_SEED_PEER": {},
+	"ZETTA_DATA_DIR":  {},
 }
 
 // zettaCustomEnv returns accepted spec.env entries in authored order and a stable list of names the
@@ -88,6 +94,9 @@ type OramaZettaClusterReconciler struct {
 	topologyCache sync.Map
 	// operatorID{Once,Value} memoize this operator's unique identity (one per k8s cluster) so its state
 	// stays distinct in a Zetta cluster shared across k8s clusters.
+	// droppedPeersLog remembers, per cluster, the last set of invalid topology peers that was logged, so a
+	// steady hostile row is logged once per change rather than every reconcile (operator#279).
+	droppedPeersLog sync.Map
 	operatorIDOnce  sync.Once
 	operatorIDValue string
 }
@@ -124,8 +133,16 @@ type OramaZettaClusterReconciler struct {
 // permissions requires the operator hold `bind` + `escalate` on roles/bindings (RBAC
 // privilege-escalation prevention) since the operator doesn't itself carry every node/pod grant. CRDs
 // are applied but never deleted (no `delete` verb — deleting a CRD cascades to all NodePools/NodeClaims).
-//+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update;patch
-//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings;roles;rolebindings,verbs=get;list;watch;create;update;patch;delete;bind;escalate
+// Every write, bind and escalate is scoped by resourceNames to the vendored bundle's objects
+// (karpenterControllerObjects, karpenterCRDNames), so the operator cannot create or bind any other role,
+// binding or CRD (operator#79). Reads stay unscoped.
+//+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
+//+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=create;update;patch,resourceNames=ec2nodeclasses.karpenter.k8s.aws;nodeclaims.karpenter.sh;nodeoverlays.karpenter.sh;nodepools.karpenter.sh
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings;roles;rolebindings,verbs=get;list;watch
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=create;update;patch;delete;bind;escalate,resourceNames=karpenter;karpenter-admin;karpenter-core
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=create;update;patch;delete,resourceNames=karpenter;karpenter-core
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=create;update;patch;delete;bind;escalate,resourceNames=karpenter;karpenter-dns
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=create;update;patch;delete,resourceNames=karpenter;karpenter-dns
 
 func zettaLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 	return map[string]string{
@@ -185,6 +202,18 @@ func zettaReachability(z *oramav1alpha1.OramaZettaCluster) string {
 // shared LB (oramasearch/zetta#739). An entry is "" while its address is still pending (LB IP unassigned).
 // An explicit spec.wanAddress override applies to every node (one stable VPN/DNS rendezvous).
 func (r *OramaZettaClusterReconciler) zettaWANAddresses(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, peerLBName, stsName string) []string {
+	// Every resolved address is validated before it is advertised or written to the shared topology
+	// (operator#279): an invalid one (a bad spec.wanAddress, an odd LB status) is treated as pending ("").
+	out := r.resolveZettaWANAddresses(ctx, z, peerLBName, stsName)
+	for i, a := range out {
+		if a != "" && validateZettaPeerAddress(a) != nil {
+			out[i] = ""
+		}
+	}
+	return out
+}
+
+func (r *OramaZettaClusterReconciler) resolveZettaWANAddresses(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, peerLBName, stsName string) []string {
 	if zettaReachability(z) != oramav1alpha1.ReachabilityWANAccessible {
 		return nil
 	}
@@ -335,7 +364,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	//      HTTP/MCP/SQL surface on a bearer that resolves to a user. A fresh node auto-generates an admin
 	//      credential the operator can't read, so the operator MUST seed a KNOWN one: it mints a 64-hex
 	//      admin token once into Secret `<name>-zetta-admin` (key `token`), injects it as
-	//      `ZETTA_ADMIN_TOKEN` → `--admin-token` (which seeds the owner), and authenticates its OWN Zetta
+	//      `ZETTA_ADMIN_TOKEN` (env; the engine seeds the owner from it), and authenticates its OWN Zetta
 	//      SQL client with it (zetta_statesync.go / zetta_controlplane.go) — otherwise the operator's SQL
 	//      sync 401s against the auth-on engine. Provisioned before the StatefulSet so its secretKeyRef
 	//      resolves; minted once, never rotated. spec.requireAuth / spec.mcpTokenAuth are now deprecated
@@ -417,9 +446,22 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	//     AFTER the per-node peer LBs (so their addresses resolve) and BEFORE the StatefulSet (so the derived
 	//     peers feed its --peer rendering). syncEnabled is reused by the control-plane/state-sync step below.
 	syncEnabled := z.Spec.ProvisionOperatorSchema == nil || *z.Spec.ProvisionOperatorSchema
-	var derivedPeers []string
+	var derivedPeers, droppedPeers []string
+	topologyRead := true
 	if syncEnabled {
-		derivedPeers = r.reconcileZettaTopology(ctx, &z, clientName, peerLBName, stsName)
+		derivedPeers, droppedPeers, topologyRead = r.reconcileZettaTopology(ctx, &z, clientName, peerLBName, stsName)
+	}
+
+	// 2.95 Peer address validation (operator#279). An invalid spec.externalPeers / spec.wanAddress (a CR
+	//      written before the CRD pattern, or one the pattern missed) is REFUSED: the StatefulSet below is
+	//      left exactly as it was, and PeerAddressesValid=False names the bad values. Invalid topology peers
+	//      were already dropped by reconcileZettaTopology and are only reported. When the topology could not
+	//      be read this round the condition is left as it is, so a flaky read does not flap it (a stale
+	//      InvalidSpecPeerAddress is still cleared once the spec is valid).
+	specInvalid := invalidSpecPeerAddresses(&z)
+	peerCond := peerAddressesConditionFor(&z, specInvalid, droppedPeers, topologyRead)
+	if len(specInvalid) > 0 {
+		logf.FromContext(ctx).Info("refusing invalid peer addresses; the StatefulSet is left unchanged", "invalid", specInvalid)
 	}
 
 	// 3. StatefulSet — N equal-peer headless nodes, each with a per-node PVC at /data.
@@ -428,12 +470,14 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// unreachable bound pod IP — otherwise external peers learn a 10.244.x and dial it forever
 	// (oramasearch/zetta#739). The resolved subset becomes .status.wanAddress below. Recomputed each
 	// reconcile; a later LB IP just rolls the pods once.
-	advertiseMap := strings.Join(r.zettaWANAddresses(ctx, &z, peerLBName, stsName), ",")
-	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: z.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
-		return r.mutateZettaStatefulSet(&z, sts, headlessName, stsName, lbls, advertiseMap, derivedPeers)
-	}); err != nil {
-		return ctrl.Result{}, err
+	if len(specInvalid) == 0 {
+		advertiseMap := strings.Join(r.zettaWANAddresses(ctx, &z, peerLBName, stsName), ",")
+		sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: z.Namespace}}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
+			return r.mutateZettaStatefulSet(&z, sts, headlessName, stsName, lbls, advertiseMap, derivedPeers)
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// 4. Optional external exposure — Ingress (+ proxied Cloudflare DNS) for the HTTP API/UI on 4800
@@ -458,7 +502,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// 6. Status — readiness roll-up + the capacity/install conditions/count and the slice's reachability
 	//    type + (for a wan-accessible slice) the routable rendezvous address (write only on change; anti-flap).
 	wanAddress := r.zettaWANAddress(ctx, &z, peerLBName, stsName)
-	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, provisionedNodes, reachability, wanAddress); err != nil {
+	if err := r.reconcileZettaStatus(ctx, &z, stsName, capCond, installCond, peerCond, provisionedNodes, reachability, wanAddress); err != nil {
 		return ctrl.Result{}, err
 	}
 	// When acting as the datastore, poll at the shortest Lake deploySync interval in this namespace.
@@ -471,7 +515,7 @@ func (r *OramaZettaClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 // reconcileZettaAdminToken ensures a Secret holding a 64-char (32-byte hex) ADMIN token exists for this
 // cluster. UNCONDITIONAL since zetta#799 made the engine's auth mandatory: the token is injected into the
-// node (ZETTA_ADMIN_TOKEN → `--admin-token`), which seeds it as the owner principal, AND it is the
+// node (env ZETTA_ADMIN_TOKEN, read by the engine — never a flag), which seeds it as the owner principal, AND it is the
 // credential the operator's OWN Zetta SQL client authenticates with (a fresh node otherwise auto-generates
 // an admin credential the operator can't read, and the auth-on engine 401s an unauthenticated client).
 // Idempotent — minted once and PRESERVED across reconciles (never rotated); the value is never logged
@@ -647,8 +691,8 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 		resources = *z.Spec.Resources
 	}
 
-	// The seed is node-0's stable DNS. A tiny sh wrapper keys off the pod ordinal ($HOSTNAME = <sts>-<ord>)
-	// so node-0 gets no --peer (it is the rendezvous) while peers seed off node-0. EVERY node — node-0
+	// The seed is node-0's stable DNS. The entrypoint keys off the pod ordinal (POD_NAME = <sts>-<ord>) so
+	// node-0 gets no --peer (it is the rendezvous) while peers seed off node-0. EVERY node — node-0
 	// included — boots with the SAME shared cluster join token (ZETTA_CLUSTER_TOKEN, injected below): the
 	// engine derives the cluster CA from it, so all nodes trust one another and form ONE mTLS cluster
 	// (operator#92). Peer traffic is always mTLS — there is no plaintext mode.
@@ -658,70 +702,37 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 	// spec.externalPeers (authoritative override — wins) and the topology-DERIVED wan endpoints of sibling
 	// slices (operator#105, coordinated through orama_control.topology — see zetta_topology.go), deduped.
 	// The derived set already excludes this operator's OWN nodes and our own advertised addresses.
-	extPeers := ""
-	for _, p := range zettaPeerSet(z.Spec.ExternalPeers, derivedPeers) {
-		extPeers += " --peer " + p
-	}
+	//
+	// operator#279: none of these values is ever formatted into shell text. The entrypoint script is the
+	// constant zettaEntrypointScript; the node flags and the external peers reach it as container args
+	// (positional parameters it only moves with "$@"), and the seed as ORAMA_ZETTA_SEED. See zetta_peers.go.
+	//
 	// The shared cluster join token (ZETTA_CLUSTER_TOKEN) is NOT passed as a flag: the engine reads that
 	// env var directly at boot and maps it to --join-token internally (src/main.cpp provisioning env). We
 	// keep it env-only on purpose — an unknown env var is safely ignored by an image that predates the
 	// feature, whereas an unknown FLAG would crash the node (as the sandbox image does for unknown flags).
-	// The `--admin-token` flag is appended AFTER the echo, and the echo shows only a redacted "****", so no
-	// token ever lands in the pod log. Tokens are injected via env from their Secrets: ZETTA_CLUSTER_TOKEN
-	// (<name>-zetta-cluster, reconcileZettaClusterToken; every node) and ZETTA_ADMIN_TOKEN (<name>-zetta-admin,
-	// reconcileZettaAdminToken; every node) which seeds the owner. zetta#799 made auth MANDATORY and REMOVED
-	// `--require-auth`/`--mcp-token`/`--cluster-plaintext` — passing any of them is now an unknown-option
-	// error that crashes the node, so the entrypoint renders NONE of them (only `--admin-token`).
+	// The admin token is env-only too (operator#279): ZETTA_ADMIN_TOKEN, which the engine reads when
+	// `--admin-token` is absent, seeds the owner. A flag would put the token in the world-readable argv
+	// (/proc/<pid>/cmdline); the log line shows only a redacted "****". Tokens are injected via env from their
+	// Secrets: ZETTA_CLUSTER_TOKEN (<name>-zetta-cluster, reconcileZettaClusterToken; every node) and
+	// ZETTA_ADMIN_TOKEN (<name>-zetta-admin, reconcileZettaAdminToken; every node). zetta#799 made auth
+	// MANDATORY and REMOVED `--require-auth`/`--mcp-token`/`--cluster-plaintext` — passing any of them is now
+	// an unknown-option error that crashes the node, so the entrypoint renders NONE of them.
 	//
-	// Node-reachability + node-type flags (zetta#803/#810) — this is what makes the engine's CRDT node:<id>
-	// entry (and thus `system.nodes` + the reachability-aware dialer) reflect the slice's ACTUAL topology
-	// instead of the engine's permanent/wan-accessible DEFAULT. Without these, a dial-out-only slice would
-	// still advertise its bound pod IP and peers would dial it — the pod-CIDR-collision undercount #803 was
-	// built to fix. reachability and node_type are INDEPENDENT axes: `--dial-out-only` is rendered iff the
-	// slice's effective reachability is dial-out-only (zettaReachability — the single source of truth shared
-	// with status + topology); `--node-type ephemeral` iff spec.ephemeral, else `--node-type permanent`. These
-	// are FLAGS (not env), so — like `--admin-token` — they require the same auth-capable image generation the
-	// operator already mandates (post-#799 travels with #803/#810); an older image would crash on them.
-	nodeFlags := " --node-type permanent"
-	if z.Spec.Ephemeral {
-		nodeFlags = " --node-type ephemeral"
-	}
-	if zettaReachability(z) == oramav1alpha1.ReachabilityDialOutOnly {
-		nodeFlags += " --dial-out-only"
-	}
-	entry := fmt.Sprintf(`set -eu
-ORD="${POD_NAME##*-}"   # NOT $HOSTNAME — under hostNetwork that is the node's name, not the pod's
-PEER_PORT=%[2]d
-API_PORT=%[3]d
-SEED="%[4]s"
-if [ "${ZETTA_HOST_NETWORK:-0}" = "1" ] && [ "$ORD" != "0" ]; then
-  # hostNetwork packs peers onto the shared host(s): every ordinal binds host ports, so give each its
-  # own (node-n → 7777+n / 4800+n) and seed off node-0 at the HOST's real IP (HOST_IP, not 127.0.0.1).
-  # The seed address must equal what node-0 advertises (its non-loopback IP) or Zetta's address-keyed
-  # reconnect dedup never matches and leaks duplicate links (oramasearch/zetta#739).
-  PEER_PORT=$((%[2]d + ORD))
-  API_PORT=$((%[3]d + ORD))
-  SEED="${HOST_IP}:%[2]d"
-fi
-A="--headless --data-dir %[1]s --listen 0.0.0.0:$PEER_PORT --mcp-listen 0.0.0.0:$API_PORT%[6]s"
-if [ "$ORD" != "0" ]; then A="$A --peer $SEED"; fi
-A="$A%[5]s"
-# Per-node WAN advertise (operator#104, oramasearch/zetta#739): ZETTA_ADVERTISE_MAP is a positional
-# comma-joined map — field (ORD+1) is THIS node's own routable addr; a 1-field map applies to all nodes.
-# A permanent wan node gossips ITS OWN reachable address, so cross-cluster peers spread across all of them.
-ADV="${ZETTA_ADVERTISE_MAP:-}"
-if [ -n "$ADV" ]; then
-  N=$(echo "$ADV" | awk -F, '{print NF}')
-  if [ "$N" = "1" ]; then MINE="$ADV"; else MINE=$(echo "$ADV" | cut -d, -f$((ORD+1))); fi
-  [ -n "$MINE" ] && A="$A --advertise $MINE"
-fi
-echo "zetta node $POD_NAME (ordinal $ORD): zetta $A${ZETTA_CLUSTER_TOKEN:+ [join-token via env ****]}${ZETTA_ADMIN_TOKEN:+ --admin-token ****}"
-if [ -n "${ZETTA_ADMIN_TOKEN:-}" ]; then A="$A --admin-token $ZETTA_ADMIN_TOKEN"; fi
-exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeFlags)
+	// Node-reachability + node-type flags (zetta#803/#810, zettaNodeFlags) — this is what makes the engine's
+	// CRDT node:<id> entry (and thus `system.nodes` + the reachability-aware dialer) reflect the slice's
+	// ACTUAL topology instead of the engine's permanent/wan-accessible DEFAULT. reachability and node_type are
+	// INDEPENDENT axes: `--dial-out-only` iff the slice's effective reachability is dial-out-only
+	// (zettaReachability — the single source of truth shared with status + topology); `--node-type
+	// ephemeral` iff spec.ephemeral, else `--node-type permanent`. These are FLAGS (not env), so they require
+	// the auth-capable image generation the operator already mandates.
+	entryArgs := zettaEntrypointArgs(z, zettaPeerSet(z.Spec.ExternalPeers, derivedPeers))
 
 	zettaEnv := []corev1.EnvVar{
 		// The ordinal comes from the POD name — $HOSTNAME is the NODE's name under hostNetwork.
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+		// node-0's in-cluster peer address, read by the entrypoint as data (never as script text).
+		{Name: zettaSeedEnv, Value: seed},
 		// Shared cluster join token → the mTLS cluster identity. Injected into EVERY node (incl. node-0):
 		// the engine derives the cluster CA from it, so all nodes trust each other and form ONE cluster.
 		// Without a SHARED token each node mints its own → different CA → cluster-of-one (operator#92).
@@ -737,8 +748,8 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 			corev1.EnvVar{Name: "HOST_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"}}},
 		)
 	}
-	// Admin token → ZETTA_ADMIN_TOKEN on EVERY node (UNCONDITIONAL since zetta#799): the entrypoint renders
-	// `--admin-token` to seed the owner, and the operator's own SQL client authenticates with the same token.
+	// Admin token → ZETTA_ADMIN_TOKEN on EVERY node (UNCONDITIONAL since zetta#799): the engine reads it from
+	// its environment to seed the owner (never a flag — argv is world-readable, operator#279), and the operator's own SQL client authenticates with the same token.
 	zettaEnv = append(zettaEnv, corev1.EnvVar{Name: "ZETTA_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{
 		SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-admin"}, Key: "token"}}})
 	// Per-node WAN advertise map (positional; field ORD+1 = this node's own routable addr) — a wan node
@@ -781,8 +792,10 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 				Name:            "zetta",
 				Image:           image,
 				ImagePullPolicy: corev1.PullAlways, // dev sandbox: mutable :v1-sandbox tag — always re-pull (operator#103)
-				Command:         []string{"/bin/sh", "-c", entry},
-				Env:             zettaEnv,
+				// A constant script; every variable value is an arg or an env var (operator#279).
+				Command: []string{"/bin/sh", "-c", zettaEntrypointScript},
+				Args:    entryArgs,
+				Env:     zettaEnv,
 				Ports: []corev1.ContainerPort{
 					{Name: "peer", ContainerPort: zettaPeerPort},
 					{Name: "api", ContainerPort: zettaAPIPort},
@@ -881,7 +894,7 @@ exec zetta $A`, zettaDataDir, zettaPeerPort, zettaAPIPort, seed, extPeers, nodeF
 // effective node-reachability type and (for a wan-accessible slice) the routable rendezvous address.
 // Writes only on a real change (anti-flap — operator principle #7); reachability + wanAddress are computed
 // by the caller (zettaReachability / zettaWANAddress) so the reconcile and status agree.
-func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond, installCond *metav1.Condition, provisionedNodes int32, reachability, wanAddress string) error {
+func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, stsName string, capCond, installCond, peerCond *metav1.Condition, provisionedNodes int32, reachability, wanAddress string) error {
 	desired := z.Spec.Replicas
 	if desired < 1 {
 		desired = 1
@@ -900,6 +913,9 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 		phase, msg = "Ready", fmt.Sprintf("all %d zetta nodes ready", desired)
 	} else if ready == 0 {
 		phase = "Progressing"
+	}
+	if peerCond != nil && peerCond.Reason == "InvalidSpecPeerAddress" {
+		phase, msg = "Degraded", "invalid peer address in spec; the StatefulSet is left unchanged (see condition "+peerAddressesConditionType+")"
 	}
 	_, ignoredEnvVars := zettaCustomEnv(z.Spec.Env)
 
@@ -925,6 +941,10 @@ func (r *OramaZettaClusterReconciler) reconcileZettaStatus(ctx context.Context, 
 			changed = true
 		}
 	} else if meta.RemoveStatusCondition(&z.Status.Conditions, installConditionType) {
+		changed = true
+	}
+
+	if setPeerAddressesCondition(z, peerCond) {
 		changed = true
 	}
 

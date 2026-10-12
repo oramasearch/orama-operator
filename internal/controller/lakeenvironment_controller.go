@@ -580,7 +580,7 @@ func (r *LakeEnvironmentReconciler) copyEnvironmentSecret(
 		return fmt.Errorf("copy delivered Secret %q: %w", source.Name, err)
 	}
 	statusWriter := &LakeSealedSecretReconciler{Client: r.Client, Scheme: r.Scheme}
-	return statusWriter.ready(ctx, owner, sealed.Status.KID, sealed.Status.Lease, operation != controllerutil.OperationResultNone, time.Now().UTC())
+	return statusWriter.ready(ctx, owner, sealed.Status.KID, sealed.Status.Lease, nil, operation != controllerutil.OperationResultNone, time.Now().UTC())
 }
 
 func (r *LakeEnvironmentReconciler) deleteStaleEnvironmentSecrets(

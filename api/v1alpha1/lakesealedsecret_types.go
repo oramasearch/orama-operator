@@ -131,6 +131,15 @@ type LakeSealedSecretStatus struct {
 	// +optional
 	Lease *LakeSealedSecretLeaseStatus `json:"lease,omitempty"`
 
+	// MintedAt is the last successful delivery from lake for a lake source. An unpinned lake source
+	// is delivered again every refresh interval, so a new secret version reaches the Secret.
+	// +optional
+	MintedAt *metav1.Time `json:"mintedAt,omitempty"`
+
+	// Version is the lake secret version the Secret holds, for a lake source.
+	// +optional
+	Version int64 `json:"version,omitempty"`
+
 	// ObservedGeneration is the resource generation represented by this status.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`

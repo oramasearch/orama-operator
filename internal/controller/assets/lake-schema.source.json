@@ -1,6 +1,6 @@
 {
   "repository": "oramasearch/lake",
   "path": "db/schema.sql",
-  "commit": "f2c41a092202e774f407ee35e33a4f9137147037",
-  "sha256": "17d51ae8100feccc9a029618dd8876a8923a77eca96245978b6238893ae37f06"
+  "commit": "396e55caf21f4aba9a36d7573118d6a51d30597d",
+  "sha256": "dc99d51ca205bf4326fb34b8169340e57d2b6efdd0e59396b2cd06ceb5cc5347"
 }

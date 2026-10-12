@@ -146,7 +146,7 @@ func agentLaunchCredentialSecret(lake, slug string) string {
 
 // lakeInternalURL is lake's in-cluster address: its Service, on the Service port.
 func lakeInternalURL(lake *oramav1alpha1.Lake, namespace string) string {
-	return fmt.Sprintf("http://lake-%s.%s.svc:%d", lake.Name, namespace, lakeServicePort)
+	return fmt.Sprintf("http://%s:%d", serviceHost("lake-"+lake.Name, namespace), lakeServicePort)
 }
 
 func workspaceLakeInternalURL(lake *oramav1alpha1.Lake, workspaceID string) string {
@@ -154,7 +154,7 @@ func workspaceLakeInternalURL(lake *oramav1alpha1.Lake, workspaceID string) stri
 }
 
 func agentServiceURL(name, namespace string) string {
-	return fmt.Sprintf("http://%s.%s.svc:%d", name, namespace, agentPort)
+	return fmt.Sprintf("http://%s:%d", serviceHost(name, namespace), agentPort)
 }
 
 // libraryAgentEndpoints is LAKE_AGENT_ENDPOINTS: key=url for every library agent, sorted.
@@ -326,6 +326,7 @@ func agentPodSpec(lake *oramav1alpha1.Lake, image string, env []corev1.EnvVar, s
 		ImagePullSecrets:             pullSecrets,
 		AutomountServiceAccountToken: &noToken,
 		EnableServiceLinks:           &noLinks,
+		DNSConfig:                    lakePodDNSConfig(),
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsNonRoot:   &nonRoot,
 			RunAsUser:      &user,

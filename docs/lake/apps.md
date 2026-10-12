@@ -62,6 +62,31 @@ environment variables. Environment names must pass Kubernetes `IsEnvVarName`, Se
 be DNS-1123 subdomains, and keys must be valid Kubernetes Secret keys. Invalid input makes the row
 `Failed` with a stable validation message and creates no invalid `LakeApp` update.
 
+### Lake secret references (lake#625)
+
+A user's secret's source of truth is lake's secret store, sealed in its workspace Zetta; a
+Kubernetes Secret is only a projection. Lake now writes every new secret reference as
+`lake-secret://<mount id>/<secret name>#<field>` (the name may contain `/` and `#`; the field follows
+the last `#` and must be a Secret key), and refuses Kubernetes Secret names:
+
+```json
+{"DB_PASSWORD":"lake-secret://6f1c2a4e-0d3b-4c55-9a7e-1b2c3d4e5f60/payments/db#password"}
+```
+
+The row becomes a `spec.secretEnv[]` entry with `lakeSecret: {mount, name, field}` and a
+`secretKeyRef` naming `app-<first 12 app UUID hex>-lake-<12 hex of mount and name>` in the Lake
+namespace. For each lake secret the app reads, the LakeApp controller owns a `LakeSealedSecret`
+there (labelled `lake.orama.cloud/app-lake-secret`, owner annotation and a plain owner reference to
+the LakeApp; the Lake stays its controller) with `source: {type: lake, lake: {mount, name}}`. Lake's
+`mint_sealed_secret` answers the secret's fields sealed to the cluster's delivery key, the
+`LakeSealedSecret` controller writes the produced Secret, and the environment copy below carries the
+selected field into the workspace namespace. Until the first delivery the app is `Progressing` with
+reason `SecretDeliveryPending` and no workload is created; a failed delivery says why in the same
+reason. An unpinned lake source is delivered again every five minutes ([sealed
+secrets](sealed-secrets.md#rotation-of-a-lake-source)), so a new version changes the copy and the pod
+template's credential digest and the pods roll. Removing the reference deletes the
+`LakeSealedSecret`, its produced Secret and the copy.
+
 For one compatibility release, the operator also accepts the former JSON array of Secret names.
 Those whole Secrets retain their `envFrom` behavior through `spec.secretRefs`; new writers must use
 the object contract. Lake must authorize these references and detect secret env values before
@@ -84,6 +109,19 @@ changes. They carry the Lake owner reference and `orama.cloud/lake` / `orama.clo
 An occupied name belonging to a different owner or customer fails without adoption. The row's
 `name` is a DNS label. An empty row host becomes `<name>.<wildcard>`; a supplied host must be one
 label beneath that suffix. Lake is responsible for reserving unique app hosts.
+
+### Store mounts (lake#666)
+
+The sync reads lake's `store_mounts` rows for the app (with the `stores` they name) and writes them
+to `spec.stores[]`: a volume of the app's workspace as `{claimName, mountPath, readOnly}`, a bucket
+as `{bucket, endpoint, region, prefix, secretName}`. The LakeApp controller mounts a volume's claim
+at its path (and gives the pod `fsGroup` 10001 so the app's user can write it), and gives a bucket's
+connection as `STORE_<NAME>_*` variables whose credential fields read a copy of the store's
+delivered Secret, made the same way as a lake secret reference's copy; a new credential version
+rolls the pods through the credential hash. The app waits with `StoreCredentialPending` until
+every mounted bucket's credential is delivered. Only a synchronized app may carry `spec.stores`
+(`StoresRequireSync`). Reading a bucket needs the workspace's internet egress. The whole of it is
+[stores.md](stores.md#mounts-lake666).
 
 ### Lifecycle and returned status
 
@@ -257,7 +295,7 @@ Standalone apps retain their direct workspace/bus Zetta policies. No general int
 
 The pod runs as uid/gid 10001, drops all capabilities, prevents privilege escalation, uses runtime
 default seccomp, has a read-only root filesystem, disables its Kubernetes token and service links,
-and gets a size-limited `emptyDir` at `/tmp`. Synchronized-app pull credentials exist only in the
+gets a size-limited `emptyDir` at `/tmp`, and resolves with `ndots:2` so the full Service names it dials resolve on the first query ([DNS](README.md#dns-ndots-2-on-lake-agent-and-app-pods)). Synchronized-app pull credentials exist only in the
 merged workload-namespace Docker config Secret; the public Lake host password is never copied into
 the CR, pod template, status or logs. Runtime env includes `WORKSPACE_ID`, and `LAKE_URL`, auth and event URLs use Lake's
 `/w/<workspace id>` route. The selected binding values appear as files at:
@@ -296,6 +334,10 @@ the auth call reaches the browser. When the Lake has public ingress (`ingressEna
 `auth-signin` sends a browser without that cookie to
 `https://<lake host>/apps/authorize?app=<app id>&rd=https://$host$escaped_request_uri`. The return URL
 is always https because TLS ends at the edge proxy. The handoff and cookie are specified in lake#407.
+
+The bytes an app's Ingress carries are metered: the operator reads ingress-nginx's per-Ingress byte
+counters and reports them by app and hour in `app_transfer` ([app-transfer.md](app-transfer.md),
+lake#661).
 
 ## Status and events
 

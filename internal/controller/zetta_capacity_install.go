@@ -6,12 +6,9 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
-	"bytes"
 	"context"
 	_ "embed"
-	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -20,7 +17,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -65,10 +61,8 @@ const (
 	// karpenterFieldOwner is the server-side-apply field manager for the install objects.
 	karpenterFieldOwner = "orama-cloud-v1-operator-karpenter"
 
-	// Placeholders in the vendored controller.yaml the operator substitutes per-CR at apply time. Keep in
-	// lockstep with hack/fetch-karpenter-manifests.sh.
-	installClusterNamePlaceholder = "__CLUSTER_NAME__"
-	installRoleARNPlaceholder     = "__CONTROLLER_ROLE_ARN__"
+	// The placeholders, the expected object sets and the renderer that sets the two CR values on the
+	// parsed bundle live in zetta_capacity_install_render.go (operator#79).
 )
 
 // capacityInstallRequested reports whether the operator should own the Karpenter install for this CR.
@@ -99,6 +93,14 @@ func (r *OramaZettaClusterReconciler) reconcileKarpenterInstall(ctx context.Cont
 			}
 		}
 		return nil, nil // no condition — a cluster that never installs keeps a clean status
+	}
+
+	// Refuse a malformed cluster name or role ARN before anything else, on every cloud. The CRD pattern
+	// rejects them at admission, but a CR stored before the pattern existed (or written past validation)
+	// still reaches here (operator#79).
+	if err := validateKarpenterInstallValues(z.Spec.Capacity.Karpenter.InstallClusterName, z.Spec.Capacity.Karpenter.ControllerRoleARN); err != nil {
+		log.Info("Karpenter install refused: invalid spec", "reason", err.Error())
+		return installBlocked("InvalidInstallSpec", "operator-owned Karpenter install refused, nothing applied: "+err.Error()), nil
 	}
 
 	// Cloud gate: only self-install on a cloud that both has a VM API and isn't already managing Karpenter.
@@ -144,16 +146,24 @@ func (r *OramaZettaClusterReconciler) reconcileKarpenterInstall(ctx context.Cont
 		}
 	}
 
+	// Render both bundles before touching the cluster, so a bundle that fails its checks applies nothing.
+	crds, err := karpenterCRDObjects()
+	if err != nil {
+		return nil, fmt.Errorf("decode Karpenter CRDs: %w", err)
+	}
+	bundle, err := renderKarpenterController(kc.InstallClusterName, kc.ControllerRoleARN)
+	if err != nil {
+		return nil, fmt.Errorf("render Karpenter controller: %w", err)
+	}
+
 	// 1. CRDs (create/update; never GC'd on teardown — deleting a Karpenter CRD cascades to every
 	//    NodePool/NodeClaim cluster-wide, and upstream keeps CRDs out of normal chart GC too).
-	if err := r.applyKarpenterManifests(ctx, karpenterCRDManifests); err != nil {
+	if err := r.applyKarpenterObjects(ctx, crds); err != nil {
 		return nil, fmt.Errorf("apply Karpenter CRDs: %w", err)
 	}
 	// 2. Controller bundle (ServiceAccount + RBAC + Deployment + Service + PDB), with the two
-	//    cluster-specific values substituted from the CR.
-	bundle := bytes.ReplaceAll(karpenterControllerManifests, []byte(installClusterNamePlaceholder), []byte(kc.InstallClusterName))
-	bundle = bytes.ReplaceAll(bundle, []byte(installRoleARNPlaceholder), []byte(kc.ControllerRoleARN))
-	if err := r.applyKarpenterManifests(ctx, bundle); err != nil {
+	//    cluster-specific values set on the parsed objects.
+	if err := r.applyKarpenterObjects(ctx, bundle); err != nil {
 		return nil, fmt.Errorf("apply Karpenter controller: %w", err)
 	}
 
@@ -205,22 +215,12 @@ func (r *OramaZettaClusterReconciler) detectCloudProvider(ctx context.Context) (
 	return "", nil // no node carries a cloud providerID ⇒ bare-metal / k0s
 }
 
-// applyKarpenterManifests server-side-applies each YAML document in raw as an unstructured object,
-// stamping the operator's management labels. Force-ownership so the operator takes over any fields the
-// upstream Helm release previously managed; the write is a no-op when nothing changed.
-func (r *OramaZettaClusterReconciler) applyKarpenterManifests(ctx context.Context, raw []byte) error {
-	dec := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(raw), 4096)
-	for {
-		obj := &unstructured.Unstructured{}
-		if err := dec.Decode(obj); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		if isEmptyManifestDoc(obj) { // skip empty / non-object docs (leading `---`, comment-only chunks)
-			continue
-		}
+// applyKarpenterObjects server-side-applies each object, stamping the operator's management labels.
+// Force-ownership so the operator takes over any fields the upstream Helm release previously managed;
+// the write is a no-op when nothing changed. Callers pass only checked bundles (karpenterCRDObjects,
+// renderKarpenterController).
+func (r *OramaZettaClusterReconciler) applyKarpenterObjects(ctx context.Context, objs []*unstructured.Unstructured) error {
+	for _, obj := range objs {
 		labels := obj.GetLabels()
 		if labels == nil {
 			labels = map[string]string{}
@@ -234,6 +234,7 @@ func (r *OramaZettaClusterReconciler) applyKarpenterManifests(ctx context.Contex
 			return fmt.Errorf("apply %s %s/%s: %w", obj.GetKind(), obj.GetNamespace(), obj.GetName(), err)
 		}
 	}
+	return nil
 }
 
 // isEmptyManifestDoc reports whether a decoded YAML document should be skipped: an empty doc (a bare
@@ -271,29 +272,23 @@ func (r *OramaZettaClusterReconciler) teardownKarpenterInstall(ctx context.Conte
 		log.Info("Karpenter install still requested by another OramaZettaCluster — leaving the shared controller in place")
 		return nil
 	}
-	return r.deleteKarpenterManifests(ctx, karpenterControllerManifests)
+	return r.deleteKarpenterController(ctx)
 }
 
-// deleteKarpenterManifests deletes each object in raw (by GVK + name + namespace), tolerating a missing
-// CRD (NoMatch) or an already-absent object. Placeholders in the bytes are irrelevant to deletion (only
-// name/namespace/kind matter), so no substitution is needed.
-func (r *OramaZettaClusterReconciler) deleteKarpenterManifests(ctx context.Context, raw []byte) error {
-	dec := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(raw), 4096)
-	for {
-		obj := &unstructured.Unstructured{}
-		if err := dec.Decode(obj); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		if isEmptyManifestDoc(obj) {
-			continue
-		}
+// deleteKarpenterController deletes each object of the controller bundle (by GVK + name + namespace),
+// tolerating a missing CRD (NoMatch) or an already-absent object. The unrendered template is enough:
+// deletion uses only the identity fields, which hold no CR value.
+func (r *OramaZettaClusterReconciler) deleteKarpenterController(ctx context.Context) error {
+	objs, err := karpenterControllerTemplate()
+	if err != nil {
+		return err
+	}
+	for _, obj := range objs {
 		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) && !apimeta.IsNoMatchError(err) {
 			return fmt.Errorf("delete %s %s/%s: %w", obj.GetKind(), obj.GetNamespace(), obj.GetName(), err)
 		}
 	}
+	return nil
 }
 
 // otherClustersRequestInstall reports whether any OTHER (non-deleting) OramaZettaCluster still requests

@@ -117,6 +117,15 @@ type OramaZettaClusterSpec struct {
 	// hosts) — the route table (operator#70). Each is appended as a `--peer` flag so this node's nodes
 	// dial them and join the shared Zetta cluster. Zetta is the mesh (gossip relays transitively), so a
 	// connected dial-graph is enough; NAT'd nodes just list a reachable sibling here.
+	//
+	// Each entry must be exactly `host:port`: a DNS name, an IPv4 address or a bracketed IPv6 address
+	// (`[fd00::1]:7777`), and a port from 1 to 65535 (operator#279). The API server refuses anything else;
+	// the controller re-checks (for CRs written before this rule) and, on an invalid entry, leaves the
+	// StatefulSet unchanged and sets `PeerAddressesValid=False`. Peers reach Zetta as process arguments,
+	// never as shell text.
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=261
+	// +kubebuilder:validation:items:Pattern=`^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|\[[0-9A-Fa-f:]+\]):([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$`
 	// +optional
 	ExternalPeers []string `json:"externalPeers,omitempty"`
 
@@ -151,7 +160,10 @@ type OramaZettaClusterSpec struct {
 	// `.status.wanAddress` (e.g. a Tailscale/WireGuard address, a stable public IP, or a DNS name). When
 	// empty, the operator derives the address from `spec.hostNetwork` (the node's host IP) or
 	// `spec.exposePeerLoadBalancer` (the cloud LB's public IP). Ignored unless reachability is
-	// wan-accessible.
+	// wan-accessible. Validated like `spec.externalPeers` (a DNS name, IPv4, `[IPv6]` or a bare IPv6 literal,
+	// with an optional port 1-65535); an invalid value is refused the same way (operator#279).
+	// +kubebuilder:validation:MaxLength=261
+	// +kubebuilder:validation:Pattern=`^(([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|\[[0-9A-Fa-f:]+\])(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7})$`
 	// +optional
 	WanAddress string `json:"wanAddress,omitempty"`
 
@@ -287,6 +299,13 @@ type KarpenterCapacity struct {
 	// resources (AWS `settings.clusterName` — the tagged subnets / security-groups / interruption queue).
 	// REQUIRED when `install` is true on EKS; empty ⇒ `KarpenterInstalled=False,
 	// Reason=InstallClusterNameRequired`. Ignored when `install` is false.
+	//
+	// Must be a valid EKS cluster name: 1-100 characters, a letter or digit first, then letters, digits,
+	// hyphens or underscores (operator#79). The API server enforces this pattern, and the reconciler checks
+	// it again (a CR written before the pattern existed is refused with `KarpenterInstalled=False,
+	// Reason=InvalidInstallSpec`), because the value is written into the Karpenter controller Deployment.
+	// +kubebuilder:validation:MaxLength=100
+	// +kubebuilder:validation:Pattern=`^[0-9A-Za-z][A-Za-z0-9\-_]{0,99}$`
 	// +optional
 	InstallClusterName string `json:"installClusterName,omitempty"`
 
@@ -297,6 +316,13 @@ type KarpenterCapacity struct {
 	// `KarpenterInstalled=False, Reason=CloudIdentityMissing` and the controller is NOT deployed (no
 	// crash-loop). This is the CONTROLLER identity only; the launched NODES get their own instance
 	// profile via the platform-owned NodeClass (NodeClassRef). Ignored when `install` is false.
+	//
+	// Must be an IAM role ARN in the aws, aws-cn or aws-us-gov partition:
+	// `arn:<partition>:iam::<12-digit account>:role/<path and name>`, where the path and name use only
+	// the characters IAM allows (operator#79). The API server enforces this pattern, and the reconciler
+	// checks it again (`KarpenterInstalled=False, Reason=InvalidInstallSpec`).
+	// +kubebuilder:validation:MaxLength=550
+	// +kubebuilder:validation:Pattern=`^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_\-/]{1,512}$`
 	// +optional
 	ControllerRoleARN string `json:"controllerRoleARN,omitempty"`
 }

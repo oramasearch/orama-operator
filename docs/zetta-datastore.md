@@ -217,6 +217,11 @@ used to be hand-wired: an admin copied each slice's `.status.wanAddress` into it
    **other** operators sharing this cluster name — excluding its own nodes and its own advertised addresses.
    The StatefulSet's `--peer` flags are the **union** of `spec.externalPeers` (explicit override — wins) and
    this derived set (deduped). Setting `spec.externalPeers` by hand still works; the derived set fills the gap.
+   **Topology rows are untrusted input** — any operator sharing the Zetta cluster can append one — so every
+   derived address is validated as `host:port` (DNS name, IPv4 or `[IPv6]`, port 1–65535); an invalid one is
+   dropped, logged Go-quoted, and named in the `PeerAddressesValid` condition while the rest of the cluster
+   reconciles. Peers reach the node as container args, never as shell text
+   ([operator#279](https://github.com/oramasearch/orama-operator/issues/279)).
 4. **Failover.** When a wan node drops out — this operator scales the slice down, or it flips to
    `dial-out-only` — the operator appends a **`status='gone'` marker row** for that node (there is no
    `DELETE`; the engine is append-only, [zetta#735](https://github.com/oramasearch/zetta/issues/735)). On the

@@ -106,8 +106,23 @@ Secret RBAC remains security-critical.
 
 `source.type: lake` carries only `{mount, name, version?}`. The operator sends the source, target
 AAD, current recipient, and its projected Kubernetes service-account token to
-`POST /v1/mint_sealed_secret` on the referenced Lake. Lake exchanges the attestation, reads the
-authorized version, and returns only a sealed record to the operator.
+`POST /v1/mint_sealed_secret` on the referenced Lake, authenticated with the Lake's admin bearer
+(`Authorization: Bearer`, from the operator-minted `lake-<lake>-admin` Secret, lake#625). Lake
+delivers only to the operator credential, seals only to the delivery key it was given
+(`LAKE_SEALING_PUBLIC_KEY`), reads the version, and returns one sealed record per field of the
+secret plus the `version` it read.
+
+#### Rotation of a lake source
+
+A user's secret changes in lake (`put_secret` writes a new version), never in the produced Secret.
+An unpinned lake source (no `version`) is therefore delivered again every five minutes
+(`LakeSourceRefresh`): `status.mintedAt` is the last delivery and `status.version` the version the
+Secret holds, and the reconcile requeues for the time left. A source pinned to a `version` is minted
+only when its Secret is missing or drifted, its generation changes, or the sealing key rotates.
+Anything that mounts the produced Secret sees the new value when it is rewritten; LakeApp copies
+carry a credential digest that rolls the app's pods (see [apps](apps.md#lake-secret-references-lake625)).
+A bucket store owns one too, `<lake>-<slug>` in the Lake namespace, delivering the bucket's
+credential from the workspace's secret store (see [stores](stores.md#customer-buckets-lake664)).
 
 ### Dynamic secret
 
@@ -116,9 +131,11 @@ and returns sealed data plus `{id, expires_at, renew_at?}`. The operator renews 
 omits it, the operator renews one third of the requested TTL before expiry. It updates the existing
 Secret in place and records only lease metadata in status.
 
-The lake capability implementations are separate lake work. Until lake supplies
-`mint_sealed_secret`, only literal sources complete against a real Lake deployment; the operator's
-HTTP and renewal behavior is covered by an `httptest` lake double.
+Lake implements `mint_sealed_secret` from lake#625 (lake `docs/api/secrets.md#projections`): a
+`lake` source reads the mount's secret; a `dynamic` source's `engine` is the mount id whose role
+leases the credential (`ttl` from 1s to 1h). Before a lake with it is deployed only literal sources
+complete against a real Lake; the operator's HTTP, refresh and renewal behavior is covered by an
+`httptest` lake double.
 
 The lake leaf's action input is the following JSON. `source` is the CRD source object unchanged.
 The capability must exchange and authorize the attestation before reading or minting a value.

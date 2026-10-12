@@ -53,7 +53,7 @@ const (
 	buildTokenSourceKey   = "SOURCE_TOKEN"
 	buildTokenPushKey     = "PUSH_TOKEN"
 	buildTokenEventsKey   = "EVENTS_TOKEN"
-	buildArgAllow         = "PYTHON_VERSION,APP_DEPS,APP_RUNTIME_IMAGE"
+	buildArgAllow         = "PYTHON_VERSION,APP_DEPS,APP_RUNTIME_IMAGE,METHODOLOGY_RUNTIME_IMAGE,METHODOLOGY_PACKAGES"
 	buildDefaultPerLake   = int32(4)
 	buildDefaultPerSpace  = int32(2)
 	buildDeadlineSeconds  = int64(3600)

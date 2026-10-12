@@ -147,7 +147,7 @@ func (r *LakeAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, err
 		}
 		phase := oramav1alpha1.LakeAppPhaseDegraded
-		if reason == "TokenRegistrationPending" || reason == "BindingPending" {
+		if reason == "TokenRegistrationPending" || reason == "BindingPending" || reason == "SecretDeliveryPending" {
 			phase = oramav1alpha1.LakeAppPhaseProgressing
 		}
 		return r.finishLakeAppStatus(ctx, &app, nil, host, phase, false, reason, message)
@@ -186,6 +186,9 @@ func (r *LakeAppReconciler) reader() client.Reader {
 func validateLakeApp(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) (string, string) {
 	if app.Spec.Sync != nil && !metav1.IsControlledBy(app, lake) {
 		return "SyncOwnerInvalid", "a synchronized app must be controlled by its Lake"
+	}
+	if len(app.Spec.Stores) > 0 && app.Spec.Sync == nil {
+		return "StoresRequireSync", "only an app synchronized from lake may mount stores"
 	}
 	mode := app.Spec.Mode
 	if mode == "" {
@@ -533,6 +536,9 @@ type lakeAppSecrets struct {
 	SourceName   string
 	PullName     string
 	Digest       string
+	// StoreSecrets maps a mounted bucket's store id to its credential copy in the app namespace
+	// (lake#666).
+	StoreSecrets map[string]string
 }
 
 func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, namespace string) (lakeAppSecrets, string, string, error) {
@@ -548,7 +554,15 @@ func (r *LakeAppReconciler) reconcileLakeAppSecrets(ctx context.Context, lake *o
 		}
 	}
 
-	reason, message, err := r.reconcileLakeAppEnvironmentSecrets(ctx, app, namespace, wanted, digests, &result)
+	reason, message, err := r.reconcileLakeAppLakeSecrets(ctx, lake, app)
+	if err != nil || reason != "" {
+		return result, reason, message, err
+	}
+	reason, message, err = r.copyLakeAppStoreCredentials(ctx, lake, app, namespace, wanted, digests, &result)
+	if err != nil || reason != "" {
+		return result, reason, message, err
+	}
+	reason, message, err = r.reconcileLakeAppEnvironmentSecrets(ctx, app, namespace, wanted, digests, &result)
 	if err != nil || reason != "" {
 		return result, reason, message, err
 	}
@@ -702,6 +716,12 @@ func (r *LakeAppReconciler) mergedLakeAppPullSecret(
 }
 
 func mergeLakeAppDockerConfig(source *corev1.Secret, host string, token []byte) ([]byte, bool) {
+	return mergeRegistryDockerConfig(source, host, "app", token)
+}
+
+// mergeRegistryDockerConfig adds lake's registry host, with a Basic username and token, to the
+// auths of a dockerconfigjson source Secret (which may be nil).
+func mergeRegistryDockerConfig(source *corev1.Secret, host, username string, token []byte) ([]byte, bool) {
 	config := map[string]json.RawMessage{}
 	if source != nil {
 		raw, found := source.Data[corev1.DockerConfigJsonKey]
@@ -717,7 +737,7 @@ func mergeLakeAppDockerConfig(source *corev1.Secret, host string, token []byte) 
 	}
 	if host != "" {
 		credentials, err := json.Marshal(map[string]string{
-			"username": "app",
+			"username": username,
 			"password": string(token),
 		})
 		if err != nil {
@@ -866,6 +886,146 @@ func (r *LakeAppReconciler) copyLakeAppEnvironmentSecrets(
 	return targetNames, "", "", nil
 }
 
+func lakeAppDeliversSecret(app *oramav1alpha1.LakeApp, name string) bool {
+	for _, variable := range app.Spec.SecretEnv {
+		if variable.LakeSecret != nil && variable.SecretKeyRef.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// lakeAppLakeSecretLabel marks the LakeSealedSecrets a LakeApp owns for its lake secrets.
+const lakeAppLakeSecretLabel = "lake.orama.cloud/app-lake-secret"
+
+// reconcileLakeAppLakeSecrets owns one LakeSealedSecret per lake secret the app reads (lake#625).
+// Each has a lake source and produces, in the Lake namespace, the Secret the app's SecretKeyRef
+// names; the environment copy below then carries the field into the app namespace, and its digest
+// rolls the pods when a new secret version is delivered. The user's secret stays in lake's store,
+// sealed in its workspace Zetta: the Secret is only this projection, rewritten on rotation.
+func (r *LakeAppReconciler) reconcileLakeAppLakeSecrets(ctx context.Context, lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) (string, string, error) {
+	wanted := map[string]oramav1alpha1.LakeAppLakeSecretReference{}
+	for _, variable := range app.Spec.SecretEnv {
+		if variable.LakeSecret != nil {
+			wanted[variable.SecretKeyRef.Name] = *variable.LakeSecret
+		}
+	}
+	names := make([]string, 0, len(wanted))
+	for name := range wanted {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	labels := lakeAppLabels(app)
+	labels[lakeAppLakeSecretLabel] = "true"
+	pending := ""
+	for _, name := range names {
+		reference := wanted[name]
+		sealed := &oramav1alpha1.LakeSealedSecret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: app.Namespace}}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sealed, func() error {
+			if sealed.ResourceVersion != "" && sealed.Annotations[lakeAppOwnerAnnotation] != lakeAppOwner(app) {
+				return fmt.Errorf("LakeSealedSecret %q is not owned by this LakeApp", name)
+			}
+			sealed.Labels = labels
+			if sealed.Annotations == nil {
+				sealed.Annotations = map[string]string{}
+			}
+			sealed.Annotations[lakeAppOwnerAnnotation] = lakeAppOwner(app)
+			sealed.Spec.LakeRef = corev1.LocalObjectReference{Name: lake.Name}
+			sealed.Spec.Template = oramav1alpha1.LakeSealedSecretTemplate{Name: name, Type: corev1.SecretTypeOpaque}
+			sealed.Spec.Data = nil
+			sealed.Spec.Source = oramav1alpha1.LakeSealedSecretSource{
+				Type: "lake",
+				Lake: &oramav1alpha1.LakeStaticSecretSource{Mount: reference.Mount, Name: reference.Name},
+			}
+			// The Lake stays its controller (the LakeSealedSecret reconciler sets it); the app is a
+			// plain owner, so deleting the app deletes the delivery and its Secret.
+			return controllerutil.SetOwnerReference(app, sealed, r.Scheme)
+		}); err != nil {
+			return "", "", fmt.Errorf("reconcile LakeSealedSecret %q: %w", name, err)
+		}
+		ready := apimeta.FindStatusCondition(sealed.Status.Conditions, "Ready")
+		if sealed.Status.Phase == "Error" && ready != nil && pending == "" {
+			pending = fmt.Sprintf("lake secret %q in mount %s: %s", reference.Name, reference.Mount, ready.Message)
+		}
+	}
+	var existing oramav1alpha1.LakeSealedSecretList
+	if err := r.List(ctx, &existing, client.InNamespace(app.Namespace), client.MatchingLabels(labels)); err != nil {
+		return "", "", err
+	}
+	for index := range existing.Items {
+		sealed := &existing.Items[index]
+		if sealed.Annotations[lakeAppOwnerAnnotation] != lakeAppOwner(app) {
+			continue
+		}
+		if _, keep := wanted[sealed.Name]; keep {
+			continue
+		}
+		if err := r.Delete(ctx, sealed); err != nil && !apierrors.IsNotFound(err) {
+			return "", "", err
+		}
+	}
+	if pending != "" {
+		return "SecretDeliveryPending", pending, nil
+	}
+	return "", "", nil
+}
+
+// lakeAppStoreSecretName is the copy, in the app namespace, of a mounted bucket's credential.
+func lakeAppStoreSecretName(app *oramav1alpha1.LakeApp, slug string) string {
+	return lakeAppManagedName(app, "store-"+slug, "store-"+slug)
+}
+
+// copyLakeAppStoreCredentials copies each mounted bucket's delivered credential (Secret
+// <lake>-<slug> in the Lake namespace, produced by the store's LakeSealedSecret) into the app
+// namespace, so the app's STORE_<NAME>_* variables can read it there; its digest rolls the pods on a
+// new credential version (lake#666). The app waits until every mounted bucket's credential is there.
+func (r *LakeAppReconciler) copyLakeAppStoreCredentials(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	app *oramav1alpha1.LakeApp,
+	namespace string,
+	wanted map[string]bool,
+	digests map[string][]byte,
+	result *lakeAppSecrets,
+) (string, string, error) {
+	for _, store := range app.Spec.Stores {
+		if store.Type == storeTypeVolume {
+			continue
+		}
+		data, found, err := readStoreCredential(ctx, r.Client, lake, app.Namespace, workloadStoreMount{StoreID: store.ID, Secret: store.SecretName})
+		if err != nil {
+			return "StoreCredentialInvalid", fmt.Sprintf("store %q: %v", store.Name, err), nil
+		}
+		if !found {
+			return "StoreCredentialPending", fmt.Sprintf("waiting for the credentials of store %q from the workspace's secret store", store.Name), nil
+		}
+		targetName := lakeAppStoreSecretName(app, store.Slug)
+		if err := r.copyLakeAppSecret(ctx, app, namespace, targetName, corev1.SecretTypeOpaque, data); err != nil {
+			return "", "", err
+		}
+		wanted[targetName] = true
+		addLakeAppSecretDigest(digests, targetName, data)
+		if result.StoreSecrets == nil {
+			result.StoreSecrets = map[string]string{}
+		}
+		result.StoreSecrets[store.ID] = targetName
+	}
+	return "", "", nil
+}
+
+// lakeAppStoreMounts is the app's stores as the pod-building helpers take them.
+func lakeAppStoreMounts(app *oramav1alpha1.LakeApp) []workloadStoreMount {
+	out := make([]workloadStoreMount, 0, len(app.Spec.Stores))
+	for _, store := range app.Spec.Stores {
+		out = append(out, workloadStoreMount{
+			StoreID: store.ID, Name: store.Name, Slug: store.Slug, Type: store.Type, Provider: store.Provider,
+			Claim: store.ClaimName, MountPath: store.MountPath, ReadOnly: store.ReadOnly,
+			Bucket: store.Bucket, Endpoint: store.Endpoint, Region: store.Region, Prefix: store.Prefix, Secret: store.SecretName,
+		})
+	}
+	return out
+}
+
 func lakeAppSecretNameIsManaged(app *oramav1alpha1.LakeApp, name string) bool {
 	return name == lakeAppTokensName(app) ||
 		name == lakeAppBindingsName(app) ||
@@ -881,6 +1041,9 @@ func (r *LakeAppReconciler) lakeAppSourceSecret(ctx context.Context, app *oramav
 	var source corev1.Secret
 	key := client.ObjectKey{Namespace: app.Namespace, Name: name}
 	if err := r.Get(ctx, key, &source); err != nil {
+		if apierrors.IsNotFound(err) && lakeAppDeliversSecret(app, name) {
+			return nil, "SecretDeliveryPending", fmt.Sprintf("lake has not delivered Secret %q yet", name), nil
+		}
 		if apierrors.IsNotFound(err) {
 			return nil, "SecretReferenceNotFound", fmt.Sprintf("Secret %q was not found", name), nil
 		}
@@ -1143,9 +1306,24 @@ func lakeAppPodSpec(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, secret
 			ReadOnly:  true,
 		})
 	}
+	// The stores the app mounts (lake#666): a volume's claim at its path, a bucket's connection as
+	// STORE_<NAME>_* variables reading its credential copy.
+	if len(app.Spec.Stores) > 0 {
+		mounts := lakeAppStoreMounts(app)
+		storeVolumes, storeVolumeMounts, storeEnv := storeMountsPodParts(mounts, func(mount workloadStoreMount) string {
+			if name := secrets.StoreSecrets[mount.StoreID]; name != "" {
+				return name
+			}
+			return lakeAppStoreSecretName(app, mount.Slug)
+		})
+		volumes = append(volumes, storeVolumes...)
+		container.VolumeMounts = append(container.VolumeMounts, storeVolumeMounts...)
+		container.Env = append(container.Env, storeEnv...)
+	}
 	pod := corev1.PodSpec{
 		AutomountServiceAccountToken: &noToken,
 		EnableServiceLinks:           &noLinks,
+		DNSConfig:                    lakePodDNSConfig(),
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsNonRoot:   &nonRoot,
 			RunAsUser:      &user,
@@ -1154,6 +1332,13 @@ func lakeAppPodSpec(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, secret
 		},
 		Containers: []corev1.Container{container},
 		Volumes:    volumes,
+	}
+	// A mounted volume is written by the app's user: the kubelet gives it the app's group.
+	if storeMountsHaveVolume(lakeAppStoreMounts(app)) {
+		group := user
+		onRootMismatch := corev1.FSGroupChangeOnRootMismatch
+		pod.SecurityContext.FSGroup = &group
+		pod.SecurityContext.FSGroupChangePolicy = &onRootMismatch
 	}
 	if secrets.PullName != "" {
 		pod.ImagePullSecrets = []corev1.LocalObjectReference{{Name: secrets.PullName}}
@@ -1686,6 +1871,16 @@ func (r *LakeAppReconciler) requestsForLakeAppSourceSecret(ctx context.Context, 
 	return requests
 }
 
+// requestsForLakeAppLakeSecret wakes the app that owns a delivery when its status changes.
+func (r *LakeAppReconciler) requestsForLakeAppLakeSecret(_ context.Context, object client.Object) []reconcile.Request {
+	for _, owner := range object.GetOwnerReferences() {
+		if owner.Kind == "LakeApp" {
+			return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: object.GetNamespace(), Name: owner.Name}}}
+		}
+	}
+	return nil
+}
+
 func (r *LakeAppReconciler) lakeAppReferencesSecret(ctx context.Context, app *oramav1alpha1.LakeApp, name string) bool {
 	if app.Spec.Sync != nil && name == lakeServicesSecret(app.Spec.LakeRef) {
 		return true
@@ -1709,6 +1904,11 @@ func (r *LakeAppReconciler) lakeAppReferencesSecret(ctx context.Context, app *or
 			return true
 		}
 	}
+	for _, store := range app.Spec.Stores {
+		if store.SecretName != "" && store.SecretName == name {
+			return true
+		}
+	}
 	var lake oramav1alpha1.Lake
 	if err := r.Get(ctx, client.ObjectKey{Name: app.Spec.LakeRef}, &lake); err != nil {
 		return false
@@ -1724,6 +1924,7 @@ func (r *LakeAppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&oramav1alpha1.LakeApp{}).
 		Watches(&oramav1alpha1.Lake{}, handler.EnqueueRequestsFromMapFunc(r.requestsForLakeAppLake)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForLakeAppSourceSecret)).
+		Watches(&oramav1alpha1.LakeSealedSecret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForLakeAppLakeSecret)).
 		Watches(&appsv1.Deployment{}, mapObject).
 		Watches(&corev1.Pod{}, mapObject).
 		Watches(&corev1.Service{}, mapObject).

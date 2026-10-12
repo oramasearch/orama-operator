@@ -19,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -33,12 +34,17 @@ import (
 const testAppRowID = "91b78263-af2c-40eb-b09c-7c768c6d4d94"
 
 type fakeAppsStore struct {
-	rows         []LakeAppRow
-	services     []LakeService
-	listErr      error
-	writeErr     error
-	statusWrites int
-	hashWrites   int
+	rows     []LakeAppRow
+	services []LakeService
+	// stores and storeMounts are the stores apps mount (lake#666).
+	stores             []LakeStore
+	storeMounts        []LakeStoreMount
+	storeMountsMissing bool
+	storeMountsErr     error
+	listErr            error
+	writeErr           error
+	statusWrites       int
+	hashWrites         int
 }
 
 func (s *fakeAppsStore) ListApps(context.Context) ([]LakeAppRow, error) {
@@ -47,6 +53,17 @@ func (s *fakeAppsStore) ListApps(context.Context) ([]LakeAppRow, error) {
 
 func (s *fakeAppsStore) ListServices(context.Context) ([]LakeService, error) {
 	return append([]LakeService(nil), s.services...), nil
+}
+
+func (s *fakeAppsStore) ListStores(context.Context) ([]LakeStore, error) {
+	return append([]LakeStore(nil), s.stores...), nil
+}
+
+func (s *fakeAppsStore) ListStoreMounts(context.Context) ([]LakeStoreMount, error) {
+	if s.storeMountsMissing {
+		return nil, errStoreMountsTableMissing
+	}
+	return append([]LakeStoreMount(nil), s.storeMounts...), s.storeMountsErr
 }
 
 func (s *fakeAppsStore) Close(context.Context) error {
@@ -254,6 +271,8 @@ func TestLakeAppsEnvtestLifecycle(t *testing.T) {
 	}
 	assertSyncedAppSteady(t, h)
 	assertSyncedAppSecretEnvironment(t, h)
+	assertSyncedAppLakeSecretEnvironment(t, h)
+	assertSyncedAppStoreMounts(t, h)
 	assertSyncedAppUpdateAndStop(t, h)
 	assertSyncedAppRotation(t, h)
 	h.store.rows[0].Desired = "deleted"
@@ -345,6 +364,100 @@ func assertSyncedAppSecretEnvironment(t *testing.T, h *appsSyncHarness) {
 	}
 }
 
+// A lake secret reference (lake#625): the app's LakeSealedSecret in the Lake namespace, the app
+// held back until lake delivers, the field copied into the app namespace, a new version rolling the
+// pods, and the delivery removed with the reference.
+func assertSyncedAppLakeSecretEnvironment(t *testing.T, h *appsSyncHarness) {
+	t.Helper()
+	const mount = "6f1c2a4e-0d3b-4c55-9a7e-1b2c3d4e5f60"
+	h.store.rows[0].SecretEnvRefs = `{"DB_PASSWORD":"lake-secret://` + mount + `/payments/db#password"}`
+	h.store.rows[0].Generation++
+	h.converge()
+	app := h.app()
+	if len(app.Spec.SecretEnv) != 1 || app.Spec.SecretEnv[0].LakeSecret == nil {
+		t.Fatalf("lake secret environment = %+v", app.Spec.SecretEnv)
+	}
+	reference := *app.Spec.SecretEnv[0].LakeSecret
+	if reference.Mount != mount || reference.Name != "payments/db" || reference.Field != "password" {
+		t.Fatalf("lake secret reference = %+v", reference)
+	}
+	produced := app.Spec.SecretEnv[0].SecretKeyRef.Name
+	var sealed oramav1alpha1.LakeSealedSecret
+	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: app.Namespace, Name: produced}, &sealed); err != nil {
+		t.Fatalf("no LakeSealedSecret for the lake secret: %v", err)
+	}
+	if sealed.Spec.Source.Type != "lake" || sealed.Spec.Source.Lake == nil ||
+		sealed.Spec.Source.Lake.Mount != mount || sealed.Spec.Source.Lake.Name != "payments/db" ||
+		sealed.Spec.Source.Lake.Version != nil || sealed.Spec.Template.Name != produced || len(sealed.Spec.Data) != 0 {
+		t.Fatalf("LakeSealedSecret spec = %+v", sealed.Spec)
+	}
+	ownedByApp := false
+	for _, owner := range sealed.OwnerReferences {
+		ownedByApp = ownedByApp || (owner.Kind == "LakeApp" && owner.Name == app.Name)
+	}
+	if !ownedByApp {
+		t.Fatalf("LakeSealedSecret owners = %+v", sealed.OwnerReferences)
+	}
+	if ready := apimeta.FindStatusCondition(app.Status.Conditions, "Ready"); ready == nil ||
+		ready.Reason != "SecretDeliveryPending" || app.Status.Phase != oramav1alpha1.LakeAppPhaseProgressing {
+		t.Fatalf("app before delivery: phase=%s conditions=%+v", app.Status.Phase, app.Status.Conditions)
+	}
+
+	// The LakeSealedSecret reconciler's produced Secret (its own tests cover the minting).
+	delivered := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: produced, Namespace: app.Namespace},
+		Data:       map[string][]byte{"password": []byte("v1-password"), "user": []byte("app")},
+	}
+	if err := h.client.Create(h.ctx, delivered); err != nil {
+		t.Fatal(err)
+	}
+	h.converge()
+	app = h.app()
+	var deployment appsv1.Deployment
+	deploymentKey := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppWorkloadObjectName(app)}
+	if err := h.client.Get(h.ctx, deploymentKey, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	copyName := lakeAppEnvSecretName(app, produced)
+	assertLakeAppSecretEnv(t, deployment.Spec.Template.Spec.Containers[0].Env, "DB_PASSWORD", copyName, "password")
+	var copied corev1.Secret
+	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: lakeAppNamespace(app), Name: copyName}, &copied); err != nil {
+		t.Fatal(err)
+	}
+	if len(copied.Data) != 1 || string(copied.Data["password"]) != "v1-password" {
+		t.Fatalf("copied lake secret = %#v", copied.Data)
+	}
+	before := deployment.Spec.Template.Annotations[lakeAppCredentialHashAnnotation]
+
+	// A new version delivered: the copy and the pods' credential digest follow.
+	delivered.Data["password"] = []byte("v2-password")
+	if err := h.client.Update(h.ctx, delivered); err != nil {
+		t.Fatal(err)
+	}
+	h.converge()
+	if err := h.client.Get(h.ctx, deploymentKey, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: lakeAppNamespace(app), Name: copyName}, &copied); err != nil {
+		t.Fatal(err)
+	}
+	if string(copied.Data["password"]) != "v2-password" || deployment.Spec.Template.Annotations[lakeAppCredentialHashAnnotation] == before {
+		t.Fatalf("rotation did not reach the app: copy=%q digest unchanged=%v", copied.Data["password"],
+			deployment.Spec.Template.Annotations[lakeAppCredentialHashAnnotation] == before)
+	}
+
+	// The reference removed: the delivery goes with it.
+	h.store.rows[0].SecretEnvRefs = `{}`
+	h.store.rows[0].Generation++
+	h.converge()
+	if err := h.client.Get(h.ctx, client.ObjectKey{Namespace: app.Namespace, Name: produced}, &sealed); !apierrors.IsNotFound(err) {
+		t.Fatalf("LakeSealedSecret kept after its reference was removed: %v", err)
+	}
+	if err := h.client.Delete(h.ctx, delivered); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatal(err)
+	}
+}
+
 func assertLakeAppSecretEnv(t *testing.T, env []corev1.EnvVar, name, secretName, key string) {
 	t.Helper()
 	for _, variable := range env {
@@ -382,6 +495,20 @@ func TestLakeAppRowSecretEnvironmentContract(t *testing.T) {
 				{Name: "DB_URL", SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{Name: "db-secret", Key: "DB_URL"}},
 			},
 		},
+		{
+			name: "lake secret reference",
+			raw:  `{"DB_PASSWORD":"lake-secret://m-1/payments/db#prod#password"}`,
+			wantSecretEnv: []oramav1alpha1.LakeAppSecretEnvironmentVariable{{
+				Name: "DB_PASSWORD",
+				SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{
+					Name: lakeAppLakeSecretName(nil, oramav1alpha1.LakeAppLakeSecretReference{Mount: "m-1", Name: "payments/db#prod"}),
+					Key:  "password",
+				},
+				LakeSecret: &oramav1alpha1.LakeAppLakeSecretReference{Mount: "m-1", Name: "payments/db#prod", Field: "password"},
+			}},
+		},
+		{name: "lake secret without a field", raw: `{"GOOD":"lake-secret://m-1/db"}`, wantError: "lake-secret://"},
+		{name: "lake secret with a bad field", raw: `{"GOOD":"lake-secret://m-1/db#a b"}`, wantError: "not a Secret key"},
 		{name: "legacy array", raw: `["z-secret","a-secret","z-secret"]`, wantLegacy: []string{"a-secret", "z-secret"}},
 		{name: "invalid environment name", raw: `{"9BAD":"good-secret"}`, wantError: "environment name"},
 		{name: "invalid Secret name", raw: `{"GOOD":"Bad-Secret"}`, wantError: "Secret name"},

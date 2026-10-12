@@ -69,8 +69,13 @@ Polars: it writes the
 Operator, K8ssandra, valkey-operator), or StatefulSet of [lake-sqlite](lake-sqlite.md), [lake-duckdb](lake-duckdb.md) or
 [lake-polars](lake-polars.md) per service, writes `service_status`, and hands lake each connection
 through a mounted Secret ([services.md](services.md)). The same poll runs a customer's **stores**
-(lake#196; phase 1: cluster volumes, one
-Lake-owned PersistentVolumeClaim each, connection in the same Secret) — [stores.md](stores.md).
+(lake#196, lake#664): cluster volumes (one Lake-owned PersistentVolumeClaim each), the customer's
+own buckets on R2, S3, B2, GCS and Azure (one `LakeSealedSecret` delivering the workspace's
+credential each; the bucket itself is never touched) and Lake-run Zetta and Lake stores, each
+connection in the same Secret. Services and apps mount them (lake#666): a volume at a path in the
+pods the operator builds (apps and the sqlite, duckdb and polars services), a bucket as
+`STORE_<NAME>_*` variables, and the operator reports each volume's used space —
+[stores.md](stores.md).
 
 ## What a Lake reconciles into
 
@@ -125,8 +130,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `drop_moved_tables_guard` from
-   `0070_drop_moved_tables`, version = hash of the SQL plus guard. The Job skips the file only when
+   `oramasearch/lake` `db/schema.sql`), guard table = `methodology_deployments_guard` from
+   `0083_methodology_deployments`, version = hash of the SQL plus guard. The Job skips the file only when
    the guard exists **and** every `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')` in it
    is present in the database's `schema_migrations`; otherwise it applies the whole idempotent file,
    so a migration that merges out of order (0067 after 0068 and 0069, #271) still applies. A changed hash automatically
@@ -192,6 +197,20 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     `VolumeSnapshotClass` the operator creates when absent: on the cron schedule, at first sight and
     on `requested_at`, pruned beyond `keep`, contents labelled with their target, and the newest
     reported in `volume_snapshot_status`. See [`volume-snapshots.md`](volume-snapshots.md).
+19. **Workload resources** (with the control-rows poll) — one `workload_resources` row per
+    workspace engine, managed service, app, build and agent launch: the CPU, memory, GPUs, GPU class
+    and VRAM its scheduled pods were given, which lake prices (lake#643). Written only on change;
+    a finished build or job keeps its values. See [`workload-resources.md`](workload-resources.md).
+20. **Methodology runs** (with builds and `spec.methodologies.runtimeImage`) — each
+    `methodology_runs` row waits for its image build, then runs a stage, a sandbox and a collect pod
+    in `lake-<name>-methodology-runs`: the sandbox carries no credential, no token and no network
+    unless granted. A workspace runs at most `spec.methodologies.maxConcurrentRunsPerWorkspace`
+    (default 2) at once and the rest wait `Queued`, oldest first; a GPU run's stage pod, and so its
+    work volume, goes in a zone where its GPU class has nodes, or it waits `Queued` (orama-operator#293).
+    Phases and the sandbox's start and finish go to `methodology_run_status`. A trained model a
+    person publishes (`methodology_deployments`, lake#690) is staged by a Job with its own
+    credential and served by a `serve` Deployment of the methodology's image behind a Service that
+    only lake's pods can reach. See [`methodology-runs.md`](methodology-runs.md).
 
 **Status** reports overall service readiness through `phase` and `conditions[Ready]`, alongside
 Deployment replica counts, store binding, Postgres, schema, Zetta, backup, sealing, and data-service
@@ -455,6 +474,49 @@ runtime-default seccomp profile. Rollout behavior, probes and the drain are in
 The pod's `fsGroupChangePolicy: OnRootMismatch` applies the store's group ownership only when its
 root does not already match gid 10001, avoiding a full recursive ownership pass on every mount.
 
+### DNS: ndots 2 on lake, agent and app pods
+
+Lake's pod, every agent pod (library Deployments, user-agent services, launch Jobs and scheduled
+runs) and every app pod carry `dnsConfig.options: [{name: ndots, value: "2"}]`, keeping the
+`ClusterFirst` nameservers and search list ([operator#276](https://github.com/oramasearch/orama-operator/issues/276)).
+The kubelet default is `ndots:5`, so a Service's full name, `<svc>.<ns>.svc.cluster.local` (four
+dots), was first tried under every search domain, A and AAAA each, including the node's cloud host
+domain that CoreDNS forwards off the cluster. On dev that cost about 18 ms per lookup (5–32 ms)
+against 2–7 ms for the absolute name. With `ndots:2` a name with two or more dots is tried as given
+first: a Service's full name resolves on the first query, and an external name such as
+`api.openai.com` no longer walks the search list. Short names (`<svc>`, `<svc>.<ns>`) still use
+the search list as before.
+
+Because a two-dot name is now tried as given first, every in-cluster URL the operator hands these
+pods is the Service's full name: `LAKE_INTERNAL_URL`, an agent's `LAKE_URL`,
+`LAKE_AGENT_ENDPOINTS` and a user agent's endpoint are `<svc>.<ns>.svc.cluster.local`, no longer
+`<svc>.<ns>.svc`. The data plane URL, workspace Zetta connections, service connections and the
+apps' auth and event URLs were already full names. Because `LAKE_INTERNAL_URL` is the build
+registry authority, a build requested after this change targets
+`lake-<name>.<ns>.svc.cluster.local/...`; rows already written keep their target, which still
+resolves.
+
+The other choice, writing every URL as an absolute name with a trailing dot, was rejected: it
+covers only the names the operator writes (not CloudNativePG's `uri`, names lake derives itself,
+or what an agent or app builds), and a trailing dot changes the `Host` header and the TLS
+server name, which lake's request-origin and app-host derivation, libpq's `verify-full` host check
+and the catalog clients would each have to accept.
+
+To measure from inside lake's pod (`getent` resolves through the pod's own resolver; each run
+includes starting `getent`):
+
+```sh
+NS=lake; POD=$(kubectl -n $NS get pod -l app.kubernetes.io/name=lake -o name | head -1)
+kubectl -n $NS exec $POD -- cat /etc/resolv.conf   # options ndots:2 after the change
+for name in lake-prod-zetta-zetta.lake.svc.cluster.local lake-prod-zetta-zetta.lake.svc.cluster.local.; do
+  kubectl -n $NS exec $POD -- sh -c "for i in 1 2 3 4 5 6 7 8 9 10; do
+    s=\$(date +%s%N); getent ahosts $name >/dev/null; e=\$(date +%s%N); echo \$(( (e-s)/1000 ))us; done" | sed "s|^|$name |"
+done
+```
+
+Before the change the first name takes about 18 ms and the trailing-dot name 2–7 ms; after it
+both take the trailing-dot time.
+
 When `spec.replicas` is greater than one, the operator creates `PodDisruptionBudget lake-<name>`
 with `maxUnavailable: 1`. It also defaults `spec.topologySpreadConstraints` to a soft
 `kubernetes.io/hostname` spread. Supply the field to replace that list; an explicit empty list
@@ -568,4 +630,9 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 ## Open
 
 - #126 incremental migrations in `PostgresSchema`.
+- [`app-transfer.md`](app-transfer.md) — the `app_transfer` rows lake meters app traffic from:
+  each app's bytes in and out through ingress-nginx's per-Ingress counters, by hour; enabling the
+  controller's metrics, the counter arithmetic across restarts, and what is not counted (lake#661).
+- [`workload-resources.md`](workload-resources.md) — the `workload_resources` contract lake meters compute from: what each kind maps to, the effective-request arithmetic, GPU class and VRAM, and when a row is written, kept and deleted (lake#643).
+- [`methodology-runs.md`](methodology-runs.md) — a workspace methodology's runs as untrusted code: the stage, sandbox and collect pods, their namespace and policies, phases, the per-workspace queue, GPU placement and metering (lake#655, orama-operator#293), and serving a trained model from Ship → Models (lake#690).
 - [`agents.md`](agents.md) — the Agent Library's agents, the launches of user-created agents on agent-runtime, their cron schedules as CronJobs, and each library agent's own agent-bus credential (lake#228, lake#231, lake#244, lake#269).

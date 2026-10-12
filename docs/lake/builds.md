@@ -40,7 +40,7 @@ bounded when a partial override is supplied. Concurrency defaults to four active
 and two for one registry space. Both configured limits must be positive. Registry cache
 import/export defaults on and can be disabled explicitly.
 
-The operator injects `LAKE_INTERNAL_URL=http://lake-<name>.<namespace>.svc:80` into the lake
+The operator injects `LAKE_INTERNAL_URL=http://lake-<name>.<namespace>.svc.cluster.local:80` into the lake
 container when builds are enabled. Lake derives each build's registry authority from that URL; no
 separate registry endpoint setting is required.
 
@@ -82,7 +82,7 @@ The Job receives the lake-builder contract exactly as environment variables:
 | `CONTEXT` / `DOCKERFILE` | source-relative build inputs |
 | `TARGET` | in-cluster Lake registry target |
 | `BUILD_ARGS` | the row's JSON object |
-| `BUILD_ARG_ALLOW` | `PYTHON_VERSION,APP_DEPS,APP_RUNTIME_IMAGE` |
+| `BUILD_ARG_ALLOW` | `PYTHON_VERSION,APP_DEPS,APP_RUNTIME_IMAGE,METHODOLOGY_RUNTIME_IMAGE,METHODOLOGY_PACKAGES` (the last two for a workspace methodology's image, lake#655) |
 | `SOURCE_TOKEN` / `PUSH_TOKEN` / `EVENTS_TOKEN` | Secret key references |
 | `CACHE_REF` | `<registry>/<space>/cache/<name>`, or empty when caching is disabled |
 | `DOCKER_CONFIG` | writable `/home/user/.docker` |
