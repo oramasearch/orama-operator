@@ -509,7 +509,7 @@ func (r *OramaCloudV1Reconciler) retireReaderDeployment(ctx context.Context, oc 
 		return nil // the StatefulSet isn't serving yet; keep the old readers up
 	}
 	log.FromContext(ctx).Info("retiring the emptyDir reader Deployment; StatefulSet readers are ready", "name", sts.Name)
-	return deleteIfExists(ctx, r.Client, old)
+	return r.deleteCloudV1Owned(ctx, oc, old)
 }
 
 // reconcileReaderHPA owns a HorizontalPodAutoscaler on the reader StatefulSet when

@@ -149,6 +149,9 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 	cluster.SetNamespace(oc.Namespace)
 
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
+		if err := r.ownUnlessProtected(oc, cluster); err != nil {
+			return err
+		}
 		cluster.SetLabels(labelsFor(oc, "controldb"))
 		storage := map[string]interface{}{"size": defaultDataVolumeSize}
 		if db.Storage.Size != nil {
@@ -189,7 +192,7 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 			spec["backup"] = cnpgBarmanBackup(backup)
 		}
 		cluster.Object["spec"] = spec
-		return r.ownUnlessProtected(oc, cluster)
+		return nil
 	})
 	if err != nil {
 		return err
@@ -210,12 +213,15 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 func (r *OramaCloudV1Reconciler) reconcileControlDBScheduledBackup(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, backup cnpgBackupConfig) error {
 	scheduledBackup := newCNPGScheduledBackupFor(controlDBScheduledBackupName(oc), oc.Namespace)
 	if !backup.Enabled || !backup.Valid {
-		return deleteIfExists(ctx, r.Client, scheduledBackup)
+		return r.deleteControlDBOwned(ctx, oc, scheduledBackup)
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, scheduledBackup, func() error {
+		if err := r.ownUnlessProtected(oc, scheduledBackup); err != nil {
+			return err
+		}
 		scheduledBackup.SetLabels(labelsFor(oc, "controldb"))
 		scheduledBackup.Object["spec"] = cnpgScheduledBackupSpec(backup, controlDBClusterName(oc))
-		return r.ownUnlessProtected(oc, scheduledBackup)
+		return nil
 	})
 	return err
 }
@@ -234,10 +240,35 @@ func cnpgAffinity(oc *oramav1alpha1.OramaCloudV1) (map[string]interface{}, error
 	}{nodeSelector, tolerations})
 }
 
+const cloudV1OwnerUIDAnnotation = "orama.cloud/cloud-v1-owner-uid"
+
+// checkControlDBOwnership also recognizes retained objects after their owner reference is removed.
+// Names and component labels alone cannot establish ownership of a database.
+func checkControlDBOwnership(oc *oramav1alpha1.OramaCloudV1, obj client.Object) error {
+	ownerUID := obj.GetAnnotations()[cloudV1OwnerUIDAnnotation]
+	controller := metav1.GetControllerOf(obj)
+	if oc.UID == "" || (ownerUID != "" && ownerUID != string(oc.UID)) ||
+		(controller != nil && controller.UID != oc.UID) ||
+		(obj.GetResourceVersion() != "" && !metav1.IsControlledBy(obj, oc) && ownerUID != string(oc.UID)) {
+		return fmt.Errorf("refusing to manage unowned control-DB %T %s", obj, obj.GetName())
+	}
+	return nil
+}
+
 // ownUnlessProtected controller-references a control-DB object (Cluster, ScheduledBackup) to the
 // CR. Under spec.deletionProtection it instead drops any reference to the CR, so garbage
-// collection never deletes the database when the CR is deleted.
+// collection never deletes the database when the CR is deleted. The UID annotation keeps the
+// retained database bound to this CR; a replacement CR requires a reviewed ownership handover.
 func (r *OramaCloudV1Reconciler) ownUnlessProtected(oc *oramav1alpha1.OramaCloudV1, obj client.Object) error {
+	if err := checkControlDBOwnership(oc, obj); err != nil {
+		return err
+	}
+	annotations := obj.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[cloudV1OwnerUIDAnnotation] = string(oc.UID)
+	obj.SetAnnotations(annotations)
 	if !oc.Spec.DeletionProtection {
 		return controllerutil.SetControllerReference(oc, obj, r.Scheme)
 	}

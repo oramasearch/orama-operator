@@ -162,9 +162,10 @@ func TestReaderDeploymentRetiredOnlyOnceStatefulSetIsReady(t *testing.T) {
 	ctx := context.Background()
 	oc := fullStackOCV1(nil)
 	old := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "v1-reader", Namespace: "orama-system", Labels: labelsFor(oc, "reader")},
-		Spec:       appsv1.DeploymentSpec{Replicas: int32Ptr(3)},
-		Status:     appsv1.DeploymentStatus{ReadyReplicas: 3},
+		ObjectMeta: metav1.ObjectMeta{Name: "v1-reader", Namespace: "orama-system", Labels: labelsFor(oc, "reader"),
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(oc, oramav1alpha1.GroupVersion.WithKind("OramaCloudV1"))}},
+		Spec:   appsv1.DeploymentSpec{Replicas: int32Ptr(3)},
+		Status: appsv1.DeploymentStatus{ReadyReplicas: 3},
 	}
 	cl, r := reconcileOCV1(t, oc, old)
 	if absent(t, cl, "v1-reader", &appsv1.Deployment{}) {
