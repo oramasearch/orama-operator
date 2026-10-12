@@ -6,7 +6,10 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -590,5 +594,40 @@ func TestNoPlacementRendersAsBefore(t *testing.T) {
 	ps := getObj(t, cl, "v1-controldb-schema", &oramav1alpha1.PostgresSchema{})
 	if ps.Spec.NodeSelector != nil || ps.Spec.Tolerations != nil {
 		t.Errorf("old CR's PostgresSchema gained placement %+v", ps.Spec)
+	}
+}
+
+// --- 7. the Prod 2 sample ---
+
+// The sample must decode strictly into the API (no misspelt fields silently dropped) and carry the
+// decided Prod 2 shape.
+func TestProd2SampleMatchesDecisions(t *testing.T) {
+	raw, err := os.ReadFile("../../config/samples/prod2.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, err := utilyaml.ToJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(js))
+	dec.DisallowUnknownFields()
+	var oc oramav1alpha1.OramaCloudV1
+	if err := dec.Decode(&oc); err != nil {
+		t.Fatalf("prod2.yaml does not decode strictly: %v", err)
+	}
+	c := oc.Spec.Components
+	b := c.ControlDB.Backup
+	switch {
+	case oc.Namespace != "orama-prod2" || oc.Spec.Profile != "medium" || !oc.Spec.DeletionProtection:
+		t.Errorf("namespace/profile/protection = %s/%s/%v", oc.Namespace, oc.Spec.Profile, oc.Spec.DeletionProtection)
+	case oc.Spec.Placement.NodeSelector["agentpool"] != "prod2" || len(oc.Spec.Placement.Tolerations) != 1 || oc.Spec.Placement.Tolerations[0].Value != "prod2":
+		t.Errorf("placement = %+v", oc.Spec.Placement)
+	case c.Dashboard.Host != "app.orama.ing" || c.Docs.Host != "docs.orama.ing":
+		t.Errorf("hosts = %s, %s", c.Dashboard.Host, c.Docs.Host)
+	case b.Enabled == nil || !*b.Enabled || b.Destination.Bucket == "" || b.SecretRef.Name == "":
+		t.Errorf("control-DB backup = %+v", b)
+	case c.ControlDB.Mode != "in-cluster" || !c.Engine.Enabled:
+		t.Errorf("controlDB mode %q engine %v", c.ControlDB.Mode, c.Engine.Enabled)
 	}
 }
