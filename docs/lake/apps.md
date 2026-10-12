@@ -322,6 +322,10 @@ the auth call reaches the browser. When the Lake has public ingress (`ingressEna
 `https://<lake host>/apps/authorize?app=<app id>&rd=https://$host$escaped_request_uri`. The return URL
 is always https because TLS ends at the edge proxy. The handoff and cookie are specified in lake#407.
 
+The bytes an app's Ingress carries are metered: the operator reads ingress-nginx's per-Ingress byte
+counters and reports them by app and hour in `app_transfer` ([app-transfer.md](app-transfer.md),
+lake#661).
+
 ## Status and events
 
 The operator sets only its own owner annotation on the app Deployment and keeps every other

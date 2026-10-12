@@ -4071,3 +4071,32 @@ CREATE TABLE IF NOT EXISTS methodology_runs_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0078_methodology_runs')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0079_app_transfer (lake#661, docs/api/metering.md#app-traffic): the bytes each app receives and
+-- sends through the cluster's ingress controller, which lake never sees. Written only by the
+-- Orama operator: it reads the ingress controller's per-Ingress byte counters (ingress-nginx's
+-- `nginx_ingress_controller_request_size_sum` and `_response_size_sum`), and adds each poll's
+-- increase to the row of the app and the UTC hour it observed it in. `in_bytes` is what clients
+-- sent (request line, headers and body), `out_bytes` what the app sent back (headers and body).
+-- The row carries the app's workspace so an hour can still be charged after the app is deleted.
+-- Numbers only: no hosts, paths or content. Lake charges each closed hour once as `transfer` in
+-- the app's workspace Zetta. The operator deletes rows older than eight days. Idempotent; drops
+-- nothing.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS app_transfer (
+    app_id       uuid        NOT NULL,
+    workspace_id uuid        NOT NULL,
+    hour         timestamptz NOT NULL CHECK (extract(epoch FROM hour) % 3600 = 0),
+    in_bytes     bigint      NOT NULL DEFAULT 0 CHECK (in_bytes >= 0),
+    out_bytes    bigint      NOT NULL DEFAULT 0 CHECK (out_bytes >= 0),
+    observed_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (app_id, hour)
+);
+CREATE INDEX IF NOT EXISTS app_transfer_hour_idx ON app_transfer (hour);
+
+CREATE TABLE IF NOT EXISTS app_transfer_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0079_app_transfer')
+    ON CONFLICT DO NOTHING;

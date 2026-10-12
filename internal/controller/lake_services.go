@@ -160,6 +160,10 @@ type LakeServiceStore interface {
 	ListMethodologyRuns(ctx context.Context) ([]LakeMethodologyRun, error)
 	UpsertMethodologyRunStatus(ctx context.Context, status LakeMethodologyRunStatus) error
 	DeleteWorkloadResources(ctx context.Context, kind, id string) error
+	// AddAppTransfer adds each app's bytes to its hour's app_transfer row, all in one statement,
+	// and deletes the rows of hours before `before` (lake_app_transfer.go, lake#661). It returns
+	// errAppTransferTableMissing while lake's schema is older than 0079_app_transfer.
+	AddAppTransfer(ctx context.Context, rows []AppTransfer, before time.Time) error
 	Close(ctx context.Context) error
 }
 
@@ -454,6 +458,15 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 			log.Info("workload resources skipped: " + err.Error())
 		} else if err != nil {
 			log.Info("workload resources deferred", "err", err.Error())
+		}
+		// App traffic through the ingress (lake_app_transfer.go, lake#661).
+		if lake.Spec.Apps.Enabled {
+			err := r.reconcileAppTransfer(passCtx, lake, store, time.Now())
+			if errors.Is(err, errAppTransferTableMissing) {
+				log.Info("app transfer skipped: " + err.Error())
+			} else if err != nil {
+				log.Info("app transfer deferred", "err", err.Error())
+			}
 		}
 	}
 	return changing
