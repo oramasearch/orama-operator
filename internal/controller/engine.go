@@ -275,8 +275,9 @@ func (r *OramaCloudV1Reconciler) reconcileEmbeddings(ctx context.Context, oc *or
 			}
 			c.Resources.Limits[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse("1")
 			// Pin to the GPU node the writer would otherwise have used.
-			nodeSelector = w.NodeSelector
-			tolerations = w.Tolerations
+			nodeSelector, tolerations = writerPlacement(oc)
+		} else {
+			nodeSelector, tolerations = podPlacement(oc)
 		}
 		dep.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
@@ -359,12 +360,13 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		}
 		// The GPU belongs to the shared embeddings Deployment (#14), not the writer — OramaCore
 		// is CPU; the embedding model is the GPU consumer (see reconcileEmbeddings).
+		nodeSelector, tolerations := writerPlacement(oc)
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets:              imagePullSecrets(oc),
-				NodeSelector:                  w.NodeSelector,
-				Tolerations:                   w.Tolerations,
+				NodeSelector:                  nodeSelector,
+				Tolerations:                   tolerations,
 				InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc)},
 				Containers:                    []corev1.Container{c},
 				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
@@ -429,8 +431,11 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		if useEnvoy {
 			containers = append(containers, envoySidecar())
 		}
+		nodeSelector, tolerations := podPlacement(oc)
 		podSpec := corev1.PodSpec{
 			ImagePullSecrets:              imagePullSecrets(oc),
+			NodeSelector:                  nodeSelector,
+			Tolerations:                   tolerations,
 			InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc)},
 			Containers:                    containers,
 			Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},

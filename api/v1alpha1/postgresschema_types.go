@@ -6,6 +6,7 @@ Licensed under the Apache License, Version 2.0.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -44,6 +45,14 @@ type PostgresSchemaSpec struct {
 	// +kubebuilder:default="postgres:16-alpine"
 	// +optional
 	Image string `json:"image,omitempty"`
+
+	// NodeSelector for the migration Job's pod.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations for the migration Job's pod.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
 // PostgresSecretKeyRef references a single key within a Secret in the CR's namespace.

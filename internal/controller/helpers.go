@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -132,6 +133,37 @@ func imagePullSecrets(oc *oramav1alpha1.OramaCloudV1) []corev1.LocalObjectRefere
 		return nil
 	}
 	return []corev1.LocalObjectReference{{Name: oc.Spec.Images.PullSecretName}}
+}
+
+// appImagePullPolicy is the pull policy for an operator-built app image. Dev tags (e.g. v1-sandbox)
+// are MUTABLE — the same tag is re-pushed on each rebuild, so a tag-only ref is pulled Always to
+// pick up the latest build. A digest-pinned ref (`@sha256:`) can't change under the node's cache,
+// so it is pulled IfNotPresent: a node restart or reschedule then never depends on the registry.
+func appImagePullPolicy(image string) corev1.PullPolicy {
+	if strings.Contains(image, "@sha256:") {
+		return corev1.PullIfNotPresent
+	}
+	return corev1.PullAlways
+}
+
+// podPlacement is the CR-level node placement (spec.placement) for an operator-created pod. Both
+// are nil when unset, so a CR without placement renders the pod exactly as before.
+func podPlacement(oc *oramav1alpha1.OramaCloudV1) (map[string]string, []corev1.Toleration) {
+	return oc.Spec.Placement.NodeSelector, oc.Spec.Placement.Tolerations
+}
+
+// writerPlacement is the writer's node placement: spec.components.engine.writer.nodeSelector and
+// .tolerations each replace the CR-level placement when set, so the writer can move to a GPU pool.
+func writerPlacement(oc *oramav1alpha1.OramaCloudV1) (map[string]string, []corev1.Toleration) {
+	nodeSelector, tolerations := podPlacement(oc)
+	w := oc.Spec.Components.Engine.Writer
+	if len(w.NodeSelector) > 0 {
+		nodeSelector = w.NodeSelector
+	}
+	if len(w.Tolerations) > 0 {
+		tolerations = w.Tolerations
+	}
+	return nodeSelector, tolerations
 }
 
 // applyPVCRetention sets Retain/Retain on a StatefulSet's PVC retention policy when the CR has

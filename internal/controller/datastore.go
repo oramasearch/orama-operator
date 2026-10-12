@@ -141,10 +141,13 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 			SecurityContext: dataStoreSecurityContext(), // root-entrypoint chown needs CHOWN/SETUID (#18)
 			VolumeMounts:    mounts,
 		}
+		nodeSelector, tolerations := podPlacement(oc)
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets:              imagePullSecrets(oc),
+				NodeSelector:                  nodeSelector,
+				Tolerations:                   tolerations,
 				Containers:                    []corev1.Container{c},
 				Volumes:                       volumes,
 				TerminationGracePeriodSeconds: int64Ptr(grace),

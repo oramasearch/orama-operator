@@ -58,12 +58,28 @@ type OramaCloudV1Spec struct {
 	// +optional
 	DemoSeed bool `json:"demoSeed,omitempty"`
 
+	// Placement pins every pod the operator creates for this CR (apps, data stores, engine,
+	// Jobs, and the CNPG control-DB instances) to a node pool. The writer's own
+	// nodeSelector/tolerations, when set, replace these for the writer.
+	// +optional
+	Placement PlacementSpec `json:"placement,omitempty"`
+
 	// DeletionProtection keeps the stack's data through CR deletion and component disable: the
 	// CNPG control-DB Cluster (and its ScheduledBackup) carry no owner reference and are never
 	// deleted by the operator, and every StatefulSet sets
 	// persistentVolumeClaimRetentionPolicy Retain/Retain. Default false.
 	// +optional
 	DeletionProtection bool `json:"deletionProtection,omitempty"`
+}
+
+// PlacementSpec is node placement applied to every operator-created pod.
+type PlacementSpec struct {
+	// NodeSelector is merged into each pod's nodeSelector.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// Tolerations are added to each pod.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
 // VolumeSpec sizes one persistent data volume (a StatefulSet volumeClaimTemplate or the CNPG
@@ -113,7 +129,9 @@ type ImagesSpec struct {
 	// +kubebuilder:default="latest"
 	Tag string `json:"tag,omitempty"`
 	// Overrides maps a component key ("oramacore", "dashboard", "disco", ...) to a
-	// full image ref, bypassing registry/tag for that component.
+	// full image ref, bypassing registry/tag for that component. A digest-pinned ref
+	// (`repo@sha256:<digest>` or `repo:tag@sha256:<digest>`) is pulled IfNotPresent;
+	// a tag-only ref of an operator-built app is pulled Always.
 	// +optional
 	Overrides map[string]string `json:"overrides,omitempty"`
 	// PullSecretName is a docker-registry Secret (in the CR's namespace) used to pull
