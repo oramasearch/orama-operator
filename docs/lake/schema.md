@@ -2,30 +2,55 @@
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit a9daf31b7f7a0e4555b79fec913a99fe6bfbcc11](https://github.com/oramasearch/lake/blob/a9daf31b7f7a0e4555b79fec913a99fe6bfbcc11/db/schema.sql)
-(branch `issue-661`, lake PR #703: lake `main` at `e46d1679`, through `0078_methodology_runs`, then
-lake#661's `0081_app_transfer`). Its SHA-256 is
-`ee570a0b4db873df1a84ab5e07e1a2288984c9888f02d7b6c37f7c66dda9da99`.
+[`oramasearch/lake` commit 396e55caf21f4aba9a36d7573118d6a51d30597d](https://github.com/oramasearch/lake/blob/396e55caf21f4aba9a36d7573118d6a51d30597d/db/schema.sql)
+(branch `integration-final`: lake `main` through `0079_mcp_connection_dispatch`, then the lake PRs
+that add `0080_store_mounts` (lake#666), `0081_app_transfer` (lake#661), `0082_methodology_run_queue`
+(orama-operator#293) and `0083_methodology_deployments` (lake#690), merged in that order). Its
+SHA-256 is
+`dc99d51ca205bf4326fb34b8169340e57d2b6efdd0e59396b2cd06ceb5cc5347`. Re-pin to lake `main` once
+those PRs land there.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
 
+Migration `0083_methodology_deployments` (lake#690) adds `methodology_deployments` (written by lake
+when a workspace methodology's model is published), `methodology_deployment_status` (written by the
+operator: phase, message, the SHA-256 of the deployment's `lmd.` credential, the serve Service's
+in-cluster endpoint) and the `methodology_deployment` kind of `workload_resources`, with guard
+`methodology_deployments_guard`, now Lake's PostgresSchema guard. Every `workload_resources` kind
+check in the schema (the table's own, `0077`'s, `0078`'s and `0083`'s) lists all nine kinds, so the
+schema reapplies over rows of every kind. Until it has applied, the operator serves no model
+([methodology-runs.md](methodology-runs.md#serving-a-model)).
+
+Migration `0082_methodology_run_queue` (orama-operator#293) lets `methodology_run_status.phase` be
+`Queued`, with guard `methodology_run_queue_guard`. The operator holds runs back past a workspace's
+cap and places a GPU run's work volume where its class has nodes
+([methodology-runs.md](methodology-runs.md)).
+
 Migration `0081_app_transfer` (lake#661) adds `app_transfer`, written only by the operator: each
 app's bytes in and out through the ingress controller, by UTC hour, with the app's workspace. Guard
-`app_transfer_guard`, now Lake's PostgresSchema guard. It is vendored from lake `a9daf31` on the PR
-branch `issue-661`; re-pin to lake `main` once lake PR #703 lands. The operator reports app traffic
-([app-transfer.md](app-transfer.md)) and, until this schema has applied, skips the write.
+`app_transfer_guard`. The operator reports app traffic ([app-transfer.md](app-transfer.md)) and,
+until this schema has applied, skips the write.
+
+Migration `0080_store_mounts` (lake#666) adds `store_mounts` (written by lake: which services and
+apps mount a store, at which path, read-only or not) and `store_status.used_bytes` /
+`used_bytes_at` (written by the operator), with guard `store_mounts_guard`. Until it has applied,
+the operator mounts nothing and measures nothing ([stores.md](stores.md#mounts-lake666)).
+
+Migration `0079_mcp_connection_dispatch` (lake#684, lake#685) adds `mcp_connection_dispatch`, written
+by lake alone: one row per MCP connection that streams or re-exports tools (ids, a flag and a
+digest; the connection itself lives in its workspace Zetta), with guard
+`mcp_connection_dispatch_guard`. The operator reads nothing of it. Apply it before a lake with
+lake#684 rolls: that lake reads the table on every workspace MCP request and every stream pass.
 
 Migration `0078_methodology_runs` (lake#655) adds `methodology_runs` (written by lake),
 `methodology_run_status` (written by the operator: phase, exit code, the SHA-256 of each run's
 credential, the sandbox's start and finish) and the `methodology_run` kind of `workload_resources`,
-with guard `methodology_runs_guard`, Lake's PostgresSchema guard until `0079`; its kind check lists every
-kind `0077_metered_jobs` allows. It is vendored from lake `1355411` on the PR branch `issue-655`;
-re-pin to lake `main` once lake PR #691 lands. The
-operator runs methodology runs ([methodology-runs.md](methodology-runs.md)) and, until this schema
-has applied, skips them; the workload pass reads them by id and finds none.
+with guard `methodology_runs_guard`. The operator runs methodology runs
+([methodology-runs.md](methodology-runs.md)) and, until this schema has applied, skips them; the
+workload pass reads them by id and finds none.
 
 Migration `0030_agent_launches` (lake#231) adds `agent_launches` (written by lake),
 `agent_launch_status` (written by the operator, including the SHA-256 of each launch's credential),

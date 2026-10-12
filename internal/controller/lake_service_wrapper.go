@@ -193,6 +193,8 @@ func toJSONValue(obj interface{}) (map[string]interface{}, error) {
 func (k wrapperServiceKind) build(in catalogService, _ string) []catalogResource {
 	secretName, _ := k.passwordSecret(in.name)
 	podTemplate := k.podTemplate(in, secretName)
+	// The stores the service mounts (lake#666); none leaves the template as it was.
+	withStoreMounts(&podTemplate, in.lake, in.svc)
 	template, err := toJSONValue(&podTemplate)
 	if err != nil {
 		// Converting a well-formed typed object cannot fail.

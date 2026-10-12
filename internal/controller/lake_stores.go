@@ -29,9 +29,15 @@ import (
 // 0028_stores). They follow the managed-services model: lake writes the stores table and never
 // talks to Kubernetes; on the services poll, after the services, the operator makes each present
 // store exist, writes its connection to <slug>.json in lake-<lake>-services beside the services'
-// connections, deletes absent ones, and writes what it observed to store_status. Phase 1 runs one
-// pair, the cluster volume: a PersistentVolumeClaim <lake>-<slug> on the StorageClass the Lake's
-// services use. Every other type × provider pair is reported Failed.
+// connections, deletes absent ones, and writes what it observed to store_status. The pairs it runs:
+//   - the cluster volume: a PersistentVolumeClaim <lake>-<slug> on the StorageClass the Lake's
+//     services use;
+//   - the customer's own bucket (r2, s3, b2, gcs, azure; lake#664, lake_stores_buckets.go): a
+//     LakeSealedSecret <lake>-<slug> in the Lake namespace that delivers the workspace's credential
+//     from lake's secret store. The bucket itself is the customer's and is never touched;
+//   - the Lake-run pairs (zetta, lake): kept by Lake in the workspace, nothing in Kubernetes.
+//
+// Every other type × provider pair (the network filesystems) is reported Failed.
 //
 // These are a customer's stores. The Lake's own libliquid store root (reconcileLakeStore,
 // lake-<lake>-store) is a different thing and is not touched here.
@@ -66,7 +72,9 @@ type LakeStore struct {
 	Provider           string
 	Name               string
 	Slug               string
-	// Spec is the raw jsonb spec: {"size_gi", "region", "public"}.
+	// Spec is the raw jsonb spec: a volume's {"size_gi", "region", "public"}, a bucket's
+	// {"public", "bucket", "endpoint", "region", "prefix", "credential"}, a Lake-run store's
+	// {"public"} (and "repository_id" for provider lake).
 	Spec       string
 	Desired    string
 	Generation int64
@@ -141,29 +149,32 @@ func parseStoreSpec(raw string) (lakeStoreSpec, error) {
 	return spec, nil
 }
 
-// storeAvailable reports whether the operator runs this type × provider pair (phase 1: the cluster
-// volume only).
+// storeAvailable reports whether the operator runs this type × provider pair.
 func storeAvailable(st *LakeStore) bool {
+	return storeIsVolume(st) || storeIsBucket(st) || storeIsLakeRun(st)
+}
+
+func storeIsVolume(st *LakeStore) bool {
 	return st.Type == storeTypeVolume && st.Provider == storeProviderCluster
 }
 
 // validateStore rejects a row the operator will not act on. The table's own constraints make most
 // of these unreachable; they are checked again because a wrong name here would touch another
 // resource.
-func validateStore(lake *oramav1alpha1.Lake, st *LakeStore) (lakeStoreSpec, error) {
+func validateStore(lake *oramav1alpha1.Lake, st *LakeStore) error {
 	switch {
 	case !storeSlugPattern.MatchString(st.Slug):
-		return lakeStoreSpec{}, fmt.Errorf("slug must match %s", storeSlugPattern.String())
+		return fmt.Errorf("slug must match %s", storeSlugPattern.String())
 	case st.CustomerID == "":
-		return lakeStoreSpec{}, fmt.Errorf("customer_id is required")
+		return fmt.Errorf("customer_id is required")
 	case st.WorkspaceID == "" || st.WorkspaceNamespace == "":
-		return lakeStoreSpec{}, fmt.Errorf("workspace_id and its reconciled namespace are required")
+		return fmt.Errorf("workspace_id and its reconciled namespace are required")
 	case len(validation.IsDNS1123Label(st.WorkspaceNamespace)) != 0:
-		return lakeStoreSpec{}, fmt.Errorf("workspace namespace is invalid")
+		return fmt.Errorf("workspace namespace is invalid")
 	case len(validation.IsDNS1123Subdomain(storeResourceName(lake.Name, st.Slug))) > 0:
-		return lakeStoreSpec{}, fmt.Errorf("lake name %q is too long for store resource names", lake.Name)
+		return fmt.Errorf("lake name %q is too long for store resource names", lake.Name)
 	}
-	return parseStoreSpec(st.Spec)
+	return nil
 }
 
 // storeOwned: controlled by this Lake and labelled with this store's id.
@@ -205,7 +216,7 @@ func (r *LakeReconciler) reconcileLakeStores(ctx context.Context, lake *oramav1a
 			pass.present[st.Slug] = true
 			pass.stores = append(pass.stores, st)
 			workspaceLabels := withLabels(labels, map[string]string{workspaceLabel: st.WorkspaceID})
-			result, err := r.reconcileCustomerStore(ctx, lake, st.WorkspaceNamespace, workspaceLabels, st)
+			result, err := r.reconcileCustomerStore(ctx, lake, st.WorkspaceNamespace, credentialNamespace, workspaceLabels, st)
 			if err != nil {
 				log.Error(err, "store reconcile deferred", "store", st.ID, "slug", st.Slug)
 				pass.changing = true
@@ -270,16 +281,30 @@ func writeStoreStatus(ctx context.Context, store LakeServiceStore, st *LakeStore
 	return nil
 }
 
-// reconcileCustomerStore makes one present store exist and reports what it observed.
-func (r *LakeReconciler) reconcileCustomerStore(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, st *LakeStore) (serviceResult, error) {
-	spec, err := validateStore(lake, st)
-	if err != nil {
+// reconcileCustomerStore makes one present store exist and reports what it observed. namespace is
+// the store's workspace namespace (a volume's claim); lakeNamespace is the Lake's own, where a
+// bucket's credential is delivered beside the services Secret.
+func (r *LakeReconciler) reconcileCustomerStore(ctx context.Context, lake *oramav1alpha1.Lake, namespace, lakeNamespace string, labels map[string]string, st *LakeStore) (serviceResult, error) {
+	if err := validateStore(lake, st); err != nil {
 		return serviceResult{phase: ServicePhaseFailed, message: err.Error()}, nil
 	}
-	if !storeAvailable(st) {
-		return serviceResult{phase: ServicePhaseFailed, message: storeUnavailableMessage(st)}, nil
+	switch {
+	case storeIsVolume(st):
+		spec, err := parseStoreSpec(st.Spec)
+		if err != nil {
+			return serviceResult{phase: ServicePhaseFailed, message: err.Error()}, nil
+		}
+		return r.reconcileVolumeStore(ctx, lake, namespace, labels, st, spec)
+	case storeIsBucket(st):
+		spec, err := parseBucketSpec(st.Spec)
+		if err != nil {
+			return serviceResult{phase: ServicePhaseFailed, message: err.Error()}, nil
+		}
+		return r.reconcileBucketStore(ctx, lake, lakeNamespace, labels, st, spec)
+	case storeIsLakeRun(st):
+		return lakeRunStoreResult(st)
 	}
-	return r.reconcileVolumeStore(ctx, lake, namespace, labels, st, spec)
+	return serviceResult{phase: ServicePhaseFailed, message: storeUnavailableMessage(st)}, nil
 }
 
 // storeClaimLabels are the Lake's labels plus the Lake and the store id.
@@ -373,7 +398,10 @@ func (r *LakeReconciler) deleteCustomerStore(
 		return serviceResult{phase: ServicePhaseFailed, message: fmt.Sprintf("slug must match %s", storeSlugPattern.String())}, nil
 	}
 	deleted := serviceResult{phase: ServicePhaseDeleted, message: "store deleted"}
-	if storeAvailable(st) {
+	if storeIsBucket(st) {
+		return r.deleteBucketStore(ctx, lake, credentialNamespace, st)
+	}
+	if storeIsVolume(st) {
 		name := storeResourceName(lake.Name, st.Slug)
 		key := client.ObjectKey{Namespace: namespace, Name: name}
 		claim := &corev1.PersistentVolumeClaim{}
@@ -401,7 +429,8 @@ func (r *LakeReconciler) deleteCustomerStore(
 		}
 		return deleted, nil
 	}
-	// An unavailable pair never had a resource; only a connection could be left.
+	// A Lake-run store has nothing in Kubernetes (Lake removes its contents itself at delete_store),
+	// and an unavailable pair never had a resource: only a connection could be left.
 	if err := r.removeServiceCredential(ctx, lake, credentialNamespace, st.Slug); err != nil {
 		return serviceResult{}, err
 	}
