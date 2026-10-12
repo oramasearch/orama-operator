@@ -88,7 +88,7 @@ const (
 	lakeStorePath        = "/var/lib/lake/store"
 	lakeStoreVolume      = "store"
 	lakeZettaFinalizer   = "orama.cloud/lake-zetta"
-	lakeSchemaGuardTable = "store_mounts_guard"
+	lakeSchemaGuardTable = "methodology_deployments_guard"
 )
 
 // lakeSchemaSQL is lake's control-plane schema. SOURCE OF TRUTH: oramasearch/lake db/schema.sql;
