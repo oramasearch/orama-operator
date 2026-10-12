@@ -4071,3 +4071,33 @@ CREATE TABLE IF NOT EXISTS methodology_runs_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0078_methodology_runs')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0079_mcp_connection_dispatch (lake#684, lake#685, docs/api/mcp-connections.md): where a
+-- workspace's MCP connections need Lake outside a request. One row per connection that has an
+-- agent with an input stream, a notifications stream or results still to publish (`streams`), or
+-- that re-exports tools through Lake's MCP (`exported_digest`, the SHA-256 of the tools/list
+-- entries it adds). The stream worker reads only the workspaces with a streaming row, and a
+-- workspace MCP session is told notifications/tools/list_changed when the digests change. Ids and
+-- a digest only: the connection is a record in its workspace Zetta. Lake writes it whenever it
+-- writes a connection. Idempotent; drops nothing.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mcp_connection_dispatch (
+    customer_id     uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    workspace_id    uuid        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    connection_id   text        NOT NULL,
+    streams         boolean     NOT NULL DEFAULT false,
+    exported_digest text        NOT NULL DEFAULT '',
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, connection_id),
+    CONSTRAINT mcp_connection_dispatch_digest_format
+        CHECK (exported_digest = '' OR exported_digest ~ '^[0-9a-f]{64}$')
+);
+CREATE INDEX IF NOT EXISTS mcp_connection_dispatch_streams_idx
+    ON mcp_connection_dispatch (workspace_id) WHERE streams;
+
+CREATE TABLE IF NOT EXISTS mcp_connection_dispatch_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0079_mcp_connection_dispatch')
+    ON CONFLICT DO NOTHING;
