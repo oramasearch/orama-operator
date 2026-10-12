@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"maps"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -86,11 +85,8 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	if !oc.Spec.Components.Engine.Enabled {
 		return r.teardownByComponent(ctx, oc, "engine", "embeddings", "writer", "reader")
 	}
-	if jwt := oc.Spec.Components.Engine.Writer.JWT; jwt != nil {
-		u, err := url.Parse(jwt.JWKSURL)
-		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || jwt.Audience == "" {
-			return fmt.Errorf("engine.writer.jwt requires an HTTP(S) jwksURL without credentials and a nonempty audience")
-		}
+	if err := validateWriterJWT(oc); err != nil {
+		return err
 	}
 	if err := validateEngineImages(oc); err != nil {
 		return err
@@ -264,10 +260,6 @@ log: {}
 // the broker admin user from <cr>-broker-admin (#307; per-service users are #99). Its hooks block is
 // hooksYAML, the same as the reader side's (#306).
 func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string {
-	jwt := ""
-	if cfg := oc.Spec.Components.Engine.Writer.JWT; cfg != nil {
-		jwt = fmt.Sprintf("  jwt:\n    providers:\n      - name: dashboard\n        jwks_url: %q\n        issuers: [%q]\n        audiences: [%q]\n        refresh_interval: 1h\n", cfg.JWKSURL, jwtIssuer(oc), cfg.Audience)
-	}
 	return fmt.Sprintf(`writer_side:
   output:
     type: rabbitmq
@@ -287,7 +279,7 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
     commit_interval: 1m
-`, oc.Name+"-broker", client.connection, client.endpoint, hooksYAML(oc), jwt)
+`, oc.Name+"-broker", client.connection, client.endpoint, hooksYAML(oc), writerJWTYAML(oc))
 }
 
 // readerSideYAML is the reader_side section. Each reader persists its index and the last stream

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -629,8 +630,10 @@ func TestProd2SampleMatchesDecisions(t *testing.T) {
 		t.Errorf("Firebase provider/reference = %+v", oc.Spec.IDP)
 	case c.Engine.Reader.Host != "collections.orama.ing" || c.Engine.Writer.Host != "writer.prod2.cluster.orama.ing":
 		t.Errorf("engine public endpoints are incorrect")
-	case c.Engine.Writer.JWT == nil || c.Engine.Writer.JWT.JWKSURL != "https://app.orama.ing/api/.well-known/jwks.json" || c.Engine.Writer.JWT.Audience != "https://writer.prod2.cluster.orama.ing" || oc.Spec.JWTIssuer != "orama-cloud":
+	case c.Engine.Writer.JWT == nil || c.Engine.Writer.JWT.JWKSURL != "" || !slices.Equal(writerJWTAudiences(c.Engine.Writer.JWT), []string{"https://writer.prod2.cluster.orama.ing"}) || oc.Spec.JWTIssuer != "orama-cloud":
 		t.Errorf("Prod 2 JWT config is incorrect")
+	case validateWriterJWT(&oc) != nil:
+		t.Errorf("Prod 2 writer JWT is refused: %v", validateWriterJWT(&oc))
 	case c.Analytics.Mode != "external" || c.Analytics.CredentialsSecretRef == nil || c.Analytics.CredentialsSecretRef.Name != "prod2-clickhouse":
 		t.Errorf("ClickHouse must stay external with referenced credentials")
 	case !c.AnalyticsProcessor.Import.Enabled || c.AnalyticsProcessor.Import.Schedule != "*/5 * * * *":

@@ -18,7 +18,7 @@ customer-serving Prod 2 shape, never applied by the sample kustomization); the f
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `idp.configSecretRef` | Secret reference | — | With `provider: firebase`, required dashboard server keys: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. Other providers retain their existing behavior. |
-| `jwtIssuer` | string | `orama-cloud` | Dashboard signing issuer and writer JWKS provider's accepted issuer (maximum 128 characters). |
+| `jwtIssuer` | string | — | Dashboard signing issuer (`JWT_ISSUER`) and the writer JWKS provider's only accepted issuer (maximum 128 characters); both read it through one function, `jwtIssuer`. No CRD default: `engine.writer.jwt` refuses an empty issuer. Without writer JWT verification an empty issuer falls back to `orama-cloud` in the shared ConfigMap. Prod 1 uses `https://app.orama.com`. |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; override via `overrides.oramacore`. (`overrides.embeddings` is no longer read: OramaCore embeds in-process and the operator runs no embeddings server.) `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile) run writer-only and reader-only OramaCore builds with side-only configs; unset, both sides fall back to `oramacore` and share the combined config (see [components.md](components.md#engine-internalcontrollerenginego)). **Digest pinning:** an override may be `repo@sha256:<digest>` (or `repo:tag@sha256:<digest>`); the operator-built apps (dashboard, docs, workers, …) then pull `IfNotPresent` instead of `Always`. Other containers keep Kubernetes' default policy, which is already `IfNotPresent` for a digest. |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers — end users pick per query. Each has `name` (`groq \| openai \| google \| anthropic \| vllm`), `models[]` (required; the first is its default model), optional `url` (overrides OramaCore's built-in OpenAI-compatible base URL) and optional `apiKeySecretRef: {name, key}` (`key` defaults to `<PROVIDER>_API_KEY`; unset ⇒ that key of `<cr>-engine-secret`). Rendered into the engine config's `ai_server.remote_llms`, one entry per provider. Empty ⇒ `groq` (`llama-3.3-70b-versatile`), `openai` (`gpt-5.2`), `anthropic` (`claude-sonnet-4-5`). Refused at reconcile (`Ready=False`): a provider listed twice or with no models, and `vllm` (in-cluster vLLM and its `gpu` field are not rendered yet). |
@@ -111,9 +111,16 @@ Changing a timeout or a minimum rolls the writer or reader StatefulSet.
 |---|---|---|
 | `engine.writer.host` | empty | Writer Ingress → `<cr>-writer:8080`, primary region only. |
 | `engine.reader.host` | empty | Reader Ingress → `<cr>-reader:80`, through Envoy when enabled, direct reader otherwise. |
-| `engine.writer.jwt` | unset | Enables `writer_side.jwt.providers` in OramaCore. Unset preserves the existing engine config without JWT. |
-| `engine.writer.jwt.jwksURL` | required when `jwt` is set | HTTP(S) dashboard JWKS URL; Prod 2 uses `https://app.orama.ing/api/.well-known/jwks.json`. |
-| `engine.writer.jwt.audience` | required when `jwt` is set | Exact `clusterWriterUrl` that the dashboard uses as the JWT audience; Prod 2 uses `https://writer.prod2.cluster.orama.ing`. Maximum 128 characters. |
+| `engine.writer.jwt` | unset | Enables `writer_side.jwt.providers` in OramaCore. Unset preserves the existing engine config without JWT. Requires `spec.jwtIssuer`. |
+| `engine.writer.jwt.jwksURL` | in-cluster dashboard | HTTP(S) dashboard JWKS URL without credentials. Unset renders `http://<cr>-dashboard:3000/api/.well-known/jwks.json`, so the writer fetches keys from the dashboard Service in its own namespace rather than through public DNS and Cloudflare; then the dashboard must be enabled. |
+| `engine.writer.jwt.audiences` | — | Accepted JWT audiences: each exact `clusterWriterUrl` the dashboard signs tokens for (the copied control DB's `oramacore_clusters.writer_url`, which the dashboard also returns as `writerURL`). List every writer URL the rows still carry; Prod 1 lists `https://writer.atlantis.cluster.oramacore.com` and `https://writer.bovista.cluster.oramacore.com`. Each entry 1–128 characters. |
+| `engine.writer.jwt.audience` | — | Deprecated single audience; rendered together with `audiences` as one list without duplicates. |
+
+`engine.writer.jwt` fails the reconcile (`Ready=False`, reason `ReconcileError`) when `jwtIssuer` is
+empty, when `audience` and `audiences` are both empty, when `jwksURL` is unset and the dashboard is
+disabled, and when `engine.writer.host` is set but `https://<writer.host>` is not among the audiences.
+OramaCore matches issuer and audience exactly, so any of these would otherwise surface only as 401s on
+customer writes.
 
 With `cloudflare.enabled`, `manageDNS` and `apiTokenSecretRef` configured, the dashboard, writer
 and reader each get an owned proxied `CloudflareDNSRecord` after their Ingress receives an address.
@@ -126,9 +133,9 @@ placeholder. With the default `none`, it adds no Firebase variables. Browser Fir
 belongs to the dashboard image; authorizing `app.orama.ing` in Firebase remains a separately approved
 production change. The operator generates Prod 2's own RSA keypair once through `ensureJWTSecrets`;
 no shared Prod 1 keypair is needed. A missing public-only Secret is recovered from the preserved pair
-without rotation. JWT configuration changes roll the init-rendered engine config. The CRD's new
-`jwtIssuer` default also supplies an explicit dashboard environment variable with the same value;
-existing dashboards may roll once when that default is first served.
+without rotation. JWT configuration changes roll the init-rendered engine config. A set `jwtIssuer` is also given to
+the dashboard as an explicit environment variable. `jwtIssuer` had a CRD default of `orama-cloud`
+until operator#310; CRs created while it was served keep that stored value.
 The dashboard token endpoint reads writer/reader URLs from control-DB cluster rows; their copy must
 use the exact Prod 2 URLs. The operator does not rewrite those rows.
 

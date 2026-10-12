@@ -200,6 +200,7 @@ func TestEngineConfigChangeRollsOnlyItsSide(t *testing.T) {
 	}
 
 	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.JWTIssuer = "https://app.example.com"
 		o.Spec.Components.Engine.Writer.JWT = &oramav1alpha1.WriterJWTSpec{JWKSURL: "https://app.example.com/jwks.json", Audience: "writer"}
 	})
 	if got := annotations("v1-reader"); !maps.Equal(got, reader) {

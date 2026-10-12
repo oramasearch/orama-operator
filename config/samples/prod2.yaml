@@ -84,8 +84,11 @@ spec:
       writer:
         host: writer.prod2.cluster.orama.ing
         jwt:
-          jwksURL: https://app.orama.ing/api/.well-known/jwks.json
-          audience: https://writer.prod2.cluster.orama.ing
+          # jwksURL unset: the writer reads the dashboard's keys in-cluster
+          # (http://prod2-dashboard:3000/api/.well-known/jwks.json). Audiences list every
+          # oramacore_clusters.writer_url the copied control DB returns; https://<host> must be one.
+          audiences:
+            - https://writer.prod2.cluster.orama.ing
         gpu: false                     # the prod2 pool has no GPU nodes; CPU embeddings
         storage: { size: 256Gi, storageClassName: managed-csi-premium }   # placeholder size (#138)
       reader:
