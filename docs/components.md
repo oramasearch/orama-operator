@@ -528,6 +528,13 @@ host is set)**.
   missing Secret keys block pod startup. Existing component Secrets may retain the unused old key.
   External ClickHouse uses `analytics.endpoint` as `CLICKHOUSE_HOST` and the referenced
   `CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD`; in-cluster wiring retains its existing defaults.
+  Everything else (Stripe, Airbyte, S3, Slack, Upstash, `CRON_SECRET`, `PRIVATE_API_KEY`, ...) comes
+  from `dashboard.envFrom` (user Secrets/ConfigMaps after the operator's sources) and `dashboard.env`
+  (after the operator's env, replacing a same-named variable such as `CLICKHOUSE_HOST`). The
+  operator-owned `DATABASE_URL`, `POSTGRES_PASSWORD`, `JWT_*` and `MASTER_API_KEY` are refused there. A
+  missing referenced object fails the reconcile; the controller watches referenced Secrets and
+  ConfigMaps and rolls the dashboard on a data change through a hash annotation (operator#311; see
+  [crd-reference.md](crd-reference.md#dashboardenvfrom-and-dashboardenv)).
 
 Every app container is pulled `Always` when its image is a tag (dev tags such as `v1-sandbox` are
 re-pushed) and `IfNotPresent` when it is digest-pinned (`repo@sha256:…` via

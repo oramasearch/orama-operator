@@ -21,7 +21,21 @@
 #     oramacore_clusters.master_api_key (spec.masterAPIKeySecretRef below);
 #   - the broker admin and Redis passwords are generated once (prod2-broker-admin, prod2-cache-auth);
 #     the stack reports Degraded until CredentialsReady is True (requireRealCredentials below);
-#   - the Cloudflare control-plane Secret `cloudflare-api-token` (token, zoneID, accountID).
+#   - the Cloudflare control-plane Secret `cloudflare-api-token` (token, zoneID, accountID);
+#   - `prod2-dashboard-env`, the dashboard's remaining environment (components.dashboard below), with:
+#       NEXT_PUBLIC_APP_URL (the runtime copy; the image is also built with it), CRON_SECRET,
+#       PRIVATE_API_KEY (must equal Prod 1's while the AWS import consumer still calls it),
+#       REDIS_CACHE_URL, REDIS_CACHE_TOKEN (Upstash REST; the in-cluster Redis cannot serve @upstash/redis),
+#       S3_BUCKET, S3_BUCKET_REGION, S3_BUCKET_PREFIX, AWS_ACCESS_KEY_VALUE, AWS_SECRET_ACCESS_KEY_VALUE,
+#       AIRBYTE_CLIENT_ID, AIRBYTE_CLIENT_SECRET, AIRBYTE_ORGANIZATION_ID, AIRBYTE_ALLOWED_ORIGINS,
+#       AIRBYTE_WEBHOOK_SECRET, AIRBYTE_DEFAULT_WORKSPACE_ID,
+#       STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE_KEY, RESEND_API_KEY,
+#       SLACK_TOKEN, SLACK_CHANNEL_NEW_USERS, SLACK_CHANNEL_STRIPE, SCRAPER_SIGNATURE,
+#       CLICKHOUSE_HOST (the ClickHouse proxy URL), CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_LOG_LEVEL,
+#       and the Prod 2-only DATA_SOURCE_REQUEST_URL and ORAMACORE_PLACEMENT_CLUSTER_ID.
+#     It must NOT hold DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER or
+#     MASTER_API_KEY (the operator owns them; the reconcile fails if it does). FIREBASE_* come from
+#     prod2-firebase. The other NEXT_PUBLIC_* values are compiled into the dashboard image.
 #
 # Hosts below produce Ingresses and owned Cloudflare DNS. Customers use app.orama.ing for tokens,
 # collections.orama.ing for reads and writer.prod2.cluster.orama.ing for writes. Copied control-DB
@@ -101,7 +115,18 @@ spec:
       # 10.244.0.0/16, Service CIDR 10.0.0.0/16, node subnet 10.224.0.0/16 (host-network pods).
       hooks:
         extraDeniedDomains: ["10.244.**", "10.0.**", "10.224.**"]
-    dashboard: { enabled: true, host: app.orama.ing }
+    dashboard:
+      enabled: true
+      host: app.orama.ing
+      # Overrides the shared ConfigMap and the seeded prod2-dashboard-secret (operator#311).
+      envFrom:
+        - secretRef: { name: prod2-dashboard-env }
+      # The dashboard keeps calling the ClickHouse proxy, not ClickHouse Cloud: these replace the
+      # values the operator derives from analytics.endpoint and prod2-clickhouse.
+      env:
+        - { name: CLICKHOUSE_HOST,     valueFrom: { secretKeyRef: { name: prod2-dashboard-env, key: CLICKHOUSE_HOST } } }
+        - { name: CLICKHOUSE_USER,     valueFrom: { secretKeyRef: { name: prod2-dashboard-env, key: CLICKHOUSE_USER } } }
+        - { name: CLICKHOUSE_PASSWORD, valueFrom: { secretKeyRef: { name: prod2-dashboard-env, key: CLICKHOUSE_PASSWORD } } }
     docs:      { enabled: true, host: docs.orama.ing }
     controlDB:
       enabled: true

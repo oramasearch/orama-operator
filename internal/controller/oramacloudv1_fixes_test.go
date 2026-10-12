@@ -107,11 +107,11 @@ func TestDashboardNeverMigratesControlDB(t *testing.T) {
 	}
 
 	inCluster := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true}}
 		o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}}
 	})
 	external := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true}}
 		o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external",
 			CredentialsSecretRef: &corev1.LocalObjectReference{Name: "planetscale"}}}
 	})
