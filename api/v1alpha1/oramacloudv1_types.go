@@ -331,6 +331,32 @@ type EngineSpec struct {
 	// reserved ranges plus the cluster's own names); this only adds to it and sets the timeouts.
 	// +optional
 	Hooks *EngineHooksSpec `json:"hooks,omitempty"`
+	// Sentry reports the writer's and readers' errors and traces to Sentry. Unset, OramaCore
+	// starts without Sentry, as before.
+	// +optional
+	Sentry *EngineSentrySpec `json:"sentry,omitempty"`
+}
+
+// EngineSentrySpec turns on OramaCore's Sentry client (log.sentry_dns and log.sentry_environment).
+type EngineSentrySpec struct {
+	// DSNSecretRef names the Secret key that holds the Sentry DSN. The render-config init container
+	// substitutes it into the config at pod start, so the DSN never sits in the ConfigMap. An empty
+	// value leaves Sentry off.
+	DSNSecretRef SentryDSNSecretRef `json:"dsnSecretRef"`
+	// Environment is the Sentry environment prefix: the writer reports as <environment>-writer and
+	// the readers as <environment>-reader. Default spec.region.name.
+	// +optional
+	Environment string `json:"environment,omitempty"`
+}
+
+// SentryDSNSecretRef names the Secret key that holds a Sentry DSN.
+type SentryDSNSecretRef struct {
+	// Name of the Secret, in the CR's namespace.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Key in the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
 }
 
 // EngineHooksSpec adds to the hooks runtime's outbound deny list and sets its timeouts. There is no

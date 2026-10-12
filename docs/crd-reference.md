@@ -66,7 +66,7 @@ increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{host,extraHosts,tlsSecretName,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,extraHosts,tlsSecretName,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `engine` | `writer.gpu`, `writer.{host,extraHosts,tlsSecretName,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,extraHosts,tlsSecretName,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `sentry.{dsnSecretRef.{name,key},environment}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host`, `extraHosts`, `tlsSecretName` (see [below](#public-hosts-and-origin-tls)), `envFrom`, `env` (see [below](#dashboardenvfrom-and-dashboardenv)), `crons` (see [below](#dashboardcrons)) | app.orama.com (Next.js) |
 | `docs` | `host`, `extraHosts`, `tlsSecretName` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
@@ -107,12 +107,26 @@ The defaults are Prod 1's (the hooks timeouts are also OramaCore's own): its rea
 start, its units set `LimitNOFILE=65535`, and its reader hosts set `vm.max_map_count=4194304`.
 Changing a timeout or a minimum rolls the writer or reader StatefulSet.
 
+### Engine Sentry and metrics
+
+| Field under `spec.components.engine` | Default | Purpose |
+|---|---|---|
+| `sentry` | unset | Turns on OramaCore's Sentry client on the writer and readers. Unset renders no `sentry_dns`, so OramaCore starts without Sentry. |
+| `sentry.dsnSecretRef.{name,key}` | — | Secret key (in the CR's namespace) holding the DSN. The ConfigMap carries `sentry_dns: '__SENTRY_DSN__'`; the `render-config` init container substitutes the value, and an empty value leaves Sentry off. |
+| `sentry.environment` | `spec.region.name` | Environment prefix: the writer reports as `<environment>-writer`, the readers as `<environment>-reader`. |
+
+Every engine config renders `log.levels` `oramacore: info` and `orama_js_pool: info`, as Prod 1 does.
+Setting, changing or removing `sentry` changes the config hash and rolls the writer and readers; a new
+DSN value in the same Secret key needs a manual rollout restart. Writer and reader pods carry
+`prometheus.io/scrape: "true"`, `prometheus.io/port: "8080"` and `prometheus.io/path: /metrics` for an
+annotation-driven scraper; the public Ingresses never serve `/metrics`.
+
 ### Prod 2 auth and public endpoints
 
 | Field under `spec.components` | Default | Purpose |
 |---|---|---|
-| `engine.writer.host` | empty | Writer Ingress → `<cr>-writer:8080`, primary region only. |
-| `engine.reader.host` | empty | Reader Ingress → `<cr>-reader:80`, through Envoy when enabled, direct reader otherwise. |
+| `engine.writer.host` | empty | Writer Ingress → `<cr>-writer:8080`, primary region only. A companion `<cr>-writer-metrics` Ingress keeps `/metrics` off it (403 on ingress-nginx). |
+| `engine.reader.host` | empty | Reader Ingress → `<cr>-reader:80`, through Envoy when enabled, direct reader otherwise. Envoy answers `/metrics` 404 and `<cr>-reader-metrics` denies it, as on the writer. |
 | `engine.writer.jwt` | unset | Enables `writer_side.jwt.providers` in OramaCore. Unset preserves the existing engine config without JWT. Requires `spec.jwtIssuer`. |
 | `engine.writer.jwt.jwksURL` | in-cluster dashboard | HTTP(S) dashboard JWKS URL without credentials. Unset renders `http://<cr>-dashboard:3000/api/.well-known/jwks.json`, so the writer fetches keys from the dashboard Service in its own namespace rather than through public DNS and Cloudflare; then the dashboard must be enabled. |
 | `engine.writer.jwt.audiences` | — | Accepted JWT audiences: each exact `clusterWriterUrl` the dashboard signs tokens for (the copied control DB's `oramacore_clusters.writer_url`, which the dashboard also returns as `writerURL`). List every writer URL the rows still carry; Prod 1 lists `https://writer.atlantis.cluster.oramacore.com` and `https://writer.bovista.cluster.oramacore.com`. Each entry 1–128 characters. |

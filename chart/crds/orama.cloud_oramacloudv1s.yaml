@@ -1445,6 +1445,37 @@ spec:
                             maxLength: 253
                             type: string
                         type: object
+                      sentry:
+                        description: |-
+                          Sentry reports the writer's and readers' errors and traces to Sentry. Unset, OramaCore
+                          starts without Sentry, as before.
+                        properties:
+                          dsnSecretRef:
+                            description: |-
+                              DSNSecretRef names the Secret key that holds the Sentry DSN. The render-config init container
+                              substitutes it into the config at pod start, so the DSN never sits in the ConfigMap. An empty
+                              value leaves Sentry off.
+                            properties:
+                              key:
+                                description: Key in the Secret.
+                                minLength: 1
+                                type: string
+                              name:
+                                description: Name of the Secret, in the CR's namespace.
+                                minLength: 1
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                          environment:
+                            description: |-
+                              Environment is the Sentry environment prefix: the writer reports as <environment>-writer and
+                              the readers as <environment>-reader. Default spec.region.name.
+                            type: string
+                        required:
+                        - dsnSecretRef
+                        type: object
                       writer:
                         properties:
                           extraHosts:
