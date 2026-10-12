@@ -993,6 +993,31 @@ spec:
                         description: Envoy enables the per-reader :80->:8080 reverse
                           proxy (matches prod).
                         type: boolean
+                      hooks:
+                        description: |-
+                          Hooks tunes the runtime that runs customer JavaScript hooks on the writer and readers. The
+                          operator always renders an outbound deny list (Prod 1's private, loopback, link-local and
+                          reserved ranges plus the cluster's own names); this only adds to it and sets the timeouts.
+                        properties:
+                          evaluationTimeout:
+                            description: EvaluationTimeout bounds loading a hook's
+                              code. Default 200ms, as on Prod 1.
+                            type: string
+                          executionTimeout:
+                            description: ExecutionTimeout bounds one run of a hook.
+                              Default 1s, as on Prod 1.
+                            type: string
+                          extraDeniedDomains:
+                            description: |-
+                              ExtraDeniedDomains are appended to the default deny list, once each. An entry is a host
+                              pattern matched against the URL host a hook fetches (not the resolved address): a literal
+                              host, or a glob in which "*" stays within one dot-separated label and "**" spans labels
+                              ("10.244.**" denies every 10.244.x.y). CIDR notation does not match anything, so it is refused.
+                            items:
+                              pattern: ^[^/\s]+$
+                              type: string
+                            type: array
+                        type: object
                       minMaxMapCount:
                         description: |-
                           MinMaxMapCount is the lowest node vm.max_map_count the writer and reader pods start on: a

@@ -260,6 +260,23 @@ Driven by `spec.region.role`:
   `spec.llm.automaticEmbeddingsSelector`. The reconcile fails with `Ready=False` before rendering
   when the default or selector provider is not listed, a provider has no models or is listed twice,
   or a provider is `vllm`.
+- **Hooks deny list** ([#306](https://github.com/oramasearch/orama-operator/issues/306),
+  `engine_hooks.go`) <a id="hooks-deny-list"></a> — customer JavaScript hooks can make outbound HTTP
+  calls, and OramaCore lets them reach any address unless `hooks.denied_domains` (or
+  `allowed_domains`) is set. `writer_side.hooks` and `reader_side.hooks` are rendered from one
+  helper, so both sides always carry the same block: Prod 1's `denied_domains`, entry for entry;
+  a `**` form of each of its `<prefix>.*` IPv4 entries (`10.**`, `127.**`, `169.254.**`, …); the
+  cluster's names (`localhost`, `*.svc`, `*.svc.cluster.local`, `*.cluster.local`, `kubernetes*`,
+  `*.internal` and their `**` forms); IPv4-mapped and unspecified IPv6 (`::ffff:*`, `::`); the CR's
+  own Service names (`<cr>-*`, `<cr>-*.**`); then `engine.hooks.extraDeniedDomains`, with
+  duplicates dropped. Timeouts default to Prod 1's `evaluation_timeout: 200ms`,
+  `execution_timeout: 1s`. orama-js-pool 0.4.3 (`src/permission.rs`, `check_net_url` and
+  `glob_match`) matches each pattern against the URL's **host string**, never the resolved address,
+  and turns `.` into a glob separator, so `*` stays within one label: Prod 1's `10.*` matches `10.0`
+  but not `10.0.0.1`, which is why the `**` forms are added. Because the match is on the name, a
+  public DNS name that resolves to a private address, or a Service in another namespace addressed
+  as `<svc>.<ns>`, is not caught: a NetworkPolicy on engine egress is the complete fix (not done
+  yet). A change to the list or the timeouts changes the config hash and rolls the engine.
 - **Analytics** ([#55](https://github.com/oramasearch/orama-operator/issues/55)) — the config sets
   `reader_side.analytics`, so each pod logs search events under `<reader data_dir>/analytics_new`
   and serves them once through `GET /v1/analytics` (read-and-erase). Without the block the endpoint
