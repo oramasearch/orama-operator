@@ -27,6 +27,7 @@ reconcile: `KubernetesCluster` resources on the management cluster, workload res
                  ┌──────────────────────┐
                  │   orama-operator     │
                  │   KubernetesCluster  │──── holds each leaf's credential, permanently
+                 │    └─ AksCluster      │
                  │   bridges            │
                  └──────────┬───────────┘
         provisions, installs│the platform layer and the leaf's operator,
@@ -122,13 +123,46 @@ talk between them.
 
 The rest is to be worked out.
 
+## Abstract kinds and concrete providers
+
+A general rule for every kind in this work, and for the operator from here on.
+
+- **What a person asks for is an abstract kind**, named for the thing and not for the vendor:
+  `KubernetesCluster`, `DnsRecord`, `ServiceMesh`.
+- **An abstract kind has a type, and the type provisions a concrete kind** for one provider:
+  `AksCluster`, `CloudflareDnsRecord`, `IstioServiceMesh`.
+- **The reason is that a provider can be swapped.** When an enterprise client has a hard
+  requirement for one provider over another, a different concrete kind goes behind the same
+  abstract one, and whatever asked for the abstract kind does not change.
+
+| Abstract kind | First concrete kind | Others it leaves room for |
+|---|---|---|
+| `KubernetesCluster` | `AksCluster` | EKS, GKE, the liquid k0s distribution |
+| `DnsRecord` | `CloudflareDnsRecord` | Another DNS provider |
+| `ServiceMesh` | `IstioServiceMesh` | Another mesh |
+
+```
+KubernetesCluster  (type: aks)        what is asked for; provider-neutral
+        │ provisions and owns
+        ▼
+AksCluster                            one provider's cluster; calls Azure
+```
+
+**The kinds the operator has today are concrete only.** `CloudflareDNSRecord`,
+`CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket` and `ClerkApplication`
+each name their vendor and have no abstract kind above them, and `Lake` and `OramaZettaCluster`
+create `CloudflareDNSRecord` resources directly. Whether and when they gain abstract kinds is not
+decided; new kinds follow the rule from the start.
+
 ## The `KubernetesCluster` kind
 
-A `KubernetesCluster` describes one cluster. The management cluster's operator creates it, keeps
-it as described, and reports what is true about it. AKS is the first provider.
+A `KubernetesCluster` describes one cluster in provider-neutral terms. The management cluster's
+operator reconciles it by provisioning the concrete kind its type names, keeps the cluster as
+described, and reports what is true about it. The first type is AKS, which provisions an
+`AksCluster`.
 
-The kind is not designed yet. Its reference will be in
-[`crd-reference.md`](../crd-reference.md) when it exists.
+Neither kind is designed yet. Their reference will be in
+[`crd-reference.md`](../crd-reference.md) when they exist.
 
 ## The path from here
 
@@ -150,7 +184,8 @@ Cluster names keep the existing convention:
 ## Not decided
 
 Kept in [#351](https://github.com/oramasearch/orama-operator/issues/351), in its comments. Among
-them: where a leaf's credential is kept and what it allows; how a leaf's set of cluster resources
+them: where provider-specific settings go when the abstract kind is neutral; where a leaf's
+credential is kept and what it allows; how a leaf's set of cluster resources
 is described; how the management operator upgrades a leaf's operator safely; which Istio
 multi-cluster model a bridge uses; what changes in Zetta's own cross-cluster peering once a bridge
 provides the address space; and how the existing cluster's workloads move.
