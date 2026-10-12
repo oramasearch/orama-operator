@@ -563,18 +563,15 @@ func TestPlacementAppliesToEveryPod(t *testing.T) {
 		t.Errorf("CNPG affinity = %v", affinity)
 	}
 
-	// Writer settings take precedence over the CR-level placement (writer + GPU embeddings).
+	// Writer settings take precedence over the CR-level placement.
 	cl, _ = reconcileOCV1(t, fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Placement = prod2Placement
 		o.Spec.Components.Engine.Writer.GPU = true
 		o.Spec.Components.Engine.Writer.NodeSelector = gpuPool
 	}))
 	pods = podTemplates(t, cl)
-	for _, name := range []string{"StatefulSet/v1-writer", "Deployment/v1-embeddings"} {
-		p := pods[name]
-		if p.NodeSelector["agentpool"] != "gpu" || len(p.Tolerations) != 1 || p.Tolerations[0].Value != "prod2" {
-			t.Errorf("%s placement = %v / %v, want the writer nodeSelector + the CR tolerations", name, p.NodeSelector, p.Tolerations)
-		}
+	if p := pods["StatefulSet/v1-writer"]; p.NodeSelector["agentpool"] != "gpu" || len(p.Tolerations) != 1 || p.Tolerations[0].Value != "prod2" {
+		t.Errorf("writer placement = %v / %v, want the writer nodeSelector + the CR tolerations", p.NodeSelector, p.Tolerations)
 	}
 	if p := pods["StatefulSet/v1-reader"]; p.NodeSelector["agentpool"] != "prod2" {
 		t.Errorf("reader placement = %v, want the CR-level prod2 pool", p.NodeSelector)
@@ -587,9 +584,9 @@ func TestNoPlacementRendersAsBefore(t *testing.T) {
 		o.Spec.Components.Engine.Writer.NodeSelector = map[string]string{"gpu": "true"}
 	}))
 	for name, p := range podTemplates(t, cl) {
-		wantSelector := name == "StatefulSet/v1-writer" || name == "Deployment/v1-embeddings"
+		wantSelector := name == "StatefulSet/v1-writer"
 		if (p.NodeSelector != nil) != wantSelector || p.Tolerations != nil {
-			t.Errorf("%s placement = %v / %v; without spec.placement only the writer (and GPU embeddings) carry a selector", name, p.NodeSelector, p.Tolerations)
+			t.Errorf("%s placement = %v / %v; without spec.placement only the writer carries a selector", name, p.NodeSelector, p.Tolerations)
 		}
 	}
 	ps := getObj(t, cl, "v1-controldb-schema", &oramav1alpha1.PostgresSchema{})

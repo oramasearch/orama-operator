@@ -15,12 +15,13 @@ import (
 
 const discoPort = 8080
 
-// reconcileDisco provisions the DISCO semantic cache as a Deployment: the Go DISCO service,
-// pointed at the SHARED embeddings Deployment (#14/#39) rather than a co-located sidecar — DISCO
-// was the third redundant copy of the embedding model weights. In-memory (no PVC — a restart
-// cold-starts the cache), single-node, exposed on discoPort. Routed through the shared reconcileApp
-// builder so it inherits the workload-hardening baseline (probes, securityContext, resources, PDB,
-// grace) like every other app (#18).
+// reconcileDisco provisions the DISCO semantic cache as a Deployment: the Go DISCO service, with no
+// embeddings sidecar. DISCO reaches its embeddings over its own EmbeddingService gRPC contract at
+// EMBEDDINGS_GRPC_HOST/EMBEDDINGS_GRPC_PORT; the operator runs no service that implements it, so
+// those stay at DISCO's defaults (#305). In-memory (no PVC — a restart cold-starts the cache),
+// single-node, exposed on discoPort. Routed through the shared reconcileApp builder so it inherits
+// the workload-hardening baseline (probes, securityContext, resources, PDB, grace) like every
+// other app (#18).
 func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.Disco.Enabled {
 		return r.teardownByComponent(ctx, oc, "disco")
@@ -31,9 +32,6 @@ func (r *OramaCloudV1Reconciler) reconcileDisco(ctx context.Context, oc *oramav1
 		port:      discoPort,
 		env: []corev1.EnvVar{
 			{Name: "DISCO_PORT", Value: "8080"},
-			// Use the SHARED embeddings Deployment (#14/#39), not a co-located sidecar —
-			// DISCO was the third redundant copy of the model weights.
-			{Name: "EMBEDDINGS_ENDPOINT", Value: oc.Name + "-embeddings:50051"},
 		},
 		// The Go semantic cache holds entries in memory; give it a roomier limit than the light apps.
 		// Override via spec.components.disco.resources.

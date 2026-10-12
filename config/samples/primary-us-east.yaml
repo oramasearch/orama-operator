@@ -24,7 +24,7 @@ spec:
   components:
     engine:
       enabled: true
-      writer: { gpu: true }   # built-in embeddings on GPU; set false for CPU on a non-GPU node
+      writer: { gpu: true }   # in-process embeddings on the writer's GPU; set false for CPU on a non-GPU node
       reader: { replicas: 3, hpa: { minReplicas: 3, maxReplicas: 8, targetCPUUtilization: 70 } }
       envoy: true
     dashboard: { enabled: true, host: app.example.com }

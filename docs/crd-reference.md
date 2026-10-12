@@ -19,7 +19,7 @@ customer-serving Prod 2 shape, never applied by the sample kustomization); the f
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `idp.configSecretRef` | Secret reference | — | With `provider: firebase`, required dashboard server keys: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. Other providers retain their existing behavior. |
 | `jwtIssuer` | string | `orama-cloud` | Dashboard signing issuer and writer JWKS provider's accepted issuer (maximum 128 characters). |
-| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile) run writer-only and reader-only OramaCore builds with side-only configs; unset, both sides fall back to `oramacore` and share the combined config (see [components.md](components.md#engine-internalcontrollerenginego)). **Digest pinning:** an override may be `repo@sha256:<digest>` (or `repo:tag@sha256:<digest>`); the operator-built apps (dashboard, docs, workers, …) then pull `IfNotPresent` instead of `Always`. Other containers keep Kubernetes' default policy, which is already `IfNotPresent` for a digest. |
+| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; override via `overrides.oramacore`. (`overrides.embeddings` is no longer read: OramaCore embeds in-process and the operator runs no embeddings server.) `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile) run writer-only and reader-only OramaCore builds with side-only configs; unset, both sides fall back to `oramacore` and share the combined config (see [components.md](components.md#engine-internalcontrollerenginego)). **Digest pinning:** an override may be `repo@sha256:<digest>` (or `repo:tag@sha256:<digest>`); the operator-built apps (dashboard, docs, workers, …) then pull `IfNotPresent` instead of `Always`. Other containers keep Kubernetes' default policy, which is already `IfNotPresent` for a digest. |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers — end users pick per query. Each has `name` (`groq \| openai \| google \| anthropic \| vllm`), `models[]` (required; the first is its default model), optional `url` (overrides OramaCore's built-in OpenAI-compatible base URL) and optional `apiKeySecretRef: {name, key}` (`key` defaults to `<PROVIDER>_API_KEY`; unset ⇒ that key of `<cr>-engine-secret`). Rendered into the engine config's `ai_server.remote_llms`, one entry per provider. Empty ⇒ `groq` (`llama-3.3-70b-versatile`), `openai` (`gpt-5.2`), `anthropic` (`claude-sonnet-4-5`). Refused at reconcile (`Ready=False`): a provider listed twice or with no models, and `vllm` (in-cluster vLLM and its `gpu` field are not rendered yet). |
 | `llm.default` | string | `groq` | Provider used when a request doesn't name one: rendered as `ai_server.llm` (`local: false`, `host` = its base URL, `model` = its first model, its key). Must be one of `providers`, else the reconcile fails with `Ready=False`. |
@@ -41,7 +41,7 @@ llm:
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
-| `placement.nodeSelector` | map | — | Added to every pod the operator creates for the CR: apps, data stores, writer, readers, embeddings, the demo-seed Job, the control-DB `PostgresSchema` migration Job, and the CNPG instances (through the Cluster's `spec.affinity`). `engine.writer.nodeSelector`, when set, replaces it for the writer (and the GPU embeddings pod). Unset = no selector, as before. |
+| `placement.nodeSelector` | map | — | Added to every pod the operator creates for the CR: apps, data stores, writer, readers, the demo-seed Job, the control-DB `PostgresSchema` migration Job, and the CNPG instances (through the Cluster's `spec.affinity`). `engine.writer.nodeSelector`, when set, replaces it for the writer. Unset = no selector, as before. |
 | `placement.tolerations` | list | — | Same scope as `placement.nodeSelector`; `engine.writer.tolerations`, when set, replaces it for the writer. |
 | `deletionProtection` | bool | false | Keep the data through CR deletion and component disable. The CNPG control-DB `Cluster` and its `ScheduledBackup` release the CR owner reference and record `orama.cloud/cloud-v1-owner-uid`, so deleting the CR leaves them; `controlDB.enabled: false` keeps them too, and the same CR UID can re-enable them. A replacement CR or an unmarked, unowned legacy database requires reviewed ownership handover ([components.md](components.md#controldb-internalcontrollercontroldbgo)). Every operator StatefulSet (writer, readers, stores) gets `persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`. Off: owned Cluster deletion/disable retains its existing behavior; foreign objects are refused. |
 
@@ -65,7 +65,7 @@ increase in place when the StorageClass allows expansion.
 | `engine` | `writer.gpu`, `writer.{host,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
-| `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
+| `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
 | `analytics` | data-store; external mode requires an HTTP(S) `endpoint` and `credentialsSecretRef` with `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` for the dashboard/processor | ClickHouse (Prod 2 keeps ClickHouse Cloud) |
 | `analyticsProcessor` | `resources`, `import.{enabled,schedule}` | Analytics import server and opt-in CronJob |
@@ -75,8 +75,14 @@ increase in place when the StorageClass allows expansion.
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
 
-`engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
-L40S). `workers` bundles all ported CF workers into one image → one Deployment.
+`engine.writer.gpu` puts an `nvidia.com/gpu: 1` limit on the writer container, where OramaCore
+computes embeddings in-process (prod runs an L40S), and renders `CUDAExecutionProvider` then
+`CPUExecutionProvider` in the writer's config; `false` runs them on CPU. There is no separate
+embeddings server. `workers` bundles all ported CF workers into one image → one Deployment.
+
+`ingestion.embeddingsURL` is the embeddings HTTP API index-builder POSTs to (its
+`ORAMA_EMBEDDINGS_URL`; Prod 1 uses the hosted embeddings API). Unset renders the variable empty,
+since index-builder requires it at boot and nothing in the stack serves that API.
 
 `engine.reader.hpa` (`minReplicas` default `reader.replicas`, `maxReplicas` default
 2 × `minReplicas`, `targetCPUUtilization` default `70`) makes the operator own a

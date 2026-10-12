@@ -54,7 +54,6 @@ spec:
     # Pin each component by digest; digest-pinned refs are pulled IfNotPresent. For example:
     # overrides:
     #   oramacore: oramasearch/oramacore@sha256:<digest>
-    #   embeddings: oramasearch/oramacore-ai-server@sha256:<digest>
     #   dashboard: oramasearch/dashboard@sha256:<digest>
     #   docs: oramasearch/docs@sha256:<digest>
     #   analytics-processor: oramasearch/analytics-processor@sha256:<digest>
@@ -112,6 +111,8 @@ spec:
     search:     { enabled: true, mode: in-cluster }
     # Component set mirrors full-stack.yaml.
     ingestion:  { enabled: true, harvest: true }
+    # Set ingestion.embeddingsURL to the hosted embeddings API index-builder POSTs to (Prod 1's value);
+    # unset, index-builder gets an empty ORAMA_EMBEDDINGS_URL and cannot compute embeddings.
     disco:      { enabled: true }
     workers:    { enabled: true, replicas: 2 }
     searchWorkers: { enabled: true }
