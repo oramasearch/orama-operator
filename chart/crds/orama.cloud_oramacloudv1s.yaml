@@ -641,7 +641,7 @@ spec:
                                 type: string
                               path:
                                 description: Path is the bucket prefix. Empty defaults
-                                  to lake-<name>/controldb.
+                                  to <namespace>/<name>/controldb.
                                 type: string
                             type: object
                           enabled:
@@ -659,7 +659,7 @@ spec:
                             type: string
                           secretRef:
                             description: |-
-                              SecretRef names the R2/S3 credentials Secret in spec.namespace. It is required when
+                              SecretRef names the R2/S3 credentials Secret in the CR's namespace. It is required when
                               Enabled is true and must contain s3ApiEndpoint, accessKeyId, and secretAccessKey.
                             properties:
                               name:

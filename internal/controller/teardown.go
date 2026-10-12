@@ -71,7 +71,7 @@ func (r *OramaCloudV1Reconciler) teardownControlDB(ctx context.Context, oc *oram
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
 	cluster.SetName(controlDBClusterName(oc))
 	cluster.SetNamespace(oc.Namespace)
-	scheduledBackup := newCNPGScheduledBackupFor(controlDBScheduledBackupName(oc), oc.Namespace)
+	scheduledBackup := newControlDBScheduledBackup(controlDBScheduledBackupName(oc), oc.Namespace)
 	for _, obj := range []*unstructured.Unstructured{scheduledBackup, cluster} {
 		if oc.Spec.DeletionProtection {
 			if err := r.releaseFromCR(ctx, oc, obj); err != nil {

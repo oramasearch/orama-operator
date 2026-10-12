@@ -626,7 +626,51 @@ type ControlDBSpec struct {
 	// credentials Secret lives in the CR's namespace. The default prefix is
 	// <namespace>/<name>/controldb.
 	// +optional
-	Backup LakePostgresBackupSpec `json:"backup,omitempty"`
+	Backup ControlDBBackupSpec `json:"backup,omitempty"`
+}
+
+// ControlDBBackupSpec describes scheduled CNPG Barman object-store backups of the control DB. The
+// Secret is in the CR's namespace and has the same R2/S3 shape as r2SecretRef: s3ApiEndpoint,
+// accessKeyId, and secretAccessKey.
+type ControlDBBackupSpec struct {
+	// Enabled turns on the CNPG Barman object store and ScheduledBackup. Default false.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Schedule is a six-field CNPG cron expression.
+	// +kubebuilder:default="0 0 3 * * *"
+	// +optional
+	Schedule string `json:"schedule,omitempty"`
+
+	// Retention is the Barman retentionPolicy.
+	// +kubebuilder:default="30d"
+	// +optional
+	Retention string `json:"retention,omitempty"`
+
+	// Destination identifies the object-store location. Bucket is required when Enabled is true.
+	// +optional
+	Destination ControlDBBackupDestination `json:"destination,omitempty"`
+
+	// SecretRef names the R2/S3 credentials Secret in the CR's namespace. It is required when
+	// Enabled is true and must contain s3ApiEndpoint, accessKeyId, and secretAccessKey.
+	// +optional
+	SecretRef corev1.LocalObjectReference `json:"secretRef,omitempty"`
+}
+
+// ControlDBBackupDestination identifies the Barman object-store location.
+type ControlDBBackupDestination struct {
+	// Bucket is the object-store bucket name. Required when backups are enabled.
+	// +optional
+	Bucket string `json:"bucket,omitempty"`
+
+	// Path is the bucket prefix. Empty defaults to <namespace>/<name>/controldb.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// EndpointURL overrides the Secret's s3ApiEndpoint.
+	// +optional
+	EndpointURL string `json:"endpointURL,omitempty"`
 }
 
 // Toggle is a simple on/off component.

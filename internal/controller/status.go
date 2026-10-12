@@ -208,7 +208,7 @@ func (r *OramaCloudV1Reconciler) controlDBBackupCondition(ctx context.Context, o
 	if err != nil || !backup.Enabled {
 		return nil, err
 	}
-	_, _, cond, err := cnpgBackupStatus(ctx, r.Client, oc.Namespace, controlDBClusterName(oc), controlDBScheduledBackupName(oc), oc.Generation, backup)
+	_, _, cond, err := controlDBBackupStatus(ctx, r.Client, oc.Namespace, controlDBClusterName(oc), controlDBScheduledBackupName(oc), oc.Generation, backup)
 	if err != nil {
 		return nil, err
 	}

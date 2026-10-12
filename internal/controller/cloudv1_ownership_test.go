@@ -22,7 +22,7 @@ func TestControlDBOwnershipRefusesForeignResources(t *testing.T) {
 				t.Run(kind+"/"+identity+"/"+action, func(t *testing.T) {
 					oc := fullStackOCV1(withBackup)
 					oc.Spec.DeletionProtection = action == "release" || identity == "retained-other-uid"
-					obj := newCNPGScheduledBackupFor(controlDBScheduledBackupName(oc), oc.Namespace)
+					obj := newControlDBScheduledBackup(controlDBScheduledBackupName(oc), oc.Namespace)
 					if kind == "Cluster" {
 						obj.SetGroupVersionKind(cnpgClusterGVK)
 						obj.SetName(controlDBClusterName(oc))
@@ -59,7 +59,7 @@ func TestControlDBOwnershipRefusesForeignResources(t *testing.T) {
 						}
 					case "delete":
 						if kind == "ScheduledBackup" {
-							err = r.reconcileControlDBScheduledBackup(context.Background(), oc, cnpgBackupConfig{})
+							err = r.reconcileControlDBScheduledBackup(context.Background(), oc, controlDBBackupConfig{})
 						} else {
 							err = r.teardownControlDB(context.Background(), oc)
 						}
