@@ -552,8 +552,9 @@ type LakeZettaSpec struct {
 }
 
 // PostgresBackupSpec describes scheduled object-store backups for a CNPG control-plane Postgres
-// cluster (Lake spec.postgres.backup). The Secret is in the Cluster's namespace and has the same
-// R2/S3 shape as OramaCloudV1's r2SecretRef: s3ApiEndpoint, accessKeyId, and secretAccessKey.
+// cluster (Lake spec.postgres.backup and OramaCloudV1 spec.components.controlDB.backup). The
+// Secret is in the Cluster's namespace and has the same R2/S3 shape as OramaCloudV1's
+// r2SecretRef: s3ApiEndpoint, accessKeyId, and secretAccessKey.
 type PostgresBackupSpec struct {
 	// Enabled turns on the CNPG Barman object store and ScheduledBackup. Default false.
 	// +kubebuilder:default=false
@@ -586,7 +587,8 @@ type PostgresBackupDestination struct {
 	// +optional
 	Bucket string `json:"bucket,omitempty"`
 
-	// Path is the bucket prefix. Empty defaults to lake-<name>/controldb.
+	// Path is the bucket prefix. Empty defaults to lake-<name>/controldb for a Lake and
+	// <namespace>/<name>/controldb for an OramaCloudV1.
 	// +optional
 	Path string `json:"path,omitempty"`
 

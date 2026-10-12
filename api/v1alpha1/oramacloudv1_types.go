@@ -185,7 +185,7 @@ type ComponentsSpec struct {
 	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
-	ControlDB DataStoreSpec  `json:"controlDB,omitempty"` // Postgres control plane
+	ControlDB ControlDBSpec  `json:"controlDB,omitempty"` // Postgres control plane (CNPG)
 	PgAdmin   Toggle         `json:"pgAdmin,omitempty"`   // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
 	Cache     DataStoreSpec  `json:"cache,omitempty"`     // Redis (+ QStash shim)
 	Broker    DataStoreSpec  `json:"broker,omitempty"`    // RabbitMQ
@@ -325,6 +325,17 @@ type DataStoreSpec struct {
 	// when Mode=external.
 	// +optional
 	Storage VolumeSpec `json:"storage,omitempty"`
+}
+
+// ControlDBSpec is the control-plane Postgres: a DataStoreSpec (run as a CNPG Cluster when
+// in-cluster) plus opt-in object-store backups.
+type ControlDBSpec struct {
+	DataStoreSpec `json:",inline"`
+	// Backup configures scheduled CNPG Barman object-store backups of the control DB. The
+	// credentials Secret lives in the CR's namespace. The default prefix is
+	// <namespace>/<name>/controldb.
+	// +optional
+	Backup PostgresBackupSpec `json:"backup,omitempty"`
 }
 
 // Toggle is a simple on/off component.

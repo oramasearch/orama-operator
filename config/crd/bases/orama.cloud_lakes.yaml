@@ -461,8 +461,9 @@ spec:
                             description: EndpointURL overrides the Secret's s3ApiEndpoint.
                             type: string
                           path:
-                            description: Path is the bucket prefix. Empty defaults
-                              to lake-<name>/controldb.
+                            description: |-
+                              Path is the bucket prefix. Empty defaults to lake-<name>/controldb for a Lake and
+                              <namespace>/<name>/controldb for an OramaCloudV1.
                             type: string
                         type: object
                       enabled:

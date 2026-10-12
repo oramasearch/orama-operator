@@ -40,6 +40,8 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=scheduledbackups,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=backups,verbs=get;list;watch
 
 // Reconcile is the control loop. It reconciles each enabled component in turn,
 // driven by .spec.region.role. Components still TODO: control-plane Postgres (CNPG),
@@ -85,7 +87,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	for _, s := range steps {
 		if err := s.fn(ctx, &oc); err != nil {
 			l.Error(err, "component reconcile failed", "component", s.name)
-			r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, metav1.Condition{
+			r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, false, metav1.Condition{
 				Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
 				Message: fmt.Sprintf("%s: %v", s.name, err),
 			})
@@ -97,11 +99,19 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// else Provisioning. Requeue while still coming up so the phase advances as pods go ready —
 	// Owns() events cover most transitions; the requeue is the backstop (e.g. the polled CNPG
 	// cluster readiness).
-	if r.applyReadiness(ctx, &oc) {
-		return ctrl.Result{}, nil
+	if !r.applyReadiness(ctx, &oc) {
+		return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
 	}
-	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
+	// CNPG Backups aren't watched: keep polling while control-DB backups are on so BackupReady
+	// follows each scheduled backup. Unchanged polls write no status.
+	if controlDBInCluster(&oc) && oc.Spec.Components.ControlDB.Backup.Enabled != nil && *oc.Spec.Components.ControlDB.Backup.Enabled {
+		return ctrl.Result{RequeueAfter: controlDBBackupPoll}, nil
+	}
+	return ctrl.Result{}, nil
 }
+
+// controlDBBackupPoll is how often a Ready stack re-reads its control-DB backup status.
+const controlDBBackupPoll = 5 * time.Minute
 
 // SetupWithManager wires the controller and the child resources it owns.
 func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {

@@ -21,11 +21,11 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// CNPG Barman object-store backups for a control DB, used by the Lake (spec.postgres.backup). The
-// owner declares a PostgresBackupSpec; its reconciler resolves it with resolveCNPGBackupConfig,
-// renders cnpgBarmanBackup into its Cluster spec, owns a ScheduledBackup built by
-// newCNPGScheduledBackupFor/cnpgScheduledBackupSpec, and reports cnpgBackupStatus as its
-// BackupReady condition.
+// CNPG Barman object-store backups, shared by the Lake (spec.postgres.backup) and OramaCloudV1
+// (spec.components.controlDB.backup) control DBs. Both declare a PostgresBackupSpec; the owner's
+// reconciler resolves it with resolveCNPGBackupConfig, renders cnpgBarmanBackup into its Cluster
+// spec, owns a ScheduledBackup built by newCNPGScheduledBackupFor/cnpgScheduledBackupSpec, and
+// reports cnpgBackupStatus as its BackupReady condition.
 
 var (
 	cnpgScheduledBackupGVK = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "ScheduledBackup"}
