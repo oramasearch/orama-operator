@@ -27,7 +27,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -90,12 +89,6 @@ const (
 //go:embed assets/lake-schema.sql
 var lakeSchemaSQL string
 
-var (
-	cnpgScheduledBackupGVK = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "ScheduledBackup"}
-	cnpgBackupGVK          = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "Backup"}
-	cnpgBackupListGVK      = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "BackupList"}
-)
-
 // lakeControlDB is the CNPG Cluster name for a Lake; CNPG derives `<name>-app` (the owner
 // credentials + URI Secret) and `<name>-rw` (the primary Service) from it.
 func lakeControlDB(name string) string { return "lake-" + name + "-controldb" }
@@ -132,19 +125,6 @@ func lakeZettaClientService(name string) string {
 
 func lakeZettaAdminSecret(name string) string {
 	return lakeZettaName(name) + "-zetta-admin"
-}
-
-type lakeBackupConfig struct {
-	Enabled    bool
-	Valid      bool
-	Reason     string
-	Message    string
-	Bucket     string
-	Path       string
-	Endpoint   string
-	Schedule   string
-	Retention  string
-	SecretName string
 }
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes,verbs=get;list;watch;create;update;patch;delete
@@ -1226,7 +1206,7 @@ func (r *LakeReconciler) reconcileLakeAdminToken(ctx context.Context, lake *oram
 // reconcileLakeControlDB provisions lake's control plane as a CloudNativePG Cluster in the lake
 // namespace, the same unstructured path OramaCloudV1 uses (controldb.go): bootstrap a database
 // and owner named "lake", per-instance storage, owned by the Lake. Disabled tears it down.
-func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *oramav1alpha1.Lake, ns string, lbls map[string]string, backup lakeBackupConfig) error {
+func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *oramav1alpha1.Lake, ns string, lbls map[string]string, backup cnpgBackupConfig) error {
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
 	cluster.SetName(lakeControlDB(lake.Name))
@@ -1260,18 +1240,7 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 			},
 		}
 		if backup.Enabled && backup.Valid {
-			spec["backup"] = map[string]interface{}{
-				"barmanObjectStore": map[string]interface{}{
-					"destinationPath": fmt.Sprintf("s3://%s/%s", strings.Trim(backup.Bucket, "/"), strings.Trim(backup.Path, "/")),
-					"endpointURL":     backup.Endpoint,
-					"s3Credentials": map[string]interface{}{
-						"accessKeyId":     map[string]interface{}{"name": backup.SecretName, "key": "accessKeyId"},
-						"secretAccessKey": map[string]interface{}{"name": backup.SecretName, "key": "secretAccessKey"},
-					},
-					"wal": map[string]interface{}{"compression": "gzip"},
-				},
-				"retentionPolicy": backup.Retention,
-			}
+			spec["backup"] = cnpgBarmanBackup(backup)
 		}
 		cluster.Object["spec"] = spec
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)
@@ -1284,147 +1253,32 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 	}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, scheduledBackup, func() error {
 		scheduledBackup.SetLabels(lbls)
-		scheduledBackup.Object["spec"] = map[string]interface{}{
-			"schedule":             backup.Schedule,
-			"backupOwnerReference": "self",
-			"cluster":              map[string]interface{}{"name": lakeControlDB(lake.Name)},
-			"immediate":            true,
-		}
+		scheduledBackup.Object["spec"] = cnpgScheduledBackupSpec(backup, lakeControlDB(lake.Name))
 		return controllerutil.SetControllerReference(lake, scheduledBackup, r.Scheme)
 	})
 	return err
 }
 
 func newCNPGScheduledBackup(lake *oramav1alpha1.Lake, ns string) *unstructured.Unstructured {
-	backup := &unstructured.Unstructured{}
-	backup.SetGroupVersionKind(cnpgScheduledBackupGVK)
-	if lake != nil {
-		backup.SetName(lakeControlDBScheduledBackup(lake.Name))
-		backup.SetNamespace(ns)
+	if lake == nil {
+		return newCNPGScheduledBackupFor("", "")
 	}
-	return backup
+	return newCNPGScheduledBackupFor(lakeControlDBScheduledBackup(lake.Name), ns)
 }
 
-// resolveLakeBackupConfig validates enabled backup settings without an admission webhook. Invalid
+// resolveLakeBackupConfig validates spec.postgres.backup (see resolveCNPGBackupConfig). Invalid
 // user configuration is reflected in Lake status rather than causing a panic or reconcile error.
-func (r *LakeReconciler) resolveLakeBackupConfig(ctx context.Context, lake *oramav1alpha1.Lake, ns string) (lakeBackupConfig, error) {
-	config := lakeBackupConfig{Enabled: lakePostgresBackupEnabled(lake)}
-	if !config.Enabled {
-		return config, nil
-	}
-	backup := lake.Spec.Postgres.Backup
-	if backup.Destination.Bucket == "" {
-		config.Reason = "BackupBucketRequired"
-		config.Message = "spec.postgres.backup.destination.bucket is required when backups are enabled"
-		return config, nil
-	}
-	if backup.SecretRef.Name == "" {
-		config.Reason = "BackupSecretRequired"
-		config.Message = "spec.postgres.backup.secretRef is required when backups are enabled"
-		return config, nil
-	}
-
-	secret := &corev1.Secret{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: backup.SecretRef.Name}, secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			config.Reason = "BackupSecretNotFound"
-			config.Message = fmt.Sprintf("backup Secret %q was not found in namespace %q", backup.SecretRef.Name, ns)
-			return config, nil
-		}
-		return config, err
-	}
-	for _, key := range []string{"s3ApiEndpoint", "accessKeyId", "secretAccessKey"} {
-		if len(secret.Data[key]) == 0 {
-			config.Reason = "InvalidBackupSecret"
-			config.Message = fmt.Sprintf("backup Secret %q must contain a non-empty %s key", backup.SecretRef.Name, key)
-			return config, nil
-		}
-	}
-
-	config.Valid = true
-	config.Bucket = backup.Destination.Bucket
-	config.Path = backup.Destination.Path
-	if config.Path == "" {
-		config.Path = "lake-" + lake.Name + "/controldb"
-	}
-	config.Endpoint = backup.Destination.EndpointURL
-	if config.Endpoint == "" {
-		config.Endpoint = string(secret.Data["s3ApiEndpoint"])
-	}
-	config.Schedule = backup.Schedule
-	if config.Schedule == "" {
-		config.Schedule = "0 0 3 * * *"
-	}
-	config.Retention = backup.Retention
-	if config.Retention == "" {
-		config.Retention = "30d"
-	}
-	config.SecretName = backup.SecretRef.Name
-	return config, nil
+func (r *LakeReconciler) resolveLakeBackupConfig(ctx context.Context, lake *oramav1alpha1.Lake, ns string) (cnpgBackupConfig, error) {
+	return resolveCNPGBackupConfig(ctx, r.Client, ns, lake.Spec.Postgres.Backup, "spec.postgres.backup", "lake-"+lake.Name+"/controldb")
 }
 
-func (r *LakeReconciler) lakeBackupStatus(ctx context.Context, lake *oramav1alpha1.Lake, ns string, config lakeBackupConfig) (bool, *metav1.Time, metav1.Condition, error) {
-	condition := metav1.Condition{Type: "BackupReady", ObservedGeneration: lake.Generation}
-	if !config.Enabled {
-		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "BackupDisabled", "control-plane backups are disabled"
+func (r *LakeReconciler) lakeBackupStatus(ctx context.Context, lake *oramav1alpha1.Lake, ns string, config cnpgBackupConfig) (bool, *metav1.Time, metav1.Condition, error) {
+	if config.Enabled && config.Valid && !lakePostgresEnabled(lake) {
+		condition := metav1.Condition{Type: "BackupReady", ObservedGeneration: lake.Generation, Status: metav1.ConditionFalse,
+			Reason: "PostgresDisabled", Message: "control-plane Postgres is disabled"}
 		return false, nil, condition, nil
 	}
-	if !config.Valid {
-		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, config.Reason, config.Message
-		return false, nil, condition, nil
-	}
-	if !lakePostgresEnabled(lake) {
-		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "PostgresDisabled", "control-plane Postgres is disabled"
-		return false, nil, condition, nil
-	}
-
-	scheduledBackup := newCNPGScheduledBackup(lake, ns)
-	if err := r.Get(ctx, client.ObjectKeyFromObject(scheduledBackup), scheduledBackup); err != nil {
-		if apierrors.IsNotFound(err) {
-			condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "ScheduledBackupPending", "waiting for the CNPG ScheduledBackup"
-			return false, nil, condition, nil
-		}
-		return false, nil, condition, err
-	}
-
-	backups := &unstructured.UnstructuredList{}
-	backups.SetGroupVersionKind(cnpgBackupListGVK)
-	if err := r.List(ctx, backups, client.InNamespace(ns), client.MatchingLabels{"cnpg.io/cluster": lakeControlDB(lake.Name)}); err != nil {
-		return false, nil, condition, err
-	}
-	if len(backups.Items) == 0 {
-		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "BackupPending", "waiting for the first CNPG Backup"
-		return false, nil, condition, nil
-	}
-	newest := &backups.Items[0]
-	for i := 1; i < len(backups.Items); i++ {
-		if backups.Items[i].GetCreationTimestamp().After(newest.GetCreationTimestamp().Time) {
-			newest = &backups.Items[i]
-		}
-	}
-	phase, _, _ := unstructured.NestedString(newest.Object, "status", "phase")
-	lastBackupTime, err := cnpgBackupCompletionTime(newest)
-	if err != nil {
-		return false, nil, condition, err
-	}
-	if phase == "completed" {
-		condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, "BackupCompleted", "newest CNPG Backup completed"
-		return true, lastBackupTime, condition, nil
-	}
-	condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "BackupNotCompleted", fmt.Sprintf("newest CNPG Backup phase is %q", phase)
-	return false, lastBackupTime, condition, nil
-}
-
-func cnpgBackupCompletionTime(backup *unstructured.Unstructured) (*metav1.Time, error) {
-	stoppedAt, found, err := unstructured.NestedString(backup.Object, "status", "stoppedAt")
-	if err != nil || !found || stoppedAt == "" {
-		return nil, err
-	}
-	parsed, err := time.Parse(time.RFC3339, stoppedAt)
-	if err != nil {
-		return nil, fmt.Errorf("parse CNPG Backup status.stoppedAt: %w", err)
-	}
-	return &metav1.Time{Time: parsed}, nil
+	return cnpgBackupStatus(ctx, r.Client, ns, lakeControlDB(lake.Name), lakeControlDBScheduledBackup(lake.Name), lake.Generation, config)
 }
 
 func lakeBackupTimesEqual(a, b *metav1.Time) bool {
