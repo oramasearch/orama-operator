@@ -18,8 +18,8 @@ operator's side of it. Field definitions are in the
 [`Lake` CRD reference](../crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service)
 (`spec.services`). Workspace namespaces are reconciled separately from the
 [`workspaces` table](workspaces.md); `spec.services.enabled` controls only this services poll. A
-customer's **stores** (volumes, and later buckets and filesystems;
-lake#196) ride the same poll, connection and Secret: see [Stores](#stores-lake196).
+customer's **stores** (volumes, the customer's own buckets, and Lake-run buckets and filesystems;
+lake#196, lake#664) ride the same poll, connection and Secret: see [Stores](#stores-lake196).
 
 ## Turning it on
 
@@ -481,10 +481,12 @@ manager to start. SQLite, DuckDB and Polars need nothing new: the manager alread
 Migration `0028_stores` adds lake's `stores` / `store_status` tables (lake
 `docs/control-plane/storage.md`). The services poll reads them on the same connection, after the
 services, and `LakeServiceStore` carries `ListStores` and `UpsertStoreStatus` beside the service
-methods. Phase 1 runs the **cluster volume**: a Lake-controlled PersistentVolumeClaim
+methods. It runs the **cluster volume** (a Lake-controlled PersistentVolumeClaim
 `<lake>-<st-slug>` labelled `orama.cloud/store-id`, on the services' StorageClass, Ready as soon as
-the claim exists and its `<slug>.json` connection is in `lake-<lake>-services`; every other type ×
-provider pair is `Failed`. A schema without the `stores` table is logged and skipped; the services
+the claim exists and its `<slug>.json` connection is in `lake-<lake>-services`), the customer's own
+**buckets** (`r2`, `s3`, `b2`, `gcs`, `azure`: a `LakeSealedSecret` delivering the workspace's
+credential, lake#664) and the **Lake-run** pairs (`zetta`, `lake`: a connection only); the network
+filesystems are `Failed`. A schema without the `stores` table is logged and skipped; the services
 carry on. The Secret keeps a store key by the same present-set rule as a service key, and keeps
 every `st-…` key when the stores read failed. Absent and provisioning stores keep the 2-second
 poll. The whole of it is [stores.md](stores.md).

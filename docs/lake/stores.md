@@ -1,4 +1,4 @@
-# Lake customer stores (lake#196)
+# Lake customer stores (lake#196, lake#664)
 
 A lake customer's **stores** — buckets, filesystems, network filesystems and volumes — follow the
 [managed-services](services.md) model: lake writes the `stores` table in its control Postgres and
@@ -11,9 +11,17 @@ authoritative contract is lake's
 These are a customer's stores. The Lake's own libliquid store root (`spec.store`, claim
 `lake-<lake>-store`) is a different thing and is not touched here.
 
-**Phase 1 runs one type × provider pair: the cluster volume** (`volume` / `cluster`). Every other
-pair is `Failed` with `<provider> <type> stores are not available on this lake yet`; lake does not
-offer them, so that only guards a row written some other way. Phases 2–4 of lake#196 add them.
+**The pairs the operator runs:**
+
+| Pair | Who runs it | What the operator makes |
+|---|---|---|
+| `volume` / `cluster` | the cluster | a PersistentVolumeClaim `<lake>-<slug>` in the workspace namespace ([below](#cluster-volume)) |
+| `object` / `r2`, `s3`, `b2`, `gcs` (S3 protocol), `azure` (Blob REST) | the customer's own bucket | a `LakeSealedSecret` `<lake>-<slug>` in the Lake namespace delivering the workspace's credential; never the bucket ([below](#customer-buckets-lake664)) |
+| `object` / `filesystem` × `zetta`, `lake` | Lake, in the workspace | nothing in Kubernetes; a connection only ([below](#lake-run-stores-lake664)) |
+
+The network filesystems (`network_filesystem` × `nfs`, `azure`, `s3`, `gcs`) are `Failed` with
+`<provider> <type> stores are not available on this lake yet`; lake does not offer them, so that
+only guards a row written some other way.
 
 ## The pass
 
@@ -61,6 +69,69 @@ The store is **Ready as soon as the claim exists and its connection is in the Se
 `managed-csi` is `WaitForFirstConsumer`, so the claim stays `Pending` until a service mounts it;
 that is the expected state, and the message says so.
 
+## Customer buckets (lake#664)
+
+A bucket on the customer's own account: `object` × `r2`, `s3`, `b2`, `gcs` (S3 protocol, SigV4) or
+`azure` (Blob REST; `bucket` is the container and `endpoint` `https://<account>.blob.core.windows.net`).
+lake writes the spec
+
+```json
+{"public": false, "bucket": "<name>", "endpoint": "https://...", "region": "<region>", "prefix": "<folder or empty>",
+ "credential": {"mount_id": "<uuid>", "name": "<secret name>"}}
+```
+
+The credential is **the workspace's own secret** in lake's secret store (a mount sealed in the
+workspace Zetta, liquid-bridge decision 58), never Orama's. Its fields: S3 protocol
+`access_key_id`, `secret_access_key` (optional `session_token`); Azure `account_key` (Shared Key,
+account name from the endpoint host) or `sas_token`. The operator never reads it through Postgres:
+the spec only names it.
+
+The operator (`internal/controller/lake_stores_buckets.go`):
+
+1. **validates** the spec: `bucket` non-empty, `endpoint` an `https://` URL with a host, the
+   credential's `mount_id` and `name` non-empty. Otherwise `Failed` with the reason
+   (`spec.bucket is required`, `spec.endpoint must be an https:// URL`, `spec.credential.mount_id
+   and spec.credential.name are required`) and nothing is created;
+2. **owns a `LakeSealedSecret` `<lake>-<slug>`** in the Lake namespace, beside the services
+   Secret: the Lake's labels plus `orama.cloud/lake`, `orama.cloud/workspace` and
+   `orama.cloud/store-id`, annotation `orama.cloud/customer-id`, the Lake as controller, source
+   `lake` `{mount: credential.mount_id, name: credential.name}` (unpinned, so a new secret version
+   is delivered on the [refresh](sealed-secrets.md)), template `<lake>-<slug>`, `Opaque`. The
+   [LakeSealedSecret controller](sealed-secrets.md) mints it from lake and produces Secret
+   `<lake>-<slug>`. A changed credential reference updates the delivery; a steady store writes
+   nothing;
+3. is `Provisioning`, `delivering the credentials from the workspace's secret store`, until the
+   Secret exists **and is controlled by that delivery**. When the delivery is in `Error` (the
+   secret is not in the mount, for one), its reason is appended after a colon, so the person can
+   act on it;
+4. writes the connection and is `Ready`, `credentials delivered`:
+
+```json
+{"type":"object","provider":"r2","bucket":"reports","endpoint":"https://<account>.r2.cloudflarestorage.com","region":"auto","prefix":"daily/","secret":"prod-st-0123456789ab","namespace":"lake"}
+```
+
+`secret` and `namespace` name the delivered Secret; the credential itself is never in the
+connection. `store_status.endpoint` is `<endpoint>/<bucket>`.
+
+**A foreign delivery** — a `LakeSealedSecret` of that name not controlled by the Lake or without
+this store's id — is refused (`Failed`, `LakeSealedSecret <ns>/<name> exists and is not this Lake's
+store`) and never rewritten or deleted. A foreign Secret of the produced name never makes the store
+Ready (the LakeSealedSecret controller refuses it too, `SecretOwnershipConflict`).
+
+**Deleting a bucket store never touches the bucket.** For an absent bucket store: delete the
+delivery (its Secret goes with it, by owner reference), drop `<slug>.json`, `Deleting` (`removing
+the credentials`) while the delivery remains, then `Deleted` with `store removed; the bucket and what
+is in it stay in your account`. A foreign delivery is left in place and named in that message.
+
+## Lake-run stores (lake#664)
+
+`object` / `filesystem` × `zetta` (a sealed bucket in the workspace Zetta) and × `lake` (a liquid
+repository of the workspace, `spec.repository_id`) are kept by Lake itself. There is nothing to
+create in Kubernetes: the operator writes the connection `{"type":"object","provider":"zetta"}` and
+the store is `Ready`, `kept by Lake in the workspace`, endpoint empty. A spec that is not a JSON
+object is `Failed`. Absent: drop `<slug>.json` and `Deleted` (`store deleted`); Lake removes the
+contents itself at `delete_store`.
+
 ## The connection
 
 `<slug>.json` in Secret `lake-<lake>-services`, beside the services' connections, written by the
@@ -75,6 +146,8 @@ carries — the one asked for, or the default the API server's admission chose. 
 `""` only when the cluster has no default class.
 
 ## Status
+
+A cluster volume's (buckets and Lake-run stores are above):
 
 | Phase | When | Message |
 |---|---|---|
@@ -103,8 +176,10 @@ is history and is skipped. Deleting the Lake garbage-collects the claims it cont
 
 ## RBAC
 
-Nothing new: the manager already has `persistentvolumeclaims` `get, list, watch, create, update,
-patch, delete` (the kubebuilder marker in `lake_controller.go` and the chart ClusterRole).
+Nothing new: the manager already has `persistentvolumeclaims` and `lakesealedsecrets` `get, list,
+watch, create, update, patch, delete` (the kubebuilder markers in `lake_controller.go` and
+`lakesealedsecret_controller.go`, and the chart ClusterRole). The Lake already `Owns`
+`LakeSealedSecret`, so a delivery turning Ready wakes the Lake at once.
 
 ## Schema
 
@@ -115,6 +190,8 @@ The vendored schema is lake `db/schema.sql` at `9aa6141`, and the Lake's Postgre
 
 ```sh
 go test ./internal/controller/ -run Stores
+# A bucket's delivery and Secret on a cluster:
+kubectl -n lake get lss,secret -l orama.cloud/store-id
 # The pgx SQL against the vendored schema on a local Postgres, inside a rolled-back transaction:
 LAKE_SERVICES_TEST_POSTGRES=1 go test ./internal/controller/ -run PgxStore
 
@@ -130,12 +207,20 @@ writing nothing, a foreign claim refused and left in place on deletion, an unava
 message, deletion through `Deleting` (claim held by its finalizer) to `Deleted` and then skipped,
 the fast poll while provisioning or deleting and not once settled, services and stores sharing the
 Secret, a failed stores read keeping store keys, a missing `stores` table leaving services working,
-and invalid rows. `lake_stores_pgx_test.go` (opt-in) runs the SQL, including the missing-table
+and invalid rows. `lake_stores_buckets_test.go` covers each cloud pair (`r2`, `s3`, `b2`, `gcs`,
+`azure`) going `Provisioning` to `Ready` with the delivery's owner, labels, source and template and
+the exact connection, a steady pass writing nothing, a changed credential updating the delivery, a
+delivery error shown in the message, a foreign delivery refused and left in place on deletion, a
+foreign Secret never making the store Ready, deletion through `Deleting` to `Deleted` with the
+delivery the only thing ever deleted (the bucket is never touched), invalid specs creating nothing,
+and the four Lake-run pairs `Ready` at once with no Kubernetes resource and `Deleted` without a
+delete. `lake_stores_pgx_test.go` (opt-in) runs the SQL, including the missing-table
 error, on a real Postgres.
 
 ## How to change
 
 - **The contract**: change lake's `docs/control-plane/storage.md` first, then here and
   `lake_stores.go` together.
-- **A new pair** (phases 2–4): extend `storeAvailable`, add its reconcile and delete beside
-  `reconcileVolumeStore` / `deleteCustomerStore`, its connection shape, and its RBAC.
+- **A new pair** (the network filesystems): extend `storeAvailable`, add its reconcile and delete
+  beside `reconcileVolumeStore` / `reconcileBucketStore` and `deleteCustomerStore`, its connection
+  shape, and its RBAC.

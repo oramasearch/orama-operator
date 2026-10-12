@@ -239,10 +239,10 @@ func TestStoresForeignClaimRefused(t *testing.T) {
 }
 
 func TestStoresUnavailableProviderFails(t *testing.T) {
-	store := &fakeServiceStore{stores: []LakeStore{testStore(testBucketStoreID, testBucketStoreSlug, "object", "r2", `{}`)}}
+	store := &fakeServiceStore{stores: []LakeStore{testStore(testBucketStoreID, testBucketStoreSlug, "network_filesystem", "nfs", `{}`)}}
 	h := newServiceHarness(t, serviceTestLake(), store)
 	h.poll()
-	expectStoreStatus(t, store.storeStatus(t, testBucketStoreID), ServicePhaseFailed, "r2 object stores are not available on this lake yet", "")
+	expectStoreStatus(t, store.storeStatus(t, testBucketStoreID), ServicePhaseFailed, "nfs network_filesystem stores are not available on this lake yet", "")
 	var claims corev1.PersistentVolumeClaimList
 	if err := h.client.List(context.Background(), &claims); err != nil {
 		t.Fatal(err)
