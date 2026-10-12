@@ -2,15 +2,23 @@
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit 1355411e3ecb4e1299a4ebf9fd8120cb39fd07c8](https://github.com/oramasearch/lake/blob/1355411e3ecb4e1299a4ebf9fd8120cb39fd07c8/db/schema.sql)
-(branch `issue-655`, lake PR #691: lake `main`'s `0076_organization_deletion` and
-`0077_metered_jobs`, then lake#655's `0078_methodology_runs`). Its SHA-256 is
-`48c4329f500f0b6d0bfd0f359229b43ee1855a6381c823059dce2eda1597e30e`.
+[`oramasearch/lake` commit 99cf837b82d2525034267ed28ed18bf49ea235bc](https://github.com/oramasearch/lake/blob/99cf837b82d2525034267ed28ed18bf49ea235bc/db/schema.sql)
+(branch `issue-684-mcp-followups`: lake `main` with lake#684's `0079_mcp_connection_dispatch`).
+Its SHA-256 is
+`b0853357f83cd53ff49a07824abc732ef2f5c8dce11288aa356fc9302629b400`.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
+
+Migration `0079_mcp_connection_dispatch` (lake#684, lake#685) adds `mcp_connection_dispatch`, written
+by lake alone: one row per MCP connection that streams or re-exports tools (ids, a flag and a
+digest; the connection itself lives in its workspace Zetta), with guard
+`mcp_connection_dispatch_guard`, now Lake's PostgresSchema guard. The operator reads nothing of it.
+It is vendored from the lake PR branch `issue-684-mcp-followups`; re-pin to lake `main` once that PR
+lands. Apply it before a lake with lake#684 rolls: that lake reads the table on every workspace MCP
+request and every stream pass.
 
 Migration `0078_methodology_runs` (lake#655) adds `methodology_runs` (written by lake),
 `methodology_run_status` (written by the operator: phase, exit code, the SHA-256 of each run's
