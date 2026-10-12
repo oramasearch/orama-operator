@@ -215,7 +215,7 @@ func TestCloudflareDNSRecordCreatesMarkedRecord(t *testing.T) {
 	if cf.bodies[0]["comment"] != testDNSMarker {
 		t.Errorf("POST body = %v", cf.bodies[0])
 	}
-	if !rec.Status.Ready || rec.Status.RecordID != "new-1" {
+	if !rec.Status.Ready || rec.Status.RecordID != "new-1" || rec.Status.OwnerComment != testDNSMarker || rec.Status.ZoneID != "zone-secret" {
 		t.Fatalf("status = %+v", rec.Status)
 	}
 	// A steady record sends no further writes.
@@ -225,7 +225,30 @@ func TestCloudflareDNSRecordCreatesMarkedRecord(t *testing.T) {
 	}
 }
 
-func TestCloudflareDNSRecordMarksLegacyRecordByStatusID(t *testing.T) {
+// A record created before ownership comments, found through status.recordID after the upgrade
+// (status.zoneID and status.ownerComment empty), is recognised without any write: no comment is
+// added, and a TXT record at the same name is not a conflict.
+func TestCloudflareDNSRecordLegacyRecordUnchangedSendsOnlyGET(t *testing.T) {
+	cf := newFakeCloudflareDNS(t)
+	cf.seed("zone-secret", cfDNSRecord{ID: "legacy", Type: "CNAME", Name: "app.example.com", Content: "lb.example.net", Proxied: true, TTL: 1})
+	cf.seed("zone-secret", cfDNSRecord{ID: "txt", Type: "TXT", Name: "app.example.com", Content: "verification", TTL: 1})
+	cl, r, _ := dnsRecordFixture(t, newDNSRecord(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "legacy", Ready: true, Message: "reconciled"}))
+	for range 2 {
+		_, rec := reconcileDNS(t, cl, r)
+		if !rec.Status.Ready || rec.Status.RecordID != "legacy" || rec.Status.ZoneID != "zone-secret" || rec.Status.OwnerComment != "" {
+			t.Fatalf("status = %+v", rec.Status)
+		}
+	}
+	if writes := cf.writes(); len(writes) != 0 {
+		t.Fatalf("unchanged legacy record was written: %v", writes)
+	}
+	if got, _ := cf.get("zone-secret", "legacy"); got.Comment != "" {
+		t.Errorf("legacy record gained a comment: %+v", got)
+	}
+}
+
+// A legacy record whose content differs from the spec is rewritten as before, keeping its comment.
+func TestCloudflareDNSRecordLegacyRecordRewrittenWithoutComment(t *testing.T) {
 	cf := newFakeCloudflareDNS(t)
 	cf.seed("zone-secret", cfDNSRecord{ID: "legacy", Type: "CNAME", Name: "app.example.com", Content: "old-lb.example.net", Proxied: true, TTL: 1})
 	cl, r, _ := dnsRecordFixture(t, newDNSRecord(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "legacy", Ready: true, Message: "reconciled"}))
@@ -233,28 +256,80 @@ func TestCloudflareDNSRecordMarksLegacyRecordByStatusID(t *testing.T) {
 	if writes := cf.writes(); len(writes) != 1 || !strings.HasPrefix(writes[0], http.MethodPut) || !strings.HasSuffix(writes[0], "/legacy") {
 		t.Fatalf("writes = %v", writes)
 	}
-	if got, _ := cf.get("zone-secret", "legacy"); got.Comment != testDNSMarker || got.Content != "lb.example.net" {
+	if got, _ := cf.get("zone-secret", "legacy"); got.Comment != "" || got.Content != "lb.example.net" {
 		t.Errorf("legacy record = %+v", got)
 	}
-	if !rec.Status.Ready || rec.Status.RecordID != "legacy" {
+	if !rec.Status.Ready || rec.Status.RecordID != "legacy" || rec.Status.OwnerComment != "" {
+		t.Errorf("status = %+v", rec.Status)
+	}
+}
+
+// An existing record is never moved between zones: the reconcile sends nothing to Cloudflare and
+// reports ready=false, whether the old zone is recorded in status or is the Secret's (legacy).
+func TestCloudflareDNSRecordRefusesZoneChange(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		statusZone string
+		oldZone    string
+	}{
+		{"legacy status", "", "zone-secret"},
+		{"recorded zone", "zone-a", "zone-a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cf := newFakeCloudflareDNS(t)
+			cf.seed(tc.oldZone, cfDNSRecord{ID: "rec", Type: "CNAME", Name: "app.example.com", Content: "lb.example.net", Proxied: true, TTL: 1})
+			obj := newDNSRecord(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "rec", ZoneID: tc.statusZone, Ready: true, Message: "reconciled"})
+			obj.Spec.ZoneID = "zone-new"
+			cl, r, _ := dnsRecordFixture(t, obj)
+			res, rec := reconcileDNS(t, cl, r)
+			if len(cf.requests) != 0 {
+				t.Fatalf("zone change sent requests: %v", cf.requests)
+			}
+			if rec.Status.Ready || rec.Status.RecordID != "rec" || !strings.Contains(rec.Status.Message, "zone change refused") {
+				t.Fatalf("status = %+v", rec.Status)
+			}
+			if res.RequeueAfter == 0 {
+				t.Error("refused zone change is not retried")
+			}
+			if _, ok := cf.get(tc.oldZone, "rec"); !ok {
+				t.Error("record removed from its zone")
+			}
+		})
+	}
+}
+
+// Naming the zone a legacy record already lives in (the Secret's) changes nothing in Cloudflare.
+func TestCloudflareDNSRecordSameZoneSendsOnlyGET(t *testing.T) {
+	cf := newFakeCloudflareDNS(t)
+	cf.seed("zone-secret", cfDNSRecord{ID: "legacy", Type: "CNAME", Name: "app.example.com", Content: "lb.example.net", Proxied: true, TTL: 1})
+	obj := newDNSRecord(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "legacy", Ready: true, Message: "reconciled"})
+	obj.Spec.ZoneID = "zone-secret"
+	cl, r, _ := dnsRecordFixture(t, obj)
+	_, rec := reconcileDNS(t, cl, r)
+	if writes := cf.writes(); len(writes) != 0 {
+		t.Fatalf("writes = %v", writes)
+	}
+	if !rec.Status.Ready || rec.Status.RecordID != "legacy" || rec.Status.ZoneID != "zone-secret" {
 		t.Errorf("status = %+v", rec.Status)
 	}
 }
 
 func TestCloudflareDNSRecordDeletion(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		comment     string
-		wantDeleted bool
+		name         string
+		comment      string
+		ownerComment string
+		wantDeleted  bool
 	}{
-		{"owned", testDNSMarker, true},
-		{"marker removed", "", false},
-		{"marker changed", "orama-operator:other/web-dns", false},
+		{"owned", testDNSMarker, testDNSMarker, true},
+		{"marker removed", "", testDNSMarker, false},
+		{"marker changed", "orama-operator:other/web-dns", testDNSMarker, false},
+		{"legacy record", "", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cf := newFakeCloudflareDNS(t)
 			cf.seed("zone-secret", cfDNSRecord{ID: "rec", Type: "CNAME", Name: "app.example.com", Content: "lb.example.net", Proxied: true, TTL: 1, Comment: tc.comment})
-			obj := newDNSRecord(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "rec", Ready: true})
+			obj := newDNSRecord(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "rec", OwnerComment: tc.ownerComment, Ready: true})
 			obj.Finalizers = []string{cfDNSFinalizer}
 			cl, r, recorder := dnsRecordFixture(t, obj)
 			if err := cl.Delete(context.Background(), obj); err != nil {
@@ -347,5 +422,43 @@ func TestCloudV1DNSZonePerHost(t *testing.T) {
 		if got := getObj(t, cl, "v1-"+component+"-dns", &oramav1alpha1.CloudflareDNSRecord{}).Spec.ZoneID; got != want {
 			t.Errorf("%s zoneID = %q, want %q", component, got, want)
 		}
+	}
+}
+
+// Adding cloudflare.zoneIDs for a host whose record already exists only updates the child's
+// spec.zoneID: the child is not finalized, so its record is never deleted and recreated (the child
+// controller then refuses a real zone move, or does nothing when the zone is unchanged).
+func TestCloudV1DNSZoneChangeKeepsExistingChild(t *testing.T) {
+	oc := fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.Dashboard.Host = "app.orama.com"
+		o.Spec.Cloudflare = oramav1alpha1.CloudflareSpec{Enabled: true, ManageDNS: true, APITokenSecretRef: &corev1.LocalObjectReference{Name: "cf"}}
+	})
+	cl, r := reconcileOCV1(t, oc)
+	ctx := context.Background()
+	ing := getObj(t, cl, "v1-dashboard", &networkingv1.Ingress{})
+	ing.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{IP: "192.0.2.10"}}
+	if err := cl.Status().Update(ctx, ing); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileCloudflare(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	child := getObj(t, cl, "v1-dashboard-dns", &oramav1alpha1.CloudflareDNSRecord{})
+	child.Finalizers = []string{cfDNSFinalizer}
+	if err := cl.Update(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	child.Status.RecordID, child.Status.Ready = "legacy", true
+	if err := cl.Status().Update(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+
+	oc.Spec.Cloudflare.ZoneIDs = map[string]string{"orama.com": "zone-com"}
+	if err := r.reconcileCloudflare(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	child = getObj(t, cl, "v1-dashboard-dns", &oramav1alpha1.CloudflareDNSRecord{})
+	if !child.DeletionTimestamp.IsZero() || child.Status.RecordID != "legacy" || child.Spec.ZoneID != "zone-com" {
+		t.Fatalf("child = deleting %v, status %+v, spec.zoneID %q", !child.DeletionTimestamp.IsZero(), child.Status, child.Spec.ZoneID)
 	}
 }

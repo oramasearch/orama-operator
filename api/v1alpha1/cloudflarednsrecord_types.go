@@ -36,6 +36,16 @@ type CloudflareDNSRecordStatus struct {
 	// RecordID is the Cloudflare-assigned DNS record ID (set once created).
 	// +optional
 	RecordID string `json:"recordID,omitempty"`
+	// ZoneID is the Cloudflare zone the record lives in. A record is never moved between zones:
+	// when the spec resolves to another zone the record is left in place and Ready is false.
+	// Empty on records created before this field existed, which live in the Secret's `zoneID`.
+	// +optional
+	ZoneID string `json:"zoneID,omitempty"`
+	// OwnerComment is the ownership comment (`orama-operator:<namespace>/<name>`) the record was
+	// created with. Such a record is deleted only while it still carries the comment. Empty for a
+	// record created before ownership comments, which is deleted with its object by ID, as before.
+	// +optional
+	OwnerComment string `json:"ownerComment,omitempty"`
 	// Ready is true once the record is reconciled in Cloudflare.
 	// +optional
 	Ready bool `json:"ready,omitempty"`
