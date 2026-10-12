@@ -44,7 +44,7 @@ func fullStackOCV1(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCl
 		o.Spec.IDP.Provider = "keycloak"
 		c := &o.Spec.Components
 		c.Engine.Enabled, c.Engine.Envoy = true, true
-		c.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app.example.com"}
+		c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app.example.com"}}
 		c.Docs.Enabled = true
 		c.Ingestion.Enabled, c.Ingestion.Harvest = true, true
 		c.ControlDB.Enabled = true

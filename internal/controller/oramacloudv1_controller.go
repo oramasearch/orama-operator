@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -132,5 +133,9 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&oramav1alpha1.CloudflareR2Bucket{}).
 		Owns(&oramav1alpha1.RabbitMQTopology{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
+		// User Secrets/ConfigMaps the dashboard's env reads (operator#311): a content change re-hashes
+		// and rolls the dashboard.
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
 		Complete(r)
 }

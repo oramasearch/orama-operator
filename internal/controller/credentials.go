@@ -181,6 +181,7 @@ func (r *OramaCloudV1Reconciler) credentialChecks(ctx context.Context, oc *orama
 	if err := r.List(ctx, &secrets, client.InNamespace(oc.Namespace)); err != nil {
 		return nil, err
 	}
+	dashboardSource := r.dashboardCredentialSourceFunc(ctx, oc)
 	for _, s := range secrets.Items {
 		rest, hasPrefix := strings.CutPrefix(s.Name, oc.Name+"-")
 		component, hasSuffix := strings.CutSuffix(rest, "-secret")
@@ -188,6 +189,15 @@ func (r *OramaCloudV1Reconciler) credentialChecks(ctx context.Context, oc *orama
 			continue
 		}
 		for key, seed := range componentSecretData(component) {
+			// A dashboard key the user env provides is checked where the dashboard reads it (operator#311).
+			if component == "dashboard" {
+				if check, mustCheck, overridden := dashboardSource(key); overridden {
+					if mustCheck {
+						checks = append(checks, check)
+					}
+					continue
+				}
+			}
 			checks = append(checks, credentialCheck{secret: s.Name, key: key, seed: seed})
 		}
 	}
