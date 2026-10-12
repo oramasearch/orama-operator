@@ -426,7 +426,12 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		if rd.HPA == nil || sts.Spec.Replicas == nil {
 			sts.Spec.Replicas = int32Ptr(replicas)
 		}
-		sts.Spec.ServiceName = name
+		if sts.ResourceVersion == "" {
+			sts.Spec.ServiceName = name
+			if oc.Spec.Components.AnalyticsProcessor.Enabled && oc.Spec.Components.AnalyticsProcessor.Import.Enabled {
+				sts.Spec.ServiceName = name + "-headless"
+			}
+		}
 		sts.Spec.PodManagementPolicy = appsv1.ParallelPodManagement
 		sts.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 		c := oramacoreContainer(oc)
@@ -467,6 +472,11 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err
+	}
+	if sts.Spec.ServiceName == name+"-headless" {
+		if err := r.reconcileReaderHeadlessService(ctx, oc); err != nil {
+			return err
+		}
 	}
 	if err := r.retireReaderDeployment(ctx, oc, sts); err != nil {
 		return err
@@ -680,4 +690,17 @@ func engineConfigAnnotations(oc *oramav1alpha1.OramaCloudV1) map[string]string {
 		return nil
 	}
 	return map[string]string{"orama.cloud/config-hash": fmt.Sprintf("%x", sha256.Sum256([]byte(oramacoreConfigYAML(oc))))}
+}
+
+func (r *OramaCloudV1Reconciler) reconcileReaderHeadlessService(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	name := oc.Name + "-reader-headless"
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		svc.Labels = labelsFor(oc, "reader")
+		svc.Spec.ClusterIP = corev1.ClusterIPNone
+		svc.Spec.Selector = labelsFor(oc, "reader")
+		svc.Spec.Ports = []corev1.ServicePort{{Name: "http", Protocol: corev1.ProtocolTCP, Port: oramacorePort, TargetPort: intstr.FromInt32(oramacorePort)}}
+		return controllerutil.SetControllerReference(oc, svc, r.Scheme)
+	})
+	return err
 }

@@ -271,6 +271,20 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      import:
+                        description: Import schedules POST /import. Unset leaves the
+                          processor unscheduled, as before.
+                        properties:
+                          enabled:
+                            description: Enabled opts in to an owned CronJob. Requires
+                              engine, analytics and controlDB enabled.
+                            type: boolean
+                          schedule:
+                            default: '*/5 * * * *'
+                            description: Schedule is a five-field CronJob schedule
+                              in UTC.
+                            type: string
+                        type: object
                       resources:
                         description: |-
                           Resources overrides the component's pod resources. When unset the operator applies a

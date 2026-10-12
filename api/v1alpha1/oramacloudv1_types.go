@@ -225,7 +225,7 @@ type ComponentsSpec struct {
 	Workers   WorkersSpec    `json:"workers,omitempty"`   // the ported CF workers (one bundled image)
 
 	// Additional v1 components (gap fill — techops-docs issues #5–#7):
-	AnalyticsProcessor Toggle `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
+	AnalyticsProcessor AnalyticsProcessorSpec `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
 	// Deprecated: oramasearch-app (api.askorama.ai, the legacy "old dashboard") just redirects to
 	// the new app, so it is NOT run in-cluster — the reconciler is unwired (operator#35). Field
 	// kept for API compatibility; setting it has no effect.
@@ -284,6 +284,23 @@ type WriterJWTSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=128
 	Audience string `json:"audience"`
+}
+
+// AnalyticsProcessorSpec configures the processor and its opt-in import trigger.
+type AnalyticsProcessorSpec struct {
+	Toggle `json:",inline"`
+	// Import schedules POST /import. Unset leaves the processor unscheduled, as before.
+	// +optional
+	Import AnalyticsImportSpec `json:"import,omitempty"`
+}
+
+type AnalyticsImportSpec struct {
+	// Enabled opts in to an owned CronJob. Requires engine, analytics and controlDB enabled.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Schedule is a five-field CronJob schedule in UTC.
+	// +kubebuilder:default="*/5 * * * *"
+	Schedule string `json:"schedule,omitempty"`
 }
 
 type ReaderSpec struct {

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,6 +21,13 @@ import (
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
+
+func scheduledImportsOC() *oramav1alpha1.OramaCloudV1 {
+	return fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.AnalyticsProcessor.Import.Enabled = true
+		o.Spec.Components.Engine.Reader.Replicas = 2
+	})
+}
 
 func TestCloudV1JWTAndFirebase(t *testing.T) {
 	oc := fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
@@ -169,5 +177,125 @@ func TestCloudV1PublicIngressAndDNSLifecycle(t *testing.T) {
 		if !absent(t, cl, "v1-"+component+"-dns", &oramav1alpha1.CloudflareDNSRecord{}) {
 			t.Errorf("disabled DNS retained %s", component)
 		}
+	}
+}
+
+func TestCloudV1ScheduledImportsAndScaling(t *testing.T) {
+	oc := scheduledImportsOC()
+	oc.Spec.Placement.NodeSelector = map[string]string{"agentpool": "prod2"}
+	oc.Spec.Placement.Tolerations = []corev1.Toleration{{Key: "agentpool", Value: "prod2", Operator: corev1.TolerationOpEqual, Effect: corev1.TaintEffectNoSchedule}}
+	oc.Spec.Images.PullSecretName = "private-images"
+	cl, r := reconcileOCV1(t, oc)
+	sts := getObj(t, cl, "v1-reader", &appsv1.StatefulSet{})
+	if sts.Spec.ServiceName != "v1-reader-headless" || getObj(t, cl, "v1-reader-headless", &corev1.Service{}).Spec.ClusterIP != corev1.ClusterIPNone {
+		t.Fatal("ordinal DNS lacks headless governing Service")
+	}
+	cm := getObj(t, cl, "v1-analytics-processor-config", &corev1.ConfigMap{})
+	for _, ordinal := range []string{"0", "1"} {
+		if !strings.Contains(cm.Data["config.yaml"], "http://v1-reader-"+ordinal+".v1-reader-headless.orama-system.svc:8080/v1/analytics") {
+			t.Errorf("missing ordinal %s", ordinal)
+		}
+	}
+	if strings.Contains(cm.Data["config.yaml"], "http://v1-reader/v1/analytics") {
+		t.Error("scheduled imports still load-balance reader polling")
+	}
+	cron := getObj(t, cl, "v1-analytics-import", &batchv1.CronJob{})
+	pod := cron.Spec.JobTemplate.Spec.Template.Spec
+	if cron.Spec.Schedule != "*/5 * * * *" || cron.Spec.TimeZone == nil || *cron.Spec.TimeZone != "Etc/UTC" || cron.Spec.ConcurrencyPolicy != batchv1.ForbidConcurrent || !metav1.IsControlledBy(cron, oc) {
+		t.Errorf("schedule = %+v", cron.Spec)
+	}
+	if pod.NodeSelector["agentpool"] != "prod2" || len(pod.Tolerations) != 1 || pod.ImagePullSecrets[0].Name != "private-images" || pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
+		t.Errorf("trigger placement/identity = %+v", pod)
+	}
+	if !slices.Contains(pod.Containers[0].Args, "POST") || !slices.Contains(pod.Containers[0].Args, "http://v1-analytics-processor:8080/import") || !slices.Contains(pod.Containers[0].Args, "--fail") || *cron.Spec.JobTemplate.Spec.BackoffLimit != 0 {
+		t.Error("trigger must POST to reachable Service, fail on HTTP errors and avoid duplicate retries")
+	}
+	// Simulate native defaults on the returned Job template, then verify steady reconciliation.
+	cron.Spec.JobTemplate.Spec.Template.Spec.DNSPolicy = corev1.DNSClusterFirst
+	cron.Spec.JobTemplate.Spec.Template.Spec.SchedulerName = corev1.DefaultSchedulerName
+	cron.Spec.JobTemplate.Spec.Template.Spec.TerminationGracePeriodSeconds = int64Ptr(30)
+	if err := cl.Update(context.Background(), cron); err != nil {
+		t.Fatal(err)
+	}
+	cronVersion := cron.ResourceVersion
+	dep := getObj(t, cl, "v1-analytics-processor", &appsv1.Deployment{})
+	hash := dep.Spec.Template.Annotations["orama.cloud/config-hash"]
+	reconcileAgain(t, cl, r, nil)
+	if getObj(t, cl, "v1-analytics-import", &batchv1.CronJob{}).ResourceVersion != cronVersion {
+		t.Error("steady schedule rewrote defaulted CronJob")
+	}
+	if getObj(t, cl, "v1-analytics-processor", &appsv1.Deployment{}).ResourceVersion != dep.ResourceVersion {
+		t.Error("steady import config rewrote Deployment")
+	}
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Engine.Reader.Replicas = 3 })
+	if !strings.Contains(getObj(t, cl, cm.Name, &corev1.ConfigMap{}).Data["config.yaml"], "v1-reader-2.") || getObj(t, cl, dep.Name, &appsv1.Deployment{}).Spec.Template.Annotations["orama.cloud/config-hash"] == hash {
+		t.Error("reader scale-up did not update and roll processor config")
+	}
+	// Once HPA owns replicas, polling follows the StatefulSet's actual desired count.
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.Engine.Reader.HPA = &oramav1alpha1.HPASpec{MinReplicas: 2, MaxReplicas: 5}
+	})
+	sts = getObj(t, cl, sts.Name, &appsv1.StatefulSet{})
+	sts.Spec.Replicas = int32Ptr(4)
+	if err := cl.Update(context.Background(), sts); err != nil {
+		t.Fatal(err)
+	}
+	reconcileAgain(t, cl, r, nil)
+	if !strings.Contains(getObj(t, cl, cm.Name, &corev1.ConfigMap{}).Data["config.yaml"], "v1-reader-3.") {
+		t.Error("processor missed HPA reader ordinal")
+	}
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.AnalyticsProcessor.Import.Enabled = false })
+	if !absent(t, cl, "v1-analytics-import", &batchv1.CronJob{}) || absent(t, cl, "v1-reader-headless", &corev1.Service{}) || getObj(t, cl, "v1-reader", &appsv1.StatefulSet{}).Spec.ServiceName != "v1-reader-headless" {
+		t.Error("disabling imports must remove schedule and preserve immutable reader networking")
+	}
+}
+
+func TestCloudV1LegacyReaderImportPrerequisite(t *testing.T) {
+	oc := fullStackOCV1(nil)
+	cl, r := reconcileOCV1(t, oc)
+	sts := getObj(t, cl, "v1-reader", &appsv1.StatefulSet{})
+	if sts.Spec.ServiceName != "v1-reader" || !absent(t, cl, "v1-reader-headless", &corev1.Service{}) || !absent(t, cl, "v1-analytics-import", &batchv1.CronJob{}) {
+		t.Fatal("ordinary CR changed reader topology or gained schedule")
+	}
+	oc.Spec.Components.AnalyticsProcessor.Import.Enabled = true
+	if err := r.reconcileReaders(context.Background(), oc); err != nil {
+		t.Fatal(err)
+	}
+	if getObj(t, cl, "v1-reader", &appsv1.StatefulSet{}).Spec.ServiceName != "v1-reader" {
+		t.Error("legacy immutable serviceName was changed")
+	}
+	if err := r.reconcileAnalyticsProcessor(context.Background(), oc); err == nil || !strings.Contains(err.Error(), "separately reviewed migration") {
+		t.Fatalf("legacy prerequisite error = %v", err)
+	}
+	if !absent(t, cl, "v1-analytics-import", &batchv1.CronJob{}) {
+		t.Error("legacy reader topology gained successful-looking schedule")
+	}
+}
+
+func TestCloudV1ImportPrerequisitesRemoveSchedule(t *testing.T) {
+	for _, field := range []string{"engine", "analytics", "controlDB", "schedule", "processor"} {
+		t.Run(field, func(t *testing.T) {
+			oc := scheduledImportsOC()
+			cl, r := reconcileOCV1(t, oc)
+			switch field {
+			case "engine":
+				oc.Spec.Components.Engine.Enabled = false
+			case "analytics":
+				oc.Spec.Components.Analytics.Enabled = false
+			case "controlDB":
+				oc.Spec.Components.ControlDB.Enabled = false
+			case "schedule":
+				oc.Spec.Components.AnalyticsProcessor.Import.Schedule = "not cron"
+			case "processor":
+				oc.Spec.Components.AnalyticsProcessor.Enabled = false
+			}
+			err := r.reconcileAnalyticsProcessor(context.Background(), oc)
+			if (err == nil) != (field == "processor") {
+				t.Errorf("prerequisite %s: %v", field, err)
+			}
+			if !absent(t, cl, "v1-analytics-import", &batchv1.CronJob{}) {
+				t.Error("invalid/disabled prerequisite left schedule running")
+			}
+		})
 	}
 }
