@@ -105,8 +105,9 @@ func replicasOf(p *int32) int32 {
 // component is ready; Degraded when one regressed after having been Ready, or when
 // spec.requireRealCredentials is set and CredentialsReady is False; else Progressing),
 // componentsReady ("n/total"), the per-component list, the Ready and CredentialsReady
-// conditions, and status.analyticsImport. Returns whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
-func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) bool {
+// conditions, status.analyticsImport, and the engine snapshots' status and SnapshotsReady condition
+// from this pass. Returns whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
+func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, snapshots engineSnapshots) bool {
 	comps := r.componentReadiness(ctx, oc)
 	ready, notReady := 0, []string(nil)
 	for _, c := range comps {
@@ -164,6 +165,16 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 		log.FromContext(ctx).Error(err, "read analytics import status")
 	} else if !equality.Semantic.DeepEqual(analyticsImport, oc.Status.AnalyticsImport) {
 		oc.Status.AnalyticsImport = analyticsImport
+		otherChanged = true
+	}
+	// status.engineSnapshots and SnapshotsReady (#316); both dropped while snapshots are off.
+	if !equality.Semantic.DeepEqual(snapshots.statuses, oc.Status.EngineSnapshots) {
+		oc.Status.EngineSnapshots = snapshots.statuses
+		otherChanged = true
+	}
+	if snapshots.condition != nil {
+		conditions = append(conditions, *snapshots.condition)
+	} else if meta.RemoveStatusCondition(&oc.Status.Conditions, engineSnapshotsConditionType) {
 		otherChanged = true
 	}
 	if oc.Spec.Components.Engine.Enabled {

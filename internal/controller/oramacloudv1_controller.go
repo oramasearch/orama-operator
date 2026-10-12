@@ -30,6 +30,8 @@ import (
 type OramaCloudV1Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Now is the clock engine snapshot schedules are judged by; nil means time.Now. Injected for tests.
+	Now func() time.Time
 }
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s,verbs=get;list;watch;create;update;patch;delete
@@ -43,6 +45,9 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=scheduledbackups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=backups,verbs=get;list;watch
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotclasses,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotcontents,verbs=get;list;watch;patch
 
 // Reconcile is the control loop. It reconciles each enabled component in turn,
 // driven by .spec.region.role. Components still TODO: control-plane Postgres (CNPG),
@@ -87,30 +92,47 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"cloudflare", r.reconcileCloudflare},
 		{"demoSeed", r.reconcileDemoSeed},
 	}
+	fail := func(name string, err error) (ctrl.Result, error) {
+		l.Error(err, "component reconcile failed", "component", name)
+		r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, false, metav1.Condition{
+			Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
+			Message: fmt.Sprintf("%s: %v", name, err),
+		})
+		return ctrl.Result{}, err
+	}
 	for _, s := range steps {
 		if err := s.fn(ctx, &oc); err != nil {
-			l.Error(err, "component reconcile failed", "component", s.name)
-			r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, false, metav1.Condition{
-				Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
-				Message: fmt.Sprintf("%s: %v", s.name, err),
-			})
-			return ctrl.Result{}, err
+			return fail(s.name, err)
 		}
+	}
+	// Engine volume snapshots (#316) run last: they snapshot claims the steps above created, and an
+	// invalid schedule then blocks nothing else.
+	snapshots, err := r.reconcileEngineSnapshots(ctx, &oc)
+	if err != nil {
+		return fail("engine snapshots", err)
 	}
 
 	// Roll child readiness up into the phase (#37): Ready once every owned workload is ready,
 	// else Provisioning. Requeue while still coming up so the phase advances as pods go ready —
 	// Owns() events cover most transitions; the requeue is the backstop (e.g. the polled CNPG
 	// cluster readiness).
-	if !r.applyReadiness(ctx, &oc) {
-		return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
+	var wait time.Duration
+	soonest := func(d time.Duration) {
+		if d > 0 && (wait == 0 || d < wait) {
+			wait = d
+		}
+	}
+	if !r.applyReadiness(ctx, &oc, snapshots) {
+		soonest(20 * time.Second)
 	}
 	// CNPG Backups aren't watched: keep polling while control-DB backups are on so BackupReady
 	// follows each scheduled backup. Unchanged polls write no status.
 	if controlDBInCluster(&oc) && oc.Spec.Components.ControlDB.Backup.Enabled != nil && *oc.Spec.Components.ControlDB.Backup.Enabled {
-		return ctrl.Result{RequeueAfter: controlDBBackupPoll}, nil
+		soonest(controlDBBackupPoll)
 	}
-	return ctrl.Result{}, nil
+	// The next engine snapshot is due, or one is still being cut.
+	soonest(snapshots.wait)
+	return ctrl.Result{RequeueAfter: wait}, nil
 }
 
 // controlDBBackupPoll is how often a Ready stack re-reads its control-DB backup status.
