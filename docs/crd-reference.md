@@ -16,6 +16,7 @@ customer-serving Prod 2 shape, never applied by the sample kustomization); the f
 | `region.name` | string | — | Region label (`us-east`, `eu`, `ap`). |
 | `region.role` | enum | `primary` | `primary` (write path + stateful stores) or `read` (regional read tier). |
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
+| `ingressClassName` | string | `nginx` | IngressClass of every Ingress the CR owns (dashboard, docs, writer, reader). Empty uses the helmfile-installed ingress-nginx. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `idp.configSecretRef` | Secret reference | — | With `provider: firebase`, required dashboard server keys: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. Other providers retain their existing behavior. |
 | `jwtIssuer` | string | — | Dashboard signing issuer (`JWT_ISSUER`) and the writer JWKS provider's only accepted issuer (maximum 128 characters); both read it through one function, `jwtIssuer`. No CRD default: `engine.writer.jwt` refuses an empty issuer. Without writer JWT verification an empty issuer falls back to `orama-cloud` in the shared ConfigMap. Prod 1 uses `https://app.orama.com`. |
@@ -65,9 +66,9 @@ increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{host,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
-| `dashboard` | `host`, `envFrom`, `env` (see [below](#dashboardenvfrom-and-dashboardenv)), `crons` (see [below](#dashboardcrons)) | app.orama.com (Next.js) |
-| `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
+| `engine` | `writer.gpu`, `writer.{host,extraHosts,tlsSecretName,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,extraHosts,tlsSecretName,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `dashboard` | `host`, `extraHosts`, `tlsSecretName` (see [below](#public-hosts-and-origin-tls)), `envFrom`, `env` (see [below](#dashboardenvfrom-and-dashboardenv)), `crons` (see [below](#dashboardcrons)) | app.orama.com (Next.js) |
+| `docs` | `host`, `extraHosts`, `tlsSecretName` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
 | `analytics` | data-store; external mode requires an HTTP(S) `endpoint` and `credentialsSecretRef` with `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` for the dashboard/processor | ClickHouse (Prod 2 keeps ClickHouse Cloud) |
@@ -127,6 +128,30 @@ With `cloudflare.enabled`, `manageDNS` and `apiTokenSecretRef` configured, the d
 and reader each get an owned proxied `CloudflareDNSRecord` after their Ingress receives an address.
 Removing a host or disabling DNS deletes its owned child record; the DNS controller's finalizer
 handles external cleanup. Existing CRs gain no writer/reader ingress until their hosts are set.
+
+### Public hosts and origin TLS
+
+The dashboard, docs, `engine.writer` and `engine.reader` each take the same three fields. Each
+applies only while that component's `host` is set.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `host` | empty | The Ingress `<cr>-<component>`, one `/` rule to the component's Service. The only name that gets a `CloudflareDNSRecord`. |
+| `extraHosts` | — | Further names, each with its own rule to the same Service. They never get a `CloudflareDNSRecord`; their DNS is switched by hand (the cutover repoints `app.orama.com` this way). |
+| `tlsSecretName` | empty | A `kubernetes.io/tls` Secret in the CR's namespace, for example a Cloudflare Origin CA certificate. Set, the Ingress gets one `tls` entry listing `host` and every extra host with that Secret, and ingress-nginx redirects plain HTTP to HTTPS. Empty, the Ingress has no `tls` section and the origin answers HTTPS with ingress-nginx's default certificate, which Cloudflare's SSL mode Full (not strict) accepts. |
+
+A host may appear once across the dashboard, docs, writer and reader, whether the component is
+enabled or not; an extra host equal to `host` (compared without case), an empty entry, and
+`extraHosts` or `tlsSecretName` without `host` are refused too. Any of these fails the reconcile
+before anything is written (`Ready=False`, reason `ReconcileError`, the message names both fields).
+Prod 2's dashboard answers both names at the cutover with:
+
+```yaml
+dashboard:
+  host: app.orama.ing
+  extraHosts: [app.orama.com]
+  tlsSecretName: origin-cert   # optional
+```
 
 `idp.provider: firebase` injects the three server variables through required Secret key references.
 The operator creates no Firebase credentials and no longer seeds the unused `FIREBASE_SERVICE_ACCOUNT`
