@@ -8,17 +8,24 @@
 #   - storage sizes: set from the orama-bridge#138 measurements;
 #   - the backup bucket and its credentials Secret (keys s3ApiEndpoint, accessKeyId, secretAccessKey,
 #     created in orama-prod2 out of Git; see docs/lake/backups.md for the R2 token procedure);
+#   - analytics.endpoint: the reviewed ClickHouse Cloud HTTPS endpoint;
 #   - images.overrides: one `repo@sha256:<digest>` per component, from build/images/build-manifest.tsv.
 #
 # Prereqs in orama-prod2 before the CR first reconciles:
 #   - the image pull Secret `oramasearch-dockerhub`;
-#   - `prod2-jwt` and `prod2-jwt-pub` holding Prod 1's JWT keypair (ensureJWTSecrets is create-if-absent,
-#     so it keeps them and Prod 1 and Prod 2 accept each other's tokens);
+#   - `prod2-firebase` with FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY;
+#   - `prod2-clickhouse` with CLICKHOUSE_USER and CLICKHOUSE_PASSWORD for ClickHouse Cloud.
+#     Provision these via ExternalSecrets or a person; no credentials belong in this sample.
+#   - JWT Secrets are generated once by ensureJWTSecrets for Prod 2; do not copy Prod 1's keys;
 #   - the Cloudflare control-plane Secret `cloudflare-api-token` (token, zoneID, accountID).
 #
-# Hostnames: app.orama.ing and docs.orama.ing are the dashboard/docs hosts below. The readers
-# (prod2.cluster.orama.ing) and the writer (writer.prod2.cluster.orama.ing) have no host field on the
-# CR; they are published through CloudflareDNSRecord resources.
+# Hosts below produce Ingresses and owned Cloudflare DNS. Customers use app.orama.ing for tokens,
+# collections.orama.ing for reads and writer.prod2.cluster.orama.ing for writes. Copied control-DB
+# cluster rows must use those same exact URLs (including the JWT audience); the operator does not
+# rewrite customer rows. Firebase authorization for app.orama.ing is a separate production approval:
+# https://github.com/oramasearch/orama-bridge/issues/159.
+# New scheduled-import stacks use a headless reader governing Service; existing legacy reader
+# StatefulSets need a separately reviewed migration before enabling imports (see components.md).
 apiVersion: orama.cloud/v1alpha1
 kind: OramaCloudV1
 metadata:
@@ -37,8 +44,10 @@ spec:
       agentpool: prod2
     tolerations:
       - { key: agentpool, operator: Equal, value: prod2, effect: NoSchedule }
+  jwtIssuer: orama-cloud
   idp:
-    provider: none
+    provider: firebase
+    configSecretRef: { name: prod2-firebase }
   images:
     registry: oramasearch
     pullSecretName: oramasearch-dockerhub
@@ -48,6 +57,8 @@ spec:
     #   embeddings: oramasearch/oramacore-ai-server@sha256:<digest>
     #   dashboard: oramasearch/dashboard@sha256:<digest>
     #   docs: oramasearch/docs@sha256:<digest>
+    #   analytics-processor: oramasearch/analytics-processor@sha256:<digest>
+    # The processor image must include the bridge's 0.0.0.0:8080 listener patch.
   llm:
     default: groq
     providers:
@@ -61,9 +72,14 @@ spec:
     engine:
       enabled: true
       writer:
+        host: writer.prod2.cluster.orama.ing
+        jwt:
+          jwksURL: https://app.orama.ing/api/.well-known/jwks.json
+          audience: https://writer.prod2.cluster.orama.ing
         gpu: false                     # the prod2 pool has no GPU nodes; CPU embeddings
         storage: { size: 256Gi, storageClassName: managed-csi-premium }   # placeholder size (#138)
       reader:
+        host: collections.orama.ing
         replicas: 2
         storage: { size: 256Gi, storageClassName: managed-csi-premium }   # placeholder size (#138)
       envoy: true
@@ -81,7 +97,12 @@ spec:
           bucket: orama-prod2-controldb-backups   # placeholder bucket name
         secretRef:
           name: orama-prod2-backup-r2             # placeholder Secret name
-    analytics:  { enabled: true, mode: in-cluster, storage: { size: 50Gi, storageClassName: managed-csi-premium } }
+    # ClickHouse Cloud stays external. Replace this host placeholder with its HTTPS endpoint.
+    analytics:
+      enabled: true
+      mode: external
+      endpoint: https://REPLACE_WITH_CLICKHOUSE_CLOUD_HOST:8443
+      credentialsSecretRef: { name: prod2-clickhouse }
     cache:      { enabled: true, mode: in-cluster }
     broker:     { enabled: true, mode: in-cluster, storage: { size: 20Gi, storageClassName: managed-csi-premium } }
     search:     { enabled: true, mode: in-cluster }
@@ -90,5 +111,9 @@ spec:
     disco:      { enabled: true }
     workers:    { enabled: true, replicas: 2 }
     searchWorkers: { enabled: true }
-    analyticsProcessor: { enabled: true }
+    analyticsProcessor:
+      enabled: true
+      import:
+        enabled: true
+        schedule: "*/5 * * * *"          # UTC; POST /import polls every reader ordinal
     pgAdmin:    { enabled: true }

@@ -9,8 +9,8 @@ Deep docs for the operator. Kept in lockstep with the source (see the repo
 - [`install/credentials.md`](install/credentials.md) — **private-image bootstrap**: manager versus application pull-secret settings, render proof, and startup diagnosis.
 - [`install/k0s.md`](install/k0s.md) — **install a private Lake on the liquid k0s distribution**, including the fresh-machine, single-node storage, pull-secret, Ready, and air-gapped paths.
 - [`development.md`](development.md) — build, codegen, run, and the AKS smoke test.
-- [`crd-reference.md`](crd-reference.md) — the `OramaCloudV1` field reference.
-- [`components.md`](components.md) — what each component reconciler creates, and its status.
+- [`crd-reference.md`](crd-reference.md) — the `OramaCloudV1` field reference, including Prod 2 JWT/Firebase settings, public endpoints and scheduled analytics imports.
+- [`components.md`](components.md) — what each component reconciler creates, its status, and analytics listener/migration prerequisites.
 - [`datastore-crds.md`](datastore-crds.md) — **datastore state as declarative, owned CRDs** ([#40](https://github.com/oramasearch/orama-operator/issues/40)): the reconciled-CRD pattern and the `RabbitMQTopology` broker topology (vhosts/users/permissions/streams via the management API).
 - [`zetta-datastore.md`](zetta-datastore.md) — **Zetta as the operator's datastore** (One Orama symbiosis v0): the `orama_control` / `orama_data` schema, how it's provisioned over `/v1/sql`, and the desired-vs-observed source-of-truth boundary.
 - [`zetta-cluster-mtls.md`](zetta-cluster-mtls.md) — **the shared cluster join token**: how the operator mints one token per `OramaZettaCluster` so every node forms **one** mTLS cluster (the CA is derived from the token), why peer traffic is mTLS-only (no plaintext mode), and the engine dependencies for multi-node convergence ([operator#92](https://github.com/oramasearch/orama-operator/issues/92)).
