@@ -82,7 +82,7 @@ func TestEngineConfigEnablesReaderAnalytics(t *testing.T) {
 // TestMasterAPIKeyHasOneSource).
 func TestAnalyticsProcessorPollsReaderWithEngineKey(t *testing.T) {
 	oc := newOCV1(nil)
-	cfg := analyticsProcessorConfigYAML(oc)
+	cfg := analyticsProcessorConfigYAML(oc, unscheduledAnalyticsSources(oc))
 
 	for _, url := range []string{
 		"api_url: http://" + oc.Name + "-reader/v1/analytics\n    api_key: __MASTER_API_KEY__\n",

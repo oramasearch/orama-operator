@@ -160,5 +160,5 @@ spec:
       enabled: true
       import:
         enabled: true
-        schedule: "*/5 * * * *"          # UTC; POST /import polls every reader ordinal
+        schedule: "*/5 * * * *"          # UTC; POST /import pulls every reader ordinal once (no writer)
     pgAdmin:    { enabled: true }

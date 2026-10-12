@@ -386,11 +386,10 @@ assert_jq '.result.serverInfo.name == "orama-mcp"' "MCP initialize -> serverInfo
 readk POST "$SC/mcp" '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 assert_jq 'any(.result.tools[]?; .name=="search")' "MCP tools/list exposes 'search'"
 
-# =============================================================================
-section "18. ANALYTICS (reader_side.analytics.api_key = the master key, operator#55)"
-# =============================================================================
-req GET "$READER/v1/analytics" "$MASTER"
-assert_ok "GET /v1/analytics (analytics key accepted)"
+# 18. ANALYTICS: no check here, on purpose (operator#315). OramaCore's analytics endpoint returns
+# AND ERASES a reader's pending search events, and only the analytics processor may pull them. Run
+# against a live stack, a check would delete one reader's customer events. The analytics config and
+# its key are covered by the operator's unit tests instead.
 
 # =============================================================================
 section "19. ANSWER / RAG (best-effort — automatic path blocked by operator#43)"
