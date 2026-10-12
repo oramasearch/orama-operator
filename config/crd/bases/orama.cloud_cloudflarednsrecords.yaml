@@ -93,12 +93,24 @@ spec:
             properties:
               message:
                 type: string
+              ownerComment:
+                description: |-
+                  OwnerComment is the ownership comment (`orama-operator:<namespace>/<name>`) the record was
+                  created with. Such a record is deleted only while it still carries the comment. Empty for a
+                  record created before ownership comments, which is deleted with its object by ID, as before.
+                type: string
               ready:
                 description: Ready is true once the record is reconciled in Cloudflare.
                 type: boolean
               recordID:
                 description: RecordID is the Cloudflare-assigned DNS record ID (set
                   once created).
+                type: string
+              zoneID:
+                description: |-
+                  ZoneID is the Cloudflare zone the record lives in. A record is never moved between zones:
+                  when the spec resolves to another zone the record is left in place and Ready is false.
+                  Empty on records created before this field existed, which live in the Secret's `zoneID`.
                 type: string
             type: object
         type: object

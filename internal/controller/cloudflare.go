@@ -63,13 +63,15 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 			continue
 		} // Preserve a serving record while an ingress is waiting for its address.
 		zoneID := cfZoneIDForHost(cf.ZoneIDs, endpoint.host)
-		// Changing an externally provisioned name/credential/zone reference must finalize the old
+		// Changing an externally provisioned name/credential reference must finalize the old
 		// child first; otherwise the DNS controller's name-based upsert can orphan its old record.
+		// A zone change is not finalized here: the child refuses to move an existing record between
+		// zones and reports ready=false, so no record is deleted or recreated.
 		if err := r.Get(ctx, client.ObjectKeyFromObject(rec), rec); err == nil {
 			if !rec.DeletionTimestamp.IsZero() {
 				continue
 			}
-			if rec.Status.RecordID != "" && (rec.Spec.Name != endpoint.host || rec.Spec.SecretRef != cf.APITokenSecretRef.Name || rec.Spec.ZoneID != zoneID) {
+			if rec.Status.RecordID != "" && (rec.Spec.Name != endpoint.host || rec.Spec.SecretRef != cf.APITokenSecretRef.Name) {
 				if err := r.deleteCloudV1Owned(ctx, oc, rec); err != nil {
 					return err
 				}
