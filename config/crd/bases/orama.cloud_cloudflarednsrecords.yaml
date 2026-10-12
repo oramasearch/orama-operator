@@ -53,8 +53,8 @@ spec:
             type: object
           spec:
             description: |-
-              CloudflareDNSRecordSpec is the desired state of a Cloudflare DNS record. The zone + API
-              token come from the referenced Secret (keys `token` + `zoneID`), so no credential is in spec.
+              CloudflareDNSRecordSpec is the desired state of a Cloudflare DNS record. The API token and the
+              default zone come from the referenced Secret (keys `token` + `zoneID`), so no credential is in spec.
             properties:
               content:
                 description: Content is the record target (an IP for A, a hostname
@@ -76,6 +76,11 @@ spec:
               type:
                 description: Type is A or CNAME; empty = inferred from Content (IP
                   → A, hostname → CNAME).
+                type: string
+              zoneID:
+                description: |-
+                  ZoneID is the Cloudflare zone holding the record. It overrides the Secret's `zoneID`, so
+                  one token can manage records in several zones. Empty = the Secret's `zoneID`.
                 type: string
             required:
             - content

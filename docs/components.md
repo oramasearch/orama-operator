@@ -594,7 +594,14 @@ and an enabled component with a host. Clearing a host, disabling the component o
 DNS deletes the owned child record; its finalizer removes external DNS. A foreign resource is never
 deleted on this path. A provisioned host or credential-reference change finalizes the old child
 before recreating its resource name, so name-based upsert cannot orphan the old record. Keep the
-old Cloudflare credential Secret available through finalization. Prod 2's hosts are `app.orama.ing`, `collections.orama.ing` and
+old Cloudflare credential Secret available through finalization. `spec.cloudflare.zoneIDs` maps zone names to
+zone IDs; each host takes the longest matching zone suffix (else the Secret's `zoneID`) into its
+child's `spec.zoneID`, so one CR can serve `orama.ing` and `orama.com` names. The DNS child controller
+never adopts or deletes a record it did not create: it marks its records with the Cloudflare comment
+`orama-operator:<namespace>/<name>`, reports `ready: false` when a foreign record already holds the
+name (so setting `app.orama.com` before the switch cannot repoint Prod 1's record), and on delete
+removes only a record that still carries its comment. Records created earlier are recognised by
+`status.recordID` and marked on their next update (see `CloudflareDNSRecord` in `crd-reference.md`). Prod 2's hosts are `app.orama.ing`, `collections.orama.ing` and
 `writer.prod2.cluster.orama.ing`. Engine hosts reuse the dashboard's nginx ingress-class behavior.
 
 These endpoint and DNS changes are unit-tested as of 2026-10-07 and have not been applied to AKS or
