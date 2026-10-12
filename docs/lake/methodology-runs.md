@@ -5,7 +5,7 @@
 deployed. A live run waits for the lake side of lake#655 and a published
 `oramasearch/methodology-runtime` image.** The per-workspace cap on concurrent runs and the
 placement of a GPU run's work volume ([orama-operator#293](https://github.com/oramasearch/orama-operator/issues/293),
-lake migration `0079_methodology_run_queue`) are implemented with fake-client and pgx contract
+lake migration `0082_methodology_run_queue`) are implemented with fake-client and pgx contract
 coverage; not deployed.
 
 A workspace can write its own methodology as Python code in one of its repositories (lake#655). That
@@ -20,7 +20,7 @@ the data in and the result out only through Orama's own runtime code. Lake's con
 | Table | Written by | What the operator uses |
 |---|---|---|
 | `methodology_runs` | lake (`NOTIFY lake_services`) | `id`, `mode` (`validate` or `train`), `build_id` (the methodology's image build), `image` (empty until lake knows it), `runtime_image`, `cpu_millis`, `memory_bytes`, `gpus`, `gpu_class`, `timeout_seconds`, `network`, `slug` (`mr-<12 hex>`), `desired` (`present` or `absent`), `generation` |
-| `methodology_run_status` | the operator (phase `Queued` from lake migration `0079_methodology_run_queue`) | `phase`, `message`, `exit_code`, `credential_sha256`, `observed_generation`, `started_at`, `finished_at` |
+| `methodology_run_status` | the operator (phase `Queued` from lake migration `0082_methodology_run_queue`) | `phase`, `message`, `exit_code`, `credential_sha256`, `observed_generation`, `started_at`, `finished_at` |
 | `workload_resources` | the operator | kind `methodology_run`, the sandbox pod's resources (see [workload-resources.md](workload-resources.md)) |
 
 The rows ride the control-rows poll with builds (`spec.builds.enabled`), on the same connection,
