@@ -383,7 +383,8 @@ type DataStoreSpec struct {
 	Endpoint string `json:"endpoint,omitempty"`
 	// CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
 	// required and must hold keys `uri` (connection URI) and `password`; the operator connects its
-	// clients with it but never provisions or migrates an external control DB.
+	// clients with it but never provisions or migrates an external control DB. External analytics
+	// uses `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` for the dashboard and processor.
 	// +optional
 	CredentialsSecretRef *corev1.LocalObjectReference `json:"credentialsSecretRef,omitempty"`
 	// Resources overrides the store's pod resources (requests + memory limit). When unset the

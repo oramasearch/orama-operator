@@ -264,11 +264,19 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 			env = append(env, secretKeyEnv(key, ref.Name, key))
 		}
 	}
+	if analyticsExternal(oc) {
+		if err := validateExternalAnalytics(oc); err != nil {
+			return err
+		}
+		ref := oc.Spec.Components.Analytics.CredentialsSecretRef.Name
+		env = append(env, corev1.EnvVar{Name: "CLICKHOUSE_HOST", Value: oc.Spec.Components.Analytics.Endpoint},
+			secretKeyEnv("CLICKHOUSE_USER", ref, "CLICKHOUSE_USER"), secretKeyEnv("CLICKHOUSE_PASSWORD", ref, "CLICKHOUSE_PASSWORD"))
+	}
 	// Schema ownership: the dashboard never migrates the control DB. In-cluster, the operator's
 	// PostgresSchema applies the schema (operator#40); a dashboard drizzle-kit migrate on top of it
 	// collides (Postgres 42710, "type already exists"). External, the database belongs to someone
-	// else — the shared production PlanetScale during the v1 migration (orama-bridge#142) — and its
-	// owner runs migrations; a migrate from this image could alter the live production schema.
+	// else, and its owner runs migrations; a migrate from this image could alter an external
+	// production schema (orama-bridge#142). Prod 2 uses its own in-cluster control DB.
 	return r.reconcileApp(ctx, oc, appDef{
 		component:   "dashboard",
 		image:       img,

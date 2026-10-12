@@ -12,6 +12,7 @@ import (
 	"github.com/robfig/cron/v3"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	"net/url"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"strings"
 
@@ -37,6 +38,10 @@ func analyticsProcessorConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	n := oc.Name
 	chURL := "http://" + n + "-analytics:8123"
 	chUser := "default"
+	if analyticsExternal(oc) {
+		chURL = oc.Spec.Components.Analytics.Endpoint
+		chUser = "__CLICKHOUSE_USER__"
+	}
 	var sources strings.Builder
 	add := func(name, endpoint string) {
 		fmt.Fprintf(&sources, "  - name: %s\n    api_url: %s\n    api_key: __MASTER_API_KEY__\n    enabled: true\n", name, endpoint)
@@ -74,6 +79,22 @@ oramacores:
 `, chURL, chUser, sources.String())
 }
 
+func analyticsExternal(oc *oramav1alpha1.OramaCloudV1) bool {
+	return oc.Spec.Components.Analytics.Mode == "external"
+}
+
+func validateExternalAnalytics(oc *oramav1alpha1.OramaCloudV1) error {
+	a := oc.Spec.Components.Analytics
+	u, err := url.Parse(a.Endpoint)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil {
+		return fmt.Errorf("analytics.endpoint must be an HTTP(S) URL without credentials")
+	}
+	if a.CredentialsSecretRef == nil || a.CredentialsSecretRef.Name == "" {
+		return fmt.Errorf("analytics.credentialsSecretRef is required for external ClickHouse (CLICKHOUSE_USER and CLICKHOUSE_PASSWORD)")
+	}
+	return nil
+}
+
 func secretKeyEnv(name, secret, key string) corev1.EnvVar {
 	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 		LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: key,
@@ -105,6 +126,14 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 			return err
 		}
 	}
+	if analyticsExternal(oc) {
+		if err := validateExternalAnalytics(oc); err != nil {
+			if cleanupErr := r.teardownByComponent(ctx, oc, "analytics-import"); cleanupErr != nil {
+				return cleanupErr
+			}
+			return err
+		}
+	}
 	config := analyticsProcessorConfigYAML(configOC)
 	img := componentImage(oc, "analytics-processor", "analytics-processor")
 	cmName := oc.Name + "-analytics-processor-config"
@@ -123,7 +152,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 			// esc makes a value safe as a sed replacement: a URI's query string carries `&`, which sed
 			// would otherwise expand to the matched placeholder.
 			`esc() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }; ` +
-				`sed -e "s#__CLICKHOUSE_PASSWORD__#$(esc "${CLICKHOUSE_PASSWORD}")#g" -e "s#__MASTER_API_KEY__#$(esc "${MASTER_API_KEY}")#g" -e "s#__PG_URI__#$(esc "${PG_URI}")#g" /tmpl/config.yaml > /etc/analytics-processor/config.yaml`},
+				`sed -e "s#__CLICKHOUSE_PASSWORD__#$(esc "${CLICKHOUSE_PASSWORD}")#g" -e "s#__MASTER_API_KEY__#$(esc "${MASTER_API_KEY}")#g" -e "s#__CLICKHOUSE_USER__#$(esc "${CLICKHOUSE_USER}")#g" -e "s#__PG_URI__#$(esc "${PG_URI}")#g" /tmpl/config.yaml > /etc/analytics-processor/config.yaml`},
 		EnvFrom: envFromFor(oc, "analytics-processor"),
 		// The control-DB URI from the CNPG or external Secret (same key in both modes).
 		Env: []corev1.EnvVar{pgURIEnv(oc, "PG_URI")},
@@ -131,6 +160,10 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 			{Name: "config-tmpl", MountPath: "/tmpl"},
 			{Name: "rendered-config", MountPath: "/etc/analytics-processor"},
 		},
+	}
+	if analyticsExternal(oc) {
+		ref := oc.Spec.Components.Analytics.CredentialsSecretRef.Name
+		render.Env = append(render.Env, secretKeyEnv("CLICKHOUSE_USER", ref, "CLICKHOUSE_USER"), secretKeyEnv("CLICKHOUSE_PASSWORD", ref, "CLICKHOUSE_PASSWORD"))
 	}
 	if err := r.reconcileApp(ctx, oc, appDef{
 		component:      "analytics-processor",
