@@ -176,7 +176,7 @@ is history and is skipped. Deleting the Lake garbage-collects the claims it cont
 
 ## Mounts (lake#666)
 
-Migration `0079_store_mounts` adds `store_mounts` (written by lake: `store_id`, `object_kind`
+Migration `0080_store_mounts` adds `store_mounts` (written by lake: `store_id`, `object_kind`
 `service` | `app`, `object_id`, `mount_path`, `read_only`) and `store_status.used_bytes` /
 `used_bytes_at` (written by the operator). lake writes a mount when a service or app is created or
 edited with `stores`, bumps the workload's generation and notifies `lake_services`. The operator
@@ -211,7 +211,7 @@ template's digest (`orama.cloud/store-credentials-digest` on a wrapper service,
 `orama.cloud/lake-app-credential-hash` on an app). Either rolls the pods. A workload with no mount
 keeps its template byte for byte, so this release rolls nothing that does not mount a store.
 
-**Transient reads.** Before `0079` (no table) nothing is mounted and nothing is measured. Once the
+**Transient reads.** Before `0080` (no table) nothing is mounted and nothing is measured. Once the
 table exists, a failed `store_mounts` or `stores` read leaves every wrapper service as it is for
 that pass (other services carry on), and defers the apps pass, so a transient read never takes a
 mount out of running pods.
@@ -252,7 +252,7 @@ Every statement here is copied into lake `tests/test_operator_contract.cpp`:
 ## Schema
 
 The vendored schema is lake `db/schema.sql` at `78a22c5` (lake branch `issue-666`, with
-`0079_store_mounts`), and the Lake's PostgresSchema guard is `store_mounts_guard`
+`0080_store_mounts`), and the Lake's PostgresSchema guard is `store_mounts_guard`
 ([schema.md](schema.md)).
 
 ## How to verify
@@ -287,10 +287,10 @@ delete. `lake_store_mounts_test.go` covers a sqlite service mounting a volume (c
 read-only) and a bucket (every variable, the optional credential references, the copy holding only
 the credential fields), a steady pass making no update, a new credential changing the template
 digest, unmounting the bucket removing its variables, digest and copy, a workload without mounts
-(and a schema before 0079) keeping its template, a failed mounts read leaving the service as it is
+(and a schema before 0080) keeping its template, a failed mounts read leaving the service as it is
 while others carry on, what the resolver leaves out, the used-space rules (first write, under and
 over 1 MiB, the 15-minute refresh, the once-a-minute rate, no stats or no pod writing nothing, no
-measurement before 0079) and parsing the kubelet's summary. The apps envtest
+measurement before 0080) and parsing the kubelet's summary. The apps envtest
 (`TestLakeAppsEnvtestLifecycle`, `lake_apps_store_mounts_test.go`) runs a volume and a bucket through
 the apps sync and the LakeApp controller on a real API server: the spec, the pod's volume, mount,
 `fsGroup` and variables, the credential copy, `StoreCredentialPending` before delivery, a rotation

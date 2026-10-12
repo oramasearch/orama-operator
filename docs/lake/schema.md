@@ -4,7 +4,7 @@ The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
 [`oramasearch/lake` commit 78a22c51f425a6bb26a75ca5c1da274a8bd86a7a](https://github.com/oramasearch/lake/blob/78a22c51f425a6bb26a75ca5c1da274a8bd86a7a/db/schema.sql)
 (branch `issue-666`: lake `main` through `0078_methodology_runs`, then lake#666's
-`0079_store_mounts`). Its SHA-256 is
+`0080_store_mounts`). Its SHA-256 is
 `22ad36a945548382c4594c12025cfa4617954579742f8e09eebbc4deef57c70c`. Re-pin to lake `main` once
 lake#666 lands there.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
@@ -13,7 +13,7 @@ The adjacent `lake-schema.source.json` records the repository, path, commit, and
 
 ## Migration and rollout ordering
 
-Migration `0079_store_mounts` (lake#666) adds `store_mounts` (written by lake: which services and
+Migration `0080_store_mounts` (lake#666) adds `store_mounts` (written by lake: which services and
 apps mount a store, at which path, read-only or not) and `store_status.used_bytes` /
 `used_bytes_at` (written by the operator), with guard `store_mounts_guard`, now Lake's
 PostgresSchema guard. Until it has applied, the operator mounts nothing and measures nothing

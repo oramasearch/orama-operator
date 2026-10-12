@@ -135,7 +135,7 @@ func TestStoresPgxStoreAgainstPostgres(t *testing.T) {
 		t.Fatalf("stores after status writes = %+v, want the volume with %+v", stores, status)
 	}
 
-	// Store mounts and used space (0079_store_mounts, lake#666).
+	// Store mounts and used space (0080_store_mounts, lake#666).
 	appID := "0d0d0d0d-1111-4222-8333-444444444444"
 	if _, err := tx.Exec(ctx, `INSERT INTO store_mounts (store_id, object_kind, object_id, mount_path, read_only)
 		VALUES ($1, 'app', $2, '/data/x', true)`, testVolumeStoreID, appID); err != nil {

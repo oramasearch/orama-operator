@@ -166,7 +166,7 @@ func TestStoreMountsWithoutMountsLeaveTheTemplate(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		missing bool
-	}{{"no mounts", false}, {"schema before 0079", true}} {
+	}{{"no mounts", false}, {"schema before 0080", true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := mountsFixture()
 			store.storeMountsMissing = tc.missing
@@ -336,7 +336,7 @@ func TestStoreUsedBytesNeedsTheMountsSchema(t *testing.T) {
 	h.reconciler.VolumeStats = stats
 	h.poll()
 	if stats.calls != 0 || len(store.usedBytesWrites) != 0 {
-		t.Fatalf("measured before 0079: %d calls, %+v", stats.calls, store.usedBytesWrites)
+		t.Fatalf("measured before 0080: %d calls, %+v", stats.calls, store.usedBytesWrites)
 	}
 }
 

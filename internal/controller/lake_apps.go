@@ -113,7 +113,7 @@ func (r *LakeAppsReconciler) pollLakeApps(ctx context.Context, lake *oramav1alph
 		log.Info("apps deferred: service identities unavailable")
 		return false
 	}
-	// The stores apps mount (lake#666). Without the store_mounts table (a schema before 0079) no
+	// The stores apps mount (lake#666). Without the store_mounts table (a schema before 0080) no
 	// app mounts any; once it exists, a failed read defers the apps, so a transient read never
 	// takes a mount out of an app's pods.
 	var storeRows lakeAppStoreRows

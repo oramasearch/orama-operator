@@ -27,7 +27,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Store mounts (lake#666, lake migration 0079_store_mounts; the contract is lake's
+// Store mounts (lake#666, lake migration 0080_store_mounts; the contract is lake's
 // docs/control-plane/storage.md#mounts). lake records in store_mounts which services and apps mount
 // a store; the operator mounts each into the pods it builds for that workload:
 //   - a volume (volume/cluster) is its PersistentVolumeClaim, mounted at mount_path, read-only when
@@ -69,13 +69,13 @@ var storeBucketCredentialFields = []struct{ key, suffix string }{
 // storeMountPathPattern is lake's store_mount_path_check.
 var storeMountPathPattern = regexp.MustCompile(`^/[A-Za-z0-9._/-]{1,255}$`)
 
-// errStoreMountsTableMissing: lake's schema has not reached 0079_store_mounts yet. Nothing is
+// errStoreMountsTableMissing: lake's schema has not reached 0080_store_mounts yet. Nothing is
 // mounted and no used space is reported; everything else goes on.
-var errStoreMountsTableMissing = errors.New("the store_mounts table does not exist yet (lake schema before 0079_store_mounts)")
+var errStoreMountsTableMissing = errors.New("the store_mounts table does not exist yet (lake schema before 0080_store_mounts)")
 
 // storeMountsState is what one services pass knows of the store mounts: read (the table exists
 // and both it and the stores were read), unknown (the table exists but a read failed), or neither
-// (a schema before 0079: nothing is mounted).
+// (a schema before 0080: nothing is mounted).
 type storeMountsState struct {
 	read    bool
 	unknown bool

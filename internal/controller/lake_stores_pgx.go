@@ -84,7 +84,7 @@ func (s *pgxServiceStore) UpsertStoreStatus(ctx context.Context, status LakeStor
 	return err
 }
 
-// The store mounts half (lake migration 0079_store_mounts, lake#666).
+// The store mounts half (lake migration 0080_store_mounts, lake#666).
 
 // listStoreMountsSQL reads every mount joined to its store; the poll keeps the present ones.
 const listStoreMountsSQL = `SELECT m.store_id::text, m.object_kind, m.object_id::text, m.mount_path, m.read_only,
@@ -103,7 +103,7 @@ const updateStoreUsedBytesSQL = `UPDATE store_status
    SET used_bytes = $2, used_bytes_at = now()
  WHERE store_id = $1::uuid`
 
-// pgUndefinedColumn is SQLSTATE 42703, undefined_column: store_status before 0079 has no
+// pgUndefinedColumn is SQLSTATE 42703, undefined_column: store_status before 0080 has no
 // used_bytes.
 const pgUndefinedColumn = "42703"
 

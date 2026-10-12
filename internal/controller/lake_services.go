@@ -145,7 +145,7 @@ type LakeServiceStore interface {
 	ListStores(ctx context.Context) ([]LakeStore, error)
 	UpsertStoreStatus(ctx context.Context, status LakeStoreStatus) error
 	// The store mounts half (lake_store_mounts.go, lake#666). ListStoreMounts and ListStoreUsage
-	// return errStoreMountsTableMissing while lake's schema is older than 0079_store_mounts.
+	// return errStoreMountsTableMissing while lake's schema is older than 0080_store_mounts.
 	ListStoreMounts(ctx context.Context) ([]LakeStoreMount, error)
 	ListStoreUsage(ctx context.Context) (map[string]LakeStoreUsage, error)
 	UpdateStoreUsedBytes(ctx context.Context, storeID string, usedBytes int64) error
@@ -414,7 +414,7 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 			} else if storesErr != nil {
 				log.Info("stores deferred: cannot read stores", "err", storesErr.Error())
 			}
-			// Store mounts (lake#666) ride it too. Without the table (a schema before 0079) nothing
+			// Store mounts (lake#666) ride it too. Without the table (a schema before 0080) nothing
 			// is mounted. Once it exists, a failed mounts or stores read leaves the mounts unknown:
 			// the services that can mount a store wait for the next pass, so their pod templates
 			// never lose a mount to a transient read.

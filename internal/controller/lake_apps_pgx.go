@@ -46,7 +46,7 @@ type LakeAppsStore interface {
 	ListApps(context.Context) ([]LakeAppRow, error)
 	ListServices(context.Context) ([]LakeService, error)
 	// The stores apps mount (lake#666): the same statements as the services poll. ListStoreMounts
-	// returns errStoreMountsTableMissing while lake's schema is older than 0079_store_mounts.
+	// returns errStoreMountsTableMissing while lake's schema is older than 0080_store_mounts.
 	ListStores(context.Context) ([]LakeStore, error)
 	ListStoreMounts(context.Context) ([]LakeStoreMount, error)
 	UpdateAppStatus(context.Context, *LakeAppRow, LakeAppRowStatus) (bool, error)
