@@ -10,6 +10,9 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/url"
+	"strconv"
+	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -125,19 +128,36 @@ const (
 	podNamePlaceholder = "__POD_NAME__"
 )
 
-// engineSide is what the writer and the reader pods differ in: the OramaCore image they run and the
-// config template (and its ConfigMap key) their render-config init container renders.
+// engineSide is what the writer and the reader pods differ in: the OramaCore image they run, the
+// config template (and its ConfigMap key) their render-config init container renders, and how long
+// their startup probe waits for OramaCore to answer.
 type engineSide struct {
-	image     string
-	configKey string
-	template  string
+	image          string
+	configKey      string
+	template       string
+	startupTimeout time.Duration
 }
+
+// Engine startup and preflight defaults, matching Prod 1: its reader unit allows 20 minutes for the
+// port to open and 40 for the unit to start (orama-deploy systemd units), its units set
+// LimitNOFILE=65535, and its reader hosts set vm.max_map_count=4194304.
+const (
+	defaultWriterStartupTimeout = 20 * time.Minute
+	defaultReaderStartupTimeout = 40 * time.Minute
+	engineStartupPeriodSeconds  = 10
+	defaultMinMaxMapCount       = 4194304
+	defaultMinOpenFiles         = 65535
+)
 
 // engineSideFor resolves the writer ("writer") or reader ("reader") side. With side-only images
 // (engineSidesSeparated) each side renders its own config; otherwise both render today's combined
 // config, whose image also starts the other side.
 func engineSideFor(oc *oramav1alpha1.OramaCloudV1, side string) engineSide {
 	s := engineSide{image: oramacoreSideImage(oc, side), configKey: combinedConfigKey, template: oramacoreConfigYAML(oc)}
+	s.startupTimeout = durationOr(oc.Spec.Components.Engine.Reader.StartupTimeout, defaultReaderStartupTimeout)
+	if side == "writer" {
+		s.startupTimeout = durationOr(oc.Spec.Components.Engine.Writer.StartupTimeout, defaultWriterStartupTimeout)
+	}
 	if !engineSidesSeparated(oc) {
 		return s
 	}
@@ -422,6 +442,77 @@ func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	}
 }
 
+// durationOr is d when it is set and positive, otherwise def.
+func durationOr(d *metav1.Duration, def time.Duration) time.Duration {
+	if d == nil || d.Duration <= 0 {
+		return def
+	}
+	return d.Duration
+}
+
+// startupFailureThreshold is the startup probe failureThreshold that gives OramaCore at least
+// timeout to answer when the probe runs every periodSeconds.
+func startupFailureThreshold(timeout time.Duration, periodSeconds int32) int32 {
+	period := time.Duration(periodSeconds) * time.Second
+	return int32(max(1, (timeout+period-1)/period))
+}
+
+// preflightInit checks the node and process limits OramaCore needs before the writer or a reader
+// starts, failing with a message that names the setting: vm.max_map_count against
+// spec.components.engine.minMaxMapCount (a reader keeps every mapping it opens until it restarts, and
+// mmap fails with ENOMEM at the limit whatever the free memory) and the open-files limit against
+// spec.components.engine.minOpenFiles. vm.max_map_count is not namespaced, so a pod can only check
+// it; the node pool sets it (docs/install.md). The open-files limit comes from the container
+// runtime, which gives every container in the pod the same one. A field set to 0 drops its check;
+// with both at 0 there is no preflight container. It runs as nobody on a read-only root filesystem.
+func preflightInit(oc *oramav1alpha1.OramaCloudV1) (corev1.Container, bool) {
+	e := oc.Spec.Components.Engine
+	var checks []string
+	if n := int64Or(e.MinMaxMapCount, defaultMinMaxMapCount); n > 0 {
+		v := strconv.FormatInt(n, 10)
+		checks = append(checks, `m=$(cat /proc/sys/vm/max_map_count); if [ "$m" -lt `+v+` ]; then `+
+			`echo "preflight: vm.max_map_count is $m, below the required `+v+`. Set it on the node pool `+
+			`(AKS linuxOSConfig.sysctls.vmMaxMapCount), or set spec.components.engine.minMaxMapCount: 0 `+
+			`to skip this check." >&2; fail=1; fi`)
+	}
+	if n := int64Or(e.MinOpenFiles, defaultMinOpenFiles); n > 0 {
+		v := strconv.FormatInt(n, 10)
+		checks = append(checks, `n=$(ulimit -n); if [ "$n" != unlimited ] && [ "$n" -lt `+v+` ]; then `+
+			`echo "preflight: the open-files limit (ulimit -n) is $n, below the required `+v+`. Raise the `+
+			`container runtime's LimitNOFILE on the node, or set spec.components.engine.minOpenFiles: 0 `+
+			`to skip this check." >&2; fail=1; fi`)
+	}
+	if len(checks) == 0 {
+		return corev1.Container{}, false
+	}
+	sc := hardenedSecurityContext() // workload hardening baseline (#18)
+	sc.RunAsNonRoot, sc.RunAsUser, sc.ReadOnlyRootFilesystem = boolPtr(true), int64Ptr(65534), boolPtr(true)
+	return corev1.Container{
+		Name:            "preflight",
+		Image:           "busybox:1.37",
+		Command:         []string{"sh", "-c", "fail=0; " + strings.Join(checks, "; ") + "; exit $fail"},
+		SecurityContext: sc,
+	}, true
+}
+
+// int64Or is *p when p is set, otherwise def.
+func int64Or(p *int64, def int64) int64 {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
+// engineInitContainers are the writer and reader init containers, in order: the broker wait, the
+// preflight checks when any is enabled, then render-config.
+func engineInitContainers(oc *oramav1alpha1.OramaCloudV1, s engineSide) []corev1.Container {
+	inits := []corev1.Container{waitForBrokerInit(oc)}
+	if c, ok := preflightInit(oc); ok {
+		inits = append(inits, c)
+	}
+	return append(inits, renderConfigInit(oc, s))
+}
+
 // renderConfigInit substitutes the MASTER_API_KEY (from the engine Secret, via envFrom; both
 // writer_side.master_api_key and reader_side.analytics.api_key) into the side's config template (the
 // ConfigMap key s.configKey) and writes the rendered file to the shared rendered-config emptyDir that
@@ -493,7 +584,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 				ImagePullSecrets:              imagePullSecrets(oc),
 				NodeSelector:                  nodeSelector,
 				Tolerations:                   tolerations,
-				InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc, side)},
+				InitContainers:                engineInitContainers(oc, side),
 				Containers:                    []corev1.Container{c},
 				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
 				TerminationGracePeriodSeconds: int64Ptr(writerGracePeriodSeconds),
@@ -568,7 +659,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			ImagePullSecrets:              imagePullSecrets(oc),
 			NodeSelector:                  nodeSelector,
 			Tolerations:                   tolerations,
-			InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc, side)},
+			InitContainers:                engineInitContainers(oc, side),
 			Containers:                    containers,
 			Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
 			TerminationGracePeriodSeconds: int64Ptr(readerGracePeriodSeconds),
@@ -678,9 +769,11 @@ func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1, s engineSide) corev1.Con
 		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 			Path: "/health", Port: intstr.FromInt32(oramacorePort)}}}
 	}
-	// startup gates liveness/readiness so a slow index-load boot isn't killed.
+	// startup gates liveness/readiness so a slow index-load boot isn't killed: a restart would begin
+	// the load again, so the probe allows the side's whole startupTimeout.
 	startup := health()
-	startup.PeriodSeconds, startup.FailureThreshold = 10, 30 // ~5 min to become live
+	startup.PeriodSeconds = engineStartupPeriodSeconds
+	startup.FailureThreshold = startupFailureThreshold(s.startupTimeout, engineStartupPeriodSeconds)
 	readiness := health()
 	readiness.PeriodSeconds, readiness.TimeoutSeconds, readiness.FailureThreshold = 10, 3, 3
 	liveness := health()
