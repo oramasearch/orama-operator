@@ -16,7 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-const analyticsKeyPlaceholderLine = `    api_key: "__MASTER_API_KEY__"`
+const analyticsKeyPlaceholderLine = `    api_key: '__MASTER_API_KEY__'`
 
 // TestEngineConfigEnablesReaderAnalytics covers #55: the engine config template carries a
 // reader_side.analytics block whose api_key is the master-key placeholder (never a value), and
@@ -74,7 +74,7 @@ func TestEngineConfigEnablesReaderAnalytics(t *testing.T) {
 	if strings.Contains(got, "__MASTER_API_KEY__") {
 		t.Error("rendered config still holds the __MASTER_API_KEY__ placeholder")
 	}
-	if !strings.Contains(got, "\n  analytics:\n    api_key: \"test-master-key\"\n") {
+	if !strings.Contains(got, "\n  analytics:\n    api_key: 'test-master-key'\n") {
 		t.Errorf("rendered reader_side.analytics.api_key is not the Secret's MASTER_API_KEY:\n%s", got)
 	}
 }

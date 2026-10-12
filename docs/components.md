@@ -222,7 +222,7 @@ Driven by `spec.region.role`:
   `spec.images.overrides.oramacore-writer` **and** `.oramacore-reader` to run them: the writer then
   renders `writer.yaml` (no `reader_side`) and the readers `reader.yaml` (no `writer_side`). One
   without the other fails the reconcile. Without them both sides keep the shared image and the
-  combined `config.yaml`, unchanged from before, and the CR carries
+  combined `config.yaml`, and the CR carries
   `EngineSidesSeparated=False` saying the readers also run a writer. The side-only images are built
   by the bridge's `build/images`, not by the operator.
 - **Stream connection names** — with side-only configs the writer names its stream connection
@@ -240,14 +240,27 @@ Driven by `spec.region.role`:
   side-only images, `writer.yaml` and `reader.yaml`. Each is assembled from the same per-section
   renderers in `engine.go` (`engineCommonYAML`, `writerSideYAML`, `readerSideYAML`, `aiServerYAML`),
   so a section shared by both sides is written once. Every config is a **template** — `master_api_key` is a `__MASTER_API_KEY__`
-  placeholder, so **no credential lives in the ConfigMap**. A `render-config` **init
-  container** substitutes the real value from `<cr>-engine-secret` (via `envFrom`) into
-  a shared `emptyDir`, and OramaCore reads it via `CONFIG_PATH=/etc/oramacore/config.yaml`
-  (env override can't reach the nested `writer_side.master_api_key` — `config`'s
-  `ORAMACORE_` provider splits on `_`). The writer and reader pod templates each carry an
-  `orama.cloud/config-hash` of their own template, so a config change rolls only the side it
-  affects; the combined config is hashed only when it carries `writer.jwt`, as before. All children set an owner reference to the CR, so
-  deleting the CR cascade-deletes them.
+  placeholder and each LLM key a `__<PROVIDER>_API_KEY__` placeholder, so **no credential lives in
+  the ConfigMap**. A `render-config` **init container** substitutes the real values into a shared
+  `emptyDir`: `MASTER_API_KEY` and `<PROVIDER>_API_KEY` from `<cr>-engine-secret` (via `envFrom`),
+  or a provider's key from its `apiKeySecretRef` (an `env` entry that overrides the `envFrom` one).
+  Each value is escaped for `sed` and sits in a single-quoted YAML scalar, so any character but a
+  newline is safe. OramaCore reads the result via `CONFIG_PATH=/etc/oramacore/config.yaml` (env
+  override can't reach nested keys such as `writer_side.master_api_key` — `config`'s `ORAMACORE_`
+  provider splits on `_`). The writer and reader pod templates each carry an
+  `orama.cloud/config-hash` of their own template, so a config change (JWT, LLM providers, …) rolls
+  the pods that render it, and with side-only configs only the side it affects. Key values are not
+  in the template: after rotating a key in its Secret, restart the writer and readers. All children
+  set an owner reference to the CR, so deleting the CR cascade-deletes them.
+- **LLM providers** ([#304](https://github.com/oramasearch/orama-operator/issues/304), `engine_llm.go`)
+  — `ai_server` mirrors the Prod 1 configs: `llm` is the `spec.llm.default` provider as an
+  OpenAI-compatible remote (`local: false`, `host` = its base URL, `model` = its first model), which
+  OramaCore uses for every request that names no provider; `remote_llms` has one entry per
+  `spec.llm.providers[]` (`default_model` = its first model, `url` only when overridden, else
+  OramaCore's built-in URL); and `embeddings.automatic_embeddings_selector` comes from
+  `spec.llm.automaticEmbeddingsSelector`. The reconcile fails with `Ready=False` before rendering
+  when the default or selector provider is not listed, a provider has no models or is listed twice,
+  or a provider is `vllm`.
 - **Analytics** ([#55](https://github.com/oramasearch/orama-operator/issues/55)) — the config sets
   `reader_side.analytics`, so each pod logs search events under `<reader data_dir>/analytics_new`
   and serves them once through `GET /v1/analytics` (read-and-erase). Without the block the endpoint
