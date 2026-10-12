@@ -525,8 +525,8 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   Protection preserves data; it does not qualify restart, restore, capacity or reader freshness.
   To really remove a protected database, turn protection off
   first, or delete the `Cluster` by hand.
-- **Backups** (`controlDB.backup`, opt-in, primary only) — the `Lake`'s Barman support, shared code
-  in `cnpg_backup.go`: the Cluster gets `spec.backup.barmanObjectStore` (gzip WAL, `retentionPolicy`)
+- **Backups** (`controlDB.backup`, opt-in, primary only) — the same Barman setup as the `Lake`'s,
+  in its own copy (`controldb_backup.go`): the Cluster gets `spec.backup.barmanObjectStore` (gzip WAL, `retentionPolicy`)
   pointing at `s3://<bucket>/<namespace>/<name>/controldb` by default, and the operator owns a
   `ScheduledBackup` `<cr>-controldb-backup` (six-field cron, default `0 0 3 * * *`, first backup
   immediately). The CR's `BackupReady` condition reports the newest CNPG `Backup`; an invalid config

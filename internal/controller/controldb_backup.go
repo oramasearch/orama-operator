@@ -21,26 +21,27 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// CNPG Barman object-store backups, shared by the Lake (spec.postgres.backup) and OramaCloudV1
-// (spec.components.controlDB.backup) control DBs. Both declare a LakePostgresBackupSpec; the owner's
-// reconciler resolves it with resolveCNPGBackupConfig, renders cnpgBarmanBackup into its Cluster
-// spec, owns a ScheduledBackup built by newCNPGScheduledBackupFor/cnpgScheduledBackupSpec, and
-// reports cnpgBackupStatus as its BackupReady condition.
+// CNPG Barman object-store backups of the OramaCloudV1 control DB (spec.components.controlDB.backup).
+// resolveControlDBBackup (controldb.go) validates the ControlDBBackupSpec with
+// resolveControlDBBackupConfig; reconcileControlDB renders controlDBBarmanBackup into the Cluster spec
+// and owns a ScheduledBackup built by newControlDBScheduledBackup/controlDBScheduledBackupSpec; and
+// status.go reports controlDBBackupStatus as the BackupReady condition. Lake keeps its own copy in
+// lake_controller.go.
 
 var (
-	cnpgScheduledBackupGVK = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "ScheduledBackup"}
-	cnpgBackupGVK          = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "Backup"}
-	cnpgBackupListGVK      = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "BackupList"}
+	controlDBScheduledBackupGVK = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "ScheduledBackup"}
+	controlDBBackupGVK          = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "Backup"}
+	controlDBBackupListGVK      = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "BackupList"}
 )
 
 const (
-	defaultCNPGBackupSchedule  = "0 0 3 * * *"
-	defaultCNPGBackupRetention = "30d"
+	defaultControlDBBackupSchedule  = "0 0 3 * * *"
+	defaultControlDBBackupRetention = "30d"
 )
 
-// cnpgBackupConfig is a validated LakePostgresBackupSpec with its defaults applied. Enabled && !Valid
+// controlDBBackupConfig is a validated ControlDBBackupSpec with its defaults applied. Enabled && !Valid
 // carries the Reason/Message the owner reports; nothing is configured in CNPG until Valid.
-type cnpgBackupConfig struct {
+type controlDBBackupConfig struct {
 	Enabled    bool
 	Valid      bool
 	Reason     string
@@ -53,23 +54,22 @@ type cnpgBackupConfig struct {
 	SecretName string
 }
 
-// resolveCNPGBackupConfig validates enabled backup settings without an admission webhook. Invalid
+// resolveControlDBBackupConfig validates enabled backup settings without an admission webhook. Invalid
 // user configuration is returned as Reason/Message rather than an error so the owner can report it
-// in status. fieldPath names the spec field in messages (e.g. "spec.postgres.backup");
-// defaultPath is the bucket prefix used when the spec leaves it empty.
-func resolveCNPGBackupConfig(ctx context.Context, c client.Reader, ns string, backup oramav1alpha1.LakePostgresBackupSpec, fieldPath, defaultPath string) (cnpgBackupConfig, error) {
-	config := cnpgBackupConfig{Enabled: backup.Enabled != nil && *backup.Enabled}
+// in status. defaultPath is the bucket prefix used when the spec leaves it empty.
+func resolveControlDBBackupConfig(ctx context.Context, c client.Reader, ns string, backup oramav1alpha1.ControlDBBackupSpec, defaultPath string) (controlDBBackupConfig, error) {
+	config := controlDBBackupConfig{Enabled: backup.Enabled != nil && *backup.Enabled}
 	if !config.Enabled {
 		return config, nil
 	}
 	if backup.Destination.Bucket == "" {
 		config.Reason = "BackupBucketRequired"
-		config.Message = fieldPath + ".destination.bucket is required when backups are enabled"
+		config.Message = "spec.components.controlDB.backup.destination.bucket is required when backups are enabled"
 		return config, nil
 	}
 	if backup.SecretRef.Name == "" {
 		config.Reason = "BackupSecretRequired"
-		config.Message = fieldPath + ".secretRef is required when backups are enabled"
+		config.Message = "spec.components.controlDB.backup.secretRef is required when backups are enabled"
 		return config, nil
 	}
 
@@ -102,24 +102,24 @@ func resolveCNPGBackupConfig(ctx context.Context, c client.Reader, ns string, ba
 	}
 	config.Schedule = backup.Schedule
 	if config.Schedule == "" {
-		config.Schedule = defaultCNPGBackupSchedule
+		config.Schedule = defaultControlDBBackupSchedule
 	}
 	config.Retention = backup.Retention
 	if config.Retention == "" {
-		config.Retention = defaultCNPGBackupRetention
+		config.Retention = defaultControlDBBackupRetention
 	}
 	config.SecretName = backup.SecretRef.Name
 	return config, nil
 }
 
 // destinationPath is the Barman destinationPath (s3://<bucket>/<prefix>).
-func (c cnpgBackupConfig) destinationPath() string {
+func (c controlDBBackupConfig) destinationPath() string {
 	return fmt.Sprintf("s3://%s/%s", strings.Trim(c.Bucket, "/"), strings.Trim(c.Path, "/"))
 }
 
-// cnpgBarmanBackup renders the Cluster spec.backup block for a valid config: a Barman object store
+// controlDBBarmanBackup renders the Cluster spec.backup block for a valid config: a Barman object store
 // with gzip WAL archiving and the configured retention.
-func cnpgBarmanBackup(c cnpgBackupConfig) map[string]interface{} {
+func controlDBBarmanBackup(c controlDBBackupConfig) map[string]interface{} {
 	return map[string]interface{}{
 		"barmanObjectStore": map[string]interface{}{
 			"destinationPath": c.destinationPath(),
@@ -134,19 +134,19 @@ func cnpgBarmanBackup(c cnpgBackupConfig) map[string]interface{} {
 	}
 }
 
-// newCNPGScheduledBackupFor returns an empty ScheduledBackup addressed by name/namespace (for
+// newControlDBScheduledBackup returns an empty ScheduledBackup addressed by name/namespace (for
 // Get, Delete, and CreateOrUpdate).
-func newCNPGScheduledBackupFor(name, ns string) *unstructured.Unstructured {
+func newControlDBScheduledBackup(name, ns string) *unstructured.Unstructured {
 	backup := &unstructured.Unstructured{}
-	backup.SetGroupVersionKind(cnpgScheduledBackupGVK)
+	backup.SetGroupVersionKind(controlDBScheduledBackupGVK)
 	backup.SetName(name)
 	backup.SetNamespace(ns)
 	return backup
 }
 
-// cnpgScheduledBackupSpec is the ScheduledBackup spec for a Cluster: the configured schedule, an
+// controlDBScheduledBackupSpec is the ScheduledBackup spec for a Cluster: the configured schedule, an
 // immediate first backup, and Backups owned by the ScheduledBackup.
-func cnpgScheduledBackupSpec(c cnpgBackupConfig, clusterName string) map[string]interface{} {
+func controlDBScheduledBackupSpec(c controlDBBackupConfig, clusterName string) map[string]interface{} {
 	return map[string]interface{}{
 		"schedule":             c.Schedule,
 		"backupOwnerReference": "self",
@@ -155,10 +155,10 @@ func cnpgScheduledBackupSpec(c cnpgBackupConfig, clusterName string) map[string]
 	}
 }
 
-// cnpgBackupStatus reports a BackupReady condition for a Cluster's backups: True only when the
+// controlDBBackupStatus reports a BackupReady condition for a Cluster's backups: True only when the
 // ScheduledBackup exists and the newest CNPG Backup completed. It also returns that Backup's
 // completion time. Disabled or invalid configs report False with their reason.
-func cnpgBackupStatus(ctx context.Context, c client.Reader, ns, clusterName, scheduledBackupName string, generation int64, config cnpgBackupConfig) (bool, *metav1.Time, metav1.Condition, error) {
+func controlDBBackupStatus(ctx context.Context, c client.Reader, ns, clusterName, scheduledBackupName string, generation int64, config controlDBBackupConfig) (bool, *metav1.Time, metav1.Condition, error) {
 	condition := metav1.Condition{Type: "BackupReady", ObservedGeneration: generation}
 	if !config.Enabled {
 		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "BackupDisabled", "control-plane backups are disabled"
@@ -169,7 +169,7 @@ func cnpgBackupStatus(ctx context.Context, c client.Reader, ns, clusterName, sch
 		return false, nil, condition, nil
 	}
 
-	scheduledBackup := newCNPGScheduledBackupFor(scheduledBackupName, ns)
+	scheduledBackup := newControlDBScheduledBackup(scheduledBackupName, ns)
 	if err := c.Get(ctx, client.ObjectKeyFromObject(scheduledBackup), scheduledBackup); err != nil {
 		if apierrors.IsNotFound(err) {
 			condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "ScheduledBackupPending", "waiting for the CNPG ScheduledBackup"
@@ -179,7 +179,7 @@ func cnpgBackupStatus(ctx context.Context, c client.Reader, ns, clusterName, sch
 	}
 
 	backups := &unstructured.UnstructuredList{}
-	backups.SetGroupVersionKind(cnpgBackupListGVK)
+	backups.SetGroupVersionKind(controlDBBackupListGVK)
 	if err := c.List(ctx, backups, client.InNamespace(ns), client.MatchingLabels{"cnpg.io/cluster": clusterName}); err != nil {
 		return false, nil, condition, err
 	}
@@ -194,7 +194,7 @@ func cnpgBackupStatus(ctx context.Context, c client.Reader, ns, clusterName, sch
 		}
 	}
 	phase, _, _ := unstructured.NestedString(newest.Object, "status", "phase")
-	lastBackupTime, err := cnpgBackupCompletionTime(newest)
+	lastBackupTime, err := controlDBBackupCompletionTime(newest)
 	if err != nil {
 		return false, nil, condition, err
 	}
@@ -206,7 +206,7 @@ func cnpgBackupStatus(ctx context.Context, c client.Reader, ns, clusterName, sch
 	return false, lastBackupTime, condition, nil
 }
 
-func cnpgBackupCompletionTime(backup *unstructured.Unstructured) (*metav1.Time, error) {
+func controlDBBackupCompletionTime(backup *unstructured.Unstructured) (*metav1.Time, error) {
 	stoppedAt, found, err := unstructured.NestedString(backup.Object, "status", "stoppedAt")
 	if err != nil || !found || stoppedAt == "" {
 		return nil, err

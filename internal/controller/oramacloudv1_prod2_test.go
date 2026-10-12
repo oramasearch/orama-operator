@@ -115,7 +115,7 @@ func controlDBCluster(t *testing.T, cl client.Client) *unstructured.Unstructured
 }
 
 func scheduledBackup(cl client.Client) (*unstructured.Unstructured, error) {
-	sb := newCNPGScheduledBackupFor("v1-controldb-backup", "orama-system")
+	sb := newControlDBScheduledBackup("v1-controldb-backup", "orama-system")
 	return sb, cl.Get(context.Background(), client.ObjectKeyFromObject(sb), sb)
 }
 
@@ -309,9 +309,9 @@ func backupSecret() *corev1.Secret {
 
 func withBackup(o *oramav1alpha1.OramaCloudV1) {
 	enabled := true
-	o.Spec.Components.ControlDB.Backup = oramav1alpha1.LakePostgresBackupSpec{
+	o.Spec.Components.ControlDB.Backup = oramav1alpha1.ControlDBBackupSpec{
 		Enabled:     &enabled,
-		Destination: oramav1alpha1.LakePostgresBackupDestination{Bucket: "prod2-backups"},
+		Destination: oramav1alpha1.ControlDBBackupDestination{Bucket: "prod2-backups"},
 		SecretRef:   corev1.LocalObjectReference{Name: "r2"},
 	}
 }
@@ -346,7 +346,7 @@ func TestControlDBBackupsConfigureBarmanAndScheduledBackup(t *testing.T) {
 			"labels": map[string]interface{}{"cnpg.io/cluster": "v1-controldb"}},
 		"status": map[string]interface{}{"phase": "completed", "stoppedAt": stopped.Format(time.RFC3339)},
 	}}
-	backup.SetGroupVersionKind(cnpgBackupGVK)
+	backup.SetGroupVersionKind(controlDBBackupGVK)
 	if err := cl.Create(ctx, backup); err != nil {
 		t.Fatal(err)
 	}

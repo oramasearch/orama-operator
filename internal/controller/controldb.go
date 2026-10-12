@@ -101,15 +101,15 @@ func controlDBIsReplica(oc *oramav1alpha1.OramaCloudV1) bool {
 	return oc.Spec.Region.Role == "read" && oc.Spec.Components.ControlDB.Replicate
 }
 
-// resolveControlDBBackup validates spec.components.controlDB.backup (see resolveCNPGBackupConfig).
+// resolveControlDBBackup validates spec.components.controlDB.backup (see resolveControlDBBackupConfig).
 // The default bucket prefix is <namespace>/<name>/controldb. Backups are never configured on a
 // replica control DB.
-func (r *OramaCloudV1Reconciler) resolveControlDBBackup(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (cnpgBackupConfig, error) {
+func (r *OramaCloudV1Reconciler) resolveControlDBBackup(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (controlDBBackupConfig, error) {
 	if !controlDBInCluster(oc) || controlDBIsReplica(oc) {
-		return cnpgBackupConfig{}, nil
+		return controlDBBackupConfig{}, nil
 	}
-	return resolveCNPGBackupConfig(ctx, r.Client, oc.Namespace, oc.Spec.Components.ControlDB.Backup,
-		"spec.components.controlDB.backup", oc.Namespace+"/"+oc.Name+"/controldb")
+	return resolveControlDBBackupConfig(ctx, r.Client, oc.Namespace, oc.Spec.Components.ControlDB.Backup,
+		oc.Namespace+"/"+oc.Name+"/controldb")
 }
 
 // reconcileControlDB provisions the control-plane Postgres (PlanetScale in prod) as a
@@ -189,7 +189,7 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 			}
 		}
 		if backup.Enabled && backup.Valid {
-			spec["backup"] = cnpgBarmanBackup(backup)
+			spec["backup"] = controlDBBarmanBackup(backup)
 		}
 		cluster.Object["spec"] = spec
 		return nil
@@ -210,8 +210,8 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 // reconcileControlDBScheduledBackup owns the control DB's ScheduledBackup while backups are
 // enabled and valid, and removes it otherwise. CNPG creates the individual Backup resources
 // (owned by the ScheduledBackup) on its schedule, starting immediately.
-func (r *OramaCloudV1Reconciler) reconcileControlDBScheduledBackup(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, backup cnpgBackupConfig) error {
-	scheduledBackup := newCNPGScheduledBackupFor(controlDBScheduledBackupName(oc), oc.Namespace)
+func (r *OramaCloudV1Reconciler) reconcileControlDBScheduledBackup(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, backup controlDBBackupConfig) error {
+	scheduledBackup := newControlDBScheduledBackup(controlDBScheduledBackupName(oc), oc.Namespace)
 	if !backup.Enabled || !backup.Valid {
 		return r.deleteControlDBOwned(ctx, oc, scheduledBackup)
 	}
@@ -220,7 +220,7 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBScheduledBackup(ctx context.C
 			return err
 		}
 		scheduledBackup.SetLabels(labelsFor(oc, "controldb"))
-		scheduledBackup.Object["spec"] = cnpgScheduledBackupSpec(backup, controlDBClusterName(oc))
+		scheduledBackup.Object["spec"] = controlDBScheduledBackupSpec(backup, controlDBClusterName(oc))
 		return nil
 	})
 	return err
