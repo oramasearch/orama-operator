@@ -72,9 +72,6 @@ func TestStoresPgxStoreAgainstPostgres(t *testing.T) {
 	if _, err := tx.Exec(ctx, string(workspaceFixture)); err != nil {
 		t.Fatalf("apply workspace fixture: %v", err)
 	}
-	if _, err := tx.Exec(ctx, `ALTER TABLE stores ADD COLUMN workspace_id uuid NOT NULL REFERENCES workspaces(id)`); err != nil {
-		t.Fatalf("add stores workspace contract: %v", err)
-	}
 	var customerID string
 	if err := tx.QueryRow(ctx, `WITH u AS (INSERT INTO users (display_name) VALUES ('t') RETURNING id)
 		INSERT INTO customers (customer_type, user_id, name) SELECT 'individual', id, 'stores-test' FROM u RETURNING id::text`).Scan(&customerID); err != nil {
