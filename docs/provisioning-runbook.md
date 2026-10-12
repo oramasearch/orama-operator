@@ -101,6 +101,7 @@ that already exists, so **set these before first reconcile or delete+recreate to
 | **OpenAI** | engine, workers, openai-decrypter | `OPENAI_API_KEY` | platform.openai.com → API keys |
 | **Groq** | engine, workers | `GROQ_API_KEY` | console.groq.com |
 | **Anthropic** | engine, workers | `ANTHROPIC_API_KEY` | console.anthropic.com |
+| **Google (Gemini)** | engine | `GOOGLE_API_KEY` | aistudio.google.com → API keys |
 | **HuggingFace** | engine (model pulls) | `HF_TOKEN` | huggingface.co → settings → tokens |
 | **Apify** | index-builder (crawler) | `APIFY_TOKEN` | console.apify.com → integrations |
 | **Ably** | harvest, index-builder (live progress) | `ABLY_API_KEY` | ably.com → app → API keys |
@@ -119,6 +120,7 @@ kubectl create secret generic v1-engine -n orama-system \
   --from-literal=OPENAI_API_KEY='sk-...' \
   --from-literal=GROQ_API_KEY='gsk_...' \
   --from-literal=ANTHROPIC_API_KEY='sk-ant-...' \
+  --from-literal=GOOGLE_API_KEY='...' \
   --from-literal=HF_TOKEN='hf_...'
 # then bounce the consumer so it re-reads:
 kubectl rollout restart statefulset/v1-writer statefulset/v1-reader -n orama-system

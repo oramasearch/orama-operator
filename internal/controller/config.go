@@ -23,13 +23,10 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// llmProviderNames returns the enabled LLM provider names (defaults to the prod set —
-// v1 offers all three and end users pick per query).
+// llmProviderNames returns the enabled LLM provider names (defaultLLMProviders when
+// spec.llm.providers is empty; end users pick per query).
 func llmProviderNames(oc *oramav1alpha1.OramaCloudV1) string {
-	provs := oc.Spec.LLM.Providers
-	if len(provs) == 0 {
-		return "groq,openai,anthropic"
-	}
+	provs := llmProviders(oc)
 	names := make([]string, 0, len(provs))
 	for _, p := range provs {
 		names = append(names, p.Name)
@@ -197,6 +194,7 @@ func componentSecretData(component string) map[string]string {
 			"GROQ_API_KEY":      "dev-groq-api-key",
 			"OPENAI_API_KEY":    "dev-openai-api-key",
 			"ANTHROPIC_API_KEY": "dev-anthropic-api-key",
+			"GOOGLE_API_KEY":    "dev-google-api-key",
 			"HF_TOKEN":          "dev-huggingface-token",
 		}
 	case "search":

@@ -59,10 +59,14 @@ spec:
     #   docs: oramasearch/docs@sha256:<digest>
     #   analytics-processor: oramasearch/analytics-processor@sha256:<digest>
     # The processor image must include the bridge's 0.0.0.0:8080 listener patch.
-  llm:
+  llm:                                 # Prod 1's provider set; keys come from v1-engine-secret
     default: groq
     providers:
-      - { name: groq, models: [llama-3.3-70b-versatile] }
+      - { name: openai,    models: [gpt-5.2] }
+      - { name: google,    models: [gemini-2.0-flash-001] }
+      - { name: groq,      models: [openai/gpt-oss-120b] }
+      - { name: anthropic, models: [claude-sonnet-4-5] }
+    automaticEmbeddingsSelector: { provider: openai, model: gpt-5.2 }
   cloudflare:
     enabled: true
     apiTokenSecretRef: { name: cloudflare-api-token }
