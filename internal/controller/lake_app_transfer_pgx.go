@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// The app transfer half of the pgx LakeServiceStore (lake migration 0079_app_transfer, lake#661):
+// The app transfer half of the pgx LakeServiceStore (lake migration 0081_app_transfer, lake#661):
 // the same connection as the services poll.
 
 // addAppTransferSQL adds every app's bytes to its hour's row in one statement, so a pass is

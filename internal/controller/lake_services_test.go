@@ -82,7 +82,7 @@ type fakeServiceStore struct {
 	runStatusUpserts []LakeMethodologyRunStatus
 	runsMissing      bool
 	// appTransfer is the app transfer half (lake_app_transfer_test.go), by app and hour.
-	// appTransferMissing is a schema before 0079_app_transfer; appTransferErr fails the write.
+	// appTransferMissing is a schema before 0081_app_transfer; appTransferErr fails the write.
 	appTransfer        map[string]AppTransfer
 	appTransferMissing bool
 	appTransferErr     error

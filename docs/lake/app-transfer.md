@@ -5,7 +5,7 @@ lake meters the bytes each app receives and sends through the ingress as `transf
 [lake#658](https://github.com/oramasearch/lake/issues/658)). That traffic never passes through
 lake: it goes from the ingress controller to the app's pods. The operator is the only writer of the
 numbers: rows in the Lake's control Postgres, table `app_transfer` (lake migration
-`0079_app_transfer`, guard `app_transfer_guard`). lake's owner loop charges each closed hour once in
+`0081_app_transfer`, guard `app_transfer_guard`). lake's owner loop charges each closed hour once in
 the app's workspace Zetta (lake `docs/api/metering.md#app-traffic`).
 
 Code: `internal/controller/lake_app_transfer.go` (the pass) and `lake_app_transfer_pgx.go` (the SQL).
@@ -60,7 +60,7 @@ Lake, so with `spec.services.enabled` or `spec.builds.enabled`), when `spec.apps
 5. Only after the write succeeds do the remembered counters advance. A failed write or an unreadable
    controller pod keeps the previous values, so the next pass counts those bytes then, once.
 
-A schema older than `0079_app_transfer` skips the write and logs it, and the counters advance as the
+A schema older than `0081_app_transfer` skips the write and logs it, and the counters advance as the
 baseline.
 
 ## What it does not count
@@ -76,7 +76,7 @@ baseline.
   answer (two series of one Ingress summed, another Ingress apart, metrics off detected); the
   baseline, each pass's increase into the app's hour, a counter restart, an unreadable controller
   counted on the next pass, a failed write retried without double counting, retention; a controller
-  pod that started after the operator counted whole, and a schema before `0079` skipped.
+  pod that started after the operator counted whole, and a schema before `0081` skipped.
 - `LAKE_SERVICES_TEST_POSTGRES=1 go test ./internal/controller/ -run TestServicesPgxStoreAgainstPostgres`:
   the SQL against the vendored schema (`checkAppTransferPgx`: passes add up, old rows pruned, the
   missing-table error).

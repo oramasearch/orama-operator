@@ -162,7 +162,7 @@ type LakeServiceStore interface {
 	DeleteWorkloadResources(ctx context.Context, kind, id string) error
 	// AddAppTransfer adds each app's bytes to its hour's app_transfer row, all in one statement,
 	// and deletes the rows of hours before `before` (lake_app_transfer.go, lake#661). It returns
-	// errAppTransferTableMissing while lake's schema is older than 0079_app_transfer.
+	// errAppTransferTableMissing while lake's schema is older than 0081_app_transfer.
 	AddAppTransfer(ctx context.Context, rows []AppTransfer, before time.Time) error
 	Close(ctx context.Context) error
 }

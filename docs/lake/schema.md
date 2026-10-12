@@ -4,7 +4,7 @@ The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
 [`oramasearch/lake` commit a9daf31b7f7a0e4555b79fec913a99fe6bfbcc11](https://github.com/oramasearch/lake/blob/a9daf31b7f7a0e4555b79fec913a99fe6bfbcc11/db/schema.sql)
 (branch `issue-661`, lake PR #703: lake `main` at `e46d1679`, through `0078_methodology_runs`, then
-lake#661's `0079_app_transfer`). Its SHA-256 is
+lake#661's `0081_app_transfer`). Its SHA-256 is
 `ee570a0b4db873df1a84ab5e07e1a2288984c9888f02d7b6c37f7c66dda9da99`.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
@@ -12,7 +12,7 @@ The adjacent `lake-schema.source.json` records the repository, path, commit, and
 
 ## Migration and rollout ordering
 
-Migration `0079_app_transfer` (lake#661) adds `app_transfer`, written only by the operator: each
+Migration `0081_app_transfer` (lake#661) adds `app_transfer`, written only by the operator: each
 app's bytes in and out through the ingress controller, by UTC hour, with the app's workspace. Guard
 `app_transfer_guard`, now Lake's PostgresSchema guard. It is vendored from lake `a9daf31` on the PR
 branch `issue-661`; re-pin to lake `main` once lake PR #703 lands. The operator reports app traffic

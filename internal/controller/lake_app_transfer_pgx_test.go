@@ -15,7 +15,7 @@ import (
 )
 
 // checkAppTransferPgx runs the app transfer statements against the vendored schema
-// (0079_app_transfer, lake#661), inside TestServicesPgxStoreAgainstPostgres's transaction.
+// (0081_app_transfer, lake#661), inside TestServicesPgxStoreAgainstPostgres's transaction.
 func checkAppTransferPgx(t *testing.T, ctx context.Context, tx pgx.Tx, store *pgxServiceStore) {
 	t.Helper()
 	const app, other, workspace = "cccccccc-0000-4000-8000-000000000001", "cccccccc-0000-4000-8000-000000000002", "cccccccc-0000-4000-8000-000000000003"
@@ -45,7 +45,7 @@ func checkAppTransferPgx(t *testing.T, ctx context.Context, tx pgx.Tx, store *pg
 		t.Fatalf("expired rows = %d, %v", count, err)
 	}
 
-	// Before 0079 the table is missing, and the pass is skipped.
+	// Before 0081 the table is missing, and the pass is skipped.
 	missing, err := tx.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -28,7 +28,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// App traffic through the ingress (lake#661; lake migration 0079_app_transfer; this repo's
+// App traffic through the ingress (lake#661; lake migration 0081_app_transfer; this repo's
 // docs/lake/app-transfer.md). lake meters an app's bytes as `transfer`, but they never pass
 // through lake: they go from the ingress controller to the app's pods. The ingress controller
 // counts them per Ingress. ingress-nginx, the controller the clusters run, exposes them on its
@@ -67,7 +67,7 @@ var ingressControllerPodLabels = client.MatchingLabels{
 	"app.kubernetes.io/component": "controller",
 }
 
-var errAppTransferTableMissing = errors.New("the app_transfer table does not exist yet (lake schema before 0079_app_transfer)")
+var errAppTransferTableMissing = errors.New("the app_transfer table does not exist yet (lake schema before 0081_app_transfer)")
 
 // AppTransfer is one app's traffic through the ingress added to one UTC hour.
 type AppTransfer struct {
