@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,12 +30,14 @@ func (r *OramaCloudV1Reconciler) deleteCloudV1Owned(ctx context.Context, oc *ora
 }
 
 func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	engine := oc.Spec.Components.Engine
 	for _, endpoint := range []struct {
 		component, host string
+		ingress         oramav1alpha1.IngressHostsSpec
 		port            int32
 	}{
-		{"writer", oc.Spec.Components.Engine.Writer.Host, oramacorePort},
-		{"reader", oc.Spec.Components.Engine.Reader.Host, envoyPort},
+		{"writer", engine.Writer.Host, engine.Writer.IngressHostsSpec, oramacorePort},
+		{"reader", engine.Reader.Host, engine.Reader.IngressHostsSpec, envoyPort},
 	} {
 		host := endpoint.host
 		if !oc.Spec.Components.Engine.Enabled || (endpoint.component == "writer" && oc.Spec.Region.Role != "primary") {
@@ -45,8 +48,54 @@ func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, o
 			if err := r.deleteCloudV1Owned(ctx, oc, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}); err != nil {
 				return err
 			}
-		} else if err := r.upsertIngress(ctx, oc, name, endpoint.component, host, endpoint.port); err != nil {
+		} else if err := r.upsertIngress(ctx, oc, name, endpoint.component, host, endpoint.ingress, endpoint.port); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateIngressHosts refuses a CR whose Ingresses would claim one name twice: every host and extra
+// host of the dashboard, docs, writer and reader must be unique across the CR (enabled or not), and
+// extra hosts need a host. ingress-nginx would otherwise merge or pick between the rules silently.
+func validateIngressHosts(oc *oramav1alpha1.OramaCloudV1) error {
+	c := oc.Spec.Components
+	owners := map[string]string{}
+	for _, component := range []struct {
+		field, host string
+		ingress     oramav1alpha1.IngressHostsSpec
+	}{
+		{"dashboard", c.Dashboard.Host, c.Dashboard.IngressHostsSpec},
+		{"docs", c.Docs.Host, c.Docs.IngressHostsSpec},
+		{"engine.writer", c.Engine.Writer.Host, c.Engine.Writer.IngressHostsSpec},
+		{"engine.reader", c.Engine.Reader.Host, c.Engine.Reader.IngressHostsSpec},
+	} {
+		if component.host == "" && (len(component.ingress.ExtraHosts) > 0 || component.ingress.TLSSecretName != "") {
+			return fmt.Errorf("%s.extraHosts and %s.tlsSecretName require %s.host", component.field, component.field, component.field)
+		}
+		claim := func(host, field string) error {
+			key := strings.ToLower(host)
+			if owner, taken := owners[key]; taken {
+				return fmt.Errorf("host %q is set in both %s and %s; each host may route to one component only", host, owner, field)
+			}
+			owners[key] = field
+			return nil
+		}
+		if component.host != "" {
+			if err := claim(component.host, component.field+".host"); err != nil {
+				return err
+			}
+		}
+		for _, extra := range component.ingress.ExtraHosts {
+			if extra == "" {
+				return fmt.Errorf("%s.extraHosts has an empty entry", component.field)
+			}
+			if strings.EqualFold(extra, component.host) {
+				return fmt.Errorf("%s.extraHosts repeats %s.host %q", component.field, component.field, extra)
+			}
+			if err := claim(extra, component.field+".extraHosts"); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

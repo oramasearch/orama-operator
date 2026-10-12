@@ -26,6 +26,12 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:default=light
 	Profile string `json:"profile,omitempty"`
 
+	// IngressClassName is the IngressClass of every Ingress this CR owns (dashboard, docs, writer,
+	// reader). Empty means nginx, the helmfile-installed ingress-nginx.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	IngressClassName string `json:"ingressClassName,omitempty"`
+
 	// IDP selects the identity provider for the dashboard / customer auth.
 	// +kubebuilder:default={provider: none}
 	IDP IDPSpec `json:"idp,omitempty"`
@@ -350,6 +356,8 @@ type WriterSpec struct {
 	// Empty keeps the writer internal.
 	// +optional
 	Host string `json:"host,omitempty"`
+	// ExtraHosts and TLSSecretName extend the Ingress on host.
+	IngressHostsSpec `json:",inline"`
 	// JWT enables the dashboard JWKS provider. Unset preserves the existing config without JWT.
 	// +optional
 	JWT *WriterJWTSpec `json:"jwt,omitempty"`
@@ -421,6 +429,8 @@ type ReaderSpec struct {
 	// Host publishes reads through an owned Ingress and optional Cloudflare DNS.
 	// +optional
 	Host string `json:"host,omitempty"`
+	// ExtraHosts and TLSSecretName extend the Ingress on host.
+	IngressHostsSpec `json:",inline"`
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
 	// HPA autoscales readers on load when set: the operator owns a HorizontalPodAutoscaler
@@ -551,10 +561,32 @@ type ToggleWithHost struct {
 	Enabled bool `json:"enabled"`
 	// +optional
 	Host string `json:"host,omitempty"`
+	// ExtraHosts and TLSSecretName extend the Ingress on host.
+	IngressHostsSpec `json:",inline"`
 	// Resources overrides the component's pod resources. When unset the operator applies a
 	// sensible per-component default (workload hardening, #18).
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// IngressHostsSpec adds names and origin TLS to a component's Ingress. Both apply only while the
+// component's host is set.
+type IngressHostsSpec struct {
+	// ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+	// same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+	// ingress by hand. A host may appear once across the CR's components; an extra host equal to
+	// host fails the reconcile.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	ExtraHosts []string `json:"extraHosts,omitempty"`
+	// TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+	// Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+	// with this Secret; empty, the Ingress has no tls section.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	TLSSecretName string `json:"tlsSecretName,omitempty"`
 }
 
 // DashboardSpec is the dashboard toggle and host, plus the environment a user supplies on top of

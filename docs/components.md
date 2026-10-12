@@ -520,7 +520,10 @@ host is set)**.
   **Selenium** grid Deployment.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
-- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`.
+- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`, with a rule for
+  each of `dashboard.extraHosts` and an optional `tls` entry from `dashboard.tlsSecretName`
+  ([crd-reference.md](crd-reference.md#public-hosts-and-origin-tls)). Every OramaCloudV1 Ingress
+  uses `spec.ingressClassName` (default `nginx`).
   With `idp.provider: firebase`, it gets `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL` and
   `FIREBASE_PRIVATE_KEY` through required keys in `idp.configSecretRef`, replacing the unused
   service-account JSON dummy. The default `none` adds no Firebase variables. The referenced Secret
