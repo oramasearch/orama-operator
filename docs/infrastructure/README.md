@@ -141,12 +141,32 @@ A general rule for every kind in this work, and for the operator from here on.
 | `DnsRecord` | `CloudflareDnsRecord` | Another DNS provider |
 | `ServiceMesh` | `IstioServiceMesh` | Another mesh |
 
+### A provider is its own resource
+
+The abstract kind does not carry the vendor's settings. It points at a **provider resource**,
+which says which vendor, which account and how to authenticate. Proposed by Steve, 2026-10-12:
+*"maybe we can create a DnsProvider CRD for example then the abstract can point to that
+provider."*
+
+| Abstract kind | Points at | Which provisions |
+|---|---|---|
+| `DnsRecord` | a `DnsProvider` (for example of type Cloudflare) | `CloudflareDnsRecord` |
+| `KubernetesCluster` | a `KubernetesClusterProvider` (of type AKS) | `AksCluster` |
+| `ServiceMesh` | a mesh provider (of type Istio) | `IstioServiceMesh` |
+
 ```
-KubernetesCluster  (type: aks)        what is asked for; provider-neutral
+KubernetesCluster ──providerRef──▶ KubernetesClusterProvider (type: aks)
+        │  provider-neutral                 vendor, account, credentials, defaults
         │ provisions and owns
         ▼
-AksCluster                            one provider's cluster; calls Azure
+AksCluster                          one provider's cluster; the only kind that calls Azure
 ```
+
+The vendor, the account and the credentials are written once, on the provider, instead of on
+every record or cluster. Swapping a provider for an enterprise client means pointing at a
+different provider resource; what asked for the abstract kind does not change.
+
+The name `KubernetesClusterProvider` is a proposal, by analogy with `DnsProvider`.
 
 **The kinds the operator has today are concrete only.** `CloudflareDNSRecord`,
 `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket` and `ClerkApplication`
@@ -156,12 +176,14 @@ decided; new kinds follow the rule from the start.
 
 ## The `KubernetesCluster` kind
 
-A `KubernetesCluster` describes one cluster in provider-neutral terms. The management cluster's
-operator reconciles it by provisioning the concrete kind its type names, keeps the cluster as
-described, and reports what is true about it. The first type is AKS, which provisions an
-`AksCluster`.
+A `KubernetesCluster` describes one cluster in provider-neutral terms and names the provider it
+wants. The management cluster's operator reconciles it by provisioning the concrete kind that
+provider's type names, keeps the cluster as described, and reports what is true about it. The
+first provider type is AKS, which provisions an `AksCluster`.
 
-Neither kind is designed yet. Their reference will be in
+The three kinds are being built in [#354](https://github.com/oramasearch/orama-operator/issues/354),
+and the first cluster they create is tracked in
+[#355](https://github.com/oramasearch/orama-operator/issues/355). Their reference will be in
 [`crd-reference.md`](../crd-reference.md) when they exist.
 
 ## The path from here

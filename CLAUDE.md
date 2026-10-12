@@ -69,7 +69,9 @@ against production-readiness, not "does a pod start."
     another."* A new kind for something a vendor provides is **two kinds**: an abstract one named
     for the thing, which is what people and other reconcilers ask for, and a concrete one named for
     the provider, which the abstract kind's type provisions and owns and which makes the vendor's
-    API calls. Nothing outside the concrete kind's controller names the vendor. The kinds that
+    API calls. The vendor, the account and the credentials live on a **provider resource** that
+    the abstract kind points at (a `DnsProvider`, a `KubernetesClusterProvider`), not on each
+    record or cluster. Nothing outside the concrete kind's controller names the vendor. The kinds that
     predate this rule (`CloudflareDNSRecord`, `CloudflareLoadBalancer`, `CloudflareKVNamespace`,
     `CloudflareR2Bucket`, `ClerkApplication`) are concrete only; do not add another like them. See
     [`docs/infrastructure/README.md`](docs/infrastructure/README.md).
