@@ -147,7 +147,7 @@ for a prod-grade deployment.
   > omit it). Enforcing `requirepass` is a hardening follow-up
   > ([operator#18](https://github.com/oramasearch/orama-operator/issues/18)).
 - **In-cluster endpoints** (no external service): `ORAMACORE_WRITER_URL`/`READER_URL`,
-  `DISCO_URL`, `EMBEDDINGS_URL` (→ ai-server `:50051`), `HARVEST_MASTER_ENDPOINT` (→ the
+  `DISCO_URL`, `HARVEST_MASTER_ENDPOINT` (→ the
   harvest-master service), `DECRYPTER_BASE_URL` (→ the `openai-decrypter` worker),
   `REDIS_URL` (→ cache), `AIRBYTE_URL` (→ the in-cluster Airbyte Helm release).
 
@@ -164,7 +164,7 @@ Per component: its external deps and the tier. `[CF]` operator-provisions on Clo
 | **workers** (RAG bundle) | `[EXT]` OpenAI, Groq, Anthropic, Sentry(opt) · `[GEN]` MASTER_API_KEY, ClickHouse, DISCO_SECRET, QStash→broker |
 | **dashboard** | `[EXT]` Firebase, Stripe, Resend, Slack · `[GEN]` Postgres/ClickHouse/Redis, JWT, Airbyte(in-cluster) |
 | **oramasearch-app** | `[EXT]` Firebase · `[GEN]` DB/JWT |
-| **index-builder** | `[CF]` KV namespaces, CF token/account · `[EXT]` Apify, Ably · `[GEN]` Typesense, MASTER_API_KEY, embeddings-bearer, decrypter, HARVEST_MASTER_ENDPOINT+SIGN, DISCO_SECRET_KEY, Redis |
+| **index-builder** | `[CF]` KV namespaces, CF token/account · `[EXT]` Apify, Ably, the embeddings API (`ingestion.embeddingsURL`) · `[GEN]` Typesense, MASTER_API_KEY, embeddings-bearer, decrypter, HARVEST_MASTER_ENDPOINT+SIGN, DISCO_SECRET_KEY, Redis |
 | **harvest** (master+worker) | `[EXT]` AWS S3, Ably · `[GEN]` HARVEST_SIGN, Mongo(in-cluster), RabbitMQ |
 | **disco** | `[GEN]` DISCO_SECRET, ClickHouse |
 | **analytics-processor** | `[GEN]` ClickHouse, MASTER_API_KEY |

@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; optional writer/reader Ingresses; engine `ConfigMap` with opt-in dashboard JWKS | ✅ **done** (validated on AKS) |
+| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); in-process embeddings, with `nvidia.com/gpu` on the writer when `writer.gpu`; Services; optional writer/reader Ingresses; engine `ConfigMap` with opt-in dashboard JWKS | ✅ **done** (validated on AKS) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; **never migrates the control DB** — in-cluster, the operator's owned `PostgresSchema` applies the schema (a second Drizzle migrate collides, Postgres `42710`); external, the database's owner runs migrations ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)) | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -26,7 +26,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **broker** | `internal/controller/datastore.go` | RabbitMQ `StatefulSet` + Service (5672/15672/5552), central placement; + an owned **`RabbitMQTopology`** (vhost/users/permissions/`oramacore-operations` stream) reconciled via the management API | ✅ **done** (validated on AKS); topology CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40)/[#41](https://github.com/oramasearch/orama-operator/issues/41)) — see [`datastore-crds.md`](datastore-crds.md) |
 | **broker-topology** | `internal/controller/rabbitmqtopology_controller.go` | reconciles the broker's vhosts/users/permissions/streams via its management HTTP API (:15672) from an owned `RabbitMQTopology` CRD (finalizer teardown); least-privilege per-service users + the `oramacore-operations` replication stream, declared with the **same `x-max-length-bytes` (5 GB) OramaCore uses** on its own stream-protocol Create — a mismatched/absent arg makes RabbitMQ 400 the redeclare and fails the whole reconcile before the users exist (the reader then can't auth) | ✅ **done** (validated on AKS) ([#40](https://github.com/oramasearch/orama-operator/issues/40)/[#41](https://github.com/oramasearch/orama-operator/issues/41)) |
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
-| **disco** | `internal/controller/disco.go` | `Deployment` (DISCO + embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
+| **disco** | `internal/controller/disco.go` | `Deployment` (DISCO, no embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
 | **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service + config; opt-in owned import CronJob polls every reader ordinal and the primary writer → ClickHouse | 🟡 **implemented**, unit-tested; scheduled import not live-tested ([orama-bridge#155](https://github.com/oramasearch/orama-bridge/issues/155)) |
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
@@ -125,7 +125,7 @@ the operator creates, so a component is run *well*, not just *running*. The help
   a **memory limit** — but **no CPU limit** (a CPU limit throttles rather than protects; the request
   suffices). Limits are sized **per component** (a blanket small one OOM-kills the heavy ones):
   light apps `512Mi`, dashboard/disco/keycloak/stores `~1Gi`, Selenium `1.5Gi`, ClickHouse `4Gi`
-  (kept in lockstep with `clickhouseMemoryXML`), embeddings `4Gi`. The engine keeps its cgroup-aware
+  (kept in lockstep with `clickhouseMemoryXML`). The engine keeps its cgroup-aware
   `resourceCaps` (CPU limit included — tokio tolerates it). Every component's `resources` is
   **overridable on the CR** (`spec.components.<x>.resources`, `spec.idp.resources`,
   `spec.components.ingestion.resources`) — like the engine writer/reader already were.
@@ -172,8 +172,9 @@ Driven by `spec.region.role`:
   writer-only image, see **Side-only images** below),
   a `volumeClaimTemplate` for `/app/.data` sized by `writer.storage` (default `10Gi`), and
   `writer.nodeSelector`/`writer.tolerations` (each falls back to `spec.placement`). Service on
-  `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
-  on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
+  `:8080`. When `writer.gpu` is set the writer container gets an `nvidia.com/gpu: 1` limit (added
+  to `writer.resources` or the default caps): OramaCore computes embeddings in-process, so the GPU
+  belongs to the writer ([#305](https://github.com/oramasearch/orama-operator/issues/305)).
 - **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` (`reader.replicas`,
   `podManagementPolicy: Parallel`) with the `oramacore` container (the shared or the reader-only
   image) **+ an Envoy sidecar**
@@ -197,22 +198,20 @@ Driven by `spec.region.role`:
     StatefulSet (CPU utilization; defaults min = `replicas`, max = 2 × min, 70%). While it is set the
     operator leaves the replica count to the HPA. Scale-down keeps the removed readers' PVCs (the
     StatefulSet default), so a later scale-up reuses them.
-- **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
-  Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
-  **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
-  matches OramaCore's reference architecture (`config-docker.yaml` points `ai_server.host` at a
-  standalone `python-ai-server`). `embeddingsImage()` resolves the **published**
-  `oramasearch/oramacore-ai-server:latest` (or `-cuda` for `writer.gpu`, which also puts the
-  `nvidia.com/gpu: 1` limit + the writer's nodeSelector/tolerations on **this** Deployment — the
-  embedding model, not OramaCore, is the GPU consumer). Auto-falls back to CPUExecutionProvider on
-  a CPU node. **Not** `embeddings-server-py` (the separate HPES / index-manager path). Validated on
-  AKS: shared `<cr>-embeddings` pod serving gRPC, writer **1/1** + readers **2/2** (sidecar gone).
-
-  > **Deeper redundancy ([#39](https://github.com/oramasearch/orama-operator/issues/39)):**
-  > the `oramacore` image *also* embeds a Python interpreter and loads the embedding models
-  > **in-process** per pod ("Building Python service" → "src.embeddings.models: Models loaded"), so
-  > each writer/reader still carries a model copy independent of this shared ai-server. Whether to
-  > offload those to the shared ai-server (or drop the redundant one) is tracked in #39.
+- **Embeddings** ([#305](https://github.com/oramasearch/orama-operator/issues/305)) — OramaCore
+  computes embeddings **in-process**, in every writer and reader, with fastembed/ONNX through its
+  embedded Python, as Prod 1 does under systemd. Since v1.2 (`b15d6bc8`, "removes dependency on ai
+  server") it reaches no embeddings server: its `ai_server` config has no `host`, `port` or
+  `scheme`, so the operator renders none and runs no embeddings ai-server. The `<cr>-embeddings`
+  Deployment and Service that earlier operators created (nothing used them; on a GPU writer the
+  Deployment held the GPU) are deleted on the next reconcile when the CR controls them; an object of
+  that name the CR does not control is left alone. `ai_server.models_cache_dir` is
+  `/app/.data/models`, on each pod's data PVC, so the downloaded models survive a restart and a
+  Hugging Face outage does not block one (OramaCore's default is `/tmp/fastembed_cache`). The
+  embeddings settings match Prod 1: `default_model_group: small`, `dynamically_load_models: true`,
+  and `execution_providers` `CUDAExecutionProvider` then `CPUExecutionProvider` in a GPU writer's
+  config (the combined config too, so a reader without a GPU falls back to CPU), CPU only otherwise
+  and in `reader.yaml`. Resolves [#39](https://github.com/oramasearch/orama-operator/issues/39).
 - **Side-only images** ([#308](https://github.com/oramasearch/orama-operator/issues/308)) —
   OramaCore builds its writer and reader sides behind Cargo features, and a binary starts every
   side compiled into it. The published `oramasearch/oramacore` image has both, so with it each
@@ -236,7 +235,7 @@ Driven by `spec.region.role`:
   `oramacore-reader`/`reader`).
 - **Config** — a `ConfigMap` with `envoy.yaml` + **full, valid** OramaCore configs: the combined
   `config.yaml` (`http` / `log` / `writer_side` / `reader_side` / `ai_server`, matching
-  `oramacore/config-docker.yaml`; `execution_providers: CUDA|CPU` from `writer.gpu`), or, with
+  `oramacore/config-docker.yaml`; `execution_providers` from `writer.gpu`, see **Embeddings**), or, with
   side-only images, `writer.yaml` and `reader.yaml`. Each is assembled from the same per-section
   renderers in `engine.go` (`engineCommonYAML`, `writerSideYAML`, `readerSideYAML`, `aiServerYAML`),
   so a section shared by both sides is written once. Every config is a **template** — `master_api_key` is a `__MASTER_API_KEY__`
@@ -316,11 +315,7 @@ boots** (`Configuration loaded successfully` → `Starting web server on
 http://0.0.0.0:8080`); the ConfigMap shows only `master_api_key: "__MASTER_API_KEY__"`
 while the rendered file in the pod holds the real value.
 
-> **Follow-ups:** the `embeddings` ai-server image is built by the bridge's
-> [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
-> tooling (`oramasearch/embeddings-server-py:{cpu,gpu}-latest`, private Docker Hub — the tag
-> is auto-picked from `writer.gpu`; just set `spec.images.pullSecretName`); the
-> reader→primary-writer endpoint on read tiers.
+> **Follow-ups:** the reader→primary-writer endpoint on read tiers.
 
 ## controlDB (`internal/controller/controldb.go`)
 
@@ -452,11 +447,10 @@ re-pushed) and `IfNotPresent` when it is digest-pinned (`repo@sha256:…` via
 pod.
 
 **Node placement.** `spec.placement.{nodeSelector,tolerations}` is applied to every pod the operator
-creates for the CR: apps, data stores, the engine (writer, readers, embeddings), the demo-seed Job,
+creates for the CR: apps, data stores, the engine (writer, readers), the demo-seed Job,
 the control-DB `PostgresSchema` migration Job (through `PostgresSchema.spec.nodeSelector/
 tolerations`) and the CNPG instances (through the Cluster's `spec.affinity`). The writer's own
-`nodeSelector` / `tolerations` each replace the CR-level value when set, and the GPU embeddings pod
-follows the writer. Without `spec.placement` every pod renders as before.
+`nodeSelector` / `tolerations` each replace the CR-level value when set. Without `spec.placement` every pod renders as before.
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.
@@ -471,9 +465,12 @@ the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd the
 ## DISCO (`disco.go`)
 
 A `Deployment` (in-memory → no PVC; restart cold-starts the cache) running the Go **DISCO** service
-(`:8080`), pointed at the **shared `<cr>-embeddings` Deployment** via `EMBEDDINGS_ENDPOINT`
-([#14](https://github.com/oramasearch/orama-operator/issues/14)/[#39](https://github.com/oramasearch/orama-operator/issues/39))
-instead of a co-located model sidecar (DISCO was the third redundant copy of the model weights).
+(`:8080`), with no embeddings sidecar. DISCO reads its embeddings backend from
+`EMBEDDINGS_GRPC_HOST`/`EMBEDDINGS_GRPC_PORT` and speaks its own `EmbeddingService` gRPC contract,
+which no service the operator runs implements, so the operator leaves both at DISCO's defaults. The
+`EMBEDDINGS_ENDPOINT` it used to set (DISCO never read it) is gone
+([#305](https://github.com/oramasearch/orama-operator/issues/305)); choosing DISCO's embeddings
+backend is a separate decision.
 Routed through the shared `reconcileApp` builder, so it inherits the workload-hardening baseline
 (probes, securityContext, resources, PDB, grace). Service on `:8080`. **Validated on AKS.**
 

@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"maps"
 	"net/url"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -102,7 +104,7 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	if err := r.reconcileEngineConfig(ctx, oc); err != nil {
 		return fmt.Errorf("engine config: %w", err)
 	}
-	if err := r.reconcileEmbeddings(ctx, oc); err != nil {
+	if err := r.retireEmbeddings(ctx, oc); err != nil {
 		return fmt.Errorf("embeddings: %w", err)
 	}
 	if oc.Spec.Region.Role == "primary" {
@@ -226,21 +228,22 @@ var (
 // OramaCore can't take them from env — config's ORAMACORE_ override splits on "_" and can't reach
 // nested keys such as writer_side.master_api_key or a remote_llms entry.
 func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
-	return engineCommonYAML() + writerSideYAML(oc, combinedWriterClient) + readerSideYAML(oc, combinedReaderClient) + aiServerYAML(oc)
+	return engineCommonYAML() + writerSideYAML(oc, combinedWriterClient) + readerSideYAML(oc, combinedReaderClient) + aiServerYAML(oc, oc.Spec.Components.Engine.Writer.GPU)
 }
 
 // oramacoreWriterConfigYAML is the writer-only config (no reader_side). The writer is a singleton, so
 // its stream connection is named <cr>-writer.
 func oramacoreWriterConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	name := oc.Name + "-writer"
-	return engineCommonYAML() + writerSideYAML(oc, streamClient{connection: name, endpoint: name}) + aiServerYAML(oc)
+	return engineCommonYAML() + writerSideYAML(oc, streamClient{connection: name, endpoint: name}) + aiServerYAML(oc, oc.Spec.Components.Engine.Writer.GPU)
 }
 
 // oramacoreReaderConfigYAML is the reader-only config (no writer_side). Each reader names its stream
 // connection after its pod (<cr>-reader-<ordinal>), so broker connections tell the readers apart.
+// Readers never get a GPU, so their embeddings run on CPU only, as in Prod 1's reader config.
 func oramacoreReaderConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	pod := streamClient{connection: podNamePlaceholder, endpoint: podNamePlaceholder}
-	return engineCommonYAML() + readerSideYAML(oc, pod) + aiServerYAML(oc)
+	return engineCommonYAML() + readerSideYAML(oc, pod) + aiServerYAML(oc, false)
 }
 
 // engineCommonYAML is the http and log sections every OramaCore config carries.
@@ -337,92 +340,55 @@ func readerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
 `, oc.Name+"-broker", client.connection, client.endpoint)
 }
 
-// aiServerYAML is the ai_server section both sides share. The embeddings ai-server is the SHARED
-// <cr>-embeddings Deployment (#14), reached by its Service DNS name — not a per-pod 127.0.0.1
-// sidecar — so the model loads into RAM once, not once per engine pod. The LLM settings
-// (llm, remote_llms and the automatic embeddings selector) come from spec.llm (#304, engine_llm.go).
-func aiServerYAML(oc *oramav1alpha1.OramaCloudV1) string {
-	ep := "CPUExecutionProvider"
-	if oc.Spec.Components.Engine.Writer.GPU {
-		ep = "CUDAExecutionProvider"
+// engineModelsCacheDir is where OramaCore's in-process embeddings keep the models they download from
+// Hugging Face: on the pod's data PVC, so a restart reuses them instead of downloading again (and a
+// Hugging Face outage does not block a restart). OramaCore's default, /tmp/fastembed_cache, is lost
+// with the container.
+const engineModelsCacheDir = "/app/.data/models"
+
+// aiServerYAML is the ai_server section. OramaCore computes embeddings in-process (fastembed/ONNX
+// through its embedded Python); since 1.2 it reaches no embeddings server, so the section carries
+// no host, port or scheme. gpu lists CUDAExecutionProvider before CPUExecutionProvider, as Prod 1's
+// writer does, so a pod without a usable GPU falls back to CPU. The embeddings settings otherwise
+// match Prod 1 (default_model_group small, models loaded on demand). The LLM settings (llm,
+// remote_llms and the automatic embeddings selector) come from spec.llm (#304, engine_llm.go).
+func aiServerYAML(oc *oramav1alpha1.OramaCloudV1, gpu bool) string {
+	providers := "      - CPUExecutionProvider\n"
+	if gpu {
+		providers = "      - CUDAExecutionProvider\n" + providers
 	}
 	return fmt.Sprintf(`ai_server:
-  scheme: http
-  host: %s
-  port: 50051
-  api_key: ""
-  max_connections: 15
+  models_cache_dir: %s
   total_threads: 12
   embeddings:
     default_model_group: small
-    dynamically_load_models: false
+    dynamically_load_models: true
     execution_providers:
-      - %s
-    total_threads: 8
-%s`, oc.Name+"-embeddings", ep, llmSelectorYAML(oc)+llmYAML(oc))
+%s    total_threads: 8
+%s`, engineModelsCacheDir, providers, llmSelectorYAML(oc)+llmYAML(oc))
 }
 
-// embeddingsContainer is the OramaCore ai-server (gRPC embeddings on :50051). It runs as ONE
-// shared Deployment (reconcileEmbeddings, #14) that the writer + all readers reach over its
-// Service — matching OramaCore's reference architecture (config-docker.yaml points
-// ai_server.host at a standalone `python-ai-server`), not a per-pod sidecar.
-func embeddingsContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
-	return corev1.Container{
-		Name:  "embeddings",
-		Image: embeddingsImage(oc),
-		Ports: []corev1.ContainerPort{{Name: "grpc", ContainerPort: 50051}},
-		// The ai-server preloads the embedding model(s) into RAM, so it's one of the heavy ones the
-		// audit (#18) warns NOT to blanket-OOM — a generous memory limit + a real request so the
-		// scheduler sees it. Deeper embeddings-memory tuning is #14; on a GPU writer the GPU limit is
-		// added on top in reconcileEmbeddings.
-		Resources:       *resourceReqs("512Mi", "250m", "4Gi"),
-		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
-	}
-}
-
-// reconcileEmbeddings runs the ai-server as a single SHARED Deployment + Service instead of a
-// sidecar in every engine pod (#14): the embedding model loads into RAM once, not once per
-// writer/reader. The GPU (when the engine is GPU) belongs HERE — the model inference is the GPU
-// consumer, OramaCore itself is CPU — so writer.gpu provisions this Deployment on the GPU node
-// and the writer/reader pods stay CPU-only.
-func (r *OramaCloudV1Reconciler) reconcileEmbeddings(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
-	name := oc.Name + "-embeddings"
-	lbls := labelsFor(oc, "embeddings")
-	w := oc.Spec.Components.Engine.Writer
-
-	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
-		dep.Labels = lbls
-		dep.Spec.Replicas = int32Ptr(1)
-		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
-		c := embeddingsContainer(oc)
-		var nodeSelector map[string]string
-		var tolerations []corev1.Toleration
-		if w.GPU {
-			if c.Resources.Limits == nil {
-				c.Resources.Limits = corev1.ResourceList{}
+// retireEmbeddings deletes the <cr>-embeddings Deployment and Service that operators before #305 ran
+// as a shared ai-server. OramaCore never used it (it embeds in-process and its ai_server config has
+// no host), and on a GPU writer it held the GPU. Only objects this CR controls are deleted; a
+// foreign object of the same name is left alone.
+func (r *OramaCloudV1Reconciler) retireEmbeddings(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	key := client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-embeddings"}
+	for _, obj := range []client.Object{&appsv1.Deployment{}, &corev1.Service{}} {
+		if err := r.Get(ctx, key, obj); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
 			}
-			c.Resources.Limits[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse("1")
-			// Pin to the GPU node the writer would otherwise have used.
-			nodeSelector, tolerations = writerPlacement(oc)
-		} else {
-			nodeSelector, tolerations = podPlacement(oc)
+			return err
 		}
-		dep.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
-			Spec: corev1.PodSpec{
-				ImagePullSecrets: imagePullSecrets(oc),
-				NodeSelector:     nodeSelector,
-				Tolerations:      tolerations,
-				Containers:       []corev1.Container{c},
-			},
+		if !metav1.IsControlledBy(obj, oc) {
+			continue
 		}
-		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
-	}); err != nil {
-		return err
+		if err := r.deleteCloudV1Owned(ctx, oc, obj); err != nil {
+			return err
+		}
 	}
-	return r.upsertService(ctx, oc, name, "embeddings",
-		[]corev1.ServicePort{{Name: "grpc", Port: 50051, TargetPort: intstr.FromInt32(50051)}})
+	return nil
 }
 
 // waitForBrokerInit blocks OramaCore startup until the broker's stream listener (:5552) is up.
@@ -570,8 +536,15 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 			// top. Override via spec.components.engine.writer.resources.
 			c.Resources = *resourceCaps("4Gi", "2", "1Gi", "500m")
 		}
-		// The GPU belongs to the shared embeddings Deployment (#14), not the writer — OramaCore
-		// is CPU; the embedding model is the GPU consumer (see reconcileEmbeddings).
+		// OramaCore computes embeddings in-process, so the GPU belongs to the writer (#305).
+		// Clone the limits so a spec-provided Resources is never mutated.
+		if w.GPU {
+			c.Resources.Limits = maps.Clone(c.Resources.Limits)
+			if c.Resources.Limits == nil {
+				c.Resources.Limits = corev1.ResourceList{}
+			}
+			c.Resources.Limits[resourceNvidiaGPU] = resource.MustParse("1")
+		}
 		nodeSelector, tolerations := writerPlacement(oc)
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side)},
@@ -643,8 +616,6 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			// CPU limit. Override via spec.components.engine.reader.resources.
 			c.Resources = *resourceCaps("2Gi", "1", "512Mi", "250m")
 		}
-		// Readers reach the shared embeddings Deployment over its Service (#14) — no per-pod
-		// sidecar, so N readers no longer each load the model into RAM.
 		containers := []corev1.Container{c}
 		if useEnvoy {
 			containers = append(containers, envoySidecar())

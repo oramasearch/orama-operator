@@ -137,6 +137,6 @@ refinement + principle #4) is also a separate slice.
   `managed.roles` per service instead of the shared owner (principle #4, revisits #32).
 - **Pin every image** ([#98](https://github.com/oramasearch/orama-operator/issues/98)) —
   determinism cross-cutting (no `:latest`); needs the intended production tags for the
-  oramacore/ai-server/selenium images.
+  oramacore/selenium images.
 - **DR (backup / restore / snapshot CRDs)** — its own epic
   ([#33](https://github.com/oramasearch/orama-operator/issues/33)).
