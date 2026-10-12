@@ -167,13 +167,15 @@ caught the two capability exceptions above before merge (drop-ALL had crash-loop
 
 Driven by `spec.region.role`:
 
-- **Writer** (primary only) — a `StatefulSet` (1 replica) running `oramasearch/oramacore`,
+- **Writer** (primary only) — a `StatefulSet` (1 replica) running `oramasearch/oramacore` (or the
+  writer-only image, see **Side-only images** below),
   a `volumeClaimTemplate` for `/app/.data` sized by `writer.storage` (default `10Gi`), and
   `writer.nodeSelector`/`writer.tolerations` (each falls back to `spec.placement`). Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
 - **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` (`reader.replicas`,
-  `podManagementPolicy: Parallel`) with the `oramacore` container **+ an Envoy sidecar**
+  `podManagementPolicy: Parallel`) with the `oramacore` container (the shared or the reader-only
+  image) **+ an Envoy sidecar**
   (`envoyproxy/envoy:v1.31.2`, `:80 → 127.0.0.1:8080`, from the generated `envoy.yaml`) when
   `engine.envoy` is set. Service on `:80` (→ Envoy, or → `:8080` if Envoy is off). Each reader
   has its own `data` PVC (`reader.storage`, default `10Gi`) at `/app/.data`, holding its index and
@@ -210,15 +212,40 @@ Driven by `spec.region.role`:
   > **in-process** per pod ("Building Python service" → "src.embeddings.models: Models loaded"), so
   > each writer/reader still carries a model copy independent of this shared ai-server. Whether to
   > offload those to the shared ai-server (or drop the redundant one) is tracked in #39.
-- **Config** — a `ConfigMap` with `envoy.yaml` + a **full, valid** `config.yaml`
-  (`http` / `writer_side` / `reader_side` / `ai_server` / `log`, matching
-  `oramacore/config-docker.yaml`; `execution_providers: CUDA|CPU` from `writer.gpu`).
-  The `config.yaml` is a **template** — `master_api_key` is a `__MASTER_API_KEY__`
+- **Side-only images** ([#308](https://github.com/oramasearch/orama-operator/issues/308)) —
+  OramaCore builds its writer and reader sides behind Cargo features, and a binary starts every
+  side compiled into it. The published `oramasearch/oramacore` image has both, so with it each
+  reader also runs a writer (a producer on `oramacore-operations`, writer state on the reader's PVC,
+  the writer API behind the reader Service) and the writer builds a second, reader-side index. Prod 1
+  ships two builds instead (`--no-default-features --features reader`, `--features writer`). Set
+  `spec.images.overrides.oramacore-writer` **and** `.oramacore-reader` to run them: the writer then
+  renders `writer.yaml` (no `reader_side`) and the readers `reader.yaml` (no `writer_side`). One
+  without the other fails the reconcile. Without them both sides keep the shared image and the
+  combined `config.yaml`, unchanged from before, and the CR carries
+  `EngineSidesSeparated=False` saying the readers also run a writer. The side-only images are built
+  by the bridge's `build/images`, not by the operator.
+- **Stream connection names** — with side-only configs the writer names its stream connection
+  (`client_provided_name` and `producer_name`) `<cr>-writer` and each reader names its own
+  (`client_provided_name` and `consumer_name`) after its pod, `<cr>-reader-<ordinal>`: the reader
+  template holds `__POD_NAME__`, which the `render-config` init container fills from the downward API
+  (`POD_NAME`). These names are **labels only**, so broker connections can be told apart; they are
+  not stream positions. In OramaCore v1.2.38 a reader resumes from the offset stored in its own data
+  directory (`rabbit.rs`), so renaming a connection, or moving from the combined config, replays
+  nothing. The combined config keeps the old shared names (`oramacore-writer`/`write`,
+  `oramacore-reader`/`reader`).
+- **Config** — a `ConfigMap` with `envoy.yaml` + **full, valid** OramaCore configs: the combined
+  `config.yaml` (`http` / `log` / `writer_side` / `reader_side` / `ai_server`, matching
+  `oramacore/config-docker.yaml`; `execution_providers: CUDA|CPU` from `writer.gpu`), or, with
+  side-only images, `writer.yaml` and `reader.yaml`. Each is assembled from the same per-section
+  renderers in `engine.go` (`engineCommonYAML`, `writerSideYAML`, `readerSideYAML`, `aiServerYAML`),
+  so a section shared by both sides is written once. Every config is a **template** — `master_api_key` is a `__MASTER_API_KEY__`
   placeholder, so **no credential lives in the ConfigMap**. A `render-config` **init
   container** substitutes the real value from `<cr>-engine-secret` (via `envFrom`) into
   a shared `emptyDir`, and OramaCore reads it via `CONFIG_PATH=/etc/oramacore/config.yaml`
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
-  `ORAMACORE_` provider splits on `_`). All children set an owner reference to the CR, so
+  `ORAMACORE_` provider splits on `_`). The writer and reader pod templates each carry an
+  `orama.cloud/config-hash` of their own template, so a config change rolls only the side it
+  affects; the combined config is hashed only when it carries `writer.jwt`, as before. All children set an owner reference to the CR, so
   deleting the CR cascade-deletes them.
 - **Analytics** ([#55](https://github.com/oramasearch/orama-operator/issues/55)) — the config sets
   `reader_side.analytics`, so each pod logs search events under `<reader data_dir>/analytics_new`
@@ -227,8 +254,9 @@ Driven by `spec.region.role`:
   placeholder the `render-config` init container fills, because that is the key analytics-processor
   polls with. `metadata_from_headers` mirrors the prod reader configs (`user-agent`,
   `CF-Connecting-IP`, `CF-IPCountry`, `continent`, `colo`, `latitude`, `longitude` → `ua`, `ip`,
-  `country`, …). Prod sets the block on readers only and with a dedicated key; here the writer
-  shares the config, so its reader side logs too (it serves no search traffic, so normally nothing).
+  `country`, …). Prod sets the block on readers only and with a dedicated key. With the combined config the
+  writer's reader side logs too (it serves no search traffic, so normally nothing); `writer.yaml` has
+  no reader side.
   With scheduled imports enabled, analytics-processor's `oramacores` lists each reader ordinal
   through its headless governing Service, then the writer on the primary, all with the master key.
   The unscheduled default retains reader-Service polling. See [Analytics import](#analytics-import).

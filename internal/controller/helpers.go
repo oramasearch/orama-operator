@@ -230,6 +230,16 @@ func oramacoreImage(oc *oramav1alpha1.OramaCloudV1) string {
 	return reg + "/oramacore:latest"
 }
 
+// oramacoreSideImage resolves the image of one OramaCore side ("writer" or "reader"):
+// spec.images.overrides["oramacore-<side>"] (a build with only that side's Cargo feature), else the
+// shared oramacoreImage that runs both sides (#308).
+func oramacoreSideImage(oc *oramav1alpha1.OramaCloudV1, side string) string {
+	if o := oc.Spec.Images.Overrides["oramacore-"+side]; o != "" {
+		return o
+	}
+	return oramacoreImage(oc)
+}
+
 func strPtr(s string) *string { return &s }
 
 // randHex returns a cryptographically-random hex string of 2*nbytes characters (e.g. randHex(32) →
