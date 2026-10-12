@@ -627,9 +627,8 @@ spec:
                                 description: EndpointURL overrides the Secret's s3ApiEndpoint.
                                 type: string
                               path:
-                                description: |-
-                                  Path is the bucket prefix. Empty defaults to lake-<name>/controldb for a Lake and
-                                  <namespace>/<name>/controldb for an OramaCloudV1.
+                                description: Path is the bucket prefix. Empty defaults
+                                  to lake-<name>/controldb.
                                 type: string
                             type: object
                           enabled:
@@ -647,7 +646,7 @@ spec:
                             type: string
                           secretRef:
                             description: |-
-                              SecretRef names the R2/S3 credentials Secret in the Cluster's namespace. It is required when
+                              SecretRef names the R2/S3 credentials Secret in spec.namespace. It is required when
                               Enabled is true and must contain s3ApiEndpoint, accessKeyId, and secretAccessKey.
                             properties:
                               name:

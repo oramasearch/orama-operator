@@ -121,7 +121,7 @@ listener/image requirements and failure limits.
 
 ### `controlDB.backup`
 
-Opt-in CNPG Barman object-store backups of the control DB, the same `PostgresBackupSpec` the
+Opt-in CNPG Barman object-store backups of the control DB, the same `LakePostgresBackupSpec` the
 `Lake` uses (`spec.postgres.backup`; procedure in [lake/backups.md](lake/backups.md)). Only an
 in-cluster, non-replica control DB is backed up.
 

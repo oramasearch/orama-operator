@@ -307,9 +307,9 @@ func backupSecret() *corev1.Secret {
 
 func withBackup(o *oramav1alpha1.OramaCloudV1) {
 	enabled := true
-	o.Spec.Components.ControlDB.Backup = oramav1alpha1.PostgresBackupSpec{
+	o.Spec.Components.ControlDB.Backup = oramav1alpha1.LakePostgresBackupSpec{
 		Enabled:     &enabled,
-		Destination: oramav1alpha1.PostgresBackupDestination{Bucket: "prod2-backups"},
+		Destination: oramav1alpha1.LakePostgresBackupDestination{Bucket: "prod2-backups"},
 		SecretRef:   corev1.LocalObjectReference{Name: "r2"},
 	}
 }

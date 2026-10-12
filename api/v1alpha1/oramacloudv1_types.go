@@ -407,7 +407,7 @@ type ControlDBSpec struct {
 	// credentials Secret lives in the CR's namespace. The default prefix is
 	// <namespace>/<name>/controldb.
 	// +optional
-	Backup PostgresBackupSpec `json:"backup,omitempty"`
+	Backup LakePostgresBackupSpec `json:"backup,omitempty"`
 }
 
 // Toggle is a simple on/off component.

@@ -549,7 +549,7 @@ type LakePostgresSpec struct {
 
 	// Backup configures scheduled Barman object-store backups of the control-plane Cluster.
 	// +optional
-	Backup PostgresBackupSpec `json:"backup,omitempty"`
+	Backup LakePostgresBackupSpec `json:"backup,omitempty"`
 }
 
 // LakeZettaSpec describes the owned Zetta data plane for a Lake.
@@ -586,11 +586,10 @@ type LakeZettaSpec struct {
 	Reachability string `json:"reachability,omitempty"`
 }
 
-// PostgresBackupSpec describes scheduled object-store backups for a CNPG control-plane Postgres
-// cluster (Lake spec.postgres.backup and OramaCloudV1 spec.components.controlDB.backup). The
-// Secret is in the Cluster's namespace and has the same R2/S3 shape as OramaCloudV1's
-// r2SecretRef: s3ApiEndpoint, accessKeyId, and secretAccessKey.
-type PostgresBackupSpec struct {
+// LakePostgresBackupSpec describes scheduled object-store backups for a Lake control-plane
+// Postgres cluster. The Secret is in spec.namespace and has the same R2/S3 shape as
+// OramaCloudV1's r2SecretRef: s3ApiEndpoint, accessKeyId, and secretAccessKey.
+type LakePostgresBackupSpec struct {
 	// Enabled turns on the CNPG Barman object store and ScheduledBackup. Default false.
 	// +kubebuilder:default=false
 	// +optional
@@ -608,22 +607,21 @@ type PostgresBackupSpec struct {
 
 	// Destination identifies the object-store location. Bucket is required when Enabled is true.
 	// +optional
-	Destination PostgresBackupDestination `json:"destination,omitempty"`
+	Destination LakePostgresBackupDestination `json:"destination,omitempty"`
 
-	// SecretRef names the R2/S3 credentials Secret in the Cluster's namespace. It is required when
+	// SecretRef names the R2/S3 credentials Secret in spec.namespace. It is required when
 	// Enabled is true and must contain s3ApiEndpoint, accessKeyId, and secretAccessKey.
 	// +optional
 	SecretRef corev1.LocalObjectReference `json:"secretRef,omitempty"`
 }
 
-// PostgresBackupDestination identifies the Barman object-store location.
-type PostgresBackupDestination struct {
+// LakePostgresBackupDestination identifies the Barman object-store location.
+type LakePostgresBackupDestination struct {
 	// Bucket is the object-store bucket name. Required when backups are enabled.
 	// +optional
 	Bucket string `json:"bucket,omitempty"`
 
-	// Path is the bucket prefix. Empty defaults to lake-<name>/controldb for a Lake and
-	// <namespace>/<name>/controldb for an OramaCloudV1.
+	// Path is the bucket prefix. Empty defaults to lake-<name>/controldb.
 	// +optional
 	Path string `json:"path,omitempty"`
 

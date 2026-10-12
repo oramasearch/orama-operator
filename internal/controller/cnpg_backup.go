@@ -22,7 +22,7 @@ import (
 )
 
 // CNPG Barman object-store backups, shared by the Lake (spec.postgres.backup) and OramaCloudV1
-// (spec.components.controlDB.backup) control DBs. Both declare a PostgresBackupSpec; the owner's
+// (spec.components.controlDB.backup) control DBs. Both declare a LakePostgresBackupSpec; the owner's
 // reconciler resolves it with resolveCNPGBackupConfig, renders cnpgBarmanBackup into its Cluster
 // spec, owns a ScheduledBackup built by newCNPGScheduledBackupFor/cnpgScheduledBackupSpec, and
 // reports cnpgBackupStatus as its BackupReady condition.
@@ -38,7 +38,7 @@ const (
 	defaultCNPGBackupRetention = "30d"
 )
 
-// cnpgBackupConfig is a validated PostgresBackupSpec with its defaults applied. Enabled && !Valid
+// cnpgBackupConfig is a validated LakePostgresBackupSpec with its defaults applied. Enabled && !Valid
 // carries the Reason/Message the owner reports; nothing is configured in CNPG until Valid.
 type cnpgBackupConfig struct {
 	Enabled    bool
@@ -57,7 +57,7 @@ type cnpgBackupConfig struct {
 // user configuration is returned as Reason/Message rather than an error so the owner can report it
 // in status. fieldPath names the spec field in messages (e.g. "spec.postgres.backup");
 // defaultPath is the bucket prefix used when the spec leaves it empty.
-func resolveCNPGBackupConfig(ctx context.Context, c client.Reader, ns string, backup oramav1alpha1.PostgresBackupSpec, fieldPath, defaultPath string) (cnpgBackupConfig, error) {
+func resolveCNPGBackupConfig(ctx context.Context, c client.Reader, ns string, backup oramav1alpha1.LakePostgresBackupSpec, fieldPath, defaultPath string) (cnpgBackupConfig, error) {
 	config := cnpgBackupConfig{Enabled: backup.Enabled != nil && *backup.Enabled}
 	if !config.Enabled {
 		return config, nil
