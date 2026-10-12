@@ -30,8 +30,9 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:default={provider: none}
 	IDP IDPSpec `json:"idp,omitempty"`
 
-	// JWTIssuer is shared by dashboard token signing and writer verification.
-	// +kubebuilder:default="orama-cloud"
+	// JWTIssuer is shared by dashboard token signing and writer verification. It has no CRD
+	// default: engine.writer.jwt requires it set, so a production issuer is always chosen on
+	// purpose. A CR without writer JWT verification falls back to "orama-cloud" for the dashboard.
 	// +kubebuilder:validation:MaxLength=128
 	JWTIssuer string `json:"jwtIssuer,omitempty"`
 
@@ -373,15 +374,25 @@ type WriterSpec struct {
 	StartupTimeout *metav1.Duration `json:"startupTimeout,omitempty"`
 }
 
-// WriterJWTSpec matches OramaCore's dashboard JWKS provider.
+// WriterJWTSpec matches OramaCore's dashboard JWKS provider. The writer accepts a token whose
+// issuer is spec.jwtIssuer and whose audience is any of Audience and Audiences.
 type WriterJWTSpec struct {
-	// JWKSURL is the dashboard's JWKS endpoint, e.g. https://app.orama.ing/api/.well-known/jwks.json.
+	// JWKSURL is the dashboard's JWKS endpoint. Unset uses the in-cluster dashboard Service,
+	// http://<cr>-dashboard:3000/api/.well-known/jwks.json, which requires the dashboard enabled.
 	// +kubebuilder:validation:Pattern=`^https?://`
-	JWKSURL string `json:"jwksURL"`
-	// Audience must match the exact clusterWriterUrl used by the dashboard's token endpoint.
-	// +kubebuilder:validation:MinLength=1
+	// +optional
+	JWKSURL string `json:"jwksURL,omitempty"`
+	// Audience is a single accepted audience. Deprecated: use Audiences; both are merged.
 	// +kubebuilder:validation:MaxLength=128
-	Audience string `json:"audience"`
+	// +optional
+	Audience string `json:"audience,omitempty"`
+	// Audiences are the accepted audiences: each exact clusterWriterUrl the dashboard's token
+	// endpoint signs for (the writer_url of a control-DB oramacore_clusters row). When the writer
+	// has a host, https://<host> must be one of them.
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=128
+	// +optional
+	Audiences []string `json:"audiences,omitempty"`
 }
 
 // AnalyticsProcessorSpec configures the processor and its opt-in import trigger.
