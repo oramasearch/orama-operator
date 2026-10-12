@@ -153,7 +153,7 @@ func TestReaderConfigNamesStreamConnectionByPod(t *testing.T) {
 	}
 
 	render := renderConfigInit(oc, reader)
-	if len(render.Env) != 1 || render.Env[0].Name != "POD_NAME" || render.Env[0].ValueFrom == nil ||
+	if len(render.Env) == 0 || render.Env[0].Name != "POD_NAME" || render.Env[0].ValueFrom == nil ||
 		render.Env[0].ValueFrom.FieldRef == nil || render.Env[0].ValueFrom.FieldRef.FieldPath != "metadata.name" {
 		t.Fatalf("render-config env = %+v, want POD_NAME from metadata.name", render.Env)
 	}

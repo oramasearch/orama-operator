@@ -101,9 +101,10 @@ func replicasOf(p *int32) int32 {
 }
 
 // applyReadiness rolls the per-component states up into the CR status: phase (Ready when every
-// component is ready; Degraded when one regressed after having been Ready; else Progressing),
-// componentsReady ("n/total"), the per-component list, and a standard Ready condition. Returns
-// whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
+// component is ready; Degraded when one regressed after having been Ready, or when
+// spec.requireRealCredentials is set and CredentialsReady is False; else Progressing),
+// componentsReady ("n/total"), the per-component list, and the Ready and CredentialsReady
+// conditions. Returns whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
 func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) bool {
 	comps := r.componentReadiness(ctx, oc)
 	ready, notReady := 0, []string(nil)
@@ -131,7 +132,22 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 		msg = fmt.Sprintf("%d/%d ready; degraded: %s", ready, total, strings.Join(notReady, ", "))
 	}
 
-	conditions := []metav1.Condition{{Type: "Ready", Status: condStatus, Reason: reason, Message: msg}}
+	// CredentialsReady (#307). With spec.requireRealCredentials a seeded or missing credential makes
+	// the stack Degraded and not Ready, whatever its components report.
+	var credentials []metav1.Condition
+	findings, err := r.credentialFindings(ctx, oc)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "check stack credentials")
+	} else {
+		credentials = append(credentials, credentialsCondition(findings))
+		if oc.Spec.RequireRealCredentials && len(findings) > 0 {
+			allReady = false
+			phase, condStatus, reason = "Degraded", metav1.ConditionFalse, "CredentialsNotReady"
+			msg = credentials[0].Message + " (spec.requireRealCredentials)"
+		}
+	}
+
+	conditions := append([]metav1.Condition{{Type: "Ready", Status: condStatus, Reason: reason, Message: msg}}, credentials...)
 	backupCondition, err := r.controlDBBackupCondition(ctx, oc)
 	removed := false
 	switch {

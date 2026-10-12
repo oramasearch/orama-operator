@@ -127,7 +127,11 @@ func TestRenderConfigSubstitutesLLMKeys(t *testing.T) {
 			refs[e.Name] = e.ValueFrom.SecretKeyRef.Name + "/" + e.ValueFrom.SecretKeyRef.Key
 		}
 	}
-	if want := map[string]string{"OPENAI_API_KEY": "openai-key/OPENAI_API_KEY", "GOOGLE_API_KEY": "google-key/token"}; !reflect.DeepEqual(refs, want) {
+	if want := map[string]string{
+		"OPENAI_API_KEY": "openai-key/OPENAI_API_KEY", "GOOGLE_API_KEY": "google-key/token",
+		"MASTER_API_KEY":  "v1-master-api-key/MASTER_API_KEY",
+		"BROKER_USERNAME": "v1-broker-admin/username", "BROKER_PASSWORD": "v1-broker-admin/password",
+	}; !reflect.DeepEqual(refs, want) {
 		t.Fatalf("render-config Secret env = %v, want %v", refs, want)
 	}
 
