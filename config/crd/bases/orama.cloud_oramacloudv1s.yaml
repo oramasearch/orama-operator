@@ -791,6 +791,65 @@ spec:
                       DashboardSpec is the dashboard toggle and host, plus the environment a user supplies on top of
                       the operator's wiring (the Stripe, Airbyte, S3, Slack, Upstash and other keys Prod 1 sets in Vercel).
                     properties:
+                      crons:
+                        description: Crons runs the dashboard's scheduled calls (Prod
+                          1's Vercel crons) as CronJobs. Off by default.
+                        properties:
+                          enabled:
+                            description: Enabled creates the CronJobs (requires the
+                              dashboard). Turning it off deletes the CR-owned ones.
+                            type: boolean
+                          schedules:
+                            description: Schedules overrides individual cron schedules
+                              (five fields, UTC). An empty entry keeps its default.
+                            properties:
+                              consumptionSync:
+                                description: ConsumptionSync schedules GET /api/billing/queue-consumption-sync.
+                                  Default "0 */6 * * *".
+                                type: string
+                              crawler:
+                                description: Crawler schedules GET /api/private/v1/run-crawler-cron.
+                                  Default "*/1 * * * *".
+                                type: string
+                              indexGC:
+                                description: IndexGC schedules GET /api/private/v1/run-index-gc-cron.
+                                  Default "0 * * * *".
+                                type: string
+                            type: object
+                          secretRef:
+                            description: |-
+                              SecretRef is the Secret key holding CRON_SECRET. Unset means wherever the dashboard itself reads
+                              CRON_SECRET from (a dashboard.envFrom Secret or a dashboard.env secretKeyRef); the reconcile fails
+                              when that is not a Secret key. Set this only when it must differ, since the dashboard compares
+                              the bearer with its own CRON_SECRET.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                          suspend:
+                            default: true
+                            description: Suspend stops new runs without deleting the
+                              CronJobs. Unset means true.
+                            type: boolean
+                        type: object
                       enabled:
                         default: true
                         type: boolean
