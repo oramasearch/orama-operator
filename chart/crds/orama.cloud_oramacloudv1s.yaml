@@ -129,6 +129,14 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  zoneIDs:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ZoneIDs maps a Cloudflare zone name (e.g. orama.com) to its zone ID. Each managed DNS host
+                      uses the zone with the longest matching suffix; a host matching no entry uses the
+                      apiTokenSecretRef Secret's `zoneID`. Lets one CR manage names in several zones.
+                    type: object
                 type: object
               components:
                 description: |-

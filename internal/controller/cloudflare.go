@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,7 +25,8 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-const cfAPIBase = "https://api.cloudflare.com/client/v4"
+// cfAPIBase is the Cloudflare API root. A var only so tests can point it at an httptest server.
+var cfAPIBase = "https://api.cloudflare.com/client/v4"
 
 // cfLBBillingOnce ensures the Load-Balancing "enable the paid feature" guidance is logged only once
 // per operator process (not on every reconcile).
@@ -60,13 +62,14 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 		if target == "" {
 			continue
 		} // Preserve a serving record while an ingress is waiting for its address.
-		// Changing an externally provisioned name/credential reference must finalize the old
+		zoneID := cfZoneIDForHost(cf.ZoneIDs, endpoint.host)
+		// Changing an externally provisioned name/credential/zone reference must finalize the old
 		// child first; otherwise the DNS controller's name-based upsert can orphan its old record.
 		if err := r.Get(ctx, client.ObjectKeyFromObject(rec), rec); err == nil {
 			if !rec.DeletionTimestamp.IsZero() {
 				continue
 			}
-			if rec.Status.RecordID != "" && (rec.Spec.Name != endpoint.host || rec.Spec.SecretRef != cf.APITokenSecretRef.Name) {
+			if rec.Status.RecordID != "" && (rec.Spec.Name != endpoint.host || rec.Spec.SecretRef != cf.APITokenSecretRef.Name || rec.Spec.ZoneID != zoneID) {
 				if err := r.deleteCloudV1Owned(ctx, oc, rec); err != nil {
 					return err
 				}
@@ -77,6 +80,7 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 		}
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rec, func() error {
 			rec.Spec.SecretRef, rec.Spec.Name, rec.Spec.Content, rec.Spec.Proxied = cf.APITokenSecretRef.Name, endpoint.host, target, true
+			rec.Spec.ZoneID = zoneID
 			return controllerutil.SetControllerReference(oc, rec, r.Scheme)
 		}); err != nil {
 			return err
@@ -132,6 +136,24 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 		})
 	}
 	return nil
+}
+
+// cfZoneIDForHost picks the zone ID whose zone name is the longest suffix of host (the host itself
+// or a parent domain), so app.orama.com maps to orama.com rather than com. Empty means no entry
+// matches and the record falls back to its Secret's zoneID.
+func cfZoneIDForHost(zoneIDs map[string]string, host string) string {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	best, bestLen := "", -1
+	for zone, id := range zoneIDs {
+		zone = strings.TrimSuffix(strings.ToLower(zone), ".")
+		if zone == "" || len(zone) <= bestLen {
+			continue
+		}
+		if host == zone || strings.HasSuffix(host, "."+zone) {
+			best, bestLen = id, len(zone)
+		}
+	}
+	return best
 }
 
 // componentIngressTarget returns this component's assigned ingress address.
