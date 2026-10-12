@@ -1663,6 +1663,13 @@ spec:
                     - enabled
                     type: object
                 type: object
+              deletionProtection:
+                description: |-
+                  DeletionProtection keeps the stack's data through CR deletion and component disable: the
+                  CNPG control-DB Cluster (and its ScheduledBackup) carry no owner reference and are never
+                  deleted by the operator, and every StatefulSet sets
+                  persistentVolumeClaimRetentionPolicy Retain/Retain. Default false.
+                type: boolean
               demoSeed:
                 description: |-
                   DemoSeed, when true, has the operator seed a demo project + index so a

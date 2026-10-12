@@ -372,6 +372,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 			},
 		}
 		setVolumeClaimTemplates(sts, dataPVC(w.Storage))
+		applyPVCRetention(oc, sts)
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err
@@ -445,6 +446,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			Spec:       podSpec,
 		}
 		setVolumeClaimTemplates(sts, dataPVC(rd.Storage))
+		applyPVCRetention(oc, sts)
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err

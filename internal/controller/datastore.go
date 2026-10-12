@@ -151,6 +151,7 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 			},
 		}
 		setVolumeClaimTemplates(sts, dataPVC(def.storage))
+		applyPVCRetention(oc, sts)
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err
