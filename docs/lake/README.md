@@ -69,8 +69,13 @@ Polars: it writes the
 Operator, K8ssandra, valkey-operator), or StatefulSet of [lake-sqlite](lake-sqlite.md), [lake-duckdb](lake-duckdb.md) or
 [lake-polars](lake-polars.md) per service, writes `service_status`, and hands lake each connection
 through a mounted Secret ([services.md](services.md)). The same poll runs a customer's **stores**
-(lake#196; phase 1: cluster volumes, one
-Lake-owned PersistentVolumeClaim each, connection in the same Secret) — [stores.md](stores.md).
+(lake#196, lake#664): cluster volumes (one Lake-owned PersistentVolumeClaim each), the customer's
+own buckets on R2, S3, B2, GCS and Azure (one `LakeSealedSecret` delivering the workspace's
+credential each; the bucket itself is never touched) and Lake-run Zetta and Lake stores, each
+connection in the same Secret. Services and apps mount them (lake#666): a volume at a path in the
+pods the operator builds (apps and the sqlite, duckdb and polars services), a bucket as
+`STORE_<NAME>_*` variables, and the operator reports each volume's used space —
+[stores.md](stores.md).
 
 ## What a Lake reconciles into
 
@@ -125,8 +130,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `methodology_run_queue_guard` from
-   `0082_methodology_run_queue`, version = hash of the SQL plus guard. The Job skips the file only when
+   `oramasearch/lake` `db/schema.sql`), guard table = `methodology_deployments_guard` from
+   `0083_methodology_deployments`, version = hash of the SQL plus guard. The Job skips the file only when
    the guard exists **and** every `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')` in it
    is present in the database's `schema_migrations`; otherwise it applies the whole idempotent file,
    so a migration that merges out of order (0067 after 0068 and 0069, #271) still applies. A changed hash automatically
@@ -623,6 +628,9 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 ## Open
 
 - #126 incremental migrations in `PostgresSchema`.
+- [`app-transfer.md`](app-transfer.md) — the `app_transfer` rows lake meters app traffic from:
+  each app's bytes in and out through ingress-nginx's per-Ingress counters, by hour; enabling the
+  controller's metrics, the counter arithmetic across restarts, and what is not counted (lake#661).
 - [`workload-resources.md`](workload-resources.md) — the `workload_resources` contract lake meters compute from: what each kind maps to, the effective-request arithmetic, GPU class and VRAM, and when a row is written, kept and deleted (lake#643).
 - [`methodology-runs.md`](methodology-runs.md) — a workspace methodology's runs as untrusted code: the stage, sandbox and collect pods, their namespace and policies, phases, the per-workspace queue, GPU placement and metering (lake#655, orama-operator#293).
 - [`agents.md`](agents.md) — the Agent Library's agents, the launches of user-created agents on agent-runtime, their cron schedules as CronJobs, and each library agent's own agent-bus credential (lake#228, lake#231, lake#244, lake#269).

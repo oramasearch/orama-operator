@@ -54,6 +54,14 @@ type fakeServiceStore struct {
 	storeUpserts  []LakeStoreStatus
 	storesMissing bool
 	storesErr     error
+	// storeMounts, storeUsage and usedBytesWrites are the store mounts half
+	// (lake_store_mounts_test.go). storeMountsMissing makes ListStoreMounts and ListStoreUsage fail
+	// as a schema before 0080_store_mounts does; storeMountsErr fails ListStoreMounts any other way.
+	storeMounts        []LakeStoreMount
+	storeMountsMissing bool
+	storeMountsErr     error
+	storeUsage         map[string]LakeStoreUsage
+	usedBytesWrites    []LakeStoreUsageWrite
 	// launches and launchUpserts are the agent launches half (lake_agents_test.go).
 	launches      []LakeAgentLaunch
 	launchUpserts []LakeAgentLaunchStatus
@@ -81,6 +89,12 @@ type fakeServiceStore struct {
 	methodologyRuns  []LakeMethodologyRun
 	runStatusUpserts []LakeMethodologyRunStatus
 	runsMissing      bool
+	// appTransfer is the app transfer half (lake_app_transfer_test.go), by app and hour.
+	// appTransferMissing is a schema before 0081_app_transfer; appTransferErr fails the write.
+	appTransfer        map[string]AppTransfer
+	appTransferMissing bool
+	appTransferErr     error
+	appTransferCalls   int
 }
 
 func (f *fakeServiceStore) ListBuilds(context.Context) ([]LakeBuild, error) {

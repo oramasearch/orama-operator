@@ -217,6 +217,7 @@ func TestServicesPgxStoreAgainstPostgres(t *testing.T) {
 	}
 	checkWorkloadResourcesPgx(t, ctx, tx, store, customerID)
 	checkMethodologyRunsPgx(t, ctx, tx, store, customerID)
+	checkAppTransferPgx(t, ctx, tx, store)
 	refused, err := tx.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

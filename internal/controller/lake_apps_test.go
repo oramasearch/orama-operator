@@ -34,12 +34,17 @@ import (
 const testAppRowID = "91b78263-af2c-40eb-b09c-7c768c6d4d94"
 
 type fakeAppsStore struct {
-	rows         []LakeAppRow
-	services     []LakeService
-	listErr      error
-	writeErr     error
-	statusWrites int
-	hashWrites   int
+	rows     []LakeAppRow
+	services []LakeService
+	// stores and storeMounts are the stores apps mount (lake#666).
+	stores             []LakeStore
+	storeMounts        []LakeStoreMount
+	storeMountsMissing bool
+	storeMountsErr     error
+	listErr            error
+	writeErr           error
+	statusWrites       int
+	hashWrites         int
 }
 
 func (s *fakeAppsStore) ListApps(context.Context) ([]LakeAppRow, error) {
@@ -48,6 +53,17 @@ func (s *fakeAppsStore) ListApps(context.Context) ([]LakeAppRow, error) {
 
 func (s *fakeAppsStore) ListServices(context.Context) ([]LakeService, error) {
 	return append([]LakeService(nil), s.services...), nil
+}
+
+func (s *fakeAppsStore) ListStores(context.Context) ([]LakeStore, error) {
+	return append([]LakeStore(nil), s.stores...), nil
+}
+
+func (s *fakeAppsStore) ListStoreMounts(context.Context) ([]LakeStoreMount, error) {
+	if s.storeMountsMissing {
+		return nil, errStoreMountsTableMissing
+	}
+	return append([]LakeStoreMount(nil), s.storeMounts...), s.storeMountsErr
 }
 
 func (s *fakeAppsStore) Close(context.Context) error {
@@ -256,6 +272,7 @@ func TestLakeAppsEnvtestLifecycle(t *testing.T) {
 	assertSyncedAppSteady(t, h)
 	assertSyncedAppSecretEnvironment(t, h)
 	assertSyncedAppLakeSecretEnvironment(t, h)
+	assertSyncedAppStoreMounts(t, h)
 	assertSyncedAppUpdateAndStop(t, h)
 	assertSyncedAppRotation(t, h)
 	h.store.rows[0].Desired = "deleted"

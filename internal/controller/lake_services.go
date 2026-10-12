@@ -117,6 +117,11 @@ type LakeService struct {
 	// zetta_service_id. LakeWorkspacesReconciler is its only resource and status writer; the
 	// services poll only delivers its connection into the services Secret.
 	WorkspaceZetta bool
+	// StoreMounts are the stores a wrapper service mounts (lake#666), resolved by the poll before
+	// the service is reconciled; StoreCredentialsDigest is the digest of the bucket credentials
+	// among them, which rolls its pods on a new version. Neither is read from the services table.
+	StoreMounts            []workloadStoreMount
+	StoreCredentialsDigest string
 	// Status is the current service_status row, nil when the operator has written none.
 	Status *LakeServiceStatus
 }
@@ -139,6 +144,11 @@ type LakeServiceStore interface {
 	UpsertServiceStatus(ctx context.Context, status LakeServiceStatus) error
 	ListStores(ctx context.Context) ([]LakeStore, error)
 	UpsertStoreStatus(ctx context.Context, status LakeStoreStatus) error
+	// The store mounts half (lake_store_mounts.go, lake#666). ListStoreMounts and ListStoreUsage
+	// return errStoreMountsTableMissing while lake's schema is older than 0080_store_mounts.
+	ListStoreMounts(ctx context.Context) ([]LakeStoreMount, error)
+	ListStoreUsage(ctx context.Context) (map[string]LakeStoreUsage, error)
+	UpdateStoreUsedBytes(ctx context.Context, storeID string, usedBytes int64) error
 	ListAgentLaunches(ctx context.Context) ([]LakeAgentLaunch, error)
 	UpsertAgentLaunchStatus(ctx context.Context, status LakeAgentLaunchStatus) error
 	ListAgentSchedules(ctx context.Context) ([]LakeAgentSchedule, error)
@@ -160,6 +170,10 @@ type LakeServiceStore interface {
 	ListMethodologyRuns(ctx context.Context) ([]LakeMethodologyRun, error)
 	UpsertMethodologyRunStatus(ctx context.Context, status LakeMethodologyRunStatus) error
 	DeleteWorkloadResources(ctx context.Context, kind, id string) error
+	// AddAppTransfer adds each app's bytes to its hour's app_transfer row, all in one statement,
+	// and deletes the rows of hours before `before` (lake_app_transfer.go, lake#661). It returns
+	// errAppTransferTableMissing while lake's schema is older than 0081_app_transfer.
+	AddAppTransfer(ctx context.Context, rows []AppTransfer, before time.Time) error
 	Close(ctx context.Context) error
 }
 
@@ -404,7 +418,23 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 			} else if storesErr != nil {
 				log.Info("stores deferred: cannot read stores", "err", storesErr.Error())
 			}
-			changing = r.syncLakeServices(passCtx, lake, namespace, labels, store, services, stores, storesRead)
+			// Store mounts (lake#666) ride it too. Without the table (a schema before 0080) nothing
+			// is mounted. Once it exists, a failed mounts or stores read leaves the mounts unknown:
+			// the services that can mount a store wait for the next pass, so their pod templates
+			// never lose a mount to a transient read.
+			mounts, mountsErr := store.ListStoreMounts(passCtx)
+			mountsMissing := errors.Is(mountsErr, errStoreMountsTableMissing)
+			if mountsMissing {
+				log.Info("store mounts skipped: " + mountsErr.Error())
+			} else if mountsErr != nil {
+				log.Info("store mounts deferred: cannot read store mounts", "err", mountsErr.Error())
+			}
+			mountsState := storeMountsState{
+				read:    mountsErr == nil && storesRead,
+				unknown: !mountsMissing && (mountsErr != nil || !storesRead),
+				mounts:  mounts,
+			}
+			changing = r.syncLakeServices(passCtx, lake, namespace, labels, store, services, stores, storesRead, mountsState)
 		}
 		// Agent launches (lake_agents.go, lake#231) ride the same connection. A schema without
 		// the table, or a failed read, skips them for this pass.
@@ -455,6 +485,15 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 		} else if err != nil {
 			log.Info("workload resources deferred", "err", err.Error())
 		}
+		// App traffic through the ingress (lake_app_transfer.go, lake#661).
+		if lake.Spec.Apps.Enabled {
+			err := r.reconcileAppTransfer(passCtx, lake, store, time.Now())
+			if errors.Is(err, errAppTransferTableMissing) {
+				log.Info("app transfer skipped: " + err.Error())
+			} else if err != nil {
+				log.Info("app transfer deferred", "err", err.Error())
+			}
+		}
 	}
 	return changing
 }
@@ -464,7 +503,7 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 // stores (lake_stores.go); then the credential Secret, which holds both; then the status of every
 // present service and store, each Ready only once its connection is in the Secret. storesRead is
 // false when the stores table could not be read: the Secret then keeps every store key it has.
-func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, store LakeServiceStore, services []LakeService, stores []LakeStore, storesRead bool) (changing bool) {
+func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string, store LakeServiceStore, services []LakeService, stores []LakeStore, storesRead bool, mounts storeMountsState) (changing bool) {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	absentIDs := map[string]bool{}
 	workspaceZettaIDs := map[string]bool{}
@@ -526,11 +565,22 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 			return false
 		}
 	}
+	// The stores each wrapper service mounts, and their credential copies, before its pod template
+	// is built (lake_store_mounts.go, lake#666).
+	if err := r.reconcileServiceStoreMounts(ctx, lake, namespace, labels, services, present, stores, mounts.mounts, mounts.read); err != nil {
+		log.Error(err, "store mounts: some credentials were not copied")
+		changing = true
+	}
 	results := make(map[string]serviceResult, len(present))
 	presentSlugs := preservedSlugs
 	credentials := map[string][]byte{}
 	for _, svc := range present {
 		presentSlugs[svc.Slug] = true
+		if mounts.unknown && isWrapperServiceKind(svc.Kind) {
+			// Its mounts could not be read: left as it is until they can.
+			changing = true
+			continue
+		}
 		result, err := r.reconcileLakeService(ctx, lake, svc.WorkspaceNamespace, svc, &live)
 		if err != nil {
 			log.Error(err, "service reconcile deferred", "service", svc.ID, "slug", svc.Slug)
@@ -603,6 +653,12 @@ func (r *LakeReconciler) syncLakeServices(ctx context.Context, lake *oramav1alph
 		}
 	}
 	finishLakeStores(ctx, lake, store, &storesPass, written)
+	// The used space of the mounted volumes (lake_store_usage.go), at most once a minute.
+	if mounts.read && r.storeUsage.due(lake.UID, time.Now()) {
+		if err := r.reconcileStoreUsage(ctx, lake, store, storesPass.stores, time.Now()); err != nil && !errors.Is(err, errStoreMountsTableMissing) {
+			log.Info("store used space deferred", "err", err.Error())
+		}
+	}
 	return changing || storesPass.changing
 }
 
