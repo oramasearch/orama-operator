@@ -30,6 +30,11 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:default={provider: none}
 	IDP IDPSpec `json:"idp,omitempty"`
 
+	// JWTIssuer is shared by dashboard token signing and writer verification.
+	// +kubebuilder:default="orama-cloud"
+	// +kubebuilder:validation:MaxLength=128
+	JWTIssuer string `json:"jwtIssuer,omitempty"`
+
 	// Images sets the default registry/tag and per-component image overrides.
 	// Defaults reuse the published oramasearch/* images.
 	Images ImagesSpec `json:"images,omitempty"`
@@ -112,7 +117,8 @@ type IDPSpec struct {
 	Provider string `json:"provider"`
 
 	// ConfigSecretRef points at an ExternalSecret-materialized secret holding the
-	// provider config (e.g. Firebase service account, Clerk keys). Ignored for "none".
+	// provider config. For firebase, the dashboard reads FIREBASE_PROJECT_ID,
+	// FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY from this Secret. Ignored for "none".
 	// +optional
 	ConfigSecretRef *corev1.LocalObjectReference `json:"configSecretRef,omitempty"`
 
@@ -241,6 +247,9 @@ type EngineSpec struct {
 }
 
 type WriterSpec struct {
+	// JWT enables the dashboard JWKS provider. Unset preserves the existing config without JWT.
+	// +optional
+	JWT *WriterJWTSpec `json:"jwt,omitempty"`
 	// GPU requests nvidia.com/gpu for the writer's BUILT-IN embeddings generation
 	// (ONNX Runtime + CUDA; prod: L40S). Set false to use CPU embeddings or a remote
 	// embeddings server. (This is the main reason a GPU node is needed at all; the
@@ -260,6 +269,17 @@ type WriterSpec struct {
 	// API server; see docs/components.md for the resize procedure.
 	// +optional
 	Storage VolumeSpec `json:"storage,omitempty"`
+}
+
+// WriterJWTSpec matches OramaCore's dashboard JWKS provider.
+type WriterJWTSpec struct {
+	// JWKSURL is the dashboard's JWKS endpoint, e.g. https://app.orama.ing/api/.well-known/jwks.json.
+	// +kubebuilder:validation:Pattern=`^https?://`
+	JWKSURL string `json:"jwksURL"`
+	// Audience must match the exact clusterWriterUrl used by the dashboard's token endpoint.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	Audience string `json:"audience"`
 }
 
 type ReaderSpec struct {

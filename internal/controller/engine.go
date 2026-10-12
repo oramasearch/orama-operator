@@ -7,7 +7,9 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"net/url"
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -79,6 +81,12 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	if !oc.Spec.Components.Engine.Enabled {
 		return r.teardownByComponent(ctx, oc, "engine", "embeddings", "writer", "reader")
 	}
+	if jwt := oc.Spec.Components.Engine.Writer.JWT; jwt != nil {
+		u, err := url.Parse(jwt.JWKSURL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || jwt.Audience == "" {
+			return fmt.Errorf("engine.writer.jwt requires an HTTP(S) jwksURL without credentials and a nonempty audience")
+		}
+	}
 	if _, err := r.ensureComponentSecret(ctx, oc, "engine"); err != nil {
 		return fmt.Errorf("engine secret: %w", err)
 	}
@@ -143,6 +151,10 @@ func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	// writer→reader replication over a RabbitMQ stream (#41): the broker Service on 5552. OramaCore
 	// creates the stream on connect; the broker advertises the Service host so reconnect works.
 	brokerHost := oc.Name + "-broker"
+	jwt := ""
+	if cfg := oc.Spec.Components.Engine.Writer.JWT; cfg != nil {
+		jwt = fmt.Sprintf("  jwt:\n    providers:\n      - name: dashboard\n        jwks_url: %q\n        issuers: [%q]\n        audiences: [%q]\n        refresh_interval: 1h\n", cfg.JWKSURL, jwtIssuer(oc), cfg.Audience)
+	}
 	return fmt.Sprintf(`http:
   host: 0.0.0.0
   port: 8080
@@ -169,7 +181,7 @@ writer_side:
       max_execution_time: 1s
       max_startup_time: 100ms
   master_api_key: "__MASTER_API_KEY__"
-  config:
+%s  config:
     data_dir: /app/.data/writer
     embedding_queue_limit: 50000
     insert_batch_commit_size: 50000000
@@ -230,7 +242,7 @@ ai_server:
     - provider: groq
       api_key: "__GROQ_API_KEY__"
       default_model: llama-3.3-70b-versatile
-`, brokerHost, brokerHost, embHost, ep)
+`, brokerHost, jwt, brokerHost, embHost, ep)
 }
 
 // embeddingsContainer is the OramaCore ai-server (gRPC embeddings on :50051). It runs as ONE
@@ -362,7 +374,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		// is CPU; the embedding model is the GPU consumer (see reconcileEmbeddings).
 		nodeSelector, tolerations := writerPlacement(oc)
 		sts.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(oc)},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets:              imagePullSecrets(oc),
 				NodeSelector:                  nodeSelector,
@@ -447,7 +459,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			podSpec.TopologySpreadConstraints = spreadConstraints(lbls)
 		}
 		sts.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(oc)},
 			Spec:       podSpec,
 		}
 		setVolumeClaimTemplates(sts, dataPVC(rd.Storage))
@@ -660,4 +672,12 @@ func (r *OramaCloudV1Reconciler) upsertPDB(ctx context.Context, oc *oramav1alpha
 		return controllerutil.SetControllerReference(oc, pdb, r.Scheme)
 	})
 	return err
+}
+
+// An init-rendered config needs a rollout to apply new JWT settings.
+func engineConfigAnnotations(oc *oramav1alpha1.OramaCloudV1) map[string]string {
+	if oc.Spec.Components.Engine.Writer.JWT == nil {
+		return nil
+	}
+	return map[string]string{"orama.cloud/config-hash": fmt.Sprintf("%x", sha256.Sum256([]byte(oramacoreConfigYAML(oc))))}
 }

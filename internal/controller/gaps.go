@@ -57,6 +57,12 @@ postgres:
 `, n, n, n)
 }
 
+func secretKeyEnv(name, secret, key string) corev1.EnvVar {
+	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: key,
+	}}}
+}
+
 // reconcileAnalyticsProcessor deploys analytics-processor (#5): the worker that pulls
 // /v1/analytics into ClickHouse. Its `server` binary reads a YAML config FILE (CONFIG_PATH) and
 // connects to ClickHouse + Postgres at startup — so the operator renders that file via an init

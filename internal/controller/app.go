@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -245,6 +246,19 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		return r.teardownByComponent(ctx, oc, "dashboard")
 	}
 	img := componentImage(oc, "dashboard", "dashboard")
+	env := []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
+	if oc.Spec.JWTIssuer != "" {
+		env = append(env, corev1.EnvVar{Name: "JWT_ISSUER", Value: jwtIssuer(oc)})
+	}
+	if oc.Spec.IDP.Provider == "firebase" {
+		ref := oc.Spec.IDP.ConfigSecretRef
+		if ref == nil || ref.Name == "" {
+			return fmt.Errorf("idp.configSecretRef is required for Firebase dashboard credentials")
+		}
+		for _, key := range []string{"FIREBASE_PROJECT_ID", "FIREBASE_CLIENT_EMAIL", "FIREBASE_PRIVATE_KEY"} {
+			env = append(env, secretKeyEnv(key, ref.Name, key))
+		}
+	}
 	// Schema ownership: the dashboard never migrates the control DB. In-cluster, the operator's
 	// PostgresSchema applies the schema (operator#40); a dashboard drizzle-kit migrate on top of it
 	// collides (Postgres 42710, "type already exists"). External, the database belongs to someone
@@ -256,7 +270,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		port:        3000,
 		ingressHost: d.Host,
 		// Control-DB password + DATABASE_URL for Drizzle, from the CNPG or external Secret (#32, #34).
-		env: []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
+		env: env,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
 	})
