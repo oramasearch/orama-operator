@@ -64,6 +64,7 @@ func pgURIEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
 // reconcileControlDB provisions the control-plane Postgres (PlanetScale in prod) as a
 // CloudNativePG Cluster. On the primary it bootstraps a fresh cluster; on a read tier
 // with replicate=true it stands up a replica cluster streaming from the primary peer.
+// spec.components.controlDB.storage sizes each instance's PVC.
 // Requires the CloudNativePG operator to be installed (see helmfile).
 func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	db := oc.Spec.Components.ControlDB
@@ -81,9 +82,16 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		cluster.SetLabels(labelsFor(oc, "controldb"))
+		storage := map[string]interface{}{"size": defaultDataVolumeSize}
+		if db.Storage.Size != nil {
+			storage["size"] = db.Storage.Size.String()
+		}
+		if db.Storage.StorageClassName != "" {
+			storage["storageClass"] = db.Storage.StorageClassName
+		}
 		spec := map[string]interface{}{
 			"instances": int64(profileInstances(oc)),
-			"storage":   map[string]interface{}{"size": "10Gi"},
+			"storage":   storage,
 		}
 		if oc.Spec.Region.Role == "read" && db.Replicate {
 			// Replica cluster: stream from the primary region's Postgres endpoint.

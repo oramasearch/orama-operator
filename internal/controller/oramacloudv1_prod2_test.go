@@ -13,7 +13,9 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -22,8 +24,8 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// Tests for the Prod 2 readiness changes (orama-bridge#141): persistent readers. It also asserts
-// that a CR without the new fields renders as it did before.
+// Tests for the Prod 2 readiness changes (orama-bridge#141): persistent readers, configurable
+// storage. Each change also asserts that a CR without the new fields renders as it did before.
 
 // fullStackOCV1 is a CR with every component on, as an existing (pre-#141) CR would declare it.
 func fullStackOCV1(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCloudV1 {
@@ -95,12 +97,24 @@ func absent(t *testing.T, cl client.Client, name string, obj client.Object) bool
 	return apierrors.IsNotFound(err)
 }
 
+func controlDBCluster(t *testing.T, cl client.Client) *unstructured.Unstructured {
+	t.Helper()
+	cluster := &unstructured.Unstructured{}
+	cluster.SetGroupVersionKind(cnpgClusterGVK)
+	return getObj(t, cl, "v1-controldb", cluster)
+}
+
 func pvcTemplate(t *testing.T, sts *appsv1.StatefulSet) corev1.PersistentVolumeClaim {
 	t.Helper()
 	if len(sts.Spec.VolumeClaimTemplates) != 1 || sts.Spec.VolumeClaimTemplates[0].Name != "data" {
 		t.Fatalf("%s volumeClaimTemplates = %+v, want one named data", sts.Name, sts.Spec.VolumeClaimTemplates)
 	}
 	return sts.Spec.VolumeClaimTemplates[0]
+}
+
+func quantity(s string) *resource.Quantity {
+	q := resource.MustParse(s)
+	return &q
 }
 
 // --- 1. persistent readers ---
@@ -203,5 +217,66 @@ func TestReaderHPATargetsStatefulSetAndOwnsReplicas(t *testing.T) {
 	}
 	if got := *getObj(t, cl, "v1-reader", &appsv1.StatefulSet{}).Spec.Replicas; got != 3 {
 		t.Errorf("without an HPA the operator owns replicas again: got %d, want 3", got)
+	}
+}
+
+// --- 2. configurable storage ---
+
+func TestStorageSizeAndClassPerComponent(t *testing.T) {
+	cl, _ := reconcileOCV1(t, fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
+		c := &o.Spec.Components
+		c.Engine.Writer.Storage = oramav1alpha1.VolumeSpec{Size: quantity("200Gi"), StorageClassName: "premium"}
+		c.Engine.Reader.Storage = oramav1alpha1.VolumeSpec{Size: quantity("150Gi"), StorageClassName: "premium"}
+		c.Analytics.Storage = oramav1alpha1.VolumeSpec{Size: quantity("40Gi")}
+		c.Broker.Storage = oramav1alpha1.VolumeSpec{StorageClassName: "standard"}
+		c.ControlDB.Storage = oramav1alpha1.VolumeSpec{Size: quantity("30Gi"), StorageClassName: "premium"}
+	}))
+	for name, want := range map[string]struct{ size, class string }{
+		"v1-writer":    {"200Gi", "premium"},
+		"v1-reader":    {"150Gi", "premium"},
+		"v1-analytics": {"40Gi", ""},
+		"v1-broker":    {"10Gi", "standard"},
+		"v1-cache":     {"10Gi", ""}, // unset stays at today's default
+	} {
+		pvc := pvcTemplate(t, getObj(t, cl, name, &appsv1.StatefulSet{}))
+		size := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		class := ""
+		if pvc.Spec.StorageClassName != nil {
+			class = *pvc.Spec.StorageClassName
+		}
+		if size.String() != want.size || class != want.class {
+			t.Errorf("%s PVC = %s/%q, want %s/%q", name, size.String(), class, want.size, want.class)
+		}
+	}
+	storage, _, _ := unstructured.NestedStringMap(controlDBCluster(t, cl).Object, "spec", "storage")
+	if storage["size"] != "30Gi" || storage["storageClass"] != "premium" {
+		t.Errorf("CNPG storage = %v, want 30Gi on premium", storage)
+	}
+}
+
+func TestStorageDefaultsUnchangedForOldCR(t *testing.T) {
+	cl, _ := reconcileOCV1(t, fullStackOCV1(nil))
+	for _, name := range []string{"v1-writer", "v1-analytics", "v1-cache", "v1-broker", "v1-search", "v1-harvest-mongo"} {
+		pvc := pvcTemplate(t, getObj(t, cl, name, &appsv1.StatefulSet{}))
+		if got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != "10Gi" || pvc.Spec.StorageClassName != nil {
+			t.Errorf("%s PVC = %s class %v, want the old 10Gi on the default class", name, got.String(), pvc.Spec.StorageClassName)
+		}
+	}
+	storage, _, _ := unstructured.NestedMap(controlDBCluster(t, cl).Object, "spec", "storage")
+	if len(storage) != 1 || storage["size"] != "10Gi" {
+		t.Errorf("CNPG storage = %v, want exactly {size: 10Gi}", storage)
+	}
+}
+
+// volumeClaimTemplates are immutable: a size change on an existing StatefulSet must not fail the
+// reconcile (which would stall every later component); the StatefulSet keeps its template.
+func TestStorageChangeKeepsExistingVolumeClaimTemplates(t *testing.T) {
+	cl, r := reconcileOCV1(t, fullStackOCV1(nil))
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.Engine.Writer.Storage.Size = quantity("500Gi")
+	})
+	pvc := pvcTemplate(t, getObj(t, cl, "v1-writer", &appsv1.StatefulSet{}))
+	if got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != "10Gi" {
+		t.Errorf("existing writer volumeClaimTemplate changed to %s; it must keep the created size", got.String())
 	}
 }

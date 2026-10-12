@@ -7,6 +7,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -56,6 +57,17 @@ type OramaCloudV1Spec struct {
 	// fresh install answers queries out of the box.
 	// +optional
 	DemoSeed bool `json:"demoSeed,omitempty"`
+}
+
+// VolumeSpec sizes one persistent data volume (a StatefulSet volumeClaimTemplate or the CNPG
+// instance storage).
+type VolumeSpec struct {
+	// Size of the volume. Default 10Gi.
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+	// StorageClassName for the PVC; empty uses the cluster default StorageClass.
+	// +optional
+	StorageClassName string `json:"storageClassName,omitempty"`
 }
 
 // RegionSpec selects the cluster role.
@@ -218,6 +230,11 @@ type WriterSpec struct {
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	// Storage sizes the writer's data PVC (default 10Gi, cluster default StorageClass).
+	// volumeClaimTemplates are immutable, so changing it on a running writer is refused by the
+	// API server; see docs/components.md for the resize procedure.
+	// +optional
+	Storage VolumeSpec `json:"storage,omitempty"`
 }
 
 type ReaderSpec struct {
@@ -229,6 +246,11 @@ type ReaderSpec struct {
 	HPA *HPASpec `json:"hpa,omitempty"`
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// Storage sizes each reader's data PVC (default 10Gi, cluster default StorageClass). The
+	// reader keeps its index and stream offset there, so a replaced reader resumes instead of
+	// replaying the replication stream from offset 0.
+	// +optional
+	Storage VolumeSpec `json:"storage,omitempty"`
 }
 
 type HPASpec struct {
@@ -299,6 +321,10 @@ type DataStoreSpec struct {
 	// Mode=external. Binary-side right-sizing (Redis maxmemory, etc.) is tracked in #42.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+	// when Mode=external.
+	// +optional
+	Storage VolumeSpec `json:"storage,omitempty"`
 }
 
 // Toggle is a simple on/off component.

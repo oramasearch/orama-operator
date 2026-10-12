@@ -242,6 +242,23 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -417,6 +434,23 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -527,6 +561,23 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -636,6 +687,23 @@ spec:
                               otherwise to an implementation-defined value. Requests cannot exceed Limits.
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
+                        type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
                         type: object
                     required:
                     - enabled
@@ -923,6 +991,24 @@ spec:
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
                             type: object
+                          storage:
+                            description: |-
+                              Storage sizes each reader's data PVC (default 10Gi, cluster default StorageClass). The
+                              reader keeps its index and stream offset there, so a replaced reader resumes instead of
+                              replaying the replication stream from offset 0.
+                            properties:
+                              size:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: Size of the volume. Default 10Gi.
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              storageClassName:
+                                description: StorageClassName for the PVC; empty uses
+                                  the cluster default StorageClass.
+                                type: string
+                            type: object
                         type: object
                       writer:
                         properties:
@@ -992,6 +1078,24 @@ spec:
                                   otherwise to an implementation-defined value. Requests cannot exceed Limits.
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
+                            type: object
+                          storage:
+                            description: |-
+                              Storage sizes the writer's data PVC (default 10Gi, cluster default StorageClass).
+                              volumeClaimTemplates are immutable, so changing it on a running writer is refused by the
+                              API server; see docs/components.md for the resize procedure.
+                            properties:
+                              size:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: Size of the volume. Default 10Gi.
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              storageClassName:
+                                description: StorageClassName for the PVC; empty uses
+                                  the cluster default StorageClass.
+                                type: string
                             type: object
                           tolerations:
                             items:
@@ -1345,6 +1449,23 @@ spec:
                               otherwise to an implementation-defined value. Requests cannot exceed Limits.
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
+                        type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
                         type: object
                     required:
                     - enabled
