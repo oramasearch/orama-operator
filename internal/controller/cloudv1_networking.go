@@ -29,6 +29,9 @@ func (r *OramaCloudV1Reconciler) deleteCloudV1Owned(ctx context.Context, oc *ora
 	return client.IgnoreNotFound(r.Delete(ctx, obj, client.Preconditions{UID: &uid, ResourceVersion: &version}))
 }
 
+// reconcileEngineIngresses publishes the writer (primary region only) and the readers on their hosts,
+// each with a companion <name>-metrics Ingress that keeps /metrics private (upsertMetricsBlockIngress),
+// and removes both Ingresses of an endpoint without a host.
 func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	engine := oc.Spec.Components.Engine
 	for _, endpoint := range []struct {
@@ -45,10 +48,17 @@ func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, o
 		}
 		name := oc.Name + "-" + endpoint.component
 		if host == "" {
-			if err := r.deleteCloudV1Owned(ctx, oc, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}); err != nil {
-				return err
+			for _, n := range []string{name, name + "-metrics"} {
+				if err := r.deleteCloudV1Owned(ctx, oc, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: n, Namespace: oc.Namespace}}); err != nil {
+					return err
+				}
 			}
-		} else if err := r.upsertIngress(ctx, oc, name, endpoint.component, host, endpoint.ingress, endpoint.port); err != nil {
+			continue
+		}
+		if err := r.upsertIngress(ctx, oc, name, endpoint.component, host, endpoint.ingress, endpoint.port); err != nil {
+			return err
+		}
+		if err := r.upsertMetricsBlockIngress(ctx, oc, name, endpoint.component, host, endpoint.ingress, endpoint.port); err != nil {
 			return err
 		}
 	}

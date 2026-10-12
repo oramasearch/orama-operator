@@ -133,8 +133,9 @@ func TestIngressClassNameAppliesToEveryIngress(t *testing.T) {
 		if err := cl.List(context.Background(), &ings, client.InNamespace(oc.Namespace)); err != nil {
 			t.Fatal(err)
 		}
-		if len(ings.Items) != 4 {
-			t.Fatalf("class %q: %d Ingresses, want 4", c.class, len(ings.Items))
+		// dashboard, docs, writer and reader, plus the writer's and reader's /metrics blocks.
+		if len(ings.Items) != 6 {
+			t.Fatalf("class %q: %d Ingresses, want 6", c.class, len(ings.Items))
 		}
 		for _, ing := range ings.Items {
 			if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != c.want {

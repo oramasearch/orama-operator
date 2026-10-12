@@ -110,7 +110,7 @@ that already exists, so **set these before first reconcile or delete+recreate to
 | **Stripe** | dashboard (billing) | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | dashboard.stripe.com → API keys / webhooks |
 | **Resend** | dashboard (transactional email) | `RESEND_API_KEY` | resend.com → API keys |
 | **Slack** | dashboard (ops alerts) | `SLACK_TOKEN` | api.slack.com → your app |
-| **Sentry** | dashboard, oramasearch-app, index-builder, workers (error/APM) | `SENTRY_DSN` | sentry.io → project → Client Keys (DSN). **Optional** — an empty DSN disables it. |
+| **Sentry** | dashboard, oramasearch-app, index-builder, workers, OramaCore writer and readers (error/APM) | `SENTRY_DSN`; the engine reads it from `spec.components.engine.sentry.dsnSecretRef` | sentry.io → project → Client Keys (DSN). **Optional** — an empty DSN disables it. |
 
 Example — set a real key on a component secret (delete+recreate to override the dummy). The
 master key is not in a component secret: it lives in `v1-master-api-key` (key `MASTER_API_KEY`), or
