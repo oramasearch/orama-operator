@@ -86,6 +86,11 @@ spec:
         replicas: 2
         storage: { size: 256Gi, storageClassName: managed-csi-premium }   # placeholder size (#138)
       envoy: true
+      # Customer hooks may not fetch in-cluster addresses. The default deny list already covers
+      # 10.**; the cluster's own ranges are named here so the CR records them: pod CIDR
+      # 10.244.0.0/16, Service CIDR 10.0.0.0/16, node subnet 10.224.0.0/16 (host-network pods).
+      hooks:
+        extraDeniedDomains: ["10.244.**", "10.0.**", "10.224.**"]
     dashboard: { enabled: true, host: app.orama.ing }
     docs:      { enabled: true, host: docs.orama.ing }
     controlDB:
