@@ -4091,3 +4091,98 @@ CREATE TABLE IF NOT EXISTS methodology_run_queue_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0079_methodology_run_queue')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0080_methodology_deployments (lake#690, docs/api/methodologies.md#serving-its-model): a model
+-- a workspace methodology trained (kind `python:W-…`) is served from Ship → Models by its own
+-- code. Publishing it writes one methodology_deployments row and NOTIFYs lake_services; the Orama
+-- operator runs it in the methodology-runs namespace as a `stage` Job (the pristine runtime image,
+-- the deployment's credential, egress to Lake only) that writes the model's artifact to a volume,
+-- then a long-running `serve` Deployment (the methodology's image, no credential, no service
+-- account token, no network unless `network`, ingress from Lake's pods only) behind a Service.
+-- The operator writes methodology_deployment_status, including the SHA-256 of the credential it
+-- generated (`lmd.<deployment id>.<secret>`) and the Service's in-cluster `endpoint`, which Lake
+-- forwards predictions to. Ids, images, resources and phases only: the model, its artifact and
+-- every prediction stay in the workspace Zetta. `workload_resources` gains
+-- `methodology_deployment` (the serve pods' resources while they run). Idempotent; drops nothing.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS methodology_deployments (
+    id                 uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id        uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    workspace_id       uuid        NOT NULL REFERENCES workspaces(id),
+    -- The workspace methodology (`W-<8 hex>`) and the engine's id of the model it serves.
+    methodology_id     text        NOT NULL,
+    model_id           text        NOT NULL,
+    -- The training run that produced the model; its image build is the serve pod's image.
+    run_id             uuid        REFERENCES methodology_runs(id) ON DELETE SET NULL,
+    build_id           uuid        REFERENCES builds(id) ON DELETE SET NULL,
+    image              text        NOT NULL DEFAULT '',
+    runtime_image      text        NOT NULL,
+    cpu_millis         integer     NOT NULL,
+    memory_bytes       bigint      NOT NULL,
+    gpus               integer     NOT NULL DEFAULT 0,
+    gpu_class          text        NOT NULL DEFAULT '',
+    network            boolean     NOT NULL DEFAULT false,
+    slug               text        NOT NULL UNIQUE,
+    desired            text        NOT NULL DEFAULT 'present',
+    generation         bigint      NOT NULL DEFAULT 1,
+    stop_reason        text        NOT NULL DEFAULT '',
+    created_by_user_id uuid        REFERENCES users(id) ON DELETE SET NULL,
+    created_by_taap_id text        NOT NULL DEFAULT '',
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT methodology_deployment_desired_check CHECK (desired IN ('present', 'absent')),
+    CONSTRAINT methodology_deployment_slug_format CHECK (slug ~ '^md-[0-9a-f]{12}$'),
+    CONSTRAINT methodology_deployment_methodology_format CHECK (methodology_id ~ '^W-[0-9a-f]{8}$'),
+    CONSTRAINT methodology_deployment_model_format CHECK (model_id ~ '^[A-Za-z0-9._:-]{1,128}$'),
+    CONSTRAINT methodology_deployment_resources_check CHECK (
+        cpu_millis > 0 AND memory_bytes > 0 AND gpus >= 0
+    ),
+    CONSTRAINT methodology_deployment_gpu_class_check CHECK (
+        gpu_class ~ '^([a-z0-9][a-z0-9-]{0,31})?$'
+    )
+);
+-- One present deployment per model of a workspace.
+CREATE UNIQUE INDEX IF NOT EXISTS methodology_deployments_present_model_idx
+    ON methodology_deployments (workspace_id, model_id) WHERE desired = 'present';
+CREATE INDEX IF NOT EXISTS methodology_deployments_workspace_idx
+    ON methodology_deployments (workspace_id, created_at DESC);
+DROP TRIGGER IF EXISTS methodology_deployment_workspace_routing ON methodology_deployments;
+CREATE TRIGGER methodology_deployment_workspace_routing
+    BEFORE INSERT OR UPDATE ON methodology_deployments
+    FOR EACH ROW EXECUTE FUNCTION enforce_workspace_routing();
+
+-- Written only by the operator: one row per deployment, replaced on every observed change.
+CREATE TABLE IF NOT EXISTS methodology_deployment_status (
+    deployment_id       uuid        PRIMARY KEY
+                                    REFERENCES methodology_deployments(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',
+    message             text        NOT NULL DEFAULT '',
+    credential_sha256   text        NOT NULL DEFAULT '',
+    -- The serve Service's in-cluster URL; empty until the operator has created it.
+    endpoint            text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    -- When the serve pod first became ready, and when it stopped serving.
+    ready_at            timestamptz,
+    stopped_at          timestamptz,
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT methodology_deployment_phase_check CHECK (
+        phase IN ('', 'Building', 'Queued', 'Staging', 'Starting', 'Ready', 'Failed', 'Stopped')
+    ),
+    CONSTRAINT methodology_deployment_endpoint_check CHECK (
+        endpoint = '' OR endpoint ~ '^http://md-[0-9a-f]{12}\.[a-z0-9-]+\.svc\.cluster\.local(:[0-9]{1,5})?$'
+    )
+);
+CREATE INDEX IF NOT EXISTS methodology_deployment_status_credential_idx
+    ON methodology_deployment_status (credential_sha256) WHERE credential_sha256 <> '';
+
+ALTER TABLE workload_resources DROP CONSTRAINT IF EXISTS workload_resources_object_kind_check;
+ALTER TABLE workload_resources ADD CONSTRAINT workload_resources_object_kind_check
+    CHECK (object_kind IN ('workspace', 'service', 'store', 'app', 'build', 'agent_launch',
+                           'agent_cron_run', 'methodology_run', 'methodology_deployment'));
+
+CREATE TABLE IF NOT EXISTS methodology_deployments_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0080_methodology_deployments')
+    ON CONFLICT DO NOTHING;

@@ -81,6 +81,12 @@ type fakeServiceStore struct {
 	methodologyRuns  []LakeMethodologyRun
 	runStatusUpserts []LakeMethodologyRunStatus
 	runsMissing      bool
+	// deployments and deploymentStatusUpserts are the served methodology models half
+	// (lake_methodology_deployments_test.go). deploymentsMissing makes ListMethodologyDeployments
+	// fail as a schema before 0080_methodology_deployments does.
+	deployments             []LakeMethodologyDeployment
+	deploymentStatusUpserts []LakeMethodologyDeploymentStatus
+	deploymentsMissing      bool
 }
 
 func (f *fakeServiceStore) ListBuilds(context.Context) ([]LakeBuild, error) {

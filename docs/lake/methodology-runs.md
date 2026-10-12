@@ -6,7 +6,10 @@ deployed. A live run waits for the lake side of lake#655 and a published
 `oramasearch/methodology-runtime` image.** The per-workspace cap on concurrent runs and the
 placement of a GPU run's work volume ([orama-operator#293](https://github.com/oramasearch/orama-operator/issues/293),
 lake migration `0079_methodology_run_queue`) are implemented with fake-client and pgx contract
-coverage; not deployed.
+coverage; not deployed. Serving a trained model from Ship → Models
+([lake#690](https://github.com/oramasearch/lake/issues/690), lake migration
+`0080_methodology_deployments`, [below](#serving-a-model)) is implemented with fake-client and pgx
+contract coverage; not deployed.
 
 A workspace can write its own methodology as Python code in one of its repositories (lake#655). That
 code is not trusted, so the operator runs it in a sandbox: no credential, no Kubernetes token, no
@@ -58,12 +61,13 @@ Each run gets, in the Lake's namespace `lake-<lake>-methodology-runs`:
 - **Why its own namespace.** A workspace namespace carries allow policies that select every pod
   (lake, DNS, HTTPS to the internet, the workspace's own services), and NetworkPolicies only ever add
   what they allow, so a sandbox there could never be denied. The methodology-runs namespace enforces
-  Pod Security `restricted` and has exactly three policies: `methodology-default-deny` (every pod,
+  Pod Security `restricted` and has exactly four policies: `methodology-default-deny` (every pod,
   ingress and egress), `methodology-transfer` (stage and collect pods: DNS and lake's pods on lake's
-  container port), `methodology-sandbox-internet` (sandboxes labelled
+  container port), `methodology-sandbox-internet` (sandboxes and serve pods labelled
   `orama.cloud/methodology-run-network=granted`: DNS and `0.0.0.0/0` except private, shared, loopback,
-  link-local and reserved ranges, so never the cluster, its nodes or the metadata service). No
-  policy admits ingress.
+  link-local and reserved ranges, so never the cluster, its nodes or the metadata service), and
+  `methodology-serve-ingress` (serve pods, [below](#serving-a-model): ingress from lake's pods only,
+  on port 8080). Nothing else admits ingress; a run's pods admit none.
 
 **Every pod** runs as uid/gid 10001 with `fsGroup` 10001 (which owns the work volume), a read-only
 root filesystem with a 1Gi `/tmp`, all capabilities dropped, `RuntimeDefault` seccomp, no privilege
@@ -109,12 +113,55 @@ At a terminal phase the credential digest is cleared (the credential stops resol
 the Jobs, their pods, the two Secrets and the work volume are deleted; the namespace and its
 policies stay. Status is written only when it changes.
 
+## Serving a model
+
+A model a workspace methodology trained (kind `python:W-…`) is served by its own code (lake#690).
+When a person publishes it in Ship → Models, lake writes a `methodology_deployments` row (lake
+migration `0080_methodology_deployments`): the model, the training run's image build, the runtime
+image, CPU, memory, GPUs, GPU class and the network grant, slug `md-<12 hex>`. The operator serves
+it in the same namespace, with the same split between the code and the credential:
+
+| Object | What it is |
+|---|---|
+| Secret `<slug>-credential` | the deployment's credential `lmd.<deployment id>.<secret>`; its SHA-256 goes to `methodology_deployment_status` |
+| Secret `<slug>-pull` | the Lake's pull entries plus lake's registry with Basic user `methodology-deployment` and the credential, for kubelet only |
+| PVC `<slug>-model` | the model volume (`spec.methodologies.workVolumeSize`, `storageClassName`), ReadWriteOnce |
+| Job `<slug>-stage` | the pristine runtime image, role `stage` (the transfer policy: DNS and lake only): `methodology stage-model --lake $(LAKE_URL) --deployment $(DEPLOYMENT_ID) --credential-file /var/run/orama/credential --out /work/model`, which pages the model's artifact from lake's `methodology_deployment_input` and checks its size and SHA-256. For a GPU model it is pinned to the zones where its GPU class has nodes, as a run's stage pod is |
+| Deployment `<slug>` | one replica (`Recreate`), role `serve`: the methodology's image, `methodology serve --model /work/model --source /methodology --port 8080`, the model volume **read-only**, no Secret mounted, no `LAKE_*`/`ZETTA_*` environment, no service account token, no service links, the run pods' security context, requests equal to limits from the row, the GPU class as its nodeSelector, `restartPolicy: Always`, readiness and liveness on `GET /healthz` |
+| Service `<slug>` | ClusterIP, port 80 to the serve pod's 8080 |
+
+The serve pod accepts connections from lake's pods only (`methodology-serve-ingress`) and opens
+none, unless the person granted the methodology network (then `methodology-sandbox-internet`
+applies, never the cluster). Lake forwards each `predict` of the model to the Service and answers
+the caller; nothing else can reach it.
+
+| Phase | When |
+|---|---|
+| `Building` | its image build is queued or running |
+| `Queued` | a GPU model with no node of its class in the cluster yet (*… the model is served when one is*) |
+| `Staging` | the stage Job is bringing the model in |
+| `Starting` | the serve Deployment exists and is not ready; `endpoint` is set |
+| `Ready` | a serve pod is ready; `ready_at` is set; the status stops changing |
+| `Failed` | the build failed or was cancelled, the stage failed (*could not bring the model in*), or a serve pod exited three times (*the model's server exited with N: \<what it said\>*, from the container's termination message, which `methodology serve` writes as its findings); its objects are removed |
+| `Stopped` | lake set `desired = absent` (the model was unpublished or deleted); its objects are removed and `stopped_at` is set |
+
+`endpoint` is `http://<slug>.<namespace>.svc.cluster.local`; lake's schema refuses any other.
+The credential stays live while the deployment is present, because kubelet pulls the image with it
+whenever a serve pod restarts; the stage Job is not recreated once the Deployment exists (its Job
+may be gone by its TTL, and the model is already on the volume). At `Failed` or `Stopped` the
+digest and endpoint are cleared, so the credential stops resolving in lake.
+
+**Metering.** The serve pods are workload kind `methodology_deployment` in `workload_resources`,
+counted by the workload pass while they run (`pods` above 0) and while the deployment is present;
+the stage Job's pod is the operator's transfer and is not counted. Lake charges the time they run
+times their CPU, memory, GPUs and GPU memory, as for any long-running workload.
+
 ## Configuration
 
 | Field | Meaning |
 |---|---|
 | `spec.methodologies.runtimeImage` | the private `oramasearch/methodology-runtime` image; injected into lake as `LAKE_METHODOLOGY_RUNTIME_IMAGE`. Empty: every run fails with that reason |
-| `spec.methodologies.workVolumeSize` | each run's work volume, default `10Gi` |
+| `spec.methodologies.workVolumeSize` | each run's work volume and each served model's model volume, default `10Gi` |
 | `spec.methodologies.storageClassName` | its storage class, default the cluster's; it should bind on first use (`WaitForFirstConsumer`) for GPU placement |
 | `spec.methodologies.maxConcurrentRunsPerWorkspace` | how many of one workspace's runs may be staging, running or collecting at once, default `2`, at least 1; the rest wait `Queued` |
 
@@ -133,6 +180,7 @@ generated methodology Dockerfile builds `FROM`.
 
 ```sh
 go test ./internal/controller/ -run 'Methodology|TheSandbox|AGranted|ARunSucceeds|AFailing|ACode|AStage|Stopping|ACancelled|RunsFail|TheWorkloadPass|AWorkspacesRuns|TheLakeSetsTheCap|AQueuedRun|AGPURun|ACPURun'
+go test ./internal/controller/ -run 'AServedModel|TheServePod|OnlyLakeReaches|AServerThatKeeps|Unpublishing|AGPUModel|DeploymentsAreSkipped'
 LAKE_SERVICES_TEST_POSTGRES=1 LAKE_SERVICES_TEST_POSTGRES_URI=postgres://127.0.0.1:5432/postgres \
-  go test ./internal/controller/ -run TestServicesPgxStoreAgainstPostgres   # includes checkMethodologyRunsPgx
+  go test ./internal/controller/ -run TestServicesPgxStoreAgainstPostgres   # checkMethodologyRunsPgx and checkMethodologyDeploymentsPgx
 ```

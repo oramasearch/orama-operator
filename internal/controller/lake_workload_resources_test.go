@@ -64,6 +64,13 @@ func (f *fakeServiceStore) ListWorkloadObjects(_ context.Context, ids []string, 
 			out = append(out, WorkloadObject{Kind: WorkloadKindMethodologyRun, ID: run.ID, Desired: run.Desired, Subkind: run.Mode, Slug: run.Slug})
 		}
 	}
+	// Served models: every present one when live, and any by id (listMethodologyDeploymentObjectsSQL).
+	for _, deployment := range f.deployments {
+		if wanted[deployment.ID] || (live && deployment.Desired == serviceDesiredPresent) {
+			out = append(out, WorkloadObject{Kind: WorkloadKindMethodologyDeployment, ID: deployment.ID,
+				Desired: deployment.Desired, Slug: deployment.Slug})
+		}
+	}
 	return out, nil
 }
 

@@ -155,7 +155,12 @@ func (s *pgxServiceStore) ListWorkloadObjects(ctx context.Context, ids []string,
 	if err != nil {
 		return nil, err
 	}
-	return append(out, runs...), nil
+	// Served methodology models (lake#690) likewise, so a schema before 0080 leaves the rest.
+	deployments, err := s.listMethodologyDeploymentObjects(ctx, ids, live)
+	if err != nil {
+		return nil, err
+	}
+	return append(append(out, runs...), deployments...), nil
 }
 
 func (s *pgxServiceStore) ListUnmeteredJobs(ctx context.Context) ([]WorkloadObject, error) {

@@ -248,9 +248,10 @@ func methodologyNamespaceLabels(lake *oramav1alpha1.Lake) map[string]string {
 }
 
 // reconcileMethodologyNamespace creates the Lake's methodology-runs namespace (Pod Security
-// restricted) and its three policies: deny everything to every pod, let the stage and collect
-// pods reach DNS and lake's pods, and let a sandbox whose run was granted network reach DNS and
-// the public internet.
+// restricted) and its four policies: deny everything to every pod, let the stage and collect
+// pods reach DNS and lake's pods, let a sandbox (or a served model's serve pod) granted network
+// reach DNS and the public internet, and let lake's pods, and nothing else, reach a serve pod's
+// port (lake#690).
 func (r *LakeReconciler) reconcileMethodologyNamespace(ctx context.Context, lake *oramav1alpha1.Lake) (string, error) {
 	name := methodologyRunsNamespace(lake.Name)
 	desired := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: methodologyNamespaceLabels(lake),
@@ -280,6 +281,7 @@ func (r *LakeReconciler) reconcileMethodologyNamespace(ctx context.Context, lake
 		methodologyDenyPolicy(name),
 		methodologyTransferNetworkPolicy(lake, name),
 		methodologySandboxInternetPolicy(lake, name),
+		methodologyServeIngressPolicy(lake, name),
 	}
 	for _, wanted := range policies {
 		policy := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: wanted.Name, Namespace: name}}
@@ -338,11 +340,16 @@ func methodologySandboxInternetPolicy(lake *oramav1alpha1.Lake, namespace string
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: methodologySandboxInternet, Namespace: namespace},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{
-				methodologyRunLakeLabel:    lake.Name,
-				methodologyRunRoleLabel:    methodologyRoleSandbox,
-				methodologyRunNetworkLabel: methodologyNetworkGranted,
-			}},
+			// A run's sandbox, or a served model's serve pod (lake#690), whose person granted it the
+			// internet.
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					methodologyRunLakeLabel:    lake.Name,
+					methodologyRunNetworkLabel: methodologyNetworkGranted,
+				},
+				MatchExpressions: []metav1.LabelSelectorRequirement{{Key: methodologyRunRoleLabel,
+					Operator: metav1.LabelSelectorOpIn, Values: []string{methodologyRoleSandbox, methodologyRoleServe}}},
+			},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 			Egress: []networkingv1.NetworkPolicyEgressRule{
 				methodologyDNSRule(lake),
@@ -603,6 +610,14 @@ func methodologySandboxPod(run *LakeMethodologyRun, image string) corev1.PodSpec
 
 func (r *LakeReconciler) reconcileMethodologyPullSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string,
 	run *LakeMethodologyRun, credential string, labels map[string]string) error {
+	return r.reconcileMethodologyPullSecretFor(ctx, lake, namespace, run.Slug, methodologyPullUser, credential, labels)
+}
+
+// reconcileMethodologyPullSecretFor writes `<slug>-pull`: the Lake's pull Secret entries plus lake's
+// public host with Basic `user` and the credential (methodology-run for a run,
+// methodology-deployment for a served model).
+func (r *LakeReconciler) reconcileMethodologyPullSecretFor(ctx context.Context, lake *oramav1alpha1.Lake, namespace,
+	slug, user, credential string, labels map[string]string) error {
 	var source *corev1.Secret
 	if lake.Spec.PullSecretName != "" {
 		source = &corev1.Secret{}
@@ -610,11 +625,11 @@ func (r *LakeReconciler) reconcileMethodologyPullSecret(ctx context.Context, lak
 			return fmt.Errorf("read the Lake's pull Secret: %w", err)
 		}
 	}
-	config, ok := mergeRegistryDockerConfig(source, lakePublicHost(lake), methodologyPullUser, []byte(credential))
+	config, ok := mergeRegistryDockerConfig(source, lakePublicHost(lake), user, []byte(credential))
 	if !ok {
 		return fmt.Errorf("the Lake's pull Secret %q has invalid dockerconfigjson data", lake.Spec.PullSecretName)
 	}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyPullSecret(run.Slug), Namespace: namespace}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyPullSecret(slug), Namespace: namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		secret.Labels = labels
 		secret.Type = corev1.SecretTypeDockerConfigJson
@@ -626,8 +641,15 @@ func (r *LakeReconciler) reconcileMethodologyPullSecret(ctx context.Context, lak
 
 func (r *LakeReconciler) reconcileMethodologyWorkClaim(ctx context.Context, lake *oramav1alpha1.Lake, namespace string,
 	run *LakeMethodologyRun, labels map[string]string) error {
+	return r.reconcileMethodologyClaim(ctx, lake, namespace, methodologyWorkClaim(run.Slug), labels)
+}
+
+// reconcileMethodologyClaim creates a run's work volume or a served model's model volume
+// (spec.methodologies.workVolumeSize and storageClassName), ReadWriteOnce.
+func (r *LakeReconciler) reconcileMethodologyClaim(ctx context.Context, lake *oramav1alpha1.Lake, namespace, name string,
+	labels map[string]string) error {
 	claim := &corev1.PersistentVolumeClaim{}
-	key := client.ObjectKey{Namespace: namespace, Name: methodologyWorkClaim(run.Slug)}
+	key := client.ObjectKey{Namespace: namespace, Name: name}
 	if err := r.Get(ctx, key, claim); err == nil {
 		return nil
 	} else if !apierrors.IsNotFound(err) {

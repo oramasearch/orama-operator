@@ -159,6 +159,11 @@ type LakeServiceStore interface {
 	// errMethodologyRunsTableMissing while lake's schema is older than 0078_methodology_runs.
 	ListMethodologyRuns(ctx context.Context) ([]LakeMethodologyRun, error)
 	UpsertMethodologyRunStatus(ctx context.Context, status LakeMethodologyRunStatus) error
+	// The served methodology models half (lake_methodology_deployments.go, lake#690).
+	// ListMethodologyDeployments returns errMethodologyDeploymentsTableMissing while lake's schema
+	// is older than 0080_methodology_deployments.
+	ListMethodologyDeployments(ctx context.Context) ([]LakeMethodologyDeployment, error)
+	UpsertMethodologyDeploymentStatus(ctx context.Context, status LakeMethodologyDeploymentStatus) error
 	DeleteWorkloadResources(ctx context.Context, kind, id string) error
 	Close(ctx context.Context) error
 }
@@ -443,6 +448,16 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 		} else if err != nil {
 			log.Info("methodology runs deferred: cannot read methodology runs", "err", err.Error())
 		} else if r.reconcileLakeMethodologyRuns(passCtx, lake, store, runs) {
+			changing = true
+		}
+		// Served methodology models (lake_methodology_deployments.go, lake#690) wait on the same
+		// builds. A schema without the table skips them.
+		deployments, err := store.ListMethodologyDeployments(passCtx)
+		if errors.Is(err, errMethodologyDeploymentsTableMissing) {
+			log.Info("methodology deployments skipped: " + err.Error())
+		} else if err != nil {
+			log.Info("methodology deployments deferred: cannot read methodology deployments", "err", err.Error())
+		} else if r.reconcileLakeMethodologyDeployments(passCtx, lake, store, deployments) {
 			changing = true
 		}
 	}
