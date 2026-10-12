@@ -47,7 +47,7 @@ increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{host,jwt,resources,nodeSelector,tolerations,storage}`, `reader.{host,replicas,hpa,resources,storage}`, `envoy` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `engine` | `writer.gpu`, `writer.{host,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
@@ -67,6 +67,17 @@ L40S). `workers` bundles all ported CF workers into one image → one Deployment
 2 × `minReplicas`, `targetCPUUtilization` default `70`) makes the operator own a
 `HorizontalPodAutoscaler` `<cr>-reader` on the reader StatefulSet; while it is set the operator
 sets the StatefulSet's replica count only when creating it. Clearing `hpa` deletes the HPA.
+
+| Field under `spec.components.engine` | Default | Purpose |
+|---|---|---|
+| `writer.startupTimeout` | `20m` | How long the writer may take to answer `GET /health` before it is restarted. The startup probe runs every 10 s with `failureThreshold` = timeout ÷ 10 s, rounded up. |
+| `reader.startupTimeout` | `40m` | The same for each reader, which loads its whole index before it answers; a restart begins the load again. `1h` gives `failureThreshold: 360`. |
+| `minMaxMapCount` | `4194304` | The `preflight` init container fails when the node's `vm.max_map_count` is lower. Set it on the node pool ([install.md](install.md#node-settings-for-the-engine)); `0` skips the check. |
+| `minOpenFiles` | `65535` | The `preflight` init container fails when the pod's open-files limit (`ulimit -n`) is lower; `0` skips the check. With both minimums at `0` the pods have no `preflight` container. |
+
+The defaults are Prod 1's: its reader unit allows 20 minutes for the port and 40 for the unit to
+start, its units set `LimitNOFILE=65535`, and its reader hosts set `vm.max_map_count=4194304`.
+Changing a timeout or a minimum rolls the writer or reader StatefulSet.
 
 ### Prod 2 auth and public endpoints
 

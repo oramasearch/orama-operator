@@ -115,7 +115,8 @@ the operator creates, so a component is run *well*, not just *running*. The help
 
 - **Health probes — startup + readiness + liveness.** The engine keeps its rich HTTP `GET /health`
   probes; every other container gets **TCP** probes on its primary port (`tcpStartup` /
-  `tcpReadiness` / `tcpLiveness`). **Startup** (`30 × 10s` ≈ 5 min) gates the others so a slow boot
+  `tcpReadiness` / `tcpLiveness`). **Startup** (`30 × 10s` ≈ 5 min; the engine's is longer, see
+  below) gates the others so a slow boot
   (index-builder's ~29-var wiring, Keycloak `start-dev`, a store loading data) isn't killed;
   **readiness** gates Service routing; **liveness** (lenient — `20s` period) restarts a hung pod. TCP
   (not a guessed HTTP path) because a wrong liveness path would restart-loop a *healthy* pod.
@@ -267,8 +268,20 @@ Driven by `spec.region.role`:
   at the default 30s.
 - **Health probes** — startup / readiness / liveness all hit `GET /health` on `:8080`
   (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path). The **startup probe**
-  (`failureThreshold: 30 × 10s` ≈ 5 min) gates the others so a slow index-load boot
-  isn't killed; readiness gates Service routing; liveness restarts a hung pod.
+  gates the others so a slow index-load boot isn't killed: it runs every 10 s and allows
+  `writer.startupTimeout` (default 20 min) or `reader.startupTimeout` (default 40 min, Prod 1's
+  unit start timeout), because a reader restarted mid-load starts the load over and a large one
+  would never become Ready. Readiness gates Service routing; liveness restarts a hung pod.
+- **Preflight** — a `preflight` init container (busybox, uid 65534, read-only root, the hardening
+  baseline) runs between `wait-for-broker` and `render-config` on the writer and every reader. It
+  fails with a message naming the setting when the node's `vm.max_map_count` is below
+  `engine.minMaxMapCount` (default 4194304) or the pod's `ulimit -n` is below `engine.minOpenFiles`
+  (default 65535). A reader holds every memory mapping it opens until it restarts (about 50k a day
+  on Prod 1), so at Ubuntu's 1048576 `mmap` fails with `ENOMEM` after about 20 days whatever the
+  free memory. `vm.max_map_count` is not a namespaced sysctl: a pod cannot set it, so the operator
+  checks it and the node pool sets it ([install.md](install.md#node-settings-for-the-engine)). The
+  open-files limit comes from the container runtime and is the same for every container in the pod.
+  Setting a minimum to `0` drops its check, and with both at `0` there is no `preflight` container.
 - **Disruption budgets** — the **writer** gets a PDB with `maxUnavailable: 0` (it's a
   singleton — voluntary disruptions like node drains/autoscaler are blocked so it
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**

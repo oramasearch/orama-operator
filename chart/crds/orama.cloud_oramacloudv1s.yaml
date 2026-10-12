@@ -993,6 +993,24 @@ spec:
                         description: Envoy enables the per-reader :80->:8080 reverse
                           proxy (matches prod).
                         type: boolean
+                      minMaxMapCount:
+                        description: |-
+                          MinMaxMapCount is the lowest node vm.max_map_count the writer and reader pods start on: a
+                          preflight init container fails below it. A reader holds every mapping it opens until it
+                          restarts, so the Ubuntu default (1048576) runs out within weeks. vm.max_map_count is not a
+                          namespaced sysctl; it is set on the node pool (see docs/install.md). Unset means 4194304,
+                          Prod 1's value; 0 skips the check.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      minOpenFiles:
+                        description: |-
+                          MinOpenFiles is the lowest open-files limit (ulimit -n) the writer and reader pods start
+                          with: the preflight init container fails below it. Unset means 65535, Prod 1's
+                          LimitNOFILE; 0 skips the check.
+                        format: int64
+                        minimum: 0
+                        type: integer
                       reader:
                         properties:
                           host:
@@ -1073,6 +1091,13 @@ spec:
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
                             type: object
+                          startupTimeout:
+                            description: |-
+                              StartupTimeout is how long a reader may take to load its index and answer GET /health
+                              before it is restarted (the startup probe's failureThreshold × periodSeconds). A restart
+                              begins the load again, so a large reader needs the full time. Default 40m, Prod 1's unit
+                              start timeout.
+                            type: string
                           storage:
                             description: |-
                               Storage sizes each reader's data PVC (default 10Gi, cluster default StorageClass). The
@@ -1185,6 +1210,12 @@ spec:
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
                             type: object
+                          startupTimeout:
+                            description: |-
+                              StartupTimeout is how long the writer may take to answer GET /health before it is
+                              restarted (the startup probe's failureThreshold × periodSeconds). Default 20m, Prod 1's
+                              port-open timeout.
+                            type: string
                           storage:
                             description: |-
                               Storage sizes the writer's data PVC (default 10Gi, cluster default StorageClass).
