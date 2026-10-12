@@ -13,7 +13,7 @@ import (
 )
 
 // The served methodology models half of the pgx LakeServiceStore (lake migration
-// 0080_methodology_deployments, lake#690): the same connection as the services poll.
+// 0083_methodology_deployments, lake#690): the same connection as the services poll.
 
 // listMethodologyDeploymentsSQL reads every deployment that still needs the operator: present
 // ones, and absent ones not yet reported Stopped or Failed at their generation or whose credential
@@ -109,7 +109,7 @@ func (s *pgxServiceStore) UpsertMethodologyDeploymentStatus(ctx context.Context,
 }
 
 // listMethodologyDeploymentObjects returns nothing, without an error, before
-// 0080_methodology_deployments: the workload pass then simply finds no served models.
+// 0083_methodology_deployments: the workload pass then simply finds no served models.
 func (s *pgxServiceStore) listMethodologyDeploymentObjects(ctx context.Context, ids []string, live bool) ([]WorkloadObject, error) {
 	if ids == nil {
 		ids = []string{}

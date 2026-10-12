@@ -155,7 +155,7 @@ func (s *pgxServiceStore) ListWorkloadObjects(ctx context.Context, ids []string,
 	if err != nil {
 		return nil, err
 	}
-	// Served methodology models (lake#690) likewise, so a schema before 0080 leaves the rest.
+	// Served methodology models (lake#690) likewise, so a schema before 0083 leaves the rest.
 	deployments, err := s.listMethodologyDeploymentObjects(ctx, ids, live)
 	if err != nil {
 		return nil, err

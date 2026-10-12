@@ -408,6 +408,6 @@ func TestDeploymentsAreSkippedBeforeTheirMigration(t *testing.T) {
 	store.mu.Unlock()
 	h.poll()
 	if len(store.deploymentStatusUpserts) != 0 {
-		t.Fatal("a schema before 0080 writes no deployment status")
+		t.Fatal("a schema before 0083 writes no deployment status")
 	}
 }

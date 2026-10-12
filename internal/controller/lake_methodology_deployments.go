@@ -28,7 +28,7 @@ import (
 )
 
 // Served models of a workspace's own methodologies (lake#690; lake migration
-// 0080_methodology_deployments; this repo's docs/lake/methodology-runs.md#serving-a-model). Lake
+// 0083_methodology_deployments; this repo's docs/lake/methodology-runs.md#serving-a-model). Lake
 // writes one methodology_deployments row when a person publishes such a model in Ship → Models. The
 // operator serves it in the Lake's methodology-runs namespace, with the same split as a run:
 //
@@ -71,8 +71,8 @@ const (
 var (
 	methodologyDeploymentSlugPattern = regexp.MustCompile(`^md-[0-9a-f]{12}$`)
 
-	// errMethodologyDeploymentsTableMissing: lake's schema has not reached 0080 yet.
-	errMethodologyDeploymentsTableMissing = errors.New("the methodology_deployments table does not exist yet (lake schema before 0080_methodology_deployments)")
+	// errMethodologyDeploymentsTableMissing: lake's schema has not reached 0083 yet.
+	errMethodologyDeploymentsTableMissing = errors.New("the methodology_deployments table does not exist yet (lake schema before 0083_methodology_deployments)")
 )
 
 // LakeMethodologyDeployment is one methodology_deployments row joined to its image build and its
