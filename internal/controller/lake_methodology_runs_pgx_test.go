@@ -36,6 +36,16 @@ func checkMethodologyRunsPgx(t *testing.T, ctx context.Context, tx pgx.Tx, store
 		t.Fatalf("run = %+v (build %+v)", run, run.Build)
 	}
 
+	// Queued (0079_methodology_run_queue, orama-operator#293) is a phase the schema accepts.
+	queued := LakeMethodologyRunStatus{RunID: runID, Phase: MethodologyPhaseQueued, ObservedGeneration: 1,
+		Message: "Queued: 2 of this workspace's methodology runs are running (the limit is 2); this run is next."}
+	if err := store.UpsertMethodologyRunStatus(ctx, queued); err != nil {
+		t.Fatalf("upsert a queued status: %v", err)
+	}
+	if runs, err := store.ListMethodologyRuns(ctx); err != nil || len(runs) != 1 || runs[0].Status == nil || !runs[0].Status.equal(queued) {
+		t.Fatalf("queued status read back = %+v, %v", runs, err)
+	}
+
 	started := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
 	finished := started.Add(time.Minute)
 	code := int32(0)

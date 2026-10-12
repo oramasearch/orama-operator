@@ -125,8 +125,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `methodology_runs_guard` from
-   `0078_methodology_runs`, version = hash of the SQL plus guard. The Job skips the file only when
+   `oramasearch/lake` `db/schema.sql`), guard table = `methodology_run_queue_guard` from
+   `0079_methodology_run_queue`, version = hash of the SQL plus guard. The Job skips the file only when
    the guard exists **and** every `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')` in it
    is present in the database's `schema_migrations`; otherwise it applies the whole idempotent file,
    so a migration that merges out of order (0067 after 0068 and 0069, #271) still applies. A changed hash automatically
@@ -199,7 +199,10 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 20. **Methodology runs** (with builds and `spec.methodologies.runtimeImage`) — each
     `methodology_runs` row waits for its image build, then runs a stage, a sandbox and a collect pod
     in `lake-<name>-methodology-runs`: the sandbox carries no credential, no token and no network
-    unless granted. Phases and the sandbox's start and finish go to `methodology_run_status`. See
+    unless granted. A workspace runs at most `spec.methodologies.maxConcurrentRunsPerWorkspace`
+    (default 2) at once and the rest wait `Queued`, oldest first; a GPU run's stage pod, and so its
+    work volume, goes in a zone where its GPU class has nodes, or it waits `Queued` (orama-operator#293).
+    Phases and the sandbox's start and finish go to `methodology_run_status`. See
     [`methodology-runs.md`](methodology-runs.md).
 
 **Status** reports overall service readiness through `phase` and `conditions[Ready]`, alongside
@@ -621,5 +624,5 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 
 - #126 incremental migrations in `PostgresSchema`.
 - [`workload-resources.md`](workload-resources.md) — the `workload_resources` contract lake meters compute from: what each kind maps to, the effective-request arithmetic, GPU class and VRAM, and when a row is written, kept and deleted (lake#643).
-- [`methodology-runs.md`](methodology-runs.md) — a workspace methodology's runs as untrusted code: the stage, sandbox and collect pods, their namespace and policies, phases and metering (lake#655).
+- [`methodology-runs.md`](methodology-runs.md) — a workspace methodology's runs as untrusted code: the stage, sandbox and collect pods, their namespace and policies, phases, the per-workspace queue, GPU placement and metering (lake#655, orama-operator#293).
 - [`agents.md`](agents.md) — the Agent Library's agents, the launches of user-created agents on agent-runtime, their cron schedules as CronJobs, and each library agent's own agent-bus credential (lake#228, lake#231, lake#244, lake#269).

@@ -269,9 +269,19 @@ type LakeMethodologiesSpec struct {
 	// +optional
 	WorkVolumeSize *resource.Quantity `json:"workVolumeSize,omitempty"`
 
-	// StorageClassName is the work volume's storage class; empty uses the cluster default.
+	// StorageClassName is the work volume's storage class; empty uses the cluster default. A GPU
+	// run's volume is placed in a zone where its GPU class has nodes by pinning the run's first pod
+	// there, so the class should bind volumes on first use (WaitForFirstConsumer).
 	// +optional
 	StorageClassName string `json:"storageClassName,omitempty"`
+
+	// MaxConcurrentRunsPerWorkspace is how many of one workspace's runs may be staging, running
+	// or collecting at once. Runs past it wait as Queued, oldest first, and Lake shows why.
+	// Default 2.
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxConcurrentRunsPerWorkspace int32 `json:"maxConcurrentRunsPerWorkspace,omitempty"`
 }
 
 // LakeBuildConcurrencySpec sets independent build concurrency limits.

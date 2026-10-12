@@ -4071,3 +4071,23 @@ CREATE TABLE IF NOT EXISTS methodology_runs_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0078_methodology_runs')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0079_methodology_run_queue (orama-operator#293, docs/api/methodologies.md#runs): the Orama
+-- operator holds a methodology run back, with phase `Queued` and a message saying why, while its
+-- workspace already has as many runs staging, running or collecting as the Lake's
+-- `spec.methodologies.maxConcurrentRunsPerWorkspace` allows, or while no node of a GPU run's GPU
+-- class exists to place its work volume next to. Only the phase CHECK changes. Idempotent; drops
+-- nothing.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE methodology_run_status DROP CONSTRAINT IF EXISTS methodology_run_phase_check;
+ALTER TABLE methodology_run_status ADD CONSTRAINT methodology_run_phase_check CHECK (
+    phase IN ('', 'Building', 'Queued', 'Staging', 'Running', 'Collecting', 'Succeeded', 'Failed',
+              'Stopped')
+);
+
+CREATE TABLE IF NOT EXISTS methodology_run_queue_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0079_methodology_run_queue')
+    ON CONFLICT DO NOTHING;
