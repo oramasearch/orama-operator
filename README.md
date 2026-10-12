@@ -15,9 +15,12 @@ into running systems:
 - `OramaCloudV1`: the complete, self-contained Orama Cloud v1 stack (engine, dashboard,
   control-plane DB, analytics, cache, broker, ingestion, workers), one CR per cluster.
 - The supporting CRDs those own: `PostgresSchema`, `RabbitMQTopology`, `CloudflareDNSRecord`,
-  `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `LakeSealedSecret`,
-  `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and the three e2e test CRDs, including
-  `LakeE2ETest`.
+  `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `ClerkApplication`,
+  `LakeSealedSecret`, `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and the three e2e
+  test CRDs, including `LakeE2ETest`.
+
+That is 17 resource kinds. The [release notes](docs/releases/v0.1.0.md) say what each one
+reconciles.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -25,10 +28,16 @@ are all named `orama-operator`.
 
 ## Status
 
-Runs in production on AKS. `Lake/prod` is live at https://lake.oramadev.net on this operator.
-Every `OramaCloudV1` component reconciler is implemented and validated on AKS; the Cloudflare
-reconcilers are implemented but not yet live-tested. Per-reconciler status and the remaining
-hardening work are in [`docs/components.md`](docs/components.md).
+The current release is **v0.1.0** (2026-10-12), the first tagged release;
+[`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md) lists everything in it.
+
+The operator runs on Orama's AKS cluster, which is the development environment (there is no
+production environment yet, whatever the cluster's name says). `Lake/prod` is live at
+https://lake.oramadev.net on this operator, with its workspace Zettas, apps, agents and services.
+Every `OramaCloudV1` component reconciler is implemented and was validated on AKS; the Cloudflare
+load balancer and the Karpenter capacity slices are implemented but not yet live-tested.
+Per-reconciler status and the remaining hardening work are in
+[`docs/components.md`](docs/components.md).
 
 ## Build and test
 
@@ -60,6 +69,7 @@ Existing AKS installations that use the former release name must follow the sche
 ## Documentation
 
 - [`docs/README.md`](docs/README.md): the index of every page.
+- [`docs/releases/README.md`](docs/releases/README.md): what each release contains.
 - [`DESIGN.md`](DESIGN.md): architecture and the decision log.
 - [`docs/crd-reference.md`](docs/crd-reference.md): the field reference for every CRD.
 - [`docs/components.md`](docs/components.md): what each reconciler creates, and its status.
