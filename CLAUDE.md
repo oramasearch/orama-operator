@@ -187,7 +187,8 @@ suites; that is what a testing environment is for
   shipped in a ConfigMap, run by an `alpine` Job that installs curl+jq). It self-bootstraps a
   clean-slate collection+index and asserts **every critical OramaCore function in variations**
   (search modes/filters/facets/sort/group, CRUD/upsert/delete, replication canary, batch-get, KV,
-  hooks, merchandising, MCP, analytics, answer/RAG). **~70 assertions; must stay `fail=0`.** Editing
+  hooks, merchandising, MCP, answer/RAG; never `GET /v1/analytics`, which erases customer events,
+  operator#315). **~70 assertions; must stay `fail=0`.** Editing
   the script requires re-running the operator (the script is embedded at compile time). Coverage +
   the per-subsystem backlog are tracked under
   [operator#44](https://github.com/oramasearch/orama-operator/issues/44). Per principle #9,

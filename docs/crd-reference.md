@@ -242,10 +242,13 @@ CronJob forbids concurrent runs, keeps one successful and three failed Jobs, and
 |---|---|---|
 | `enabled` | `false` | Own `<cr>-analytics-import`, a CronJob that sends `POST /import` to the processor Service on port 8080. Requires engine, analytics and controlDB enabled. |
 | `schedule` | `*/5 * * * *` | Five-field cron in UTC (`timeZone: Etc/UTC`); validated before scheduling. |
+| `includeWriter` | `false` | Also pull the writer's reader side (primary regions only). The writer serves no search traffic, so it is left out unless set. |
 
 A new stack opting in creates a headless governing reader Service `<cr>-reader-headless` alongside
 the normal customer-facing reader Service. The processor polls each reader ordinal on its own port
-8080, including HPA-driven replicas, plus the writer's reader side on the primary. Configuration
+8080, including HPA-driven replicas, exactly once per run; an ordinal whose pod is gone but whose
+data PVC remains stays listed, disabled. `status.analyticsImport` reports the sources and the last
+successful run. Configuration
 changes roll the processor through a deterministic config hash; ordinary unscheduled configurations
 retain their existing reader-Service polling. The processor now gets that hash annotation even
 without a schedule, so upgrading an existing processor rolls it once.
@@ -301,6 +304,15 @@ the phase only with `spec.requireRealCredentials`. The broker and Redis password
 [components.md](components.md#stack-wide-credentials-and-credentialsready-307-credentialsgo)), so on a
 new stack they are never listed unless deleted.
 
+### `status.analyticsImport`
+
+Present while `analyticsProcessor.import` is enabled ([operator#315](https://github.com/oramasearch/orama-operator/issues/315)).
+`sources[]` is the processor's configured source list in config order (`name`, `url`, `enabled`):
+reader ordinals `0..n-1` once each, where `n` is the larger of the reader count and the highest
+ordinal with a `data-<cr>-reader-<ordinal>` PVC plus one, then the writer when `includeWriter` is set.
+`enabled: false` marks an ordinal with a PVC and no pod. `lastSuccessfulTime` is the import CronJob's
+`status.lastSuccessfulTime`. Written only when either changes, so a successful run causes one write.
+
 ## `OramaCloudV1E2ETest` (separate CRD)
 
 Runs the **comprehensive functional e2e suite** as a Job against a deployed stack — a test is a
@@ -310,7 +322,9 @@ is a curl+jq script that self-bootstraps a clean-slate collection+index and asse
 OramaCore function in variations** — liveness, auth (keys + negatives), collection/index lifecycle +
 document CRUD/upsert/delete, the write→searchable replication canary, fulltext (typo tolerance/exact/
 threshold/boost/pagination), vector + hybrid, filters (number/date/bool/string/geo + and/or/not),
-facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, analytics, and answer/RAG. It is the
+facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, and answer/RAG. It never calls
+`GET /v1/analytics`, which erases a reader's pending customer events (only the analytics processor
+pulls them; [operator#315](https://github.com/oramasearch/orama-operator/issues/315)). It is the
 forcing function (see the production-migration principle in `CLAUDE.md`) — never softened to pass.
 Coverage is tracked by [operator#44](https://github.com/oramasearch/orama-operator/issues/44).
 Sample: [`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).

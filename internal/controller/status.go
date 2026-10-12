@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -103,8 +104,8 @@ func replicasOf(p *int32) int32 {
 // applyReadiness rolls the per-component states up into the CR status: phase (Ready when every
 // component is ready; Degraded when one regressed after having been Ready, or when
 // spec.requireRealCredentials is set and CredentialsReady is False; else Progressing),
-// componentsReady ("n/total"), the per-component list, and the Ready and CredentialsReady
-// conditions. Returns whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
+// componentsReady ("n/total"), the per-component list, the Ready and CredentialsReady
+// conditions, and status.analyticsImport. Returns whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
 func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) bool {
 	comps := r.componentReadiness(ctx, oc)
 	ready, notReady := 0, []string(nil)
@@ -149,21 +150,28 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 
 	conditions := append([]metav1.Condition{{Type: "Ready", Status: condStatus, Reason: reason, Message: msg}}, credentials...)
 	backupCondition, err := r.controlDBBackupCondition(ctx, oc)
-	removed := false
+	otherChanged := false // a removed condition or status.analyticsImport changed
 	switch {
 	case err != nil:
 		log.FromContext(ctx).Error(err, "read control DB backup status")
 	case backupCondition != nil:
 		conditions = append(conditions, *backupCondition)
 	default: // backups off: drop a BackupReady left from when they were on
-		removed = meta.RemoveStatusCondition(&oc.Status.Conditions, "BackupReady")
+		otherChanged = meta.RemoveStatusCondition(&oc.Status.Conditions, "BackupReady")
+	}
+	// status.analyticsImport (#315): written on a real change only, like the rest of the status.
+	if analyticsImport, err := r.analyticsImportStatus(ctx, oc); err != nil {
+		log.FromContext(ctx).Error(err, "read analytics import status")
+	} else if !equality.Semantic.DeepEqual(analyticsImport, oc.Status.AnalyticsImport) {
+		oc.Status.AnalyticsImport = analyticsImport
+		otherChanged = true
 	}
 	if oc.Spec.Components.Engine.Enabled {
 		conditions = append(conditions, engineSidesCondition(oc))
 	} else if meta.RemoveStatusCondition(&oc.Status.Conditions, engineSidesConditionType) {
-		removed = true
+		otherChanged = true
 	}
-	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, removed, conditions...)
+	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, otherChanged, conditions...)
 	return allReady
 }
 
@@ -198,10 +206,10 @@ func (r *OramaCloudV1Reconciler) controlDBBackupCondition(ctx context.Context, o
 
 // setStatus writes phase + componentsReady + the per-component list + the merged conditions — but
 // only when something actually changed, so a steady state produces NO control-plane traffic even
-// though reconcile runs on every child event. This is the anti-flap guard. conditionsRemoved
-// reports that the caller already removed a condition from oc.Status, which also needs a write.
-func (r *OramaCloudV1Reconciler) setStatus(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, phase, componentsReady string, comps []oramav1alpha1.ComponentStatus, conditionsRemoved bool, conds ...metav1.Condition) {
-	changed := conditionsRemoved || oc.Status.Phase != phase ||
+// though reconcile runs on every child event. This is the anti-flap guard. otherChanged
+// reports that the caller already changed oc.Status (removed a condition, set analyticsImport), which also needs a write.
+func (r *OramaCloudV1Reconciler) setStatus(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, phase, componentsReady string, comps []oramav1alpha1.ComponentStatus, otherChanged bool, conds ...metav1.Condition) {
+	changed := otherChanged || oc.Status.Phase != phase ||
 		oc.Status.ComponentsReady != componentsReady ||
 		oc.Status.ObservedGeneration != oc.Generation ||
 		!componentsEqual(oc.Status.Components, comps)
