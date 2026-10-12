@@ -104,7 +104,7 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	if err := r.reconcileReaders(ctx, oc); err != nil {
 		return fmt.Errorf("readers: %w", err)
 	}
-	return nil
+	return r.reconcileEngineIngresses(ctx, oc)
 }
 
 func engineConfigName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-engine-config" }

@@ -247,6 +247,10 @@ type EngineSpec struct {
 }
 
 type WriterSpec struct {
+	// Host publishes the writer through an owned Ingress and optional Cloudflare DNS.
+	// Empty keeps the writer internal.
+	// +optional
+	Host string `json:"host,omitempty"`
 	// JWT enables the dashboard JWKS provider. Unset preserves the existing config without JWT.
 	// +optional
 	JWT *WriterJWTSpec `json:"jwt,omitempty"`
@@ -283,6 +287,9 @@ type WriterJWTSpec struct {
 }
 
 type ReaderSpec struct {
+	// Host publishes reads through an owned Ingress and optional Cloudflare DNS.
+	// +optional
+	Host string `json:"host,omitempty"`
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
 	// HPA autoscales readers on load when set: the operator owns a HorizontalPodAutoscaler

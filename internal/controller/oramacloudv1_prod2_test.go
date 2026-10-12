@@ -62,7 +62,7 @@ func fullStackOCV1(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCl
 func reconcileOCV1(t *testing.T, oc *oramav1alpha1.OramaCloudV1, objs ...client.Object) (client.Client, *OramaCloudV1Reconciler) {
 	t.Helper()
 	s := ocv1TestScheme(t)
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(append(objs, oc)...).WithStatusSubresource(oc).Build()
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(append(objs, oc)...).WithStatusSubresource(oc, &oramav1alpha1.CloudflareDNSRecord{}).Build()
 	r := &OramaCloudV1Reconciler{Client: cl, Scheme: s}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(oc)}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
