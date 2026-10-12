@@ -241,6 +241,7 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "workers", image: img, port: 8080, replicas: w.Replicas,
+		env:       []corev1.EnvVar{masterAPIKeyEnv(oc)},
 		resources: resourcesOr(w.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }
@@ -251,7 +252,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		return r.teardownByComponent(ctx, oc, "dashboard")
 	}
 	img := componentImage(oc, "dashboard", "dashboard")
-	env := []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
+	env := []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
 	if oc.Spec.JWTIssuer != "" {
 		env = append(env, corev1.EnvVar{Name: "JWT_ISSUER", Value: jwtIssuer(oc)})
 	}

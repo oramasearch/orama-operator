@@ -222,9 +222,10 @@ var (
 // ai_server, matching oramacore/config-docker.yaml) that an image with both sides needs: OramaCore
 // requires both side sections when both are compiled in.
 //
-// Every config is a template. master_api_key and the LLM providers' api_key fields are placeholders
-// such as __MASTER_API_KEY__ (this string lives in a ConfigMap): the render-config init container
-// substitutes the real values from Secrets at pod start, so no credential ever sits in the ConfigMap.
+// Every config is a template. master_api_key, the LLM providers' api_key fields and the broker
+// user and password are placeholders such as __MASTER_API_KEY__ (this string lives in a ConfigMap):
+// the render-config init container substitutes the real values from Secrets at pod start, so no
+// credential ever sits in the ConfigMap.
 // OramaCore can't take them from env — config's ORAMACORE_ override splits on "_" and can't reach
 // nested keys such as writer_side.master_api_key or a remote_llms entry.
 func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
@@ -259,7 +260,8 @@ log: {}
 
 // writerSideYAML is the writer_side section. The writer replicates to the readers over the RabbitMQ
 // stream oramacore-operations on the broker Service :5552 (#41); OramaCore creates the stream on
-// connect and the broker advertises the Service host so reconnect works. Its hooks block is
+// connect and the broker advertises the Service host so reconnect works. Both sides authenticate as
+// the broker admin user from <cr>-broker-admin (#307; per-service users are #99). Its hooks block is
 // hooksYAML, the same as the reader side's (#306).
 func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string {
 	jwt := ""
@@ -271,8 +273,8 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
     type: rabbitmq
     host: %s
     port: 5552
-    user: orama
-    password: dev-rabbitmq-password
+    user: '__BROKER_USERNAME__'
+    password: '__BROKER_PASSWORD__'
     v_host: /
     stream_name: oramacore-operations
     client_provided_name: %s
@@ -303,8 +305,8 @@ func readerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
     type: rabbitmq
     host: %s
     port: 5552
-    user: orama
-    password: dev-rabbitmq-password
+    user: '__BROKER_USERNAME__'
+    password: '__BROKER_PASSWORD__'
     v_host: /
     stream_name: oramacore-operations
     client_provided_name: %s
@@ -471,8 +473,9 @@ func engineInitContainers(oc *oramav1alpha1.OramaCloudV1, s engineSide) []corev1
 // renderConfigInit substitutes the secret placeholders into the side's config template (the
 // ConfigMap key s.configKey) and writes the rendered file to the shared rendered-config emptyDir that
 // the OramaCore container reads via CONFIG_PATH: MASTER_API_KEY (writer_side.master_api_key and
-// reader_side.analytics.api_key) and each LLM provider's <PROVIDER>_API_KEY come from the engine
-// Secret via envFrom, or from a provider's apiKeySecretRef via an env entry that overrides it. This
+// reader_side.analytics.api_key) from the master API key Secret, BROKER_USERNAME and BROKER_PASSWORD
+// from <cr>-broker-admin, and each LLM provider's <PROVIDER>_API_KEY from the engine Secret via
+// envFrom, or from a provider's apiKeySecretRef via an env entry that overrides it. This
 // keeps the credentials out of the ConfigMap while leaving the reviewable config in one. Values may
 // hold any character but a newline (renderConfigScript escapes them).
 //
@@ -484,6 +487,8 @@ func renderConfigInit(oc *oramav1alpha1.OramaCloudV1, s engineSide) corev1.Conta
 		env = []corev1.EnvVar{{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
 			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}}}
 	}
+	env = append(env, masterAPIKeyEnv(oc))
+	env = append(env, brokerCredentialEnv(oc)...)
 	env = append(env, llmKeySecretEnv(oc)...)
 	return corev1.Container{
 		Name:    "render-config",

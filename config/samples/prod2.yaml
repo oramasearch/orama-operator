@@ -17,6 +17,10 @@
 #   - `prod2-clickhouse` with CLICKHOUSE_USER and CLICKHOUSE_PASSWORD for ClickHouse Cloud.
 #     Provision these via ExternalSecrets or a person; no credentials belong in this sample.
 #   - JWT Secrets are generated once by ensureJWTSecrets for Prod 2; do not copy Prod 1's keys;
+#   - `prod2-master-api-key` with key MASTER_API_KEY: the value in the copied control DB's
+#     oramacore_clusters.master_api_key (spec.masterAPIKeySecretRef below);
+#   - the broker admin and Redis passwords are generated once (prod2-broker-admin, prod2-cache-auth);
+#     the stack reports Degraded until CredentialsReady is True (requireRealCredentials below);
 #   - the Cloudflare control-plane Secret `cloudflare-api-token` (token, zoneID, accountID).
 #
 # Hosts below produce Ingresses and owned Cloudflare DNS. Customers use app.orama.ing for tokens,
@@ -38,6 +42,9 @@ spec:
   profile: medium                      # single-tenant prod: 2 CNPG instances
   # Keep the control DB and the writer/reader volumes through CR deletion and component disable.
   deletionProtection: true
+  # Degraded, not Ready, while any credential is a seeded dummy or missing (status CredentialsReady).
+  requireRealCredentials: true
+  masterAPIKeySecretRef: { name: prod2-master-api-key }
   # Every operator-created pod (apps, stores, engine, Jobs, CNPG instances) runs on the prod2 pool.
   placement:
     nodeSelector:

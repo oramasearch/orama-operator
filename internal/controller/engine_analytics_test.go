@@ -20,7 +20,7 @@ const analyticsKeyPlaceholderLine = `    api_key: '__MASTER_API_KEY__'`
 
 // TestEngineConfigEnablesReaderAnalytics covers #55: the engine config template carries a
 // reader_side.analytics block whose api_key is the master-key placeholder (never a value), and
-// the render-config init container fills it from the engine Secret's MASTER_API_KEY.
+// the render-config init container fills it from the master API key Secret (#307).
 func TestEngineConfigEnablesReaderAnalytics(t *testing.T) {
 	oc := newOCV1(nil)
 	tmpl := oramacoreConfigYAML(oc)
@@ -42,16 +42,13 @@ func TestEngineConfigEnablesReaderAnalytics(t *testing.T) {
 		t.Errorf("reader_side.analytics needs metadata_from_headers, got:\n%s", analytics)
 	}
 
-	// The placeholder must come from a key the engine Secret actually carries.
-	if _, ok := componentSecretData("engine")["MASTER_API_KEY"]; !ok {
-		t.Fatal("engine Secret seeds no MASTER_API_KEY")
-	}
+	// The placeholder must come from the master API key Secret.
 	render := renderConfigInit(oc, engineSideFor(oc, "reader"))
-	engineSecret := componentSecretName(oc, "engine")
-	if !slices.ContainsFunc(render.EnvFrom, func(e corev1.EnvFromSource) bool {
-		return e.SecretRef != nil && e.SecretRef.Name == engineSecret
+	if !slices.ContainsFunc(render.Env, func(e corev1.EnvVar) bool {
+		return e.Name == "MASTER_API_KEY" && e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil &&
+			e.ValueFrom.SecretKeyRef.Name == "v1-master-api-key" && e.ValueFrom.SecretKeyRef.Key == "MASTER_API_KEY"
 	}) {
-		t.Errorf("render-config does not envFrom the engine Secret %s: %+v", engineSecret, render.EnvFrom)
+		t.Errorf("render-config does not take MASTER_API_KEY from v1-master-api-key: %+v", render.Env)
 	}
 
 	// Run the init container's real command against the template, with its mount paths
@@ -80,8 +77,9 @@ func TestEngineConfigEnablesReaderAnalytics(t *testing.T) {
 }
 
 // TestAnalyticsProcessorPollsReaderWithEngineKey covers the other half of #55: the processor
-// drains the reader Service (where searches land) and authenticates with MASTER_API_KEY from
-// its own Secret, the same key the engine renders as reader_side.analytics.api_key.
+// drains the reader Service (where searches land) and authenticates with MASTER_API_KEY, the same
+// key the engine renders as reader_side.analytics.api_key (both read the master API key Secret;
+// TestMasterAPIKeyHasOneSource).
 func TestAnalyticsProcessorPollsReaderWithEngineKey(t *testing.T) {
 	oc := newOCV1(nil)
 	cfg := analyticsProcessorConfigYAML(oc)
@@ -93,8 +91,5 @@ func TestAnalyticsProcessorPollsReaderWithEngineKey(t *testing.T) {
 		if !strings.Contains(cfg, url) {
 			t.Errorf("processor config lacks oramacores entry %q:\n%s", url, cfg)
 		}
-	}
-	if _, ok := componentSecretData("analytics-processor")["MASTER_API_KEY"]; !ok {
-		t.Error("analytics-processor Secret seeds no MASTER_API_KEY")
 	}
 }

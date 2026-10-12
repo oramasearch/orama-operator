@@ -133,9 +133,9 @@ func llmKeySecretEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 }
 
 // engineKeyEnvs are the variables whose values replace their placeholders in the engine config:
-// the master key and one key per LLM provider.
+// the master key, the broker admin user and password, and one key per LLM provider.
 func engineKeyEnvs(oc *oramav1alpha1.OramaCloudV1) []string {
-	envs := []string{"MASTER_API_KEY"}
+	envs := []string{masterAPIKeyKey, brokerUserEnv, brokerPasswordEnv}
 	for _, p := range llmProviders(oc) {
 		envs = append(envs, llmKeyEnv(p.Name))
 	}

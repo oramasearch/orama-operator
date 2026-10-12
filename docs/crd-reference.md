@@ -44,6 +44,8 @@ llm:
 | `placement.nodeSelector` | map | — | Added to every pod the operator creates for the CR: apps, data stores, writer, readers, the demo-seed Job, the control-DB `PostgresSchema` migration Job, and the CNPG instances (through the Cluster's `spec.affinity`). `engine.writer.nodeSelector`, when set, replaces it for the writer. Unset = no selector, as before. |
 | `placement.tolerations` | list | — | Same scope as `placement.nodeSelector`; `engine.writer.tolerations`, when set, replaces it for the writer. |
 | `deletionProtection` | bool | false | Keep the data through CR deletion and component disable. The CNPG control-DB `Cluster` and its `ScheduledBackup` release the CR owner reference and record `orama.cloud/cloud-v1-owner-uid`, so deleting the CR leaves them; `controlDB.enabled: false` keeps them too, and the same CR UID can re-enable them. A replacement CR or an unmarked, unowned legacy database requires reviewed ownership handover ([components.md](components.md#controldb-internalcontrollercontroldbgo)). Every operator StatefulSet (writer, readers, stores) gets `persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`. Off: owned Cluster deletion/disable retains its existing behavior; foreign objects are refused. |
+| `masterAPIKeySecretRef` | object | — | `{name, key}` of the Secret holding `MASTER_API_KEY` (`key` defaults to `MASTER_API_KEY`). Engine, analytics-processor, index-builder, dashboard and workers all read it, and nothing else. Unset: `<cr>-master-api-key`, created once (from `<cr>-engine-secret`'s old value on an existing stack, random on a new one). Must equal the control DB's `oramacore_clusters.master_api_key`. |
+| `requireRealCredentials` | bool | false | Make the phase `Degraded` (and `Ready=False`, reason `CredentialsNotReady`) while `CredentialsReady` is False. Off: the condition is reported only. Prod 2 sets it. |
 
 ## `spec.components`
 
@@ -184,6 +186,16 @@ Present while the engine is enabled. `True` (`SideImages`) when `spec.images.ove
 `oramacore-writer` and `oramacore-reader`: the writer renders `writer.yaml` and readers `reader.yaml`.
 `False` (`CombinedImage`) while both sides run the shared `oramacore` image with the combined config,
 which means every reader also starts a writer side. It does not change the stack's `phase`.
+
+### `status.conditions[CredentialsReady]`
+
+Always present. `False` (`SeededOrMissingCredentials`) lists every `Secret/key` the running stack reads
+that is missing, empty, still its seeded dummy, or any other `dev-*` value: the component Secrets'
+seeded keys, `<cr>-broker-admin/password`, `<cr>-cache-auth/password` and the master API key. `True`
+(`CredentialsSet`) once none is left. Values are never written to status, events or logs. It changes
+the phase only with `spec.requireRealCredentials`. The broker and Redis passwords are generated (see
+[components.md](components.md#stack-wide-credentials-and-credentialsready-307-credentialsgo)), so on a
+new stack they are never listed unless deleted.
 
 ## `OramaCloudV1E2ETest` (separate CRD)
 

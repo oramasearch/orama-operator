@@ -104,8 +104,8 @@ func secretKeyEnv(name, secret, key string) corev1.EnvVar {
 // reconcileAnalyticsProcessor deploys analytics-processor (#5): the worker that pulls
 // /v1/analytics into ClickHouse. Its `server` binary reads a YAML config FILE (CONFIG_PATH) and
 // connects to ClickHouse + Postgres at startup — so the operator renders that file via an init
-// container (ClickHouse password + master key from the component Secret; the control-DB URI from
-// the CNPG or external credentials Secret) and mounts it. (The image is also
+// container (ClickHouse password from the component Secret; the master key from the master API key
+// Secret; the control-DB URI from the CNPG or external credentials Secret) and mounts it. (The image is also
 // patched at build to bind 0.0.0.0:8080 instead of its hardcoded 127.0.0.1:8888.)
 func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.AnalyticsProcessor.Enabled {
@@ -155,7 +155,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 				`sed -e "s#__CLICKHOUSE_PASSWORD__#$(esc "${CLICKHOUSE_PASSWORD}")#g" -e "s#__MASTER_API_KEY__#$(esc "${MASTER_API_KEY}")#g" -e "s#__CLICKHOUSE_USER__#$(esc "${CLICKHOUSE_USER}")#g" -e "s#__PG_URI__#$(esc "${PG_URI}")#g" /tmpl/config.yaml > /etc/analytics-processor/config.yaml`},
 		EnvFrom: envFromFor(oc, "analytics-processor"),
 		// The control-DB URI from the CNPG or external Secret (same key in both modes).
-		Env: []corev1.EnvVar{pgURIEnv(oc, "PG_URI")},
+		Env: []corev1.EnvVar{pgURIEnv(oc, "PG_URI"), masterAPIKeyEnv(oc)},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "config-tmpl", MountPath: "/tmpl"},
 			{Name: "rendered-config", MountPath: "/etc/analytics-processor"},

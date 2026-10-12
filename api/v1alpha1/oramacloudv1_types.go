@@ -75,6 +75,29 @@ type OramaCloudV1Spec struct {
 	// persistentVolumeClaimRetentionPolicy Retain/Retain. Default false.
 	// +optional
 	DeletionProtection bool `json:"deletionProtection,omitempty"`
+
+	// MasterAPIKeySecretRef names the Secret key holding OramaCore's MASTER_API_KEY, which feeds
+	// every component that reads it (engine, analytics-processor, index-builder, dashboard,
+	// workers). Unset, the operator uses <cr>-master-api-key (key MASTER_API_KEY), creating it once
+	// if absent. The value must equal the control DB's oramacore_clusters.master_api_key.
+	// +optional
+	MasterAPIKeySecretRef *MasterAPIKeySecretRef `json:"masterAPIKeySecretRef,omitempty"`
+
+	// RequireRealCredentials turns a False CredentialsReady condition (a Secret key still holding
+	// a seeded dummy value, or missing) into phase Degraded. Default false: the condition is
+	// reported but the phase follows component readiness only.
+	// +optional
+	RequireRealCredentials bool `json:"requireRealCredentials,omitempty"`
+}
+
+// MasterAPIKeySecretRef names the Secret key that holds the master API key.
+type MasterAPIKeySecretRef struct {
+	// Name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Key in the Secret. Defaults to MASTER_API_KEY.
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 // PlacementSpec is node placement applied to every operator-created pod.
