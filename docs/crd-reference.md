@@ -66,7 +66,7 @@ increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{host,extraHosts,tlsSecretName,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,extraHosts,tlsSecretName,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `sentry.{dsnSecretRef.{name,key},environment}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `engine` | `writer.gpu`, `writer.{host,extraHosts,tlsSecretName,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,extraHosts,tlsSecretName,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `sentry.{dsnSecretRef.{name,key},environment}`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host`, `extraHosts`, `tlsSecretName` (see [below](#public-hosts-and-origin-tls)), `envFrom`, `env` (see [below](#dashboardenvfrom-and-dashboardenv)), `crons` (see [below](#dashboardcrons)) | app.orama.com (Next.js) |
 | `docs` | `host`, `extraHosts`, `tlsSecretName` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
@@ -120,6 +120,19 @@ Setting, changing or removing `sentry` changes the config hash and rolls the wri
 DSN value in the same Secret key needs a manual rollout restart. Writer and reader pods carry
 `prometheus.io/scrape: "true"`, `prometheus.io/port: "8080"` and `prometheus.io/path: /metrics` for an
 annotation-driven scraper; the public Ingresses never serve `/metrics`.
+
+### Engine volume snapshots
+
+| Field under `spec.components.engine.snapshots` | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Take scheduled CSI `VolumeSnapshot`s of the writer's and every reader's `data` claim ([operator#316](https://github.com/oramasearch/orama-operator/issues/316)). Disabling stops new snapshots and pruning and drops the status; it never deletes a snapshot. |
+| `schedule` | `0 3 * * *` | 5-field cron (minute hour day-of-month month day-of-week), UTC; daily at 03:00 as on Prod 1. A descriptor (`@daily`), a time zone or an invalid expression fails the reconcile (`Ready=False`, `ReconcileError`). |
+| `keep` | `7` | Ready snapshots kept per claim, as on Prod 1; the oldest beyond it are deleted with their disk snapshots. Minimum 1. |
+| `volumeSnapshotClassName` | `orama-cloud-v1-retain` | Class every snapshot names. The default is created when absent (`disk.csi.azure.com`, `deletionPolicy: Retain`); a named class must exist and be `Retain`. |
+
+Snapshots are named `<claim>-<UTC timestamp>`, carry the CR's standard labels and no owner reference,
+and are timed from the newest existing snapshot of each claim. Behaviour and the restore runbook:
+[components.md](components.md#engine-volume-snapshots-316-engine_snapshotsgo).
 
 ### Prod 2 auth and public endpoints
 
@@ -303,6 +316,17 @@ seeded keys, `<cr>-broker-admin/password`, `<cr>-cache-auth/password` and the ma
 the phase only with `spec.requireRealCredentials`. The broker and Redis passwords are generated (see
 [components.md](components.md#stack-wide-credentials-and-credentialsready-307-credentialsgo)), so on a
 new stack they are never listed unless deleted.
+
+### `status.engineSnapshots` and `status.conditions[SnapshotsReady]`
+
+Present while `engine.snapshots` is enabled. `engineSnapshots[]` has one entry per existing engine
+data claim (`claim`, `component`, and its newest snapshot's `snapshotName`, `snapshotTime`,
+`readyToUse`, `error`). `SnapshotsReady` is `True` (`SnapshotsCurrent`) when every claim has a ready
+snapshot within two schedule periods; otherwise `False` with `SnapshotFailed` (a claim's newest
+snapshot reports an error), `SnapshotStale` (a claim's newest ready snapshot is older than two
+schedule periods), `SnapshotPending` (no ready snapshot yet), `ClassNotUsable` (no snapshot CRDs, a
+missing class, or a class that is not `Retain`) or `NoClaims`. It does not change the stack's
+`phase`. Written only when it changes.
 
 ### `status.analyticsImport`
 

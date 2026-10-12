@@ -335,6 +335,33 @@ type EngineSpec struct {
 	// starts without Sentry, as before.
 	// +optional
 	Sentry *EngineSentrySpec `json:"sentry,omitempty"`
+	// Snapshots takes scheduled CSI VolumeSnapshots of the writer's and every reader's data
+	// claim. Unset or disabled, no snapshot is taken. See docs/components.md.
+	// +optional
+	Snapshots *EngineSnapshotsSpec `json:"snapshots,omitempty"`
+}
+
+// EngineSnapshotsSpec schedules CSI VolumeSnapshots of the engine's data claims. The operator
+// takes them itself (no CronJob), names each <claim>-<UTC timestamp>, and deletes the oldest
+// beyond keep. Snapshots carry no owner reference, so deleting the CR never deletes them.
+type EngineSnapshotsSpec struct {
+	// Enabled takes snapshots. Disabling stops new snapshots and pruning; it never deletes one.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Schedule is a 5-field cron expression (minute hour day-of-month month day-of-week) in UTC.
+	// Default "0 3 * * *", daily at 03:00 UTC as on Prod 1.
+	// +optional
+	Schedule string `json:"schedule,omitempty"`
+	// Keep is how many ready snapshots of each claim are kept. Default 7, as on Prod 1.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	Keep int32 `json:"keep,omitempty"`
+	// VolumeSnapshotClassName is the class every snapshot names. Default orama-cloud-v1-retain,
+	// which the operator creates for disk.csi.azure.com with deletionPolicy Retain when it is
+	// absent. A named class must exist and have deletionPolicy Retain, so a snapshot's contents
+	// outlive the snapshot, the CR and its namespace.
+	// +optional
+	VolumeSnapshotClassName string `json:"volumeSnapshotClassName,omitempty"`
 }
 
 // EngineSentrySpec turns on OramaCore's Sentry client (log.sentry_dns and log.sentry_environment).
@@ -746,6 +773,31 @@ type OramaCloudV1Status struct {
 	// AnalyticsImport is set while spec.components.analyticsProcessor.import is enabled.
 	// +optional
 	AnalyticsImport *AnalyticsImportStatus `json:"analyticsImport,omitempty"`
+	// EngineSnapshots is the newest snapshot of each engine data claim, set while
+	// spec.components.engine.snapshots is enabled.
+	// +optional
+	// +listType=map
+	// +listMapKey=claim
+	EngineSnapshots []EngineSnapshotStatus `json:"engineSnapshots,omitempty"`
+}
+
+// EngineSnapshotStatus is the newest VolumeSnapshot of one engine data claim.
+type EngineSnapshotStatus struct {
+	// Claim is the PersistentVolumeClaim, e.g. data-<name>-writer-0.
+	Claim string `json:"claim"`
+	// Component is writer or reader.
+	Component string `json:"component"`
+	// SnapshotName is the newest VolumeSnapshot of the claim; empty before the first.
+	// +optional
+	SnapshotName string `json:"snapshotName,omitempty"`
+	// SnapshotTime is when the operator took it.
+	// +optional
+	SnapshotTime *metav1.Time `json:"snapshotTime,omitempty"`
+	// ReadyToUse is the snapshot's status.readyToUse.
+	ReadyToUse bool `json:"readyToUse"`
+	// Error is the snapshot's status.error.message, when the snapshotter reported one.
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 // +kubebuilder:object:root=true
