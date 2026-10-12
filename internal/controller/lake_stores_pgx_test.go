@@ -61,6 +61,14 @@ func TestStoresPgxStoreAgainstPostgres(t *testing.T) {
 		t.Fatalf("list without a stores table: %v, want errStoresTableMissing", err)
 	}
 	_ = before.Rollback(ctx)
+	beforeMounts, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&pgxServiceStore{db: beforeMounts}).ListStoreMounts(ctx); !errors.Is(err, errStoreMountsTableMissing) {
+		t.Fatalf("list without a store_mounts table: %v, want errStoreMountsTableMissing", err)
+	}
+	_ = beforeMounts.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, lakeSchemaSQL); err != nil {
 		t.Fatalf("apply the vendored lake schema: %v", err)
@@ -125,5 +133,39 @@ func TestStoresPgxStoreAgainstPostgres(t *testing.T) {
 	}
 	if len(stores) != 1 || stores[0].Status == nil || *stores[0].Status != status {
 		t.Fatalf("stores after status writes = %+v, want the volume with %+v", stores, status)
+	}
+
+	// Store mounts and used space (0080_store_mounts, lake#666).
+	appID := "0d0d0d0d-1111-4222-8333-444444444444"
+	if _, err := tx.Exec(ctx, `INSERT INTO store_mounts (store_id, object_kind, object_id, mount_path, read_only)
+		VALUES ($1, 'app', $2, '/data/x', true)`, testVolumeStoreID, appID); err != nil {
+		t.Fatalf("seed mount: %v", err)
+	}
+	mounts, err := store.ListStoreMounts(ctx)
+	if err != nil {
+		t.Fatalf("list mounts: %v", err)
+	}
+	want := LakeStoreMount{StoreID: testVolumeStoreID, ObjectKind: "app", ObjectID: appID, MountPath: "/data/x", ReadOnly: true,
+		Slug: testVolumeStoreSlug, Type: "volume", Provider: "cluster", Name: "data", Desired: "present"}
+	if len(mounts) != 1 || mounts[0] != want {
+		t.Fatalf("mounts = %+v, want %+v", mounts, want)
+	}
+	usage, err := store.ListStoreUsage(ctx)
+	if err != nil || len(usage) != 0 {
+		t.Fatalf("usage before a measurement = %v, %v", usage, err)
+	}
+	if err := store.UpdateStoreUsedBytes(ctx, testVolumeStoreID, 5<<20); err != nil {
+		t.Fatalf("write used bytes: %v", err)
+	}
+	usage, err = store.ListStoreUsage(ctx)
+	if err != nil || len(usage) != 1 || usage[testVolumeStoreID].UsedBytes != 5<<20 || usage[testVolumeStoreID].At.IsZero() {
+		t.Fatalf("usage = %v, %v", usage, err)
+	}
+	// The status write leaves the used space alone.
+	if err := store.UpsertStoreStatus(ctx, status); err != nil {
+		t.Fatal(err)
+	}
+	if usage, err = store.ListStoreUsage(ctx); err != nil || usage[testVolumeStoreID].UsedBytes != 5<<20 {
+		t.Fatalf("usage after a status write = %v, %v", usage, err)
 	}
 }

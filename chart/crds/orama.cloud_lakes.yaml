@@ -430,6 +430,15 @@ spec:
                   sandbox and a collect pod in the Lake's methodology-runs namespace. Needs Builds, which
                   builds each methodology's image. See docs/lake/methodology-runs.md.
                 properties:
+                  maxConcurrentRunsPerWorkspace:
+                    default: 2
+                    description: |-
+                      MaxConcurrentRunsPerWorkspace is how many of one workspace's runs may be staging, running
+                      or collecting at once. Runs past it wait as Queued, oldest first, and Lake shows why.
+                      Default 2.
+                    format: int32
+                    minimum: 1
+                    type: integer
                   runtimeImage:
                     description: |-
                       RuntimeImage is the private oramasearch/methodology-runtime image. Lake builds each
@@ -437,8 +446,10 @@ spec:
                       pods run it unchanged. Empty turns methodology runs off: a run then fails with that reason.
                     type: string
                   storageClassName:
-                    description: StorageClassName is the work volume's storage class;
-                      empty uses the cluster default.
+                    description: |-
+                      StorageClassName is the work volume's storage class; empty uses the cluster default. A GPU
+                      run's volume is placed in a zone where its GPU class has nodes by pinning the run's first pod
+                      there, so the class should bind volumes on first use (WaitForFirstConsumer).
                     type: string
                   workVolumeSize:
                     anyOf:

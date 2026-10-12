@@ -388,6 +388,76 @@ spec:
                 - repository
                 - revision
                 type: object
+              stores:
+                description: |-
+                  Stores are the workspace's stores the app mounts (lake#666), written by the apps sync from
+                  lake's store_mounts table; only a synchronized app may carry them. A volume is its claim
+                  mounted at mountPath; a bucket is its connection as STORE_<NAME>_* environment variables, with
+                  the credential fields copied from secretName.
+                items:
+                  description: LakeAppStoreMount is one store an app mounts.
+                  properties:
+                    bucket:
+                      description: Bucket, Endpoint, Region and Prefix are a bucket's
+                        connection.
+                      type: string
+                    claimName:
+                      description: ClaimName is a volume's PersistentVolumeClaim in
+                        the app's workspace namespace.
+                      type: string
+                    endpoint:
+                      type: string
+                    id:
+                      description: ID is the store's id in lake.
+                      minLength: 1
+                      type: string
+                    mountPath:
+                      description: MountPath is where a volume is mounted in the app's
+                        container.
+                      pattern: ^/[A-Za-z0-9._/-]{1,255}$
+                      type: string
+                    name:
+                      description: |-
+                        Name is the store's name; a bucket's environment variables are STORE_<NAME>_* with the name
+                        upper-cased and "-" as "_".
+                      pattern: ^[a-z][a-z0-9-]{0,30}$
+                      type: string
+                    prefix:
+                      type: string
+                    provider:
+                      description: Provider is the store's provider (cluster for a
+                        volume; r2, s3, b2, gcs or azure for a bucket).
+                      minLength: 1
+                      type: string
+                    readOnly:
+                      description: ReadOnly mounts a volume read-only.
+                      type: boolean
+                    region:
+                      type: string
+                    secretName:
+                      description: |-
+                        SecretName is the Secret, in this LakeApp's namespace, that the store's LakeSealedSecret
+                        delivered with the bucket's credential fields.
+                      type: string
+                    slug:
+                      description: Slug is the store's slug, st- and 12 hex digits.
+                      pattern: ^st-[0-9a-f]{12}$
+                      type: string
+                    type:
+                      description: Type is volume or object.
+                      enum:
+                      - volume
+                      - object
+                      type: string
+                  required:
+                  - id
+                  - name
+                  - provider
+                  - slug
+                  - type
+                  type: object
+                maxItems: 32
+                type: array
               sync:
                 description: |-
                   Sync is set by the apps-table controller. It selects generated local tokens and

@@ -136,7 +136,7 @@ func (o WorkloadObject) live() bool {
 	switch o.Kind {
 	case WorkloadKindWorkspace, WorkloadKindApp:
 		return o.Desired != "deleted"
-	case WorkloadKindService, WorkloadKindAgentLaunch:
+	case WorkloadKindService, WorkloadKindAgentLaunch, WorkloadKindMethodologyDeployment:
 		return o.Desired == serviceDesiredPresent
 	}
 	return true
@@ -391,6 +391,14 @@ func (ix *workloadIndex) classify(pod *corev1.Pod) (workloadKey, bool) {
 	if id := podLabels[agentLaunchIDLabel]; id != "" {
 		return workloadKey{WorkloadKindAgentLaunch, id}, true
 	}
+	if id := podLabels[methodologyDeploymentIDLabel]; id != "" {
+		// A served methodology model's serve pods (lake#690); its stage Job's pod is the
+		// operator's own transfer and is not the workspace's workload.
+		if podLabels[methodologyRunLakeLabel] == ix.lake.Name && podLabels[methodologyRunRoleLabel] == methodologyRoleServe {
+			return workloadKey{WorkloadKindMethodologyDeployment, id}, true
+		}
+		return workloadKey{}, false
+	}
 	if id := podLabels[methodologyRunIDLabel]; id != "" {
 		if podLabels[methodologyRunLakeLabel] == ix.lake.Name && podLabels[methodologyRunRoleLabel] == methodologyRoleSandbox {
 			return workloadKey{WorkloadKindMethodologyRun, id}, true
@@ -598,10 +606,11 @@ func (r *LakeReconciler) reconcileWorkloadResources(ctx context.Context, lake *o
 		}
 		// A pod counts only in its object's own namespace (a build in its build space, a
 		// methodology run in the Lake's methodology-runs namespace).
-		if key.kind == WorkloadKindMethodologyRun && pod.Namespace != methodologyRunsNamespace(ix.lake.Name) {
+		methodologyKind := key.kind == WorkloadKindMethodologyRun || key.kind == WorkloadKindMethodologyDeployment
+		if methodologyKind && pod.Namespace != methodologyRunsNamespace(ix.lake.Name) {
 			continue
 		}
-		if key.kind != WorkloadKindBuild && key.kind != WorkloadKindMethodologyRun && pod.Namespace != object.Namespace {
+		if key.kind != WorkloadKindBuild && !methodologyKind && pod.Namespace != object.Namespace {
 			continue
 		}
 		resources := podSpecResources(&pod.Spec, containerDefaults{})

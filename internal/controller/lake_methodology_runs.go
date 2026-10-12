@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ import (
 // it also pulls the built image from lake's registry (Basic user methodology-run).
 const (
 	MethodologyPhaseBuilding   = "Building"
+	MethodologyPhaseQueued     = "Queued"
 	MethodologyPhaseStaging    = "Staging"
 	MethodologyPhaseRunning    = "Running"
 	MethodologyPhaseCollecting = "Collecting"
@@ -84,6 +86,9 @@ const (
 	methodologyJobTTLSeconds    = int32(3600)
 	methodologyDefaultWorkSize  = "10Gi"
 	methodologyLakePublicHost   = "LAKE_PUBLIC_HOST"
+	// methodologyDefaultConcurrentRuns is how many of one workspace's runs may be staging,
+	// running or collecting at once when spec.methodologies.maxConcurrentRunsPerWorkspace is unset.
+	methodologyDefaultConcurrentRuns = int32(2)
 )
 
 var (
@@ -243,9 +248,10 @@ func methodologyNamespaceLabels(lake *oramav1alpha1.Lake) map[string]string {
 }
 
 // reconcileMethodologyNamespace creates the Lake's methodology-runs namespace (Pod Security
-// restricted) and its three policies: deny everything to every pod, let the stage and collect
-// pods reach DNS and lake's pods, and let a sandbox whose run was granted network reach DNS and
-// the public internet.
+// restricted) and its four policies: deny everything to every pod, let the stage and collect
+// pods reach DNS and lake's pods, let a sandbox (or a served model's serve pod) granted network
+// reach DNS and the public internet, and let lake's pods, and nothing else, reach a serve pod's
+// port (lake#690).
 func (r *LakeReconciler) reconcileMethodologyNamespace(ctx context.Context, lake *oramav1alpha1.Lake) (string, error) {
 	name := methodologyRunsNamespace(lake.Name)
 	desired := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: methodologyNamespaceLabels(lake),
@@ -275,6 +281,7 @@ func (r *LakeReconciler) reconcileMethodologyNamespace(ctx context.Context, lake
 		methodologyDenyPolicy(name),
 		methodologyTransferNetworkPolicy(lake, name),
 		methodologySandboxInternetPolicy(lake, name),
+		methodologyServeIngressPolicy(lake, name),
 	}
 	for _, wanted := range policies {
 		policy := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: wanted.Name, Namespace: name}}
@@ -333,11 +340,16 @@ func methodologySandboxInternetPolicy(lake *oramav1alpha1.Lake, namespace string
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: methodologySandboxInternet, Namespace: namespace},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{
-				methodologyRunLakeLabel:    lake.Name,
-				methodologyRunRoleLabel:    methodologyRoleSandbox,
-				methodologyRunNetworkLabel: methodologyNetworkGranted,
-			}},
+			// A run's sandbox, or a served model's serve pod (lake#690), whose person granted it the
+			// internet.
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					methodologyRunLakeLabel:    lake.Name,
+					methodologyRunNetworkLabel: methodologyNetworkGranted,
+				},
+				MatchExpressions: []metav1.LabelSelectorRequirement{{Key: methodologyRunRoleLabel,
+					Operator: metav1.LabelSelectorOpIn, Values: []string{methodologyRoleSandbox, methodologyRoleServe}}},
+			},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 			Egress: []networkingv1.NetworkPolicyEgressRule{
 				methodologyDNSRule(lake),
@@ -437,12 +449,137 @@ func methodologyTransferEnv(lake *oramav1alpha1.Lake, run *LakeMethodologyRun) [
 	}
 }
 
-func methodologyStagePod(lake *oramav1alpha1.Lake, run *LakeMethodologyRun) corev1.PodSpec {
-	return methodologyPod(run.RuntimeImage,
+// methodologyStagePod is the run's first pod, so the work volume's first consumer: with a
+// WaitForFirstConsumer storage class the volume is created in the zone the stage pod lands in. For
+// a GPU run, zones are the zones where nodes of its GPU class are (methodologyRunPlacement), so its
+// sandbox can be scheduled next to its data; empty leaves the stage pod free to go anywhere.
+func methodologyStagePod(lake *oramav1alpha1.Lake, run *LakeMethodologyRun, zones []string) corev1.PodSpec {
+	pod := methodologyPod(run.RuntimeImage,
 		[]string{methodologyCLI, "stage", "--lake", "$(LAKE_URL)", "--run", "$(RUN_ID)",
 			"--credential-file", methodologyCredentialDir + "/" + methodologyCredentialFile, "--out", methodologyWorkPath + "/in"},
 		methodologyTransferEnv(lake, run), methodologyTransferResources(),
 		methodologyWorkClaim(run.Slug), methodologyPullSecret(run.Slug), methodologyCredentialSecret(run.Slug))
+	if len(zones) > 0 {
+		pod.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{{
+					Key: corev1.LabelTopologyZone, Operator: corev1.NodeSelectorOpIn, Values: zones,
+				}}}},
+			},
+		}}
+	}
+	return pod
+}
+
+// methodologyPlacement is where a run's work volume may go: the zones its stage pod is pinned to
+// (none: anywhere), or why the run must wait.
+type methodologyPlacement struct {
+	Zones []string
+	Wait  string
+}
+
+// methodologyRunPlacement decides where a run's work volume goes (orama-operator#293). A run
+// without GPUs goes anywhere. A GPU run needs nodes that can run its sandbox: nodes labelled with
+// its GPU class (the sandbox's nodeSelector), or, without a class, nodes that offer GPUs. With none
+// it waits, and says so. Otherwise its volume goes in one of their zones
+// (topology.kubernetes.io/zone); nodes without a zone label add no zone, and when none has one (a
+// cluster without zones) the volume is not constrained. Unschedulable nodes do not count.
+func methodologyRunPlacement(nodes []corev1.Node, run *LakeMethodologyRun) methodologyPlacement {
+	if run.GPUs <= 0 {
+		return methodologyPlacement{}
+	}
+	class := validGPUClass(run.GPUClass)
+	zones := map[string]bool{}
+	matched := 0
+	for i := range nodes {
+		node := &nodes[i]
+		if node.Spec.Unschedulable {
+			continue
+		}
+		if class != "" {
+			if validGPUClass(node.Labels[gpuClassLabel]) != class {
+				continue
+			}
+		} else {
+			gpus := node.Status.Allocatable[resourceNvidiaGPU]
+			if gpus.IsZero() {
+				gpus = node.Status.Capacity[resourceNvidiaGPU]
+			}
+			if gpus.IsZero() {
+				continue
+			}
+		}
+		matched++
+		if zone := node.Labels[corev1.LabelTopologyZone]; zone != "" {
+			zones[zone] = true
+		}
+	}
+	if matched == 0 {
+		if class != "" {
+			return methodologyPlacement{Wait: fmt.Sprintf("Queued: no node of GPU class %s is in the cluster yet; the run starts when one is.", class)}
+		}
+		return methodologyPlacement{Wait: "Queued: no node with GPUs is in the cluster yet; the run starts when one is."}
+	}
+	placement := methodologyPlacement{}
+	for zone := range zones {
+		placement.Zones = append(placement.Zones, zone)
+	}
+	sort.Strings(placement.Zones)
+	return placement
+}
+
+// methodologyActive is a phase in which a run holds one of its workspace's places.
+func methodologyActive(phase string) bool {
+	return phase == MethodologyPhaseStaging || phase == MethodologyPhaseRunning || phase == MethodologyPhaseCollecting
+}
+
+// methodologyConcurrentRuns is the Lake's cap on one workspace's active runs.
+func methodologyConcurrentRuns(lake *oramav1alpha1.Lake) int32 {
+	if limit := lake.Spec.Methodologies.MaxConcurrentRunsPerWorkspace; limit > 0 {
+		return limit
+	}
+	return methodologyDefaultConcurrentRuns
+}
+
+// methodologyQueue admits a workspace's runs up to the Lake's cap, oldest first (orama-operator#293).
+// Runs already staging, running or collecting hold their places; one pass admits the others in
+// the order lake created them, while places are free.
+type methodologyQueue struct {
+	limit   int32
+	active  map[string]int32
+	waiting map[string]int32
+}
+
+func newMethodologyQueue(lake *oramav1alpha1.Lake, runs []LakeMethodologyRun) *methodologyQueue {
+	queue := &methodologyQueue{limit: methodologyConcurrentRuns(lake), active: map[string]int32{}, waiting: map[string]int32{}}
+	for i := range runs {
+		if runs[i].Desired == serviceDesiredPresent && runs[i].Status != nil && methodologyActive(runs[i].Status.Phase) {
+			queue.active[runs[i].WorkspaceID]++
+		}
+	}
+	return queue
+}
+
+// admit reports whether run may start staging now, taking a place when it does; otherwise the
+// message saying why it waits and where it is in line.
+func (q *methodologyQueue) admit(run *LakeMethodologyRun) (bool, string) {
+	if run.Status != nil && methodologyActive(run.Status.Phase) {
+		return true, ""
+	}
+	if q.active[run.WorkspaceID] < q.limit {
+		q.active[run.WorkspaceID]++
+		return true, ""
+	}
+	q.waiting[run.WorkspaceID]++
+	ahead := q.waiting[run.WorkspaceID] - 1
+	place := "this run is next"
+	if ahead == 1 {
+		place = "1 run is ahead of it"
+	} else if ahead > 1 {
+		place = fmt.Sprintf("%d runs are ahead of it", ahead)
+	}
+	return false, fmt.Sprintf("Queued: %d of this workspace's methodology runs are running (the limit is %d); %s.",
+		q.active[run.WorkspaceID], q.limit, place)
 }
 
 // methodologyCollectPod reports the result; exitCode is the sandbox's, passed as --run-exit-code
@@ -473,6 +610,14 @@ func methodologySandboxPod(run *LakeMethodologyRun, image string) corev1.PodSpec
 
 func (r *LakeReconciler) reconcileMethodologyPullSecret(ctx context.Context, lake *oramav1alpha1.Lake, namespace string,
 	run *LakeMethodologyRun, credential string, labels map[string]string) error {
+	return r.reconcileMethodologyPullSecretFor(ctx, lake, namespace, run.Slug, methodologyPullUser, credential, labels)
+}
+
+// reconcileMethodologyPullSecretFor writes `<slug>-pull`: the Lake's pull Secret entries plus lake's
+// public host with Basic `user` and the credential (methodology-run for a run,
+// methodology-deployment for a served model).
+func (r *LakeReconciler) reconcileMethodologyPullSecretFor(ctx context.Context, lake *oramav1alpha1.Lake, namespace,
+	slug, user, credential string, labels map[string]string) error {
 	var source *corev1.Secret
 	if lake.Spec.PullSecretName != "" {
 		source = &corev1.Secret{}
@@ -480,11 +625,11 @@ func (r *LakeReconciler) reconcileMethodologyPullSecret(ctx context.Context, lak
 			return fmt.Errorf("read the Lake's pull Secret: %w", err)
 		}
 	}
-	config, ok := mergeRegistryDockerConfig(source, lakePublicHost(lake), methodologyPullUser, []byte(credential))
+	config, ok := mergeRegistryDockerConfig(source, lakePublicHost(lake), user, []byte(credential))
 	if !ok {
 		return fmt.Errorf("the Lake's pull Secret %q has invalid dockerconfigjson data", lake.Spec.PullSecretName)
 	}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyPullSecret(run.Slug), Namespace: namespace}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: methodologyPullSecret(slug), Namespace: namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		secret.Labels = labels
 		secret.Type = corev1.SecretTypeDockerConfigJson
@@ -496,8 +641,15 @@ func (r *LakeReconciler) reconcileMethodologyPullSecret(ctx context.Context, lak
 
 func (r *LakeReconciler) reconcileMethodologyWorkClaim(ctx context.Context, lake *oramav1alpha1.Lake, namespace string,
 	run *LakeMethodologyRun, labels map[string]string) error {
+	return r.reconcileMethodologyClaim(ctx, lake, namespace, methodologyWorkClaim(run.Slug), labels)
+}
+
+// reconcileMethodologyClaim creates a run's work volume or a served model's model volume
+// (spec.methodologies.workVolumeSize and storageClassName), ReadWriteOnce.
+func (r *LakeReconciler) reconcileMethodologyClaim(ctx context.Context, lake *oramav1alpha1.Lake, namespace, name string,
+	labels map[string]string) error {
 	claim := &corev1.PersistentVolumeClaim{}
-	key := client.ObjectKey{Namespace: namespace, Name: methodologyWorkClaim(run.Slug)}
+	key := client.ObjectKey{Namespace: namespace, Name: name}
 	if err := r.Get(ctx, key, claim); err == nil {
 		return nil
 	} else if !apierrors.IsNotFound(err) {
@@ -655,7 +807,8 @@ func (r *LakeReconciler) recordMethodologyResources(ctx context.Context, store L
 // reconcileMethodologyRun advances one present run and reports what the operator observed, and
 // whether it is still changing.
 func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oramav1alpha1.Lake, store LakeServiceStore,
-	run *LakeMethodologyRun, namespace func() (string, error)) (LakeMethodologyRunStatus, bool, error) {
+	run *LakeMethodologyRun, namespace func() (string, error), queue *methodologyQueue,
+	nodes func() ([]corev1.Node, error)) (LakeMethodologyRunStatus, bool, error) {
 	status := LakeMethodologyRunStatus{RunID: run.ID, ObservedGeneration: run.Generation}
 	prior := run.Status
 	if prior != nil {
@@ -725,6 +878,37 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 		return fail("the image must be pinned by digest (name@sha256:<64 hex>)")
 	}
 
+	// Where its volume goes, and whether it may start now: a GPU run waits for a node of its class,
+	// and every run waits for a place among its workspace's runs (orama-operator#293).
+	var placement methodologyPlacement
+	if run.GPUs > 0 {
+		listed, err := nodes()
+		if err != nil {
+			return status, true, err
+		}
+		placement = methodologyRunPlacement(listed, run)
+	}
+	started := prior != nil && methodologyActive(prior.Phase)
+	if placement.Wait != "" && !started {
+		status.Phase, status.Message = MethodologyPhaseQueued, placement.Wait
+		return status, true, nil
+	}
+	if admitted, why := queue.admit(run); !admitted {
+		// A stage Job that already exists (a status write lost after it was created) is under way.
+		existing := &batchv1.Job{}
+		err := r.Get(ctx, client.ObjectKey{Namespace: methodologyRunsNamespace(lake.Name), Name: methodologyStageJob(run.Slug)}, existing)
+		switch {
+		case err == nil && existing.Labels[methodologyRunIDLabel] == run.ID:
+			queue.active[run.WorkspaceID]++
+			queue.waiting[run.WorkspaceID]--
+		case err == nil || apierrors.IsNotFound(err):
+			status.Phase, status.Message = MethodologyPhaseQueued, why
+			return status, true, nil
+		default:
+			return status, true, err
+		}
+	}
+
 	ns, err := namespace()
 	if err != nil {
 		return status, true, err
@@ -745,7 +929,7 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 
 	// 1. stage
 	stage, _, err := r.ensureMethodologyJob(ctx, lake, ns, methodologyStageJob(run.Slug),
-		methodologyLabels(lake, run, methodologyRoleStage), methodologyStagePod(lake, run), methodologyTransferDeadline)
+		methodologyLabels(lake, run, methodologyRoleStage), methodologyStagePod(lake, run, placement.Zones), methodologyTransferDeadline)
 	if err != nil {
 		return status, true, err
 	}
@@ -942,6 +1126,21 @@ func (r *LakeReconciler) reconcileLakeMethodologyRuns(ctx context.Context, lake 
 		}
 		return namespaceName, namespaceErr
 	}
+	queue := newMethodologyQueue(lake, runs)
+	var nodeList []corev1.Node
+	var nodesErr error
+	nodesDone := false
+	nodes := func() ([]corev1.Node, error) {
+		if !nodesDone {
+			var listed corev1.NodeList
+			nodesErr = r.reader().List(ctx, &listed)
+			nodeList, nodesDone = listed.Items, true
+			if nodesErr != nil {
+				nodesErr = fmt.Errorf("list nodes to place a GPU run: %w", nodesErr)
+			}
+		}
+		return nodeList, nodesErr
+	}
 	for i := range runs {
 		run := &runs[i]
 		var status LakeMethodologyRunStatus
@@ -955,7 +1154,7 @@ func (r *LakeReconciler) reconcileLakeMethodologyRuns(ctx context.Context, lake 
 			status, err = r.stopMethodologyRun(ctx, lake, store, run)
 		case serviceDesiredPresent:
 			var still bool
-			status, still, err = r.reconcileMethodologyRun(ctx, lake, store, run, namespace)
+			status, still, err = r.reconcileMethodologyRun(ctx, lake, store, run, namespace, queue, nodes)
 			changing = changing || still
 		default:
 			status = LakeMethodologyRunStatus{RunID: run.ID, Phase: MethodologyPhaseFailed,

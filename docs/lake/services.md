@@ -486,7 +486,10 @@ methods. It runs the **cluster volume** (a Lake-controlled PersistentVolumeClaim
 the claim exists and its `<slug>.json` connection is in `lake-<lake>-services`), the customer's own
 **buckets** (`r2`, `s3`, `b2`, `gcs`, `azure`: a `LakeSealedSecret` delivering the workspace's
 credential, lake#664) and the **Lake-run** pairs (`zetta`, `lake`: a connection only); the network
-filesystems are `Failed`. A schema without the `stores` table is logged and skipped; the services
+filesystems are `Failed`. The wrapper kinds (`sqlite`, `duckdb`, `polars`) mount the stores lake's
+`store_mounts` names for them (lake#666): a volume at its path, a bucket as `STORE_<NAME>_*`
+variables, both in the StatefulSet's pod template, so a change rolls the pods; the poll also
+reports each mounted volume's used space. A schema without the `stores` table is logged and skipped; the services
 carry on. The Secret keeps a store key by the same present-set rule as a service key, and keeps
 every `st-…` key when the stores read failed. Absent and provisioning stores keep the 2-second
 poll. The whole of it is [stores.md](stores.md).

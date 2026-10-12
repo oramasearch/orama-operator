@@ -72,7 +72,10 @@ through a mounted Secret ([services.md](services.md)). The same poll runs a cust
 (lake#196, lake#664): cluster volumes (one Lake-owned PersistentVolumeClaim each), the customer's
 own buckets on R2, S3, B2, GCS and Azure (one `LakeSealedSecret` delivering the workspace's
 credential each; the bucket itself is never touched) and Lake-run Zetta and Lake stores, each
-connection in the same Secret — [stores.md](stores.md).
+connection in the same Secret. Services and apps mount them (lake#666): a volume at a path in the
+pods the operator builds (apps and the sqlite, duckdb and polars services), a bucket as
+`STORE_<NAME>_*` variables, and the operator reports each volume's used space —
+[stores.md](stores.md).
 
 ## What a Lake reconciles into
 
@@ -127,8 +130,8 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    data**.
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
-   `oramasearch/lake` `db/schema.sql`), guard table = `mcp_connection_dispatch_guard` from
-   `0079_mcp_connection_dispatch`, version = hash of the SQL plus guard. The Job skips the file only when
+   `oramasearch/lake` `db/schema.sql`), guard table = `methodology_deployments_guard` from
+   `0083_methodology_deployments`, version = hash of the SQL plus guard. The Job skips the file only when
    the guard exists **and** every `INSERT INTO schema_migrations (version) VALUES ('NNNN_…')` in it
    is present in the database's `schema_migrations`; otherwise it applies the whole idempotent file,
    so a migration that merges out of order (0067 after 0068 and 0069, #271) still applies. A changed hash automatically
@@ -201,8 +204,13 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 20. **Methodology runs** (with builds and `spec.methodologies.runtimeImage`) — each
     `methodology_runs` row waits for its image build, then runs a stage, a sandbox and a collect pod
     in `lake-<name>-methodology-runs`: the sandbox carries no credential, no token and no network
-    unless granted. Phases and the sandbox's start and finish go to `methodology_run_status`. See
-    [`methodology-runs.md`](methodology-runs.md).
+    unless granted. A workspace runs at most `spec.methodologies.maxConcurrentRunsPerWorkspace`
+    (default 2) at once and the rest wait `Queued`, oldest first; a GPU run's stage pod, and so its
+    work volume, goes in a zone where its GPU class has nodes, or it waits `Queued` (orama-operator#293).
+    Phases and the sandbox's start and finish go to `methodology_run_status`. A trained model a
+    person publishes (`methodology_deployments`, lake#690) is staged by a Job with its own
+    credential and served by a `serve` Deployment of the methodology's image behind a Service that
+    only lake's pods can reach. See [`methodology-runs.md`](methodology-runs.md).
 
 **Status** reports overall service readiness through `phase` and `conditions[Ready]`, alongside
 Deployment replica counts, store binding, Postgres, schema, Zetta, backup, sealing, and data-service
@@ -622,6 +630,9 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 ## Open
 
 - #126 incremental migrations in `PostgresSchema`.
+- [`app-transfer.md`](app-transfer.md) — the `app_transfer` rows lake meters app traffic from:
+  each app's bytes in and out through ingress-nginx's per-Ingress counters, by hour; enabling the
+  controller's metrics, the counter arithmetic across restarts, and what is not counted (lake#661).
 - [`workload-resources.md`](workload-resources.md) — the `workload_resources` contract lake meters compute from: what each kind maps to, the effective-request arithmetic, GPU class and VRAM, and when a row is written, kept and deleted (lake#643).
-- [`methodology-runs.md`](methodology-runs.md) — a workspace methodology's runs as untrusted code: the stage, sandbox and collect pods, their namespace and policies, phases and metering (lake#655).
+- [`methodology-runs.md`](methodology-runs.md) — a workspace methodology's runs as untrusted code: the stage, sandbox and collect pods, their namespace and policies, phases, the per-workspace queue, GPU placement and metering (lake#655, orama-operator#293), and serving a trained model from Ship → Models (lake#690).
 - [`agents.md`](agents.md) — the Agent Library's agents, the launches of user-created agents on agent-runtime, their cron schedules as CronJobs, and each library agent's own agent-bus credential (lake#228, lake#231, lake#244, lake#269).
