@@ -723,3 +723,32 @@ func TestServicePodSelectorsCoverEveryKind(t *testing.T) {
 		t.Errorf("postgres selector keys = %v", keys)
 	}
 }
+
+func (f *fakeServiceStore) AddAppTransfer(_ context.Context, rows []AppTransfer, before time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.appTransferMissing {
+		return errAppTransferTableMissing
+	}
+	if f.appTransferErr != nil {
+		return f.appTransferErr
+	}
+	if f.appTransfer == nil {
+		f.appTransfer = map[string]AppTransfer{}
+	}
+	for _, row := range rows {
+		key := row.AppID + "@" + row.Hour.UTC().Format(time.RFC3339)
+		total := f.appTransfer[key]
+		total.AppID, total.WorkspaceID, total.Hour = row.AppID, row.WorkspaceID, row.Hour.UTC()
+		total.InBytes += row.InBytes
+		total.OutBytes += row.OutBytes
+		f.appTransfer[key] = total
+	}
+	for key, row := range f.appTransfer {
+		if row.Hour.Before(before) {
+			delete(f.appTransfer, key)
+		}
+	}
+	f.appTransferCalls++
+	return nil
+}

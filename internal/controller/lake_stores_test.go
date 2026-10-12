@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -239,10 +240,10 @@ func TestStoresForeignClaimRefused(t *testing.T) {
 }
 
 func TestStoresUnavailableProviderFails(t *testing.T) {
-	store := &fakeServiceStore{stores: []LakeStore{testStore(testBucketStoreID, testBucketStoreSlug, "object", "r2", `{}`)}}
+	store := &fakeServiceStore{stores: []LakeStore{testStore(testBucketStoreID, testBucketStoreSlug, "network_filesystem", "nfs", `{}`)}}
 	h := newServiceHarness(t, serviceTestLake(), store)
 	h.poll()
-	expectStoreStatus(t, store.storeStatus(t, testBucketStoreID), ServicePhaseFailed, "r2 object stores are not available on this lake yet", "")
+	expectStoreStatus(t, store.storeStatus(t, testBucketStoreID), ServicePhaseFailed, "nfs network_filesystem stores are not available on this lake yet", "")
 	var claims corev1.PersistentVolumeClaimList
 	if err := h.client.List(context.Background(), &claims); err != nil {
 		t.Fatal(err)
@@ -377,4 +378,46 @@ func TestStoresInvalidRows(t *testing.T) {
 			expectStoreStatus(t, store.storeStatus(t, testVolumeStoreID), ServicePhaseFailed, tc.message, "")
 		})
 	}
+}
+
+// LakeStoreUsageWrite is one UpdateStoreUsedBytes call on the fake store.
+type LakeStoreUsageWrite struct {
+	StoreID   string
+	UsedBytes int64
+}
+
+func (f *fakeServiceStore) ListStoreMounts(context.Context) ([]LakeStoreMount, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.storeMountsMissing {
+		return nil, errStoreMountsTableMissing
+	}
+	if f.storeMountsErr != nil {
+		return nil, f.storeMountsErr
+	}
+	return append([]LakeStoreMount(nil), f.storeMounts...), nil
+}
+
+func (f *fakeServiceStore) ListStoreUsage(context.Context) (map[string]LakeStoreUsage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.storeMountsMissing {
+		return nil, errStoreMountsTableMissing
+	}
+	out := map[string]LakeStoreUsage{}
+	for id, usage := range f.storeUsage {
+		out[id] = usage
+	}
+	return out, nil
+}
+
+func (f *fakeServiceStore) UpdateStoreUsedBytes(_ context.Context, storeID string, usedBytes int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.usedBytesWrites = append(f.usedBytesWrites, LakeStoreUsageWrite{StoreID: storeID, UsedBytes: usedBytes})
+	if f.storeUsage == nil {
+		f.storeUsage = map[string]LakeStoreUsage{}
+	}
+	f.storeUsage[storeID] = LakeStoreUsage{UsedBytes: usedBytes, At: time.Now()}
+	return nil
 }

@@ -3919,7 +3919,9 @@ INSERT INTO schema_migrations (version) VALUES ('0074_payment_provider')
 -- ---------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS workload_resources (
     object_kind  text        NOT NULL CHECK (object_kind IN ('workspace', 'service', 'store', 'app',
-                                                             'build', 'agent_launch')),
+                                                             'build', 'agent_launch',
+                                                             'agent_cron_run', 'methodology_run',
+                                                             'methodology_deployment')),
     object_id    uuid        NOT NULL,
     pods         integer     NOT NULL DEFAULT 0 CHECK (pods >= 0),
     cpu_millis   bigint      NOT NULL DEFAULT 0 CHECK (cpu_millis >= 0),
@@ -3973,7 +3975,7 @@ INSERT INTO schema_migrations (version) VALUES ('0076_organization_deletion')
 ALTER TABLE workload_resources DROP CONSTRAINT IF EXISTS workload_resources_object_kind_check;
 ALTER TABLE workload_resources ADD CONSTRAINT workload_resources_object_kind_check
     CHECK (object_kind IN ('workspace', 'service', 'store', 'app', 'build', 'agent_launch',
-                           'agent_cron_run'));
+                           'agent_cron_run', 'methodology_run', 'methodology_deployment'));
 
 CREATE TABLE IF NOT EXISTS metered_jobs_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -4064,7 +4066,7 @@ CREATE INDEX IF NOT EXISTS methodology_run_status_credential_idx
 ALTER TABLE workload_resources DROP CONSTRAINT IF EXISTS workload_resources_object_kind_check;
 ALTER TABLE workload_resources ADD CONSTRAINT workload_resources_object_kind_check
     CHECK (object_kind IN ('workspace', 'service', 'store', 'app', 'build', 'agent_launch',
-                           'agent_cron_run', 'methodology_run'));
+                           'agent_cron_run', 'methodology_run', 'methodology_deployment'));
 
 CREATE TABLE IF NOT EXISTS methodology_runs_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -4073,7 +4075,99 @@ INSERT INTO schema_migrations (version) VALUES ('0078_methodology_runs')
     ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------------------------------
--- 0079_methodology_run_queue (orama-operator#293, docs/api/methodologies.md#runs): the Orama
+-- 0079_mcp_connection_dispatch (lake#684, lake#685, docs/api/mcp-connections.md): where a
+-- workspace's MCP connections need Lake outside a request. One row per connection that has an
+-- agent with an input stream, a notifications stream or results still to publish (`streams`), or
+-- that re-exports tools through Lake's MCP (`exported_digest`, the SHA-256 of the tools/list
+-- entries it adds). The stream worker reads only the workspaces with a streaming row, and a
+-- workspace MCP session is told notifications/tools/list_changed when the digests change. Ids and
+-- a digest only: the connection is a record in its workspace Zetta. Lake writes it whenever it
+-- writes a connection. Idempotent; drops nothing.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mcp_connection_dispatch (
+    customer_id     uuid        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    workspace_id    uuid        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    connection_id   text        NOT NULL,
+    streams         boolean     NOT NULL DEFAULT false,
+    exported_digest text        NOT NULL DEFAULT '',
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, connection_id),
+    CONSTRAINT mcp_connection_dispatch_digest_format
+        CHECK (exported_digest = '' OR exported_digest ~ '^[0-9a-f]{64}$')
+);
+CREATE INDEX IF NOT EXISTS mcp_connection_dispatch_streams_idx
+    ON mcp_connection_dispatch (workspace_id) WHERE streams;
+
+CREATE TABLE IF NOT EXISTS mcp_connection_dispatch_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0079_mcp_connection_dispatch')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0080_store_mounts (lake#666, docs/control-plane/storage.md#mounts): which services and apps
+-- mount a store, and how much of a store is used. lake writes store_mounts when a service or an
+-- app is created or edited with `stores`, bumps the workload's generation and NOTIFYs
+-- lake_services; the operator mounts each store into the workload's pods and writes
+-- store_status.used_bytes (bytes in use, beside the size asked for) when it can measure it.
+-- Content-free desired state: ids, a path and a flag.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS store_mounts (
+    store_id    uuid        NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    object_kind text        NOT NULL,
+    object_id   uuid        NOT NULL,
+    -- Where a volume is mounted in the workload's containers; a bucket's mount is its
+    -- connection as environment variables and has no path ('').
+    mount_path  text        NOT NULL DEFAULT '',
+    read_only   boolean     NOT NULL DEFAULT false,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (store_id, object_kind, object_id),
+    CONSTRAINT store_mount_kind_check CHECK (object_kind IN ('service', 'app')),
+    CONSTRAINT store_mount_path_check
+        CHECK (mount_path = '' OR mount_path ~ '^/[A-Za-z0-9._/-]{1,255}$')
+);
+CREATE INDEX IF NOT EXISTS store_mounts_object_idx ON store_mounts (object_kind, object_id);
+
+ALTER TABLE store_status ADD COLUMN IF NOT EXISTS used_bytes bigint;
+ALTER TABLE store_status ADD COLUMN IF NOT EXISTS used_bytes_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS store_mounts_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0080_store_mounts')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0081_app_transfer (lake#661, docs/api/metering.md#app-traffic): the bytes each app receives and
+-- sends through the cluster's ingress controller, which lake never sees. Written only by the
+-- Orama operator: it reads the ingress controller's per-Ingress byte counters (ingress-nginx's
+-- `nginx_ingress_controller_request_size_sum` and `_response_size_sum`), and adds each poll's
+-- increase to the row of the app and the UTC hour it observed it in. `in_bytes` is what clients
+-- sent (request line, headers and body), `out_bytes` what the app sent back (headers and body).
+-- The row carries the app's workspace so an hour can still be charged after the app is deleted.
+-- Numbers only: no hosts, paths or content. Lake charges each closed hour once as `transfer` in
+-- the app's workspace Zetta. The operator deletes rows older than eight days. Idempotent; drops
+-- nothing.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS app_transfer (
+    app_id       uuid        NOT NULL,
+    workspace_id uuid        NOT NULL,
+    hour         timestamptz NOT NULL CHECK (extract(epoch FROM hour) % 3600 = 0),
+    in_bytes     bigint      NOT NULL DEFAULT 0 CHECK (in_bytes >= 0),
+    out_bytes    bigint      NOT NULL DEFAULT 0 CHECK (out_bytes >= 0),
+    observed_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (app_id, hour)
+);
+CREATE INDEX IF NOT EXISTS app_transfer_hour_idx ON app_transfer (hour);
+
+CREATE TABLE IF NOT EXISTS app_transfer_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0081_app_transfer')
+    ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0082_methodology_run_queue (orama-operator#293, docs/api/methodologies.md#runs): the Orama
 -- operator holds a methodology run back, with phase `Queued` and a message saying why, while its
 -- workspace already has as many runs staging, running or collecting as the Lake's
 -- `spec.methodologies.maxConcurrentRunsPerWorkspace` allows, or while no node of a GPU run's GPU
@@ -4089,11 +4183,11 @@ ALTER TABLE methodology_run_status ADD CONSTRAINT methodology_run_phase_check CH
 CREATE TABLE IF NOT EXISTS methodology_run_queue_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO schema_migrations (version) VALUES ('0079_methodology_run_queue')
+INSERT INTO schema_migrations (version) VALUES ('0082_methodology_run_queue')
     ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------------------------------
--- 0080_methodology_deployments (lake#690, docs/api/methodologies.md#serving-its-model): a model
+-- 0083_methodology_deployments (lake#690, docs/api/methodologies.md#serving-its-model): a model
 -- a workspace methodology trained (kind `python:W-…`) is served from Ship → Models by its own
 -- code. Publishing it writes one methodology_deployments row and NOTIFYs lake_services; the Orama
 -- operator runs it in the methodology-runs namespace as a `stage` Job (the pristine runtime image,
@@ -4184,5 +4278,5 @@ ALTER TABLE workload_resources ADD CONSTRAINT workload_resources_object_kind_che
 CREATE TABLE IF NOT EXISTS methodology_deployments_guard (
     applied_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO schema_migrations (version) VALUES ('0080_methodology_deployments')
+INSERT INTO schema_migrations (version) VALUES ('0083_methodology_deployments')
     ON CONFLICT DO NOTHING;
