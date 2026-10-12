@@ -46,7 +46,7 @@ func TestEngineConfigEnablesReaderAnalytics(t *testing.T) {
 	if _, ok := componentSecretData("engine")["MASTER_API_KEY"]; !ok {
 		t.Fatal("engine Secret seeds no MASTER_API_KEY")
 	}
-	render := renderConfigInit(oc)
+	render := renderConfigInit(oc, engineSideFor(oc, "reader"))
 	engineSecret := componentSecretName(oc, "engine")
 	if !slices.ContainsFunc(render.EnvFrom, func(e corev1.EnvFromSource) bool {
 		return e.SecretRef != nil && e.SecretRef.Name == engineSecret
