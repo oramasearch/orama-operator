@@ -62,17 +62,17 @@ func TestDashboardIngressExtraHostsAndTLS(t *testing.T) {
 func TestEngineIngressesHonourExtraHostsAndTLS(t *testing.T) {
 	oc := fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		e := &o.Spec.Components.Engine
-		e.Writer.Host = "writer.prod2.cluster.orama.ing"
+		e.Writer.Host = "writer.orama.ing"
 		e.Writer.IngressHostsSpec = oramav1alpha1.IngressHostsSpec{ExtraHosts: []string{"writer.orama.com"}, TLSSecretName: "writer-cert"}
-		e.Reader.Host = "collections.orama.ing"
+		e.Reader.Host = "reader.orama.ing"
 		e.Reader.IngressHostsSpec = oramav1alpha1.IngressHostsSpec{ExtraHosts: []string{"collections.orama.com"}, TLSSecretName: "reader-cert"}
 	})
 	cl, _ := reconcileOCV1(t, oc)
 	for _, c := range []struct {
 		name, host, extra, backend, secret string
 	}{
-		{"v1-writer", "writer.prod2.cluster.orama.ing", "writer.orama.com", "v1-writer:8080", "writer-cert"},
-		{"v1-reader", "collections.orama.ing", "collections.orama.com", "v1-reader:80", "reader-cert"},
+		{"v1-writer", "writer.orama.ing", "writer.orama.com", "v1-writer:8080", "writer-cert"},
+		{"v1-reader", "reader.orama.ing", "collections.orama.com", "v1-reader:80", "reader-cert"},
 	} {
 		ing := getObj(t, cl, c.name, &networkingv1.Ingress{})
 		if got, want := ingressRoutes(ing), map[string]string{c.host: c.backend, c.extra: c.backend}; !reflect.DeepEqual(got, want) {
@@ -89,8 +89,8 @@ func TestExtraHostsGetNoCloudflareDNSRecord(t *testing.T) {
 	oc := fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		c := &o.Spec.Components
 		c.Dashboard.Host, c.Dashboard.ExtraHosts = "app.orama.ing", []string{"app.orama.com"}
-		c.Engine.Reader.Host, c.Engine.Reader.ExtraHosts = "collections.orama.ing", []string{"collections.orama.com"}
-		c.Engine.Writer.Host, c.Engine.Writer.ExtraHosts = "writer.prod2.cluster.orama.ing", []string{"writer.orama.com"}
+		c.Engine.Reader.Host, c.Engine.Reader.ExtraHosts = "reader.orama.ing", []string{"collections.orama.com"}
+		c.Engine.Writer.Host, c.Engine.Writer.ExtraHosts = "writer.orama.ing", []string{"writer.orama.com"}
 		o.Spec.Cloudflare = oramav1alpha1.CloudflareSpec{Enabled: true, ManageDNS: true, APITokenSecretRef: &corev1.LocalObjectReference{Name: "cf"}}
 	})
 	cl, r := reconcileOCV1(t, oc)
@@ -113,7 +113,7 @@ func TestExtraHostsGetNoCloudflareDNSRecord(t *testing.T) {
 	for _, rec := range records.Items {
 		names[rec.Spec.Name] = true
 	}
-	want := map[string]bool{"app.orama.ing": true, "collections.orama.ing": true, "writer.prod2.cluster.orama.ing": true}
+	want := map[string]bool{"app.orama.ing": true, "reader.orama.ing": true, "writer.orama.ing": true}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("DNS record names = %v, want only the hosts %v", names, want)
 	}
@@ -125,8 +125,8 @@ func TestIngressClassNameAppliesToEveryIngress(t *testing.T) {
 			o.Spec.IngressClassName = c.class
 			o.Spec.Components.Dashboard.Host = "app.orama.ing"
 			o.Spec.Components.Docs.Host = "docs.orama.ing"
-			o.Spec.Components.Engine.Writer.Host = "writer.prod2.cluster.orama.ing"
-			o.Spec.Components.Engine.Reader.Host = "collections.orama.ing"
+			o.Spec.Components.Engine.Writer.Host = "writer.orama.ing"
+			o.Spec.Components.Engine.Reader.Host = "reader.orama.ing"
 		})
 		cl, _ := reconcileOCV1(t, oc)
 		var ings networkingv1.IngressList
@@ -152,9 +152,9 @@ func TestIngressHostConflictsFailReconcile(t *testing.T) {
 		want string
 	}{
 		{"extra host repeats another component's host", func(o *oramav1alpha1.OramaCloudV1) {
-			o.Spec.Components.Engine.Reader.Host = "collections.orama.ing"
-			o.Spec.Components.Dashboard.ExtraHosts = []string{"collections.orama.ing"}
-		}, `host "collections.orama.ing" is set in both dashboard.extraHosts and engine.reader.host`},
+			o.Spec.Components.Engine.Reader.Host = "reader.orama.ing"
+			o.Spec.Components.Dashboard.ExtraHosts = []string{"reader.orama.ing"}
+		}, `host "reader.orama.ing" is set in both dashboard.extraHosts and engine.reader.host`},
 		{"same host on two components", func(o *oramav1alpha1.OramaCloudV1) {
 			o.Spec.Components.Docs.Host = "app.orama.ing"
 		}, `host "app.orama.ing" is set in both dashboard.host and docs.host`},

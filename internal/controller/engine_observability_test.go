@@ -203,15 +203,15 @@ func TestEnginePodsCarryPrometheusAnnotations(t *testing.T) {
 func TestPublicEngineIngressesDoNotServeMetrics(t *testing.T) {
 	oc := fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		e := &o.Spec.Components.Engine
-		e.Writer.Host = "writer.prod2.cluster.orama.ing"
+		e.Writer.Host = "writer.orama.ing"
 		e.Writer.IngressHostsSpec = oramav1alpha1.IngressHostsSpec{ExtraHosts: []string{"writer.orama.com"}, TLSSecretName: "writer-cert"}
-		e.Reader.Host = "collections.orama.ing"
+		e.Reader.Host = "reader.orama.ing"
 		e.Reader.ExtraHosts = []string{"collections.orama.com"}
 	})
 	cl, r := reconcileOCV1(t, oc)
 	for _, c := range []struct{ name, host, extra string }{
-		{"v1-writer", "writer.prod2.cluster.orama.ing", "writer.orama.com"},
-		{"v1-reader", "collections.orama.ing", "collections.orama.com"},
+		{"v1-writer", "writer.orama.ing", "writer.orama.com"},
+		{"v1-reader", "reader.orama.ing", "collections.orama.com"},
 	} {
 		// The public Ingress itself routes only Prefix "/" (no /metrics rule of its own).
 		for _, rule := range getObj(t, cl, c.name, &networkingv1.Ingress{}).Spec.Rules {

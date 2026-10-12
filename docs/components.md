@@ -635,7 +635,9 @@ host is set)**.
 Every app container is pulled `Always` when its image is a tag (dev tags such as `v1-sandbox` are
 re-pushed) and `IfNotPresent` when it is digest-pinned (`repo@sha256:…` via
 `spec.images.overrides`), so a pinned production stack never depends on the registry to restart a
-pod.
+pod. `spec.images.requireDigests: true` makes pinning mandatory: before anything is written, the
+reconcile (`validateImageDigests`, `helpers.go`) fails with `Ready=False` naming every enabled
+component whose image resolved through `spec.images` lacks `@sha256:<digest>` (operator#317).
 
 **Node placement.** `spec.placement.{nodeSelector,tolerations}` is applied to every pod the operator
 creates for the CR: apps, data stores, the engine (writer, readers), the demo-seed Job,
@@ -699,8 +701,8 @@ cannot repoint Prod 1's record). Records created earlier are recognised by `stat
 any write and never gain the comment. A zone change on an existing record is refused (`ready: false`,
 nothing changes in either zone); mapping a host to the zone it is already in changes nothing. On
 delete, a commented record is removed only if it still carries its comment, and a legacy record is
-removed by ID as before (see `CloudflareDNSRecord` in `crd-reference.md`). Prod 2's hosts are `app.orama.ing`, `collections.orama.ing` and
-`writer.prod2.cluster.orama.ing`. Engine hosts reuse the dashboard's nginx ingress-class behavior.
+removed by ID as before (see `CloudflareDNSRecord` in `crd-reference.md`). Prod 2's hosts are `app.orama.ing`, `reader.orama.ing` and
+`writer.orama.ing`, one level deep so Cloudflare's `*.orama.ing` certificate covers them (operator#317). Engine hosts reuse the dashboard's nginx ingress-class behavior.
 
 These endpoint and DNS changes are unit-tested as of 2026-10-07 and have not been applied to AKS or
 Cloudflare. Prod 1's records remain read-only; this work makes no production calls.

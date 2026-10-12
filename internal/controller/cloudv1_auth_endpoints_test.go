@@ -34,7 +34,7 @@ func TestCloudV1JWTAndFirebase(t *testing.T) {
 		o.Spec.JWTIssuer = "https://app.orama.ing"
 		o.Spec.IDP = oramav1alpha1.IDPSpec{Provider: "firebase", ConfigSecretRef: &corev1.LocalObjectReference{Name: "firebase-server"}}
 		o.Spec.Components.Engine.Writer.JWT = &oramav1alpha1.WriterJWTSpec{
-			JWKSURL: "https://app.orama.ing/api/.well-known/jwks.json", Audience: "https://writer.prod2.cluster.orama.ing",
+			JWKSURL: "https://app.orama.ing/api/.well-known/jwks.json", Audience: "https://writer.orama.ing",
 		}
 	})
 	cl, r := reconcileOCV1(t, oc)
@@ -118,8 +118,8 @@ func TestCloudV1JWTRecoversPublicSecretWithoutRotation(t *testing.T) {
 
 func TestCloudV1PublicIngressAndDNSLifecycle(t *testing.T) {
 	oc := fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.Components.Engine.Writer.Host = "writer.prod2.cluster.orama.ing"
-		o.Spec.Components.Engine.Reader.Host = "collections.orama.ing"
+		o.Spec.Components.Engine.Writer.Host = "writer.orama.ing"
+		o.Spec.Components.Engine.Reader.Host = "reader.orama.ing"
 		o.Spec.Components.Dashboard.Host = "app.orama.ing"
 		o.Spec.Cloudflare = oramav1alpha1.CloudflareSpec{Enabled: true, ManageDNS: true, APITokenSecretRef: &corev1.LocalObjectReference{Name: "cf"}}
 	})
