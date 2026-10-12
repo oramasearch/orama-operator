@@ -535,6 +535,8 @@ host is set)**.
   missing referenced object fails the reconcile; the controller watches referenced Secrets and
   ConfigMaps and rolls the dashboard on a data change through a hash annotation (operator#311; see
   [crd-reference.md](crd-reference.md#dashboardenvfrom-and-dashboardenv)).
+  `dashboard.crons` adds the scheduled calls Prod 1 runs from Vercel; see
+  [Dashboard crons](#dashboard-crons).
 
 Every app container is pulled `Always` when its image is a tag (dev tags such as `v1-sandbox` are
 re-pushed) and `IfNotPresent` when it is digest-pinned (`repo@sha256:…` via
@@ -597,6 +599,22 @@ old Cloudflare credential Secret available through finalization. Prod 2's hosts 
 
 These endpoint and DNS changes are unit-tested as of 2026-10-07 and have not been applied to AKS or
 Cloudflare. Prod 1's records remain read-only; this work makes no production calls.
+
+## Dashboard crons
+
+`spec.components.dashboard.crons.enabled` owns three CronJobs, `<cr>-dashboard-cron-crawler`,
+`-index-gc` and `-consumption-sync`, the in-cluster equivalent of Prod 1's Vercel crons (operator#17).
+Each runs `curlimages/curl:8.10.1` to `GET http://<cr>-dashboard:3000<path>` with
+`Authorization: Bearer $CRON_SECRET`; the dashboard routes return 401 without it. `CRON_SECRET`
+comes from a `secretKeyRef` to the Secret key the dashboard reads it from (or `crons.secretRef`) and
+goes to curl on stdin. The pods follow CR placement and pull secrets, carry the hardening baseline
+and resource limits, and mount no service-account token. `Forbid` prevents overlapping runs (a slow
+crawler run makes the next minute's run skip); `--fail` makes a non-2xx response a failed Job.
+
+They are created suspended (`crons.suspend` defaults to true): two stacks running them at once would
+crawl and bill twice. At the cutover Prod 1's Vercel crons are switched off and `suspend: false` is
+set in the same step. Disabling the crons, or the dashboard, deletes the CronJobs this CR owns.
+Run outcomes are visible in Job status and logs; the stack's readiness does not include them.
 
 ## Analytics import
 

@@ -65,7 +65,7 @@ increase in place when the StorageClass allows expansion.
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
 | `engine` | `writer.gpu`, `writer.{host,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
-| `dashboard` | `host`, `envFrom`, `env` (see [below](#dashboardenvfrom-and-dashboardenv)) | app.orama.com (Next.js) |
+| `dashboard` | `host`, `envFrom`, `env` (see [below](#dashboardenvfrom-and-dashboardenv)), `crons` (see [below](#dashboardcrons)) | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
@@ -170,6 +170,31 @@ are never written anywhere else. A dashboard with no user references carries no 
 `CredentialsReady` follows the user env: a seeded `<cr>-dashboard-secret` key (`STRIPE_SECRET_KEY`,
 `RESEND_API_KEY`, ...) that `env` or `envFrom` provides is checked in the Secret the dashboard really
 reads it from, and not checked at all when it comes from a literal or a ConfigMap.
+
+### `dashboard.crons`
+
+The dashboard's three scheduled calls, which Prod 1 runs as Vercel crons from `vercel.json`, as
+CronJobs `<cr>-dashboard-cron-<name>` ([operator#17](https://github.com/oramasearch/orama-operator/issues/17)).
+Each sends `GET http://<cr>-dashboard:3000<path>` with `Authorization: Bearer $CRON_SECRET` to the
+in-cluster Service, never the public hostname.
+
+| Name | Path | Default schedule (UTC) |
+|---|---|---|
+| `crawler` | `/api/private/v1/run-crawler-cron` | `*/1 * * * *` |
+| `index-gc` | `/api/private/v1/run-index-gc-cron` | `0 * * * *` |
+| `consumption-sync` | `/api/billing/queue-consumption-sync` | `0 */6 * * *` |
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Create the CronJobs. Requires `dashboard.enabled`. Turning it off deletes the CronJobs this CR owns and leaves any other CronJob alone. |
+| `suspend` | `true` | Keep the CronJobs but start no runs. Set to `false` at the cutover, in the same step that turns Prod 1's Vercel crons off; running both stacks' crons crawls and bills twice. |
+| `secretRef` | unset | `SecretKeySelector` for `CRON_SECRET`. Unset means the Secret key the dashboard itself reads `CRON_SECRET` from (a `dashboard.envFrom` Secret, or a `dashboard.env` `secretKeyRef`); the reconcile fails when there is none or it is a literal or ConfigMap value. The dashboard compares the bearer with its own `CRON_SECRET`, so set this only when the two are kept in the same value elsewhere. |
+| `schedules.crawler`, `schedules.indexGC`, `schedules.consumptionSync` | the table above | Five-field cron in UTC, validated before scheduling; an override replaces only its own entry. |
+
+`curl --fail` turns a non-2xx response into a failed Job. The secret reaches the container through a
+`secretKeyRef` and is passed to curl on stdin, never in the spec or the process arguments. Each
+CronJob forbids concurrent runs, keeps one successful and three failed Jobs, and gives a run a
+300-second request timeout inside a 330-second Job deadline; Job retries are off.
 
 ### `analyticsProcessor.import`
 
