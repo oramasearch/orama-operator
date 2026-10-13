@@ -241,8 +241,10 @@ rules:
   - lakerestorerehearsals
   - lakes
   - lakesealedsecrets
+  - lakesets
   - oramacloudv1e2etests
   - oramacloudv1s
+  - oramacloudv1sets
   - oramaoperators
   - oramazettaclusters
   - postgresschemas
@@ -272,6 +274,8 @@ rules:
   - lakeenvironments/finalizers
   - lakes/finalizers
   - lakesealedsecrets/finalizers
+  - lakesets/finalizers
+  - oramacloudv1sets/finalizers
   - oramaoperators/finalizers
   - oramazettaclusters/finalizers
   - rabbitmqtopologies/finalizers
@@ -295,8 +299,10 @@ rules:
   - lakerestorerehearsals/status
   - lakes/status
   - lakesealedsecrets/status
+  - lakesets/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
+  - oramacloudv1sets/status
   - oramaoperators/status
   - oramazettaclusters/status
   - postgresschemas/status

@@ -936,6 +936,9 @@ Managing other clusters ([`infrastructure/README.md`](infrastructure/README.md),
 cluster's operator, with no flag: the operator is the same on a management cluster and a leaf, and
 a cluster manages others by holding the resources. `ClusterHelmRelease` and `OramaOperator` install
 pinned chart releases and the operator itself onto a managed cluster with the Helm library.
+`LakeSet` and `OramaCloudV1Set` (`managedset_controller.go`,
+[#391](https://github.com/oramasearch/orama-operator/issues/391)) apply `Lake` and `OramaCloudV1`
+instances onto managed clusters from one template, each member in its own namespace and independent of the others.
 
 | Controller | Reconciles | Creates |
 |---|---|---|
@@ -948,10 +951,14 @@ pinned chart releases and the operator itself onto a managed cluster with the He
   function, so the same pair always produces the same concrete resource.
 - **Create, observe and delete only.** A cluster is not changed after it exists; the `InSync`
   condition reports what differs.
-- **Nothing is installed on the new cluster yet.** Its platform layer and its own operator are the
-  next stages of [#355](https://github.com/oramasearch/orama-operator/issues/355).
-- **Not live-tested.** The tests run against a fake Azure Resource Manager. No real cluster has
-  been created by these controllers.
+- **What goes on a new cluster** is installed by `ClusterHelmRelease` and `OramaOperator`, and
+  its instances by `LakeSet` and `OramaCloudV1Set`
+  ([`infrastructure/README.md`](infrastructure/README.md)).
+- **Live.** Three clusters have been created with these kinds (`orama-nonprod-cluster-01`,
+  `orama-production-cluster-02`, `orama-production-cluster-03`), each with its platform layer,
+  operator and instances installed from the managing cluster. The unit tests run against a fake
+  Azure Resource Manager. Deleting a cluster, and changing one after creation, have not been
+  exercised against Azure.
 
 ## `Lake` — the lake service (liquid project)
 
