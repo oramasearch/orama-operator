@@ -91,9 +91,6 @@ func (r *CloudflareKVNamespaceReconciler) Reconcile(ctx context.Context, req ctr
 				return settle(ctrl.Result{}, statusErr)
 			}
 		}
-		if providerRefused(err) {
-			return ctrl.Result{RequeueAfter: refusalRecheckInterval}, nil
-		}
 		return ctrl.Result{}, err
 	}
 	if kv.Status.NamespaceID != id || !kv.Status.Ready {
@@ -197,12 +194,8 @@ func (r *CloudflareR2BucketReconciler) Reconcile(ctx context.Context, req ctrl.R
 				return settle(ctrl.Result{}, statusErr)
 			}
 		}
-		// Cloudflare refusing because of the account's configuration (R2 not enabled, a token
-		// without the permission) is recorded above and rechecked occasionally. It is not an error
-		// the manager should retry with backoff and log each time.
-		if providerRefused(err) {
-			return ctrl.Result{RequeueAfter: refusalRecheckInterval}, nil
-		}
+		// The error is returned, so it is logged and retried until its cause is fixed. For R2 the
+		// usual cause is the account: R2 not enabled, or a token without Workers R2 Storage: Edit.
 		return ctrl.Result{}, err
 	}
 	if !b.Status.Created || !b.Status.Ready {

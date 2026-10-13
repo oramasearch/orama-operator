@@ -373,7 +373,11 @@ func (r *AksClusterReconciler) writeStatus(ctx context.Context, cluster *oramav1
 	if reflect.DeepEqual(&cluster.Status, observed) {
 		return nil
 	}
-	return r.Status().Update(ctx, cluster)
+	// A patch of what changed, with no version precondition: this controller is the only writer
+	// of this status, so a read that is one write behind must not make the write fail.
+	base := cluster.DeepCopy()
+	base.Status = *observed.DeepCopy()
+	return r.Status().Patch(ctx, cluster, client.MergeFrom(base))
 }
 
 // setClusterStatus sets the phase, the message and the Ready condition together. The condition's
