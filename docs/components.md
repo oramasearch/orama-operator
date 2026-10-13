@@ -61,8 +61,8 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
   Keycloak non-secret config. Reconciled every pass.
 - **Per-component secrets** `<cr>-<component>-secret` — each holds **only the dummy
   credentials that component needs** (`componentSecretData`). e.g. `search-secret` =
-  `TYPESENSE_API_KEY`; `cache-secret` = empty (Redis is passwordless, #32); `engine-secret`
-  = master key + JWT keys + LLM keys; `dashboard-secret` = ClickHouse/JWT/Stripe (its **Postgres
+  `TYPESENSE_API_KEY`; `cache-secret` = empty (the Redis password is in `<cr>-cache-auth`, below);
+  `engine-secret` = LLM keys + model-download token; `dashboard-secret` = ClickHouse/Stripe (its **Postgres
   password comes from the CNPG `<cr>-controldb-app` secret**, not here — #32). **No shared blob** —
   a pod never sees a credential it doesn't use. **Create-if-absent** — the operator
   never overwrites an existing secret, so real / rotated values are
@@ -70,6 +70,66 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
 
 Each component consumes `envFrom: [<cr>-config, <cr>-<component>-secret]` (its own
 secret only). Everything is owner-referenced → GC'd with the CR.
+
+### Stack-wide credentials and `CredentialsReady` ([#307](https://github.com/oramasearch/orama-operator/issues/307), `credentials.go`)
+
+Three credentials are shared by several components. Each lives in **one** Secret that every client
+reads, created once (create-if-absent, so an existing Secret always wins) and labelled with the
+component `credentials`, so disabling the broker or cache does not delete it:
+
+| Secret | Keys | Created when | Read by |
+|---|---|---|---|
+| `<cr>-broker-admin` | `username` (`orama`), `password` (random) | the broker runs in this cluster | the broker's `rabbitmq.conf` (rendered by an init container), the engine config (writer and reader), harvest-master's `AMQP_HOST`, the `RabbitMQTopology` reconciler |
+| `<cr>-cache-auth` | `password` (random) | the cache runs in this cluster | Redis `--requirepass`, harvest-master's `REDIS_HOST`, index-builder's `REDIS_URL` |
+| `<cr>-master-api-key` | `MASTER_API_KEY` | `spec.masterAPIKeySecretRef` is unset | engine (`writer_side.master_api_key`), analytics-processor, index-builder, dashboard, workers |
+
+No credential value is in a pod spec or ConfigMap. Config files hold `__VAR__` placeholders that a
+`render-config` init container fills at pod start; URLs hold `$(VAR)` references that the kubelet
+expands from an earlier `secretKeyRef` env entry (for example
+`amqp://$(BROKER_USERNAME):$(BROKER_PASSWORD)@<cr>-broker:5672`), so a password used in a URL must be
+URL-safe (the generated ones are hex). `MASTER_API_KEY` is an explicit `env` entry, which wins over
+any old `MASTER_API_KEY` still in a component Secret (those copies are no longer read).
+
+`<cr>-master-api-key` must equal the copied control DB's `oramacore_clusters.master_api_key`. A new
+stack gets a random key; a stack reconciled before #307 starts with the value from
+`<cr>-engine-secret` so nothing changes on upgrade. To use an existing Secret instead, set
+`spec.masterAPIKeySecretRef` (`name`, `key` default `MASTER_API_KEY`).
+
+**`CredentialsReady` condition.** Every reconcile checks the Secret keys the running components read
+(each component Secret's seeded keys, the broker and Redis passwords, the master key) and sets
+`CredentialsReady=False` with the list of `Secret/key` pairs that are missing, empty, still their
+seeded value, or any other `dev-*` value; `True` once none is left. Values are compared in the
+operator and never written to status, events or logs. With `spec.requireRealCredentials: true` a False condition makes the phase `Degraded` and `Ready=False`
+(reason `CredentialsNotReady`); without it the phase follows component readiness only. Editing an
+owned Secret triggers a reconcile; a Secret named by `masterAPIKeySecretRef` is picked up on the next
+one.
+
+**Upgrading a stack created before #307.** The operator keeps every existing value, so nothing that
+connects today is locked out:
+- `<cr>-broker-admin` already exists with the old password, so the broker, engine and harvest-master
+  all render that password; the broker, writer, readers and harvest-master roll once for the new
+  templates. `CredentialsReady` names `<cr>-broker-admin/password` until it is changed.
+- `<cr>-cache-auth` is new: Redis restarts with `--requirepass`, and harvest-master and index-builder
+  roll with the password in their URLs in the same reconcile. Redis keeps no password on disk, so
+  nothing else changes.
+- `<cr>-master-api-key` is created from `<cr>-engine-secret`'s `MASTER_API_KEY`; the dashboard,
+  workers, index-builder and analytics-processor roll to read it. If those components' own Secrets
+  held a different key, set the right one in `<cr>-master-api-key` (or `masterAPIKeySecretRef`).
+
+**Changing the broker admin password on an existing broker.** RabbitMQ applies `default_user` and
+`default_pass` only when its data directory is empty, so a broker with data keeps the password it
+was created with. Change it in the broker first, then in the Secret, then restart its clients:
+
+```sh
+NEW=$(openssl rand -hex 24)
+kubectl -n <ns> exec <cr>-broker-0 -- rabbitmqctl change_password orama "$NEW"
+kubectl -n <ns> patch secret <cr>-broker-admin --type merge -p "{\"stringData\":{\"password\":\"$NEW\"}}"
+kubectl -n <ns> rollout restart statefulset/<cr>-writer statefulset/<cr>-reader deployment/<cr>-harvest-master
+```
+
+The same restart applies after changing `<cr>-cache-auth` (restart the cache, harvest-master and
+index-builder) or the master key (restart every component in the table): the operator does not roll
+pods when only a Secret value changes.
 
 **Disable ≠ leave running ([#23](https://github.com/oramasearch/orama-operator/issues/23)).**
 Owner-GC only fires on CR *deletion*; so when a `components.<x>.enabled` toggle flips off, the
@@ -96,8 +156,8 @@ cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boo
 `1/1` off their scoped secrets.
 
 > **Follow-ups:** edit the remaining dummy secret values in place for production
-> (they're plain in-cluster K8s Secrets; the operator won't overwrite them). (The JWT
-> keypair is already real + generated.)
+> (they're plain in-cluster K8s Secrets; the operator won't overwrite them); `CredentialsReady`
+> lists the ones left. (The JWT keypair is already real + generated.)
 
 ## Workload hardening — applied to EVERY component ([#18](https://github.com/oramasearch/orama-operator/issues/18))
 
@@ -235,8 +295,10 @@ Driven by `spec.region.role`:
   so a section shared by both sides is written once. Every config is a **template** — `master_api_key` is a `__MASTER_API_KEY__`
   placeholder and each LLM key a `__<PROVIDER>_API_KEY__` placeholder, so **no credential lives in
   the ConfigMap**. A `render-config` **init container** substitutes the real values into a shared
-  `emptyDir`: `MASTER_API_KEY` and `<PROVIDER>_API_KEY` from `<cr>-engine-secret` (via `envFrom`),
-  or a provider's key from its `apiKeySecretRef` (an `env` entry that overrides the `envFrom` one).
+  `emptyDir`: `MASTER_API_KEY` from the master API key Secret, the broker `user` and `password`
+  (`__BROKER_USERNAME__`, `__BROKER_PASSWORD__`) from `<cr>-broker-admin`, and `<PROVIDER>_API_KEY`
+  from `<cr>-engine-secret` (via `envFrom`), or a provider's key from its `apiKeySecretRef` (an `env`
+  entry that overrides the `envFrom` one).
   Each value is escaped for `sed` and sits in a single-quoted YAML scalar, so any character but a
   newline is safe. OramaCore reads the result via `CONFIG_PATH=/etc/oramacore/config.yaml` (env
   override can't reach nested keys such as `writer_side.master_api_key` — `config`'s `ORAMACORE_`
@@ -470,7 +532,13 @@ and reference the primary's endpoint). Images are overridable via
 | Store | Component | Image | Ports |
 |---|---|---|---|
 | Redis | `cache` | `redis:7-alpine` | 6379 |
-| RabbitMQ | `broker` | `rabbitmq:3.13-management` | 5672, 15672 |
+| RabbitMQ | `broker` | `rabbitmq:3.13-management` | 5672, 15672, 5552 |
+
+Redis runs with `--requirepass $(REDIS_PASSWORD)` from `<cr>-cache-auth`. The broker's
+`rabbitmq.conf` is a template whose `default_user`/`default_pass` a `render-config` init container
+fills from `<cr>-broker-admin`; `enabled_plugins` is mounted from the ConfigMap as before. A store with
+a config template carries an `orama.cloud/config-hash` annotation, so a template change rolls it. See
+[Stack-wide credentials](#stack-wide-credentials-and-credentialsready-307-credentialsgo).
 | ClickHouse | `analytics` | `clickhouse/clickhouse-server:24.8` | 8123, 9000 |
 | Typesense | `search` | `typesense/typesense:0.25.2` | 8108 |
 
@@ -500,8 +568,8 @@ and a `maxUnavailable: 0` PDB) — see [Workload hardening](#workload-hardening-
 
 > **Follow-ups:** these are single-node for light/medium. **Heavy/production** should
 > swap in the dedicated operators (Altinity ClickHouse, RabbitMQ cluster-operator) and
-> a clustered Typesense; wire credentials via the component secret (the Typesense API key
-> is a dev placeholder today). Binary-side right-sizing derived from the memory limits (Redis
+> a clustered Typesense; the Typesense API key is a seeded placeholder (reported by
+> `CredentialsReady`). Binary-side right-sizing derived from the memory limits (Redis
 > `maxmemory`, etc.) is [#42](https://github.com/oramasearch/orama-operator/issues/42).
 
 ## App compute — ingestion / workers / dashboard / docs (`app.go`, `ingestion.go`)

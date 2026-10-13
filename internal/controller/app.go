@@ -233,6 +233,7 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "workers", image: img, port: 8080, replicas: w.Replicas,
+		env:       []corev1.EnvVar{masterAPIKeyEnv(oc)},
 		resources: resourcesOr(w.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }
@@ -253,8 +254,9 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		image:       img,
 		port:        3000,
 		ingressHost: d.Host,
-		// Control-DB password + DATABASE_URL for Drizzle, from the CNPG or external Secret (#32, #34).
-		env: []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
+		// The master key, and the control-DB password + DATABASE_URL for Drizzle from the CNPG or
+		// external Secret (#32, #34).
+		env: []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
 	})

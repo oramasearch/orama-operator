@@ -2005,6 +2005,23 @@ spec:
                       type: object
                     type: array
                 type: object
+              masterAPIKeySecretRef:
+                description: |-
+                  MasterAPIKeySecretRef names the Secret key holding OramaCore's MASTER_API_KEY, which feeds
+                  every component that reads it (engine, analytics-processor, index-builder, dashboard,
+                  workers). Unset, the operator uses <cr>-master-api-key (key MASTER_API_KEY), creating it once
+                  if absent. The value must equal the control DB's oramacore_clusters.master_api_key.
+                properties:
+                  key:
+                    description: Key in the Secret. Defaults to MASTER_API_KEY.
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               peers:
                 description: |-
                   Peers lists the other regions (used by read tiers to reach the primary's
@@ -2063,6 +2080,12 @@ spec:
                 - name
                 - role
                 type: object
+              requireRealCredentials:
+                description: |-
+                  RequireRealCredentials turns a False CredentialsReady condition (a Secret key still holding
+                  a seeded dummy value, or missing) into phase Degraded. Default false: the condition is
+                  reported but the phase follows component readiness only.
+                type: boolean
             required:
             - region
             type: object
