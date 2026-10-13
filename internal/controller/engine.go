@@ -542,12 +542,13 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 			}
 			c.Resources.Limits[resourceNvidiaGPU] = resource.MustParse("1")
 		}
+		nodeSelector, tolerations := writerPlacement(oc)
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: enginePodAnnotations(side)},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets:              imagePullSecrets(oc),
-				NodeSelector:                  w.NodeSelector,
-				Tolerations:                   w.Tolerations,
+				NodeSelector:                  nodeSelector,
+				Tolerations:                   tolerations,
 				InitContainers:                engineInitContainers(oc, side),
 				Containers:                    []corev1.Container{c},
 				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
@@ -616,8 +617,11 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		if useEnvoy {
 			containers = append(containers, envoySidecar())
 		}
+		nodeSelector, tolerations := podPlacement(oc)
 		podSpec := corev1.PodSpec{
 			ImagePullSecrets:              imagePullSecrets(oc),
+			NodeSelector:                  nodeSelector,
+			Tolerations:                   tolerations,
 			InitContainers:                engineInitContainers(oc, side),
 			Containers:                    containers,
 			Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},

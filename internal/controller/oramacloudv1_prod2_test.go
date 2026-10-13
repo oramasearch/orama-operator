@@ -12,6 +12,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -378,7 +379,7 @@ func TestControlDBBackupInvalidConfigIsReportedNotApplied(t *testing.T) {
 func TestControlDBWithoutBackupRendersAsBefore(t *testing.T) {
 	cl, _ := reconcileOCV1(t, fullStackOCV1(nil))
 	spec, _, _ := unstructured.NestedMap(controlDBCluster(t, cl).Object, "spec")
-	for _, k := range []string{"backup"} {
+	for _, k := range []string{"backup", "affinity"} {
 		if _, ok := spec[k]; ok {
 			t.Errorf("old CR's Cluster gained spec.%s", k)
 		}
@@ -453,5 +454,100 @@ func TestWithoutDeletionProtectionBehavesAsBefore(t *testing.T) {
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
 	if !absent(t, cl, "v1-controldb", cluster) {
 		t.Error("unprotected control DB disable must still delete the Cluster")
+	}
+}
+
+// --- 6. node placement ---
+
+var prod2Placement = oramav1alpha1.PlacementSpec{
+	NodeSelector: map[string]string{"agentpool": "prod2"},
+	Tolerations:  []corev1.Toleration{{Key: "agentpool", Operator: corev1.TolerationOpEqual, Value: "prod2", Effect: corev1.TaintEffectNoSchedule}},
+}
+
+// podTemplates returns every pod spec the operator rendered, keyed by kind/name.
+func podTemplates(t *testing.T, cl client.Client) map[string]corev1.PodSpec {
+	t.Helper()
+	ctx := context.Background()
+	out := map[string]corev1.PodSpec{}
+	var deps appsv1.DeploymentList
+	var sts appsv1.StatefulSetList
+	var jobs batchv1.JobList
+	for _, l := range []client.ObjectList{&deps, &sts, &jobs} {
+		if err := cl.List(ctx, l, client.InNamespace("orama-system")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range deps.Items {
+		out["Deployment/"+d.Name] = d.Spec.Template.Spec
+	}
+	for _, s := range sts.Items {
+		out["StatefulSet/"+s.Name] = s.Spec.Template.Spec
+	}
+	for _, j := range jobs.Items {
+		out["Job/"+j.Name] = j.Spec.Template.Spec
+	}
+	return out
+}
+
+func TestPlacementAppliesToEveryPod(t *testing.T) {
+	gpuPool := map[string]string{"agentpool": "gpu"}
+	cl, _ := reconcileOCV1(t, fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Placement = prod2Placement
+		o.Spec.Components.Engine.Writer.GPU = false
+	}))
+	pods := podTemplates(t, cl)
+	if len(pods) < 20 {
+		t.Fatalf("only %d pod templates rendered; the full stack should render 20+", len(pods))
+	}
+	for name, p := range pods {
+		if p.NodeSelector["agentpool"] != "prod2" || len(p.Tolerations) != 1 || p.Tolerations[0].Value != "prod2" {
+			t.Errorf("%s placement = %v / %v, want the prod2 pool", name, p.NodeSelector, p.Tolerations)
+		}
+	}
+	if _, ok := pods["Job/v1-demo-seed"]; !ok {
+		t.Error("demo-seed Job not rendered")
+	}
+
+	ps := getObj(t, cl, "v1-controldb-schema", &oramav1alpha1.PostgresSchema{})
+	job := pgMigrationJobSpec(ps).Template.Spec
+	if job.NodeSelector["agentpool"] != "prod2" || len(job.Tolerations) != 1 {
+		t.Errorf("PostgresSchema migration Job placement = %v / %v", job.NodeSelector, job.Tolerations)
+	}
+	affinity, _, _ := unstructured.NestedMap(controlDBCluster(t, cl).Object, "spec", "affinity")
+	sel, _, _ := unstructured.NestedStringMap(affinity, "nodeSelector")
+	tols, _, _ := unstructured.NestedSlice(affinity, "tolerations")
+	if sel["agentpool"] != "prod2" || len(tols) != 1 || tols[0].(map[string]interface{})["value"] != "prod2" {
+		t.Errorf("CNPG affinity = %v", affinity)
+	}
+
+	// Writer settings take precedence over the CR-level placement.
+	cl, _ = reconcileOCV1(t, fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Placement = prod2Placement
+		o.Spec.Components.Engine.Writer.GPU = true
+		o.Spec.Components.Engine.Writer.NodeSelector = gpuPool
+	}))
+	pods = podTemplates(t, cl)
+	if p := pods["StatefulSet/v1-writer"]; p.NodeSelector["agentpool"] != "gpu" || len(p.Tolerations) != 1 || p.Tolerations[0].Value != "prod2" {
+		t.Errorf("writer placement = %v / %v, want the writer nodeSelector + the CR tolerations", p.NodeSelector, p.Tolerations)
+	}
+	if p := pods["StatefulSet/v1-reader"]; p.NodeSelector["agentpool"] != "prod2" {
+		t.Errorf("reader placement = %v, want the CR-level prod2 pool", p.NodeSelector)
+	}
+}
+
+func TestNoPlacementRendersAsBefore(t *testing.T) {
+	cl, _ := reconcileOCV1(t, fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.Engine.Writer.GPU = true
+		o.Spec.Components.Engine.Writer.NodeSelector = map[string]string{"gpu": "true"}
+	}))
+	for name, p := range podTemplates(t, cl) {
+		wantSelector := name == "StatefulSet/v1-writer"
+		if (p.NodeSelector != nil) != wantSelector || p.Tolerations != nil {
+			t.Errorf("%s placement = %v / %v; without spec.placement only the writer carries a selector", name, p.NodeSelector, p.Tolerations)
+		}
+	}
+	ps := getObj(t, cl, "v1-controldb-schema", &oramav1alpha1.PostgresSchema{})
+	if ps.Spec.NodeSelector != nil || ps.Spec.Tolerations != nil {
+		t.Errorf("old CR's PostgresSchema gained placement %+v", ps.Spec)
 	}
 }

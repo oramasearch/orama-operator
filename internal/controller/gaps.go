@@ -303,6 +303,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsImport(ctx context.Context, o
 	job := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, job, func() error {
 		job.Labels = labelsFor(oc, "analytics-import")
+		nodes, tolerations := podPlacement(oc)
 		// Preserve API-defaulted fields outside our intent so a steady schedule makes no writes.
 		job.Spec.Schedule = analyticsImportSchedule(oc)
 		job.Spec.TimeZone = strPtr("Etc/UTC")
@@ -314,7 +315,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsImport(ctx context.Context, o
 		pod := &jobSpec.Template.Spec
 		jobSpec.Template.Labels = labelsFor(oc, "analytics-import")
 		pod.RestartPolicy, pod.AutomountServiceAccountToken = corev1.RestartPolicyNever, boolPtr(false)
-		pod.ImagePullSecrets = imagePullSecrets(oc)
+		pod.NodeSelector, pod.Tolerations, pod.ImagePullSecrets = nodes, tolerations, imagePullSecrets(oc)
 		pod.Containers = []corev1.Container{{
 			Name: "import", Image: "curlimages/curl:8.10.1", ImagePullPolicy: corev1.PullIfNotPresent,
 			Args:                   []string{"--fail", "--silent", "--show-error", "--connect-timeout", "10", "--max-time", "240", "--request", "POST", "http://" + oc.Name + "-analytics-processor:8080/import"},

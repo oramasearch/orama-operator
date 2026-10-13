@@ -131,6 +131,8 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 	initContainers := def.initContainers
 	hardenAll(initContainers)
 
+	nodeSelector, tolerations := podPlacement(oc)
+
 	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
 		dep.Labels = lbls
@@ -138,6 +140,8 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 		podSpec := corev1.PodSpec{
 			ImagePullSecrets:              imagePullSecrets(oc),
+			NodeSelector:                  nodeSelector,
+			Tolerations:                   tolerations,
 			SecurityContext:               def.securityContext,
 			InitContainers:                initContainers,
 			Volumes:                       def.volumes,

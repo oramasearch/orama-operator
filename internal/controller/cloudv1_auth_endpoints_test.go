@@ -182,6 +182,8 @@ func TestCloudV1PublicIngressAndDNSLifecycle(t *testing.T) {
 
 func TestCloudV1ScheduledImportsAndScaling(t *testing.T) {
 	oc := scheduledImportsOC()
+	oc.Spec.Placement.NodeSelector = map[string]string{"agentpool": "prod2"}
+	oc.Spec.Placement.Tolerations = []corev1.Toleration{{Key: "agentpool", Value: "prod2", Operator: corev1.TolerationOpEqual, Effect: corev1.TaintEffectNoSchedule}}
 	oc.Spec.Images.PullSecretName = "private-images"
 	cl, r := reconcileOCV1(t, oc)
 	sts := getObj(t, cl, "v1-reader", &appsv1.StatefulSet{})
@@ -202,8 +204,8 @@ func TestCloudV1ScheduledImportsAndScaling(t *testing.T) {
 	if cron.Spec.Schedule != "*/5 * * * *" || cron.Spec.TimeZone == nil || *cron.Spec.TimeZone != "Etc/UTC" || cron.Spec.ConcurrencyPolicy != batchv1.ForbidConcurrent || !metav1.IsControlledBy(cron, oc) {
 		t.Errorf("schedule = %+v", cron.Spec)
 	}
-	if pod.ImagePullSecrets[0].Name != "private-images" || pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
-		t.Errorf("trigger identity = %+v", pod)
+	if pod.NodeSelector["agentpool"] != "prod2" || len(pod.Tolerations) != 1 || pod.ImagePullSecrets[0].Name != "private-images" || pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
+		t.Errorf("trigger placement/identity = %+v", pod)
 	}
 	if !slices.Contains(pod.Containers[0].Args, "POST") || !slices.Contains(pod.Containers[0].Args, "http://v1-analytics-processor:8080/import") || !slices.Contains(pod.Containers[0].Args, "--fail") || *cron.Spec.JobTemplate.Spec.BackoffLimit != 0 {
 		t.Error("trigger must POST to reachable Service, fail on HTTP errors and avoid duplicate retries")

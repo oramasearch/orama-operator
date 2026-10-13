@@ -70,6 +70,12 @@ type OramaCloudV1Spec struct {
 	// +optional
 	DemoSeed bool `json:"demoSeed,omitempty"`
 
+	// Placement pins every pod the operator creates for this CR (apps, data stores, engine,
+	// Jobs, and the CNPG control-DB instances) to a node pool. The writer's own
+	// nodeSelector/tolerations, when set, replace these for the writer.
+	// +optional
+	Placement PlacementSpec `json:"placement,omitempty"`
+
 	// DeletionProtection keeps the stack's data through CR deletion and component disable: the
 	// CNPG control-DB Cluster (and its ScheduledBackup) carry no owner reference and are never
 	// deleted by the operator, and every StatefulSet sets
@@ -99,6 +105,16 @@ type MasterAPIKeySecretRef struct {
 	// Key in the Secret. Defaults to MASTER_API_KEY.
 	// +optional
 	Key string `json:"key,omitempty"`
+}
+
+// PlacementSpec is node placement applied to every operator-created pod.
+type PlacementSpec struct {
+	// NodeSelector is merged into each pod's nodeSelector.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// Tolerations are added to each pod.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
 // VolumeSpec sizes one persistent data volume (a StatefulSet volumeClaimTemplate or the CNPG

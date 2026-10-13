@@ -107,6 +107,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboardCron(ctx context.Context, oc 
 	url := "http://" + oc.Name + "-dashboard:3000" + dc.path
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, job, func() error {
 		job.Labels = labelsFor(oc, dashboardCronsComponent)
+		nodes, tolerations := podPlacement(oc)
 		// Set only our intent so API-defaulted fields survive and a steady schedule makes no writes.
 		job.Spec.Schedule = dc.schedule
 		job.Spec.TimeZone = strPtr("Etc/UTC")
@@ -119,7 +120,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboardCron(ctx context.Context, oc 
 		jobSpec.Template.Labels = labelsFor(oc, dashboardCronsComponent)
 		pod := &jobSpec.Template.Spec
 		pod.RestartPolicy, pod.AutomountServiceAccountToken = corev1.RestartPolicyNever, boolPtr(false)
-		pod.ImagePullSecrets = imagePullSecrets(oc)
+		pod.NodeSelector, pod.Tolerations, pod.ImagePullSecrets = nodes, tolerations, imagePullSecrets(oc)
 		pod.Containers = []corev1.Container{{
 			Name: "call", Image: "curlimages/curl:8.10.1", ImagePullPolicy: corev1.PullIfNotPresent,
 			Command: []string{"/bin/sh", "-c", dashboardCronScript(url)},

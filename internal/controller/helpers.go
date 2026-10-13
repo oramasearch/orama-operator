@@ -134,6 +134,26 @@ func imagePullSecrets(oc *oramav1alpha1.OramaCloudV1) []corev1.LocalObjectRefere
 	return []corev1.LocalObjectReference{{Name: oc.Spec.Images.PullSecretName}}
 }
 
+// podPlacement is the CR-level node placement (spec.placement) for an operator-created pod. Both
+// are nil when unset, so a CR without placement renders the pod exactly as before.
+func podPlacement(oc *oramav1alpha1.OramaCloudV1) (map[string]string, []corev1.Toleration) {
+	return oc.Spec.Placement.NodeSelector, oc.Spec.Placement.Tolerations
+}
+
+// writerPlacement is the writer's node placement: spec.components.engine.writer.nodeSelector and
+// .tolerations each replace the CR-level placement when set, so the writer can move to a GPU pool.
+func writerPlacement(oc *oramav1alpha1.OramaCloudV1) (map[string]string, []corev1.Toleration) {
+	nodeSelector, tolerations := podPlacement(oc)
+	w := oc.Spec.Components.Engine.Writer
+	if len(w.NodeSelector) > 0 {
+		nodeSelector = w.NodeSelector
+	}
+	if len(w.Tolerations) > 0 {
+		tolerations = w.Tolerations
+	}
+	return nodeSelector, tolerations
+}
+
 // applyPVCRetention sets Retain/Retain on a StatefulSet's PVC retention policy when the CR has
 // spec.deletionProtection, so neither CR deletion nor a scale-down ever deletes its volumes even on
 // a cluster whose default differs. Without protection the field is left as the API server has it.

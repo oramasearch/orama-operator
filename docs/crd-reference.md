@@ -42,6 +42,8 @@ llm:
 | `cloudflare.zoneIDs` | map | — | Zone name → Cloudflare zone ID (e.g. `{orama.ing: <id>, orama.com: <id>}`). Each managed DNS host uses the zone with the longest matching suffix and falls back to the Secret's `zoneID`, so one CR can manage names in several zones. An existing record is never moved: if a host's zone changes, its `CloudflareDNSRecord` reports `ready: false` and nothing changes in either zone. Mapping a host to the zone it is already in changes nothing. |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
+| `placement.nodeSelector` | map | — | Added to every pod the operator creates for the CR: apps, data stores, writer, readers, the demo-seed Job, the control-DB `PostgresSchema` migration Job, and the CNPG instances (through the Cluster's `spec.affinity`). `engine.writer.nodeSelector`, when set, replaces it for the writer. Unset = no selector, as before. |
+| `placement.tolerations` | list | — | Same scope as `placement.nodeSelector`; `engine.writer.tolerations`, when set, replaces it for the writer. |
 | `deletionProtection` | bool | false | Keep the data through CR deletion and component disable. The CNPG control-DB `Cluster` and its `ScheduledBackup` release the CR owner reference and record `orama.cloud/cloud-v1-owner-uid`, so deleting the CR leaves them; `controlDB.enabled: false` keeps them too, and the same CR UID can re-enable them. A replacement CR or an unmarked, unowned legacy database requires reviewed ownership handover ([components.md](components.md#controldb-internalcontrollercontroldbgo)). Every operator StatefulSet (writer, readers, stores) gets `persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`. Off: owned Cluster deletion/disable retains its existing behavior; foreign objects are refused. |
 | `masterAPIKeySecretRef` | object | — | `{name, key}` of the Secret holding `MASTER_API_KEY` (`key` defaults to `MASTER_API_KEY`). Engine, analytics-processor, index-builder, dashboard and workers all read it, and nothing else. Unset: `<cr>-master-api-key`, created once (from `<cr>-engine-secret`'s old value on an existing stack, random on a new one). Must equal the control DB's `oramacore_clusters.master_api_key`. |
 | `requireRealCredentials` | bool | false | Make the phase `Degraded` (and `Ready=False`, reason `CredentialsNotReady`) while `CredentialsReady` is False. Off: the condition is reported only. Prod 2 sets it. |
@@ -270,7 +272,7 @@ A separately reviewed reader migration is required first; the operator never del
 StatefulSet to change this field. Disabling imports removes the schedule but keeps a headless Service
 already governing live readers. Disabling the processor removes its Deployment, config and schedule.
 Invalid prerequisites remove a previous schedule and degrade reconciliation. Trigger pods inherit
-pull secrets, mount no service-account token or credentials, forbid concurrent Jobs,
+placement and pull secrets, mount no service-account token or credentials, forbid concurrent Jobs,
 and make no automatic request retries. See [components.md](components.md#analytics-import) for
 listener/image requirements and failure limits.
 
@@ -597,6 +599,7 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.version` | Schema version recorded in `.status.appliedVersion` once applied. A change automatically replaces the prior Job with foreground deletion, waiting for its pods before starting the guarded apply. Lake hashes SQL plus guard; the dashboard hashes SQL. |
 | `spec.guardTable` | A `public` table that must exist for the Job to skip the apply. Default `crawler_configs`. When the schema file records migrations (`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`), the Job also requires every one of them in the database's `schema_migrations`, and otherwise applies the whole idempotent file ([#271](https://github.com/oramasearch/orama-operator/issues/271)). With no `schema_migrations` table, or a file that records none, the guard alone decides. |
 | `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
+| `spec.nodeSelector` / `spec.tolerations` | Placement for the migration Job's pod. `OramaCloudV1` copies its `spec.placement` here. Applies to Jobs created after the change. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `ReplacingMigrationJob` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
 

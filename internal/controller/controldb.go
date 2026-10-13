@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -114,10 +115,10 @@ func (r *OramaCloudV1Reconciler) resolveControlDBBackup(ctx context.Context, oc 
 // reconcileControlDB provisions the control-plane Postgres (PlanetScale in prod) as a
 // CloudNativePG Cluster. On the primary it bootstraps a fresh cluster; on a read tier
 // with replicate=true it stands up a replica cluster streaming from the primary peer.
-// spec.components.controlDB.storage sizes each instance's PVC, and controlDB.backup adds a Barman
-// object store + an owned ScheduledBackup. Under
-// spec.deletionProtection the Cluster and ScheduledBackup carry no owner reference, so deleting the
-// CR leaves them (and the data) in place.
+// spec.components.controlDB.storage sizes each instance's PVC, spec.placement pins the instances
+// through the Cluster's affinity, and controlDB.backup adds a Barman object store + an owned
+// ScheduledBackup. Under spec.deletionProtection the Cluster and ScheduledBackup carry no owner
+// reference, so deleting the CR leaves them (and the data) in place.
 // Requires the CloudNativePG operator to be installed (see helmfile).
 func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	db := oc.Spec.Components.ControlDB
@@ -134,6 +135,10 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 		return r.teardownControlDB(ctx, oc) // disable ≠ leave running (#23)
 	}
 	backup, err := r.resolveControlDBBackup(ctx, oc)
+	if err != nil {
+		return err
+	}
+	affinity, err := cnpgAffinity(oc)
 	if err != nil {
 		return err
 	}
@@ -158,6 +163,9 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 		spec := map[string]interface{}{
 			"instances": int64(profileInstances(oc)),
 			"storage":   storage,
+		}
+		if affinity != nil {
+			spec["affinity"] = affinity
 		}
 		if controlDBIsReplica(oc) {
 			// Replica cluster: stream from the primary region's Postgres endpoint.
@@ -216,6 +224,20 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBScheduledBackup(ctx context.C
 		return nil
 	})
 	return err
+}
+
+// cnpgAffinity renders spec.placement as the CNPG Cluster's spec.affinity (nodeSelector +
+// tolerations, which CNPG copies onto every instance pod). nil when no placement is set, so a CR
+// without placement renders the Cluster exactly as before.
+func cnpgAffinity(oc *oramav1alpha1.OramaCloudV1) (map[string]interface{}, error) {
+	nodeSelector, tolerations := podPlacement(oc)
+	if len(nodeSelector) == 0 && len(tolerations) == 0 {
+		return nil, nil
+	}
+	return runtime.DefaultUnstructuredConverter.ToUnstructured(&struct {
+		NodeSelector map[string]string   `json:"nodeSelector,omitempty"`
+		Tolerations  []corev1.Toleration `json:"tolerations,omitempty"`
+	}{nodeSelector, tolerations})
 }
 
 const cloudV1OwnerUIDAnnotation = "orama.cloud/cloud-v1-owner-uid"
@@ -291,12 +313,15 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBMigrations(ctx context.Contex
 	ps := &oramav1alpha1.PostgresSchema{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-controldb-schema", Namespace: oc.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ps, func() error {
 		ps.Labels = labelsFor(oc, "controldb")
+		nodeSelector, tolerations := podPlacement(oc)
 		ps.Spec = oramav1alpha1.PostgresSchemaSpec{
 			ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: controlDBAppSecret(oc), Key: "uri"},
 			SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: cmName, Key: "schema.sql"},
 			Version:             schemaVersion(dashboardSchemaSQL),
 			GuardTable:          controlDBSchemaGuardTable,
 			Image:               "postgres:16-alpine",
+			NodeSelector:        nodeSelector,
+			Tolerations:         tolerations,
 		}
 		return controllerutil.SetControllerReference(oc, ps, r.Scheme)
 	})

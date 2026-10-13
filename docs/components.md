@@ -233,7 +233,7 @@ Driven by `spec.region.role`:
 - **Writer** (primary only) — a `StatefulSet` (1 replica) running `oramasearch/oramacore` (or the
   writer-only image, see **Side-only images** below),
   a `volumeClaimTemplate` for `/app/.data` sized by `writer.storage` (default `10Gi`), and
-  `writer.nodeSelector`/`writer.tolerations`. Service on
+  `writer.nodeSelector`/`writer.tolerations` (each falls back to `spec.placement`). Service on
   `:8080`. When `writer.gpu` is set the writer container gets an `nvidia.com/gpu: 1` limit (added
   to `writer.resources` or the default caps): OramaCore computes embeddings in-process, so the GPU
   belongs to the writer ([#305](https://github.com/oramasearch/orama-operator/issues/305)).
@@ -498,7 +498,8 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
 - **Primary** — a fresh cluster, `spec.instances` from the profile (light 1 / medium
   2 / heavy 3), storage from `controlDB.storage` (default `10Gi` on the default StorageClass;
   CNPG grows the PVCs in place when the StorageClass allows expansion), `bootstrap.initdb`
-  creating the `oramacore` database.
+  creating the `oramacore` database. `spec.placement` becomes the Cluster's
+  `spec.affinity.{nodeSelector,tolerations}`, which CNPG puts on every instance pod.
 - **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** streaming
   from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
 - `mode: external` connects to a database the operator does not own, such as the shared
@@ -630,6 +631,12 @@ host is set)**.
   `dashboard.crons` adds the scheduled calls Prod 1 runs from Vercel; see
   [Dashboard crons](#dashboard-crons).
 
+**Node placement.** `spec.placement.{nodeSelector,tolerations}` is applied to every pod the operator
+creates for the CR: apps, data stores, the engine (writer, readers), the demo-seed Job,
+the control-DB `PostgresSchema` migration Job (through `PostgresSchema.spec.nodeSelector/
+tolerations`) and the CNPG instances (through the Cluster's `spec.affinity`). The writer's own
+`nodeSelector` / `tolerations` each replace the CR-level value when set. Without `spec.placement` every pod renders as before.
+
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.
 
@@ -699,7 +706,7 @@ Cloudflare. Prod 1's records remain read-only; this work makes no production cal
 Each runs `curlimages/curl:8.10.1` to `GET http://<cr>-dashboard:3000<path>` with
 `Authorization: Bearer $CRON_SECRET`; the dashboard routes return 401 without it. `CRON_SECRET`
 comes from a `secretKeyRef` to the Secret key the dashboard reads it from (or `crons.secretRef`) and
-goes to curl on stdin. The pods use the CR's pull secrets, carry the hardening baseline
+goes to curl on stdin. The pods follow CR placement and pull secrets, carry the hardening baseline
 and resource limits, and mount no service-account token. `Forbid` prevents overlapping runs (a slow
 crawler run makes the next minute's run skip); `--fail` makes a non-2xx response a failed Job.
 
@@ -712,7 +719,7 @@ Run outcomes are visible in Job status and logs; the stack's readiness does not 
 
 `spec.components.analyticsProcessor.import.enabled` owns a CronJob `<cr>-analytics-import`, which
 uses the existing `curlimages/curl:8.10.1` helper image to call
-`POST http://<cr>-analytics-processor:8080/import`. It uses the CR's pull secrets, has
+`POST http://<cr>-analytics-processor:8080/import`. It follows CR placement and pull secrets, has
 resource limits and the container hardening baseline, and mounts neither credentials nor a
 service-account token. The default schedule is every five minutes, in UTC. `Forbid` prevents
 concurrent Jobs; request retries and Job retries are off because imports drain reader logs.
