@@ -386,3 +386,37 @@ func TestE2EChartHoldsExactlyTheGatedKinds(t *testing.T) {
 		}
 	}
 }
+
+// A CRD the API server will refuse must not ship. gofmt treats a "// +kubebuilder" marker as
+// comment text and rewrites two single quotes in it into a typographic quote, which is not valid
+// CEL; the cluster refused ClusterHelmRelease for an empty-string literal in a validation rule on
+// 2026-10-12 (write size(x) > 0 instead). A validation rule in a shipped CRD is plain ASCII.
+func TestShippedCRDValidationRulesArePlainASCII(t *testing.T) {
+	for _, dir := range []string{"../chart/crds", "../chart/management-crds", "../chart/e2e-crds"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		for _, entry := range entries {
+			if !strings.HasSuffix(entry.Name(), ".yaml") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for number, line := range strings.Split(string(data), "\n") {
+				rule := strings.TrimPrefix(strings.TrimSpace(line), "- ")
+				if !strings.HasPrefix(rule, "rule:") {
+					continue
+				}
+				for _, r := range rule {
+					if r > 126 {
+						t.Errorf("%s/%s:%d: the rule has the non-ASCII character %q: %s", dir, entry.Name(), number+1, r, rule)
+						break
+					}
+				}
+			}
+		}
+	}
+}
