@@ -84,8 +84,16 @@ func (r *CloudflareKVNamespaceReconciler) Reconcile(ctx context.Context, req ctr
 	}
 	id, err := cfEnsureKVNamespace(ctx, token, accountID, kv.Spec.Title)
 	if err != nil {
-		kv.Status.Ready, kv.Status.Message = false, err.Error()
-		_ = r.Status().Update(ctx, &kv)
+		// Written only when it changes, so a standing failure produces no writes.
+		if kv.Status.Ready || kv.Status.Message != err.Error() {
+			kv.Status.Ready, kv.Status.Message = false, err.Error()
+			if statusErr := r.Status().Update(ctx, &kv); statusErr != nil {
+				return settle(ctrl.Result{}, statusErr)
+			}
+		}
+		if providerRefused(err) {
+			return ctrl.Result{RequeueAfter: refusalRecheckInterval}, nil
+		}
 		return ctrl.Result{}, err
 	}
 	if kv.Status.NamespaceID != id || !kv.Status.Ready {
@@ -182,8 +190,19 @@ func (r *CloudflareR2BucketReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, nil
 	}
 	if err := cfEnsureR2Bucket(ctx, token, accountID, b.Spec.Name); err != nil {
-		b.Status.Ready, b.Status.Message = false, err.Error()
-		_ = r.Status().Update(ctx, &b)
+		// Written only when it changes, so a standing failure produces no writes.
+		if b.Status.Ready || b.Status.Message != err.Error() {
+			b.Status.Ready, b.Status.Message = false, err.Error()
+			if statusErr := r.Status().Update(ctx, &b); statusErr != nil {
+				return settle(ctrl.Result{}, statusErr)
+			}
+		}
+		// Cloudflare refusing because of the account's configuration (R2 not enabled, a token
+		// without the permission) is recorded above and rechecked occasionally. It is not an error
+		// the manager should retry with backoff and log each time.
+		if providerRefused(err) {
+			return ctrl.Result{RequeueAfter: refusalRecheckInterval}, nil
+		}
 		return ctrl.Result{}, err
 	}
 	if !b.Status.Created || !b.Status.Ready {

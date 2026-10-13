@@ -577,6 +577,22 @@ nothing, and a partial component/event pair retries only the missing append. Lak
 as deterministic JSON in the component detail. See [Zetta as the operator datastore](zetta-datastore.md)
 and the [Lake observed-state contract](lake/README.md#observed-state-in-zetta).
 
+## What is and is not an error in the log (`reconcile_results.go`)
+
+The operator's log is read to see what is new, so two ordinary outcomes are kept out of it.
+
+- **A write conflict is a quiet requeue.** The object changed between the cached read and the
+  write; the reconcile runs again from a fresh read and nothing is logged. `settle` does this, and
+  also never returns a result together with an error (the manager ignores the result and warns).
+- **A provider refusing a request because of configuration is rechecked every 30 minutes**, not
+  retried with backoff. A 4xx other than 408 or 429 from Cloudflare or Azure (a feature not enabled
+  on the account, a credential without the permission) is written to the resource's status, once,
+  and the resource is tried again later. `providerRefused` decides. A 5xx or a network error is
+  still an error and is retried with backoff.
+
+The `CloudflareKVNamespace` and `CloudflareR2Bucket` controllers and the three cluster-management
+controllers use both. The other controllers predate this and still return such errors.
+
 ## Cluster management (`kubernetescluster_controller.go`, `akscluster_controller.go`, `azure_resource_manager.go`) — 🟡 implemented, not live-tested
 
 The management cluster's role ([`infrastructure/README.md`](infrastructure/README.md),

@@ -88,14 +88,14 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if !controllerutil.ContainsFinalizer(&cluster, aksClusterFinalizer) {
 		controllerutil.AddFinalizer(&cluster, aksClusterFinalizer)
 		if err := r.Update(ctx, &cluster); err != nil {
-			return ctrl.Result{}, err
+			return settle(ctrl.Result{}, err)
 		}
 	}
 
 	if credsErr != nil {
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhasePending, "CredentialsUnavailable", credsErr.Error())
-		return ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &cluster, observed)
+		return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &cluster, observed))
 	}
 
 	spec := cluster.Spec
@@ -107,7 +107,7 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhaseDegraded, "InvalidTags", problem)
 		cluster.Status.ObservedGeneration = cluster.Generation
-		return ctrl.Result{}, r.writeStatus(ctx, &cluster, observed)
+		return settle(ctrl.Result{}, r.writeStatus(ctx, &cluster, observed))
 	}
 
 	created, err := az.ensureResourceGroup(ctx, creds, spec.SubscriptionID, spec.ResourceGroup, spec.Location, spec.Tags)
@@ -118,7 +118,7 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// Recorded before anything else, so a later delete knows the group is the operator's.
 		cluster.Status.CreatedResourceGroup = true
 		if err := r.writeStatus(ctx, &cluster, observed); err != nil {
-			return ctrl.Result{}, err
+			return settle(ctrl.Result{}, err)
 		}
 		observed = cluster.Status.DeepCopy()
 	}
@@ -135,7 +135,7 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhaseProvisioning, "Creating", "Azure accepted the request to create the cluster")
 		cluster.Status.ObservedGeneration = cluster.Generation
-		return ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &cluster, observed)
+		return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &cluster, observed))
 	}
 
 	r.observe(&cluster, found)
@@ -150,17 +150,17 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			cluster.Generation, clusterPhaseReady, "Provisioned", "")
 		setInSync(&cluster.Status.Conditions, cluster.Generation, aksDrift(&cluster, found))
 		cluster.Status.ObservedGeneration = cluster.Generation
-		return ctrl.Result{RequeueAfter: aksSteadyRecheck}, r.writeStatus(ctx, &cluster, observed)
+		return settle(ctrl.Result{RequeueAfter: aksSteadyRecheck}, r.writeStatus(ctx, &cluster, observed))
 	case "Failed", "Canceled":
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhaseDegraded, "Azure"+state, "Azure reports the cluster's provisioning state as "+state)
 		cluster.Status.ObservedGeneration = cluster.Generation
-		return ctrl.Result{RequeueAfter: aksSteadyRecheck}, r.writeStatus(ctx, &cluster, observed)
+		return settle(ctrl.Result{RequeueAfter: aksSteadyRecheck}, r.writeStatus(ctx, &cluster, observed))
 	default:
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhaseProvisioning, "Azure"+state, "Azure reports the cluster's provisioning state as "+state)
 		cluster.Status.ObservedGeneration = cluster.Generation
-		return ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &cluster, observed)
+		return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &cluster, observed))
 	}
 }
 
@@ -178,7 +178,7 @@ func (r *AksClusterReconciler) finalize(ctx context.Context, cluster *oramav1alp
 			setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 				cluster.Generation, clusterPhaseDeleting, "CredentialsUnavailable",
 				"cannot delete the cluster in Azure: "+credsErr.Error())
-			return ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, cluster, observed)
+			return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, cluster, observed))
 		}
 		spec := cluster.Spec
 		name := aksClusterAzureName(cluster)
@@ -197,7 +197,7 @@ func (r *AksClusterReconciler) finalize(ctx context.Context, cluster *oramav1alp
 			cluster.Status.ProvisioningState = "Deleting"
 			setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 				cluster.Generation, clusterPhaseDeleting, "Deleting", "waiting for Azure to delete the cluster")
-			return ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, cluster, observed)
+			return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, cluster, observed))
 		}
 		if cluster.Status.CreatedResourceGroup {
 			exists, err := az.resourceGroupExists(ctx, creds, spec.SubscriptionID, spec.ResourceGroup)
@@ -210,12 +210,12 @@ func (r *AksClusterReconciler) finalize(ctx context.Context, cluster *oramav1alp
 				}
 				setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 					cluster.Generation, clusterPhaseDeleting, "Deleting", "waiting for Azure to delete the resource group")
-				return ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, cluster, observed)
+				return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, cluster, observed))
 			}
 		}
 	}
 	controllerutil.RemoveFinalizer(cluster, aksClusterFinalizer)
-	return ctrl.Result{}, r.Update(ctx, cluster)
+	return settle(ctrl.Result{}, r.Update(ctx, cluster))
 }
 
 // observe copies what Azure reports into status.
@@ -362,7 +362,7 @@ func (r *AksClusterReconciler) fail(ctx context.Context, cluster *oramav1alpha1.
 	setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 		cluster.Generation, phase, reason, err.Error())
 	if statusErr := r.writeStatus(ctx, cluster, observed); statusErr != nil {
-		return ctrl.Result{}, statusErr
+		return settle(ctrl.Result{}, statusErr)
 	}
 	return ctrl.Result{}, err
 }
