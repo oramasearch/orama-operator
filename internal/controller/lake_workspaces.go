@@ -689,6 +689,12 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNamespace(
 	return false, r.Update(ctx, namespace)
 }
 
+// The counts of Service and Secret objects are sized for a workspace that runs many datastores:
+// one Postgres is three Services, one Cassandra five, and each brings several Secrets. At 20
+// Services a workspace of two Postgres, a Kafka, a Polars and one stuck Cassandra was full, and
+// no other kind could be created (operator#435). The memory ceiling is 32Gi for the same reason:
+// it is a sum of limits, and a dozen small services reach 16Gi of limits while reserving 3Gi.
+//
 // The quota does not cap the sum of CPU limits. A CPU limit is only the ceiling a container may
 // burst to, so their sum says nothing about what a workspace uses or reserves: with a default limit
 // of one CPU, a workspace of nine pods using a third of a CPU between them was reported full at
@@ -697,14 +703,14 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNamespace(
 func defaultWorkspacePlan() oramav1alpha1.LakeWorkspacePlanSpec {
 	return oramav1alpha1.LakeWorkspacePlanSpec{
 		Quota: corev1.ResourceList{
-			corev1.ResourceLimitsMemory:           resource.MustParse("16Gi"),
+			corev1.ResourceLimitsMemory:           resource.MustParse("32Gi"),
 			corev1.ResourcePods:                   resource.MustParse("50"),
 			corev1.ResourceRequestsCPU:            resource.MustParse("4"),
 			corev1.ResourceRequestsMemory:         resource.MustParse("8Gi"),
 			corev1.ResourceRequestsStorage:        resource.MustParse("100Gi"),
 			corev1.ResourcePersistentVolumeClaims: resource.MustParse("20"),
-			corev1.ResourceSecrets:                resource.MustParse("50"),
-			corev1.ResourceServices:               resource.MustParse("20"),
+			corev1.ResourceSecrets:                resource.MustParse("200"),
+			corev1.ResourceServices:               resource.MustParse("100"),
 		},
 		DefaultRequest: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("100m"),
