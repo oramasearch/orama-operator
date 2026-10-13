@@ -172,7 +172,7 @@ type KubernetesClusterStatus struct {
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:scope=Cluster,shortName=kc
+//+kubebuilder:resource:scope=Cluster,shortName=kcluster
 //+kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.providerRef`
 //+kubebuilder:printcolumn:name="Region",type=string,JSONPath=`.spec.region`
 //+kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.kubernetesVersion`

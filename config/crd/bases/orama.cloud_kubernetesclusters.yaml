@@ -12,7 +12,7 @@ spec:
     listKind: KubernetesClusterList
     plural: kubernetesclusters
     shortNames:
-    - kc
+    - kcluster
     singular: kubernetescluster
   scope: Cluster
   versions:
