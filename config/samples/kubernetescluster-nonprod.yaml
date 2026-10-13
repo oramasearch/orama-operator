@@ -33,18 +33,21 @@ metadata:
   name: orama-nonprod-cluster-01
 spec:
   providerRef: azure-orama
-  region: westus2
+  region: westus2   # Washington state; chosen by Steve, 2026-10-12
   kubernetesVersion: "1.35"
   # Required, with no default. Delete destroys the cluster when this resource is deleted.
   deletionPolicy: Delete
   nodePools:
+    # One 8-core node to start, the machine type the management cluster uses. The pool may grow
+    # to five, the management cluster's range.
     - name: agentpool
       role: system
       machineSize: Standard_D8as_v7
-      count: 2
+      count: 1
       minCount: 1
       maxCount: 5
       zones: ["1", "2", "3"]
+    # Empty until a workload needs it, so it costs nothing to start.
     - name: userpool
       role: user
       machineSize: Standard_D8as_v7
