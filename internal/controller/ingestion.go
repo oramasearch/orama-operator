@@ -49,15 +49,17 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 		component: "harvest-master",
 		image:     componentImage(oc, "harvest-master", "harvest-master"),
 		port:      8080,
-		env: []corev1.EnvVar{
-			{Name: "APP_ENV", Value: "production"},
-			{Name: "EXPRESS_PORT", Value: "8080"},
-			{Name: "MONGODB_URL", Value: "mongodb://" + n + "-harvest-mongo:27017/harvest"},
-			{Name: "AMQP_HOST", Value: "amqp://orama:dev-rabbitmq-password@" + n + "-broker:5672"},
-			{Name: "REDIS_HOST", Value: "redis://" + n + "-cache:6379"}, // in-cluster Redis is passwordless
-			{Name: "MASTER_URI", Value: "http://" + n + "-harvest-master:8080"},
-			{Name: "WORKER_IMAGE", Value: componentImage(oc, "harvest", "harvest")},
-		},
+		// AMQP_HOST and REDIS_HOST are URLs whose credentials are $(VAR) references to the env
+		// entries before them, expanded by the kubelet from <cr>-broker-admin and <cr>-cache-auth.
+		env: append(brokerCredentialEnv(oc), redisPasswordEnvVar(oc),
+			corev1.EnvVar{Name: "APP_ENV", Value: "production"},
+			corev1.EnvVar{Name: "EXPRESS_PORT", Value: "8080"},
+			corev1.EnvVar{Name: "MONGODB_URL", Value: "mongodb://" + n + "-harvest-mongo:27017/harvest"},
+			corev1.EnvVar{Name: "AMQP_HOST", Value: amqpURL(oc)},
+			corev1.EnvVar{Name: "REDIS_HOST", Value: redisURL(oc)},
+			corev1.EnvVar{Name: "MASTER_URI", Value: "http://" + n + "-harvest-master:8080"},
+			corev1.EnvVar{Name: "WORKER_IMAGE", Value: componentImage(oc, "harvest", "harvest")},
+		),
 		resources: resourceReqs("128Mi", "50m", "512Mi"),
 	}); err != nil {
 		return err
@@ -86,11 +88,14 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 
 // indexBuilderEnv provides the non-secret half of index-builder's EnvSchema (in-cluster URLs +
 // constants + the CF KV namespace IDs from the owned KV CRs). Credential-shaped vars come via the
-// component Secret (envFrom). Nothing connects eagerly at boot, so present+valid env → healthy;
+// component Secret (envFrom), except MASTER_API_KEY (the master API key Secret) and the Redis
+// password (<cr>-cache-auth, referenced by REDIS_URL). Nothing connects eagerly at boot, so present+valid env → healthy;
 // external endpoints (Apify) + DATABASE_URL password are placeholders until real provisioning.
 func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 	n := oc.Name
 	return []corev1.EnvVar{
+		masterAPIKeyEnv(oc),
+		redisPasswordEnvVar(oc), // before REDIS_URL, which references it
 		{Name: "NODE_ENV", Value: "production"},
 		{Name: "TELEMETRY_WORKER_NAME", Value: "telemetry-worker"},
 		{Name: "SENTRY_DSN", Value: ""}, // empty disables Sentry
@@ -102,9 +107,12 @@ func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav
 		{Name: "DEPLOYMENT_API_BASE_URL", Value: "http://" + n + "-dashboard:3000"},
 		{Name: "APIFY_ACT_ENDPOINT", Value: "https://api.apify.com/v2/acts/placeholder/runs"},
 		{Name: "APIFY_DATASET_ENDPOINT", Value: "https://api.apify.com/v2/datasets/placeholder/items"},
-		{Name: "REDIS_URL", Value: "redis://" + n + "-cache:6379"}, // in-cluster Redis is passwordless
-		pgURIEnv(oc, "DATABASE_URL"),                               // CNPG-generated URI (real password), not a placeholder (#32)
-		{Name: "ORAMA_EMBEDDINGS_URL", Value: "http://" + n + "-disco:50051"},
+		{Name: "REDIS_URL", Value: redisURL(oc)},
+		pgURIEnv(oc, "DATABASE_URL"), // CNPG-generated URI (real password), not a placeholder (#32)
+		// The embeddings HTTP API index-builder POSTs to. Nothing in the stack serves it, so it is
+		// empty unless spec.components.ingestion.embeddingsURL names one; the variable stays because
+		// index-builder's EnvSchema requires it at boot.
+		{Name: "ORAMA_EMBEDDINGS_URL", Value: oc.Spec.Components.Ingestion.EmbeddingsURL},
 		{Name: "DISCO_URL", Value: "http://" + n + "-disco:8080"},
 		{Name: "DISCO_PEERS", Value: ""},
 		{Name: "DECRYPTER_BASE_URL", Value: "http://" + n + "-openai-decrypter:8080"},

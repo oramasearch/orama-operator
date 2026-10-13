@@ -129,6 +129,14 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  zoneIDs:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ZoneIDs maps a Cloudflare zone name (e.g. orama.com) to its zone ID. Each managed DNS host
+                      uses the zone with the longest matching suffix; a host matching no entry uses the
+                      apiTokenSecretRef Secret's `zoneID`. Lets one CR manage names in several zones.
+                    type: object
                 type: object
               components:
                 description: |-
@@ -141,8 +149,11 @@ spec:
                       operator/chart), pointed at an external endpoint, or centrally located.
                     properties:
                       credentialsSecretRef:
-                        description: CredentialsSecretRef (ExternalSecret-materialized)
-                          when Mode=external.
+                        description: |-
+                          CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
+                          required and must hold keys `uri` (connection URI) and `password`; the operator connects its
+                          clients with it but never provisions or migrates an external control DB. External analytics
+                          uses `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` for the dashboard and processor.
                         properties:
                           name:
                             default: ""
@@ -242,6 +253,23 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -252,6 +280,25 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      import:
+                        description: Import schedules POST /import. Unset leaves the
+                          processor unscheduled, as before.
+                        properties:
+                          enabled:
+                            description: Enabled opts in to an owned CronJob. Requires
+                              engine, analytics and controlDB enabled.
+                            type: boolean
+                          includeWriter:
+                            description: |-
+                              IncludeWriter also pulls the writer's reader side on a primary region. The writer serves no
+                              search traffic, so it normally has nothing to import.
+                            type: boolean
+                          schedule:
+                            default: '*/5 * * * *'
+                            description: Schedule is a five-field CronJob schedule
+                              in UTC.
+                            type: string
+                        type: object
                       resources:
                         description: |-
                           Resources overrides the component's pod resources. When unset the operator applies a
@@ -316,8 +363,11 @@ spec:
                       operator/chart), pointed at an external endpoint, or centrally located.
                     properties:
                       credentialsSecretRef:
-                        description: CredentialsSecretRef (ExternalSecret-materialized)
-                          when Mode=external.
+                        description: |-
+                          CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
+                          required and must hold keys `uri` (connection URI) and `password`; the operator connects its
+                          clients with it but never provisions or migrates an external control DB. External analytics
+                          uses `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` for the dashboard and processor.
                         properties:
                           name:
                             default: ""
@@ -416,6 +466,23 @@ spec:
                               otherwise to an implementation-defined value. Requests cannot exceed Limits.
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
+                        type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
                         type: object
                     required:
                     - enabled
@@ -426,8 +493,11 @@ spec:
                       operator/chart), pointed at an external endpoint, or centrally located.
                     properties:
                       credentialsSecretRef:
-                        description: CredentialsSecretRef (ExternalSecret-materialized)
-                          when Mode=external.
+                        description: |-
+                          CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
+                          required and must hold keys `uri` (connection URI) and `password`; the operator connects its
+                          clients with it but never provisions or migrates an external control DB. External analytics
+                          uses `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` for the dashboard and processor.
                         properties:
                           name:
                             default: ""
@@ -526,18 +596,90 @@ spec:
                               otherwise to an implementation-defined value. Requests cannot exceed Limits.
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
+                        type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
                         type: object
                     required:
                     - enabled
                     type: object
                   controlDB:
                     description: |-
-                      DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
-                      operator/chart), pointed at an external endpoint, or centrally located.
+                      ControlDBSpec is the control-plane Postgres: a DataStoreSpec (run as a CNPG Cluster when
+                      in-cluster) plus opt-in object-store backups.
                     properties:
+                      backup:
+                        description: |-
+                          Backup configures scheduled CNPG Barman object-store backups of the control DB. The
+                          credentials Secret lives in the CR's namespace. The default prefix is
+                          <namespace>/<name>/controldb.
+                        properties:
+                          destination:
+                            description: Destination identifies the object-store location.
+                              Bucket is required when Enabled is true.
+                            properties:
+                              bucket:
+                                description: Bucket is the object-store bucket name.
+                                  Required when backups are enabled.
+                                type: string
+                              endpointURL:
+                                description: EndpointURL overrides the Secret's s3ApiEndpoint.
+                                type: string
+                              path:
+                                description: Path is the bucket prefix. Empty defaults
+                                  to <namespace>/<name>/controldb.
+                                type: string
+                            type: object
+                          enabled:
+                            default: false
+                            description: Enabled turns on the CNPG Barman object store
+                              and ScheduledBackup. Default false.
+                            type: boolean
+                          retention:
+                            default: 30d
+                            description: Retention is the Barman retentionPolicy.
+                            type: string
+                          schedule:
+                            default: 0 0 3 * * *
+                            description: Schedule is a six-field CNPG cron expression.
+                            type: string
+                          secretRef:
+                            description: |-
+                              SecretRef names the R2/S3 credentials Secret in the CR's namespace. It is required when
+                              Enabled is true and must contain s3ApiEndpoint, accessKeyId, and secretAccessKey.
+                            properties:
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        type: object
                       credentialsSecretRef:
-                        description: CredentialsSecretRef (ExternalSecret-materialized)
-                          when Mode=external.
+                        description: |-
+                          CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
+                          required and must hold keys `uri` (connection URI) and `password`; the operator connects its
+                          clients with it but never provisions or migrates an external control DB. External analytics
+                          uses `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` for the dashboard and processor.
                         properties:
                           name:
                             default: ""
@@ -637,15 +779,282 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
                   dashboard:
-                    description: ToggleWithHost is a toggle plus an ingress host.
+                    description: |-
+                      DashboardSpec is the dashboard toggle and host, plus the environment a user supplies on top of
+                      the operator's wiring (the Stripe, Airbyte, S3, Slack, Upstash and other keys Prod 1 sets in Vercel).
                     properties:
+                      crons:
+                        description: Crons runs the dashboard's scheduled calls (Prod
+                          1's Vercel crons) as CronJobs. Off by default.
+                        properties:
+                          enabled:
+                            description: Enabled creates the CronJobs (requires the
+                              dashboard). Turning it off deletes the CR-owned ones.
+                            type: boolean
+                          schedules:
+                            description: Schedules overrides individual cron schedules
+                              (five fields, UTC). An empty entry keeps its default.
+                            properties:
+                              consumptionSync:
+                                description: ConsumptionSync schedules GET /api/billing/queue-consumption-sync.
+                                  Default "0 */6 * * *".
+                                type: string
+                              crawler:
+                                description: Crawler schedules GET /api/private/v1/run-crawler-cron.
+                                  Default "*/1 * * * *".
+                                type: string
+                              indexGC:
+                                description: IndexGC schedules GET /api/private/v1/run-index-gc-cron.
+                                  Default "0 * * * *".
+                                type: string
+                            type: object
+                          secretRef:
+                            description: |-
+                              SecretRef is the Secret key holding CRON_SECRET. Unset means wherever the dashboard itself reads
+                              CRON_SECRET from (a dashboard.envFrom Secret or a dashboard.env secretKeyRef); the reconcile fails
+                              when that is not a Secret key. Set this only when it must differ, since the dashboard compares
+                              the bearer with its own CRON_SECRET.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                          suspend:
+                            default: true
+                            description: Suspend stops new runs without deleting the
+                              CronJobs. Unset means true.
+                            type: boolean
+                        type: object
                       enabled:
                         default: true
                         type: boolean
+                      env:
+                        description: |-
+                          Env is appended after the operator's explicit env; an entry replaces the operator's variable of
+                          the same name (e.g. CLICKHOUSE_HOST for external analytics). Operator-owned names are refused
+                          as for envFrom. A change to a referenced Secret or ConfigMap key rolls the dashboard.
+                        items:
+                          description: EnvVar represents an environment variable present
+                            in a Container.
+                          properties:
+                            name:
+                              description: Name of the environment variable. Must
+                                be a C_IDENTIFIER.
+                              type: string
+                            value:
+                              description: |-
+                                Variable references $(VAR_NAME) are expanded
+                                using the previously defined environment variables in the container and
+                                any service environment variables. If a variable cannot be resolved,
+                                the reference in the input string will be unchanged. Double $$ are reduced
+                                to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e.
+                                "$$(VAR_NAME)" will produce the string literal "$(VAR_NAME)".
+                                Escaped references will never be expanded, regardless of whether the variable
+                                exists or not.
+                                Defaults to "".
+                              type: string
+                            valueFrom:
+                              description: Source for the environment variable's value.
+                                Cannot be used if value is not empty.
+                              properties:
+                                configMapKeyRef:
+                                  description: Selects a key of a ConfigMap.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                fieldRef:
+                                  description: |-
+                                    Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,
+                                    spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.
+                                  properties:
+                                    apiVersion:
+                                      description: Version of the schema the FieldPath
+                                        is written in terms of, defaults to "v1".
+                                      type: string
+                                    fieldPath:
+                                      description: Path of the field to select in
+                                        the specified API version.
+                                      type: string
+                                  required:
+                                  - fieldPath
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                resourceFieldRef:
+                                  description: |-
+                                    Selects a resource of the container: only resources limits and requests
+                                    (limits.cpu, limits.memory, limits.ephemeral-storage, requests.cpu, requests.memory and requests.ephemeral-storage) are currently supported.
+                                  properties:
+                                    containerName:
+                                      description: 'Container name: required for volumes,
+                                        optional for env vars'
+                                      type: string
+                                    divisor:
+                                      anyOf:
+                                      - type: integer
+                                      - type: string
+                                      description: Specifies the output format of
+                                        the exposed resources, defaults to "1"
+                                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                      x-kubernetes-int-or-string: true
+                                    resource:
+                                      description: 'Required: resource to select'
+                                      type: string
+                                  required:
+                                  - resource
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                secretKeyRef:
+                                  description: Selects a key of a secret in the pod's
+                                    namespace
+                                  properties:
+                                    key:
+                                      description: The key of the secret to select
+                                        from.  Must be a valid secret key.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the Secret or its
+                                        key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
+                          required:
+                          - name
+                          type: object
+                        type: array
+                      envFrom:
+                        description: |-
+                          EnvFrom lists Secrets and ConfigMaps in the CR's namespace, appended after the operator's own
+                          envFrom sources (the shared ConfigMap, <cr>-dashboard-secret, <cr>-jwt), so a key here
+                          overrides the shared ConfigMap and the seeded dashboard Secret. It does not override explicit
+                          env (use env for that). A source that is missing (and not optional) or that carries an
+                          operator-owned key (DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY,
+                          JWT_ISSUER, MASTER_API_KEY) fails the reconcile. A change to a source's data rolls the dashboard.
+                        items:
+                          description: EnvFromSource represents the source of a set
+                            of ConfigMaps
+                          properties:
+                            configMapRef:
+                              description: The ConfigMap to select from
+                              properties:
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap must
+                                    be defined
+                                  type: boolean
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            prefix:
+                              description: An optional identifier to prepend to each
+                                key in the ConfigMap. Must be a C_IDENTIFIER.
+                              type: string
+                            secretRef:
+                              description: The Secret to select from
+                              properties:
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the Secret must be
+                                    defined
+                                  type: boolean
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
+                        type: array
+                      extraHosts:
+                        description: |-
+                          ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+                          same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+                          ingress by hand. A host may appear once across the CR's components; an extra host equal to
+                          host fails the reconcile.
+                        items:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
                       host:
                         type: string
                       resources:
@@ -703,6 +1112,13 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      tlsSecretName:
+                        description: |-
+                          TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+                          Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+                          with this Secret; empty, the Ingress has no tls section.
+                        maxLength: 253
+                        type: string
                     required:
                     - enabled
                     type: object
@@ -776,6 +1192,18 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      extraHosts:
+                        description: |-
+                          ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+                          same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+                          ingress by hand. A host may appear once across the CR's components; an extra host equal to
+                          host fails the reconcile.
+                        items:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
                       host:
                         type: string
                       resources:
@@ -833,6 +1261,13 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      tlsSecretName:
+                        description: |-
+                          TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+                          Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+                          with this Secret; empty, the Ingress has no tls section.
+                        maxLength: 253
+                        type: string
                     required:
                     - enabled
                     type: object
@@ -847,10 +1282,71 @@ spec:
                         description: Envoy enables the per-reader :80->:8080 reverse
                           proxy (matches prod).
                         type: boolean
+                      hooks:
+                        description: |-
+                          Hooks tunes the runtime that runs customer JavaScript hooks on the writer and readers. The
+                          operator always renders an outbound deny list (Prod 1's private, loopback, link-local and
+                          reserved ranges plus the cluster's own names); this only adds to it and sets the timeouts.
+                        properties:
+                          evaluationTimeout:
+                            description: EvaluationTimeout bounds loading a hook's
+                              code. Default 200ms, as on Prod 1.
+                            type: string
+                          executionTimeout:
+                            description: ExecutionTimeout bounds one run of a hook.
+                              Default 1s, as on Prod 1.
+                            type: string
+                          extraDeniedDomains:
+                            description: |-
+                              ExtraDeniedDomains are appended to the default deny list, once each. An entry is a host
+                              pattern matched against the URL host a hook fetches (not the resolved address): a literal
+                              host, or a glob in which "*" stays within one dot-separated label and "**" spans labels
+                              ("10.244.**" denies every 10.244.x.y). CIDR notation does not match anything, so it is refused.
+                            items:
+                              pattern: ^[^/\s]+$
+                              type: string
+                            type: array
+                        type: object
+                      minMaxMapCount:
+                        description: |-
+                          MinMaxMapCount is the lowest node vm.max_map_count the writer and reader pods start on: a
+                          preflight init container fails below it. A reader holds every mapping it opens until it
+                          restarts, so the Ubuntu default (1048576) runs out within weeks. vm.max_map_count is not a
+                          namespaced sysctl; it is set on the node pool (see docs/install.md). Unset means 4194304,
+                          Prod 1's value; 0 skips the check.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      minOpenFiles:
+                        description: |-
+                          MinOpenFiles is the lowest open-files limit (ulimit -n) the writer and reader pods start
+                          with: the preflight init container fails below it. Unset means 65535, Prod 1's
+                          LimitNOFILE; 0 skips the check.
+                        format: int64
+                        minimum: 0
+                        type: integer
                       reader:
                         properties:
+                          extraHosts:
+                            description: |-
+                              ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+                              same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+                              ingress by hand. A host may appear once across the CR's components; an extra host equal to
+                              host fails the reconcile.
+                            items:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            type: array
+                            x-kubernetes-list-type: set
+                          host:
+                            description: Host publishes reads through an owned Ingress
+                              and optional Cloudflare DNS.
+                            type: string
                           hpa:
-                            description: HPA autoscales readers on load when set.
+                            description: |-
+                              HPA autoscales readers on load when set: the operator owns a HorizontalPodAutoscaler
+                              targeting the reader StatefulSet and stops setting its replica count.
                             properties:
                               maxReplicas:
                                 format: int32
@@ -921,17 +1417,151 @@ spec:
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
                             type: object
+                          startupTimeout:
+                            description: |-
+                              StartupTimeout is how long a reader may take to load its index and answer GET /health
+                              before it is restarted (the startup probe's failureThreshold × periodSeconds). A restart
+                              begins the load again, so a large reader needs the full time. Default 40m, Prod 1's unit
+                              start timeout.
+                            type: string
+                          storage:
+                            description: |-
+                              Storage sizes each reader's data PVC (default 10Gi, cluster default StorageClass). The
+                              reader keeps its index and stream offset there, so a replaced reader resumes instead of
+                              replaying the replication stream from offset 0.
+                            properties:
+                              size:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: Size of the volume. Default 10Gi.
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              storageClassName:
+                                description: StorageClassName for the PVC; empty uses
+                                  the cluster default StorageClass.
+                                type: string
+                            type: object
+                          tlsSecretName:
+                            description: |-
+                              TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+                              Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+                              with this Secret; empty, the Ingress has no tls section.
+                            maxLength: 253
+                            type: string
+                        type: object
+                      sentry:
+                        description: |-
+                          Sentry reports the writer's and readers' errors and traces to Sentry. Unset, OramaCore
+                          starts without Sentry, as before.
+                        properties:
+                          dsnSecretRef:
+                            description: |-
+                              DSNSecretRef names the Secret key that holds the Sentry DSN. The render-config init container
+                              substitutes it into the config at pod start, so the DSN never sits in the ConfigMap. An empty
+                              value leaves Sentry off.
+                            properties:
+                              key:
+                                description: Key in the Secret.
+                                minLength: 1
+                                type: string
+                              name:
+                                description: Name of the Secret, in the CR's namespace.
+                                minLength: 1
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                          environment:
+                            description: |-
+                              Environment is the Sentry environment prefix: the writer reports as <environment>-writer and
+                              the readers as <environment>-reader. Default spec.region.name.
+                            type: string
+                        required:
+                        - dsnSecretRef
+                        type: object
+                      snapshots:
+                        description: |-
+                          Snapshots takes scheduled CSI VolumeSnapshots of the writer's and every reader's data
+                          claim. Unset or disabled, no snapshot is taken. See docs/components.md.
+                        properties:
+                          enabled:
+                            description: Enabled takes snapshots. Disabling stops
+                              new snapshots and pruning; it never deletes one.
+                            type: boolean
+                          keep:
+                            description: Keep is how many ready snapshots of each
+                              claim are kept. Default 7, as on Prod 1.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          schedule:
+                            description: |-
+                              Schedule is a 5-field cron expression (minute hour day-of-month month day-of-week) in UTC.
+                              Default "0 3 * * *", daily at 03:00 UTC as on Prod 1.
+                            type: string
+                          volumeSnapshotClassName:
+                            description: |-
+                              VolumeSnapshotClassName is the class every snapshot names. Default orama-cloud-v1-retain,
+                              which the operator creates for disk.csi.azure.com with deletionPolicy Retain when it is
+                              absent. A named class must exist and have deletionPolicy Retain, so a snapshot's contents
+                              outlive the snapshot, the CR and its namespace.
+                            type: string
                         type: object
                       writer:
                         properties:
+                          extraHosts:
+                            description: |-
+                              ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+                              same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+                              ingress by hand. A host may appear once across the CR's components; an extra host equal to
+                              host fails the reconcile.
+                            items:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            type: array
+                            x-kubernetes-list-type: set
                           gpu:
                             default: true
                             description: |-
-                              GPU requests nvidia.com/gpu for the writer's BUILT-IN embeddings generation
-                              (ONNX Runtime + CUDA; prod: L40S). Set false to use CPU embeddings or a remote
-                              embeddings server. (This is the main reason a GPU node is needed at all; the
-                              other is an in-cluster vLLM — see spec.llm.gpu.)
+                              GPU requests nvidia.com/gpu: 1 on the writer pod, where OramaCore computes embeddings
+                              in-process (ONNX Runtime + CUDA, falling back to CPU; prod: L40S). Set false to run the
+                              writer's embeddings on CPU on a node without a GPU. (This is the main reason a GPU node is
+                              needed at all; the other is an in-cluster vLLM — see spec.llm.gpu.)
                             type: boolean
+                          host:
+                            description: |-
+                              Host publishes the writer through an owned Ingress and optional Cloudflare DNS.
+                              Empty keeps the writer internal.
+                            type: string
+                          jwt:
+                            description: JWT enables the dashboard JWKS provider.
+                              Unset preserves the existing config without JWT.
+                            properties:
+                              audience:
+                                description: 'Audience is a single accepted audience.
+                                  Deprecated: use Audiences; both are merged.'
+                                maxLength: 128
+                                type: string
+                              audiences:
+                                description: |-
+                                  Audiences are the accepted audiences: each exact clusterWriterUrl the dashboard's token
+                                  endpoint signs for (the writer_url of a control-DB oramacore_clusters row). When the writer
+                                  has a host, https://<host> must be one of them.
+                                items:
+                                  maxLength: 128
+                                  minLength: 1
+                                  type: string
+                                type: array
+                              jwksURL:
+                                description: |-
+                                  JWKSURL is the dashboard's JWKS endpoint. Unset uses the in-cluster dashboard Service,
+                                  http://<cr>-dashboard:3000/api/.well-known/jwks.json, which requires the dashboard enabled.
+                                pattern: ^https?://
+                                type: string
+                            type: object
                           nodeSelector:
                             additionalProperties:
                               type: string
@@ -991,6 +1621,37 @@ spec:
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
                             type: object
+                          startupTimeout:
+                            description: |-
+                              StartupTimeout is how long the writer may take to answer GET /health before it is
+                              restarted (the startup probe's failureThreshold × periodSeconds). Default 20m, Prod 1's
+                              port-open timeout.
+                            type: string
+                          storage:
+                            description: |-
+                              Storage sizes the writer's data PVC (default 10Gi, cluster default StorageClass).
+                              volumeClaimTemplates are immutable, so changing it on a running writer is refused by the
+                              API server; see docs/components.md for the resize procedure.
+                            properties:
+                              size:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: Size of the volume. Default 10Gi.
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                              storageClassName:
+                                description: StorageClassName for the PVC; empty uses
+                                  the cluster default StorageClass.
+                                type: string
+                            type: object
+                          tlsSecretName:
+                            description: |-
+                              TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+                              Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+                              with this Secret; empty, the Ingress has no tls section.
+                            maxLength: 253
+                            type: string
                           tolerations:
                             items:
                               description: |-
@@ -1037,6 +1698,12 @@ spec:
                     description: IngestionSpec configures the ingest path (index-builder
                       as a plain Deployment + HARVEST).
                     properties:
+                      embeddingsURL:
+                        description: |-
+                          EmbeddingsURL is the embeddings HTTP API index-builder POSTs to (its ORAMA_EMBEDDINGS_URL;
+                          Prod 1 uses the hosted embeddings API). Unset renders ORAMA_EMBEDDINGS_URL empty:
+                          index-builder requires the variable at boot, and nothing in the stack serves this API.
+                        type: string
                       enabled:
                         default: true
                         type: boolean
@@ -1113,6 +1780,18 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      extraHosts:
+                        description: |-
+                          ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+                          same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+                          ingress by hand. A host may appear once across the CR's components; an extra host equal to
+                          host fails the reconcile.
+                        items:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
                       host:
                         type: string
                       resources:
@@ -1170,6 +1849,13 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      tlsSecretName:
+                        description: |-
+                          TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+                          Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+                          with this Secret; empty, the Ingress has no tls section.
+                        maxLength: 253
+                        type: string
                     required:
                     - enabled
                     type: object
@@ -1243,8 +1929,11 @@ spec:
                       operator/chart), pointed at an external endpoint, or centrally located.
                     properties:
                       credentialsSecretRef:
-                        description: CredentialsSecretRef (ExternalSecret-materialized)
-                          when Mode=external.
+                        description: |-
+                          CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is
+                          required and must hold keys `uri` (connection URI) and `password`; the operator connects its
+                          clients with it but never provisions or migrates an external control DB. External analytics
+                          uses `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` for the dashboard and processor.
                         properties:
                           name:
                             default: ""
@@ -1343,6 +2032,23 @@ spec:
                               otherwise to an implementation-defined value. Requests cannot exceed Limits.
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
+                        type: object
+                      storage:
+                        description: |-
+                          Storage sizes the store's data PVC (default 10Gi, cluster default StorageClass). Ignored
+                          when Mode=external.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size of the volume. Default 10Gi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: StorageClassName for the PVC; empty uses
+                              the cluster default StorageClass.
+                            type: string
                         type: object
                     required:
                     - enabled
@@ -1487,6 +2193,13 @@ spec:
                     - enabled
                     type: object
                 type: object
+              deletionProtection:
+                description: |-
+                  DeletionProtection keeps the stack's data through CR deletion and component disable: the
+                  CNPG control-DB Cluster (and its ScheduledBackup) carry no owner reference and are never
+                  deleted by the operator, and every StatefulSet sets
+                  persistentVolumeClaimRetentionPolicy Retain/Retain. Default false.
+                type: boolean
               demoSeed:
                 description: |-
                   DemoSeed, when true, has the operator seed a demo project + index so a
@@ -1501,7 +2214,8 @@ spec:
                   configSecretRef:
                     description: |-
                       ConfigSecretRef points at an ExternalSecret-materialized secret holding the
-                      provider config (e.g. Firebase service account, Clerk keys). Ignored for "none".
+                      provider config. For firebase, the dashboard reads FIREBASE_PROJECT_ID,
+                      FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY from this Secret. Ignored for "none".
                     properties:
                       name:
                         default: ""
@@ -1590,7 +2304,9 @@ spec:
                       type: string
                     description: |-
                       Overrides maps a component key ("oramacore", "dashboard", "disco", ...) to a
-                      full image ref, bypassing registry/tag for that component.
+                      full image ref, bypassing registry/tag for that component. A digest-pinned ref
+                      (`repo@sha256:<digest>` or `repo:tag@sha256:<digest>`) is pulled IfNotPresent;
+                      a tag-only ref of an operator-built app is pulled Always.
                     type: object
                   pullSecretName:
                     description: |-
@@ -1601,49 +2317,95 @@ spec:
                   registry:
                     default: oramasearch
                     type: string
+                  requireDigests:
+                    description: |-
+                      RequireDigests, when true, fails the reconcile (Ready=False) while any enabled component's
+                      image resolved through registry/tag or overrides lacks `@sha256:<digest>`, so production never
+                      runs a floating tag. Data-store and helper images (Redis, busybox, curl, ...) are not checked.
+                      Default false: tag-only images such as `:latest` are allowed.
+                    type: boolean
                   tag:
                     default: latest
                     type: string
                 type: object
+              ingressClassName:
+                description: |-
+                  IngressClassName is the IngressClass of every Ingress this CR owns (dashboard, docs, writer,
+                  reader). Empty means nginx, the helmfile-installed ingress-nginx.
+                maxLength: 253
+                type: string
+              jwtIssuer:
+                description: |-
+                  JWTIssuer is shared by dashboard token signing and writer verification. It has no CRD
+                  default: engine.writer.jwt requires it set, so a production issuer is always chosen on
+                  purpose. A CR without writer JWT verification falls back to "orama-cloud" for the dashboard.
+                maxLength: 128
+                type: string
               llm:
                 default:
                   default: groq
                 description: LLM configures the available answer/RAG language-model
                   providers (multiple).
                 properties:
+                  automaticEmbeddingsSelector:
+                    description: |-
+                      AutomaticEmbeddingsSelector is the provider and model the writer asks to choose the properties
+                      of a collection with automatic embeddings (ai_server.embeddings.automatic_embeddings_selector).
+                      Its provider must be one of providers. Unset renders no selector.
+                    properties:
+                      model:
+                        description: Model is the provider's model name, for example
+                          gpt-5.2.
+                        minLength: 1
+                        type: string
+                      provider:
+                        description: Provider is the name of one of spec.llm.providers.
+                        enum:
+                        - groq
+                        - openai
+                        - google
+                        - anthropic
+                        type: string
+                    required:
+                    - model
+                    - provider
+                    type: object
                   default:
                     default: groq
                     description: Default provider used when a request doesn't name
-                      one.
+                      one. It must be one of providers.
                     type: string
                   providers:
-                    description: Providers available for selection. If empty, defaults
-                      to groq + openai + anthropic.
+                    description: |-
+                      Providers available for selection. If empty, defaults to groq (llama-3.3-70b-versatile),
+                      openai (gpt-5.2) and anthropic (claude-sonnet-4-5).
                     items:
                       description: LLMProvider is one selectable LLM backend.
                       properties:
                         apiKeySecretRef:
-                          description: APIKeySecretRef overrides the default per-component
-                            key for this provider.
+                          description: |-
+                            APIKeySecretRef takes this provider's key from a Secret in the CR's namespace instead of the
+                            engine Secret.
                           properties:
-                            name:
-                              default: ""
-                              description: |-
-                                Name of the referent.
-                                This field is effectively required, but due to backwards compatibility is
-                                allowed to be empty. Instances of this type with an empty value here are
-                                almost certainly wrong.
-                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            key:
+                              description: Key in the Secret. Defaults to <PROVIDER>_API_KEY,
+                                for example OPENAI_API_KEY.
                               type: string
+                            name:
+                              description: Name of the Secret.
+                              type: string
+                          required:
+                          - name
                           type: object
-                          x-kubernetes-map-type: atomic
                         gpu:
-                          description: GPU requests a GPU for an in-cluster vLLM provider
-                            (name=vllm).
+                          description: |-
+                            GPU requests a GPU for an in-cluster vLLM provider (name=vllm). In-cluster vLLM is not
+                            rendered yet, so a vllm provider is refused at reconcile.
                           type: boolean
                         models:
-                          description: Models this provider offers (the catalog the
-                            end user can pick from).
+                          description: |-
+                            Models this provider offers (the catalog the end user can pick from). The first is the
+                            provider's default model; at least one is required.
                           items:
                             type: string
                           type: array
@@ -1652,13 +2414,36 @@ spec:
                           enum:
                           - groq
                           - openai
+                          - google
                           - anthropic
                           - vllm
+                          type: string
+                        url:
+                          description: |-
+                            URL overrides the provider's OpenAI-compatible API base URL. Empty uses OramaCore's built-in
+                            one (for example https://api.openai.com/v1).
                           type: string
                       required:
                       - name
                       type: object
                     type: array
+                type: object
+              masterAPIKeySecretRef:
+                description: |-
+                  MasterAPIKeySecretRef names the Secret key holding OramaCore's MASTER_API_KEY, which feeds
+                  every component that reads it (engine, analytics-processor, index-builder, dashboard,
+                  workers). Unset, the operator uses <cr>-master-api-key (key MASTER_API_KEY), creating it once
+                  if absent. The value must equal the control DB's oramacore_clusters.master_api_key.
+                properties:
+                  key:
+                    description: Key in the Secret. Defaults to MASTER_API_KEY.
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    minLength: 1
+                    type: string
+                required:
+                - name
                 type: object
               peers:
                 description: |-
@@ -1684,6 +2469,57 @@ spec:
                   - name
                   type: object
                 type: array
+              placement:
+                description: |-
+                  Placement pins every pod the operator creates for this CR (apps, data stores, engine,
+                  Jobs, and the CNPG control-DB instances) to a node pool. The writer's own
+                  nodeSelector/tolerations, when set, replace these for the writer.
+                properties:
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: NodeSelector is merged into each pod's nodeSelector.
+                    type: object
+                  tolerations:
+                    description: Tolerations are added to each pod.
+                    items:
+                      description: |-
+                        The pod this Toleration is attached to tolerates any taint that matches
+                        the triple <key,value,effect> using the matching operator <operator>.
+                      properties:
+                        effect:
+                          description: |-
+                            Effect indicates the taint effect to match. Empty means match all taint effects.
+                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                          type: string
+                        key:
+                          description: |-
+                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                          type: string
+                        operator:
+                          description: |-
+                            Operator represents a key's relationship to the value.
+                            Valid operators are Exists and Equal. Defaults to Equal.
+                            Exists is equivalent to wildcard for value, so that a pod can
+                            tolerate all taints of a particular category.
+                          type: string
+                        tolerationSeconds:
+                          description: |-
+                            TolerationSeconds represents the period of time the toleration (which must be
+                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                            it is not set, which means tolerate the taint forever (do not evict). Zero and
+                            negative values will be treated as 0 (evict immediately) by the system.
+                          format: int64
+                          type: integer
+                        value:
+                          description: |-
+                            Value is the taint value the toleration matches to.
+                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          type: string
+                      type: object
+                    type: array
+                type: object
               profile:
                 default: light
                 description: |-
@@ -1718,12 +2554,53 @@ spec:
                 - name
                 - role
                 type: object
+              requireRealCredentials:
+                description: |-
+                  RequireRealCredentials turns a False CredentialsReady condition (a Secret key still holding
+                  a seeded dummy value, or missing) into phase Degraded. Default false: the condition is
+                  reported but the phase follows component readiness only.
+                type: boolean
             required:
             - region
             type: object
           status:
             description: OramaCloudV1Status is the observed state.
             properties:
+              analyticsImport:
+                description: AnalyticsImport is set while spec.components.analyticsProcessor.import
+                  is enabled.
+                properties:
+                  lastSuccessfulTime:
+                    description: LastSuccessfulTime is when the import CronJob last
+                      completed a Job successfully.
+                    format: date-time
+                    type: string
+                  sources:
+                    description: Sources are the processor's configured sources, in
+                      config order.
+                    items:
+                      description: AnalyticsImportSource is one OramaCore the analytics
+                        processor pulls GET /v1/analytics from.
+                      properties:
+                        enabled:
+                          description: |-
+                            Enabled is false for a reader ordinal whose pod is gone but whose data PVC remains: its
+                            unpulled events wait on the PVC until the ordinal returns, and the processor skips it.
+                          type: boolean
+                        name:
+                          description: Name is the source's name in the processor
+                            config (a reader pod or the writer).
+                          type: string
+                        url:
+                          description: URL is the endpoint the processor pulls.
+                          type: string
+                      required:
+                      - enabled
+                      - name
+                      - url
+                      type: object
+                    type: array
+                type: object
               components:
                 description: |-
                   Components is the per-component readiness summary — accurate component-level visibility
@@ -1817,6 +2694,44 @@ spec:
                   - type
                   type: object
                 type: array
+              engineSnapshots:
+                description: |-
+                  EngineSnapshots is the newest snapshot of each engine data claim, set while
+                  spec.components.engine.snapshots is enabled.
+                items:
+                  description: EngineSnapshotStatus is the newest VolumeSnapshot of
+                    one engine data claim.
+                  properties:
+                    claim:
+                      description: Claim is the PersistentVolumeClaim, e.g. data-<name>-writer-0.
+                      type: string
+                    component:
+                      description: Component is writer or reader.
+                      type: string
+                    error:
+                      description: Error is the snapshot's status.error.message, when
+                        the snapshotter reported one.
+                      type: string
+                    readyToUse:
+                      description: ReadyToUse is the snapshot's status.readyToUse.
+                      type: boolean
+                    snapshotName:
+                      description: SnapshotName is the newest VolumeSnapshot of the
+                        claim; empty before the first.
+                      type: string
+                    snapshotTime:
+                      description: SnapshotTime is when the operator took it.
+                      format: date-time
+                      type: string
+                  required:
+                  - claim
+                  - component
+                  - readyToUse
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - claim
+                x-kubernetes-list-type: map
               observedGeneration:
                 format: int64
                 type: integer

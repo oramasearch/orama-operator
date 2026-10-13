@@ -9,7 +9,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"slices"
+	"strings"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -133,6 +137,50 @@ func imagePullSecrets(oc *oramav1alpha1.OramaCloudV1) []corev1.LocalObjectRefere
 	return []corev1.LocalObjectReference{{Name: oc.Spec.Images.PullSecretName}}
 }
 
+// appImagePullPolicy is the pull policy for an operator-built app image. Dev tags (e.g. v1-sandbox)
+// are MUTABLE — the same tag is re-pushed on each rebuild, so a tag-only ref is pulled Always to
+// pick up the latest build. A digest-pinned ref (`@sha256:`) can't change under the node's cache,
+// so it is pulled IfNotPresent: a node restart or reschedule then never depends on the registry.
+func appImagePullPolicy(image string) corev1.PullPolicy {
+	if strings.Contains(image, "@sha256:") {
+		return corev1.PullIfNotPresent
+	}
+	return corev1.PullAlways
+}
+
+// podPlacement is the CR-level node placement (spec.placement) for an operator-created pod. Both
+// are nil when unset, so a CR without placement renders the pod exactly as before.
+func podPlacement(oc *oramav1alpha1.OramaCloudV1) (map[string]string, []corev1.Toleration) {
+	return oc.Spec.Placement.NodeSelector, oc.Spec.Placement.Tolerations
+}
+
+// writerPlacement is the writer's node placement: spec.components.engine.writer.nodeSelector and
+// .tolerations each replace the CR-level placement when set, so the writer can move to a GPU pool.
+func writerPlacement(oc *oramav1alpha1.OramaCloudV1) (map[string]string, []corev1.Toleration) {
+	nodeSelector, tolerations := podPlacement(oc)
+	w := oc.Spec.Components.Engine.Writer
+	if len(w.NodeSelector) > 0 {
+		nodeSelector = w.NodeSelector
+	}
+	if len(w.Tolerations) > 0 {
+		tolerations = w.Tolerations
+	}
+	return nodeSelector, tolerations
+}
+
+// applyPVCRetention sets Retain/Retain on a StatefulSet's PVC retention policy when the CR has
+// spec.deletionProtection, so neither CR deletion nor a scale-down ever deletes its volumes even on
+// a cluster whose default differs. Without protection the field is left as the API server has it.
+func applyPVCRetention(oc *oramav1alpha1.OramaCloudV1, sts *appsv1.StatefulSet) {
+	if !oc.Spec.DeletionProtection {
+		return
+	}
+	sts.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+		WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+		WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+	}
+}
+
 // componentImage resolves the image for a component: an explicit override wins,
 // otherwise registry/tag defaults (published oramasearch/* images).
 func componentImage(oc *oramav1alpha1.OramaCloudV1, key, defaultRepo string) string {
@@ -150,25 +198,6 @@ func componentImage(oc *oramav1alpha1.OramaCloudV1, key, defaultRepo string) str
 	return reg + "/" + defaultRepo + ":" + tag
 }
 
-// embeddingsImage resolves the OramaCore engine ai-server (embeddings, gRPC :50051) sidecar. This
-// is the PUBLISHED oramacore-ai-server image (the engine's own ai-server) — the CUDA build for a
-// GPU writer, else the base build (which auto-falls back to CPUExecutionProvider on a CPU node).
-// It is NOT embeddings-server-py: that's the separate HPES / hosted-search (index-manager) path.
-// A reused published image, so it uses :latest, not the global spec.images.tag. Override wins.
-func embeddingsImage(oc *oramav1alpha1.OramaCloudV1) string {
-	if o := oc.Spec.Images.Overrides["embeddings"]; o != "" {
-		return o
-	}
-	reg := oc.Spec.Images.Registry
-	if reg == "" {
-		reg = "oramasearch"
-	}
-	if oc.Spec.Components.Engine.Writer.GPU {
-		return reg + "/oramacore-ai-server-cuda:latest"
-	}
-	return reg + "/oramacore-ai-server:latest"
-}
-
 // oramacoreImage resolves the OramaCore engine image. OramaCore is a REUSED published image, so it
 // defaults to :latest (its published tag) rather than the global spec.images.tag — that tag is for
 // the operator's OWN built images (which don't include oramacore). An explicit
@@ -182,6 +211,76 @@ func oramacoreImage(oc *oramav1alpha1.OramaCloudV1) string {
 		reg = "oramasearch"
 	}
 	return reg + "/oramacore:latest"
+}
+
+// oramacoreSideImage resolves the image of one OramaCore side ("writer" or "reader"):
+// spec.images.overrides["oramacore-<side>"] (a build with only that side's Cargo feature), else the
+// shared oramacoreImage that runs both sides (#308).
+func oramacoreSideImage(oc *oramav1alpha1.OramaCloudV1, side string) string {
+	if o := oc.Spec.Images.Overrides["oramacore-"+side]; o != "" {
+		return o
+	}
+	return oramacoreImage(oc)
+}
+
+// specImages lists the image, keyed by component, of every enabled component whose image resolves
+// through spec.images, as its reconciler resolves it. Keep it in step with the reconcilers.
+func specImages(oc *oramav1alpha1.OramaCloudV1) map[string]string {
+	c := oc.Spec.Components
+	images := map[string]string{}
+	if c.Engine.Enabled {
+		if oc.Spec.Region.Role == "primary" {
+			images["engine writer"] = oramacoreSideImage(oc, "writer")
+		}
+		images["engine reader"] = oramacoreSideImage(oc, "reader")
+	}
+	if c.Ingestion.Enabled {
+		images["index-builder"] = componentImage(oc, "index-builder", "index-builder")
+		if c.Ingestion.Harvest {
+			images["harvest-master"] = componentImage(oc, "harvest-master", "harvest-master")
+			images["harvest"] = componentImage(oc, "harvest", "harvest")
+		}
+	}
+	if c.Workers.Enabled && c.Workers.Image == "" {
+		images["workers"] = componentImage(oc, "workers", "orama-workers")
+	}
+	if c.Dashboard.Enabled {
+		images["dashboard"] = componentImage(oc, "dashboard", "dashboard")
+	}
+	if c.Docs.Enabled {
+		images["docs"] = componentImage(oc, "docs", "docs")
+	}
+	if c.Disco.Enabled {
+		images["disco"] = componentImage(oc, "disco", "disco")
+	}
+	if c.AnalyticsProcessor.Enabled {
+		images["analytics-processor"] = componentImage(oc, "analytics-processor", "analytics-processor")
+	}
+	if c.SearchWorkers.Enabled {
+		for _, w := range searchWorkerNames {
+			images[w] = componentImage(oc, w, w)
+		}
+	}
+	return images
+}
+
+// validateImageDigests enforces spec.images.requireDigests: with it set, every image specImages
+// lists must be pinned by digest, and the error names each one that is not. Unset allows any tag.
+func validateImageDigests(oc *oramav1alpha1.OramaCloudV1) error {
+	if !oc.Spec.Images.RequireDigests {
+		return nil
+	}
+	var floating []string
+	for component, image := range specImages(oc) {
+		if !digestReferencePattern.MatchString(image) {
+			floating = append(floating, fmt.Sprintf("%s (%s)", component, image))
+		}
+	}
+	if len(floating) == 0 {
+		return nil
+	}
+	slices.Sort(floating)
+	return fmt.Errorf("spec.images.requireDigests: not pinned by @sha256:<digest>: %s", strings.Join(floating, ", "))
 }
 
 func strPtr(s string) *string { return &s }
@@ -205,7 +304,11 @@ func deleteIfExists(ctx context.Context, c client.Client, obj client.Object) err
 	return nil
 }
 
-// ingressClassName is the IngressClass the operator binds its Ingresses to — the
-// helmfile-installed ingress-nginx (which fronts the cluster LoadBalancer). TODO: make
-// configurable via a spec field if a cluster uses a different controller.
-func ingressClassName(_ *oramav1alpha1.OramaCloudV1) string { return "nginx" }
+// ingressClassName is the IngressClass of every Ingress the CR owns: spec.ingressClassName, else
+// the helmfile-installed ingress-nginx (which fronts the cluster LoadBalancer).
+func ingressClassName(oc *oramav1alpha1.OramaCloudV1) string {
+	if oc.Spec.IngressClassName != "" {
+		return oc.Spec.IngressClassName
+	}
+	return "nginx"
+}

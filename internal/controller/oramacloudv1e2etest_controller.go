@@ -12,6 +12,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -85,6 +86,16 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 		runner = e2eRunnerImage
 	}
 	cmName := t.Name + "-e2e-config"
+
+	// The target names its master API key Secret (spec.masterAPIKeySecretRef); a target not found
+	// yet is assumed to use the default <target>-master-api-key.
+	target := &oramav1alpha1.OramaCloudV1{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: t.Spec.TargetRef}, target); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		target.Name = t.Spec.TargetRef
+	}
 	jobName := t.Name + "-e2e"
 
 	// 1. The suite's config.json (plain — the collection key is a test-only credential) + the
@@ -110,12 +121,8 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 			if t.Spec.PullSecretName != "" {
 				pull = []corev1.LocalObjectReference{{Name: t.Spec.PullSecretName}}
 			}
-			// The master key to create the collection comes from the target's engine Secret.
-			masterKey := corev1.EnvVar{Name: "MASTER_API_KEY", ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: t.Spec.TargetRef + "-engine-secret"},
-					Key:                  "MASTER_API_KEY",
-				}}}
+			// The master key to create the collection comes from the target's master API key Secret.
+			masterKey := masterAPIKeyEnv(target)
 			configVol := corev1.VolumeMount{Name: "e2e-config", MountPath: "/etc/e2e", ReadOnly: true}
 			job.Labels = map[string]string{"app.kubernetes.io/managed-by": "orama-cloud-v1-operator", "orama.cloud/e2e": t.Name}
 			job.Spec = batchv1.JobSpec{

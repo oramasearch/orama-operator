@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -79,6 +80,8 @@ type appDef struct {
 	env         []corev1.EnvVar
 	args        []string
 	ingressHost string
+	// ingress adds extra hosts and origin TLS to the Ingress on ingressHost.
+	ingress oramav1alpha1.IngressHostsSpec
 	// Optional config-file rendering: an init container renders a config file (from a
 	// ConfigMap template with secret placeholders) into a shared volume the app reads via
 	// CONFIG_PATH. initContainers/volumes are added to the pod; volumeMounts to the app container.
@@ -95,6 +98,12 @@ type appDef struct {
 	// gracePeriodSeconds is terminationGracePeriodSeconds. 0 → the stateless-app default (30s).
 	// Stateful/slow-draining apps set a larger value. Workload hardening (#18).
 	gracePeriodSeconds int64
+	// configHash rolls workloads whose init container renders a config file.
+	configHash string
+	// extraEnvFrom is appended after the operator's envFrom sources (a later source wins).
+	extraEnvFrom []corev1.EnvFromSource
+	// envHash rolls the pod when user-referenced env data changes (dashboardEnvHashAnnotation).
+	envHash string
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
@@ -122,6 +131,8 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 	initContainers := def.initContainers
 	hardenAll(initContainers)
 
+	nodeSelector, tolerations := podPlacement(oc)
+
 	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
 		dep.Labels = lbls
@@ -129,6 +140,8 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 		podSpec := corev1.PodSpec{
 			ImagePullSecrets:              imagePullSecrets(oc),
+			NodeSelector:                  nodeSelector,
+			Tolerations:                   tolerations,
 			SecurityContext:               def.securityContext,
 			InitContainers:                initContainers,
 			Volumes:                       def.volumes,
@@ -136,14 +149,12 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			Containers: []corev1.Container{{
 				Name:  def.component,
 				Image: def.image,
-				// Dev image tags (e.g. v1-sandbox) are MUTABLE — the same tag is re-pushed on
-				// each rebuild. Default IfNotPresent would keep a stale cached image, so pull
-				// Always to pick up the latest build (build-manifest.tsv records the digest).
-				ImagePullPolicy: corev1.PullAlways,
+				// Always for a mutable dev tag, IfNotPresent for a digest-pinned ref (#141).
+				ImagePullPolicy: appImagePullPolicy(def.image),
 				Args:            def.args,
 				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
 				Env:             def.env,
-				EnvFrom:         envFromFor(oc, def.component),
+				EnvFrom:         append(envFromFor(oc, def.component), def.extraEnvFrom...),
 				VolumeMounts:    def.volumeMounts,
 				Resources:       *res,
 				// Startup gates liveness/readiness so a slow boot isn't killed; readiness gates
@@ -165,6 +176,16 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec:       podSpec,
 		}
+		annotations := map[string]string{}
+		if def.configHash != "" {
+			annotations["orama.cloud/config-hash"] = def.configHash
+		}
+		if def.envHash != "" {
+			annotations[dashboardEnvHashAnnotation] = def.envHash
+		}
+		if len(annotations) > 0 {
+			dep.Spec.Template.Annotations = annotations
+		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
 	}); err != nil {
 		return err
@@ -183,23 +204,33 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		return err
 	}
 	if def.ingressHost != "" {
-		return r.upsertIngress(ctx, oc, name, def.component, def.ingressHost, def.port)
+		return r.upsertIngress(ctx, oc, name, def.component, def.ingressHost, def.ingress, def.port)
 	}
 	return nil
 }
 
-func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, host string, port int32) error {
-	lbls := labelsFor(oc, component)
-	pathType := networkingv1.PathTypePrefix
+// upsertIngress owns the Ingress <name> routing host and every extra host to the Service <name>:port,
+// with one tls entry for all of them when ingress.tlsSecretName is set.
+func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, host string, ingress oramav1alpha1.IngressHostsSpec, port int32) error {
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
-		ing.Labels = lbls
-		// Bind to the helmfile-installed ingress-nginx controller. Without an ingressClassName the
-		// controller ignores the Ingress (no ADDRESS assigned → nothing routes). Configurable via
-		// spec.ingressClassName (default "nginx").
-		ing.Spec.IngressClassName = strPtr(ingressClassName(oc))
-		ing.Spec.Rules = []networkingv1.IngressRule{{
-			Host: host,
+		ing.Labels = labelsFor(oc, component)
+		ing.Spec = ingressSpec(oc, name, host, ingress, port)
+		return controllerutil.SetControllerReference(oc, ing, r.Scheme)
+	})
+	return err
+}
+
+// ingressSpec renders one Prefix "/" rule per host (host first, then the extra hosts), all to the
+// same backend. Without an ingressClassName the controller ignores the Ingress (no address is
+// assigned, nothing routes), so the class is always set: spec.ingressClassName, default nginx.
+func ingressSpec(oc *oramav1alpha1.OramaCloudV1, name, host string, ingress oramav1alpha1.IngressHostsSpec, port int32) networkingv1.IngressSpec {
+	hosts := append([]string{host}, ingress.ExtraHosts...)
+	pathType := networkingv1.PathTypePrefix
+	spec := networkingv1.IngressSpec{IngressClassName: strPtr(ingressClassName(oc))}
+	for _, h := range hosts {
+		spec.Rules = append(spec.Rules, networkingv1.IngressRule{
+			Host: h,
 			IngressRuleValue: networkingv1.IngressRuleValue{
 				HTTP: &networkingv1.HTTPIngressRuleValue{
 					Paths: []networkingv1.HTTPIngressPath{{
@@ -214,10 +245,12 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 					}},
 				},
 			},
-		}}
-		return controllerutil.SetControllerReference(oc, ing, r.Scheme)
-	})
-	return err
+		})
+	}
+	if ingress.TLSSecretName != "" {
+		spec.TLS = []networkingv1.IngressTLS{{Hosts: hosts, SecretName: ingress.TLSSecretName}}
+	}
+	return spec
 }
 
 // ---- workers + dashboard reconcilers ----
@@ -233,48 +266,92 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "workers", image: img, port: 8080, replicas: w.Replicas,
+		env:       []corev1.EnvVar{masterAPIKeyEnv(oc)},
 		resources: resourcesOr(w.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
+}
+
+// dashboardOperatorEnv is the explicit env the operator gives the dashboard, before dashboard.env:
+// the master key, the control DB, the JWT issuer when set, Firebase server keys and external ClickHouse.
+func dashboardOperatorEnv(oc *oramav1alpha1.OramaCloudV1) ([]corev1.EnvVar, error) {
+	env := []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
+	if oc.Spec.JWTIssuer != "" {
+		env = append(env, corev1.EnvVar{Name: "JWT_ISSUER", Value: jwtIssuer(oc)})
+	}
+	if oc.Spec.IDP.Provider == "firebase" {
+		ref := oc.Spec.IDP.ConfigSecretRef
+		if ref == nil || ref.Name == "" {
+			return nil, fmt.Errorf("idp.configSecretRef is required for Firebase dashboard credentials")
+		}
+		for _, key := range []string{"FIREBASE_PROJECT_ID", "FIREBASE_CLIENT_EMAIL", "FIREBASE_PRIVATE_KEY"} {
+			env = append(env, secretKeyEnv(key, ref.Name, key))
+		}
+	}
+	if analyticsExternal(oc) {
+		if err := validateExternalAnalytics(oc); err != nil {
+			return nil, err
+		}
+		ref := oc.Spec.Components.Analytics.CredentialsSecretRef.Name
+		env = append(env, corev1.EnvVar{Name: "CLICKHOUSE_HOST", Value: oc.Spec.Components.Analytics.Endpoint},
+			secretKeyEnv("CLICKHOUSE_USER", ref, "CLICKHOUSE_USER"), secretKeyEnv("CLICKHOUSE_PASSWORD", ref, "CLICKHOUSE_PASSWORD"))
+	}
+	return env, nil
 }
 
 func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	d := oc.Spec.Components.Dashboard
 	if !d.Enabled {
-		return r.teardownByComponent(ctx, oc, "dashboard")
+		if err := r.teardownByComponent(ctx, oc, "dashboard"); err != nil {
+			return err
+		}
+		if err := r.teardownDashboardCrons(ctx, oc); err != nil {
+			return err
+		}
+		if d.Crons.Enabled {
+			return fmt.Errorf("dashboard.crons requires the dashboard enabled")
+		}
+		return nil
 	}
 	img := componentImage(oc, "dashboard", "dashboard")
-	// Schema ownership: when the operator manages the control DB in-cluster it also owns the schema —
-	// reconcileControlDBMigrations applies the SAME Drizzle schema via an owned PostgresSchema Job
-	// (operator#40, supersedes the #34 dashboard init). Running BOTH double-applies the schema and the
-	// dashboard's drizzle-kit migrate then dies on the objects PostgresSchema already created (Postgres
-	// 42710, "type already exists") — it can't tell, because PostgresSchema applies raw SQL and doesn't
-	// touch `__drizzle_migrations`. So only run the dashboard's own db-migrate when the operator does
-	// NOT own the schema: an EXTERNAL control DB (no operator-managed PostgresSchema).
-	cdb := oc.Spec.Components.ControlDB
-	operatorOwnsSchema := cdb.Enabled && cdb.Mode != "external"
-	var initContainers []corev1.Container
-	if !operatorOwnsSchema {
-		// External control DB — the operator applies no PostgresSchema, so the dashboard applies its
-		// own Drizzle migrations before it serves (#34). GUARDED as a safe no-op on an image that
-		// doesn't ship the migrations (`.drizzle` + `drizzle.config.ts`).
-		initContainers = []corev1.Container{{
-			Name:    "db-migrate",
-			Image:   img,
-			Command: []string{"sh", "-c", `if [ -f drizzle.config.ts ] && [ -d .drizzle ]; then npm run db:migrate; else echo "dashboard image ships no migrations yet (operator#34) — skipping"; fi`},
-			Env:     []corev1.EnvVar{pgURIEnv(oc, "DATABASE_URL")},
-		}}
+	env, err := dashboardOperatorEnv(oc)
+	if err != nil {
+		return err
 	}
-	return r.reconcileApp(ctx, oc, appDef{
+	// User env (operator#311): dashboard.envFrom after the operator's sources, dashboard.env after
+	// (and replacing) the operator's env; operator-owned names are refused (dashboard_env.go).
+	if err := validateDashboardEnv(oc); err != nil {
+		return err
+	}
+	sources, err := r.dashboardEnvSources(ctx, oc)
+	if err != nil {
+		return err
+	}
+	envHash, err := r.dashboardEnvHash(ctx, oc, sources)
+	if err != nil {
+		return err
+	}
+	// Schema ownership: the dashboard never migrates the control DB. In-cluster, the operator's
+	// PostgresSchema applies the schema (operator#40); a dashboard drizzle-kit migrate on top of it
+	// collides (Postgres 42710, "type already exists"). External, the database belongs to someone
+	// else, and its owner runs migrations; a migrate from this image could alter an external
+	// production schema (orama-bridge#142). Prod 2 uses its own in-cluster control DB.
+	if err := r.reconcileApp(ctx, oc, appDef{
 		component:   "dashboard",
 		image:       img,
 		port:        3000,
 		ingressHost: d.Host,
-		// Real control-DB password from the CNPG secret (#32) + DATABASE_URL for Drizzle (#34).
-		env:            []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
-		initContainers: initContainers,
+		ingress:     d.IngressHostsSpec,
+		// The operator's env (control DB from the CNPG or external Secret, #32/#34), then dashboard.env.
+		env:          overrideEnv(env, d.Env),
+		extraEnvFrom: d.EnvFrom,
+		envHash:      envHash,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
-	})
+	}); err != nil {
+		return err
+	}
+	// The scheduled calls (Prod 1's Vercel crons, operator#17) read CRON_SECRET from the same source.
+	return r.reconcileDashboardCrons(ctx, oc, sources)
 }
 
 // reconcileDocs provisions docs.orama.com (Next.js + Fumadocs) as a Deployment + Service
@@ -289,6 +366,7 @@ func (r *OramaCloudV1Reconciler) reconcileDocs(ctx context.Context, oc *oramav1a
 		image:       componentImage(oc, "docs", "docs"),
 		port:        3000,
 		ingressHost: d.Host,
+		ingress:     d.IngressHostsSpec,
 		resources:   resourcesOr(d.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }

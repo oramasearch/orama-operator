@@ -69,9 +69,11 @@ in-cluster (removing it — which runs the finalizer — where it doesn't). It d
 - **stream** `oramacore-operations` — the writer→reader replication stream, declared as
   `x-queue-type=stream`.
 
-Admin creds come from `<cr>-broker-admin` (keys `username`/`password`), whose values share a single
-source of truth (`brokerAdminUser` / `brokerAdminPassword`) with the mounted `rabbitmq.conf` so the two
-can never drift. All broker secrets are **create-if-absent** so generated/rotated material survives
+Admin creds come from `<cr>-broker-admin` (keys `username`/`password`, a random password generated
+once). That Secret is the only source: an init container renders it into the broker's `rabbitmq.conf`,
+and the engine config and harvest-master's AMQP URL read it at pod start, so the two can never drift
+([#307](https://github.com/oramasearch/orama-operator/issues/307); see components.md, "Stack-wide
+credentials"). All broker secrets are **create-if-absent** so generated/rotated material survives
 reconciles.
 
 ### Two deliberate constraints (and their follow-ups)
@@ -137,6 +139,6 @@ refinement + principle #4) is also a separate slice.
   `managed.roles` per service instead of the shared owner (principle #4, revisits #32).
 - **Pin every image** ([#98](https://github.com/oramasearch/orama-operator/issues/98)) —
   determinism cross-cutting (no `:latest`); needs the intended production tags for the
-  oramacore/ai-server/selenium images.
+  oramacore/selenium images.
 - **DR (backup / restore / snapshot CRDs)** — its own epic
   ([#33](https://github.com/oramasearch/orama-operator/issues/33)).

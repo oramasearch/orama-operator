@@ -11,6 +11,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -19,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -28,6 +30,8 @@ import (
 type OramaCloudV1Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Now is the clock engine snapshot schedules are judged by; nil means time.Now. Injected for tests.
+	Now func() time.Time
 }
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s,verbs=get;list;watch;create;update;patch;delete
@@ -37,8 +41,13 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=scheduledbackups,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=backups,verbs=get;list;watch
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotclasses,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotcontents,verbs=get;list;watch;patch
 
 // Reconcile is the control loop. It reconciles each enabled component in turn,
 // driven by .spec.region.role. Components still TODO: control-plane Postgres (CNPG),
@@ -59,6 +68,10 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		name string
 		fn   func(context.Context, *oramav1alpha1.OramaCloudV1) error
 	}{
+		// Refuse conflicting Ingress hosts before anything is written (operator#313).
+		{"ingress hosts", func(_ context.Context, oc *oramav1alpha1.OramaCloudV1) error { return validateIngressHosts(oc) }},
+		// Refuse floating image tags before anything rolls when spec.images.requireDigests is set (#317).
+		{"image digests", func(_ context.Context, oc *oramav1alpha1.OramaCloudV1) error { return validateImageDigests(oc) }},
 		{"bootstrap", r.reconcileBootstrap}, // shared config + dummy secrets first
 		{"engine", r.reconcileEngine},
 		{"controlDB", r.reconcileControlDB},
@@ -81,26 +94,51 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"cloudflare", r.reconcileCloudflare},
 		{"demoSeed", r.reconcileDemoSeed},
 	}
+	fail := func(name string, err error) (ctrl.Result, error) {
+		l.Error(err, "component reconcile failed", "component", name)
+		r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, false, metav1.Condition{
+			Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
+			Message: fmt.Sprintf("%s: %v", name, err),
+		})
+		return ctrl.Result{}, err
+	}
 	for _, s := range steps {
 		if err := s.fn(ctx, &oc); err != nil {
-			l.Error(err, "component reconcile failed", "component", s.name)
-			r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, metav1.Condition{
-				Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
-				Message: fmt.Sprintf("%s: %v", s.name, err),
-			})
-			return ctrl.Result{}, err
+			return fail(s.name, err)
 		}
+	}
+	// Engine volume snapshots (#316) run last: they snapshot claims the steps above created, and an
+	// invalid schedule then blocks nothing else.
+	snapshots, err := r.reconcileEngineSnapshots(ctx, &oc)
+	if err != nil {
+		return fail("engine snapshots", err)
 	}
 
 	// Roll child readiness up into the phase (#37): Ready once every owned workload is ready,
 	// else Provisioning. Requeue while still coming up so the phase advances as pods go ready —
 	// Owns() events cover most transitions; the requeue is the backstop (e.g. the polled CNPG
 	// cluster readiness).
-	if r.applyReadiness(ctx, &oc) {
-		return ctrl.Result{}, nil
+	var wait time.Duration
+	soonest := func(d time.Duration) {
+		if d > 0 && (wait == 0 || d < wait) {
+			wait = d
+		}
 	}
-	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
+	if !r.applyReadiness(ctx, &oc, snapshots) {
+		soonest(20 * time.Second)
+	}
+	// CNPG Backups aren't watched: keep polling while control-DB backups are on so BackupReady
+	// follows each scheduled backup. Unchanged polls write no status.
+	if controlDBInCluster(&oc) && oc.Spec.Components.ControlDB.Backup.Enabled != nil && *oc.Spec.Components.ControlDB.Backup.Enabled {
+		soonest(controlDBBackupPoll)
+	}
+	// The next engine snapshot is due, or one is still being cut.
+	soonest(snapshots.wait)
+	return ctrl.Result{RequeueAfter: wait}, nil
 }
+
+// controlDBBackupPoll is how often a Ready stack re-reads its control-DB backup status.
+const controlDBBackupPoll = 5 * time.Minute
 
 // SetupWithManager wires the controller and the child resources it owns.
 func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -108,16 +146,22 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&oramav1alpha1.OramaCloudV1{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&batchv1.Job{}).
+		Owns(&batchv1.CronJob{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Owns(&oramav1alpha1.CloudflareKVNamespace{}).
 		Owns(&oramav1alpha1.CloudflareR2Bucket{}).
 		Owns(&oramav1alpha1.RabbitMQTopology{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
+		// User Secrets/ConfigMaps the dashboard's env reads (operator#311): a content change re-hashes
+		// and rolls the dashboard.
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
 		Complete(r)
 }

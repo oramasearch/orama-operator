@@ -11,7 +11,7 @@ For a Lake installation, use [install/k0s.md](install/k0s.md).
   with the operator image supplied below.
 - **Helm 3.x**, **helmfile**, and **kubectl**. These commands use Helmfile's `sync` command;
   they do not require the Helm diff plugin.
-- A default **StorageClass** with `ReadWriteOnce`, capacity for the engine, embeddings service,
+- A default **StorageClass** with `ReadWriteOnce`, capacity for the engine
   and broker, and node network access to the image registries and required model downloads.
   The sample sets `components.engine.writer.gpu: false`; no GPU is required.
 - **Private registry access from the Orama release maintainer:** a Docker Hub username and a
@@ -21,11 +21,15 @@ For a Lake installation, use [install/k0s.md](install/k0s.md).
   cluster's Linux architecture and compatible with this checkout's CRDs and RBAC. Set
   `OPERATOR_TAG` to that tag. This page does not supply or promise a published release tag;
   `v1-sandbox` is the chart's mutable default, not the tag to use for this installation.
-- For the sample in §3, **compatible published immutable image references** for OramaCore and its
-  CPU ai-server from their release maintainer. Set `ORAMACORE_IMAGE` and `EMBEDDINGS_IMAGE` to
-  those full references (`repository:tag` or `repository@sha256:digest`). Obtain registry access
-  to both; the global application tag does not select these two images. If their model artifacts
-  require credentials, arrange those with the maintainer before applying the sample.
+- For the sample in §3, a **compatible published immutable image reference** for OramaCore from
+  its release maintainer. Set `ORAMACORE_IMAGE` to that full reference (`repository:tag` or
+  `repository@sha256:digest`) and obtain registry access to it; the global application tag does
+  not select this image. OramaCore computes embeddings in-process and downloads its models from
+  Hugging Face on first start into the data volume, so nodes need outbound access to it.
+
+- **Node settings for the OramaCore writer and readers:** `vm.max_map_count` of at least 4194304
+  and a container open-files limit of at least 65535. See
+  [Node settings for the engine](#node-settings-for-the-engine).
 
 If an image or access grant is missing, obtain it before continuing. Maintainers publish the
 operator through cluster BuildKit with `buildctl`; the native checks, remote build procedure, and
@@ -177,7 +181,7 @@ prove that all controllers have started. Pull failures and startup checks are co
 
 ## 3. Reconcile the CPU engine sample
 
-The minimal sample enables the writer, reader, shared CPU embeddings service, and RabbitMQ
+The minimal sample enables the writer, reader (both computing embeddings on CPU), and RabbitMQ
 broker used by writer-to-reader replication. It leaves external Cloudflare operations and demo
 seeding disabled. It does not enable the dashboard, SaaS integrations, or the rest of the v1
 application tier. The operator seeds development component credentials; it does **not** generate
@@ -185,7 +189,6 @@ the registry credential. Use an isolated installation for these development defa
 
 ```sh
 : "${ORAMACORE_IMAGE:?Set the supplied immutable OramaCore image reference}"
-: "${EMBEDDINGS_IMAGE:?Set the supplied immutable CPU ai-server image reference}"
 kubectl apply -n orama-system -f - <<EOF_SAMPLE
 apiVersion: orama.cloud/v1alpha1
 kind: OramaCloudV1
@@ -203,7 +206,6 @@ spec:
     pullSecretName: oramasearch-dockerhub
     overrides:
       oramacore: "${ORAMACORE_IMAGE}"
-      embeddings: "${EMBEDDINGS_IMAGE}"
   cloudflare:
     enabled: false
   demoSeed: false
@@ -225,8 +227,10 @@ kubectl -n orama-system get ocv1 v1
 kubectl -n orama-system get pods,statefulsets,deployments,svc,pvc
 ```
 
-The `Ready` condition must be true and every entry in `.status.components` ready. If it does
-not converge, inspect `kubectl -n orama-system describe ocv1 v1`, workload events, and the manager
+The `Ready` condition must be true and every entry in `.status.components` ready. On a node
+without the [engine's node settings](#node-settings-for-the-engine) the writer and reader stop in
+their `preflight` init container; set the node setting, or add `minMaxMapCount: 0` under
+`components.engine` for a short-lived test. If it does not converge, inspect `kubectl -n orama-system describe ocv1 v1`, workload events, and the manager
 logs. Check image access, bound PVCs, model downloads, broker readiness, and node capacity.
 The manager's successful rollout and the sample's Ready condition are separate checks.
 
@@ -244,14 +248,16 @@ repeat §3's readiness checks. It replaces the minimal `v1` CR when applied in t
 its data stores. It is a partial smoke-test configuration, not a self-contained stack with those
 dependencies running. [`primary-us-east.yaml`](../config/samples/primary-us-east.yaml) and
 [`read-eu.yaml`](../config/samples/read-eu.yaml) require the production and peer prerequisites.
+[`prod2.yaml`](../config/samples/prod2.yaml) is the customer-serving Prod 2 shape (node pool
+`prod2`, deletion protection, control-DB backups, `images.requireDigests`); its header lists the
+placeholders (including one image `<digest>` per enabled component) and Secrets to provide first, and it is not part of the sample kustomization.
 
 Image selection is independent of the manager chart values:
 
 - `spec.images.registry` and `tag` select the operator-specific application images supplied by the
   owning projects, such as dashboard, workers, and ingestion. Obtain published builds first.
-- `oramacore` defaults to `oramasearch/oramacore:latest`; `embeddings` defaults to
-  `oramasearch/oramacore-ai-server:latest` on CPU, or `oramasearch/oramacore-ai-server-cuda:latest`
-  on GPU. They do not use the global `spec.images.tag`. §3 pins both through `overrides`.
+- `oramacore` defaults to `oramasearch/oramacore:latest` and does not use the global
+  `spec.images.tag`. §3 pins it through `overrides`.
 - `spec.images.overrides` maps component keys to full image references and wins over defaults.
   The manager image is selected only by `operator.image.repository` and `operator.image.tag`.
 
@@ -288,6 +294,38 @@ registry access.
   ingress, and Cloudflare credentials appropriate to that deployment; use the read-tier sample
   and [provisioning-runbook.md](provisioning-runbook.md). Shared Zetta behavior is described in
   [zetta-datastore.md](zetta-datastore.md) and [zetta-cluster-mtls.md](zetta-cluster-mtls.md).
+
+## Node settings for the engine
+
+The writer and reader pods start with a `preflight` init container that fails, naming the setting,
+when the node's `vm.max_map_count` is below `spec.components.engine.minMaxMapCount` (default 4194304)
+or the pod's open-files limit is below `spec.components.engine.minOpenFiles` (default 65535). A
+reader keeps every memory mapping it opens until it restarts, so with the Ubuntu default of 1048576
+`mmap` fails after about 20 days. `vm.max_map_count` is a node setting that no pod can change, so set
+it on every node pool that runs the engine. AKS nodes default to 65530 (Ubuntu 22.04) or 1048576
+(Ubuntu 24.04, Azure Linux 3.0), both below the minimum.
+
+On AKS, set it through the node pool's Linux OS configuration (`linuxOSConfig.sysctls.vmMaxMapCount`),
+which is given when the pool is created; for an existing pool, add a new pool with it and move the
+engine there:
+
+```sh
+cat > linuxosconfig.json <<'EOF_OSCONFIG'
+{ "sysctls": { "vmMaxMapCount": 4194304 } }
+EOF_OSCONFIG
+az aks nodepool add --resource-group <rg> --cluster-name <cluster> --name <pool> \
+  --linux-os-config ./linuxosconfig.json ...
+```
+
+In Terraform it is `linux_os_config { sysctl_config { vm_max_map_count = 4194304 } }` on the node
+pool. On other clusters, set `vm.max_map_count = 4194304` in the node's `/etc/sysctl.d/` and apply it
+with `sysctl --system`. Check a node with `cat /proc/sys/vm/max_map_count`; a failing pod shows the
+value in `kubectl logs <pod> -c preflight`.
+
+The open-files limit is the one the container runtime gives containers (containerd's
+`LimitNOFILE`); if the check fails, raise it in the runtime's service on the node. A development
+cluster that does not need these limits can set `minMaxMapCount: 0` or `minOpenFiles: 0` to skip a
+check.
 
 ## Uninstall
 

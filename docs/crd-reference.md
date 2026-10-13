@@ -4,8 +4,9 @@ One umbrella CR per cluster describes an entire regional v1 deployment. Source o
 truth: [`../api/v1alpha1/oramacloudv1_types.go`](../api/v1alpha1/oramacloudv1_types.go)
 (regenerate this doc's tables when the types change). Samples:
 [`../config/samples/primary-us-east.yaml`](../config/samples/primary-us-east.yaml) (a primary
-region) and [`../config/samples/read-eu.yaml`](../config/samples/read-eu.yaml) (a read tier
-pointing at the primary); the full sample list is in
+region), [`../config/samples/read-eu.yaml`](../config/samples/read-eu.yaml) (a read tier
+pointing at the primary) and [`../config/samples/prod2.yaml`](../config/samples/prod2.yaml) (the
+customer-serving Prod 2 shape, never applied by the sample kustomization); the full sample list is in
 [install.md](install.md#3-deploy-a-v1-stack-single-cluster-quickstart).
 
 ## Top-level `spec`
@@ -15,36 +16,327 @@ pointing at the primary); the full sample list is in
 | `region.name` | string | — | Region label (`us-east`, `eu`, `ap`). |
 | `region.role` | enum | `primary` | `primary` (write path + stateful stores) or `read` (regional read tier). |
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
+| `ingressClassName` | string | `nginx` | IngressClass of every Ingress the CR owns (dashboard, docs, writer, reader). Empty uses the helmfile-installed ingress-nginx. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
-| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. |
+| `idp.configSecretRef` | Secret reference | — | With `provider: firebase`, required dashboard server keys: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. Other providers retain their existing behavior. |
+| `jwtIssuer` | string | — | Dashboard signing issuer (`JWT_ISSUER`) and the writer JWKS provider's only accepted issuer (maximum 128 characters); both read it through one function, `jwtIssuer`. No CRD default: `engine.writer.jwt` refuses an empty issuer. Without writer JWT verification an empty issuer falls back to `orama-cloud` in the shared ConfigMap. Prod 1 uses `https://app.orama.com`; Prod 2 uses `https://app.orama.ing` (`config/samples/prod2.yaml`). |
+| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; override via `overrides.oramacore`. (`overrides.embeddings` is no longer read: OramaCore embeds in-process and the operator runs no embeddings server.) `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile) run writer-only and reader-only OramaCore builds with side-only configs; unset, both sides fall back to `oramacore` and share the combined config (see [components.md](components.md#engine-internalcontrollerenginego)). **Digest pinning:** an override may be `repo@sha256:<digest>` (or `repo:tag@sha256:<digest>`); the operator-built apps (dashboard, docs, workers, …) then pull `IfNotPresent` instead of `Always`. Other containers keep Kubernetes' default policy, which is already `IfNotPresent` for a digest. |
+| `images.requireDigests` | bool | `false` | When `true`, the reconcile fails before anything is written (`Ready=False`, reason `ReconcileError`) while any enabled component's image resolved through `spec.images` (defaults or overrides) is not pinned by `@sha256:<64 hex>`; the message names each such component and its image. Checked: the engine writer (primary regions) and readers, dashboard, docs, index-builder, harvest-master and harvest (with `ingestion.harvest`), disco, workers (unless `workers.image` is set), analytics-processor and the four search workers. Data-store and helper images are not checked. Unset allows tags such as `:latest`. The Prod 2 sample sets it ([operator#317](https://github.com/oramasearch/orama-operator/issues/317)). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
-| `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
-| `llm.default` | enum | `groq` | Provider used when a request doesn't name one. |
+| `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers — end users pick per query. Each has `name` (`groq \| openai \| google \| anthropic \| vllm`), `models[]` (required; the first is its default model), optional `url` (overrides OramaCore's built-in OpenAI-compatible base URL) and optional `apiKeySecretRef: {name, key}` (`key` defaults to `<PROVIDER>_API_KEY`; unset ⇒ that key of `<cr>-engine-secret`). Rendered into the engine config's `ai_server.remote_llms`, one entry per provider. Empty ⇒ `groq` (`llama-3.3-70b-versatile`), `openai` (`gpt-5.2`), `anthropic` (`claude-sonnet-4-5`). Refused at reconcile (`Ready=False`): a provider listed twice or with no models, and `vllm` (in-cluster vLLM and its `gpu` field are not rendered yet). |
+| `llm.default` | string | `groq` | Provider used when a request doesn't name one: rendered as `ai_server.llm` (`local: false`, `host` = its base URL, `model` = its first model, its key). Must be one of `providers`, else the reconcile fails with `Ready=False`. |
+| `llm.automaticEmbeddingsSelector` | `{provider, model}` | — | The model the writer uses to choose the properties of a collection with automatic embeddings (`ai_server.embeddings.automatic_embeddings_selector`). `provider` must be one of `providers`. Unset ⇒ no selector. |
+
+Prod 1's provider set (orama-deploy `oramacore/production/config/`), as in `config/samples/prod2.yaml`:
+
+```yaml
+llm:
+  default: groq
+  providers:
+    - { name: openai,    models: [gpt-5.2] }
+    - { name: google,    models: [gemini-2.0-flash-001] }
+    - { name: groq,      models: [openai/gpt-oss-120b] }
+    - { name: anthropic, models: [claude-sonnet-4-5] }
+  automaticEmbeddingsSelector: { provider: openai, model: gpt-5.2 }
+```
+
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
+| `cloudflare.zoneIDs` | map | — | Zone name → Cloudflare zone ID (e.g. `{orama.ing: <id>, orama.com: <id>}`). Each managed DNS host uses the zone with the longest matching suffix and falls back to the Secret's `zoneID`, so one CR can manage names in several zones. An existing record is never moved: if a host's zone changes, its `CloudflareDNSRecord` reports `ready: false` and nothing changes in either zone. Mapping a host to the zone it is already in changes nothing. |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
+| `placement.nodeSelector` | map | — | Added to every pod the operator creates for the CR: apps, data stores, writer, readers, the demo-seed Job, the control-DB `PostgresSchema` migration Job, and the CNPG instances (through the Cluster's `spec.affinity`). `engine.writer.nodeSelector`, when set, replaces it for the writer. Unset = no selector, as before. |
+| `placement.tolerations` | list | — | Same scope as `placement.nodeSelector`; `engine.writer.tolerations`, when set, replaces it for the writer. |
+| `deletionProtection` | bool | false | Keep the data through CR deletion and component disable. The CNPG control-DB `Cluster` and its `ScheduledBackup` release the CR owner reference and record `orama.cloud/cloud-v1-owner-uid`, so deleting the CR leaves them; `controlDB.enabled: false` keeps them too, and the same CR UID can re-enable them. A replacement CR or an unmarked, unowned legacy database requires reviewed ownership handover ([components.md](components.md#controldb-internalcontrollercontroldbgo)). Every operator StatefulSet (writer, readers, stores) gets `persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`. Off: owned Cluster deletion/disable retains its existing behavior; foreign objects are refused. |
+| `masterAPIKeySecretRef` | object | — | `{name, key}` of the Secret holding `MASTER_API_KEY` (`key` defaults to `MASTER_API_KEY`). Engine, analytics-processor, index-builder, dashboard and workers all read it, and nothing else. Unset: `<cr>-master-api-key`, created once (from `<cr>-engine-secret`'s old value on an existing stack, random on a new one). Must equal the control DB's `oramacore_clusters.master_api_key`. |
+| `requireRealCredentials` | bool | false | Make the phase `Degraded` (and `Ready=False`, reason `CredentialsNotReady`) while `CredentialsReady` is False. Off: the condition is reported only. Prod 2 sets it. |
 
 ## `spec.components`
 
 Every component has `enabled`. Data stores also have `mode: in-cluster|external`,
-`placement: local|central`, `replicate`, and `endpoint`/`credentialsSecretRef`.
+`placement: local|central`, `replicate`, `endpoint`/`credentialsSecretRef`, and
+`storage` (below).
+
+**`storage`** (a `VolumeSpec`) sizes a persistent volume: `size` (quantity, default `10Gi`) and
+`storageClassName` (default: the cluster default StorageClass). It exists on `engine.writer`,
+`engine.reader`, every data store (`analytics`, `cache`, `broker`, `search`) and `controlDB`, where it
+becomes the CNPG Cluster's `spec.storage.{size,storageClass}`. The StatefulSet volumes take it when
+the operator **creates** the StatefulSet: `volumeClaimTemplates` are immutable, so a later change is
+ignored for an existing StatefulSet (resize an existing PVC by expanding it; see
+[components.md](components.md#resizing-a-data-volume)). CNPG applies a `controlDB.storage.size`
+increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations}`, `reader.{replicas,hpa,resources}`, `envoy` | OramaCore writer + readers + Envoy |
-| `dashboard` | `host` | app.orama.com (Next.js) |
-| `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
-| `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
-| `controlDB` | data-store | PlanetScale → CloudNativePG |
-| `analytics` | data-store | ClickHouse |
+| `engine` | `writer.gpu`, `writer.{host,extraHosts,tlsSecretName,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,extraHosts,tlsSecretName,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `sentry.{dsnSecretRef.{name,key},environment}`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `dashboard` | `host`, `extraHosts`, `tlsSecretName` (see [below](#public-hosts-and-origin-tls)), `envFrom`, `env` (see [below](#dashboardenvfrom-and-dashboardenv)), `crons` (see [below](#dashboardcrons)) | app.orama.com (Next.js) |
+| `docs` | `host`, `extraHosts`, `tlsSecretName` | docs.orama.com (Next.js + Fumadocs) |
+| `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
+| `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
+| `analytics` | data-store; external mode requires an HTTP(S) `endpoint` and `credentialsSecretRef` with `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` for the dashboard/processor | ClickHouse (Prod 2 keeps ClickHouse Cloud) |
+| `analyticsProcessor` | `resources`, `import.{enabled,schedule}` | Analytics import server and opt-in CronJob |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
 | `search` | data-store | Typesense hosted-search |
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
 
-`engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
-L40S). `workers` bundles all ported CF workers into one image → one Deployment.
+`engine.writer.gpu` puts an `nvidia.com/gpu: 1` limit on the writer container, where OramaCore
+computes embeddings in-process (prod runs an L40S), and renders `CUDAExecutionProvider` then
+`CPUExecutionProvider` in the writer's config; `false` runs them on CPU. There is no separate
+embeddings server. `workers` bundles all ported CF workers into one image → one Deployment.
+
+`ingestion.embeddingsURL` is the embeddings HTTP API index-builder POSTs to (its
+`ORAMA_EMBEDDINGS_URL`; Prod 1 uses the hosted embeddings API). Unset renders the variable empty,
+since index-builder requires it at boot and nothing in the stack serves that API.
+
+`engine.reader.hpa` (`minReplicas` default `reader.replicas`, `maxReplicas` default
+2 × `minReplicas`, `targetCPUUtilization` default `70`) makes the operator own a
+`HorizontalPodAutoscaler` `<cr>-reader` on the reader StatefulSet; while it is set the operator
+sets the StatefulSet's replica count only when creating it. Clearing `hpa` deletes the HPA.
+
+| Field under `spec.components.engine` | Default | Purpose |
+|---|---|---|
+| `writer.startupTimeout` | `20m` | How long the writer may take to answer `GET /health` before it is restarted. The startup probe runs every 10 s with `failureThreshold` = timeout ÷ 10 s, rounded up. |
+| `reader.startupTimeout` | `40m` | The same for each reader, which loads its whole index before it answers; a restart begins the load again. `1h` gives `failureThreshold: 360`. |
+| `minMaxMapCount` | `4194304` | The `preflight` init container fails when the node's `vm.max_map_count` is lower. Set it on the node pool ([install.md](install.md#node-settings-for-the-engine)); `0` skips the check. |
+| `minOpenFiles` | `65535` | The `preflight` init container fails when the pod's open-files limit (`ulimit -n`) is lower; `0` skips the check. With both minimums at `0` the pods have no `preflight` container. |
+| `hooks.extraDeniedDomains` | — | Host patterns appended, once each, to the deny list the writer and readers apply to outbound HTTP from customer JavaScript hooks (see [components.md](components.md#hooks-deny-list)). A pattern matches the URL host, not the resolved address; `*` stays within one dot-separated label and `**` spans labels, so write `10.244.**`, not `10.244.*` or `10.244.0.0/16` (an entry containing `/` is refused). There is no allow list. |
+| `hooks.evaluationTimeout` | `200ms` | How long OramaCore lets a hook's code load. |
+| `hooks.executionTimeout` | `1s` | How long one run of a hook may take. |
+
+The defaults are Prod 1's (the hooks timeouts are also OramaCore's own): its reader unit allows 20 minutes for the port and 40 for the unit to
+start, its units set `LimitNOFILE=65535`, and its reader hosts set `vm.max_map_count=4194304`.
+Changing a timeout or a minimum rolls the writer or reader StatefulSet.
+
+### Engine Sentry and metrics
+
+| Field under `spec.components.engine` | Default | Purpose |
+|---|---|---|
+| `sentry` | unset | Turns on OramaCore's Sentry client on the writer and readers. Unset renders no `sentry_dns`, so OramaCore starts without Sentry. |
+| `sentry.dsnSecretRef.{name,key}` | — | Secret key (in the CR's namespace) holding the DSN. The ConfigMap carries `sentry_dns: '__SENTRY_DSN__'`; the `render-config` init container substitutes the value, and an empty value leaves Sentry off. |
+| `sentry.environment` | `spec.region.name` | Environment prefix: the writer reports as `<environment>-writer`, the readers as `<environment>-reader`. |
+
+Every engine config renders `log.levels` `oramacore: info` and `orama_js_pool: info`, as Prod 1 does.
+Setting, changing or removing `sentry` changes the config hash and rolls the writer and readers; a new
+DSN value in the same Secret key needs a manual rollout restart. Writer and reader pods carry
+`prometheus.io/scrape: "true"`, `prometheus.io/port: "8080"` and `prometheus.io/path: /metrics` for an
+annotation-driven scraper; the public Ingresses never serve `/metrics`.
+
+### Engine volume snapshots
+
+| Field under `spec.components.engine.snapshots` | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Take scheduled CSI `VolumeSnapshot`s of the writer's and every reader's `data` claim ([operator#316](https://github.com/oramasearch/orama-operator/issues/316)). Disabling stops new snapshots and pruning and drops the status; it never deletes a snapshot. |
+| `schedule` | `0 3 * * *` | 5-field cron (minute hour day-of-month month day-of-week), UTC; daily at 03:00 as on Prod 1. A descriptor (`@daily`), a time zone or an invalid expression fails the reconcile (`Ready=False`, `ReconcileError`). |
+| `keep` | `7` | Ready snapshots kept per claim, as on Prod 1; the oldest beyond it are deleted with their disk snapshots. Minimum 1. |
+| `volumeSnapshotClassName` | `orama-cloud-v1-retain` | Class every snapshot names. The default is created when absent (`disk.csi.azure.com`, `deletionPolicy: Retain`); a named class must exist and be `Retain`. |
+
+Snapshots are named `<claim>-<UTC timestamp>`, carry the CR's standard labels and no owner reference,
+and are timed from the newest existing snapshot of each claim. Behaviour and the restore runbook:
+[components.md](components.md#engine-volume-snapshots-316-engine_snapshotsgo).
+
+### Prod 2 auth and public endpoints
+
+| Field under `spec.components` | Default | Purpose |
+|---|---|---|
+| `engine.writer.host` | empty | Writer Ingress → `<cr>-writer:8080`, primary region only. A companion `<cr>-writer-metrics` Ingress keeps `/metrics` off it (403 on ingress-nginx). |
+| `engine.reader.host` | empty | Reader Ingress → `<cr>-reader:80`, through Envoy when enabled, direct reader otherwise. Envoy answers `/metrics` 404 and `<cr>-reader-metrics` denies it, as on the writer. |
+| `engine.writer.jwt` | unset | Enables `writer_side.jwt.providers` in OramaCore. Unset preserves the existing engine config without JWT. Requires `spec.jwtIssuer`. |
+| `engine.writer.jwt.jwksURL` | in-cluster dashboard | HTTP(S) dashboard JWKS URL without credentials. Unset renders `http://<cr>-dashboard:3000/api/.well-known/jwks.json`, so the writer fetches keys from the dashboard Service in its own namespace rather than through public DNS and Cloudflare; then the dashboard must be enabled. |
+| `engine.writer.jwt.audiences` | — | Accepted JWT audiences: each exact `clusterWriterUrl` the dashboard signs tokens for (the copied control DB's `oramacore_clusters.writer_url`, which the dashboard also returns as `writerURL`). List every writer URL the rows still carry; Prod 1 lists `https://writer.atlantis.cluster.oramacore.com` and `https://writer.bovista.cluster.oramacore.com`. Each entry 1–128 characters. |
+| `engine.writer.jwt.audience` | — | Deprecated single audience; rendered together with `audiences` as one list without duplicates. |
+
+`engine.writer.jwt` fails the reconcile (`Ready=False`, reason `ReconcileError`) when `jwtIssuer` is
+empty, when `audience` and `audiences` are both empty, when `jwksURL` is unset and the dashboard is
+disabled, and when `engine.writer.host` is set but `https://<writer.host>` is not among the audiences.
+OramaCore matches issuer and audience exactly, so any of these would otherwise surface only as 401s on
+customer writes.
+
+With `cloudflare.enabled`, `manageDNS` and `apiTokenSecretRef` configured, the dashboard, writer
+and reader each get an owned proxied `CloudflareDNSRecord` after their Ingress receives an address.
+Removing a host or disabling DNS deletes its owned child record; the DNS controller's finalizer
+handles external cleanup. Existing CRs gain no writer/reader ingress until their hosts are set.
+
+### Public hosts and origin TLS
+
+The dashboard, docs, `engine.writer` and `engine.reader` each take the same three fields. Each
+applies only while that component's `host` is set.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `host` | empty | The Ingress `<cr>-<component>`, one `/` rule to the component's Service. The only name that gets a `CloudflareDNSRecord`. |
+| `extraHosts` | — | Further names, each with its own rule to the same Service. They never get a `CloudflareDNSRecord`; their DNS is switched by hand (the cutover repoints `app.orama.com` this way). |
+| `tlsSecretName` | empty | A `kubernetes.io/tls` Secret in the CR's namespace, for example a Cloudflare Origin CA certificate. Set, the Ingress gets one `tls` entry listing `host` and every extra host with that Secret, and ingress-nginx redirects plain HTTP to HTTPS. Empty, the Ingress has no `tls` section and the origin answers HTTPS with ingress-nginx's default certificate, which Cloudflare's SSL mode Full (not strict) accepts. |
+
+A host may appear once across the dashboard, docs, writer and reader, whether the component is
+enabled or not; an extra host equal to `host` (compared without case), an empty entry, and
+`extraHosts` or `tlsSecretName` without `host` are refused too. Any of these fails the reconcile
+before anything is written (`Ready=False`, reason `ReconcileError`, the message names both fields).
+Prod 2's dashboard answers both names at the cutover with:
+
+```yaml
+dashboard:
+  host: app.orama.ing
+  extraHosts: [app.orama.com]
+  tlsSecretName: origin-cert   # optional
+```
+
+`idp.provider: firebase` injects the three server variables through required Secret key references.
+The operator creates no Firebase credentials and no longer seeds the unused `FIREBASE_SERVICE_ACCOUNT`
+placeholder. With the default `none`, it adds no Firebase variables. Browser Firebase configuration
+belongs to the dashboard image; authorizing `app.orama.ing` in Firebase remains a separately approved
+production change. The operator generates Prod 2's own RSA keypair once through `ensureJWTSecrets`;
+no shared Prod 1 keypair is needed. A missing public-only Secret is recovered from the preserved pair
+without rotation. JWT configuration changes roll the init-rendered engine config. A set `jwtIssuer` is also given to
+the dashboard as an explicit environment variable. `jwtIssuer` had a CRD default of `orama-cloud`
+until operator#310; CRs created while it was served keep that stored value.
+The dashboard token endpoint reads writer/reader URLs from control-DB cluster rows; their copy must
+use the exact Prod 2 URLs. The operator does not rewrite those rows.
+
+### `dashboard.envFrom` and `dashboard.env`
+
+The environment the dashboard needs beyond the operator's wiring (Prod 1 sets 48 variables in Vercel:
+Stripe, Airbyte, S3, Slack, Upstash, the cron and private-API secrets, and others) comes from Secrets
+and ConfigMaps the user creates in the CR's namespace ([operator#311](https://github.com/oramasearch/orama-operator/issues/311)).
+
+| Field | Type | Behavior |
+|---|---|---|
+| `dashboard.envFrom` | `[]EnvFromSource` | Secrets and ConfigMaps appended after the operator's envFrom sources (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`), so a key here overrides the shared ConfigMap and the seeded dashboard Secret; among these sources a later one wins. A key here does not override the operator's explicit env (below); use `env` for that. |
+| `dashboard.env` | `[]EnvVar` | Appended after the operator's explicit env. An entry replaces the operator's variable of the same name, so each name appears once: for example `CLICKHOUSE_HOST` set to the ClickHouse proxy URL while `analytics.endpoint` points the processor at ClickHouse Cloud. |
+
+Precedence, lowest to highest: operator envFrom, `dashboard.envFrom`, operator explicit env
+(`MASTER_API_KEY`, `POSTGRES_PASSWORD`, `DATABASE_URL`, a set `JWT_ISSUER`, the `FIREBASE_*` keys with
+`idp.provider: firebase`, and `CLICKHOUSE_HOST`/`USER`/`PASSWORD` with external analytics),
+`dashboard.env`.
+
+Operator-owned variables are never taken from the user: `DATABASE_URL` and `POSTGRES_PASSWORD` (the
+control DB), `JWT_PRIVATE_KEY` and `JWT_PUBLIC_KEY` (the generated `<cr>-jwt`), `JWT_ISSUER`
+(`jwtIssuer`) and `MASTER_API_KEY` (`masterAPIKeySecretRef`). Naming one in `env`, or a source in
+`envFrom` that holds one (after its `prefix`), fails the reconcile with a message naming the field,
+the source and the variable, never its value.
+
+A referenced Secret or ConfigMap that does not exist fails the reconcile (`Ready=False` naming it)
+unless the reference is `optional`; so does a missing key behind a non-optional `env` `valueFrom`.
+The operator watches the referenced objects: a change to their data rolls the dashboard through the
+pod-template annotation `orama.cloud/dashboard-env-hash`, a SHA-256 over the referenced data. Values
+are never written anywhere else. A dashboard with no user references carries no annotation.
+
+`CredentialsReady` follows the user env: a seeded `<cr>-dashboard-secret` key (`STRIPE_SECRET_KEY`,
+`RESEND_API_KEY`, ...) that `env` or `envFrom` provides is checked in the Secret the dashboard really
+reads it from, and not checked at all when it comes from a literal or a ConfigMap.
+
+### `dashboard.crons`
+
+The dashboard's three scheduled calls, which Prod 1 runs as Vercel crons from `vercel.json`, as
+CronJobs `<cr>-dashboard-cron-<name>` ([operator#17](https://github.com/oramasearch/orama-operator/issues/17)).
+Each sends `GET http://<cr>-dashboard:3000<path>` with `Authorization: Bearer $CRON_SECRET` to the
+in-cluster Service, never the public hostname.
+
+| Name | Path | Default schedule (UTC) |
+|---|---|---|
+| `crawler` | `/api/private/v1/run-crawler-cron` | `*/1 * * * *` |
+| `index-gc` | `/api/private/v1/run-index-gc-cron` | `0 * * * *` |
+| `consumption-sync` | `/api/billing/queue-consumption-sync` | `0 */6 * * *` |
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Create the CronJobs. Requires `dashboard.enabled`. Turning it off deletes the CronJobs this CR owns and leaves any other CronJob alone. |
+| `suspend` | `true` | Keep the CronJobs but start no runs. Set to `false` at the cutover, in the same step that turns Prod 1's Vercel crons off; running both stacks' crons crawls and bills twice. |
+| `secretRef` | unset | `SecretKeySelector` for `CRON_SECRET`. Unset means the Secret key the dashboard itself reads `CRON_SECRET` from (a `dashboard.envFrom` Secret, or a `dashboard.env` `secretKeyRef`); the reconcile fails when there is none or it is a literal or ConfigMap value. The dashboard compares the bearer with its own `CRON_SECRET`, so set this only when the two are kept in the same value elsewhere. |
+| `schedules.crawler`, `schedules.indexGC`, `schedules.consumptionSync` | the table above | Five-field cron in UTC, validated before scheduling; an override replaces only its own entry. |
+
+`curl --fail` turns a non-2xx response into a failed Job. The secret reaches the container through a
+`secretKeyRef` and is passed to curl on stdin, never in the spec or the process arguments. Each
+CronJob forbids concurrent runs, keeps one successful and three failed Jobs, and gives a run a
+300-second request timeout inside a 330-second Job deadline; Job retries are off.
+
+### `analyticsProcessor.import`
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Own `<cr>-analytics-import`, a CronJob that sends `POST /import` to the processor Service on port 8080. Requires engine, analytics and controlDB enabled. |
+| `schedule` | `*/5 * * * *` | Five-field cron in UTC (`timeZone: Etc/UTC`); validated before scheduling. |
+| `includeWriter` | `false` | Also pull the writer's reader side (primary regions only). The writer serves no search traffic, so it is left out unless set. |
+
+A new stack opting in creates a headless governing reader Service `<cr>-reader-headless` alongside
+the normal customer-facing reader Service. The processor polls each reader ordinal on its own port
+8080, including HPA-driven replicas, exactly once per run; an ordinal whose pod is gone but whose
+data PVC remains stays listed, disabled. `status.analyticsImport` reports the sources and the last
+successful run. Configuration
+changes roll the processor through a deterministic config hash; ordinary unscheduled configurations
+retain their existing reader-Service polling. The processor now gets that hash annotation even
+without a schedule, so upgrading an existing processor rolls it once.
+
+Existing reader StatefulSets retain their immutable `serviceName`. Enabling imports on a legacy
+`<cr>-reader` governing Service returns a visible prerequisite error and creates no schedule.
+A separately reviewed reader migration is required first; the operator never deletes/recreates the
+StatefulSet to change this field. Disabling imports removes the schedule but keeps a headless Service
+already governing live readers. Disabling the processor removes its Deployment, config and schedule.
+Invalid prerequisites remove a previous schedule and degrade reconciliation. Trigger pods inherit
+placement and pull secrets, mount no service-account token or credentials, forbid concurrent Jobs,
+and make no automatic request retries. See [components.md](components.md#analytics-import) for
+listener/image requirements and failure limits.
+
+### `controlDB.backup`
+
+Opt-in CNPG Barman object-store backups of the control DB (`ControlDBBackupSpec`). It has the same
+fields as the `Lake`'s `spec.postgres.backup` (procedure in [lake/backups.md](lake/backups.md)). Only an
+in-cluster, non-replica control DB is backed up.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Configure the Cluster's `spec.backup.barmanObjectStore` and own a `ScheduledBackup` `<cr>-controldb-backup` (`immediate: true`, Backups owned by the ScheduledBackup). |
+| `schedule` | `0 0 3 * * *` | Six-field CNPG cron. |
+| `retention` | `30d` | Barman `retentionPolicy`. |
+| `destination.bucket` | — | Required when enabled. |
+| `destination.path` | `<namespace>/<name>/controldb` | Bucket prefix; give each cluster its own when sharing a bucket. |
+| `destination.endpointURL` | the Secret's `s3ApiEndpoint` | S3 endpoint override. |
+| `secretRef.name` | — | Required when enabled: a Secret in the CR's namespace with `s3ApiEndpoint`, `accessKeyId`, `secretAccessKey`. |
+
+`status.conditions[BackupReady]` is present only while backups are enabled: `True`
+(`BackupCompleted`) once the ScheduledBackup exists and the newest CNPG Backup completed; otherwise
+`False` with `ScheduledBackupPending`, `BackupPending`, `BackupNotCompleted`, or, for an invalid
+config, `BackupBucketRequired` / `BackupSecretRequired` / `BackupSecretNotFound` /
+`InvalidBackupSecret` (nothing is configured in CNPG until the config is valid). It does not change
+the stack's `phase`. While backups are enabled a Ready stack re-reads backup status every 5 minutes;
+unchanged reads write nothing.
+
+### `status.conditions[EngineSidesSeparated]`
+
+Present while the engine is enabled. `True` (`SideImages`) when `spec.images.overrides` sets both
+`oramacore-writer` and `oramacore-reader`: the writer renders `writer.yaml` and readers `reader.yaml`.
+`False` (`CombinedImage`) while both sides run the shared `oramacore` image with the combined config,
+which means every reader also starts a writer side. It does not change the stack's `phase`.
+
+### `status.conditions[CredentialsReady]`
+
+Always present. `False` (`SeededOrMissingCredentials`) lists every `Secret/key` the running stack reads
+that is missing, empty, still its seeded dummy, or any other `dev-*` value: the component Secrets'
+seeded keys, `<cr>-broker-admin/password`, `<cr>-cache-auth/password` and the master API key. `True`
+(`CredentialsSet`) once none is left. Values are never written to status, events or logs. It changes
+the phase only with `spec.requireRealCredentials`. The broker and Redis passwords are generated (see
+[components.md](components.md#stack-wide-credentials-and-credentialsready-307-credentialsgo)), so on a
+new stack they are never listed unless deleted.
+
+### `status.engineSnapshots` and `status.conditions[SnapshotsReady]`
+
+Present while `engine.snapshots` is enabled. `engineSnapshots[]` has one entry per existing engine
+data claim (`claim`, `component`, and its newest snapshot's `snapshotName`, `snapshotTime`,
+`readyToUse`, `error`). `SnapshotsReady` is `True` (`SnapshotsCurrent`) when every claim has a ready
+snapshot within two schedule periods; otherwise `False` with `SnapshotFailed` (a claim's newest
+snapshot reports an error), `SnapshotStale` (a claim's newest ready snapshot is older than two
+schedule periods), `SnapshotPending` (no ready snapshot yet), `ClassNotUsable` (no snapshot CRDs, a
+missing class, or a class that is not `Retain`) or `NoClaims`. It does not change the stack's
+`phase`. Written only when it changes.
+
+### `status.analyticsImport`
+
+Present while `analyticsProcessor.import` is enabled ([operator#315](https://github.com/oramasearch/orama-operator/issues/315)).
+`sources[]` is the processor's configured source list in config order (`name`, `url`, `enabled`):
+reader ordinals `0..n-1` once each, where `n` is the larger of the reader count and the highest
+ordinal with a `data-<cr>-reader-<ordinal>` PVC plus one, then the writer when `includeWriter` is set.
+`enabled: false` marks an ordinal with a PVC and no pod. `lastSuccessfulTime` is the import CronJob's
+`status.lastSuccessfulTime`. Written only when either changes, so a successful run causes one write.
 
 ## `OramaCloudV1E2ETest` (separate CRD)
 
@@ -55,7 +347,9 @@ is a curl+jq script that self-bootstraps a clean-slate collection+index and asse
 OramaCore function in variations** — liveness, auth (keys + negatives), collection/index lifecycle +
 document CRUD/upsert/delete, the write→searchable replication canary, fulltext (typo tolerance/exact/
 threshold/boost/pagination), vector + hybrid, filters (number/date/bool/string/geo + and/or/not),
-facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, analytics, and answer/RAG. It is the
+facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, and answer/RAG. It never calls
+`GET /v1/analytics`, which erases a reader's pending customer events (only the analytics processor
+pulls them; [operator#315](https://github.com/oramasearch/orama-operator/issues/315)). It is the
 forcing function (see the production-migration principle in `CLAUDE.md`) — never softened to pass.
 Coverage is tracked by [operator#44](https://github.com/oramasearch/orama-operator/issues/44).
 Sample: [`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).
@@ -169,6 +463,52 @@ End-to-end sample (a 3-replica target + its test): [`../config/samples/zetta-req
 | `spec.levels` | Which test levels to run (`ZETTA_E2E_LEVELS`, default `2,3`). |
 | `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
 | `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ozce2e`; `kubectl logs job/<name>-e2e`. |
+## `CloudflareDNSRecord` (separate CRD) — one Cloudflare DNS record
+
+One proxied DNS record, created by the `OramaCloudV1`, `OramaZettaCluster` and Lake controllers. The
+child controller (`cloudflarednsrecord_controller.go`) makes the CF API calls and holds a finalizer.
+It never changes a DNS record it did not create, and never changes an existing record in any way it
+did not before operator#312 (owner decision 2026-10-12: existing DNS settings stay as they are; new
+records may be created):
+
+- A record it **creates** carries the Cloudflare comment `orama-operator:<namespace>/<name>`, recorded
+  in `status.ownerComment`.
+- A **legacy** record (created before ownership comments) is recognised by `status.recordID` with no
+  write: it never gains a comment, and it is rewritten only when its type, content, proxying or TTL
+  differs from the spec. Before operator#312 every reconcile rewrote it; now an unchanged record is
+  only read. A rewrite keeps the record's comment as it is.
+- Any other A, AAAA or CNAME record with the same name is never modified: the CR reports
+  `ready: false` with a message naming the conflicting record and retries every 5 minutes. Other
+  types at the name (TXT, MX, ...) are ignored, as the old type-filtered lookup did.
+- **Zones:** a record is never moved between zones. When `spec.zoneID` (or the Secret's `zoneID`)
+  resolves to a zone other than `status.zoneID`, no request is sent, the record stays where it is,
+  and the CR reports `ready: false` ("zone change refused"). A legacy status without `zoneID` counts
+  as the Secret's zone, so naming the zone a record is already in changes nothing. To move a record,
+  delete the CR (which deletes the record) and recreate it.
+- **Deletion** removes the record from the zone in `status.zoneID`:
+  - a record with `status.ownerComment` is fetched first and deleted only if it still carries that
+    comment; otherwise it is left in place, the finalizer is released, and a `RecordNotOwned`
+    Warning Event is recorded;
+  - a legacy record (empty `status.ownerComment`) is deleted by ID when its own CR is deleted, as the
+    finalizer always did, so nothing about existing records changes. The stricter comment rule
+    applies only to records created from now on.
+  - A record that is already gone counts as deleted.
+
+| Field | Meaning |
+|---|---|
+| `spec.secretRef` | Secret with `token` and the default `zoneID`. |
+| `spec.name` | Record FQDN. |
+| `spec.type` | `A` or `CNAME`; empty infers it from `content`. |
+| `spec.content` | Target IP or hostname. |
+| `spec.zoneID` | Zone for the record; overrides the Secret's `zoneID`. Changing it on an existing record is refused (see above). |
+| `spec.proxied` | Proxied through Cloudflare (TTL is always auto). |
+| `status.recordID` / `ready` / `message` | The owned Cloudflare record, and why it is not ready (a conflict or a refused zone change). |
+| `status.zoneID` | Zone the record lives in; empty on legacy records (the Secret's zone). |
+| `status.ownerComment` | Comment the record was created with; empty on legacy records. |
+
+Cloudflare limits record comments to 100 characters on Free zones, so keep `<namespace>/<name>`
+under 85 characters.
+
 ## `CloudflareLoadBalancer` (separate CRD) — the global geo-LB
 
 Owns a Cloudflare **global Load Balancer** ([operator#73](https://github.com/oramasearch/orama-operator/issues/73)):
@@ -260,6 +600,7 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.version` | Schema version recorded in `.status.appliedVersion` once applied. A change automatically replaces the prior Job with foreground deletion, waiting for its pods before starting the guarded apply. Lake hashes SQL plus guard; the dashboard hashes SQL. |
 | `spec.guardTable` | A `public` table that must exist for the Job to skip the apply. Default `crawler_configs`. When the schema file records migrations (`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`), the Job also requires every one of them in the database's `schema_migrations`, and otherwise applies the whole idempotent file ([#271](https://github.com/oramasearch/orama-operator/issues/271)). With no `schema_migrations` table, or a file that records none, the guard alone decides. |
 | `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
+| `spec.nodeSelector` / `spec.tolerations` | Placement for the migration Job's pod. `OramaCloudV1` copies its `spec.placement` here. Applies to Jobs created after the change. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `ReplacingMigrationJob` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
 

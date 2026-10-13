@@ -11,6 +11,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,13 +23,10 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// llmProviderNames returns the enabled LLM provider names (defaults to the prod set —
-// v1 offers all three and end users pick per query).
+// llmProviderNames returns the enabled LLM provider names (defaultLLMProviders when
+// spec.llm.providers is empty; end users pick per query).
 func llmProviderNames(oc *oramav1alpha1.OramaCloudV1) string {
-	provs := oc.Spec.LLM.Providers
-	if len(provs) == 0 {
-		return "groq,openai,anthropic"
-	}
+	provs := llmProviders(oc)
 	names := make([]string, 0, len(provs))
 	for _, p := range provs {
 		names = append(names, p.Name)
@@ -41,6 +39,13 @@ func llmDefault(oc *oramav1alpha1.OramaCloudV1) string {
 		return oc.Spec.LLM.Default
 	}
 	return "groq"
+}
+
+func jwtIssuer(oc *oramav1alpha1.OramaCloudV1) string {
+	if oc.Spec.JWTIssuer != "" {
+		return oc.Spec.JWTIssuer
+	}
+	return "orama-cloud"
 }
 
 func configMapName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-config" }
@@ -62,9 +67,6 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 			"ROLE":                  oc.Spec.Region.Role,
 			"LLM_PROVIDERS":         llmProviderNames(oc), // multiple; users pick per query
 			"LLM_DEFAULT":           llmDefault(oc),
-			"POSTGRES_HOST":         n + "-controldb-rw",
-			"POSTGRES_PORT":         "5432",
-			"POSTGRES_DB":           controlDBName,
 			"CLICKHOUSE_HOST":       n + "-analytics",
 			"CLICKHOUSE_PORT":       "8123",
 			"REDIS_HOST":            n + "-cache",
@@ -78,7 +80,6 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 			"DISCO_URL":             "http://" + n + "-disco:8080",
 			"ORAMACORE_WRITER_URL":  "http://" + n + "-writer:8080",
 			"ORAMACORE_READER_URL":  "http://" + n + "-reader",
-			"EMBEDDINGS_URL":        "http://" + n + "-disco:50051",
 			// #8 QStash-equivalent: the in-cluster RabbitMQ (a true QStash HTTP shim is a follow-up).
 			"QSTASH_URL": "http://" + n + "-broker:5672",
 			// #4 Airbyte: installed via its Helm chart (helmfile platformDeps); dashboard/index-builder use this.
@@ -86,11 +87,21 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 			"KC_HTTP_ENABLED":             "true",
 			"KC_PROXY_HEADERS":            "xforwarded",
 			"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
-			"JWT_ISSUER":                  "orama-cloud",
+			"JWT_ISSUER":                  jwtIssuer(oc),
+		}
+		// Connection hints for the in-cluster control DB only. An external DB's address lives in
+		// its credentials Secret (`uri`); no running component reads these keys.
+		if !controlDBExternal(oc) {
+			cm.Data["POSTGRES_HOST"] = n + "-controldb-rw"
+			cm.Data["POSTGRES_PORT"] = "5432"
+			cm.Data["POSTGRES_DB"] = controlDBName
 		}
 		return controllerutil.SetControllerReference(oc, cm, r.Scheme)
 	})
 	if err != nil {
+		return err
+	}
+	if err := r.ensureCredentialSecrets(ctx, oc); err != nil {
 		return err
 	}
 	return r.ensureJWTSecrets(ctx, oc)
@@ -102,8 +113,9 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 // not a placeholder.
 func (r *OramaCloudV1Reconciler) ensureJWTSecrets(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	jwtName := oc.Name + "-jwt"
-	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: jwtName}, &corev1.Secret{}); err == nil {
-		return nil // already generated — never rotate here
+	jwt := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: jwtName}, jwt); err == nil {
+		return r.ensureJWTPublicSecret(ctx, oc, jwt) // recover a missing public Secret; never rotate
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -120,26 +132,48 @@ func (r *OramaCloudV1Reconciler) ensureJWTSecrets(ctx context.Context, oc *orama
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
 
 	// dashboard: private + public (it signs the writer JWT)
-	jwt := &corev1.Secret{
+	jwt = &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: jwtName, Namespace: oc.Namespace, Labels: labelsFor(oc, "jwt")},
 		StringData: map[string]string{"JWT_PRIVATE_KEY": string(privPEM), "JWT_PUBLIC_KEY": string(pubPEM)},
 	}
 	if err := controllerutil.SetControllerReference(oc, jwt, r.Scheme); err != nil {
 		return err
 	}
-	if err := r.Create(ctx, jwt); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	if err := r.Create(ctx, jwt); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		// A concurrent reconciler won creation; use its pair, never this discarded pair.
+		if err := r.Get(ctx, client.ObjectKeyFromObject(jwt), jwt); err != nil {
+			return err
+		}
 	}
+	return r.ensureJWTPublicSecret(ctx, oc, jwt)
+}
 
-	// engine: public only (it verifies)
-	jwtPub := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: jwtName + "-pub", Namespace: oc.Namespace, Labels: labelsFor(oc, "jwt")},
-		StringData: map[string]string{"JWT_PUBLIC_KEY": string(pubPEM)},
-	}
-	if err := controllerutil.SetControllerReference(oc, jwtPub, r.Scheme); err != nil {
+// Recover interrupted generation or a lost public-only Secret from the preserved signing pair.
+func (r *OramaCloudV1Reconciler) ensureJWTPublicSecret(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, jwt *corev1.Secret) error {
+	name := jwt.Name + "-pub"
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, &corev1.Secret{}); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
-	if err := r.Create(ctx, jwtPub); err != nil && !apierrors.IsAlreadyExists(err) {
+	publicKey := string(jwt.Data["JWT_PUBLIC_KEY"])
+	if publicKey == "" {
+		publicKey = jwt.StringData["JWT_PUBLIC_KEY"]
+	}
+	if publicKey == "" {
+		return fmt.Errorf("JWT signing Secret %s is missing JWT_PUBLIC_KEY", jwt.Name)
+	}
+	pub := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace, Labels: labelsFor(oc, "jwt")},
+		StringData: map[string]string{"JWT_PUBLIC_KEY": publicKey},
+	}
+	if err := controllerutil.SetControllerReference(oc, pub, r.Scheme); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, pub); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 	return nil
@@ -150,37 +184,37 @@ func (r *OramaCloudV1Reconciler) ensureJWTSecrets(ctx context.Context, oc *orama
 // maps in techops-docs). Returns nil for components that need no secret. Real
 // deployments override these (edit in place, or source from ExternalSecrets).
 //
+// MASTER_API_KEY is not seeded here: every component that reads it takes it from the one
+// <cr>-master-api-key Secret (or spec.masterAPIKeySecretRef) through masterAPIKeyEnv (#307). A key
+// that still holds its seed below is reported by the CredentialsReady condition (credentials.go).
+//
 // NOTE: the Cloudflare API token is intentionally NOT here — it's needed only by the
 // operator (the CF DNS reconciler), read from spec.cloudflare.apiTokenSecretRef, and
 // a dummy value would be useless (the CF API would reject it).
 func componentSecretData(component string) map[string]string {
 	switch component {
-	case "engine": // OramaCore: master key, LLM providers, model downloads, JWT verify (public only)
+	case "engine": // OramaCore: LLM providers, model downloads, JWT verify (public only)
 		return map[string]string{
 			// JWT_PUBLIC_KEY comes from the generated <cr>-jwt-pub secret (verify only).
-			"MASTER_API_KEY":    "dev-master-api-key",
 			"GROQ_API_KEY":      "dev-groq-api-key",
 			"OPENAI_API_KEY":    "dev-openai-api-key",
 			"ANTHROPIC_API_KEY": "dev-anthropic-api-key",
+			"GOOGLE_API_KEY":    "dev-google-api-key",
 			"HF_TOKEN":          "dev-huggingface-token",
 		}
 	case "search":
 		return map[string]string{"TYPESENSE_API_KEY": "dev-typesense-api-key"}
 	case "cache":
-		// In-cluster Redis runs WITHOUT requirepass (the redis image ignores REDIS_PASSWORD;
-		// it needs --requirepass), and every client uses a passwordless URL — so advertising a
-		// password here only causes AUTH failures. Passwordless everywhere (#32); enforcing
-		// requirepass is a hardening follow-up (#18).
+		// The Redis password is generated into <cr>-cache-auth (credentials.go), not seeded here.
 		return map[string]string{}
 	case "broker":
-		// Creds live in the mounted rabbitmq.conf (default_user/pass) — the RABBITMQ_DEFAULT_USER
-		// env conflicts with a mounted config, so keep the broker secret empty (#41). (Prod: render
-		// the password from a Secret via an init container instead of the config dummy.)
+		// The admin credentials are generated into <cr>-broker-admin and rendered into rabbitmq.conf
+		// by an init container (reconcileBroker), not seeded here.
 		return map[string]string{}
 	case "analytics":
 		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "analytics-processor": // pulls /v1/analytics -> ClickHouse
-		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password", "MASTER_API_KEY": "dev-master-api-key"}
+		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "disco":
 		return map[string]string{"DISCO_SECRET": "dev-disco-secret", "CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "keycloak":
@@ -195,7 +229,6 @@ func componentSecretData(component string) map[string]string {
 		// as plain env in reconcileIngestion.
 		return map[string]string{
 			"TYPESENSE_API_KEY":           "dev-typesense-api-key",
-			"MASTER_API_KEY":              "dev-master-api-key",
 			"ORAMA_EMBEDDINGS_BEARER":     "dev-hpes-bearer",
 			"ABLY_API_KEY":                "sandbox.dummy:sandboxdummyablysecret000000",
 			"API_SECRET":                  "dev-index-builder-api-secret",
@@ -225,19 +258,16 @@ func componentSecretData(component string) map[string]string {
 			// JWT_PRIVATE_KEY + JWT_PUBLIC_KEY come from the generated <cr>-jwt secret
 			// (the dashboard signs the OramaCore writer JWT); JWT_ISSUER is in the config.
 			// POSTGRES_PASSWORD is sourced from the CNPG-generated <cr>-controldb-app Secret via
-			// an explicit env in reconcileDashboard (#32) — not the dummy. Redis is passwordless.
-			"MASTER_API_KEY":           "dev-master-api-key",
-			"CLICKHOUSE_PASSWORD":      "dev-clickhouse-password",
-			"FIREBASE_SERVICE_ACCOUNT": "dev-firebase-service-account-json",
-			"STRIPE_SECRET_KEY":        "dev-stripe-secret-key",
-			"STRIPE_WEBHOOK_SECRET":    "dev-stripe-webhook-secret",
-			"AIRBYTE_CLIENT_SECRET":    "dev-airbyte-client-secret",
-			"RESEND_API_KEY":           "dev-resend-api-key",
-			"SLACK_TOKEN":              "dev-slack-token",
+			// an explicit env in reconcileDashboard (#32) — not the dummy.
+			"CLICKHOUSE_PASSWORD":   "dev-clickhouse-password",
+			"STRIPE_SECRET_KEY":     "dev-stripe-secret-key",
+			"STRIPE_WEBHOOK_SECRET": "dev-stripe-webhook-secret",
+			"AIRBYTE_CLIENT_SECRET": "dev-airbyte-client-secret",
+			"RESEND_API_KEY":        "dev-resend-api-key",
+			"SLACK_TOKEN":           "dev-slack-token",
 		}
 	case "workers": // the CF workers bundle — RAG answer path + telemetry
 		return map[string]string{
-			"MASTER_API_KEY":      "dev-master-api-key",
 			"OPENAI_API_KEY":      "dev-openai-api-key",
 			"GROQ_API_KEY":        "dev-groq-api-key",
 			"ANTHROPIC_API_KEY":   "dev-anthropic-api-key",
