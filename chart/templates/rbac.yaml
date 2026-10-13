@@ -43,6 +43,8 @@ rules:
       - aksclusters
       - clusterhelmreleases
       - oramaoperators
+      - lakesets
+      - oramacloudv1sets
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -86,6 +88,10 @@ rules:
       - clusterhelmreleases/finalizers
       - oramaoperators/status
       - oramaoperators/finalizers
+      - lakesets/status
+      - lakesets/finalizers
+      - oramacloudv1sets/status
+      - oramacloudv1sets/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
