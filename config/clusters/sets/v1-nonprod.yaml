@@ -1,0 +1,92 @@
+apiVersion: orama.cloud/v1alpha1
+kind: OramaCloudV1Set
+metadata:
+  name: v1-nonprod
+spec:
+  clusters:
+  - clusterRef: orama-nonprod-cluster-01
+    name: v1-dev
+    namespace: v1-dev
+    spec:
+      components:
+        dashboard:
+          host: app-dev.oramadev.net
+  deletionPolicy: Retain
+  secrets:
+  - name: oramasearch-dockerhub
+    namespace: orama-system
+  - name: cloudflare-api-token
+    namespace: orama-system
+  template:
+    cloudflare:
+      apiTokenSecretRef:
+        name: cloudflare-api-token
+      enabled: true
+      manageDNS: true
+      manageLoadBalancers: true
+    components:
+      analytics:
+        enabled: true
+        mode: in-cluster
+        placement: local
+      analyticsProcessor:
+        enabled: true
+      broker:
+        enabled: true
+        mode: in-cluster
+        placement: local
+      cache:
+        enabled: true
+        mode: in-cluster
+        placement: local
+      controlDB:
+        enabled: true
+        mode: in-cluster
+        placement: local
+      dashboard:
+        enabled: true
+      disco:
+        enabled: true
+      docs:
+        enabled: true
+        host: docs.sandbox.local
+      engine:
+        enabled: true
+        envoy: true
+        reader:
+          replicas: 1
+        writer:
+          gpu: false
+      ingestion:
+        enabled: true
+        harvest: true
+      oramasearchApp:
+        enabled: false
+        host: api.sandbox.local
+      pgAdmin:
+        enabled: true
+      search:
+        enabled: true
+        mode: in-cluster
+        placement: local
+      searchWorkers:
+        enabled: true
+      workers:
+        enabled: true
+        replicas: 1
+    demoSeed: false
+    idp:
+      provider: none
+    images:
+      pullSecretName: oramasearch-dockerhub
+      registry: oramasearch
+      tag: v1-sandbox
+    llm:
+      default: groq
+      providers:
+      - models:
+        - llama-3.3-70b-versatile
+        name: groq
+    profile: light
+    region:
+      role: primary
