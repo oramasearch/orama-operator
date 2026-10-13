@@ -243,35 +243,18 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		return r.teardownByComponent(ctx, oc, "dashboard")
 	}
 	img := componentImage(oc, "dashboard", "dashboard")
-	// Schema ownership: when the operator manages the control DB in-cluster it also owns the schema —
-	// reconcileControlDBMigrations applies the SAME Drizzle schema via an owned PostgresSchema Job
-	// (operator#40, supersedes the #34 dashboard init). Running BOTH double-applies the schema and the
-	// dashboard's drizzle-kit migrate then dies on the objects PostgresSchema already created (Postgres
-	// 42710, "type already exists") — it can't tell, because PostgresSchema applies raw SQL and doesn't
-	// touch `__drizzle_migrations`. So only run the dashboard's own db-migrate when the operator does
-	// NOT own the schema: an EXTERNAL control DB (no operator-managed PostgresSchema).
-	cdb := oc.Spec.Components.ControlDB
-	operatorOwnsSchema := cdb.Enabled && cdb.Mode != "external"
-	var initContainers []corev1.Container
-	if !operatorOwnsSchema {
-		// External control DB — the operator applies no PostgresSchema, so the dashboard applies its
-		// own Drizzle migrations before it serves (#34). GUARDED as a safe no-op on an image that
-		// doesn't ship the migrations (`.drizzle` + `drizzle.config.ts`).
-		initContainers = []corev1.Container{{
-			Name:    "db-migrate",
-			Image:   img,
-			Command: []string{"sh", "-c", `if [ -f drizzle.config.ts ] && [ -d .drizzle ]; then npm run db:migrate; else echo "dashboard image ships no migrations yet (operator#34) — skipping"; fi`},
-			Env:     []corev1.EnvVar{pgURIEnv(oc, "DATABASE_URL")},
-		}}
-	}
+	// Schema ownership: the dashboard never migrates the control DB. In-cluster, the operator's
+	// PostgresSchema applies the schema (operator#40); a dashboard drizzle-kit migrate on top of it
+	// collides (Postgres 42710, "type already exists"). External, the database belongs to someone
+	// else, and its owner runs migrations; a migrate from this image could alter an external
+	// production schema (orama-bridge#142). Prod 2 uses its own in-cluster control DB.
 	return r.reconcileApp(ctx, oc, appDef{
 		component:   "dashboard",
 		image:       img,
 		port:        3000,
 		ingressHost: d.Host,
-		// Real control-DB password from the CNPG secret (#32) + DATABASE_URL for Drizzle (#34).
-		env:            []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
-		initContainers: initContainers,
+		// Control-DB password + DATABASE_URL for Drizzle, from the CNPG or external Secret (#32, #34).
+		env: []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
 	})

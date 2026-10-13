@@ -62,9 +62,6 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 			"ROLE":                  oc.Spec.Region.Role,
 			"LLM_PROVIDERS":         llmProviderNames(oc), // multiple; users pick per query
 			"LLM_DEFAULT":           llmDefault(oc),
-			"POSTGRES_HOST":         n + "-controldb-rw",
-			"POSTGRES_PORT":         "5432",
-			"POSTGRES_DB":           controlDBName,
 			"CLICKHOUSE_HOST":       n + "-analytics",
 			"CLICKHOUSE_PORT":       "8123",
 			"REDIS_HOST":            n + "-cache",
@@ -87,6 +84,13 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 			"KC_PROXY_HEADERS":            "xforwarded",
 			"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
 			"JWT_ISSUER":                  "orama-cloud",
+		}
+		// Connection hints for the in-cluster control DB only. An external DB's address lives in
+		// its credentials Secret (`uri`); no running component reads these keys.
+		if !controlDBExternal(oc) {
+			cm.Data["POSTGRES_HOST"] = n + "-controldb-rw"
+			cm.Data["POSTGRES_PORT"] = "5432"
+			cm.Data["POSTGRES_DB"] = controlDBName
 		}
 		return controllerutil.SetControllerReference(oc, cm, r.Scheme)
 	})

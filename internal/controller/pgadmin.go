@@ -25,7 +25,10 @@ const pgAdminImage = "dpage/pgadmin4:8.14"
 // pre-registered via servers.json; the DB password is entered on first connect (it lives in the
 // <cr>-controldb-app Secret). Opt-in via spec.components.pgAdmin.enabled.
 func (r *OramaCloudV1Reconciler) reconcilePgAdmin(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
-	if !oc.Spec.Components.PgAdmin.Enabled {
+	// pgAdmin is pre-registered against the in-cluster control DB only. An external control DB is
+	// someone else's (the shared production PlanetScale during the v1 migration), so no admin UI
+	// for it is run from here.
+	if !oc.Spec.Components.PgAdmin.Enabled || controlDBExternal(oc) {
 		return r.teardownByComponent(ctx, oc, "pgadmin")
 	}
 

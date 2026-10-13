@@ -16,7 +16,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
-| **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
+| **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; **never migrates the control DB** — in-cluster, the operator's owned `PostgresSchema` applies the schema (a second Drizzle migrate collides, Postgres `42710`); external, the database's owner runs migrations ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)) | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
 | **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica); + an owned **`PostgresSchema`** applying the dashboard's Drizzle schema | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
@@ -237,8 +237,15 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   2 / heavy 3), `10Gi` storage, `bootstrap.initdb` creating the `oramacore` database.
 - **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** streaming
   from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
-- `mode: external` skips creation (the app uses the external endpoint). Owner ref on
-  the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs).
+- `mode: external` connects to a database the operator does not own, such as the shared
+  production PlanetScale while v1 migrates project by project
+  ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)). It requires
+  `credentialsSecretRef`, a Secret with keys `uri` and `password` (the same keys CNPG generates);
+  without it the reconcile fails and the CR goes `Degraded`. Every control-DB client — dashboard,
+  index-builder, analytics-processor — reads that Secret instead of `<cr>-controldb-app`. The
+  operator creates no `Cluster`, applies no `PostgresSchema`, runs no migration, omits the
+  `POSTGRES_HOST/PORT/DB` ConfigMap keys, and does not run pgAdmin.
+- Owner ref on the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs).
 
 **Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
