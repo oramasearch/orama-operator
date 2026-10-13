@@ -11,6 +11,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"helm.sh/helm/v3/pkg/chart/loader"
 	corev1 "k8s.io/api/core/v1"
@@ -515,5 +516,17 @@ func TestCRDManifestsHoldOnlyCRDs(t *testing.T) {
 	}
 	if err := applyCRDDocuments(context.Background(), c, "https://example.invalid/empty.yaml", []byte("# nothing\n")); err == nil {
 		t.Fatal("a manifest with no CRD is an error")
+	}
+}
+
+// A chart's hooks get minutes, not the API timeout: a hook Job on a new cluster pulls its image
+// alongside everything else. With 30 seconds, the ClickHouse operator's release failed 26 times
+// in a row on orama-production-cluster-03.
+func TestHelmWaitsLongEnoughForAChartsHooks(t *testing.T) {
+	if leafHookTimeout < 5*time.Minute {
+		t.Fatalf("hooks get %s; a hook's image pull on a new cluster needs minutes", leafHookTimeout)
+	}
+	if leafHookTimeout == leafAPITimeout {
+		t.Fatal("the hook timeout is the API timeout again")
 	}
 }
