@@ -57,6 +57,11 @@ const (
 	leafFieldOwner = "orama-operator-management"
 
 	leafAPITimeout = 30 * time.Second
+	// How long Helm waits for a chart's hooks (a Job that installs CRDs, for one). It is not the
+	// API timeout: on a new cluster a hook's image is pulled alongside everything else, and the
+	// ClickHouse operator's took over 30 seconds on orama-production-cluster-03, where a
+	// 30-second limit failed the release 26 times in a row before one attempt got through.
+	leafHookTimeout = 10 * time.Minute
 )
 
 // chartSource says where a chart is. Repository is either a classic chart repository
@@ -606,7 +611,7 @@ func (h *helmLeafInstaller) ensureRelease(ctx context.Context, getter *kubeconfi
 			install.ReleaseName, install.Namespace = req.Release, req.Namespace
 			install.CreateNamespace = true
 			install.SkipCRDs = true
-			install.Timeout = leafAPITimeout
+			install.Timeout = leafHookTimeout
 			installed, err := install.RunWithContext(ctx, chrt, req.Values)
 			if err != nil {
 				return state, fmt.Errorf("helm install of %s on the cluster failed: %w", req.Release, err)
@@ -617,7 +622,7 @@ func (h *helmLeafInstaller) ensureRelease(ctx context.Context, getter *kubeconfi
 			upgrade.Namespace = req.Namespace
 			upgrade.SkipCRDs = true
 			upgrade.MaxHistory = 10
-			upgrade.Timeout = leafAPITimeout
+			upgrade.Timeout = leafHookTimeout
 			upgraded, err := upgrade.RunWithContext(ctx, req.Release, chrt, req.Values)
 			if err != nil {
 				return state, fmt.Errorf("helm upgrade of %s on the cluster failed: %w", req.Release, err)
@@ -647,7 +652,7 @@ func (h *helmLeafInstaller) RemoveRelease(ctx context.Context, kubeconfig []byte
 		return err
 	}
 	uninstall := action.NewUninstall(config)
-	uninstall.Timeout = leafAPITimeout
+	uninstall.Timeout = leafHookTimeout
 	if _, err := uninstall.Run(name); err != nil && !errors.Is(err, driver.ErrReleaseNotFound) && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("helm uninstall of %s on the cluster failed: %w", name, err)
 	}
