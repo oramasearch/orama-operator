@@ -249,9 +249,10 @@ its data stores. It is a partial smoke-test configuration, not a self-contained 
 dependencies running. [`primary-us-east.yaml`](../config/samples/primary-us-east.yaml) and
 [`read-eu.yaml`](../config/samples/read-eu.yaml) require the production and peer prerequisites.
 [`oramacloudv1set-prod.yaml`](../config/samples/oramacloudv1set-prod.yaml) is Cloud v1 production: the
-`v1-prod` `OramaCloudV1Set`, applied on the management cluster, whose members are `v1-eu` on
-`orama-production-cluster-02` (it takes the cutover first) and `v1-us` on `orama-production-cluster-03`
-(lit up after it). Every change is rehearsed first through `v1-nonprod` on `orama-nonprod-cluster-01`.
+`v1-prod` `OramaCloudV1Set`, applied on the management cluster (where its members run:
+[the clusters today](infrastructure/README.md#the-clusters-today-and-the-path-from-here)). Its `v1-eu`
+member takes the cutover first and `v1-us` is lit up after it. Every change is rehearsed first through
+`v1-nonprod`.
 Its template sets the user node pool, deletion protection, control-DB backups and
 `images.requireDigests`; its header lists the placeholders (including one image `<digest>` per enabled
 component) and the Secrets each member namespace needs, and it is not part of the sample kustomization.
