@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -21,6 +22,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -140,6 +142,13 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	r.observe(&cluster, found)
 
+	// What Azure says about the operation it is running or last ran: its progress, and its error.
+	operation, err := az.latestOperation(ctx, creds, spec.SubscriptionID, spec.ResourceGroup, name)
+	if err != nil {
+		return r.fail(ctx, &cluster, observed, "OperationReadFailed", err)
+	}
+	observeOperation(&cluster.Status, operation)
+
 	switch state := found.Properties.ProvisioningState; state {
 	case "Succeeded":
 		if err := r.writeKubeconfig(ctx, &cluster, creds, name); err != nil {
@@ -152,13 +161,20 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		cluster.Status.ObservedGeneration = cluster.Generation
 		return settle(ctrl.Result{RequeueAfter: aksSteadyRecheck}, r.writeStatus(ctx, &cluster, observed))
 	case "Failed", "Canceled":
+		message := aksAzureMessage(&cluster.Status)
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
-			cluster.Generation, clusterPhaseDegraded, "Azure"+state, "Azure reports the cluster's provisioning state as "+state)
+			cluster.Generation, clusterPhaseDegraded, "Azure"+state, message)
 		cluster.Status.ObservedGeneration = cluster.Generation
+		// Logged once per distinct failure, when it is first seen, so it is in the log to be
+		// corrected without repeating on every recheck.
+		if observed.Message != message {
+			logf.FromContext(ctx).Error(errors.New(message), "Azure failed the cluster's operation",
+				"cluster", name, "resourceGroup", spec.ResourceGroup, "provisioningState", state)
+		}
 		return settle(ctrl.Result{RequeueAfter: aksSteadyRecheck}, r.writeStatus(ctx, &cluster, observed))
 	default:
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
-			cluster.Generation, clusterPhaseProvisioning, "Azure"+state, "Azure reports the cluster's provisioning state as "+state)
+			cluster.Generation, clusterPhaseProvisioning, "Azure"+state, aksAzureMessage(&cluster.Status))
 		cluster.Status.ObservedGeneration = cluster.Generation
 		return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &cluster, observed))
 	}
@@ -238,14 +254,58 @@ func (r *AksClusterReconciler) observe(cluster *oramav1alpha1.AksCluster, found 
 	if props.OIDCIssuerProfile != nil {
 		status.OIDCIssuerURL = props.OIDCIssuerProfile.IssuerURL
 	}
+	status.ProvisioningError = ""
+	if props.Status != nil {
+		status.ProvisioningError = props.Status.ProvisioningError.text()
+	}
 	pools := make([]oramav1alpha1.AksNodePoolStatus, 0, len(props.AgentPoolProfiles))
 	for _, pool := range props.AgentPoolProfiles {
-		pools = append(pools, oramav1alpha1.AksNodePoolStatus{
+		entry := oramav1alpha1.AksNodePoolStatus{
 			Name: pool.Name, ProvisioningState: pool.ProvisioningState, Count: pool.Count,
-		})
+		}
+		if pool.Status != nil {
+			entry.Error = pool.Status.ProvisioningError.text()
+		}
+		pools = append(pools, entry)
 	}
 	sort.Slice(pools, func(i, j int) bool { return pools[i].Name < pools[j].Name })
 	status.NodePools = pools
+}
+
+// observeOperation copies Azure's latest operation into status. Azure keeping none clears it.
+func observeOperation(status *oramav1alpha1.AksClusterStatus, operation *azureOperation) {
+	if operation == nil {
+		status.Operation = nil
+		return
+	}
+	status.Operation = &oramav1alpha1.AksOperationStatus{
+		ID: operation.Name, Status: operation.Status, StartTime: operation.StartTime, EndTime: operation.EndTime,
+		Error: operation.Error.text(),
+	}
+}
+
+// aksAzureMessage says where the cluster stands in Azure's words: the provisioning state, the
+// operation's progress line, and every error Azure reports, on the operation, on the cluster and
+// on each pool. A reader should not need the Azure portal to learn what to correct.
+func aksAzureMessage(status *oramav1alpha1.AksClusterStatus) string {
+	message := "Azure reports the cluster's provisioning state as " + status.ProvisioningState
+	if op := status.Operation; op != nil {
+		if op.Status != "" && op.Status != status.ProvisioningState {
+			message += " (" + op.Status + ")"
+		}
+		if op.Error != "" {
+			message += ". Operation " + op.ID + " failed: " + op.Error
+		}
+	}
+	if status.ProvisioningError != "" && (status.Operation == nil || status.ProvisioningError != status.Operation.Error) {
+		message += ". Cluster: " + status.ProvisioningError
+	}
+	for _, pool := range status.NodePools {
+		if pool.Error != "" {
+			message += ". Node pool " + pool.Name + ": " + pool.Error
+		}
+	}
+	return message
 }
 
 // aksDrift lists what the spec asks for that the cluster does not have. This version reports it

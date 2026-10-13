@@ -539,7 +539,8 @@ are in `chart/management-crds/`, not the install chart.
 | `spec.tags` | Attached to the cluster where the provider supports them. **For an AKS provider a tag name cannot contain `<`, `>`, `%`, `&`, `\`, `?` or `/`**, so a Kubernetes-style name such as `orama.cloud/role` is refused: the cluster is `Degraded` with the tag named, and Azure is never called. At most 50 tags, names up to 512 characters, values up to 256. |
 | `status.phase` | `Pending`, `Provisioning`, `Ready`, `Degraded` or `Deleting`, summarized from the concrete resource. `kubectl get kcluster` (the short name `kc` belongs to Strimzi's `KafkaConnect`). |
 | `status.concreteRef` | The concrete resource, as `AksCluster/<name>`. |
-| `status.endpoint` / `.kubernetesVersion` / `.nodePools[]` | The API server's address, the version running, and each pool's state and count. |
+| `status.endpoint` / `.kubernetesVersion` / `.nodePools[]` | The API server's address, the version running, and each pool's state, count and the provider's `error` for it. |
+| `status.message` | Why the cluster is not `Ready`, in the provider's words, copied from the concrete resource. A column of `kubectl get kcluster`. |
 | `status.kubeconfigSecretRef` | Set once the kubeconfig Secret holds a credential. |
 | `Ready` / `InSync` conditions | Carried across from the concrete resource. |
 
@@ -586,6 +587,9 @@ directly, as the Cloudflare and Clerk controllers call theirs: there is no Azure
 | `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written. The Secret is owned by the `AksCluster`. |
 | `status.phase` / `.provisioningState` / `.powerState` | The operator's phase, and Azure's own words. `kubectl get aks`. |
 | `status.resourceID`, `.fqdn`, `.kubernetesVersion`, `.nodeResourceGroup`, `.oidcIssuerURL`, `.nodePools[]` | What Azure reports. |
+| `status.operation` | The latest operation Azure ran on the cluster, read from `operations/latest` on every reconcile: `id` (to quote to Azure support), `status` (Azure's progress line while it runs, such as `CreatingAgentPools: 0/1 nodes completed`, then `Succeeded`, `Failed` or `Canceled`), `startTime`, `endTime`, and `error` (`code: message`, followed by the causes Azure nests under it). The `Operation` column of `kubectl get aks`. |
+| `status.provisioningError`, `.nodePools[].error` | The provisioning error Azure reports on the cluster and on each pool. |
+| `status.message` | Why the cluster is not `Ready`, in Azure's words: the provisioning state, the operation's progress, and every error Azure reports on the operation, the cluster and each pool. The same text is the `Ready` condition's message and is copied to the `KubernetesCluster`. `kubectl get aks -o wide`, `kubectl get kcluster`. A failure is also logged by the operator as an error, once per distinct failure. |
 | `status.createdResourceGroup` | True when the operator created the resource group, and so may delete it. |
 | `status.kubeconfigWritten` | True once the kubeconfig Secret holds a credential. |
 | `InSync` condition | False when the spec asks for something the cluster does not have. **This version reports the difference and does not act on it**: a cluster is not changed after it is created. |

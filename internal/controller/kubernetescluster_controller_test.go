@@ -47,13 +47,15 @@ type fakeAzure struct {
 	tokenForms     []map[string]string
 	groups         map[string]bool
 	clusters       map[string]*azureManagedCluster
+	operations     map[string]*azureOperation // by cluster name; none means Azure answers 404
+	operationsDown bool                       // the latest-operation read answers 500
 	rejectToken    bool
 	deleteFinishes bool // a DELETE removes the cluster at once instead of marking it Deleting
 }
 
 func newFakeAzure(t *testing.T) *fakeAzure {
 	t.Helper()
-	f := &fakeAzure{t: t, groups: map[string]bool{}, clusters: map[string]*azureManagedCluster{}}
+	f := &fakeAzure{t: t, groups: map[string]bool{}, clusters: map[string]*azureManagedCluster{}, operations: map[string]*azureOperation{}}
 	f.server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.server.Close)
 	return f
@@ -130,6 +132,22 @@ func (f *fakeAzure) serve(w http.ResponseWriter, r *http.Request) {
 		respond(http.StatusOK, map[string]any{"kubeconfigs": []map[string]string{{
 			"name": "clusterAdmin", "value": base64.StdEncoding.EncodeToString([]byte(testKubeconfig)),
 		}}})
+	case strings.Contains(path, "/managedClusters/") && strings.HasSuffix(path, "/operations/latest"):
+		name := strings.TrimSuffix(path[strings.Index(path, "/managedClusters/")+len("/managedClusters/"):], "/operations/latest")
+		if r.URL.Query().Get("api-version") != azureAPIOperations {
+			respond(http.StatusBadRequest, map[string]any{"error": map[string]string{"code": "InvalidApiVersionParameter", "message": "wrong api-version"}})
+			return
+		}
+		if f.operationsDown {
+			respond(http.StatusInternalServerError, map[string]any{"error": map[string]string{"code": "InternalServerError", "message": "try again"}})
+			return
+		}
+		operation, ok := f.operations[name]
+		if !ok {
+			notFound()
+			return
+		}
+		respond(http.StatusOK, operation)
 	case strings.Contains(path, "/managedClusters/"):
 		name := path[strings.LastIndex(path, "/")+1:]
 		switch r.Method {
@@ -875,5 +893,115 @@ func TestKubernetesClusterProviderReportsRefusedCredentials(t *testing.T) {
 	if provider.Status.Ready || provider.Status.AuthMethod != azureAuthServicePrincipal ||
 		!strings.Contains(provider.Status.Message, "invalid_client") || strings.Contains(provider.Status.Message, "s3cret-value") {
 		t.Fatalf("provider status with refused credentials: %+v", provider.Status)
+	}
+}
+
+// Azure's own account of an operation reaches the resource: its progress line while it runs, and
+// when it fails the error with the cause Azure nests under it, on the AksCluster, on the
+// KubernetesCluster that owns it, and in the operator's log once.
+func TestAksClusterReportsAzuresOperationProgressAndErrors(t *testing.T) {
+	azure := newFakeAzure(t)
+	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	name := "orama-nonprod-cluster-01"
+
+	reconcileAks(t, r, name) // creates
+
+	// While Azure works, its progress line is in the message.
+	azure.operations[name] = &azureOperation{Name: "b10310ee", Status: "CreatingAgentPools: 0/1 nodes completed", StartTime: "2026-10-13T01:28:05Z"}
+	reconcileAks(t, r, name)
+	cluster := getAks(t, c, name)
+	if cluster.Status.Operation == nil || cluster.Status.Operation.Status != "CreatingAgentPools: 0/1 nodes completed" || cluster.Status.Operation.ID != "b10310ee" {
+		t.Fatalf("operation not reported: %+v", cluster.Status.Operation)
+	}
+	if want := "Azure reports the cluster's provisioning state as Creating (CreatingAgentPools: 0/1 nodes completed)"; cluster.Status.Message != want {
+		t.Fatalf("message while creating:\n got %q\nwant %q", cluster.Status.Message, want)
+	}
+
+	// Azure fails the operation: the error, its nested cause and the pool's own error are reported.
+	azure.clusters[name].Properties.ProvisioningState = "Failed"
+	azure.clusters[name].Properties.AgentPoolProfiles[0].ProvisioningState = "Failed"
+	azure.clusters[name].Properties.AgentPoolProfiles[0].Status = &azureResourceStatus{ProvisioningError: &azureErrorDetail{
+		Code: "QuotaExceeded", Message: "Operation could not be completed as it results in exceeding approved standardDASv7Family Cores quota.",
+	}}
+	azure.operations[name] = &azureOperation{Name: "b10310ee", Status: "Failed", EndTime: "2026-10-13T01:50:00Z", Error: &azureErrorDetail{
+		Code: "VMExtensionProvisioningError", Message: "VM has reported a failure when processing extension 'vmssCSE'.",
+		Details: []azureErrorDetail{{Code: "OutboundConnFailVMExtensionError", Message: "Enable failed: command terminated with exit status=50"}},
+	}}
+	if result := reconcileAks(t, r, name); result.RequeueAfter != aksSteadyRecheck {
+		t.Fatalf("a failed cluster is rechecked every %s, got %s", aksSteadyRecheck, result.RequeueAfter)
+	}
+	cluster = getAks(t, c, name)
+	if cluster.Status.Phase != clusterPhaseDegraded {
+		t.Fatalf("phase %q, want Degraded", cluster.Status.Phase)
+	}
+	for _, want := range []string{
+		"provisioning state as Failed",
+		"Operation b10310ee failed: VMExtensionProvisioningError: VM has reported a failure when processing extension 'vmssCSE'.",
+		"OutboundConnFailVMExtensionError: Enable failed: command terminated with exit status=50",
+		"Node pool agentpool: QuotaExceeded: Operation could not be completed",
+	} {
+		if !strings.Contains(cluster.Status.Message, want) {
+			t.Fatalf("message lacks %q:\n%s", want, cluster.Status.Message)
+		}
+	}
+	if ready := apimeta.FindStatusCondition(cluster.Status.Conditions, clusterConditionReady); ready == nil || ready.Reason != "AzureFailed" || ready.Message != cluster.Status.Message {
+		t.Fatalf("Ready condition does not carry Azure's error: %+v", ready)
+	}
+	var agentpool oramav1alpha1.AksNodePoolStatus
+	for _, pool := range cluster.Status.NodePools {
+		if pool.Name == "agentpool" {
+			agentpool = pool
+		}
+	}
+	if !strings.HasPrefix(agentpool.Error, "QuotaExceeded: ") {
+		t.Fatalf("pool error not reported: %+v", cluster.Status.NodePools)
+	}
+
+	// The operation succeeding clears the errors.
+	azure.clusters[name].Properties.ProvisioningState = "Succeeded"
+	azure.clusters[name].Properties.AgentPoolProfiles[0].ProvisioningState = "Succeeded"
+	azure.clusters[name].Properties.AgentPoolProfiles[0].Status = nil
+	azure.operations[name] = &azureOperation{Name: "c2", Status: "Succeeded"}
+	reconcileAks(t, r, name)
+	cluster = getAks(t, c, name)
+	if cluster.Status.Phase != clusterPhaseReady || cluster.Status.Message != "" || cluster.Status.Operation.Error != "" || cluster.Status.Operation.Status != "Succeeded" {
+		t.Fatalf("after success: phase %q, message %q, operation %+v", cluster.Status.Phase, cluster.Status.Message, cluster.Status.Operation)
+	}
+}
+
+// Azure being unable to answer for the operation is itself an error: recorded in status and
+// returned, so it is logged and retried. It is never skipped to keep the reconcile quiet.
+func TestAksClusterReturnsAnErrorWhenTheOperationCannotBeRead(t *testing.T) {
+	azure := newFakeAzure(t)
+	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	name := "orama-nonprod-cluster-01"
+	reconcileAks(t, r, name)
+
+	azure.operationsDown = true
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: name}})
+	if err == nil || !strings.Contains(err.Error(), "InternalServerError") {
+		t.Fatalf("want Azure's error returned, got %v", err)
+	}
+	cluster := getAks(t, c, name)
+	ready := apimeta.FindStatusCondition(cluster.Status.Conditions, clusterConditionReady)
+	if ready == nil || ready.Reason != "OperationReadFailed" || !strings.Contains(cluster.Status.Message, "InternalServerError") {
+		t.Fatalf("the failed read is not in status: %+v, %q", ready, cluster.Status.Message)
+	}
+}
+
+// An Azure error is rendered with what Azure nests under it, and bounded, because it is stored in
+// a status field and Azure's extension errors can be very long.
+func TestAzureErrorTextIncludesNestedDetailsAndIsBounded(t *testing.T) {
+	nested := &azureErrorDetail{Code: "A", Message: "outer\n  line", Details: []azureErrorDetail{{Code: "B", Message: "inner", Details: []azureErrorDetail{{Message: "cause"}}}}}
+	if got, want := nested.text(), "A: outer line; B: inner; cause"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if text := (&azureErrorDetail{Code: "A", Message: strings.Repeat("x", 3*azureErrorTextLimit)}).text(); len(text) > azureErrorTextLimit+80 || !strings.Contains(text, "truncated") {
+		t.Fatalf("a long Azure error is bounded and says so, got %d bytes", len(text))
+	}
+	if (*azureErrorDetail)(nil).text() != "" {
+		t.Fatal("no error renders as empty text")
 	}
 }

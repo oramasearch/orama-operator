@@ -178,7 +178,7 @@ func (r *KubernetesClusterReconciler) reconcileAKS(ctx context.Context, cluster 
 	}
 	pools := make([]oramav1alpha1.ClusterNodePoolStatus, 0, len(concrete.Status.NodePools))
 	for _, pool := range concrete.Status.NodePools {
-		pools = append(pools, oramav1alpha1.ClusterNodePoolStatus{Name: pool.Name, State: pool.ProvisioningState, Count: pool.Count})
+		pools = append(pools, oramav1alpha1.ClusterNodePoolStatus{Name: pool.Name, State: pool.ProvisioningState, Count: pool.Count, Error: pool.Error})
 	}
 	sort.Slice(pools, func(i, j int) bool { return pools[i].Name < pools[j].Name })
 	status.NodePools = pools

@@ -37,7 +37,10 @@ const (
 
 	azureAPIResourceGroups  = "2021-04-01"
 	azureAPIManagedClusters = "2024-09-01"
-	azureAPISubscriptions   = "2022-12-01"
+	// The latest-operation resource. From this version its status carries Azure's progress text
+	// ("CreatingAgentPools: 0/1 nodes completed"); 2024-09-01 answers only "InProgress".
+	azureAPIOperations    = "2025-05-01"
+	azureAPISubscriptions = "2022-12-01"
 
 	// azureFederatedTokenFileEnv is set by the AKS workload identity webhook to the path of the
 	// projected service-account token.
@@ -282,6 +285,69 @@ type azureAgentPool struct {
 	NodeLabels        map[string]string `json:"nodeLabels,omitempty"`
 	NodeTaints        []string          `json:"nodeTaints,omitempty"`
 	ProvisioningState string            `json:"provisioningState,omitempty"`
+	// Read only: Azure's account of what is wrong with the pool.
+	Status *azureResourceStatus `json:"status,omitempty"`
+}
+
+// azureErrorDetail is the error object Azure nests in an operation and in a resource's status.
+type azureErrorDetail struct {
+	Code    string             `json:"code,omitempty"`
+	Message string             `json:"message,omitempty"`
+	Target  string             `json:"target,omitempty"`
+	Details []azureErrorDetail `json:"details,omitempty"`
+}
+
+// text renders the error and what Azure nests under it as "code: message; code: message". The
+// nested entries usually hold the cause (the VM extension's exit code, the quota that ran out).
+func (e *azureErrorDetail) text() string {
+	if e == nil {
+		return ""
+	}
+	var parts []string
+	var walk func(d azureErrorDetail, depth int)
+	walk = func(d azureErrorDetail, depth int) {
+		line := strings.TrimSpace(strings.Join(strings.Fields(d.Message), " "))
+		switch {
+		case d.Code != "" && line != "":
+			line = d.Code + ": " + line
+		case d.Code != "":
+			line = d.Code
+		}
+		if line != "" {
+			parts = append(parts, line)
+		}
+		if depth < azureErrorDetailDepth {
+			for _, nested := range d.Details {
+				walk(nested, depth+1)
+			}
+		}
+	}
+	walk(*e, 0)
+	text := strings.Join(parts, "; ")
+	if len(text) > azureErrorTextLimit {
+		text = text[:azureErrorTextLimit] + "... (truncated; the operation ID finds the rest in Azure)"
+	}
+	return text
+}
+
+const (
+	azureErrorDetailDepth = 4
+	// A status field, so bounded: Azure's extension errors can run to many kilobytes.
+	azureErrorTextLimit = 2000
+)
+
+type azureResourceStatus struct {
+	ProvisioningError *azureErrorDetail `json:"provisioningError,omitempty"`
+}
+
+// azureOperation is a managed cluster's long-running operation.
+type azureOperation struct {
+	ID        string            `json:"id,omitempty"`
+	Name      string            `json:"name,omitempty"`
+	Status    string            `json:"status,omitempty"`
+	StartTime string            `json:"startTime,omitempty"`
+	EndTime   string            `json:"endTime,omitempty"`
+	Error     *azureErrorDetail `json:"error,omitempty"`
 }
 
 type azureManagedCluster struct {
@@ -312,6 +378,8 @@ type azureManagedClusterProperties struct {
 	OIDCIssuerProfile        *azureOIDCIssuer  `json:"oidcIssuerProfile,omitempty"`
 	SecurityProfile          *azureSecurity    `json:"securityProfile,omitempty"`
 	AutoUpgradeProfile       *azureAutoUpgrade `json:"autoUpgradeProfile,omitempty"`
+	// Read only: Azure's account of what is wrong with the cluster.
+	Status *azureResourceStatus `json:"status,omitempty"`
 }
 
 type azurePowerState struct {
@@ -505,6 +573,20 @@ func (c *azureClient) getManagedCluster(ctx context.Context, creds azureCredenti
 		return nil, err
 	}
 	return &found, nil
+}
+
+// latestOperation returns the most recent operation Azure ran on the cluster, or nil, nil when
+// Azure keeps none for it.
+func (c *azureClient) latestOperation(ctx context.Context, creds azureCredentials, subscription, group, name string) (*azureOperation, error) {
+	var op azureOperation
+	_, err := c.do(ctx, creds, http.MethodGet, azureManagedClusterPath(subscription, group, name)+"/operations/latest", azureAPIOperations, nil, &op)
+	if azureNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &op, nil
 }
 
 func (c *azureClient) createManagedCluster(ctx context.Context, creds azureCredentials, subscription, group, name string, body azureManagedCluster) error {
