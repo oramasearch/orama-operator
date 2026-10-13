@@ -1,0 +1,208 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: kubernetesclusterproviders.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: KubernetesClusterProvider
+    listKind: KubernetesClusterProviderList
+    plural: kubernetesclusterproviders
+    shortNames:
+    - kcp
+    singular: kubernetesclusterprovider
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.authMethod
+      name: Auth
+      type: string
+    - jsonPath: .status.clusters
+      name: Clusters
+      type: integer
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          KubernetesClusterProvider is where a vendor, an account and its credentials are written once.
+          A KubernetesCluster points at one, and the provider's type decides the concrete kind that is
+          provisioned. Swapping a provider means pointing at a different one.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              KubernetesClusterProviderSpec says which vendor provisions clusters, in which account, and how
+              the operator authenticates to it.
+            properties:
+              aks:
+                description: AKS holds the settings for type aks.
+                properties:
+                  network:
+                    description: Network settings for every cluster of this provider.
+                    properties:
+                      dataplane:
+                        default: cilium
+                        type: string
+                      dnsServiceIP:
+                        default: 10.0.0.10
+                        type: string
+                      plugin:
+                        default: azure
+                        type: string
+                      pluginMode:
+                        default: overlay
+                        type: string
+                      podCIDR:
+                        default: 10.244.0.0/16
+                        type: string
+                      policy:
+                        default: cilium
+                        type: string
+                      serviceCIDR:
+                        default: 10.0.0.0/16
+                        type: string
+                    type: object
+                  nodeOSUpgradeChannel:
+                    default: NodeImage
+                    description: NodeOSUpgradeChannel is None, Unmanaged, SecurityPatch
+                      or NodeImage.
+                    enum:
+                    - None
+                    - Unmanaged
+                    - SecurityPatch
+                    - NodeImage
+                    type: string
+                  osDiskSizeGB:
+                    default: 256
+                    description: OSDiskSizeGB is each node's OS disk size.
+                    format: int32
+                    minimum: 30
+                    type: integer
+                  resourceGroupPrefix:
+                    description: |-
+                      ResourceGroupPrefix names each cluster's resource group as <prefix><cluster name>.
+                      Defaults to empty, with the suffix below.
+                    type: string
+                  resourceGroupSuffix:
+                    default: _group
+                    description: ResourceGroupSuffix defaults to "_group", matching
+                      orama-production-cluster-01_group.
+                    type: string
+                  skuTier:
+                    default: Standard
+                    description: SKUTier is Free, Standard or Premium.
+                    enum:
+                    - Free
+                    - Standard
+                    - Premium
+                    type: string
+                  subscriptionID:
+                    description: SubscriptionID is the Azure subscription clusters
+                      are created in.
+                    pattern: ^[0-9a-fA-F-]{36}$
+                    type: string
+                  upgradeChannel:
+                    default: patch
+                    description: 'UpgradeChannel is the cluster auto-upgrade channel:
+                      none, patch, stable, rapid, node-image.'
+                    enum:
+                    - none
+                    - patch
+                    - stable
+                    - rapid
+                    - node-image
+                    type: string
+                  workloadIdentity:
+                    default: true
+                    description: WorkloadIdentity turns on the OIDC issuer and workload
+                      identity in each cluster.
+                    type: boolean
+                required:
+                - subscriptionID
+                type: object
+              credentialsSecretRef:
+                description: |-
+                  CredentialsSecretRef names the Secret the operator authenticates with. For type aks its
+                  keys are tenantID and clientID, plus clientSecret for a service principal. Without
+                  clientSecret the operator uses workload identity: it exchanges its projected
+                  service-account token for an Azure token.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                  namespace:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              type:
+                description: Type is the vendor. Immutable.
+                enum:
+                - aks
+                type: string
+                x-kubernetes-validations:
+                - message: type is immutable
+                  rule: self == oldSelf
+            required:
+            - credentialsSecretRef
+            - type
+            type: object
+            x-kubernetes-validations:
+            - message: spec.aks is required when type is aks
+              rule: self.type != 'aks' || has(self.aks)
+          status:
+            description: KubernetesClusterProviderStatus reports whether the provider
+              can be used.
+            properties:
+              authMethod:
+                description: AuthMethod is workload-identity or service-principal,
+                  as read from the credentials Secret.
+                type: string
+              clusters:
+                description: Clusters is the number of KubernetesCluster resources
+                  that point at this provider.
+                format: int32
+                type: integer
+              message:
+                description: Message says why the provider is not Ready.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the spec generation last reconciled.
+                format: int64
+                type: integer
+              ready:
+                description: Ready is true once the credentials were used successfully.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

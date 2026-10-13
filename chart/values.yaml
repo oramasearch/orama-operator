@@ -44,3 +44,16 @@ installCRDs: true
 # See docs/operations/crd-rollout.md.
 e2e:
   enabled: false
+
+# Cluster management is the management cluster's role (docs/infrastructure/README.md): the
+# operator provisions other Kubernetes clusters from KubernetesCluster resources. A leaf cluster
+# leaves this off. The management cluster sets it true AND applies chart/management-crds:
+#   kubectl apply -f chart/management-crds/
+#   helm upgrade --install ... --set clusterManagement.enabled=true
+clusterManagement:
+  enabled: false
+  # Azure workload identity for the manager, so it can call Azure with no long-lived secret: the
+  # client ID of a user-assigned managed identity that has a federated credential for this
+  # ServiceAccount. Empty leaves the ServiceAccount and pod unannotated; a provider can still
+  # authenticate with a service principal secret.
+  azureWorkloadIdentityClientID: ""

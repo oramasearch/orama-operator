@@ -99,6 +99,13 @@ the two sets.
 
 ### Left on the production cluster
 
+**The cluster-management kinds follow the same rule as the e2e kinds.** `KubernetesCluster`,
+`KubernetesClusterProvider` and `AksCluster` are reconciled only under
+`--enable-cluster-management` (chart `clusterManagement.enabled`), and their definitions live in
+`chart/management-crds/`. Only the management cluster applies them; pass `--management` to
+`hack/check-cluster-crds.sh` there. A leaf's operator registers no watch for them, so their absence
+on a leaf is correct and harmless.
+
 The three e2e CRDs are still installed on `orama-production-cluster-01` from before this change —
 one of them applied during the incident. They are inert once the controllers stop, but removing a
 CRD deletes its custom resources, so retire them deliberately, having checked there are none:

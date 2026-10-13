@@ -1,0 +1,402 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: aksclusters.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: AksCluster
+    listKind: AksClusterList
+    plural: aksclusters
+    shortNames:
+    - aks
+    singular: akscluster
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.location
+      name: Location
+      type: string
+    - jsonPath: .status.kubernetesVersion
+      name: Version
+      type: string
+    - jsonPath: .status.provisioningState
+      name: State
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AksCluster is one AKS managed cluster. It is the concrete kind a KubernetesCluster provisions
+          when its provider has type aks, and the only kind whose controller calls Azure.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AksClusterSpec is one AKS managed cluster.
+            properties:
+              clusterName:
+                description: ClusterName is the managed cluster's name in Azure. Defaults
+                  to the resource's name.
+                type: string
+              credentialsSecretRef:
+                description: |-
+                  CredentialsSecretRef names the Secret the operator authenticates to Azure with: tenantID
+                  and clientID, plus clientSecret for a service principal.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                  namespace:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              deletionPolicy:
+                description: |-
+                  DeletionPolicy is required: Delete destroys the managed cluster and its resource group,
+                  Retain leaves both.
+                enum:
+                - Delete
+                - Retain
+                type: string
+              kubeconfigSecretRef:
+                description: KubeconfigSecretRef is where the admin kubeconfig is
+                  written (key `kubeconfig`).
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                  namespace:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              kubernetesVersion:
+                pattern: ^[0-9]+\.[0-9]+(\.[0-9]+)?$
+                type: string
+              location:
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: location is immutable
+                  rule: self == oldSelf
+              network:
+                description: AksNetworkSettings mirrors the AKS network profile fields
+                  the operator sets.
+                properties:
+                  dataplane:
+                    default: cilium
+                    type: string
+                  dnsServiceIP:
+                    default: 10.0.0.10
+                    type: string
+                  plugin:
+                    default: azure
+                    type: string
+                  pluginMode:
+                    default: overlay
+                    type: string
+                  podCIDR:
+                    default: 10.244.0.0/16
+                    type: string
+                  policy:
+                    default: cilium
+                    type: string
+                  serviceCIDR:
+                    default: 10.0.0.0/16
+                    type: string
+                type: object
+              nodeOSUpgradeChannel:
+                enum:
+                - None
+                - Unmanaged
+                - SecurityPatch
+                - NodeImage
+                type: string
+              nodePools:
+                items:
+                  description: AksNodePool is one AKS agent pool.
+                  properties:
+                    availabilityZones:
+                      items:
+                        type: string
+                      type: array
+                    count:
+                      description: Count is the node count, and the starting count
+                        when autoscaling.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                    enableAutoScaling:
+                      description: |-
+                        EnableAutoScaling turns on the AKS cluster autoscaler for the pool, between MinCount and
+                        MaxCount.
+                      type: boolean
+                    maxCount:
+                      format: int32
+                      type: integer
+                    minCount:
+                      format: int32
+                      type: integer
+                    mode:
+                      description: Mode is System or User.
+                      enum:
+                      - System
+                      - User
+                      type: string
+                    name:
+                      pattern: ^[a-z][a-z0-9]{0,11}$
+                      type: string
+                    nodeLabels:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    nodeTaints:
+                      items:
+                        description: |-
+                          The node this Taint is attached to has the "effect" on
+                          any pod that does not tolerate the Taint.
+                        properties:
+                          effect:
+                            description: |-
+                              Required. The effect of the taint on pods
+                              that do not tolerate the taint.
+                              Valid effects are NoSchedule, PreferNoSchedule and NoExecute.
+                            type: string
+                          key:
+                            description: Required. The taint key to be applied to
+                              a node.
+                            type: string
+                          timeAdded:
+                            description: |-
+                              TimeAdded represents the time at which the taint was added.
+                              It is only written for NoExecute taints.
+                            format: date-time
+                            type: string
+                          value:
+                            description: The taint value corresponding to the taint
+                              key.
+                            type: string
+                        required:
+                        - effect
+                        - key
+                        type: object
+                      type: array
+                    osDiskSizeGB:
+                      format: int32
+                      minimum: 30
+                      type: integer
+                    vmSize:
+                      minLength: 1
+                      type: string
+                  required:
+                  - count
+                  - mode
+                  - name
+                  - vmSize
+                  type: object
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              resourceGroup:
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: resourceGroup is immutable
+                  rule: self == oldSelf
+              skuTier:
+                default: Standard
+                enum:
+                - Free
+                - Standard
+                - Premium
+                type: string
+              subscriptionID:
+                description: SubscriptionID, ResourceGroup and Location say where
+                  the cluster lives. Immutable.
+                pattern: ^[0-9a-fA-F-]{36}$
+                type: string
+                x-kubernetes-validations:
+                - message: subscriptionID is immutable
+                  rule: self == oldSelf
+              tags:
+                additionalProperties:
+                  type: string
+                type: object
+              upgradeChannel:
+                enum:
+                - none
+                - patch
+                - stable
+                - rapid
+                - node-image
+                type: string
+              workloadIdentity:
+                description: WorkloadIdentity turns on the OIDC issuer and workload
+                  identity.
+                type: boolean
+            required:
+            - credentialsSecretRef
+            - deletionPolicy
+            - kubeconfigSecretRef
+            - kubernetesVersion
+            - location
+            - nodePools
+            - resourceGroup
+            - subscriptionID
+            type: object
+          status:
+            description: AksClusterStatus is what Azure reports.
+            properties:
+              conditions:
+                description: 'Conditions: Ready, and InSync.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              createdResourceGroup:
+                description: |-
+                  CreatedResourceGroup is true when the operator created the resource group, and so may
+                  delete it.
+                type: boolean
+              fqdn:
+                description: FQDN is the API server's host name.
+                type: string
+              kubeconfigWritten:
+                description: KubeconfigWritten is true once the admin kubeconfig Secret
+                  holds a credential.
+                type: boolean
+              kubernetesVersion:
+                description: KubernetesVersion is the version Azure reports as current.
+                type: string
+              message:
+                type: string
+              nodePools:
+                items:
+                  description: AksNodePoolStatus is Azure's view of one agent pool.
+                  properties:
+                    count:
+                      format: int32
+                      type: integer
+                    name:
+                      type: string
+                    provisioningState:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              nodeResourceGroup:
+                description: NodeResourceGroup is the group Azure creates for the
+                  cluster's nodes.
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              oidcIssuerURL:
+                description: OIDCIssuerURL is set when workload identity is on.
+                type: string
+              phase:
+                description: Phase is Pending, Provisioning, Ready, Degraded or Deleting.
+                type: string
+              powerState:
+                description: PowerState is Running or Stopped.
+                type: string
+              provisioningState:
+                description: 'ProvisioningState is Azure''s own word: Creating, Succeeded,
+                  Updating, Failed, Deleting.'
+                type: string
+              resourceID:
+                description: ResourceID is the managed cluster's Azure resource ID.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

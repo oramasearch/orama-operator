@@ -1,12 +1,14 @@
 # Infrastructure: management and leaf clusters
 
 How the operator manages the clusters Orama's products run on. This page records the
-architecture as decided so far. It is early: none of it is built, and this is the design the work
-follows. The running discussion and the open questions are in
+architecture as decided so far. It is early: the first kinds exist, most of it is not built, and
+this is the design the work follows. The running discussion and the open questions are in
 [#351](https://github.com/oramasearch/orama-operator/issues/351).
 
-**Status, 2026-10-12:** decided in outline; nothing is implemented. The first step is one
-non-production AKS cluster.
+**Status, 2026-10-12:** decided in outline. The first three kinds are implemented and tested
+against a fake Azure API ([#354](https://github.com/oramasearch/orama-operator/issues/354)); no
+real cluster has been created with them yet. The first step is one non-production AKS cluster
+([#355](https://github.com/oramasearch/orama-operator/issues/355)).
 
 ## The model
 
@@ -181,10 +183,47 @@ wants. The management cluster's operator reconciles it by provisioning the concr
 provider's type names, keeps the cluster as described, and reports what is true about it. The
 first provider type is AKS, which provisions an `AksCluster`.
 
-The three kinds are being built in [#354](https://github.com/oramasearch/orama-operator/issues/354),
-and the first cluster they create is tracked in
-[#355](https://github.com/oramasearch/orama-operator/issues/355). Their reference will be in
-[`crd-reference.md`](../crd-reference.md) when they exist.
+The three kinds exist ([#354](https://github.com/oramasearch/orama-operator/issues/354)); their
+fields are in [`crd-reference.md`](../crd-reference.md#kubernetescluster-separate-crd-cluster-scoped--a-cluster-the-operator-provisions).
+
+| Kind | Short name | What it is |
+|---|---|---|
+| `KubernetesCluster` | `kc` | The cluster that is wanted: region, version, node pools, deletion policy, and the provider to use |
+| `KubernetesClusterProvider` | `kcp` | A vendor, an account and its credentials, plus the settings with no neutral equivalent |
+| `AksCluster` | `aks` | One AKS managed cluster; created and owned by a `KubernetesCluster` |
+
+What they do today: **create, observe and delete.** A `KubernetesCluster` becomes an `AksCluster`,
+which creates the resource group and the managed cluster in Azure, waits for it, and writes the
+admin kubeconfig to a Secret. Deleting the `KubernetesCluster` deletes the cluster when its
+`deletionPolicy` is `Delete`. They do not yet change a cluster after it exists, and they install
+nothing on it.
+
+### Turning the management role on
+
+A cluster's operator plays the management role only when asked. It is off by default, so a leaf's
+operator never watches these kinds.
+
+```sh
+kubectl apply -f chart/management-crds/
+helm upgrade orama-operator chart/ -n orama-system -f <stored values> \
+  --set clusterManagement.enabled=true \
+  --set clusterManagement.azureWorkloadIdentityClientID=<managed identity client ID>
+```
+
+`make check-crds CONTEXT=<context>` gains `--management` (`./hack/check-cluster-crds.sh <context>
+--management`) to include these definitions in the pre-upgrade check.
+
+### Reaching Azure
+
+The operator needs an Azure identity that may create resource groups and managed clusters in the
+subscription. This is a cloud-account prerequisite the operator cannot create for itself, the same
+class as an image pull secret.
+
+- **Workload identity (preferred):** a user-assigned managed identity with a federated credential
+  for the operator's ServiceAccount (`system:serviceaccount:orama-system:orama-operator`, issued
+  by the management cluster's OIDC issuer) and a role assignment on the subscription. The
+  credentials Secret holds only `tenantID` and `clientID`.
+- **Service principal:** the same Secret with a `clientSecret` as well.
 
 ## The path from here
 

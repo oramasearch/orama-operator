@@ -577,6 +577,29 @@ nothing, and a partial component/event pair retries only the missing append. Lak
 as deterministic JSON in the component detail. See [Zetta as the operator datastore](zetta-datastore.md)
 and the [Lake observed-state contract](lake/README.md#observed-state-in-zetta).
 
+## Cluster management (`kubernetescluster_controller.go`, `akscluster_controller.go`, `azure_resource_manager.go`) — 🟡 implemented, not live-tested
+
+The management cluster's role ([`infrastructure/README.md`](infrastructure/README.md),
+[#351](https://github.com/oramasearch/orama-operator/issues/351),
+[#354](https://github.com/oramasearch/orama-operator/issues/354)). Off unless the manager runs
+with `--enable-cluster-management`.
+
+| Controller | Reconciles | Creates |
+|---|---|---|
+| `KubernetesClusterReconciler` | `KubernetesCluster` (abstract) | One owned `AksCluster` when the provider has type `aks`; nothing else |
+| `KubernetesClusterProviderReconciler` | `KubernetesClusterProvider` | Nothing; it checks the credentials and holds the provider while a cluster uses it |
+| `AksClusterReconciler` | `AksCluster` (concrete) | In Azure: a resource group and a managed cluster. In the cluster: the owned kubeconfig Secret |
+
+- **Only `azure_resource_manager.go` and `akscluster_controller.go` name Azure.** The abstract
+  controller maps the neutral fields and the provider's settings onto an `AksCluster` with a pure
+  function, so the same pair always produces the same concrete resource.
+- **Create, observe and delete only.** A cluster is not changed after it exists; the `InSync`
+  condition reports what differs.
+- **Nothing is installed on the new cluster yet.** Its platform layer and its own operator are the
+  next stages of [#355](https://github.com/oramasearch/orama-operator/issues/355).
+- **Not live-tested.** The tests run against a fake Azure Resource Manager. No real cluster has
+  been created by these controllers.
+
 ## `Lake` — the lake service (liquid project)
 
 Reconciler: `internal/controller/lake_controller.go`. Full page: [`lake/README.md`](lake/README.md);
