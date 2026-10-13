@@ -57,6 +57,8 @@ var managementKinds = map[string]bool{
 	"KubernetesCluster":         true,
 	"KubernetesClusterProvider": true,
 	"AksCluster":                true,
+	"ClusterHelmRelease":        true,
+	"OramaOperator":             true,
 }
 
 func registeredKinds(t *testing.T) []string {

@@ -1,0 +1,28 @@
+# What the management cluster installs onto orama-nonprod-cluster-01 (operator#363), in the
+# order it must happen: the operator's prerequisite first, then the operator.
+#
+# The OramaOperator does not need dependsOn: it reads the CRDs its version requires from its own
+# chart and is not installed until the cluster has them. Apply both at once.
+apiVersion: orama.cloud/v1alpha1
+kind: ClusterHelmRelease
+metadata:
+  name: nonprod-cloudnative-pg
+spec:
+  clusterRef: orama-nonprod-cluster-01
+  releaseName: cnpg
+  namespace: cnpg-system        # the workspace NetworkPolicies name this namespace (docs/install.md)
+  chart:
+    repository: https://cloudnative-pg.github.io/charts
+    name: cloudnative-pg
+    version: 0.29.0             # operator 1.30.0, what the management cluster runs
+---
+apiVersion: orama.cloud/v1alpha1
+kind: OramaOperator
+metadata:
+  name: orama-nonprod-cluster-01
+spec:
+  clusterRef: orama-nonprod-cluster-01
+  version: dev-0000000          # the operator version the leaf runs; its chart must be published
+  imagePullSecretRef:
+    name: oramasearch-dockerhub
+    namespace: orama-system

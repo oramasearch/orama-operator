@@ -46,6 +46,8 @@ rules:
       - kubernetesclusters
       - kubernetesclusterproviders
       - aksclusters
+      - clusterhelmreleases
+      - oramaoperators
       {{- end }}
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
@@ -91,6 +93,10 @@ rules:
       - kubernetesclusterproviders/finalizers
       - aksclusters/status
       - aksclusters/finalizers
+      - clusterhelmreleases/status
+      - clusterhelmreleases/finalizers
+      - oramaoperators/status
+      - oramaoperators/finalizers
       {{- end }}
     verbs: ["*"]
   - apiGroups: ["apps"]

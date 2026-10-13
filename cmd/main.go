@@ -58,7 +58,7 @@ func main() {
 	// these controllers are off unless a cluster asks, and their CRDs live outside the install
 	// chart (chart/management-crds).
 	flag.BoolVar(&enableClusterManagement, "enable-cluster-management", false,
-		"reconcile KubernetesCluster, KubernetesClusterProvider and AksCluster; the management "+
+		"reconcile KubernetesCluster, KubernetesClusterProvider, AksCluster, ClusterHelmRelease and OramaOperator; the management "+
 			"cluster only, and the cluster needs the chart/management-crds CRDs")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -272,6 +272,22 @@ func main() {
 			Scheme: mgr.GetScheme(),
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "AksCluster")
+			os.Exit(1)
+		}
+		// What the management cluster puts on a cluster it manages (operator#363): pinned chart
+		// releases, and the cluster's own Orama operator.
+		if err = (&controller.ClusterHelmReleaseReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ClusterHelmRelease")
+			os.Exit(1)
+		}
+		if err = (&controller.OramaOperatorReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "OramaOperator")
 			os.Exit(1)
 		}
 	}

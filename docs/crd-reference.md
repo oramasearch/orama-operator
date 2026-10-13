@@ -601,3 +601,38 @@ Status is written only when it changes. On deletion with `Delete`, the resource 
 Azure reports the cluster gone; if the credentials are missing, it is held and says so, so a
 running cluster is never orphaned silently.
 
+## `ClusterHelmRelease` (separate CRD, cluster-scoped) — one chart release on a managed cluster
+
+Management cluster only (`chart/management-crds`, `--enable-cluster-management`). Short name `chr`.
+How it fits: [`infrastructure/README.md`](infrastructure/README.md#installing-it-clusterhelmrelease-and-oramaoperator).
+
+| Field | Meaning |
+|---|---|
+| `spec.clusterRef` | The `KubernetesCluster` to install onto. Immutable. The release waits while the cluster is not `Ready`. |
+| `spec.releaseName`, `spec.namespace` | The Helm release and its namespace on that cluster. Immutable. The namespace is created when absent. |
+| `spec.chart.repository`, `.name`, `.version` | A chart repository (`https://...`) with the chart's `name`, or an OCI repository (`oci://...`) holding the chart. `version` is required; changing it upgrades the release. |
+| `spec.chart.credentialsSecretRef` | For a private chart: a `kubernetes.io/dockerconfigjson` Secret with an entry for the repository's host, or a Secret with `username` and `password`. |
+| `spec.values` | The chart's values. |
+| `spec.dependsOn[]` | Other `ClusterHelmRelease` names, on the same cluster, that must be `Ready` first. A release others depend on is not uninstalled until they are deleted. |
+| `spec.requiredCRDs[]` | CRDs that must exist on the cluster before this chart is installed or upgraded. |
+| `status.phase` | `Pending` (waiting for the cluster, a dependency or a CRD), `Installing`, `Ready`, `Degraded` or `Deleting`. |
+| `status.chartVersion`, `.appVersion`, `.revision`, `.releaseStatus` | The release on the cluster, in Helm's words. |
+| `status.workloads`, `.readyWorkloads` | The release's Deployments, StatefulSets and DaemonSets, and how many are rolled out. |
+| `status.message` | Why it is not `Ready`: each workload that is not rolled out with what its pods report, or what the chart repository, Helm or the cluster refused. |
+
+## `OramaOperator` (separate CRD, cluster-scoped) — a managed cluster's own operator, at a version
+
+Management cluster only. Short name `ooperator`.
+
+| Field | Meaning |
+|---|---|
+| `spec.clusterRef` | The `KubernetesCluster` to install onto. Immutable. |
+| `spec.version` | The operator version the cluster runs: the image tag, and the chart published with it. Changing it upgrades the cluster's operator, CRDs first. |
+| `spec.namespace` | Default `orama-system`. Immutable. |
+| `spec.imagePullSecretRef` | A `kubernetes.io/dockerconfigjson` Secret on the management cluster. Copied to the leaf for the image pull, and used to pull the chart. |
+| `spec.imageRepository`, `spec.chartRepository` | Defaults `oramasearch/orama-operator` and `registry-1.docker.io/oramasearch/orama-operator-chart`. |
+| `spec.values` | Chart values for the leaf. The image, its pull secret and `clusterManagement.enabled=false` are set by the controller and win. |
+| `status.phase` | `Pending` (waiting for the cluster, or for prerequisites), `Installing`, `Ready`, `Degraded` or `Deleting`. |
+| `status.installedVersion`, `.chartVersion`, `.revision`, `.releaseStatus` | The Helm release on the leaf. |
+| `status.image`, `.replicas`, `.readyReplicas` | The operator's Deployment on the leaf. `Ready` needs every replica ready on the image asked for. |
+| `status.message` | Why it is not `Ready`. When prerequisites are missing it names the CRDs and says nothing was installed; when pods are failing it carries the kubelet's reason. |
