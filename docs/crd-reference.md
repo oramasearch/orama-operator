@@ -16,7 +16,7 @@ pointing at the primary); the full sample list is in
 | `region.role` | enum | `primary` | `primary` (write path + stateful stores) or `read` (regional read tier). |
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
-| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. |
+| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile) run writer-only and reader-only OramaCore builds with side-only configs; unset, both sides fall back to `oramacore` and share the combined config (see [components.md](components.md#engine-internalcontrollerenginego)). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
 | `llm.default` | enum | `groq` | Provider used when a request doesn't name one. |
@@ -98,6 +98,13 @@ config, `BackupBucketRequired` / `BackupSecretRequired` / `BackupSecretNotFound`
 `InvalidBackupSecret` (nothing is configured in CNPG until the config is valid). It does not change
 the stack's `phase`. While backups are enabled a Ready stack re-reads backup status every 5 minutes;
 unchanged reads write nothing.
+
+### `status.conditions[EngineSidesSeparated]`
+
+Present while the engine is enabled. `True` (`SideImages`) when `spec.images.overrides` sets both
+`oramacore-writer` and `oramacore-reader`: the writer renders `writer.yaml` and readers `reader.yaml`.
+`False` (`CombinedImage`) while both sides run the shared `oramacore` image with the combined config,
+which means every reader also starts a writer side. It does not change the stack's `phase`.
 
 ### `status.engineSnapshots` and `status.conditions[SnapshotsReady]`
 

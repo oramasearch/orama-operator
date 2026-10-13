@@ -154,8 +154,27 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 	} else if meta.RemoveStatusCondition(&oc.Status.Conditions, engineSnapshotsConditionType) {
 		otherChanged = true
 	}
+	if oc.Spec.Components.Engine.Enabled {
+		conditions = append(conditions, engineSidesCondition(oc))
+	} else if meta.RemoveStatusCondition(&oc.Status.Conditions, engineSidesConditionType) {
+		otherChanged = true
+	}
 	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, otherChanged, conditions...)
 	return allReady
+}
+
+// engineSidesConditionType reports whether the engine runs writer-only and reader-only images (#308).
+const engineSidesConditionType = "EngineSidesSeparated"
+
+// engineSidesCondition is True when the writer and readers run side-only images with their own
+// configs, and False while they share the oramacore image, whose readers also start a writer.
+func engineSidesCondition(oc *oramav1alpha1.OramaCloudV1) metav1.Condition {
+	if engineSidesSeparated(oc) {
+		return metav1.Condition{Type: engineSidesConditionType, Status: metav1.ConditionTrue, Reason: "SideImages",
+			Message: "the writer runs the oramacore-writer image with writer.yaml; readers run oramacore-reader with reader.yaml"}
+	}
+	return metav1.Condition{Type: engineSidesConditionType, Status: metav1.ConditionFalse, Reason: "CombinedImage",
+		Message: "writer and readers share the oramacore image and combined config, so every reader also runs a writer; set spec.images.overrides oramacore-writer and oramacore-reader to separate them"}
 }
 
 // controlDBBackupCondition is the BackupReady condition for spec.components.controlDB.backup: True
