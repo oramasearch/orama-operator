@@ -64,7 +64,9 @@ func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
 		{path: []string{"spec", "discovery", "requests"}, value: map[string]interface{}{"cpu": "20m", "memory": "64Mi"}},
 		{path: []string{"spec", "discovery", "limits"}, value: map[string]interface{}{"cpu": "100m", "memory": "128Mi"}},
 		{path: []string{"spec", "pd", "limits"}, value: map[string]interface{}{"cpu": "250m", "memory": "512Mi"}},
-		{path: []string{"spec", "tikv", "limits"}, value: map[string]interface{}{"cpu": "500m", "memory": "1Gi"}},
+		// TiKV was OOM-killed two seconds after "ready to serve" with a 1Gi limit and its default
+		// block cache (operator#435). It gets 2Gi, and its block cache is capped below.
+		{path: []string{"spec", "tikv", "limits"}, value: map[string]interface{}{"cpu": "500m", "memory": "2Gi"}},
 		{path: []string{"spec", "tidb", "limits"}, value: map[string]interface{}{"cpu": "250m", "memory": "512Mi"}},
 		{path: []string{"spec", "tidb", "requests"}, value: map[string]interface{}{"cpu": "100m", "memory": "256Mi"}},
 		{path: []string{"spec", "version"}, value: tidbVersion},
@@ -77,7 +79,10 @@ func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
 		// TiKV reserves 5GB of its volume by default, more than a small service's whole disk; a
 		// tenth of the volume keeps room to recover from a full disk.
 		{path: []string{"spec", "tikv", "config"}, value: map[string]interface{}{
-			"storage": map[string]interface{}{"reserve-space": fmt.Sprintf("%dMB", int64(in.spec.StorageGi)*1024/10)},
+			"storage": map[string]interface{}{
+				"reserve-space": fmt.Sprintf("%dMB", int64(in.spec.StorageGi)*1024/10),
+				"block-cache":   map[string]interface{}{"capacity": "512MB"},
+			},
 		}},
 		{path: []string{"spec", "tidb", "config"}, value: map[string]interface{}{}},
 		// The TiDB Service <name>-tidb exists only when spec.tidb.service is set, and the

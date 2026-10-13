@@ -35,7 +35,7 @@ that does not meet it, so the upstream operator behind a kind must produce `rest
 | Cassandra | The operator writes `spec.cassandra.podSecurityContext` and a security context on each of the four containers cass-operator creates (`cassandra`, `server-system-logger`, and the init containers `server-config-init-base` and `server-config-init`) ([#435](https://github.com/oramasearch/orama-operator/issues/435)). |
 | ClickHouse | The operator writes a pod template (`restricted`) used by every ClickHouse and Keeper pod, running as the image's `clickhouse` user (101). The image is pinned to `25.3`: a pod template must name it, and the Altinity operator's default is `latest`. |
 | TiDB | The operator writes `spec.podSecurityContext` (UID 1000) and a container security context on the discovery service, PD, TiKV and TiDB. |
-| Valkey | The operator writes `spec.podSecurityContext` and a security context on the server and metrics exporter containers. |
+| Valkey | The operator writes `spec.podSecurityContext`, running as the image's own `valkey` user (999:1000) because the image declares no numeric user, and a security context on the server and metrics exporter containers. |
 
 ### What a service costs a workspace's quota
 
@@ -55,7 +55,7 @@ upstream-operator kind states its containers' sizes, so none takes the default:
 | Kafka | broker, plus the entity operator's topic and user operators | **1 for a one-broker Kafka**, stated by the operator: 500m for the broker and 250m for each operator. Before 2026-10-13 nothing was stated, a Kafka cost 3, and the entity operator's pod was refused in a full workspace ([#428](https://github.com/oramasearch/orama-operator/issues/428)). |
 | Cassandra | `cassandra` (500m, 2Gi) and the system logger (100m, 128M) | 0.6 |
 | ClickHouse | `clickhouse` (500m, 1Gi) per replica; a Keeper (250m, 512Mi) when replicated | 0.5 per replica |
-| TiDB | discovery (100m), PD (250m), TiKV (500m), TiDB (250m) | 1.1 per instance |
+| TiDB | discovery (100m), PD (250m), TiKV (500m, 2Gi, block cache capped at 512MB), TiDB (250m) | 1.1 per instance |
 | Valkey | server (250m, 256Mi) and the exporter (50m, 64Mi) | 0.3 per node |
 
 A service that is not ready says why. Every kind's `service_status.message` carries Kubernetes'
