@@ -9,8 +9,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// CloudflareDNSRecordSpec is the desired state of a Cloudflare DNS record. The zone + API
-// token come from the referenced Secret (keys `token` + `zoneID`), so no credential is in spec.
+// CloudflareDNSRecordSpec is the desired state of a Cloudflare DNS record. The API token and the
+// default zone come from the referenced Secret (keys `token` + `zoneID`), so no credential is in spec.
 type CloudflareDNSRecordSpec struct {
 	// SecretRef names the Secret holding the Cloudflare credentials (`token`, `zoneID`,
 	// `accountID`) — normally the CR's `spec.cloudflare.apiTokenSecretRef`.
@@ -22,6 +22,10 @@ type CloudflareDNSRecordSpec struct {
 	Type string `json:"type,omitempty"`
 	// Content is the record target (an IP for A, a hostname for CNAME).
 	Content string `json:"content"`
+	// ZoneID is the Cloudflare zone holding the record. It overrides the Secret's `zoneID`, so
+	// one token can manage records in several zones. Empty = the Secret's `zoneID`.
+	// +optional
+	ZoneID string `json:"zoneID,omitempty"`
 	// Proxied routes the record through Cloudflare's proxy (orange-cloud).
 	// +kubebuilder:default=true
 	Proxied bool `json:"proxied,omitempty"`
@@ -32,6 +36,16 @@ type CloudflareDNSRecordStatus struct {
 	// RecordID is the Cloudflare-assigned DNS record ID (set once created).
 	// +optional
 	RecordID string `json:"recordID,omitempty"`
+	// ZoneID is the Cloudflare zone the record lives in. A record is never moved between zones:
+	// when the spec resolves to another zone the record is left in place and Ready is false.
+	// Empty on records created before this field existed, which live in the Secret's `zoneID`.
+	// +optional
+	ZoneID string `json:"zoneID,omitempty"`
+	// OwnerComment is the ownership comment (`orama-operator:<namespace>/<name>`) the record was
+	// created with. Such a record is deleted only while it still carries the comment. Empty for a
+	// record created before ownership comments, which is deleted with its object by ID, as before.
+	// +optional
+	OwnerComment string `json:"ownerComment,omitempty"`
 	// Ready is true once the record is reconciled in Cloudflare.
 	// +optional
 	Ready bool `json:"ready,omitempty"`

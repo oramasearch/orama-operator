@@ -38,6 +38,7 @@ llm:
 ```
 
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
+| `cloudflare.zoneIDs` | map | — | Zone name → Cloudflare zone ID (e.g. `{orama.ing: <id>, orama.com: <id>}`). Each managed DNS host uses the zone with the longest matching suffix and falls back to the Secret's `zoneID`, so one CR can manage names in several zones. An existing record is never moved: if a host's zone changes, its `CloudflareDNSRecord` reports `ready: false` and nothing changes in either zone. Mapping a host to the zone it is already in changes nothing. |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
 | `deletionProtection` | bool | false | Keep the data through CR deletion and component disable. The CNPG control-DB `Cluster` and its `ScheduledBackup` release the CR owner reference and record `orama.cloud/cloud-v1-owner-uid`, so deleting the CR leaves them; `controlDB.enabled: false` keeps them too, and the same CR UID can re-enable them. A replacement CR or an unmarked, unowned legacy database requires reviewed ownership handover ([components.md](components.md#controldb-internalcontrollercontroldbgo)). Every operator StatefulSet (writer, readers, stores) gets `persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`. Off: owned Cluster deletion/disable retains its existing behavior; foreign objects are refused. |
@@ -330,6 +331,52 @@ End-to-end sample (a 3-replica target + its test): [`../config/samples/zetta-req
 | `spec.levels` | Which test levels to run (`ZETTA_E2E_LEVELS`, default `2,3`). |
 | `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
 | `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ozce2e`; `kubectl logs job/<name>-e2e`. |
+## `CloudflareDNSRecord` (separate CRD) — one Cloudflare DNS record
+
+One proxied DNS record, created by the `OramaCloudV1`, `OramaZettaCluster` and Lake controllers. The
+child controller (`cloudflarednsrecord_controller.go`) makes the CF API calls and holds a finalizer.
+It never changes a DNS record it did not create, and never changes an existing record in any way it
+did not before operator#312 (owner decision 2026-10-12: existing DNS settings stay as they are; new
+records may be created):
+
+- A record it **creates** carries the Cloudflare comment `orama-operator:<namespace>/<name>`, recorded
+  in `status.ownerComment`.
+- A **legacy** record (created before ownership comments) is recognised by `status.recordID` with no
+  write: it never gains a comment, and it is rewritten only when its type, content, proxying or TTL
+  differs from the spec. Before operator#312 every reconcile rewrote it; now an unchanged record is
+  only read. A rewrite keeps the record's comment as it is.
+- Any other A, AAAA or CNAME record with the same name is never modified: the CR reports
+  `ready: false` with a message naming the conflicting record and retries every 5 minutes. Other
+  types at the name (TXT, MX, ...) are ignored, as the old type-filtered lookup did.
+- **Zones:** a record is never moved between zones. When `spec.zoneID` (or the Secret's `zoneID`)
+  resolves to a zone other than `status.zoneID`, no request is sent, the record stays where it is,
+  and the CR reports `ready: false` ("zone change refused"). A legacy status without `zoneID` counts
+  as the Secret's zone, so naming the zone a record is already in changes nothing. To move a record,
+  delete the CR (which deletes the record) and recreate it.
+- **Deletion** removes the record from the zone in `status.zoneID`:
+  - a record with `status.ownerComment` is fetched first and deleted only if it still carries that
+    comment; otherwise it is left in place, the finalizer is released, and a `RecordNotOwned`
+    Warning Event is recorded;
+  - a legacy record (empty `status.ownerComment`) is deleted by ID when its own CR is deleted, as the
+    finalizer always did, so nothing about existing records changes. The stricter comment rule
+    applies only to records created from now on.
+  - A record that is already gone counts as deleted.
+
+| Field | Meaning |
+|---|---|
+| `spec.secretRef` | Secret with `token` and the default `zoneID`. |
+| `spec.name` | Record FQDN. |
+| `spec.type` | `A` or `CNAME`; empty infers it from `content`. |
+| `spec.content` | Target IP or hostname. |
+| `spec.zoneID` | Zone for the record; overrides the Secret's `zoneID`. Changing it on an existing record is refused (see above). |
+| `spec.proxied` | Proxied through Cloudflare (TTL is always auto). |
+| `status.recordID` / `ready` / `message` | The owned Cloudflare record, and why it is not ready (a conflict or a refused zone change). |
+| `status.zoneID` | Zone the record lives in; empty on legacy records (the Secret's zone). |
+| `status.ownerComment` | Comment the record was created with; empty on legacy records. |
+
+Cloudflare limits record comments to 100 characters on Free zones, so keep `<namespace>/<name>`
+under 85 characters.
+
 ## `CloudflareLoadBalancer` (separate CRD) — the global geo-LB
 
 Owns a Cloudflare **global Load Balancer** ([operator#73](https://github.com/oramasearch/orama-operator/issues/73)):

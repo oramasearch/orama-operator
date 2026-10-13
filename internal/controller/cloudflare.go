@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,7 +25,8 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-const cfAPIBase = "https://api.cloudflare.com/client/v4"
+// cfAPIBase is the Cloudflare API root. A var only so tests can point it at an httptest server.
+var cfAPIBase = "https://api.cloudflare.com/client/v4"
 
 // cfLBBillingOnce ensures the Load-Balancing "enable the paid feature" guidance is logged only once
 // per operator process (not on every reconcile).
@@ -49,6 +51,7 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 				rec := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-dashboard-dns", Namespace: oc.Namespace}}
 				if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rec, func() error {
 					rec.Spec.SecretRef, rec.Spec.Name, rec.Spec.Content, rec.Spec.Proxied = secretName, host, target, true
+					rec.Spec.ZoneID = cfZoneIDForHost(cf.ZoneIDs, host)
 					return controllerutil.SetControllerReference(oc, rec, r.Scheme)
 				}); err != nil {
 					return err
@@ -102,6 +105,24 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 		})
 	}
 	return nil
+}
+
+// cfZoneIDForHost picks the zone ID whose zone name is the longest suffix of host (the host itself
+// or a parent domain), so app.orama.com maps to orama.com rather than com. Empty means no entry
+// matches and the record falls back to its Secret's zoneID.
+func cfZoneIDForHost(zoneIDs map[string]string, host string) string {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	best, bestLen := "", -1
+	for zone, id := range zoneIDs {
+		zone = strings.TrimSuffix(strings.ToLower(zone), ".")
+		if zone == "" || len(zone) <= bestLen {
+			continue
+		}
+		if host == zone || strings.HasSuffix(host, "."+zone) {
+			best, bestLen = id, len(zone)
+		}
+	}
+	return best
 }
 
 // ingressTarget returns the external address of the dashboard Ingress, if assigned.

@@ -53,8 +53,8 @@ spec:
             type: object
           spec:
             description: |-
-              CloudflareDNSRecordSpec is the desired state of a Cloudflare DNS record. The zone + API
-              token come from the referenced Secret (keys `token` + `zoneID`), so no credential is in spec.
+              CloudflareDNSRecordSpec is the desired state of a Cloudflare DNS record. The API token and the
+              default zone come from the referenced Secret (keys `token` + `zoneID`), so no credential is in spec.
             properties:
               content:
                 description: Content is the record target (an IP for A, a hostname
@@ -77,6 +77,11 @@ spec:
                 description: Type is A or CNAME; empty = inferred from Content (IP
                   → A, hostname → CNAME).
                 type: string
+              zoneID:
+                description: |-
+                  ZoneID is the Cloudflare zone holding the record. It overrides the Secret's `zoneID`, so
+                  one token can manage records in several zones. Empty = the Secret's `zoneID`.
+                type: string
             required:
             - content
             - name
@@ -88,12 +93,24 @@ spec:
             properties:
               message:
                 type: string
+              ownerComment:
+                description: |-
+                  OwnerComment is the ownership comment (`orama-operator:<namespace>/<name>`) the record was
+                  created with. Such a record is deleted only while it still carries the comment. Empty for a
+                  record created before ownership comments, which is deleted with its object by ID, as before.
+                type: string
               ready:
                 description: Ready is true once the record is reconciled in Cloudflare.
                 type: boolean
               recordID:
                 description: RecordID is the Cloudflare-assigned DNS record ID (set
                   once created).
+                type: string
+              zoneID:
+                description: |-
+                  ZoneID is the Cloudflare zone the record lives in. A record is never moved between zones:
+                  when the spec resolves to another zone the record is left in place and Ready is false.
+                  Empty on records created before this field existed, which live in the Secret's `zoneID`.
                 type: string
             type: object
         type: object

@@ -96,6 +96,11 @@ rules:
   - apiGroups: [""]
     resources: ["endpoints"]
     verbs: ["get", "list", "watch"]
+  # Events on the operator's own CRs in any namespace (e.g. a CloudflareDNSRecord finalizer that
+  # left a Cloudflare record it no longer owns in place).
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
   # Read the Zetta e2e Job's pod logs to parse pass/fail/skip counts and Lake builder logs to read
   # the final pushed digest and size into their respective status records.
   # Patch lake pods' orama.cloud/services-secret-version annotation so kubelet refreshes the

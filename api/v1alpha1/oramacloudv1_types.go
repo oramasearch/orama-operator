@@ -238,6 +238,11 @@ type CloudflareSpec struct {
 	// ManageDNS: create/update DNS records pointing at this cluster's ingress.
 	// +kubebuilder:default=true
 	ManageDNS bool `json:"manageDNS,omitempty"`
+	// ZoneIDs maps a Cloudflare zone name (e.g. orama.com) to its zone ID. Each managed DNS host
+	// uses the zone with the longest matching suffix; a host matching no entry uses the
+	// apiTokenSecretRef Secret's `zoneID`. Lets one CR manage names in several zones.
+	// +optional
+	ZoneIDs map[string]string `json:"zoneIDs,omitempty"`
 	// ManageLoadBalancers: reconcile Cloudflare Load Balancing — geo-steered pools
 	// across the regional clusters + health checks. This is the geo load-balancer.
 	// +kubebuilder:default=true
