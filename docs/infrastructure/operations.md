@@ -103,6 +103,8 @@ Every cluster runs the same operator version (rule 11 in [`CLAUDE.md`](../../CLA
    install that version.
 2. Set that version on every `OramaOperator`, in `config/clusters/<cluster>/operator.yaml`, and apply.
    Each managed cluster's operator is upgraded, CRDs first.
+   The management cluster (step 1) and the leaves (this step) must end on the same version: they
+   are two installation paths for the same operator.
 3. Confirm every cluster is on it:
 
    ```sh
@@ -111,7 +113,21 @@ Every cluster runs the same operator version (rule 11 in [`CLAUDE.md`](../../CLA
 
 ## Add or upgrade a platform chart
 
-Edit the `ClusterHelmRelease` in `<cluster>/platform.yaml` (`spec.chart.version`, `spec.values`) and
+**A platform chart is described in two places, and both change together**
+([README, *Two installation paths, one result*](README.md#two-installation-paths-one-result)):
+
+1. `helmfile.yaml`, which installs the **management** cluster;
+2. the `ClusterHelmRelease` in **every** `config/clusters/*/platform.yaml`, which the management
+   cluster's operator installs on each **leaf**.
+
+Make the same change in both (`version`, values, a new or removed chart), in one pull request.
+`go test ./cmd/ -run Helmfile` fails while they differ. Then:
+
+- apply each `platform.yaml` to the managing cluster: the operator upgrades the leaves;
+- apply the helmfile to the management cluster, **with Steve's consent**
+  (`helmfile -l name=<release> sync`), and check `helm list -A` there against the file.
+
+Edit the `ClusterHelmRelease` (`spec.chart.version`, `spec.values`) and
 apply. Read the chart's release notes for CRD changes first. `dependsOn` orders installs
 (cert-manager before K8ssandra); `crdURLs` names CRDs a chart ships in a separate file (TiDB).
 

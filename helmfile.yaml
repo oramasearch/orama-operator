@@ -1,3 +1,25 @@
+# ======================================================================================
+# THIS FILE AND config/clusters/*/platform.yaml MUST SAY THE SAME THING.
+#
+# There are two installation paths, and they must produce the same cluster:
+#
+#   * The MANAGEMENT cluster is installed from THIS helmfile. Nothing else can install it:
+#     it is the cluster the operator that manages the others runs on, so it has to exist
+#     first.
+#   * Every LEAF cluster is installed by the management cluster's operator, from the
+#     ClusterHelmRelease and OramaOperator resources in config/clusters/<cluster>/.
+#
+# Same charts, same chart versions, same namespaces, same values, same operator version, on
+# both paths. A change to one is not finished until the other has it:
+#
+#   change here                      ->  change every config/clusters/*/platform.yaml
+#   change a ClusterHelmRelease      ->  change this file
+#   new operator version on a leaf   ->  the same version on the management cluster
+#
+# cmd/platform_sync_test.go fails when they differ. docs/infrastructure/README.md, "Two
+# installation paths, one result", is the full statement.
+# ======================================================================================
+#
 # Composition layer: platform operators (upstream OSS charts) + the v1 operator.
 # Usage: helmfile apply    (installs everything in order)
 #        helmfile -l app=orama-operator apply   (just our operator)
@@ -51,6 +73,7 @@ releases:
   - name: cloudnative-pg
     namespace: cnpg-system
     chart: cnpg/cloudnative-pg
+    version: 0.29.0   # operator 1.30.0; the same pin every leaf's ClusterHelmRelease has
     installed: true   # REQUIRED — control DB is a CNPG Cluster CR + managed roles
 
   # ingress controller with a Service type=LoadBalancer — the cloud provisions a public IP so the
@@ -60,6 +83,7 @@ releases:
     namespace: ingress-nginx
     createNamespace: true
     chart: ingress-nginx/ingress-nginx
+    version: 4.15.1   # the same pin every leaf's ClusterHelmRelease has
     installed: true
     set:
       - name: controller.service.type

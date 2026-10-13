@@ -32,6 +32,12 @@ operator through cluster BuildKit with `buildctl`; the native checks, remote bui
 published-image alternative are in [development.md](development.md#obtain-or-publish-the-operator-image).
 Application images come from their owning projects.
 
+> **This page is the helmfile path, which is how a management cluster is installed.** A leaf
+> cluster is not installed this way: the management cluster's operator installs it from
+> `ClusterHelmRelease` and `OramaOperator` resources. The two paths must install the same thing, so
+> a change to `helmfile.yaml` is also a change to every `config/clusters/*/platform.yaml`
+> ([`infrastructure/README.md`](infrastructure/README.md#two-installation-paths-one-result)).
+
 Three layers, each with one job:
 
 - **`helmfile.yaml`** composes **CloudNativePG and ingress-nginx**, the **service operators** that
@@ -129,8 +135,8 @@ expected. Upgrading one of them is a version bump here, checked against its rele
 changes (Valkey 0.6.0 broke its TLS field), then the same `sync`.
 
 The selectors include **only** CloudNativePG and ingress-nginx. The manager is installed next.
-The platform chart versions are currently unpinned in `helmfile.yaml`; use your approved platform
-versions for production. See [components.md](components.md) for the component mapping.
+Every platform chart is pinned in `helmfile.yaml`, to the same version each leaf's
+`ClusterHelmRelease` has; `cmd/platform_sync_test.go` fails on an unpinned release. See [components.md](components.md) for the component mapping.
 
 ## 2. Render, install, and wait for the manager
 
