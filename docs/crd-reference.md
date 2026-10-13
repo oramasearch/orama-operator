@@ -18,8 +18,23 @@ pointing at the primary); the full sample list is in
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile) run writer-only and reader-only OramaCore builds with side-only configs; unset, both sides fall back to `oramacore` and share the combined config (see [components.md](components.md#engine-internalcontrollerenginego)). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
-| `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
-| `llm.default` | enum | `groq` | Provider used when a request doesn't name one. |
+| `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers — end users pick per query. Each has `name` (`groq \| openai \| google \| anthropic \| vllm`), `models[]` (required; the first is its default model), optional `url` (overrides OramaCore's built-in OpenAI-compatible base URL) and optional `apiKeySecretRef: {name, key}` (`key` defaults to `<PROVIDER>_API_KEY`; unset ⇒ that key of `<cr>-engine-secret`). Rendered into the engine config's `ai_server.remote_llms`, one entry per provider. Empty ⇒ `groq` (`llama-3.3-70b-versatile`), `openai` (`gpt-5.2`), `anthropic` (`claude-sonnet-4-5`). Refused at reconcile (`Ready=False`): a provider listed twice or with no models, and `vllm` (in-cluster vLLM and its `gpu` field are not rendered yet). |
+| `llm.default` | string | `groq` | Provider used when a request doesn't name one: rendered as `ai_server.llm` (`local: false`, `host` = its base URL, `model` = its first model, its key). Must be one of `providers`, else the reconcile fails with `Ready=False`. |
+| `llm.automaticEmbeddingsSelector` | `{provider, model}` | — | The model the writer uses to choose the properties of a collection with automatic embeddings (`ai_server.embeddings.automatic_embeddings_selector`). `provider` must be one of `providers`. Unset ⇒ no selector. |
+
+Prod 1's provider set (orama-deploy `oramacore/production/config/`):
+
+```yaml
+llm:
+  default: groq
+  providers:
+    - { name: openai,    models: [gpt-5.2] }
+    - { name: google,    models: [gemini-2.0-flash-001] }
+    - { name: groq,      models: [openai/gpt-oss-120b] }
+    - { name: anthropic, models: [claude-sonnet-4-5] }
+  automaticEmbeddingsSelector: { provider: openai, model: gpt-5.2 }
+```
+
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |

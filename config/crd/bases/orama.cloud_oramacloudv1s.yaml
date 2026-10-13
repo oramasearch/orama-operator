@@ -1862,39 +1862,65 @@ spec:
                 description: LLM configures the available answer/RAG language-model
                   providers (multiple).
                 properties:
+                  automaticEmbeddingsSelector:
+                    description: |-
+                      AutomaticEmbeddingsSelector is the provider and model the writer asks to choose the properties
+                      of a collection with automatic embeddings (ai_server.embeddings.automatic_embeddings_selector).
+                      Its provider must be one of providers. Unset renders no selector.
+                    properties:
+                      model:
+                        description: Model is the provider's model name, for example
+                          gpt-5.2.
+                        minLength: 1
+                        type: string
+                      provider:
+                        description: Provider is the name of one of spec.llm.providers.
+                        enum:
+                        - groq
+                        - openai
+                        - google
+                        - anthropic
+                        type: string
+                    required:
+                    - model
+                    - provider
+                    type: object
                   default:
                     default: groq
                     description: Default provider used when a request doesn't name
-                      one.
+                      one. It must be one of providers.
                     type: string
                   providers:
-                    description: Providers available for selection. If empty, defaults
-                      to groq + openai + anthropic.
+                    description: |-
+                      Providers available for selection. If empty, defaults to groq (llama-3.3-70b-versatile),
+                      openai (gpt-5.2) and anthropic (claude-sonnet-4-5).
                     items:
                       description: LLMProvider is one selectable LLM backend.
                       properties:
                         apiKeySecretRef:
-                          description: APIKeySecretRef overrides the default per-component
-                            key for this provider.
+                          description: |-
+                            APIKeySecretRef takes this provider's key from a Secret in the CR's namespace instead of the
+                            engine Secret.
                           properties:
-                            name:
-                              default: ""
-                              description: |-
-                                Name of the referent.
-                                This field is effectively required, but due to backwards compatibility is
-                                allowed to be empty. Instances of this type with an empty value here are
-                                almost certainly wrong.
-                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            key:
+                              description: Key in the Secret. Defaults to <PROVIDER>_API_KEY,
+                                for example OPENAI_API_KEY.
                               type: string
+                            name:
+                              description: Name of the Secret.
+                              type: string
+                          required:
+                          - name
                           type: object
-                          x-kubernetes-map-type: atomic
                         gpu:
-                          description: GPU requests a GPU for an in-cluster vLLM provider
-                            (name=vllm).
+                          description: |-
+                            GPU requests a GPU for an in-cluster vLLM provider (name=vllm). In-cluster vLLM is not
+                            rendered yet, so a vllm provider is refused at reconcile.
                           type: boolean
                         models:
-                          description: Models this provider offers (the catalog the
-                            end user can pick from).
+                          description: |-
+                            Models this provider offers (the catalog the end user can pick from). The first is the
+                            provider's default model; at least one is required.
                           items:
                             type: string
                           type: array
@@ -1903,8 +1929,14 @@ spec:
                           enum:
                           - groq
                           - openai
+                          - google
                           - anthropic
                           - vllm
+                          type: string
+                        url:
+                          description: |-
+                            URL overrides the provider's OpenAI-compatible API base URL. Empty uses OramaCore's built-in
+                            one (for example https://api.openai.com/v1).
                           type: string
                       required:
                       - name
