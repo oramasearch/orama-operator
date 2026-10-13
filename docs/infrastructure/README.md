@@ -338,6 +338,27 @@ Cluster names keep the existing convention:
 | `orama-nonprod-cluster-01` | Leaf, first to be created | Staging, dev and testing |
 | `orama-production-cluster-02` | Leaf, after | Production |
 
+## Left out on purpose
+
+**AKS add-ons are not set on a cluster the operator creates** (Steve, 2026-10-12: *"let's omit them
+for now"*). `orama-production-cluster-01` has four that `orama-nonprod-cluster-01` does not:
+
+| Add-on | What it does | CRD groups it brings |
+|---|---|---|
+| Azure Policy (Gatekeeper) | Enforces Azure-defined rules on what may be deployed | `*.gatekeeper.sh`, `azurepolicy.azure.com` |
+| Image cleaner (Eraser) | Deletes unused images with known vulnerabilities from nodes | `eraser.sh` |
+| Azure Monitor | Ships container logs and metrics to Azure; log ingestion is billed | `azmonitoring.coreos.com` |
+| A cluster-configuration extension | Not identified | `aks.clusterconfig.azure.com` |
+
+They are on the existing cluster most likely because the Azure portal enables them by default,
+not because they were chosen. Nothing in the operator or in `helmfile.yaml` depends on any of them,
+and the leaf works without them, so `AksCluster` has no fields for add-ons. The consequence to
+know: **a leaf has no Azure-side logs or metrics**. If monitoring through Azure is wanted on a
+leaf, that is the one to add first.
+
+This is a difference between how two AKS clusters were created, not between their operators,
+which are identical ([One operator, on every cluster](#one-operator-on-every-cluster)).
+
 ## Not decided
 
 Kept in [#351](https://github.com/oramasearch/orama-operator/issues/351), in its comments. Among
