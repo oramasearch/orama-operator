@@ -44,7 +44,9 @@ resources a limit of one CPU and 1Gi. **The quota no longer caps the sum of CPU 
 ([#435](https://github.com/oramasearch/orama-operator/issues/435)): a limit is only the ceiling a
 container may burst to, and with a default of one CPU a workspace of nine pods using a third of a
 CPU between them was reported full at "8 of 8". What a workspace may reserve is capped by
-`requests.cpu` (4), and its memory by `requests.memory` (8Gi) and `limits.memory` (16Gi). Every
+`requests.cpu` (4), and its memory by `requests.memory` (8Gi) and `limits.memory` (32Gi). It may
+hold 100 Service objects and 200 Secrets: a Postgres is three Services and a Cassandra five, and at
+the earlier limit of 20 a workspace with five services could not create a sixth. Every
 upstream-operator kind states its containers' sizes, so none takes the default:
 
 | Kind | Containers | CPU limits charged |

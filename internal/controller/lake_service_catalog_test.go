@@ -1027,6 +1027,12 @@ func TestTheDefaultWorkspacePlanDoesNotCapTheSumOfCPULimits(t *testing.T) {
 	if _, capped := plan.Quota[corev1.ResourceLimitsCPU]; capped {
 		t.Fatal("the default plan caps limits.cpu again")
 	}
+	// A workspace must hold one service of every kind in the catalog at once. Counted on
+	// lake.oramadev.net: Postgres 3 Service objects, Cassandra 5, Kafka 2 or 3, the rest 1 to 5.
+	services := plan.Quota[corev1.ResourceServices]
+	if services.Value() < 60 {
+		t.Errorf("the default plan allows %d Service objects; ten kinds of datastore need more", services.Value())
+	}
 	for _, kept := range []corev1.ResourceName{corev1.ResourceRequestsCPU, corev1.ResourceRequestsMemory, corev1.ResourceLimitsMemory, corev1.ResourcePods} {
 		if _, ok := plan.Quota[kept]; !ok {
 			t.Errorf("the default plan no longer caps %s", kept)
