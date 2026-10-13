@@ -276,6 +276,58 @@ Not read yet: the node resource group's activity log and the scale set's instanc
 them needs `Microsoft.Compute` and `Microsoft.Insights` read on the provisioner role. Azure
 copies a node's bootstrap failure onto the operation's error, which is reported.
 
+### Two installation paths, one result
+
+Steve, 2026-10-13: *"both the helmfile and the operator need to be kept in sync so that operators
+on mgnt clusters and leaf clusters are effectively the same, even though mgmt cluster will need the
+helmfile installation path and leaf clusters will be installed by the mgmt operator ... make sure
+that knowledge is 1000% clear in the docs"*.
+
+**There are two ways a cluster gets its software, and they must produce the same cluster.**
+
+| | Management cluster | Leaf cluster |
+|---|---|---|
+| **Installed by** | A person or agent running `helmfile` from this repository, with Steve's consent | The management cluster's operator |
+| **Described in** | [`helmfile.yaml`](../../helmfile.yaml) | [`config/clusters/<cluster>/`](../../config/clusters/README.md): `platform.yaml` (`ClusterHelmRelease`) and `operator.yaml` (`OramaOperator`) |
+| **Platform charts** | The helmfile's releases | One `ClusterHelmRelease` per chart |
+| **The Orama operator** | The helmfile's `orama-operator` release, from `./chart` | `OramaOperator`, from the chart published for that version |
+| **Why this path** | It is the cluster the managing operator runs on, so it must exist before any operator can install anything | The operator can reach it, so no person has to |
+
+**The two descriptions must say the same thing**: the same charts, at the same chart versions, in
+the same namespaces, with the same values, the same install order, and the same operator version.
+A management cluster and a leaf are then effectively the same cluster, and any leaf could be a
+management cluster.
+
+**So every change is made twice, in one pull request:**
+
+| When you change | You also change |
+|---|---|
+| A release in `helmfile.yaml` (version, values, a new chart, a removed chart) | The matching `ClusterHelmRelease` in **every** `config/clusters/*/platform.yaml` |
+| A `ClusterHelmRelease` in any `platform.yaml` | `helmfile.yaml`, and every other cluster's `platform.yaml` |
+| The operator version on the leaves (`config/clusters/*/operator.yaml`) | The management cluster is rolled to the same version, through the helmfile path |
+| Anything in `chart/` (values, RBAC, CRDs) | Nothing more: both paths install the same chart |
+
+**Neither path is ever replaced by a command typed at a cluster.** A `helm upgrade` run by hand
+against the management cluster is not the helmfile path: it is state outside the code
+([`CLAUDE.md`](../../CLAUDE.md), *Never change a cluster by hand*). To change the management
+cluster, change `helmfile.yaml`, merge it, and apply the helmfile with Steve's consent.
+
+**What holds it:** [`cmd/platform_sync_test.go`](../../cmd/platform_sync_test.go) reads
+`helmfile.yaml` and every `config/clusters/*/platform.yaml` and fails if a chart, version,
+namespace, value, dependency or separately-shipped CRD manifest is in one and not the other, if a
+helmfile release is unpinned, or if the leaves' `OramaOperator` versions differ from one another.
+
+**Two things the test cannot see**, which a person has to keep true:
+
+- **Whether the management cluster actually runs what `helmfile.yaml` says.** Nothing reconciles
+  the helmfile; it is applied when someone applies it. After a change, apply it (with consent) and
+  check `helm list -A` on the management cluster against the file.
+- **The management cluster's operator version.** It is whatever was last rolled onto it, and is
+  not written in a file. It must be the version in `config/clusters/*/operator.yaml`.
+
+Closing both would mean the management cluster describing itself with the same resources a leaf
+has. That is not built.
+
 ### One operator, on every cluster
 
 Steve, 2026-10-12: *"install the same operator everywhere... all crds"*, *"no differences between
