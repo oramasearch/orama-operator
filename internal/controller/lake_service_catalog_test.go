@@ -17,9 +17,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // catalogCase is one catalog kind's fixture: how its service is built, made ready, and
@@ -773,4 +775,82 @@ func TestServicesCatalogCountsTowardQuota(t *testing.T) {
 	if err := h2.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: c.passwordSecret}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("a service over quota generated a password: %v", err)
 	}
+}
+
+// A Kafka that is not ready says what Strimzi is stuck on. A broker pod the API server refuses is
+// recorded by Strimzi on the pod set, not on the Kafka; without reading it the service waits
+// forever with no reason (operator#428).
+func TestServicesKafkaSaysWhatStrimziIsStuckOn(t *testing.T) {
+	in := catalogService{name: "prod-svc-083b8bddac01", namespace: "prod-ws-6bb777ba498a"}
+	refusal := `Failure executing: POST at: https://10.0.0.1:443/api/v1/namespaces/prod-ws-6bb777ba498a/pods. Message: pods "prod-svc-083b8bddac01-pool-0" is forbidden: violates PodSecurity "restricted:latest": allowPrivilegeEscalation != false`
+	podSet := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "core.strimzi.io/v1", "kind": "StrimziPodSet",
+		"metadata": map[string]interface{}{"name": in.name + "-pool", "namespace": in.namespace, "labels": map[string]interface{}{strimziClusterLabel: in.name}},
+		"status":   map[string]interface{}{"conditions": []interface{}{map[string]interface{}{"type": "Error", "status": "True", "message": refusal}}},
+	}}
+	other := podSet.DeepCopy()
+	other.SetName("another-kafka-pool")
+	other.SetLabels(map[string]string{strimziClusterLabel: "another-kafka"})
+	unstructured.SetNestedField(other.Object, "not this one", "status", "conditions")
+	kafka := &unstructured.Unstructured{Object: map[string]interface{}{
+		"status": map[string]interface{}{"conditions": []interface{}{map[string]interface{}{
+			"type": "NotReady", "status": "True", "message": "Exceeded timeout of 300000ms while waiting for Pods resource"}}},
+	}}
+	found := map[string]*unstructured.Unstructured{strimziKafkaGVK.Kind: kafka}
+	scheme := runtime.NewScheme()
+	scheme.AddKnownTypeWithName(strimziPodSetListGVK, &unstructured.UnstructuredList{})
+	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "core.strimzi.io", Version: "v1", Kind: "StrimziPodSet"}, &unstructured.Unstructured{})
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(podSet, other).Build()
+	why, err := kafkaServiceKind{}.waitingReason(context.Background(), c, in, found)
+	if err != nil || !strings.Contains(why, `violates PodSecurity "restricted:latest"`) {
+		t.Fatalf("want the API server's refusal, got %q, %v", why, err)
+	}
+
+	// With no pod set failure, the Kafka's own NotReady message is the reason.
+	c = fake.NewClientBuilder().WithScheme(scheme).Build()
+	if why, err = (kafkaServiceKind{}).waitingReason(context.Background(), c, in, found); err != nil || !strings.HasPrefix(why, "Exceeded timeout of 300000ms") {
+		t.Fatalf("want the Kafka's NotReady message, got %q, %v", why, err)
+	}
+	if got := boundedReason(strings.Repeat("x ", serviceWaitReasonLimit)); len(got) > serviceWaitReasonLimit+3 {
+		t.Fatalf("an upstream message is bounded, got %d bytes", len(got))
+	}
+}
+
+// The Kafka resources this operator writes carry the `restricted` security context themselves, on
+// the broker pod and on the entity operator's pod, so the service does not depend on how Strimzi
+// is configured on a cluster (operator#428).
+func TestServicesKafkaPodsMeetRestrictedPodSecurity(t *testing.T) {
+	resources := kafkaServiceKind{}.build(catalogService{name: "svc", namespace: "ws", spec: lakeServiceSpec{Instances: 1, StorageGi: 10}}, "")
+	field := func(kind string, path ...string) interface{} {
+		for _, resource := range resources {
+			if resource.gvk.Kind != kind {
+				continue
+			}
+			for _, f := range resource.fields {
+				if strings.Join(f.path, ".") == strings.Join(path, ".") {
+					return f.value
+				}
+			}
+		}
+		t.Fatalf("%s has no field %v", kind, path)
+		return nil
+	}
+	restricted := func(what string, container map[string]interface{}) {
+		t.Helper()
+		sc, _ := container["securityContext"].(map[string]interface{})
+		drop, _, _ := unstructured.NestedSlice(sc, "capabilities", "drop")
+		seccomp, _, _ := unstructured.NestedString(sc, "seccompProfile", "type")
+		if sc["allowPrivilegeEscalation"] != false || sc["runAsNonRoot"] != true || len(drop) != 1 || drop[0] != "ALL" || seccomp != "RuntimeDefault" {
+			t.Errorf("%s does not meet restricted: %+v", what, sc)
+		}
+	}
+	pool := field("KafkaNodePool", "spec", "template").(map[string]interface{})
+	restricted("the broker container", pool["kafkaContainer"].(map[string]interface{}))
+	if sc := pool["pod"].(map[string]interface{})["securityContext"].(map[string]interface{}); sc["runAsNonRoot"] != true {
+		t.Errorf("the broker pod: %+v", sc)
+	}
+	entity := field("Kafka", "spec", "entityOperator").(map[string]interface{})["template"].(map[string]interface{})
+	restricted("the topic operator container", entity["topicOperatorContainer"].(map[string]interface{}))
+	restricted("the user operator container", entity["userOperatorContainer"].(map[string]interface{}))
 }

@@ -21,6 +21,22 @@ operator's side of it. Field definitions are in the
 customer's **stores** (volumes, the customer's own buckets, and Lake-run buckets and filesystems;
 lake#196, lake#664) ride the same poll, connection and Secret: see [Stores](#stores-lake196).
 
+## A service's pods must meet its namespace's Pod Security level
+
+A service created in a workspace runs in that workspace's namespace, which enforces the
+`restricted` Pod Security Standard ([`workspaces.md`](workspaces.md)). The API server refuses a pod
+that does not meet it, so the upstream operator behind a kind must produce `restricted` pods.
+
+| Kind | How its pods meet `restricted` |
+|---|---|
+| Postgres | CloudNativePG's pods do, as shipped. |
+| SQLite, DuckDB, Polars | The operator runs them and sets the security context itself. |
+| Kafka | **The operator writes the security context itself**, on the `KafkaNodePool`'s pod and broker container and on the `Kafka`'s entity operator, so a Kafka service starts whatever Strimzi's defaults are on a cluster. Strimzi is also installed with `STRIMZI_POD_SECURITY_PROVIDER_CLASS=restricted` (`helmfile.yaml`, and every cluster's `ClusterHelmRelease`), which covers any pod Strimzi creates that the operator does not template ([#428](https://github.com/oramasearch/orama-operator/issues/428)). |
+| ClickHouse, TiDB, Cassandra, Valkey | **Not verified in a workspace namespace.** Their resources are rendered without a security context; each needs the same check ([#428](https://github.com/oramasearch/orama-operator/issues/428)). |
+
+A service that is not ready says why where the kind can tell: a Kafka's `service_status.message`
+carries what Strimzi is stuck on, including the API server's reason for refusing a pod.
+
 ## Turning it on
 
 ```yaml

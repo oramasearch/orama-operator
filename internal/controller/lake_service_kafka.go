@@ -10,6 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -79,13 +82,28 @@ func (k kafkaServiceKind) build(in catalogService, _ string) []catalogResource {
 				"default.replication.factor":               brokers,
 				"min.insync.replicas":                      minInSync,
 			}},
+			// The entity operator's pod meets the `restricted` Pod Security Standard by what is
+			// written here, not by how Strimzi happens to be installed on the cluster.
 			{path: []string{"spec", "entityOperator"}, value: map[string]interface{}{
 				"topicOperator": map[string]interface{}{}, "userOperator": map[string]interface{}{},
+				"template": map[string]interface{}{
+					"pod":                    map[string]interface{}{"securityContext": restrictedPodSecurityContext()},
+					"topicOperatorContainer": map[string]interface{}{"securityContext": restrictedContainerSecurityContext()},
+					"userOperatorContainer":  map[string]interface{}{"securityContext": restrictedContainerSecurityContext()},
+				},
 			}},
 		}},
 		{catalogObject: objects[1], labels: cluster, fields: []serviceField{
 			{path: []string{"spec", "replicas"}, value: brokers},
 			{path: []string{"spec", "roles"}, value: []interface{}{"controller", "broker"}},
+			// A workspace namespace enforces the `restricted` Pod Security Standard, and the API
+			// server refuses a broker pod that does not meet it (operator#428). The security
+			// context is part of the resource this operator writes, so a Kafka service starts
+			// on any cluster, whatever Strimzi's own defaults are there.
+			{path: []string{"spec", "template"}, value: map[string]interface{}{
+				"pod":            map[string]interface{}{"securityContext": restrictedPodSecurityContext()},
+				"kafkaContainer": map[string]interface{}{"securityContext": restrictedContainerSecurityContext()},
+			}},
 			// Storage cannot be updated (the CRD says so); deleteClaim stays false and deletion
 			// removes the claims itself.
 			{path: []string{"spec", "storage"}, createOnly: true, value: map[string]interface{}{
@@ -113,6 +131,58 @@ func (kafkaServiceKind) ready(_ catalogService, found map[string]*unstructured.U
 		return false, "waiting for the Kafka cluster"
 	}
 	return true, ""
+}
+
+// restrictedPodSecurityContext and restrictedContainerSecurityContext are what the `restricted`
+// Pod Security Standard requires, as the unstructured values an upstream resource's pod template
+// takes.
+func restrictedPodSecurityContext() map[string]interface{} {
+	return map[string]interface{}{
+		"runAsNonRoot":   true,
+		"seccompProfile": map[string]interface{}{"type": "RuntimeDefault"},
+	}
+}
+
+func restrictedContainerSecurityContext() map[string]interface{} {
+	return map[string]interface{}{
+		"allowPrivilegeEscalation": false,
+		"runAsNonRoot":             true,
+		"capabilities":             map[string]interface{}{"drop": []interface{}{"ALL"}},
+		"seccompProfile":           map[string]interface{}{"type": "RuntimeDefault"},
+	}
+}
+
+// strimziPodSetListGVK is the resource through which Strimzi creates a Kafka's pods. Its status is
+// where Strimzi records a pod the API server refused.
+var strimziPodSetListGVK = schema.GroupVersionKind{Group: "core.strimzi.io", Version: "v1", Kind: "StrimziPodSetList"}
+
+// waitingReason says what Strimzi is stuck on: first a pod set's own failure (the API server
+// refusing the broker pod, with its reason), else the Kafka's NotReady message. On 2026-10-13 a
+// Kafka in a workspace namespace waited forever on a pod that violated the namespace's Pod
+// Security level, and the service said only "waiting for the Kafka cluster" (operator#428).
+func (kafkaServiceKind) waitingReason(ctx context.Context, c client.Reader, in catalogService, found map[string]*unstructured.Unstructured) (string, error) {
+	sets := &unstructured.UnstructuredList{}
+	sets.SetGroupVersionKind(strimziPodSetListGVK)
+	err := c.List(ctx, sets, client.InNamespace(in.namespace), client.MatchingLabels{strimziClusterLabel: in.name})
+	if err != nil && !apimeta.IsNoMatchError(err) && !apierrors.IsNotFound(err) {
+		return "", fmt.Errorf("list the Kafka's pod sets: %w", err)
+	}
+	for _, set := range sets.Items {
+		conditions, _, _ := unstructured.NestedSlice(set.Object, "status", "conditions")
+		for _, raw := range conditions {
+			condition, ok := raw.(map[string]interface{})
+			if !ok || condition["status"] != string(metav1.ConditionTrue) {
+				continue
+			}
+			if message, _ := condition["message"].(string); message != "" {
+				return boundedReason(message), nil
+			}
+		}
+	}
+	if kafka := found[strimziKafkaGVK.Kind]; kafka != nil {
+		return boundedReason(conditionMessage(kafka.Object, "NotReady")), nil
+	}
+	return "", nil
 }
 
 // credential reads the Secret the User Operator writes for the KafkaUser: named by the user's
