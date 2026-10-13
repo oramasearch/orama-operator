@@ -142,6 +142,10 @@ rules:
   - apiGroups: ["kafka.strimzi.io"]
     resources: ["kafkas", "kafkanodepools", "kafkausers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read only: where Strimzi records a broker pod the API server refused (operator#428).
+  - apiGroups: ["core.strimzi.io"]
+    resources: ["strimzipodsets"]
+    verbs: ["get", "list"]
   - apiGroups: ["pingcap.com"]
     resources: ["tidbclusters"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
