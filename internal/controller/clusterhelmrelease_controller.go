@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -26,7 +27,10 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-const clusterHelmReleaseFinalizer = "orama.cloud/cluster-helm-release-cleanup"
+const (
+	clusterHelmReleaseFinalizer = "orama.cloud/cluster-helm-release-cleanup"
+	clusterHelmReleaseWorkers   = 8
+)
 
 // ClusterHelmReleaseReconciler keeps one chart release on a managed cluster at its pinned version
 // (operator#363). The management cluster only.
@@ -287,7 +291,10 @@ func (r *ClusterHelmReleaseReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		}
 		return requests
 	})
+	// Several at once: an install can spend minutes in a chart's hooks, and one cluster's slow
+	// release must not hold up every other release on every cluster.
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: clusterHelmReleaseWorkers}).
 		For(&oramav1alpha1.ClusterHelmRelease{}).
 		Watches(&oramav1alpha1.KubernetesCluster{}, forCluster).
 		Watches(&oramav1alpha1.ClusterHelmRelease{}, forRelease).

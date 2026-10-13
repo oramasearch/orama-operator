@@ -10,6 +10,11 @@ against a fake Azure API ([#354](https://github.com/oramasearch/orama-operator/i
 real cluster has been created with them yet. The first step is one non-production AKS cluster
 ([#355](https://github.com/oramasearch/orama-operator/issues/355)).
 
+> **Doing the work?** [`operations.md`](operations.md) is the runbook: create a cluster, upgrade
+> the operator, add or change an instance in a set, and what has gone wrong before. What is
+> deployed is in [`config/clusters/`](../../config/clusters/README.md). The `orama-clusters` Claude
+> skill in the umbrella bridge is the short form.
+
 ## The model
 
 There are two kinds of cluster, and **every cluster runs an instance of this operator**.
@@ -321,22 +326,115 @@ class as an image pull secret.
   credentials Secret holds only `tenantID` and `clientID`.
 - **Service principal:** the same Secret with a `clientSecret` as well.
 
-## The path from here
+## The clusters today, and the path from here
 
-1. **The existing cluster, `orama-production-cluster-01`, becomes the management cluster**, slowly
-   and intentionally. Today it also runs workloads, which is a leaf's job, so the conversion
-   finishes only when those have somewhere else to live.
-2. **The first leaf is a non-production cluster**: a second AKS cluster in the western US, for
-   staging, dev and testing environments.
-3. **Then an actual production cluster**, possibly in the EU.
+As of 2026-10-12. The resources themselves are in
+[`config/clusters/`](../../config/clusters/README.md), which is the record of what is deployed.
 
-Cluster names keep the existing convention:
+| Cluster | Region | Purpose | Role | Runs |
+|---|---|---|---|---|
+| `orama-production-cluster-01` | `eastus` | Development, despite its name | **The managing cluster**: holds every `KubernetesCluster`, `ClusterHelmRelease`, `OramaOperator` and set. Created by hand before these kinds existed, so it has no `KubernetesCluster` of its own | Also still runs workloads: `Lake/prod` (`lake.oramadev.net`) and the v1 sandbox (`app.oramadev.net`) |
+| `orama-nonprod-cluster-01` | `westus2` | `nonprod` | Managed | Lake `dev` and `staging`; Orama Cloud v1 `v1-dev` |
+| `orama-production-cluster-02` | `swedencentral` | `production` | Managed | Lake `shared`; Orama Cloud v1 `v1-eu` |
+| `orama-production-cluster-03` | `eastus` | `production` | Managed | Lake `shared-us`; Orama Cloud v1 `v1-us` |
 
-| Cluster | Role | For |
-|---|---|---|
-| `orama-production-cluster-01` | Becoming the management cluster | Today: the development environment, despite its name |
-| `orama-nonprod-cluster-01` | Leaf, first to be created | Staging, dev and testing |
-| `orama-production-cluster-02` | Leaf, after | Production |
+Every managed cluster has the same platform layer (CloudNativePG, ingress-nginx, cert-manager, and
+the Strimzi, ClickHouse, K8ssandra, TiDB and Valkey operators) and the same operator version as the
+managing cluster. Each has one system node and a user pool that scales from zero.
+
+The instances are in four sets, one per kind per purpose: `lake-nonprod`, `v1-nonprod`,
+`lake-prod`, `v1-prod`.
+
+What the path was, and where it stands:
+
+1. **The existing cluster becomes the management cluster**, slowly and intentionally. It manages
+   the other three now. It still runs workloads, which is a leaf's job, so the conversion finishes
+   only when `Lake/prod` and the v1 sandbox have moved.
+2. **A non-production cluster**: done, `orama-nonprod-cluster-01`.
+3. **Production clusters**: done twice, in the EU and the US.
+
+What the production clusters are **not** yet:
+
+- **Their instances use the nonprod settings.** The Lakes are minimal (no apps, builds, agents,
+  billing or model-provider key). Orama Cloud v1 is on the `light` profile with single replicas,
+  the mutable image tag `v1-sandbox`, and the component secrets the operator seeds for
+  development.
+- **Their hostnames are in the dev zone** (`lake-eu`, `lake-us`, `app-eu`, `app-us` under
+  `oramadev.net`). No hostname that production traffic uses points at them.
+- **The two v1 production instances are independent primaries.** v1's multi-region model is one
+  primary and read regions joined by `spec.peers`; nothing joins `v1-eu` and `v1-us`.
+- **No customer data is on them.**
+
+Still open for a healthy leaf: Karpenter and Istio (neither is in the helmfile or on any cluster),
+bridges between clusters, and the proof that a cluster can be destroyed and recreated from its
+resources alone.
+
+## Workloads on managed clusters: `LakeSet` and `OramaCloudV1Set`
+
+Steve, 2026-10-12: *"let's create "Lake Set" and an "Orama Cloud v1 Set" which will be CRs on the
+management cluster, that will install CRs of Lake and Orama Cloud v1 on the leaf clusters (and
+manage their versions, settings, etc)."* ([#391](https://github.com/oramasearch/orama-operator/issues/391))
+
+A set is one template and a list of members. **A member is one instance on one cluster.** The
+managing cluster's operator applies each member's `Lake` (or `OramaCloudV1`) on its cluster, and
+that cluster's own operator reconciles it into workloads: the set decides what should exist and at
+which version, the leaf runs it.
+
+```yaml
+kind: LakeSet
+metadata: {name: lake-prod}
+spec:
+  template: {...}                 # a Lake spec, the default for every member
+  secrets: [...]                  # copied from this cluster into each member's namespace
+  clusters:                       # independent of each other
+    - clusterRef: orama-production-cluster-02
+      name: shared                # general production, for all shared accounts
+      spec: {host: lake.eu.example}
+    - clusterRef: orama-production-cluster-02
+      name: enterprise-customer-1 # a dedicated instance
+      spec: {host: customer-1.lake.eu.example}
+      secrets:
+        - {name: customer-1-openai, namespace: lake, as: lake-prod-openai}
+```
+
+The rules, each as Steve stated it:
+
+| Rule | How it is held |
+|---|---|
+| *"lakesets would never combine nonprod and prod in a single lakeset (nor oramacloud v1)"* | Every member's `KubernetesCluster` must carry the same `purpose` tag. A set that mixes purposes, or names a cluster with no `purpose`, is refused whole: nothing is applied to any cluster, and the status names the clusters. |
+| *"nonprod might combine multiple environments... each environment needs to land in its own namespace"*; *"we could have multiple prod instances in a set, eg. general prod for all shared accounts, and separate lakes for dedicated instances"* | A set holds any number of members, on one cluster or several. Each gets its own namespace, `lake-<name>` (`v1-<name>`), overridable per member. Two members on one cluster that would share a name or a namespace are refused. |
+| *"I like the overridable spec from the cluster too"* | A member's `spec` is merged over the template: a field wins, an object is merged field by field, and a list replaces the template's list whole. |
+| *"the region is already defined by which cluster it is assigned to"* | An `OramaCloudV1`'s `region.name` is its `KubernetesCluster`'s region. It is never written, and a `spec` that states a different one is refused. Only the role (`primary` or `read`) is stated. |
+| *"make secrets overridable too"* | A member's `secrets` are added to the set's. One whose name on the member's cluster (`as`, default `name`) matches a set secret replaces it for that member. |
+
+What a set does for each member, in order:
+
+1. **Checks the prerequisites.** The cluster is `Ready`, and it has the instance's kind (its
+   `OramaOperator` is installed). Otherwise the member is `Pending` and says which is missing.
+2. **Creates the member's namespace and writes its Secrets** into it, before the instance: an
+   instance whose pull secret or credentials are absent starts failing.
+3. **Applies the instance**, labelled `orama.cloud/managed-by-set: <Kind>.<set>`.
+4. **Reports what the cluster says**: the version running, and the instance's own reasons when it is
+   not `Ready` (for a Lake, every condition that is not met, such as a store that cannot be
+   provisioned). What the cluster's API server refuses (a field the kind does not accept) is on the
+   member and returned as an error.
+
+Further behavior:
+
+- **Members are independent** (Steve, 2026-10-12: *"staging should not need to wait for dev ...
+  they're independent"*). Every member is applied on every pass and none waits for another: one
+  that fails or starts slowly does not hold back the rest. A template change reaches all members
+  at once, except those that pin the field.
+- **Pinning.** A member whose `spec` sets the version (a Lake's `image`) ignores the template's.
+- **Removal keeps the instance.** Removing a member or deleting the set leaves the instance running
+  and unmanaged, unless the set says `deletionPolicy: Delete`.
+- **A set never takes over an instance it did not create**: one of the same name without the
+  set's label is an error, and is neither changed nor deleted.
+- **Per-instance keys are never copied.** A Lake's instance key and sealing key are generated on
+  its own cluster; only the Secrets a set lists travel.
+
+[`config/samples/lakeset-nonprod.yaml`](../../config/samples/lakeset-nonprod.yaml) is a nonprod set
+with two environments.
 
 ## Left out on purpose
 
