@@ -96,6 +96,13 @@ releases:
     set:
       - name: watchAnyNamespace
         value: "true"
+    # Every pod Strimzi creates (brokers, the entity operator) meets the `restricted` Pod Security
+    # Standard. A lake workspace namespace enforces it, and without this the API server refuses
+    # the broker pod and the Kafka never starts (operator#428).
+    values:
+      - extraEnvs:
+          - name: STRIMZI_POD_SECURITY_PROVIDER_CLASS
+            value: restricted
 
   - name: clickhouse-operator
     namespace: clickhouse-system

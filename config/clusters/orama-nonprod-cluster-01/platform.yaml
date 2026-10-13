@@ -60,6 +60,9 @@ spec:
   namespace: strimzi-system
   releaseName: strimzi
   values:
+    extraEnvs:
+    - name: STRIMZI_POD_SECURITY_PROVIDER_CLASS
+      value: restricted
     watchAnyNamespace: true
 ---
 apiVersion: orama.cloud/v1alpha1
