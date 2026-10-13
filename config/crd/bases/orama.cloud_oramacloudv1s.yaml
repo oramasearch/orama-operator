@@ -288,6 +288,11 @@ spec:
                             description: Enabled opts in to an owned CronJob. Requires
                               engine, analytics and controlDB enabled.
                             type: boolean
+                          includeWriter:
+                            description: |-
+                              IncludeWriter also pulls the writer's reader side on a primary region. The writer serves no
+                              search traffic, so it normally has nothing to import.
+                            type: boolean
                           schedule:
                             default: '*/5 * * * *'
                             description: Schedule is a five-field CronJob schedule
@@ -2263,6 +2268,41 @@ spec:
           status:
             description: OramaCloudV1Status is the observed state.
             properties:
+              analyticsImport:
+                description: AnalyticsImport is set while spec.components.analyticsProcessor.import
+                  is enabled.
+                properties:
+                  lastSuccessfulTime:
+                    description: LastSuccessfulTime is when the import CronJob last
+                      completed a Job successfully.
+                    format: date-time
+                    type: string
+                  sources:
+                    description: Sources are the processor's configured sources, in
+                      config order.
+                    items:
+                      description: AnalyticsImportSource is one OramaCore the analytics
+                        processor pulls GET /v1/analytics from.
+                      properties:
+                        enabled:
+                          description: |-
+                            Enabled is false for a reader ordinal whose pod is gone but whose data PVC remains: its
+                            unpulled events wait on the PVC until the ordinal returns, and the processor skips it.
+                          type: boolean
+                        name:
+                          description: Name is the source's name in the processor
+                            config (a reader pod or the writer).
+                          type: string
+                        url:
+                          description: URL is the endpoint the processor pulls.
+                          type: string
+                      required:
+                      - enabled
+                      - name
+                      - url
+                      type: object
+                    type: array
+                type: object
               components:
                 description: |-
                   Components is the per-component readiness summary — accurate component-level visibility

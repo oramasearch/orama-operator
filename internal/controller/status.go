@@ -105,7 +105,8 @@ func replicasOf(p *int32) int32 {
 // component is ready; Degraded when one regressed after having been Ready, or when
 // spec.requireRealCredentials is set and CredentialsReady is False; else Progressing),
 // componentsReady ("n/total"), the per-component list, the Ready and CredentialsReady
-// conditions, and the engine snapshots' status and SnapshotsReady condition from this pass. Returns whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
+// conditions, status.analyticsImport, and the engine snapshots' status and SnapshotsReady condition
+// from this pass. Returns whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
 func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, snapshots engineSnapshots) bool {
 	comps := r.componentReadiness(ctx, oc)
 	ready, notReady := 0, []string(nil)
@@ -159,6 +160,13 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 	default: // backups off: drop a BackupReady left from when they were on
 		otherChanged = meta.RemoveStatusCondition(&oc.Status.Conditions, "BackupReady")
 	}
+	// status.analyticsImport (#315): written on a real change only, like the rest of the status.
+	if analyticsImport, err := r.analyticsImportStatus(ctx, oc); err != nil {
+		log.FromContext(ctx).Error(err, "read analytics import status")
+	} else if !equality.Semantic.DeepEqual(analyticsImport, oc.Status.AnalyticsImport) {
+		oc.Status.AnalyticsImport = analyticsImport
+		otherChanged = true
+	}
 	// status.engineSnapshots and SnapshotsReady (#316); both dropped while snapshots are off.
 	if !equality.Semantic.DeepEqual(snapshots.statuses, oc.Status.EngineSnapshots) {
 		oc.Status.EngineSnapshots = snapshots.statuses
@@ -210,7 +218,7 @@ func (r *OramaCloudV1Reconciler) controlDBBackupCondition(ctx context.Context, o
 // setStatus writes phase + componentsReady + the per-component list + the merged conditions — but
 // only when something actually changed, so a steady state produces NO control-plane traffic even
 // though reconcile runs on every child event. This is the anti-flap guard. otherChanged
-// reports that the caller already changed oc.Status (removed a condition), which also needs a write.
+// reports that the caller already changed oc.Status (removed a condition, set analyticsImport), which also needs a write.
 func (r *OramaCloudV1Reconciler) setStatus(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, phase, componentsReady string, comps []oramav1alpha1.ComponentStatus, otherChanged bool, conds ...metav1.Condition) {
 	changed := otherChanged || oc.Status.Phase != phase ||
 		oc.Status.ComponentsReady != componentsReady ||

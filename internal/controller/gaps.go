@@ -14,9 +14,11 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	"net/url"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -31,35 +33,17 @@ import (
 // analyticsProcessorConfigYAML renders the config the `server` binary reads (lib.rs). It
 // connects to ClickHouse + Postgres at startup, so these are the real endpoints.
 // Secret values are __PLACEHOLDER__s the render init container substitutes — never in the CM.
-//
-// Scheduled imports poll every reader ordinal through the governing headless Service. The
-// unscheduled default keeps the existing reader Service + writer configuration.
-func analyticsProcessorConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
-	n := oc.Name
-	chURL := "http://" + n + "-analytics:8123"
+// sources become its `oramacores`, pulled in order on every POST /import.
+func analyticsProcessorConfigYAML(oc *oramav1alpha1.OramaCloudV1, sources []oramav1alpha1.AnalyticsImportSource) string {
+	chURL := "http://" + oc.Name + "-analytics:8123"
 	chUser := "default"
 	if analyticsExternal(oc) {
 		chURL = oc.Spec.Components.Analytics.Endpoint
 		chUser = "__CLICKHOUSE_USER__"
 	}
-	var sources strings.Builder
-	add := func(name, endpoint string) {
-		fmt.Fprintf(&sources, "  - name: %s\n    api_url: %s\n    api_key: __MASTER_API_KEY__\n    enabled: true\n", name, endpoint)
-	}
-	if oc.Spec.Components.AnalyticsProcessor.Import.Enabled {
-		replicas := oc.Spec.Components.Engine.Reader.Replicas
-		if replicas == 0 {
-			replicas = 3
-		}
-		for ordinal := int32(0); ordinal < replicas; ordinal++ {
-			name := fmt.Sprintf("%s-reader-%d", n, ordinal)
-			add(name, fmt.Sprintf("http://%s.%s-reader-headless.%s.svc:8080/v1/analytics", name, n, oc.Namespace))
-		}
-	} else {
-		add("oramacore-reader", "http://"+n+"-reader/v1/analytics")
-	}
-	if !oc.Spec.Components.AnalyticsProcessor.Import.Enabled || oc.Spec.Region.Role == "primary" {
-		add("oramacore-writer", "http://"+n+"-writer:8080/v1/analytics")
+	var oramacores strings.Builder
+	for _, s := range sources {
+		fmt.Fprintf(&oramacores, "  - name: %s\n    api_url: %s\n    api_key: __MASTER_API_KEY__\n    enabled: %t\n", s.Name, s.URL, s.Enabled)
 	}
 	return fmt.Sprintf(`clickhouse:
   url: %q
@@ -76,7 +60,83 @@ oramacores:
   schema: analytics
   runs_table: runs
   delta: 60m
-`, chURL, chUser, sources.String())
+`, chURL, chUser, oramacores.String())
+}
+
+// unscheduledAnalyticsSources is the processor's config without scheduled imports: the
+// load-balanced reader Service and the writer, as before scheduled imports existed. Nothing in the
+// cluster calls /import in this mode.
+func unscheduledAnalyticsSources(oc *oramav1alpha1.OramaCloudV1) []oramav1alpha1.AnalyticsImportSource {
+	return []oramav1alpha1.AnalyticsImportSource{
+		{Name: "oramacore-reader", URL: "http://" + oc.Name + "-reader/v1/analytics", Enabled: true},
+		{Name: "oramacore-writer", URL: "http://" + oc.Name + "-writer:8080/v1/analytics", Enabled: true},
+	}
+}
+
+// analyticsImportSources lists every reader ordinal once, through the headless governing Service.
+// Ordinals below live have a pod and are pulled. Ordinals from live up to claimed have only a data
+// PVC left (a scale-down retains it) and are listed disabled: GET /v1/analytics erases what it
+// returns, and those events wait on the PVC until the ordinal's pod returns and is pulled again.
+// The processor aborts a run at the first source it cannot reach (analytics-processor
+// importer.rs, import_analytics), so a source without a pod must be disabled, not left to fail.
+// The writer follows only when import.includeWriter is set on a primary (the only region with one).
+func analyticsImportSources(oc *oramav1alpha1.OramaCloudV1, live, claimed int32) []oramav1alpha1.AnalyticsImportSource {
+	n := oc.Name
+	var sources []oramav1alpha1.AnalyticsImportSource
+	for ordinal := int32(0); ordinal < max(live, claimed); ordinal++ {
+		pod := fmt.Sprintf("%s-reader-%d", n, ordinal)
+		sources = append(sources, oramav1alpha1.AnalyticsImportSource{
+			Name:    pod,
+			URL:     fmt.Sprintf("http://%s.%s-reader-headless.%s.svc:8080/v1/analytics", pod, n, oc.Namespace),
+			Enabled: ordinal < live,
+		})
+	}
+	if oc.Spec.Components.AnalyticsProcessor.Import.IncludeWriter && oc.Spec.Region.Role == "primary" {
+		sources = append(sources, oramav1alpha1.AnalyticsImportSource{
+			Name: n + "-writer", URL: "http://" + n + "-writer:8080/v1/analytics", Enabled: true,
+		})
+	}
+	return sources
+}
+
+// readerImportSources reads the reader StatefulSet and its data PVCs and returns the scheduled
+// import's sources. Ordinals with a pod are those below the larger of the desired and the current
+// replica count (a scale-down's terminating pods still count); ordinals with a PVC
+// (data-<cr>-reader-<ordinal>) stay listed after their pod is gone.
+func (r *OramaCloudV1Reconciler) readerImportSources(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) ([]oramav1alpha1.AnalyticsImportSource, error) {
+	sts := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-reader"}, sts); err != nil {
+		return nil, err
+	}
+	if sts.Spec.ServiceName != oc.Name+"-reader-headless" {
+		return nil, fmt.Errorf("analytics import requires reader StatefulSet serviceName %s-reader-headless; legacy readers need a separately reviewed migration before enabling imports", oc.Name)
+	}
+	live := oc.Spec.Components.Engine.Reader.Replicas
+	if live == 0 {
+		live = 3
+	}
+	if sts.Spec.Replicas != nil {
+		if *sts.Spec.Replicas < 1 {
+			return nil, fmt.Errorf("analytics import requires at least one reader replica")
+		}
+		live = *sts.Spec.Replicas
+	}
+	live = max(live, sts.Status.Replicas)
+	var claims corev1.PersistentVolumeClaimList
+	if err := r.List(ctx, &claims, client.InNamespace(oc.Namespace)); err != nil {
+		return nil, err
+	}
+	claimed, prefix := int32(0), "data-"+oc.Name+"-reader-"
+	for _, c := range claims.Items {
+		rest, ok := strings.CutPrefix(c.Name, prefix)
+		if !ok {
+			continue
+		}
+		if ordinal, err := strconv.ParseInt(rest, 10, 32); err == nil && ordinal >= 0 && rest == strconv.FormatInt(ordinal, 10) {
+			claimed = max(claimed, int32(ordinal)+1)
+		}
+	}
+	return analyticsImportSources(oc, live, claimed), nil
 }
 
 func analyticsExternal(oc *oramav1alpha1.OramaCloudV1) bool {
@@ -117,9 +177,13 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 			return err
 		}
 	}
-	configOC := oc.DeepCopy()
+	sources := unscheduledAnalyticsSources(oc)
 	if oc.Spec.Components.AnalyticsProcessor.Import.Enabled {
-		if err := r.analyticsImportPrerequisites(ctx, oc, configOC); err != nil {
+		var err error
+		if err = analyticsImportPrerequisites(oc); err == nil {
+			sources, err = r.readerImportSources(ctx, oc)
+		}
+		if err != nil {
 			if cleanupErr := r.teardownByComponent(ctx, oc, "analytics-import"); cleanupErr != nil {
 				return cleanupErr
 			}
@@ -134,7 +198,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 			return err
 		}
 	}
-	config := analyticsProcessorConfigYAML(configOC)
+	config := analyticsProcessorConfigYAML(oc, sources)
 	img := componentImage(oc, "analytics-processor", "analytics-processor")
 	cmName := oc.Name + "-analytics-processor-config"
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: oc.Namespace}}
@@ -188,8 +252,9 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 	return nil
 }
 
-// Validate before creating a schedule so an existing non-headless reader topology fails visibly.
-func (r *OramaCloudV1Reconciler) analyticsImportPrerequisites(ctx context.Context, oc, configOC *oramav1alpha1.OramaCloudV1) error {
+// analyticsImportPrerequisites validates the spec before a schedule is created; the reader
+// topology is checked by readerImportSources.
+func analyticsImportPrerequisites(oc *oramav1alpha1.OramaCloudV1) error {
 	c := oc.Spec.Components
 	if !c.Engine.Enabled || !c.Analytics.Enabled || !c.ControlDB.Enabled {
 		return fmt.Errorf("analyticsProcessor.import requires engine, analytics and controlDB enabled")
@@ -200,20 +265,28 @@ func (r *OramaCloudV1Reconciler) analyticsImportPrerequisites(ctx context.Contex
 	if _, err := cron.ParseStandard(analyticsImportSchedule(oc)); err != nil {
 		return fmt.Errorf("analyticsProcessor.import.schedule: %w", err)
 	}
-	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-reader"}, sts); err != nil {
-		return err
-	}
-	if sts.Spec.ServiceName != oc.Name+"-reader-headless" {
-		return fmt.Errorf("analytics import requires reader StatefulSet serviceName %s-reader-headless; legacy readers need a separately reviewed migration before enabling imports", oc.Name)
-	}
-	if sts.Spec.Replicas != nil {
-		if *sts.Spec.Replicas < 1 {
-			return fmt.Errorf("analytics import requires at least one reader replica")
-		}
-		configOC.Spec.Components.Engine.Reader.Replicas = *sts.Spec.Replicas
-	}
 	return nil
+}
+
+// analyticsImportStatus is status.analyticsImport: the sources the processor is configured with
+// and the import CronJob's last successful run. nil while imports are off.
+func (r *OramaCloudV1Reconciler) analyticsImportStatus(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (*oramav1alpha1.AnalyticsImportStatus, error) {
+	if !oc.Spec.Components.AnalyticsProcessor.Enabled || !oc.Spec.Components.AnalyticsProcessor.Import.Enabled {
+		return nil, nil
+	}
+	sources, err := r.readerImportSources(ctx, oc)
+	if err != nil {
+		return nil, err
+	}
+	status := &oramav1alpha1.AnalyticsImportStatus{Sources: sources}
+	schedule := &batchv1.CronJob{}
+	switch err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-analytics-import"}, schedule); {
+	case err == nil:
+		status.LastSuccessfulTime = schedule.Status.LastSuccessfulTime
+	case !apierrors.IsNotFound(err):
+		return nil, err
+	}
+	return status, nil
 }
 
 func analyticsImportSchedule(oc *oramav1alpha1.OramaCloudV1) string {

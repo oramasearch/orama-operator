@@ -458,6 +458,31 @@ type AnalyticsImportSpec struct {
 	// Schedule is a five-field CronJob schedule in UTC.
 	// +kubebuilder:default="*/5 * * * *"
 	Schedule string `json:"schedule,omitempty"`
+	// IncludeWriter also pulls the writer's reader side on a primary region. The writer serves no
+	// search traffic, so it normally has nothing to import.
+	// +optional
+	IncludeWriter bool `json:"includeWriter,omitempty"`
+}
+
+// AnalyticsImportSource is one OramaCore the analytics processor pulls GET /v1/analytics from.
+type AnalyticsImportSource struct {
+	// Name is the source's name in the processor config (a reader pod or the writer).
+	Name string `json:"name"`
+	// URL is the endpoint the processor pulls.
+	URL string `json:"url"`
+	// Enabled is false for a reader ordinal whose pod is gone but whose data PVC remains: its
+	// unpulled events wait on the PVC until the ordinal returns, and the processor skips it.
+	Enabled bool `json:"enabled"`
+}
+
+// AnalyticsImportStatus reports what the scheduled analytics import covers.
+type AnalyticsImportStatus struct {
+	// Sources are the processor's configured sources, in config order.
+	// +optional
+	Sources []AnalyticsImportSource `json:"sources,omitempty"`
+	// LastSuccessfulTime is when the import CronJob last completed a Job successfully.
+	// +optional
+	LastSuccessfulTime *metav1.Time `json:"lastSuccessfulTime,omitempty"`
 }
 
 type ReaderSpec struct {
@@ -713,6 +738,9 @@ type OramaCloudV1Status struct {
 	// +listMapKey=name
 	Components         []ComponentStatus `json:"components,omitempty"`
 	ObservedGeneration int64             `json:"observedGeneration,omitempty"`
+	// AnalyticsImport is set while spec.components.analyticsProcessor.import is enabled.
+	// +optional
+	AnalyticsImport *AnalyticsImportStatus `json:"analyticsImport,omitempty"`
 	// EngineSnapshots is the newest snapshot of each engine data claim, set while
 	// spec.components.engine.snapshots is enabled.
 	// +optional

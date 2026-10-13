@@ -369,7 +369,7 @@ Driven by `spec.region.role`:
   writer's reader side logs too (it serves no search traffic, so normally nothing); `writer.yaml` has
   no reader side.
   With scheduled imports enabled, analytics-processor's `oramacores` lists each reader ordinal
-  through its headless governing Service (and the writer on a primary region), all with the
+  through its headless governing Service (the writer only with `import.includeWriter`), all with the
   master key.
   The unscheduled default retains reader-Service polling. See [Analytics import](#analytics-import).
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
@@ -701,6 +701,26 @@ The processor is one Deployment with an init-rendered YAML config. Every new opt
 uses `<cr>-reader-headless` as the StatefulSet's governing Service and polls
 `http://<cr>-reader-<ordinal>.<cr>-reader-headless.<namespace>.svc:8080/v1/analytics` for every current
 desired replica.
+
+**Every reader exactly once ([#315](https://github.com/oramasearch/orama-operator/issues/315)).**
+`GET /v1/analytics` returns and erases a reader's pending events (oramacore
+`sides/read/analytics.rs`, `get_and_erase`), so the processor is the only thing that may call it:
+the e2e suite does not, and each ordinal appears once in the config. The writer's reader side is
+listed only with `import.includeWriter` (it serves no search traffic). Sources cover ordinals
+`0..max(replicas, highest reader PVC ordinal + 1) - 1`, where replicas is the larger of the
+StatefulSet's desired and current count, so a terminating pod still counts. A scale-down (by the CR
+or the HPA) retains the removed ordinals' PVCs, and with them any events not yet pulled; those
+ordinals stay in the config with `enabled: false` until their pod returns, when they are pulled
+again. They are disabled rather than left enabled because the processor (analytics-processor
+`importer.rs`, `import_analytics`, at `11a6c2d`) pulls sources in order and aborts the run at the
+first one it cannot reach; it skips only sources marked disabled. Events on a PVC whose ordinal never
+returns are not imported; a scale-down without loss needs those events pulled before the pod stops,
+which the operator does not do. `status.analyticsImport` lists the configured sources and the
+CronJob's last successful run. The normal `<cr>-reader:80` Service continues to serve customer reads. StatefulSet
+scale events, including HPA changes, update the list and the processor's config-hash annotation,
+so a rollout applies the new config. This hash also adds one initial rollout for an existing
+unscheduled processor; its polling behavior otherwise stays the same. Both engine and processor
+Both read `MASTER_API_KEY` from the one master API key Secret.
 
 An existing reader StatefulSet keeps its immutable governing Service name. If it still uses
 `<cr>-reader`, enabling imports fails visibly before creating Jobs; migrate its reader topology
