@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/yaml"
+
 	rbacv1 "k8s.io/api/rbac/v1"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
@@ -405,18 +407,33 @@ func TestShippedCRDValidationRulesArePlainASCII(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for number, line := range strings.Split(string(data), "\n") {
-				rule := strings.TrimPrefix(strings.TrimSpace(line), "- ")
-				if !strings.HasPrefix(rule, "rule:") {
-					continue
-				}
-				for _, r := range rule {
-					if r > 126 {
-						t.Errorf("%s/%s:%d: the rule has the non-ASCII character %q: %s", dir, entry.Name(), number+1, r, rule)
-						break
+			// Parsed, because YAML wraps a long rule over several lines.
+			var crd any
+			if err := yaml.Unmarshal(data, &crd); err != nil {
+				t.Fatalf("%s/%s: %v", dir, entry.Name(), err)
+			}
+			var walk func(node any)
+			walk = func(node any) {
+				switch typed := node.(type) {
+				case map[string]any:
+					for key, value := range typed {
+						if rule, ok := value.(string); ok && key == "rule" {
+							for _, r := range rule {
+								if r > 126 {
+									t.Errorf("%s/%s: a validation rule has the non-ASCII character %q: %s", dir, entry.Name(), r, rule)
+									break
+								}
+							}
+						}
+						walk(value)
+					}
+				case []any:
+					for _, value := range typed {
+						walk(value)
 					}
 				}
 			}
+			walk(crd)
 		}
 	}
 }
