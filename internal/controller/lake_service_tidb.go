@@ -69,6 +69,13 @@ func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
 		{path: []string{"spec", "tikv", "limits"}, value: map[string]interface{}{"cpu": "500m", "memory": "2Gi"}},
 		{path: []string{"spec", "tidb", "limits"}, value: map[string]interface{}{"cpu": "250m", "memory": "512Mi"}},
 		{path: []string{"spec", "tidb", "requests"}, value: map[string]interface{}{"cpu": "100m", "memory": "256Mi"}},
+		// TiDB's pod has a second container, slowlog, that tails the slow-query log. Without a
+		// security context of its own the API server refuses the whole pod (operator#435).
+		{path: []string{"spec", "tidb", "slowLogTailer"}, value: map[string]interface{}{
+			"securityContext": restrictedContainerSecurityContext(),
+			"requests":        map[string]interface{}{"cpu": "10m", "memory": "32Mi"},
+			"limits":          map[string]interface{}{"cpu": "50m", "memory": "64Mi"},
+		}},
 		{path: []string{"spec", "version"}, value: tidbVersion},
 		// The PVs of deleted claims go too; Retain (the default) would keep every disk.
 		{path: []string{"spec", "pvReclaimPolicy"}, value: "Delete"},
