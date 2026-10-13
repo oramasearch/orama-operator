@@ -217,6 +217,34 @@ suites; that is what a testing environment is for
   cross-repository suite. Watch `kubectl get lakee2e`; logs are on Job `<name>-e2e` in the Lake
   namespace.
 
+## Cutting a release
+
+A release is a tag on `main`, which is what the cluster runs. The pages and their conventions are
+in [`docs/releases/`](docs/releases/README.md). `v0.1.0` (2026-10-12) was the first.
+
+1. **Steve names the version.** Confirm what is deployed is `main`: the manager's image tag is
+   `main-<sha>`, and that commit must be an ancestor of `origin/main`.
+2. **On a branch `docs/release-vX.Y.Z`**, write `docs/releases/vX.Y.Z.md` and add it to
+   `docs/releases/README.md`: what the release includes, what it does not, known issues, and
+   verification. Say where each thing has run (implemented, validated on the cluster, live-tested).
+   Move `version` and `appVersion` in `chart/Chart.yaml` when the version changes.
+3. **Prove it**: `go build ./...`, `go vet ./...`, `go test ./...` with the envtest assets, and
+   `helm lint chart`. Put the results in the page, and say which opt-in tests did not run.
+4. **Open the pull request into `main`** and merge it with a merge commit, never a squash.
+5. **Tag the merge commit** `vX.Y.Z` and publish the GitHub release from the page
+   (`gh release create vX.Y.Z --repo oramasearch/orama-operator --verify-tag --title "Release vX.Y.Z" --notes-file <page without its first heading, relative links made absolute at the tag>`).
+6. **Build the image from the tag and roll it.** `make check-crds CONTEXT=<context>` first, then
+   build `oramasearch/orama-operator:main-<sha>` on the cluster BuildKit, apply `chart/crds/`, and
+   upgrade the release with the stored values as a file (liquid-bridge's `liquid-dev` skill has
+   the commands). Confirm the pod runs the new digest and that every `Lake` and
+   `OramaZettaCluster` is still `Ready`.
+7. **Tag the image `vX.Y.Z` in Docker Hub**, naming the same digest that is deployed, without
+   rebuilding: `retag-image.py orama-operator main-<sha> vX.Y.Z` (in the `liquid-dev` skill). Check
+   that an anonymous request for the repository still answers 404.
+
+A release is not finished until the Git tag, the GitHub release and the image tag all exist and
+the cluster runs that image.
+
 ## Conventions
 
 - **No AI attribution** in commits/PRs (org policy): no `Co-Authored-By: Claude`,
