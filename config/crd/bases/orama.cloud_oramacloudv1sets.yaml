@@ -1,0 +1,286 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: oramacloudv1sets.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: OramaCloudV1Set
+    listKind: OramaCloudV1SetList
+    plural: oramacloudv1sets
+    shortNames:
+    - ocv1set
+    singular: oramacloudv1set
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.purpose
+      name: Purpose
+      type: string
+    - jsonPath: .status.members
+      name: Members
+      type: integer
+    - jsonPath: .status.readyMembers
+      name: Ready
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.message
+      name: Message
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          OramaCloudV1Set installs OramaCloudV1 instances onto clusters this one manages and keeps their
+          versions and settings as described. Each instance's region is its cluster's.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ManagedSetSpec is the shape LakeSet and OramaCloudV1Set share.
+            properties:
+              clusters:
+                description: |-
+                  Clusters are the members: one instance on one cluster each, applied in this order. A member
+                  waits until the one before it is Ready. Every member's cluster must carry the same
+                  `purpose` tag: a set never combines nonprod and production.
+                items:
+                  description: SetMember is one instance on one cluster.
+                  properties:
+                    clusterRef:
+                      description: ClusterRef names the KubernetesCluster the instance
+                        runs on.
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Name is the instance's name on that cluster.
+                      maxLength: 40
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the instance's own namespace on that cluster. Default: the kind's prefix and
+                        Name (lake-<name>, v1-<name>). No two members on one cluster share a namespace.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    secrets:
+                      description: |-
+                        Secrets are this member's own, added to the set's. One with the same name on the member's
+                        cluster as a set secret replaces it for this member.
+                      items:
+                        description: |-
+                          SetSecret names a Secret on this cluster that is copied into a member's namespace on its
+                          cluster before the instance is applied.
+                        properties:
+                          as:
+                            description: |-
+                              As is the Secret's name on the member's cluster. Default: Name. A member's secret replaces
+                              the set's secret that has the same name there.
+                            type: string
+                          name:
+                            minLength: 1
+                            type: string
+                          namespace:
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - namespace
+                        type: object
+                      type: array
+                    spec:
+                      description: |-
+                        Spec is this member's own settings, merged over the template: a field here wins over the
+                        template's, an object is merged field by field, and a list replaces the template's list.
+                      x-kubernetes-preserve-unknown-fields: true
+                  required:
+                  - clusterRef
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+              deletionPolicy:
+                default: Retain
+                description: |-
+                  DeletionPolicy says what happens to an instance when its member is removed or the set is
+                  deleted. Retain (the default) leaves it running.
+                enum:
+                - Retain
+                - Delete
+                type: string
+              secrets:
+                description: |-
+                  Secrets are copied from this cluster into every member's namespace before its instance is
+                  applied, and kept in step afterwards.
+                items:
+                  description: |-
+                    SetSecret names a Secret on this cluster that is copied into a member's namespace on its
+                    cluster before the instance is applied.
+                  properties:
+                    as:
+                      description: |-
+                        As is the Secret's name on the member's cluster. Default: Name. A member's secret replaces
+                        the set's secret that has the same name there.
+                      type: string
+                    name:
+                      minLength: 1
+                      type: string
+                    namespace:
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  - namespace
+                  type: object
+                type: array
+              template:
+                description: |-
+                  Template is the instance's spec (a Lake's, an OramaCloudV1's), the default for every
+                  member. It is validated by each member's cluster when applied, and what that cluster
+                  refuses is reported on the member.
+                x-kubernetes-preserve-unknown-fields: true
+            required:
+            - clusters
+            - template
+            type: object
+          status:
+            description: ManagedSetStatus is the status LakeSet and OramaCloudV1Set
+              share.
+            properties:
+              conditions:
+                description: 'Conditions: Ready.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              memberStatuses:
+                description: MemberStatuses reports each member, in the set's order.
+                items:
+                  description: SetMemberStatus is one instance as its cluster reports
+                    it.
+                  properties:
+                    cluster:
+                      type: string
+                    message:
+                      description: Message says why the member is not Ready, in the
+                        words of whatever refused or reported it.
+                      type: string
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    phase:
+                      description: |-
+                        Phase is Pending (waiting for the cluster, a prerequisite or the member before it),
+                        Progressing (applied, not yet Ready), Ready or Degraded.
+                      type: string
+                    version:
+                      description: 'Version is what the instance runs: a Lake''s image,
+                        an OramaCloudV1''s image tag.'
+                      type: string
+                  required:
+                  - cluster
+                  - name
+                  type: object
+                type: array
+              members:
+                format: int32
+                type: integer
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: |-
+                  Phase is Ready (every member Ready), Progressing, or Degraded (the set was refused or a
+                  member failed).
+                type: string
+              purpose:
+                description: Purpose is the `purpose` tag every member's cluster carries.
+                type: string
+              readyMembers:
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

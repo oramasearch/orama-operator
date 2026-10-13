@@ -338,6 +338,71 @@ Cluster names keep the existing convention:
 | `orama-nonprod-cluster-01` | Leaf, first to be created | Staging, dev and testing |
 | `orama-production-cluster-02` | Leaf, after | Production |
 
+## Workloads on managed clusters: `LakeSet` and `OramaCloudV1Set`
+
+Steve, 2026-10-12: *"let's create "Lake Set" and an "Orama Cloud v1 Set" which will be CRs on the
+management cluster, that will install CRs of Lake and Orama Cloud v1 on the leaf clusters (and
+manage their versions, settings, etc)."* ([#391](https://github.com/oramasearch/orama-operator/issues/391))
+
+A set is one template and a list of members. **A member is one instance on one cluster.** The
+managing cluster's operator applies each member's `Lake` (or `OramaCloudV1`) on its cluster, and
+that cluster's own operator reconciles it into workloads: the set decides what should exist and at
+which version, the leaf runs it.
+
+```yaml
+kind: LakeSet
+metadata: {name: lake-prod}
+spec:
+  template: {...}                 # a Lake spec, the default for every member
+  secrets: [...]                  # copied from this cluster into each member's namespace
+  clusters:                       # applied in this order
+    - clusterRef: orama-production-cluster-02
+      name: shared                # general production, for all shared accounts
+      spec: {host: lake.eu.example}
+    - clusterRef: orama-production-cluster-02
+      name: enterprise-customer-1 # a dedicated instance
+      spec: {host: customer-1.lake.eu.example}
+      secrets:
+        - {name: customer-1-openai, namespace: lake, as: lake-prod-openai}
+```
+
+The rules, each as Steve stated it:
+
+| Rule | How it is held |
+|---|---|
+| *"lakesets would never combine nonprod and prod in a single lakeset (nor oramacloud v1)"* | Every member's `KubernetesCluster` must carry the same `purpose` tag. A set that mixes purposes, or names a cluster with no `purpose`, is refused whole: nothing is applied to any cluster, and the status names the clusters. |
+| *"nonprod might combine multiple environments... each environment needs to land in its own namespace"*; *"we could have multiple prod instances in a set, eg. general prod for all shared accounts, and separate lakes for dedicated instances"* | A set holds any number of members, on one cluster or several. Each gets its own namespace, `lake-<name>` (`v1-<name>`), overridable per member. Two members on one cluster that would share a name or a namespace are refused. |
+| *"I like the overridable spec from the cluster too"* | A member's `spec` is merged over the template: a field wins, an object is merged field by field, and a list replaces the template's list whole. |
+| *"the region is already defined by which cluster it is assigned to"* | An `OramaCloudV1`'s `region.name` is its `KubernetesCluster`'s region. It is never written, and a `spec` that states a different one is refused. Only the role (`primary` or `read`) is stated. |
+| *"make secrets overridable too"* | A member's `secrets` are added to the set's. One whose name on the member's cluster (`as`, default `name`) matches a set secret replaces it for that member. |
+
+What a set does for each member, in order:
+
+1. **Checks the prerequisites.** The cluster is `Ready`, and it has the instance's kind (its
+   `OramaOperator` is installed). Otherwise the member is `Pending` and says which is missing.
+2. **Creates the member's namespace and writes its Secrets** into it, before the instance: an
+   instance whose pull secret or credentials are absent starts failing.
+3. **Applies the instance**, labelled `orama.cloud/managed-by-set: <Kind>.<set>`.
+4. **Reports what the cluster says**: the version running, and the instance's own reason when it is
+   not `Ready`. What the cluster's API server refuses (a field the kind does not accept) is on the
+   member and returned as an error.
+
+Further behavior:
+
+- **Ordered rollout.** Members are applied in list order, and a member is not touched until the one
+  before it is `Ready`. A template change therefore reaches the first member first; order the list
+  so that is the one you want to see it first.
+- **Pinning.** A member whose `spec` sets the version (a Lake's `image`) ignores the template's.
+- **Removal keeps the instance.** Removing a member or deleting the set leaves the instance running
+  and unmanaged, unless the set says `deletionPolicy: Delete`.
+- **A set never takes over an instance it did not create**: one of the same name without the
+  set's label is an error, and is neither changed nor deleted.
+- **Per-instance keys are never copied.** A Lake's instance key and sealing key are generated on
+  its own cluster; only the Secrets a set lists travel.
+
+[`config/samples/lakeset-nonprod.yaml`](../../config/samples/lakeset-nonprod.yaml) is a nonprod set
+with two environments.
+
 ## Left out on purpose
 
 **AKS add-ons are not set on a cluster the operator creates** (Steve, 2026-10-12: *"let's omit them
