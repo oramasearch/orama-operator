@@ -60,6 +60,8 @@ var managementKinds = map[string]bool{
 	"AksCluster":                true,
 	"ClusterHelmRelease":        true,
 	"OramaOperator":             true,
+	"LakeSet":                   true,
+	"OramaCloudV1Set":           true,
 }
 
 func registeredKinds(t *testing.T) []string {
