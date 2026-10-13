@@ -31,7 +31,7 @@ type ClusterHelmChart struct {
 }
 
 // ClusterHelmReleaseSpec is one chart release on a cluster this one manages.
-// +kubebuilder:validation:XValidation:rule="self.chart.repository.startsWith('https://') ? has(self.chart.name) && self.chart.name != ” : true",message="chart.name is required for a chart repository (https://)"
+// +kubebuilder:validation:XValidation:rule="self.chart.repository.startsWith('https://') ? has(self.chart.name) && size(self.chart.name) > 0 : true",message="chart.name is required for a chart repository (https://)"
 type ClusterHelmReleaseSpec struct {
 	// ClusterRef names the KubernetesCluster the chart is installed onto.
 	// +kubebuilder:validation:MinLength=1

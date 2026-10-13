@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/yaml"
+
 	rbacv1 "k8s.io/api/rbac/v1"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
@@ -383,6 +385,55 @@ func TestE2EChartHoldsExactlyTheGatedKinds(t *testing.T) {
 	for kind := range e2eKinds {
 		if !seen[kind] {
 			t.Errorf("%s is gated behind --enable-e2e-controllers but chart/e2e-crds ships no CRD for it", kind)
+		}
+	}
+}
+
+// A CRD the API server will refuse must not ship. gofmt treats a "// +kubebuilder" marker as
+// comment text and rewrites two single quotes in it into a typographic quote, which is not valid
+// CEL; the cluster refused ClusterHelmRelease for an empty-string literal in a validation rule on
+// 2026-10-12 (write size(x) > 0 instead). A validation rule in a shipped CRD is plain ASCII.
+func TestShippedCRDValidationRulesArePlainASCII(t *testing.T) {
+	for _, dir := range []string{"../chart/crds", "../chart/management-crds", "../chart/e2e-crds"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		for _, entry := range entries {
+			if !strings.HasSuffix(entry.Name(), ".yaml") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Parsed, because YAML wraps a long rule over several lines.
+			var crd any
+			if err := yaml.Unmarshal(data, &crd); err != nil {
+				t.Fatalf("%s/%s: %v", dir, entry.Name(), err)
+			}
+			var walk func(node any)
+			walk = func(node any) {
+				switch typed := node.(type) {
+				case map[string]any:
+					for key, value := range typed {
+						if rule, ok := value.(string); ok && key == "rule" {
+							for _, r := range rule {
+								if r > 126 {
+									t.Errorf("%s/%s: a validation rule has the non-ASCII character %q: %s", dir, entry.Name(), r, rule)
+									break
+								}
+							}
+						}
+						walk(value)
+					}
+				case []any:
+					for _, value := range typed {
+						walk(value)
+					}
+				}
+			}
+			walk(crd)
 		}
 	}
 }
