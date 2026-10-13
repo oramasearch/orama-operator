@@ -4,31 +4,31 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: oramaoperators.orama.cloud
+  name: clusterhelmreleases.orama.cloud
 spec:
   group: orama.cloud
   names:
-    kind: OramaOperator
-    listKind: OramaOperatorList
-    plural: oramaoperators
+    kind: ClusterHelmRelease
+    listKind: ClusterHelmReleaseList
+    plural: clusterhelmreleases
     shortNames:
-    - ooperator
-    singular: oramaoperator
+    - chr
+    singular: clusterhelmrelease
   scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.clusterRef
       name: Cluster
       type: string
-    - jsonPath: .spec.version
+    - jsonPath: .spec.releaseName
+      name: Release
+      type: string
+    - jsonPath: .spec.chart.version
       name: Version
       type: string
-    - jsonPath: .status.installedVersion
+    - jsonPath: .status.chartVersion
       name: Installed
       type: string
-    - jsonPath: .status.readyReplicas
-      name: Ready
-      type: integer
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -39,9 +39,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          OramaOperator installs the Orama operator onto a cluster this one manages and keeps it at the
-          version named. Every cluster runs the operator; a leaf's is installed and versioned from here,
-          by the management cluster's operator. Reconciled by the management cluster's operator only.
+          ClusterHelmRelease is one Helm chart release on a cluster this one manages, at a pinned
+          version: the cluster-scoped software a leaf needs before and around its operator
+          (CloudNativePG, an ingress controller, the service operators).
         properties:
           apiVersion:
             description: |-
@@ -61,76 +61,121 @@ spec:
           metadata:
             type: object
           spec:
-            description: OramaOperatorSpec says which cluster gets the Orama operator,
-              and at which version.
+            description: ClusterHelmReleaseSpec is one chart release on a cluster
+              this one manages.
             properties:
-              chartRepository:
-                default: registry-1.docker.io/oramasearch/orama-operator-chart
-                description: ChartRepository is the OCI repository holding the operator's
-                  chart, one tag per version.
-                type: string
-              clusterRef:
-                description: |-
-                  ClusterRef names the KubernetesCluster the operator is installed onto. The cluster is
-                  reached through the admin kubeconfig Secret that KubernetesCluster writes.
-                minLength: 1
-                type: string
-                x-kubernetes-validations:
-                - message: clusterRef cannot be changed; create another OramaOperator
-                    for another cluster
-                  rule: self == oldSelf
-              imagePullSecretRef:
-                description: |-
-                  ImagePullSecretRef names a registry credentials Secret (kubernetes.io/dockerconfigjson) on
-                  this cluster. It is copied to the target cluster so its nodes can pull the private operator
-                  image, and it authenticates the pull of the chart.
+              chart:
+                description: ClusterHelmChart says which chart, from where, at which
+                  version.
                 properties:
+                  credentialsSecretRef:
+                    description: |-
+                      CredentialsSecretRef names a Secret on this cluster for a private chart: either a
+                      kubernetes.io/dockerconfigjson Secret with an entry for the repository's host, or one with
+                      `username` and `password` keys.
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                      namespace:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
                   name:
+                    description: Name is the chart's name in a chart repository. Unused
+                      for an OCI repository.
+                    type: string
+                  repository:
+                    description: |-
+                      Repository is a chart repository (https://cloudnative-pg.github.io/charts), with Name the
+                      chart in it, or an OCI repository holding the chart (oci://registry/path), with Name unset.
                     minLength: 1
                     type: string
-                  namespace:
+                  version:
+                    description: |-
+                      Version is the chart version. It is required: a release on a managed cluster is always
+                      pinned, and changing this is how it is upgraded.
                     minLength: 1
                     type: string
                 required:
-                - name
-                - namespace
+                - repository
+                - version
                 type: object
-              imageRepository:
-                default: oramasearch/orama-operator
-                description: ImageRepository is the operator image without a tag.
+              clusterRef:
+                description: ClusterRef names the KubernetesCluster the chart is installed
+                  onto.
+                minLength: 1
                 type: string
+                x-kubernetes-validations:
+                - message: clusterRef cannot be changed; create another ClusterHelmRelease
+                    for another cluster
+                  rule: self == oldSelf
+              crdURLs:
+                description: |-
+                  CRDURLs are https URLs of manifests holding CRDs the chart ships apart from itself (TiDB's
+                  crd.yaml). Each is applied server-side before the chart, on every install and upgrade, and
+                  may hold only CustomResourceDefinitions. Pin the URL to a version.
+                items:
+                  pattern: ^https://
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              dependsOn:
+                description: |-
+                  DependsOn names other ClusterHelmRelease resources, on the same cluster, that must be
+                  Ready before this one is installed (cert-manager before a chart whose webhooks need it).
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               namespace:
-                default: orama-system
-                description: Namespace is where the operator is installed on the cluster.
+                description: Namespace is the release's namespace on the cluster.
+                  It is created when absent.
+                minLength: 1
                 type: string
                 x-kubernetes-validations:
                 - message: namespace cannot be changed
                   rule: self == oldSelf
-              values:
-                description: |-
-                  Values are chart values for the cluster's operator. The image, its pull secret and
-                  clusterManagement.enabled=false are set by this controller and win over anything here.
-                x-kubernetes-preserve-unknown-fields: true
-              version:
-                description: |-
-                  Version is the operator version the cluster runs: the image tag, and the chart published
-                  with it (a release such as v0.1.0, or a build such as dev-83242f9). Changing it upgrades
-                  the cluster's operator, CRDs first.
-                maxLength: 128
+              releaseName:
+                description: ReleaseName is the Helm release's name on the cluster.
+                maxLength: 53
                 minLength: 1
-                pattern: ^[A-Za-z0-9_][A-Za-z0-9_.-]*$
                 type: string
+                x-kubernetes-validations:
+                - message: releaseName cannot be changed
+                  rule: self == oldSelf
+              requiredCRDs:
+                description: |-
+                  RequiredCRDs are CRD names that must exist on the cluster before this chart is installed
+                  or upgraded, for a chart whose CRDs are shipped apart from it.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              values:
+                description: Values are the chart's values.
+                x-kubernetes-preserve-unknown-fields: true
             required:
+            - chart
             - clusterRef
-            - imagePullSecretRef
-            - version
+            - namespace
+            - releaseName
             type: object
+            x-kubernetes-validations:
+            - message: chart.name is required for a chart repository (https://)
+              rule: 'self.chart.repository.startsWith(''https://'') ? has(self.chart.name)
+                && size(self.chart.name) > 0 : true'
           status:
-            description: OramaOperatorStatus is what the target cluster's operator
-              is observed to be.
+            description: ClusterHelmReleaseStatus is what the cluster has.
             properties:
+              appVersion:
+                type: string
               chartVersion:
-                description: ChartVersion is the chart version of that release.
+                description: ChartVersion and AppVersion are those of the release
+                  on the cluster.
                 type: string
               conditions:
                 description: 'Conditions: Ready.'
@@ -192,40 +237,34 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              image:
-                description: Image is the image the operator's Deployment on the cluster
-                  runs.
-                type: string
-              installedVersion:
-                description: InstalledVersion is the operator version of the Helm
-                  release on the cluster.
-                type: string
               message:
                 description: |-
-                  Message says why the operator is not Ready, in the words of whatever refused: the
-                  registry, Helm, the cluster's API server, or the operator's own pod.
+                  Message says why the release is not Ready, in the words of whatever refused: the chart
+                  repository, Helm, the cluster's API server, or the release's own pods.
                 type: string
               observedGeneration:
                 format: int64
                 type: integer
               phase:
-                description: Phase is Pending (waiting for the cluster), Installing,
-                  Ready, Degraded or Deleting.
+                description: |-
+                  Phase is Pending (waiting for the cluster or a dependency), Installing, Ready, Degraded or
+                  Deleting.
                 type: string
-              readyReplicas:
+              readyWorkloads:
                 format: int32
                 type: integer
               releaseStatus:
                 description: 'ReleaseStatus is Helm''s own word for the release: deployed,
                   failed, pending-upgrade.'
                 type: string
-              replicas:
-                description: Replicas and ReadyReplicas are the operator Deployment's,
-                  on the cluster.
+              revision:
+                description: Revision is the Helm release's revision.
                 format: int32
                 type: integer
-              revision:
-                description: Revision is the Helm release's revision on the cluster.
+              workloads:
+                description: |-
+                  Workloads counts the release's Deployments, StatefulSets and DaemonSets; ReadyWorkloads
+                  those fully rolled out.
                 format: int32
                 type: integer
             type: object

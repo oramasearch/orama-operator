@@ -4,7 +4,7 @@ metadata:
   name: {{ .Values.serviceAccount.name }}
   namespace: {{ .Release.Namespace }}
   labels: {{- include "operator.labels" . | nindent 4 }}
-  {{- if and .Values.clusterManagement.enabled .Values.clusterManagement.azureWorkloadIdentityClientID }}
+  {{- if .Values.clusterManagement.azureWorkloadIdentityClientID }}
   annotations:
     azure.workload.identity/client-id: {{ .Values.clusterManagement.azureWorkloadIdentityClientID | quote }}
   {{- end }}
@@ -42,13 +42,11 @@ rules:
       - lakeapps
       - lakerestorerehearsals
       - lakesealedsecrets
-      {{- if .Values.clusterManagement.enabled }}
       - kubernetesclusters
       - kubernetesclusterproviders
       - aksclusters
       - clusterhelmreleases
       - oramaoperators
-      {{- end }}
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -86,7 +84,6 @@ rules:
       - lakeenvironments/finalizers
       - lakeapps/finalizers
       - lakesealedsecrets/finalizers
-      {{- if .Values.clusterManagement.enabled }}
       - kubernetesclusters/status
       - kubernetesclusters/finalizers
       - kubernetesclusterproviders/status
@@ -97,7 +94,6 @@ rules:
       - clusterhelmreleases/finalizers
       - oramaoperators/status
       - oramaoperators/finalizers
-      {{- end }}
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]

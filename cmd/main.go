@@ -35,7 +35,7 @@ func init() {
 
 func main() {
 	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage, lakeDuckDBImage, lakePolarsImage string
-	var enableLeaderElection, enableE2EControllers, enableClusterManagement bool
+	var enableLeaderElection, enableE2EControllers bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.StringVar(&controlPlaneAddr, "control-plane-bind-address", ":8090", "deployment control-plane endpoint")
@@ -53,13 +53,6 @@ func main() {
 	flag.BoolVar(&enableE2EControllers, "enable-e2e-controllers", false,
 		"reconcile the e2e test kinds (OramaCloudV1E2ETest, ZettaClusterE2ETest, LakeE2ETest); "+
 			"testing environments only, and the cluster needs the chart/e2e-crds CRDs")
-	// Cluster management is the management cluster's role (operator#351): provisioning other
-	// Kubernetes clusters. A leaf cluster's operator does not manage the cluster it sits on, so
-	// these controllers are off unless a cluster asks, and their CRDs live outside the install
-	// chart (chart/management-crds).
-	flag.BoolVar(&enableClusterManagement, "enable-cluster-management", false,
-		"reconcile KubernetesCluster, KubernetesClusterProvider, AksCluster, ClusterHelmRelease and OramaOperator; the management "+
-			"cluster only, and the cluster needs the chart/management-crds CRDs")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -249,47 +242,47 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeSealedSecret")
 		os.Exit(1)
 	}
-	// Infrastructure (operator#351, #354): the abstract KubernetesCluster, the provider it points
-	// at, and the concrete AksCluster that provider's type provisions. The management cluster only.
-	if enableClusterManagement {
-		setupLog.Info("cluster management enabled; this cluster needs the chart/management-crds CRDs installed")
-		if err = (&controller.KubernetesClusterProviderReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "KubernetesClusterProvider")
-			os.Exit(1)
-		}
-		if err = (&controller.KubernetesClusterReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "KubernetesCluster")
-			os.Exit(1)
-		}
-		if err = (&controller.AksClusterReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "AksCluster")
-			os.Exit(1)
-		}
-		// What the management cluster puts on a cluster it manages (operator#363): pinned chart
-		// releases, and the cluster's own Orama operator.
-		if err = (&controller.ClusterHelmReleaseReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ClusterHelmRelease")
-			os.Exit(1)
-		}
-		if err = (&controller.OramaOperatorReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "OramaOperator")
-			os.Exit(1)
-		}
+	// Infrastructure (operator#351, #354, #363): the abstract KubernetesCluster, the provider it
+	// points at, the concrete AksCluster, and what is installed on a managed cluster. Every
+	// cluster's operator runs these: there is no difference between a management cluster's
+	// operator and a leaf's, and any cluster can manage others (Steve, 2026-10-12). A cluster
+	// with none of these resources reconciles nothing.
+	if err = (&controller.KubernetesClusterProviderReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KubernetesClusterProvider")
+		os.Exit(1)
+	}
+	if err = (&controller.KubernetesClusterReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KubernetesCluster")
+		os.Exit(1)
+	}
+	if err = (&controller.AksClusterReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AksCluster")
+		os.Exit(1)
+	}
+	// What the management cluster puts on a cluster it manages (operator#363): pinned chart
+	// releases, and the cluster's own Orama operator.
+	if err = (&controller.ClusterHelmReleaseReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterHelmRelease")
+		os.Exit(1)
+	}
+	if err = (&controller.OramaOperatorReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OramaOperator")
+		os.Exit(1)
 	}
 	// e2e kinds — testing environments only. Production reconciles no e2e resources, so these
 	// controllers are not registered and their CRDs are not installed.

@@ -265,10 +265,9 @@ A release promotes `dev` to `main` and tags the result. The pages and their conv
    share history.
 6. **Tag the merge commit on `main`** `vX.Y.Z` and publish the GitHub release from the page
    (`gh release create vX.Y.Z --repo oramasearch/orama-operator --verify-tag --title "Release vX.Y.Z" --notes-file <page without its first heading, relative links made absolute at the tag>`).
-7. **Build the image from the tag and roll it.** `make check-crds CONTEXT=<context>` first (with
-   `--management` on the management cluster), then build
-   `oramasearch/orama-operator:main-<sha>` on the cluster BuildKit, apply `chart/crds/` (and
-   `chart/management-crds/` on the management cluster), and upgrade the release with the stored
+7. **Build the image from the tag and roll it.** `make check-crds CONTEXT=<context>` first, then
+   build `oramasearch/orama-operator:main-<sha>` on the cluster BuildKit, apply `chart/crds/`, and
+   upgrade the release with the stored
    values as a file (liquid-bridge's `liquid-dev` skill has the commands). Confirm the pod runs the
    new digest and that every `Lake` and `OramaZettaCluster` is still `Ready`.
    Publish the chart for the same tag, so a management cluster can install this version on a

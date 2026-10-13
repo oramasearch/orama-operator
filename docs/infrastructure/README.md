@@ -115,7 +115,7 @@ kubeconfig Secret its `KubernetesCluster` wrote:
 
 | Kind | What it is |
 |---|---|
-| `ClusterHelmRelease` | One Helm chart release on a managed cluster, at a pinned version: chart repository or OCI, values, `dependsOn` other releases, `requiredCRDs`. One per helmfile entry. |
+| `ClusterHelmRelease` | One Helm chart release on a managed cluster, at a pinned version: chart repository or OCI, values, `dependsOn` other releases, `requiredCRDs`, `crdURLs`. One per helmfile entry. |
 | `OramaOperator` | The cluster's own Orama operator at a named version. Changing `spec.version` upgrades the leaf, CRDs first. |
 
 What the install requires, and who makes it true:
@@ -129,8 +129,8 @@ What the install requires, and who makes it true:
 | A default StorageClass and the volume snapshot CRDs | AKS provides both. |
 | ingress-nginx, cert-manager and the service operators | A `ClusterHelmRelease` each, when the leaf needs them. cert-manager before K8ssandra is `dependsOn`. |
 
-A leaf's chart is installed with `clusterManagement.enabled=false` whatever `spec.values` says, and
-the management CRDs are not among the chart's CRDs: a leaf does not manage clusters.
+The chart, its CRDs and its values are the same for every cluster; `OramaOperator` sets only the
+image and its pull secret.
 
 Both kinds report what the leaf says. A release that is not ready lists each Deployment,
 StatefulSet or DaemonSet that is not rolled out and what its pods report (an image that cannot be
@@ -141,8 +141,13 @@ Deleting either resource uninstalls its release from a cluster that still exists
 removing an operator never deletes what it was running. A `ClusterHelmRelease` that others depend
 on is not uninstalled until they are gone.
 
-Not covered yet: TiDB's CRDs, which come from a file outside its chart (the helmfile applies them
-with a presync hook); `requiredCRDs` makes that release wait for them, but nothing applies them.
+A chart whose CRDs are shipped apart from it (TiDB's `crd.yaml`, which the helmfile applies with a
+presync hook) names them in `spec.crdURLs`. Each is applied server-side before the chart, on every
+install and upgrade, and may hold nothing but CustomResourceDefinitions.
+
+A release is installed with its namespace as the default for resources whose manifest names none.
+Helm otherwise puts them wherever the kubeconfig says: K8ssandra's Deployments landed in `default`
+on the first leaf before this was fixed.
 
 [`config/samples/leaf-nonprod-operator.yaml`](../../config/samples/leaf-nonprod-operator.yaml) is
 the pair for `orama-nonprod-cluster-01`.
@@ -266,20 +271,32 @@ Not read yet: the node resource group's activity log and the scale set's instanc
 them needs `Microsoft.Compute` and `Microsoft.Insights` read on the provisioner role. Azure
 copies a node's bootstrap failure onto the operation's error, which is reported.
 
-### Turning the management role on
+### One operator, on every cluster
 
-A cluster's operator plays the management role only when asked. It is off by default, so a leaf's
-operator never watches these kinds.
+Steve, 2026-10-12: *"install the same operator everywhere... all crds"*, *"no differences between
+management and leaf operator"*, *"any leaf can be a mgnt cluster too... no differences"*.
+
+The operator installed on a leaf is the operator installed on the management cluster: the same
+chart, the same CRDs (the cluster-management kinds included, in `chart/crds`), the same controllers
+running. There is no flag and no chart value that turns cluster management on or off. **Which
+cluster manages which is decided only by where the resources are created**: a cluster holding
+`KubernetesCluster` resources is managing those clusters, and a cluster holding none reconciles
+nothing of the kind.
+
+What a cluster that does manage others needs is a way to call the cloud, which is configuration,
+not a different operator:
 
 ```sh
-kubectl apply -f chart/management-crds/
 helm upgrade orama-operator chart/ -n orama-system -f <stored values> \
-  --set clusterManagement.enabled=true \
   --set clusterManagement.azureWorkloadIdentityClientID=<managed identity client ID>
 ```
 
-`make check-crds CONTEXT=<context>` gains `--management` (`./hack/check-cluster-crds.sh <context>
---management`) to include these definitions in the pre-upgrade check.
+or a service principal secret named by its `KubernetesClusterProvider`.
+
+`cmd/crd_coverage_test.go` holds this: it fails if a management kind leaves `chart/crds`, if its
+controller is registered behind a condition, or if the flag or the chart switch comes back. The
+e2e test kinds are a different matter and stay gated ([`crd-rollout.md`](../operations/crd-rollout.md)):
+that is about testing environments, not about management and leaf.
 
 ### What lives in Azure for this (created 2026-10-12)
 

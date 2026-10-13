@@ -15,16 +15,13 @@
 # chart/e2e-crds is installed only by testing environments (alongside --set e2e.enabled=true).
 # Pass --e2e to include them.
 #
-# The cluster-management CRDs (KubernetesCluster, KubernetesClusterProvider, AksCluster) are NOT
-# part of this check by default either: only the management cluster runs those controllers, so
-# chart/management-crds is installed only there (alongside --set clusterManagement.enabled=true).
-# Pass --management to include them.
+# The cluster-management CRDs are part of chart/crds: every cluster's operator is the same and can
+# manage other clusters. --management is still accepted, and does nothing.
 #
 #   ./hack/check-cluster-crds.sh                              # current kube-context
 #   ./hack/check-cluster-crds.sh orama-production-cluster-01   # explicit context
 #   ./hack/check-cluster-crds.sh <context> --apply             # apply what is missing
 #   ./hack/check-cluster-crds.sh <context> --e2e               # a testing environment
-#   ./hack/check-cluster-crds.sh <context> --management        # the management cluster
 #
 # Requires: kubectl with access to the target cluster.
 set -euo pipefail
@@ -32,24 +29,18 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART_CRDS="${REPO_ROOT}/chart/crds"
 E2E_CRDS="${REPO_ROOT}/chart/e2e-crds"
-MANAGEMENT_CRDS="${REPO_ROOT}/chart/management-crds"
 CONTEXT="${1:-}"
 APPLY=0
 WITH_E2E=0
-WITH_MANAGEMENT=0
 for arg in "$@"; do
   [ "$arg" = "--apply" ] && APPLY=1
   [ "$arg" = "--e2e" ] && WITH_E2E=1
-  [ "$arg" = "--management" ] && WITH_MANAGEMENT=1
 done
 case "$CONTEXT" in --apply|--e2e|--management) CONTEXT="" ;; esac
 
 DIRS=("$CHART_CRDS")
 if [ "$WITH_E2E" -eq 1 ]; then
   DIRS+=("$E2E_CRDS")
-fi
-if [ "$WITH_MANAGEMENT" -eq 1 ]; then
-  DIRS+=("$MANAGEMENT_CRDS")
 fi
 
 kube() {

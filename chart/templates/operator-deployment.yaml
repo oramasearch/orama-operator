@@ -13,7 +13,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
-        {{- if and .Values.clusterManagement.enabled .Values.clusterManagement.azureWorkloadIdentityClientID }}
+        {{- if .Values.clusterManagement.azureWorkloadIdentityClientID }}
         azure.workload.identity/use: "true"
         {{- end }}
     spec:
@@ -30,9 +30,6 @@ spec:
             - --leader-elect
             {{- if .Values.e2e.enabled }}
             - --enable-e2e-controllers
-            {{- end }}
-            {{- if .Values.clusterManagement.enabled }}
-            - --enable-cluster-management
             {{- end }}
             - --control-plane-bind-address=:{{ .Values.controlPlane.service.port }}
             {{- with .Values.lakeServices.sqliteImage }}

@@ -524,9 +524,10 @@ provider-neutral terms and names a `KubernetesClusterProvider`. That provider's 
 concrete kind the operator creates for it: `AksCluster` for type `aks`. The controller never calls
 a vendor's API.
 
-**Management cluster only.** The three kinds in this section are reconciled only when the manager
-runs with `--enable-cluster-management` (chart: `clusterManagement.enabled`), and their definitions
-are in `chart/management-crds/`, not the install chart.
+**On every cluster.** These kinds ship in `chart/crds` and their controllers run in every
+cluster's operator: there is no difference between a management cluster's operator and a leaf's
+([`infrastructure/README.md`](infrastructure/README.md#one-operator-on-every-cluster)). A cluster
+manages others by holding these resources.
 
 | Field | Meaning |
 |---|---|
@@ -603,7 +604,7 @@ running cluster is never orphaned silently.
 
 ## `ClusterHelmRelease` (separate CRD, cluster-scoped) — one chart release on a managed cluster
 
-Management cluster only (`chart/management-crds`, `--enable-cluster-management`). Short name `chr`.
+Short name `chr`. Reconciled wherever it is created; the cluster holding it is managing the cluster it names.
 How it fits: [`infrastructure/README.md`](infrastructure/README.md#installing-it-clusterhelmrelease-and-oramaoperator).
 
 | Field | Meaning |
@@ -615,6 +616,7 @@ How it fits: [`infrastructure/README.md`](infrastructure/README.md#installing-it
 | `spec.values` | The chart's values. |
 | `spec.dependsOn[]` | Other `ClusterHelmRelease` names, on the same cluster, that must be `Ready` first. A release others depend on is not uninstalled until they are deleted. |
 | `spec.requiredCRDs[]` | CRDs that must exist on the cluster before this chart is installed or upgraded. |
+| `spec.crdURLs[]` | `https://` URLs of manifests holding CRDs the chart ships apart from itself. Applied server-side before the chart on every install and upgrade; a manifest holding anything but CustomResourceDefinitions is refused. |
 | `status.phase` | `Pending` (waiting for the cluster, a dependency or a CRD), `Installing`, `Ready`, `Degraded` or `Deleting`. |
 | `status.chartVersion`, `.appVersion`, `.revision`, `.releaseStatus` | The release on the cluster, in Helm's words. |
 | `status.workloads`, `.readyWorkloads` | The release's Deployments, StatefulSets and DaemonSets, and how many are rolled out. |
@@ -622,7 +624,7 @@ How it fits: [`infrastructure/README.md`](infrastructure/README.md#installing-it
 
 ## `OramaOperator` (separate CRD, cluster-scoped) — a managed cluster's own operator, at a version
 
-Management cluster only. Short name `ooperator`.
+Short name `ooperator`. Reconciled wherever it is created.
 
 | Field | Meaning |
 |---|---|
@@ -631,7 +633,7 @@ Management cluster only. Short name `ooperator`.
 | `spec.namespace` | Default `orama-system`. Immutable. |
 | `spec.imagePullSecretRef` | A `kubernetes.io/dockerconfigjson` Secret on the management cluster. Copied to the leaf for the image pull, and used to pull the chart. |
 | `spec.imageRepository`, `spec.chartRepository` | Defaults `oramasearch/orama-operator` and `registry-1.docker.io/oramasearch/orama-operator-chart`. |
-| `spec.values` | Chart values for the leaf. The image, its pull secret and `clusterManagement.enabled=false` are set by the controller and win. |
+| `spec.values` | Chart values for the cluster's operator. The image and its pull secret are set by the controller and win; nothing else differs from any other cluster's operator. |
 | `status.phase` | `Pending` (waiting for the cluster, or for prerequisites), `Installing`, `Ready`, `Degraded` or `Deleting`. |
 | `status.installedVersion`, `.chartVersion`, `.revision`, `.releaseStatus` | The Helm release on the leaf. |
 | `status.image`, `.replicas`, `.readyReplicas` | The operator's Deployment on the leaf. `Ready` needs every replica ready on the image asked for. |

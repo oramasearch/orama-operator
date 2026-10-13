@@ -51,10 +51,9 @@ var e2eKinds = map[string]bool{
 	"LakeE2ETest":         true,
 }
 
-// The cluster-management kinds are gated behind --enable-cluster-management and their CRDs live in
-// chart/management-crds, not chart/crds: only the management cluster provisions other clusters
-// (operator#351), and a leaf's operator must not watch or need them. Keep this list in step with
-// the gated block in main.go.
+// The cluster-management kinds ship in chart/crds and their controllers run on every cluster:
+// there is no difference between a management cluster's operator and a leaf's, and any cluster
+// can manage others (Steve, 2026-10-12; operator#351). This list holds them to that.
 var managementKinds = map[string]bool{
 	"KubernetesCluster":         true,
 	"KubernetesClusterProvider": true,
@@ -91,10 +90,6 @@ func chartKinds(t *testing.T) []string { return kindsIn(t, filepath.Join("..", "
 
 func e2eChartKinds(t *testing.T) []string {
 	return kindsIn(t, filepath.Join("..", "chart", "e2e-crds"))
-}
-
-func managementChartKinds(t *testing.T) []string {
-	return kindsIn(t, filepath.Join("..", "chart", "management-crds"))
 }
 
 func kindsIn(t *testing.T, dir string) []string {
@@ -135,9 +130,6 @@ func TestEveryRegisteredControllerHasAChartCRD(t *testing.T) {
 	for _, kind := range e2eChartKinds(t) {
 		chart[kind] = true
 	}
-	for _, kind := range managementChartKinds(t) {
-		chart[kind] = true
-	}
 	var missing []string
 	for _, kind := range registeredKinds(t) {
 		if !chart[kind] {
@@ -161,7 +153,7 @@ func TestEveryChartCRDHasARegisteredController(t *testing.T) {
 		registered[kind] = true
 	}
 	var orphaned []string
-	for _, kind := range append(append(chartKinds(t), e2eChartKinds(t)...), managementChartKinds(t)...) {
+	for _, kind := range append(chartKinds(t), e2eChartKinds(t)...) {
 		if !registered[kind] {
 			orphaned = append(orphaned, kind)
 		}
@@ -173,40 +165,45 @@ func TestEveryChartCRDHasARegisteredController(t *testing.T) {
 	}
 }
 
-// A gated kind must live in its own folder, never in chart/crds: a management kind installed by
-// the chart would be put on every leaf, and one missing from chart/management-crds would crash the
-// management cluster's operator when the flag is on.
-func TestManagementKindsLiveOnlyInManagementCRDs(t *testing.T) {
-	for _, kind := range chartKinds(t) {
-		if managementKinds[kind] {
-			t.Errorf("%s is a cluster-management kind and must be in chart/management-crds, not chart/crds", kind)
-		}
-	}
+// The operator is the same on every cluster. The management kinds are in the install chart, their
+// controllers are registered unconditionally, and neither the manager nor the chart has a switch
+// that would make one cluster's operator differ from another's in what it can manage.
+func TestManagementKindsShipAndRunOnEveryCluster(t *testing.T) {
 	shipped := make(map[string]bool)
-	for _, kind := range managementChartKinds(t) {
+	for _, kind := range chartKinds(t) {
 		shipped[kind] = true
-		if !managementKinds[kind] {
-			t.Errorf("chart/management-crds ships %s, which is not in managementKinds", kind)
-		}
-	}
-	for kind := range managementKinds {
-		if !shipped[kind] {
-			t.Errorf("%s is a cluster-management kind with no CRD in chart/management-crds", kind)
-		}
 	}
 	source, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatalf("read main.go: %v", err)
 	}
-	gate := strings.Index(string(source), "if enableClusterManagement {")
-	if gate < 0 {
-		t.Fatal("main.go no longer gates cluster management behind enableClusterManagement")
+	e2eGate := strings.Index(string(source), "if enableE2EControllers {")
+	if e2eGate < 0 {
+		t.Fatal("main.go no longer gates the e2e kinds behind enableE2EControllers")
 	}
 	for kind := range managementKinds {
-		registration := strings.Index(string(source), "controller."+kind+"Reconciler{")
-		if registration < gate {
-			t.Errorf("%sReconciler is registered outside the enableClusterManagement block", kind)
+		if !shipped[kind] {
+			t.Errorf("%s has no CRD in chart/crds, so a cluster installed from the chart could not manage others", kind)
 		}
+		registration := strings.Index(string(source), "controller."+kind+"Reconciler{")
+		if registration < 0 || registration > e2eGate {
+			t.Errorf("%sReconciler is not registered unconditionally", kind)
+		}
+	}
+	if strings.Contains(string(source), "enable-cluster-management") {
+		t.Error("main.go has an --enable-cluster-management flag again: the operator must not differ between clusters")
+	}
+	for _, file := range []string{"values.yaml", "templates/rbac.yaml", "templates/operator-deployment.yaml"} {
+		data, err := os.ReadFile(filepath.Join("..", "chart", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "clusterManagement.enabled") || regexp.MustCompile(`(?m)^clusterManagement:\n  enabled:`).Match(data) {
+			t.Errorf("chart/%s switches cluster management on or off: the operator must not differ between clusters", file)
+		}
+	}
+	if _, err := os.Stat(filepath.Join("..", "chart", "management-crds")); err == nil {
+		t.Error("chart/management-crds exists again: the management kinds belong in chart/crds, installed everywhere")
 	}
 }
 
@@ -218,13 +215,6 @@ func TestEveryChartCRDIsCoveredByChartRBAC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob chart/crds: %v", err)
 	}
-	// The management kinds' RBAC is rendered only under clusterManagement.enabled; the resource
-	// names are in the template either way, which is what this checks.
-	management, err := filepath.Glob(filepath.Join("..", "chart", "management-crds", "*.yaml"))
-	if err != nil {
-		t.Fatalf("glob chart/management-crds: %v", err)
-	}
-	manifests = append(manifests, management...)
 	var plurals []string
 	for _, file := range manifests {
 		manifest, err := os.ReadFile(file)
@@ -394,7 +384,7 @@ func TestE2EChartHoldsExactlyTheGatedKinds(t *testing.T) {
 // CEL; the cluster refused ClusterHelmRelease for an empty-string literal in a validation rule on
 // 2026-10-12 (write size(x) > 0 instead). A validation rule in a shipped CRD is plain ASCII.
 func TestShippedCRDValidationRulesArePlainASCII(t *testing.T) {
-	for _, dir := range []string{"../chart/crds", "../chart/management-crds", "../chart/e2e-crds"} {
+	for _, dir := range []string{"../chart/crds", "../chart/e2e-crds"} {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatalf("read %s: %v", dir, err)
