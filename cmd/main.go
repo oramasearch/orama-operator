@@ -35,7 +35,7 @@ func init() {
 
 func main() {
 	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage, lakeDuckDBImage, lakePolarsImage string
-	var enableLeaderElection, enableE2EControllers bool
+	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.StringVar(&controlPlaneAddr, "control-plane-bind-address", ":8090", "deployment control-plane endpoint")
@@ -46,13 +46,6 @@ func main() {
 		"the lake-duckdb image for a Lake's duckdb services when its spec.services.duckdbImage is empty")
 	flag.StringVar(&lakePolarsImage, "lake-polars-image", controller.DefaultLakePolarsImage,
 		"the lake-polars image for a Lake's polars services when its spec.services.polarsImage is empty")
-	// The e2e kinds are test fixtures. Production runs no e2e suites — that is what a testing
-	// environment is for — so their controllers stay unregistered unless a cluster asks. Their CRDs
-	// are in the chart with every other kind, on every cluster. Off by default means the safe
-	// posture is the one you get by forgetting. See docs/operations/crd-rollout.md.
-	flag.BoolVar(&enableE2EControllers, "enable-e2e-controllers", false,
-		"reconcile the e2e test kinds (OramaCloudV1E2ETest, ZettaClusterE2ETest, LakeE2ETest); "+
-			"testing environments only")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -284,32 +277,30 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "OramaOperator")
 		os.Exit(1)
 	}
-	// e2e kinds — testing environments only. Production reconciles no e2e resources, so these
-	// controllers are not registered. Their CRDs are installed everywhere, like every other kind.
-	if enableE2EControllers {
-		setupLog.Info("e2e controllers enabled")
-		if err = (&controller.OramaCloudV1E2ETestReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1E2ETest")
-			os.Exit(1)
-		}
-		if err = (&controller.ZettaClusterE2ETestReconciler{
-			Client:    mgr.GetClient(),
-			Scheme:    mgr.GetScheme(),
-			Clientset: clientset,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ZettaClusterE2ETest")
-			os.Exit(1)
-		}
-		if err = (&controller.LakeE2ETestReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "LakeE2ETest")
-			os.Exit(1)
-		}
+	// The e2e test kinds. Registered on every cluster like every other kind: no cluster's operator
+	// differs from another's. A cluster runs an e2e suite only when someone creates one of these
+	// resources on it.
+	if err = (&controller.OramaCloudV1E2ETestReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1E2ETest")
+		os.Exit(1)
+	}
+	if err = (&controller.ZettaClusterE2ETestReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Clientset: clientset,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ZettaClusterE2ETest")
+		os.Exit(1)
+	}
+	if err = (&controller.LakeE2ETestReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeE2ETest")
+		os.Exit(1)
 	}
 
 	if controlPlaneAddr != "" {

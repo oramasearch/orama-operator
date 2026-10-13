@@ -293,10 +293,10 @@ helm upgrade orama-operator chart/ -n orama-system -f <stored values> \
 
 or a service principal secret named by its `KubernetesClusterProvider`.
 
-`cmd/crd_coverage_test.go` holds this: it fails if a management kind leaves `chart/crds`, if its
-controller is registered behind a condition, or if the flag or the chart switch comes back. The
-e2e test kinds are a different matter and stay gated ([`crd-rollout.md`](../operations/crd-rollout.md)):
-that is about testing environments, not about management and leaf.
+This is rule 11 in [`CLAUDE.md`](../../CLAUDE.md), and it covers every kind, the e2e test kinds
+included: no flag, chart value or CRD directory makes one cluster's operator differ from another's.
+`cmd/crd_coverage_test.go` fails if a CRD leaves `chart/crds`, if a controller is registered
+inside a condition, or if a flag or chart switch for controllers comes back.
 
 ### What lives in Azure for this (created 2026-10-12)
 

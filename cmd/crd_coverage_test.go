@@ -43,9 +43,8 @@ var (
 	rbacResourcePattern = regexp.MustCompile(`(?m)^\s+- ([a-z0-9]+)$`)
 )
 
-// The e2e kinds' controllers are gated behind --enable-e2e-controllers. Their CRDs are in
-// chart/crds with every other kind: every cluster gets exactly the same CRDs (Steve, 2026-10-12,
-// "no differences"). Keep this list in step with the gated block in main.go.
+// The e2e test kinds. Their CRDs are in chart/crds and their controllers run on every cluster,
+// like every other kind (Steve, 2026-10-12, "no differences").
 var e2eKinds = map[string]bool{
 	"OramaCloudV1E2ETest": true,
 	"ZettaClusterE2ETest": true,
@@ -171,17 +170,12 @@ func TestManagementKindsShipAndRunOnEveryCluster(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read main.go: %v", err)
 	}
-	e2eGate := strings.Index(string(source), "if enableE2EControllers {")
-	if e2eGate < 0 {
-		t.Fatal("main.go no longer gates the e2e kinds behind enableE2EControllers")
-	}
 	for kind := range managementKinds {
 		if !shipped[kind] {
 			t.Errorf("%s has no CRD in chart/crds, so a cluster installed from the chart could not manage others", kind)
 		}
-		registration := strings.Index(string(source), "controller."+kind+"Reconciler{")
-		if registration < 0 || registration > e2eGate {
-			t.Errorf("%sReconciler is not registered unconditionally", kind)
+		if !strings.Contains(string(source), "controller."+kind+"Reconciler{") {
+			t.Errorf("%sReconciler is not registered", kind)
 		}
 	}
 	if strings.Contains(string(source), "enable-cluster-management") {
@@ -359,20 +353,55 @@ func TestTheChartHasOneCRDDirectoryWithEveryKind(t *testing.T) {
 	}
 }
 
-// The e2e controllers stay behind their flag: a cluster runs e2e suites only when asked to. The
-// flag is the same on every cluster by default, so it makes no cluster differ from another.
-func TestE2EControllersAreRegisteredBehindTheirFlag(t *testing.T) {
+// THE RULE (CLAUDE.md, "One operator: no differences between clusters"): the operator is the same
+// on every cluster. Nothing in the manager or the chart may make one cluster's operator differ
+// from another's in which kinds it has, which controllers it runs, or what it is allowed to do.
+// Steve said it three times on 2026-10-12 before it was done; this test is why it stays done.
+func TestNoClusterDiffersFromAnother(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatalf("read main.go: %v", err)
 	}
-	gate := strings.Index(string(source), "if enableE2EControllers {")
-	if gate < 0 {
-		t.Fatal("main.go no longer gates the e2e kinds behind enableE2EControllers")
+	// Every controller is registered at the top level of main, never inside a condition.
+	registration := regexp.MustCompile(`(?m)^(\t+)if err = \(&controller\.([A-Za-z0-9]+)Reconciler\{`)
+	matches := registration.FindAllStringSubmatch(string(source), -1)
+	if len(matches) == 0 {
+		t.Fatal("found no controller registrations in main.go; the pattern this test relies on changed")
 	}
-	for kind := range e2eKinds {
-		if registration := strings.Index(string(source), "controller."+kind+"Reconciler{"); registration < gate {
-			t.Errorf("%sReconciler is registered outside the enableE2EControllers block", kind)
+	for _, match := range matches {
+		if match[1] != "\t" {
+			t.Errorf("%sReconciler is registered inside a condition: every controller runs on every cluster", match[2])
+		}
+	}
+	for _, kind := range registeredKinds(t) {
+		found := false
+		for _, match := range matches {
+			found = found || match[2] == kind
+		}
+		if !found {
+			t.Errorf("%sReconciler is registered in a form this test cannot see; register it like the others", kind)
+		}
+	}
+	// No flag turns a set of controllers on or off.
+	if flagPattern := regexp.MustCompile(`"enable-[a-z0-9-]*(controllers?|management)[a-z0-9-]*"`); flagPattern.Match(source) {
+		t.Errorf("main.go has a flag that turns controllers on or off (%s): no cluster's operator may differ from another's", flagPattern.Find(source))
+	}
+	// The chart's RBAC and manager arguments do not depend on values.
+	for _, file := range []string{"templates/rbac.yaml", "templates/operator-deployment.yaml"} {
+		data, err := os.ReadFile(filepath.Join("..", "chart", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for number, line := range strings.Split(string(data), "\n") {
+			if !strings.Contains(line, "{{- if") {
+				continue
+			}
+			// Allowed: where images are pulled from and how the pod calls a cloud. These are a
+			// cluster's configuration, not a different operator.
+			if strings.Contains(line, "imagePullSecrets") || strings.Contains(line, "azureWorkloadIdentityClientID") {
+				continue
+			}
+			t.Errorf("chart/%s:%d renders conditionally (%s): RBAC and manager arguments are the same on every cluster", file, number+1, strings.TrimSpace(line))
 		}
 	}
 }

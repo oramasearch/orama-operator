@@ -79,6 +79,35 @@ against production-readiness, not "does a pod start."
 When in doubt, choose the option that makes the operator more complete and the system more
 deterministic/recoverable, even if it is more work now.
 
+11. **One operator: no differences between clusters (non-negotiable).** Steve, 2026-10-12, three
+    times in one session before it was done: *"install the same operator everywhere... all crds"*,
+    *"no differences between management and leaf operator"*, *"any leaf can be a mgnt cluster
+    too... no differences"*, then *"I said no differences!!! I said it like 3 times"*.
+
+    The operator is **identical on every cluster**: the same chart, the same image, **every CRD**,
+    **every controller running**, the same RBAC. A cluster's role (management, leaf, testing,
+    production) is decided **only by which resources exist on it**, never by how its operator is
+    installed. Concretely, **never**:
+
+    - add a flag, environment variable or chart value that turns a controller, a kind or a
+      permission on or off (`--enable-cluster-management` and `--enable-e2e-controllers` both
+      existed and were both removed);
+    - put a CRD anywhere but `chart/crds`, or apply some CRDs only to some clusters
+      (`chart/management-crds` and `chart/e2e-crds` both existed and were both removed);
+    - register a controller inside a condition in `cmd/main.go`;
+    - have `OramaOperator`, a build script or a runbook set a value on one cluster that it does
+      not set on another, beyond the image, its pull secret and the cluster's own cloud identity;
+    - keep "one small exception" because a difference seems reasonable. When Steve says no
+      differences, there are none: if you believe an exception is needed, **stop and ask before
+      writing it**, do not ship it and mention it afterwards.
+
+    What may differ is a cluster's **configuration**, not its operator: where images are pulled
+    from, and the identity the pod uses to call a cloud.
+
+    `cmd/crd_coverage_test.go` enforces this (`TestNoClusterDiffersFromAnother`,
+    `TestTheChartHasOneCRDDirectoryWithEveryKind`, `TestManagementKindsShipAndRunOnEveryCluster`).
+    **Never weaken or delete those tests to make a change pass.**
+
 ## One Orama: Zetta is the operator's datastore (multi-cluster)
 
 Beyond deploying v1, this operator is becoming **symbiotic with Orama Zetta** (One Orama stage 2,
@@ -188,13 +217,11 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
   single-node **sandbox** (no GPU). Install the CRD + apply a sample into an isolated
   `orama-system` namespace. **No GPU node yet → set `writer.gpu: false`** when testing
   the engine, or the writer pod stays Pending.
-**Every cluster gets every CRD; e2e suites run only where asked.** There is one CRD directory,
-`chart/crds`, installed on every cluster: the e2e test kinds and the cluster-management kinds
-included (Steve, 2026-10-12: *"no differences"*). Never add a second CRD directory applied only to
-some clusters. The e2e **controllers** (`OramaCloudV1E2ETest`, `ZettaClusterE2ETest`, `LakeE2ETest`)
-stay behind `--enable-e2e-controllers` (**off by default**; chart `e2e.enabled`, which also renders
-their RBAC): production runs no e2e suites
-([#166](https://github.com/oramasearch/orama-operator/issues/166), decided 2026-09-09).
+**Every cluster gets every CRD and runs every controller** (principle 11). The e2e kinds
+(`OramaCloudV1E2ETest`, `ZettaClusterE2ETest`, `LakeE2ETest`) are in `chart/crds` and reconciled on
+every cluster; a cluster runs an e2e suite only when one of those resources is created on it.
+Production runs no e2e suites because none is created there
+([#166](https://github.com/oramasearch/orama-operator/issues/166)).
 
 - **Functional e2e (`OramaCloudV1E2ETest`):** the comprehensive suite lives at
   `internal/controller/assets/e2e-functional.sh` (a curl+jq script embedded via `go:embed`,
