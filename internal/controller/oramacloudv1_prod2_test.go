@@ -6,7 +6,12 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"os"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -588,5 +594,185 @@ func TestNoPlacementRendersAsBefore(t *testing.T) {
 	ps := getObj(t, cl, "v1-controldb-schema", &oramav1alpha1.PostgresSchema{})
 	if ps.Spec.NodeSelector != nil || ps.Spec.Tolerations != nil {
 		t.Errorf("old CR's PostgresSchema gained placement %+v", ps.Spec)
+	}
+}
+
+// --- 7. the production set sample ---
+
+// setSample is the part of an OramaCloudV1Set the production sample is checked through. This branch
+// does not carry the set kind, so the test reads the manifest itself.
+type setSample struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Metadata   struct {
+		Name string `json:"name"`
+	} `json:"metadata"`
+	Spec struct {
+		DeletionPolicy string `json:"deletionPolicy"`
+		Secrets        []struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"secrets"`
+		Clusters []struct {
+			ClusterRef string          `json:"clusterRef"`
+			Name       string          `json:"name"`
+			Namespace  string          `json:"namespace"`
+			Spec       json.RawMessage `json:"spec"`
+		} `json:"clusters"`
+		Template json.RawMessage `json:"template"`
+	} `json:"spec"`
+}
+
+// mergeOverTemplate lays a member's spec over the set's template the way the set controller does
+// (mergeSpec in managedset_controller.go): a field wins, an object is merged field by field, and a
+// list replaces the template's list whole.
+func mergeOverTemplate(template, override map[string]any) map[string]any {
+	merged := make(map[string]any, len(template)+len(override))
+	for key, value := range template {
+		merged[key] = value
+	}
+	for key, value := range override {
+		base, baseIsMap := merged[key].(map[string]any)
+		over, overIsMap := value.(map[string]any)
+		if baseIsMap && overIsMap {
+			merged[key] = mergeOverTemplate(base, over)
+			continue
+		}
+		merged[key] = value
+	}
+	return merged
+}
+
+// productionMembers reads the production set sample (with every <digest> placeholder replaced by
+// digest, unless digest is empty) and returns each member's merged spec, strictly decoded into
+// OramaCloudV1Spec so a misspelt field fails instead of being dropped.
+func productionMembers(t *testing.T, digest string) (setSample, map[string]oramav1alpha1.OramaCloudV1Spec) {
+	t.Helper()
+	raw, err := os.ReadFile("../../config/samples/oramacloudv1set-prod.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != "" {
+		raw = bytes.ReplaceAll(raw, []byte("<digest>"), []byte(digest))
+	}
+	js, err := utilyaml.ToJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var set setSample
+	dec := json.NewDecoder(bytes.NewReader(js))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&set); err != nil {
+		t.Fatalf("set sample does not decode strictly: %v", err)
+	}
+	var template map[string]any
+	if err := json.Unmarshal(set.Spec.Template, &template); err != nil {
+		t.Fatal(err)
+	}
+	specs := map[string]oramav1alpha1.OramaCloudV1Spec{}
+	for _, member := range set.Spec.Clusters {
+		override := map[string]any{}
+		if len(member.Spec) > 0 {
+			if err := json.Unmarshal(member.Spec, &override); err != nil {
+				t.Fatal(err)
+			}
+		}
+		merged, err := json.Marshal(mergeOverTemplate(template, override))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var spec oramav1alpha1.OramaCloudV1Spec
+		dec := json.NewDecoder(bytes.NewReader(merged))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&spec); err != nil {
+			t.Fatalf("member %s does not decode strictly: %v", member.Name, err)
+		}
+		specs[member.Name] = spec
+	}
+	return set, specs
+}
+
+// The production set keeps the live set's members, clusters, namespaces, secrets and deletion policy,
+// and every member's merged spec is a valid production OramaCloudV1.
+func TestProductionSetSampleMatchesDecisions(t *testing.T) {
+	set, specs := productionMembers(t, "")
+	if set.Kind != "OramaCloudV1Set" || set.Metadata.Name != "v1-prod" || set.Spec.DeletionPolicy != "Retain" {
+		t.Errorf("set = %s %s, deletionPolicy %q", set.Kind, set.Metadata.Name, set.Spec.DeletionPolicy)
+	}
+	var members, secrets []string
+	for _, m := range set.Spec.Clusters {
+		members = append(members, m.Name+"@"+m.ClusterRef+"/"+m.Namespace)
+	}
+	for _, s := range set.Spec.Secrets {
+		secrets = append(secrets, s.Namespace+"/"+s.Name)
+	}
+	if want := []string{"v1-eu@orama-production-cluster-02/v1-eu", "v1-us@orama-production-cluster-03/v1-us"}; !slices.Equal(members, want) {
+		t.Errorf("members = %v, want %v", members, want)
+	}
+	if want := []string{"orama-system/oramasearch-dockerhub", "orama-system/cloudflare-api-token"}; !slices.Equal(secrets, want) {
+		t.Errorf("secrets = %v, want %v", secrets, want)
+	}
+
+	for name, spec := range specs {
+		oc := &oramav1alpha1.OramaCloudV1{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: name}, Spec: spec}
+		c := spec.Components
+		b := c.ControlDB.Backup
+		switch {
+		case spec.Region.Name != "":
+			t.Errorf("%s: region.name %q is set; it comes from the member's cluster", name, spec.Region.Name)
+		case spec.Profile != "medium" || !spec.DeletionProtection || !spec.RequireRealCredentials:
+			t.Errorf("%s: profile/protection/credentials = %s/%v/%v", name, spec.Profile, spec.DeletionProtection, spec.RequireRealCredentials)
+		case spec.Placement.NodeSelector["kubernetes.azure.com/agentpool"] != "userpool" || len(spec.Placement.NodeSelector) != 1 || len(spec.Placement.Tolerations) != 0:
+			t.Errorf("%s: placement = %+v", name, spec.Placement)
+		case !spec.Images.RequireDigests:
+			t.Errorf("%s: production must require digest-pinned images", name)
+		case validateImageDigests(oc) == nil:
+			t.Errorf("%s: the <digest> placeholders must be refused until replaced", name)
+		case b.Enabled == nil || !*b.Enabled || b.Destination.Bucket == "" || b.SecretRef.Name == "":
+			t.Errorf("%s: control-DB backup = %+v", name, b)
+		case c.Analytics.Mode != "external" || c.Analytics.CredentialsSecretRef == nil:
+			t.Errorf("%s: ClickHouse must stay external with referenced credentials", name)
+		case validateExternalAnalytics(oc) != nil:
+			t.Errorf("%s: external analytics refused: %v", name, validateExternalAnalytics(oc))
+		case !c.AnalyticsProcessor.Import.Enabled || c.ControlDB.Mode != "in-cluster" || !c.Engine.Enabled:
+			t.Errorf("%s: import %v, controlDB mode %q, engine %v", name, c.AnalyticsProcessor.Import.Enabled, c.ControlDB.Mode, c.Engine.Enabled)
+		case spec.IDP.Provider != "firebase" || spec.IDP.ConfigSecretRef == nil:
+			t.Errorf("%s: Firebase provider/reference = %+v", name, spec.IDP)
+		case validateWriterJWT(oc) != nil:
+			t.Errorf("%s: writer JWT refused: %v", name, validateWriterJWT(oc))
+		case validateIngressHosts(oc) != nil:
+			t.Errorf("%s: ingress hosts refused: %v", name, validateIngressHosts(oc))
+		case validateDashboardEnv(oc) != nil:
+			t.Errorf("%s: dashboard env refused: %v", name, validateDashboardEnv(oc))
+		}
+	}
+
+	eu := specs["v1-eu"].Components
+	switch {
+	case eu.Dashboard.Host != "app.orama.ing" || eu.Engine.Reader.Host != "reader.orama.ing" || eu.Engine.Writer.Host != "writer.orama.ing":
+		t.Errorf("v1-eu hosts = %s, %s, %s", eu.Dashboard.Host, eu.Engine.Reader.Host, eu.Engine.Writer.Host)
+	case specs["v1-eu"].JWTIssuer != "https://app.orama.ing":
+		t.Errorf("v1-eu jwtIssuer = %q", specs["v1-eu"].JWTIssuer)
+	case eu.Engine.Writer.JWT == nil || eu.Engine.Writer.JWT.JWKSURL != "" || !slices.Equal(writerJWTAudiences(eu.Engine.Writer.JWT), []string{"https://writer.orama.ing"}):
+		t.Errorf("v1-eu writer JWT = %+v", eu.Engine.Writer.JWT)
+	case len(eu.Dashboard.ExtraHosts) != 0:
+		t.Errorf("v1-eu answers app.orama.com before the cutover: %v", eu.Dashboard.ExtraHosts)
+	}
+	// The member's override replaced only what it names: the template's engine settings survive.
+	if eu.Engine.Reader.Replicas != 2 || !eu.Engine.Envoy || eu.Engine.Writer.GPU {
+		t.Errorf("v1-eu lost template engine settings: replicas %d, envoy %v, gpu %v", eu.Engine.Reader.Replicas, eu.Engine.Envoy, eu.Engine.Writer.GPU)
+	}
+
+	us := specs["v1-us"]
+	if us.Components.Dashboard.Host != "app-us.oramadev.net" || us.Components.Engine.Reader.Host != "" || us.Components.Engine.Writer.Host != "" || us.JWTIssuer != "" || us.Components.Engine.Writer.JWT != nil {
+		t.Errorf("v1-us must keep only its dashboard host until its role is decided: %+v", us.Components.Dashboard)
+	}
+
+	// With each <digest> filled in, every member pins every component it enables.
+	_, pinned := productionMembers(t, strings.Repeat("0", 64))
+	for name, spec := range pinned {
+		if err := validateImageDigests(&oramav1alpha1.OramaCloudV1{Spec: spec}); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

@@ -1,0 +1,200 @@
+# Cloud v1 production: the `v1-prod` OramaCloudV1Set on the management cluster (orama-bridge#141,
+# operator#317). It installs one OramaCloudV1 per member cluster from the template below; a member's
+# `spec` is merged over the template (a field wins, an object is merged field by field, a list
+# replaces the template's list). The region name comes from each member's cluster, never from here.
+#
+# Members, as the live set has them: `v1-eu` on orama-production-cluster-02 (swedencentral) takes the
+# cutover first; `v1-us` on orama-production-cluster-03 (eastus) is lit up after it. There is no Asia
+# member. Every change is rehearsed first through `v1-nonprod` on orama-nonprod-cluster-01.
+#
+# Not part of config/samples/kustomization.yaml, so `kubectl apply -k config/samples` never applies it.
+# Production rules apply: never apply it to a sandbox.
+#
+# Placeholders to replace before the first apply (everything else is the decided production shape):
+#   - storage sizes: set from the orama-bridge#138 measurements;
+#   - the control-DB backup bucket and its credentials Secret (keys s3ApiEndpoint, accessKeyId,
+#     secretAccessKey; see docs/lake/backups.md for the R2 token procedure);
+#   - analytics.endpoint: the reviewed ClickHouse Cloud HTTPS endpoint;
+#   - images.overrides: every `<digest>` placeholder, from build/images/build-manifest.tsv
+#     (requireDigests refuses the stack until each enabled component is pinned).
+#
+# `secrets` below are copied from orama-system on this cluster into each member's namespace. Each member
+# namespace also needs, before its instance first reconciles (via ExternalSecrets or a person; no
+# credentials belong in this sample):
+#   - `v1-prod-firebase` with FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY;
+#   - `v1-prod-clickhouse` with CLICKHOUSE_USER and CLICKHOUSE_PASSWORD for ClickHouse Cloud;
+#   - `v1-prod-master-api-key` with key MASTER_API_KEY: the copied control DB's
+#     oramacore_clusters.master_api_key (masterAPIKeySecretRef below);
+#   - `v1-prod-controldb-backup`, the backup credentials above;
+#   - `v1-prod-dashboard-env`, the dashboard's remaining environment (components.dashboard below):
+#       NEXT_PUBLIC_APP_URL, CRON_SECRET, PRIVATE_API_KEY (must equal Prod 1's while the AWS import
+#       consumer still calls it), REDIS_CACHE_URL, REDIS_CACHE_TOKEN (Upstash REST), S3_BUCKET,
+#       S3_BUCKET_REGION, S3_BUCKET_PREFIX, AWS_ACCESS_KEY_VALUE, AWS_SECRET_ACCESS_KEY_VALUE,
+#       AIRBYTE_CLIENT_ID, AIRBYTE_CLIENT_SECRET, AIRBYTE_ORGANIZATION_ID, AIRBYTE_ALLOWED_ORIGINS,
+#       AIRBYTE_WEBHOOK_SECRET, AIRBYTE_DEFAULT_WORKSPACE_ID, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+#       STRIPE_PUBLISHABLE_KEY, RESEND_API_KEY, SLACK_TOKEN, SLACK_CHANNEL_NEW_USERS,
+#       SLACK_CHANNEL_STRIPE, SCRAPER_SIGNATURE, CLICKHOUSE_HOST (the ClickHouse proxy URL),
+#       CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_LOG_LEVEL, DATA_SOURCE_REQUEST_URL and
+#       ORAMACORE_PLACEMENT_CLUSTER_ID.
+#     It must NOT hold DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER or
+#     MASTER_API_KEY (the operator owns them; the reconcile fails if it does).
+# The JWT pair, the broker admin and the Redis passwords are generated once per instance; do not copy
+# Prod 1's keys. Each instance reports Degraded until CredentialsReady is True (requireRealCredentials).
+apiVersion: orama.cloud/v1alpha1
+kind: OramaCloudV1Set
+metadata:
+  name: v1-prod
+spec:
+  deletionPolicy: Retain
+  secrets:
+    - { name: oramasearch-dockerhub, namespace: orama-system }
+    - { name: cloudflare-api-token, namespace: orama-system }
+  clusters:
+    # EU takes the cutover. Its hosts are one level under orama.ing, so Cloudflare's *.orama.ing
+    # certificate covers them, and the operator creates their DNS. Copied control-DB cluster rows must
+    # return https://writer.orama.ing as writer_url (the JWT audience). Customers keep reading through
+    # collections.orama.com, whose worker forwards to ORAMACORE_READ_URLS.c1; at the cutover that is set
+    # to https://reader.orama.ing and app.orama.com is repointed here, both by hand.
+    - clusterRef: orama-production-cluster-02
+      name: v1-eu
+      namespace: v1-eu
+      spec:
+        jwtIssuer: https://app.orama.ing
+        components:
+          dashboard:
+            host: app.orama.ing
+            # The cutover change: uncomment so the dashboard also answers app.orama.com once that
+            # record is repointed by hand. Extra hosts get no CloudflareDNSRecord.
+            # extraHosts: [app.orama.com]
+          engine:
+            reader:
+              host: reader.orama.ing
+            writer:
+              host: writer.orama.ing
+              jwt:
+                # jwksURL unset: the writer reads the dashboard's keys in-cluster. Audiences list every
+                # oramacore_clusters.writer_url the copied control DB returns; https://<host> must be one.
+                audiences:
+                  - https://writer.orama.ing
+    # US is lit up after the EU cutover. Its production role (hosts, writer or readers of the EU
+    # writer) is decided then; until then it keeps only the dashboard host it has today.
+    - clusterRef: orama-production-cluster-03
+      name: v1-us
+      namespace: v1-us
+      spec:
+        components:
+          dashboard:
+            host: app-us.oramadev.net
+  template:
+    region:
+      role: primary
+    profile: medium                    # single-tenant prod: 2 CNPG instances
+    # Keep the control DB and the writer/reader volumes through CR deletion and component disable.
+    deletionProtection: true
+    # Degraded, not Ready, while any credential is a seeded dummy or missing (status CredentialsReady).
+    requireRealCredentials: true
+    masterAPIKeySecretRef: { name: v1-prod-master-api-key }
+    # Every operator-created pod (apps, stores, engine, Jobs, CNPG instances) runs on the user pool.
+    # The pool has no taints, so no tolerations.
+    placement:
+      nodeSelector:
+        kubernetes.azure.com/agentpool: userpool
+    idp:
+      provider: firebase
+      configSecretRef: { name: v1-prod-firebase }
+    images:
+      registry: oramasearch
+      pullSecretName: oramasearch-dockerhub
+      # Every enabled component must be pinned by digest (Ready=False names any that is not);
+      # digest-pinned refs are pulled IfNotPresent. Replace each <digest> placeholder.
+      requireDigests: true
+      overrides:
+        oramacore-writer: oramasearch/oramacore-writer@sha256:<digest>   # writer-only build (#308)
+        oramacore-reader: oramasearch/oramacore-reader@sha256:<digest>   # reader-only build (#308)
+        dashboard: oramasearch/dashboard@sha256:<digest>
+        docs: oramasearch/docs@sha256:<digest>
+        index-builder: oramasearch/index-builder@sha256:<digest>
+        harvest-master: oramasearch/harvest-master@sha256:<digest>
+        harvest: oramasearch/harvest@sha256:<digest>
+        disco: oramasearch/disco@sha256:<digest>
+        workers: oramasearch/orama-workers@sha256:<digest>
+        index-shared-worker: oramasearch/index-shared-worker@sha256:<digest>
+        large-index-worker: oramasearch/large-index-worker@sha256:<digest>
+        openai-decrypter: oramasearch/openai-decrypter@sha256:<digest>
+        telemetry-worker: oramasearch/telemetry-worker@sha256:<digest>
+        # The processor image must include the bridge's 0.0.0.0:8080 listener patch.
+        analytics-processor: oramasearch/analytics-processor@sha256:<digest>
+    llm:                               # Prod 1's provider set; keys come from <instance>-engine-secret
+      default: groq
+      providers:
+        - { name: openai,    models: [gpt-5.2] }
+        - { name: google,    models: [gemini-2.0-flash-001] }
+        - { name: groq,      models: [openai/gpt-oss-120b] }
+        - { name: anthropic, models: [claude-sonnet-4-5] }
+      automaticEmbeddingsSelector: { provider: openai, model: gpt-5.2 }
+    cloudflare:
+      enabled: true
+      apiTokenSecretRef: { name: cloudflare-api-token }
+      manageDNS: true
+      manageLoadBalancers: false       # no geo load balancer across the members yet
+    components:
+      engine:
+        enabled: true
+        writer:
+          gpu: false                   # the user pool has no GPU nodes; CPU embeddings
+          storage: { size: 256Gi, storageClassName: managed-csi-premium }   # placeholder size (#138)
+        reader:
+          replicas: 2
+          storage: { size: 256Gi, storageClassName: managed-csi-premium }   # placeholder size (#138)
+        envoy: true
+        # Customer hooks may not fetch in-cluster addresses. The default deny list already covers
+        # 10.**; the cluster ranges are named here so the CR records them: pod CIDR 10.244.0.0/16,
+        # Service CIDR 10.0.0.0/16, node subnet 10.224.0.0/16 (host-network pods). Check them on each
+        # member's cluster.
+        hooks:
+          extraDeniedDomains: ["10.244.**", "10.0.**", "10.224.**"]
+      dashboard:
+        enabled: true
+        # Overrides the shared ConfigMap and the seeded dashboard Secret (operator#311).
+        envFrom:
+          - secretRef: { name: v1-prod-dashboard-env }
+        # The dashboard keeps calling the ClickHouse proxy, not ClickHouse Cloud: these replace the
+        # values the operator derives from analytics.endpoint and v1-prod-clickhouse.
+        env:
+          - { name: CLICKHOUSE_HOST,     valueFrom: { secretKeyRef: { name: v1-prod-dashboard-env, key: CLICKHOUSE_HOST } } }
+          - { name: CLICKHOUSE_USER,     valueFrom: { secretKeyRef: { name: v1-prod-dashboard-env, key: CLICKHOUSE_USER } } }
+          - { name: CLICKHOUSE_PASSWORD, valueFrom: { secretKeyRef: { name: v1-prod-dashboard-env, key: CLICKHOUSE_PASSWORD } } }
+      docs:      { enabled: true }
+      controlDB:
+        enabled: true
+        mode: in-cluster
+        storage: { size: 50Gi, storageClassName: managed-csi-premium }    # placeholder size (#138)
+        backup:
+          enabled: true
+          schedule: "0 0 3 * * *"      # 03:00:00 daily (six-field CNPG cron)
+          retention: 30d
+          destination:
+            bucket: orama-v1-prod-controldb-backups   # placeholder bucket name
+          secretRef:
+            name: v1-prod-controldb-backup            # placeholder Secret name
+      # ClickHouse Cloud stays external. Replace this host placeholder with its HTTPS endpoint.
+      analytics:
+        enabled: true
+        mode: external
+        endpoint: https://REPLACE_WITH_CLICKHOUSE_CLOUD_HOST:8443
+        credentialsSecretRef: { name: v1-prod-clickhouse }
+      cache:      { enabled: true, mode: in-cluster }
+      broker:     { enabled: true, mode: in-cluster, storage: { size: 20Gi, storageClassName: managed-csi-premium } }
+      search:     { enabled: true, mode: in-cluster }
+      ingestion:  { enabled: true, harvest: true }
+      # Set ingestion.embeddingsURL to the hosted embeddings API index-builder POSTs to (Prod 1's value);
+      # unset, index-builder gets an empty ORAMA_EMBEDDINGS_URL and cannot compute embeddings.
+      disco:      { enabled: true }
+      workers:    { enabled: true, replicas: 2 }
+      searchWorkers: { enabled: true }
+      analyticsProcessor:
+        enabled: true
+        import:
+          enabled: true
+          schedule: "*/5 * * * *"        # UTC; POST /import pulls every reader ordinal once (no writer)
+      pgAdmin:    { enabled: true }

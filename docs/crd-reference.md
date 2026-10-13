@@ -4,8 +4,9 @@ One umbrella CR per cluster describes an entire regional v1 deployment. Source o
 truth: [`../api/v1alpha1/oramacloudv1_types.go`](../api/v1alpha1/oramacloudv1_types.go)
 (regenerate this doc's tables when the types change). Samples:
 [`../config/samples/primary-us-east.yaml`](../config/samples/primary-us-east.yaml) (a primary
-region) and [`../config/samples/read-eu.yaml`](../config/samples/read-eu.yaml) (a read tier
-pointing at the primary); the full sample list is in
+region), [`../config/samples/read-eu.yaml`](../config/samples/read-eu.yaml) (a read tier
+pointing at the primary) and [`../config/samples/oramacloudv1set-prod.yaml`](../config/samples/oramacloudv1set-prod.yaml)
+(production: the `v1-prod` `OramaCloudV1Set`, never applied by the sample kustomization); the full sample list is in
 [install.md](install.md#3-deploy-a-v1-stack-single-cluster-quickstart).
 
 ## Top-level `spec`
@@ -18,15 +19,15 @@ pointing at the primary); the full sample list is in
 | `ingressClassName` | string | `nginx` | IngressClass of every Ingress the CR owns (dashboard, docs, writer, reader). Empty uses the helmfile-installed ingress-nginx. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `idp.configSecretRef` | Secret reference | — | With `provider: firebase`, required dashboard server keys: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. Other providers retain their existing behavior. |
-| `jwtIssuer` | string | — | Dashboard signing issuer (`JWT_ISSUER`) and the writer JWKS provider's only accepted issuer (maximum 128 characters); both read it through one function, `jwtIssuer`. No CRD default: `engine.writer.jwt` refuses an empty issuer. Without writer JWT verification an empty issuer falls back to `orama-cloud` in the shared ConfigMap. Prod 1 uses `https://app.orama.com`; Prod 2 uses `https://app.orama.ing`. |
+| `jwtIssuer` | string | — | Dashboard signing issuer (`JWT_ISSUER`) and the writer JWKS provider's only accepted issuer (maximum 128 characters); both read it through one function, `jwtIssuer`. No CRD default: `engine.writer.jwt` refuses an empty issuer. Without writer JWT verification an empty issuer falls back to `orama-cloud` in the shared ConfigMap. Prod 1 uses `https://app.orama.com`; production's `v1-eu` member uses `https://app.orama.ing` (`config/samples/oramacloudv1set-prod.yaml`). |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; override via `overrides.oramacore`. (`overrides.embeddings` is no longer read: OramaCore embeds in-process and the operator runs no embeddings server.) `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile) run writer-only and reader-only OramaCore builds with side-only configs; unset, both sides fall back to `oramacore` and share the combined config (see [components.md](components.md#engine-internalcontrollerenginego)). **Digest pinning:** an override may be `repo@sha256:<digest>` (or `repo:tag@sha256:<digest>`); the operator-built apps (dashboard, docs, workers, …) then pull `IfNotPresent` instead of `Always`. Other containers keep Kubernetes' default policy, which is already `IfNotPresent` for a digest. |
-| `images.requireDigests` | bool | `false` | When `true`, the reconcile fails before anything is written (`Ready=False`, reason `ReconcileError`) while any enabled component's image resolved through `spec.images` (defaults or overrides) is not pinned by `@sha256:<64 hex>`; the message names each such component and its image. Checked: the engine writer (primary regions) and readers, dashboard, docs, index-builder, harvest-master and harvest (with `ingestion.harvest`), disco, workers (unless `workers.image` is set), analytics-processor and the four search workers. Data-store and helper images are not checked. Unset allows tags such as `:latest` ([operator#317](https://github.com/oramasearch/orama-operator/issues/317)). |
+| `images.requireDigests` | bool | `false` | When `true`, the reconcile fails before anything is written (`Ready=False`, reason `ReconcileError`) while any enabled component's image resolved through `spec.images` (defaults or overrides) is not pinned by `@sha256:<64 hex>`; the message names each such component and its image. Checked: the engine writer (primary regions) and readers, dashboard, docs, index-builder, harvest-master and harvest (with `ingestion.harvest`), disco, workers (unless `workers.image` is set), analytics-processor and the four search workers. Data-store and helper images are not checked. Unset allows tags such as `:latest`. The production set sample sets it ([operator#317](https://github.com/oramasearch/orama-operator/issues/317)). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers — end users pick per query. Each has `name` (`groq \| openai \| google \| anthropic \| vllm`), `models[]` (required; the first is its default model), optional `url` (overrides OramaCore's built-in OpenAI-compatible base URL) and optional `apiKeySecretRef: {name, key}` (`key` defaults to `<PROVIDER>_API_KEY`; unset ⇒ that key of `<cr>-engine-secret`). Rendered into the engine config's `ai_server.remote_llms`, one entry per provider. Empty ⇒ `groq` (`llama-3.3-70b-versatile`), `openai` (`gpt-5.2`), `anthropic` (`claude-sonnet-4-5`). Refused at reconcile (`Ready=False`): a provider listed twice or with no models, and `vllm` (in-cluster vLLM and its `gpu` field are not rendered yet). |
 | `llm.default` | string | `groq` | Provider used when a request doesn't name one: rendered as `ai_server.llm` (`local: false`, `host` = its base URL, `model` = its first model, its key). Must be one of `providers`, else the reconcile fails with `Ready=False`. |
 | `llm.automaticEmbeddingsSelector` | `{provider, model}` | — | The model the writer uses to choose the properties of a collection with automatic embeddings (`ai_server.embeddings.automatic_embeddings_selector`). `provider` must be one of `providers`. Unset ⇒ no selector. |
 
-Prod 1's provider set (orama-deploy `oramacore/production/config/`):
+Prod 1's provider set (orama-deploy `oramacore/production/config/`), as in `config/samples/oramacloudv1set-prod.yaml`:
 
 ```yaml
 llm:
@@ -102,7 +103,6 @@ sets the StatefulSet's replica count only when creating it. Clearing `hpa` delet
 | `hooks.extraDeniedDomains` | — | Host patterns appended, once each, to the deny list the writer and readers apply to outbound HTTP from customer JavaScript hooks (see [components.md](components.md#hooks-deny-list)). A pattern matches the URL host, not the resolved address; `*` stays within one dot-separated label and `**` spans labels, so write `10.244.**`, not `10.244.*` or `10.244.0.0/16` (an entry containing `/` is refused). There is no allow list. |
 | `hooks.evaluationTimeout` | `200ms` | How long OramaCore lets a hook's code load. |
 | `hooks.executionTimeout` | `1s` | How long one run of a hook may take. |
-
 
 The defaults are Prod 1's (the hooks timeouts are also OramaCore's own): its reader unit allows 20 minutes for the port and 40 for the unit to
 start, its units set `LimitNOFILE=65535`, and its reader hosts set `vm.max_map_count=4194304`.

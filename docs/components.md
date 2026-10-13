@@ -99,7 +99,8 @@ stack gets a random key; a stack reconciled before #307 starts with the value fr
 (each component Secret's seeded keys, the broker and Redis passwords, the master key) and sets
 `CredentialsReady=False` with the list of `Secret/key` pairs that are missing, empty, still their
 seeded value, or any other `dev-*` value; `True` once none is left. Values are compared in the
-operator and never written to status, events or logs. With `spec.requireRealCredentials: true` a False condition makes the phase `Degraded` and `Ready=False`
+operator and never written to status, events or logs. With `spec.requireRealCredentials: true` (set
+in `config/samples/oramacloudv1set-prod.yaml`) a False condition makes the phase `Degraded` and `Ready=False`
 (reason `CredentialsNotReady`); without it the phase follows component readiness only. Editing an
 owned Secret triggers a reconcile; a Secret named by `masterAPIKeySecretRef` is picked up on the next
 one.
