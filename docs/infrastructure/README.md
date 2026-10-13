@@ -198,6 +198,30 @@ admin kubeconfig to a Secret. Deleting the `KubernetesCluster` deletes the clust
 `deletionPolicy` is `Delete`. They do not yet change a cluster after it exists, and they install
 nothing on it.
 
+### Seeing what the provider is doing, and what it refused
+
+Steve, 2026-10-12, watching the first leaf's nodes not come up: *"the operator should talk to the
+API and report any errors from the azure api so they can be corrected"*.
+
+On every reconcile the `AksCluster` controller reads Azure's latest operation for the cluster
+(`managedClusters/<name>/operations/latest`) along with the cluster itself, and reports both:
+
+| Where | What it shows |
+|---|---|
+| `kubectl get aks` | `Operation`: Azure's progress line while it works (`CreatingAgentPools: 0/1 nodes completed`), then `Succeeded` or `Failed` |
+| `kubectl get kcluster`, `kubectl get aks -o wide` | `Message`: the provisioning state, the progress, and every error Azure reports |
+| `status.operation.error`, `status.provisioningError`, `status.nodePools[].error` | Each error where Azure put it: on the operation (with the causes nested under it, such as a VM extension's exit code), on the cluster, on a pool |
+| The operator's log | An error line when Azure fails an operation, once per distinct failure |
+
+A failure to read the operation is an error like any other: it is recorded and returned. Creating
+`orama-nonprod-cluster-01` took 14 minutes, 11 of them with the system node's virtual machine
+running and not yet joined; during that time Azure reported no error and only the progress line
+said what it was waiting for.
+
+Not read yet: the node resource group's activity log and the scale set's instance view. Reading
+them needs `Microsoft.Compute` and `Microsoft.Insights` read on the provisioner role. Azure
+copies a node's bootstrap failure onto the operation's error, which is reported.
+
 ### Turning the management role on
 
 A cluster's operator plays the management role only when asked. It is off by default, so a leaf's

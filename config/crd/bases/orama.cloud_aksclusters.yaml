@@ -29,6 +29,13 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.operation.status
+      name: Operation
+      type: string
+    - jsonPath: .status.message
+      name: Message
+      priority: 1
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -352,6 +359,8 @@ spec:
                 description: KubernetesVersion is the version Azure reports as current.
                 type: string
               message:
+                description: Message says why the cluster is not Ready, in Azure's
+                  words where Azure gave any.
                 type: string
               nodePools:
                 items:
@@ -360,6 +369,10 @@ spec:
                     count:
                       format: int32
                       type: integer
+                    error:
+                      description: 'Error is the provisioning error Azure reports
+                        for the pool, as "code: message".'
+                      type: string
                     name:
                       type: string
                     provisioningState:
@@ -381,11 +394,39 @@ spec:
               oidcIssuerURL:
                 description: OIDCIssuerURL is set when workload identity is on.
                 type: string
+              operation:
+                description: |-
+                  Operation is the latest operation Azure ran on the cluster: its progress while it runs and
+                  its error when it fails.
+                properties:
+                  endTime:
+                    type: string
+                  error:
+                    description: |-
+                      Error is the error Azure attached to the operation, as "code: message", with the details
+                      Azure nests under it. Empty when Azure reports none.
+                    type: string
+                  id:
+                    description: ID is the operation's identifier, to quote to Azure
+                      support.
+                    type: string
+                  startTime:
+                    type: string
+                  status:
+                    description: |-
+                      Status is Azure's own text: a progress line while the operation runs (for example
+                      "CreatingAgentPools: 0/1 nodes completed"), then Succeeded, Failed or Canceled.
+                    type: string
+                type: object
               phase:
                 description: Phase is Pending, Provisioning, Ready, Degraded or Deleting.
                 type: string
               powerState:
                 description: PowerState is Running or Stopped.
+                type: string
+              provisioningError:
+                description: ProvisioningError is the provisioning error Azure reports
+                  on the cluster itself.
                 type: string
               provisioningState:
                 description: 'ProvisioningState is Azure''s own word: Creating, Succeeded,

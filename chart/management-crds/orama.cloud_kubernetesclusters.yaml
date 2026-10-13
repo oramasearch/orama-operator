@@ -29,6 +29,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.message
+      name: Message
+      type: string
     - jsonPath: .status.endpoint
       name: Endpoint
       priority: 1
@@ -315,6 +318,10 @@ spec:
                       description: Count is the number of nodes the provider reports.
                       format: int32
                       type: integer
+                    error:
+                      description: Error is the error the provider reports for the
+                        pool.
+                      type: string
                     name:
                       type: string
                     state:

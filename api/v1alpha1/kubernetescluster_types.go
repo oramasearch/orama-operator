@@ -128,6 +128,9 @@ type ClusterNodePoolStatus struct {
 	// Count is the number of nodes the provider reports.
 	// +optional
 	Count int32 `json:"count,omitempty"`
+	// Error is the error the provider reports for the pool.
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 // KubernetesClusterStatus is what is true of the cluster, summarized from the concrete resource
@@ -177,6 +180,7 @@ type KubernetesClusterStatus struct {
 //+kubebuilder:printcolumn:name="Region",type=string,JSONPath=`.spec.region`
 //+kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.kubernetesVersion`
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
 //+kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.status.endpoint`,priority=1
 
 // KubernetesCluster is a Kubernetes cluster the operator provisions and keeps as described. It is

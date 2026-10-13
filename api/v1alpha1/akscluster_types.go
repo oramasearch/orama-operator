@@ -100,6 +100,28 @@ type AksNodePoolStatus struct {
 	ProvisioningState string `json:"provisioningState,omitempty"`
 	// +optional
 	Count int32 `json:"count,omitempty"`
+	// Error is the provisioning error Azure reports for the pool, as "code: message".
+	// +optional
+	Error string `json:"error,omitempty"`
+}
+
+// AksOperationStatus is the cluster's most recent long-running operation, as Azure reports it.
+type AksOperationStatus struct {
+	// ID is the operation's identifier, to quote to Azure support.
+	// +optional
+	ID string `json:"id,omitempty"`
+	// Status is Azure's own text: a progress line while the operation runs (for example
+	// "CreatingAgentPools: 0/1 nodes completed"), then Succeeded, Failed or Canceled.
+	// +optional
+	Status string `json:"status,omitempty"`
+	// +optional
+	StartTime string `json:"startTime,omitempty"`
+	// +optional
+	EndTime string `json:"endTime,omitempty"`
+	// Error is the error Azure attached to the operation, as "code: message", with the details
+	// Azure nests under it. Empty when Azure reports none.
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 // AksClusterStatus is what Azure reports.
@@ -139,6 +161,14 @@ type AksClusterStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	NodePools []AksNodePoolStatus `json:"nodePools,omitempty"`
+	// Operation is the latest operation Azure ran on the cluster: its progress while it runs and
+	// its error when it fails.
+	// +optional
+	Operation *AksOperationStatus `json:"operation,omitempty"`
+	// ProvisioningError is the provisioning error Azure reports on the cluster itself.
+	// +optional
+	ProvisioningError string `json:"provisioningError,omitempty"`
+	// Message says why the cluster is not Ready, in Azure's words where Azure gave any.
 	// +optional
 	Message string `json:"message,omitempty"`
 	// +optional
@@ -157,6 +187,8 @@ type AksClusterStatus struct {
 //+kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.kubernetesVersion`
 //+kubebuilder:printcolumn:name="State",type=string,JSONPath=`.status.provisioningState`
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="Operation",type=string,JSONPath=`.status.operation.status`
+//+kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`,priority=1
 
 // AksCluster is one AKS managed cluster. It is the concrete kind a KubernetesCluster provisions
 // when its provider has type aks, and the only kind whose controller calls Azure.
