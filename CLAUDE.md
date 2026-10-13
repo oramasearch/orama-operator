@@ -108,6 +108,37 @@ deterministic/recoverable, even if it is more work now.
     `TestTheChartHasOneCRDDirectoryWithEveryKind`, `TestManagementKindsShipAndRunOnEveryCluster`).
     **Never weaken or delete those tests to make a change pass.**
 
+## Two installation paths, one result: `helmfile.yaml` and the operator stay in sync (STRICT)
+
+Steve, 2026-10-13: *"both the helmfile and the operator need to be kept in sync so that operators
+on mgnt clusters and leaf clusters are effectively the same, even though mgmt cluster will need the
+helmfile installation path and leaf clusters will be installed by the mgmt operator"*.
+
+- **The management cluster is installed from [`helmfile.yaml`](helmfile.yaml).** It has to be: it
+  is the cluster the managing operator runs on, so it exists before any operator can install
+  anything.
+- **Every leaf cluster is installed by the management cluster's operator**, from the
+  `ClusterHelmRelease` and `OramaOperator` resources in
+  [`config/clusters/<cluster>/`](config/clusters/README.md).
+- **Both must install the same thing**: same charts, same chart versions, same namespaces, same
+  values, same order, same operator version. A management cluster and a leaf are effectively the
+  same cluster.
+
+**Every platform change is made in both places, in the same pull request.** Change a release in
+`helmfile.yaml` and you change the matching `ClusterHelmRelease` in every
+`config/clusters/*/platform.yaml`; change a `ClusterHelmRelease` and you change `helmfile.yaml`
+and every other cluster's file. Roll a new operator version onto the leaves and the management
+cluster gets the same version. **A change that is in only one of them is not finished, and must
+not be merged.**
+
+`cmd/platform_sync_test.go` fails when they differ. **Never weaken or delete it to make a change
+pass**; fix the side that is behind.
+
+Neither path is a command typed at a cluster. Applying the helmfile to the management cluster is
+done from the merged file, with Steve's consent (next section). The full statement, with the table
+of who installs what, is
+[`docs/infrastructure/README.md`](docs/infrastructure/README.md#two-installation-paths-one-result).
+
 ## Never change a cluster by hand: the operator is how change happens (STRICT)
 
 Steve, 2026-10-13: *"I said no one-offs ... make a strict rule that you're not able to directly

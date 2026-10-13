@@ -12,6 +12,14 @@ hand*): a change made by hand is state outside the code, and is not reproducible
 How to work with them: [`docs/infrastructure/operations.md`](../../docs/infrastructure/operations.md).
 Why they are shaped this way: [`docs/infrastructure/README.md`](../../docs/infrastructure/README.md).
 
+**These files are one of two installation paths, and they mirror the other.** The leaf clusters
+here are installed by the management cluster's operator from these files. The management cluster
+itself is installed from [`helmfile.yaml`](../../helmfile.yaml). Both must install the same charts,
+versions, namespaces and values: **a change to a `platform.yaml` is not finished until
+`helmfile.yaml` and every other cluster's `platform.yaml` have it too**
+([`docs/infrastructure/README.md`](../../docs/infrastructure/README.md#two-installation-paths-one-result);
+`cmd/platform_sync_test.go` fails when they differ).
+
 | File | What it holds |
 |---|---|
 | [`provider.yaml`](provider.yaml) | `KubernetesClusterProvider/azure-orama`: the Azure subscription and defaults every cluster is created with. |
