@@ -108,6 +108,49 @@ deterministic/recoverable, even if it is more work now.
     `TestTheChartHasOneCRDDirectoryWithEveryKind`, `TestManagementKindsShipAndRunOnEveryCluster`).
     **Never weaken or delete those tests to make a change pass.**
 
+## Never change a cluster by hand: the operator is how change happens (STRICT)
+
+Steve, 2026-10-13: *"I said no one-offs ... make a strict rule that you're not able to directly
+manipulate the clusters without my explicit consent ... the operator is how we affect change (or
+changing the CRs for the lakeset or v1 set)"*, and *"that's state changes outside of our code, and
+therefore not reproducible"*.
+
+**You may not directly manipulate any cluster without Steve's explicit consent for that specific
+action.** Every cluster: the managing one and every managed one, nonprod and production.
+
+There are two ways to change what runs on a cluster, and only two:
+
+1. **Change this operator**: code, chart, CRDs, merged into `dev`. If the operator cannot make a
+   change, the fix is to teach it, not to do the change by hand.
+2. **Change a custom resource the operator reconciles**, by editing its file in
+   [`config/clusters/`](config/clusters/README.md) and applying that file. File, apply and commit
+   go together.
+
+Without his explicit consent you do not run, against any cluster: `helm install`, `upgrade`,
+`uninstall` or `rollback`; `kubectl apply`, `create`, `patch`, `edit`, `replace`, `scale`,
+`rollout restart`, `label`, `annotate`, `delete`, or a writing `exec`, on anything but the
+operator's own custom resources applied from their committed files; a cloud CLI change; a write to
+a database on a cluster. Deleting an object "so it is recreated" is included, on nonprod too, even
+when it holds no data. Reading is always allowed: `get`, `describe`, `logs`, `diff`, `wait`, a
+server dry-run, `helm list`, `get`, `history` and `template`, a read-only `select`.
+
+**When a by-hand action looks like the fix, stop.** Say what is wrong and make the operator, or a
+resource, do it. Never offer a by-hand action as an option you might take.
+
+**What this means for the operator's design**: anything an operator of the clusters would need to
+do by hand is a missing feature. Examples already hit: a volume claim whose access mode was wrong
+had to be deleted by hand; a chart setting on the managing cluster had to be applied with `helm`
+because that cluster has no `ClusterHelmRelease`; a workload refused by a quota had no remedy but a
+manual one. Each is work for the operator, to be filed and built.
+
+**Known gap, not a licence**: the managing cluster's own operator and platform charts are not
+managed by a resource yet, so rolling a new build onto it is a `helm upgrade` by
+`build-operator.sh`. That roll needs Steve's explicit consent each time, until the managing cluster
+is managed like the others.
+
+The org-wide form of this rule is in the umbrella bridge's `CLAUDE.md`
+(https://github.com/oramasearch/orama-bridge/blob/main/CLAUDE.md).
+
 ## Clusters, their platform layer, and sets: where to look
 
 Creating a cluster, installing its platform layer and operator, and running Lake or Orama Cloud v1
