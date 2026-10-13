@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -25,4 +26,33 @@ func (r *OramaCloudV1Reconciler) deleteCloudV1Owned(ctx context.Context, oc *ora
 	}
 	uid, version := obj.GetUID(), obj.GetResourceVersion()
 	return client.IgnoreNotFound(r.Delete(ctx, obj, client.Preconditions{UID: &uid, ResourceVersion: &version}))
+}
+
+// reconcileEngineIngresses publishes the writer (primary region only) and the readers on their hosts,
+// and removes the Ingress of an endpoint without a host.
+func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	engine := oc.Spec.Components.Engine
+	for _, endpoint := range []struct {
+		component, host string
+		port            int32
+	}{
+		{"writer", engine.Writer.Host, oramacorePort},
+		{"reader", engine.Reader.Host, envoyPort},
+	} {
+		host := endpoint.host
+		if !oc.Spec.Components.Engine.Enabled || (endpoint.component == "writer" && oc.Spec.Region.Role != "primary") {
+			host = ""
+		}
+		name := oc.Name + "-" + endpoint.component
+		if host == "" {
+			if err := r.deleteCloudV1Owned(ctx, oc, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := r.upsertIngress(ctx, oc, name, endpoint.component, host, endpoint.port); err != nil {
+			return err
+		}
+	}
+	return nil
 }

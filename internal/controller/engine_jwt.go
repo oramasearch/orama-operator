@@ -46,16 +46,19 @@ func writerJWKSURL(oc *oramav1alpha1.OramaCloudV1) string {
 }
 
 // validateWriterJWT refuses a writer JWT config that would reject every customer write: no
-// explicit issuer, no audience, or an unusable JWKS URL.
+// explicit issuer, no audience, an unusable JWKS URL, or an audience list that does not contain the
+// writer's own public URL.
 func validateWriterJWT(oc *oramav1alpha1.OramaCloudV1) error {
-	cfg := oc.Spec.Components.Engine.Writer.JWT
+	w := oc.Spec.Components.Engine.Writer
+	cfg := w.JWT
 	if cfg == nil {
 		return nil
 	}
 	if oc.Spec.JWTIssuer == "" {
 		return fmt.Errorf("engine.writer.jwt requires spec.jwtIssuer: set it to the JWT_ISSUER the dashboard signs write tokens with")
 	}
-	if len(writerJWTAudiences(cfg)) == 0 {
+	audiences := writerJWTAudiences(cfg)
+	if len(audiences) == 0 {
 		return fmt.Errorf("engine.writer.jwt requires at least one audience (the clusterWriterUrl the dashboard signs tokens for)")
 	}
 	if cfg.JWKSURL == "" {
@@ -64,6 +67,11 @@ func validateWriterJWT(oc *oramav1alpha1.OramaCloudV1) error {
 		}
 	} else if u, err := url.Parse(cfg.JWKSURL); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
 		return fmt.Errorf("engine.writer.jwt.jwksURL must be an HTTP(S) URL without credentials")
+	}
+	if w.Host != "" {
+		if public := "https://" + w.Host; !slices.Contains(audiences, public) {
+			return fmt.Errorf("engine.writer.jwt audiences %v do not include %s, the writer's public URL (engine.writer.host); the dashboard signs each token for the exact clusterWriterUrl it returns", audiences, public)
+		}
 	}
 	return nil
 }

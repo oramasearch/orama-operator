@@ -62,7 +62,7 @@ increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `sentry.{dsnSecretRef.{name,key},environment}`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `engine` | `writer.gpu`, `writer.{host,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `sentry.{dsnSecretRef.{name,key},environment}`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
@@ -134,15 +134,23 @@ and are timed from the newest existing snapshot of each claim. Behaviour and the
 
 | Field under `spec.components` | Default | Purpose |
 |---|---|---|
+| `engine.writer.host` | empty | Writer Ingress → `<cr>-writer:8080`, primary region only. |
+| `engine.reader.host` | empty | Reader Ingress → `<cr>-reader:80`, through Envoy when enabled, direct reader otherwise. |
 | `engine.writer.jwt` | unset | Enables `writer_side.jwt.providers` in OramaCore. Unset preserves the existing engine config without JWT. Requires `spec.jwtIssuer`. |
 | `engine.writer.jwt.jwksURL` | in-cluster dashboard | HTTP(S) dashboard JWKS URL without credentials. Unset renders `http://<cr>-dashboard:3000/api/.well-known/jwks.json`, so the writer fetches keys from the dashboard Service in its own namespace rather than through public DNS and Cloudflare; then the dashboard must be enabled. |
 | `engine.writer.jwt.audiences` | — | Accepted JWT audiences: each exact `clusterWriterUrl` the dashboard signs tokens for (the copied control DB's `oramacore_clusters.writer_url`, which the dashboard also returns as `writerURL`). List every writer URL the rows still carry; Prod 1 lists `https://writer.atlantis.cluster.oramacore.com` and `https://writer.bovista.cluster.oramacore.com`. Each entry 1–128 characters. |
 | `engine.writer.jwt.audience` | — | Deprecated single audience; rendered together with `audiences` as one list without duplicates. |
 
 `engine.writer.jwt` fails the reconcile (`Ready=False`, reason `ReconcileError`) when `jwtIssuer` is
-empty, when `audience` and `audiences` are both empty, and when `jwksURL` is unset and the dashboard is
-disabled. OramaCore matches issuer and audience exactly, so any of these would otherwise surface only
-as 401s on customer writes.
+empty, when `audience` and `audiences` are both empty, when `jwksURL` is unset and the dashboard is
+disabled, and when `engine.writer.host` is set but `https://<writer.host>` is not among the audiences.
+OramaCore matches issuer and audience exactly, so any of these would otherwise surface only as 401s on
+customer writes.
+
+With `cloudflare.enabled`, `manageDNS` and `apiTokenSecretRef` configured, the dashboard, writer
+and reader each get an owned proxied `CloudflareDNSRecord` after their Ingress receives an address.
+Removing a host or disabling DNS deletes its owned child record; the DNS controller's finalizer
+handles external cleanup. Existing CRs gain no writer/reader ingress until their hosts are set.
 
 `idp.provider: firebase` injects the three server variables through required Secret key references.
 The operator creates no Firebase credentials and no longer seeds the unused `FIREBASE_SERVICE_ACCOUNT`

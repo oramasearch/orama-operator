@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); in-process embeddings, with `nvidia.com/gpu` on the writer when `writer.gpu`; Services; engine `ConfigMap` with opt-in dashboard JWKS and Sentry; Prometheus scrape annotations; opt-in scheduled `VolumeSnapshot`s of the writer and reader data claims (`engine_snapshots.go`, #316) | ✅ **done** (validated on AKS; snapshots 🟡 fake-client tested, not live-tested) |
+| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); in-process embeddings, with `nvidia.com/gpu` on the writer when `writer.gpu`; Services; optional writer/reader Ingresses; engine `ConfigMap` with opt-in dashboard JWKS and Sentry; Prometheus scrape annotations; opt-in scheduled `VolumeSnapshot`s of the writer and reader data claims (`engine_snapshots.go`, #316) | ✅ **done** (validated on AKS; snapshots 🟡 fake-client tested, not live-tested) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; **never migrates the control DB** — in-cluster, the operator's owned `PostgresSchema` applies the schema (a second Drizzle migrate collides, Postgres `42710`); external, the database's owner runs migrations ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)) | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -155,7 +155,8 @@ Idempotent — `enable → disable → enable` round-trips cleanly (validated on
   provider (`engine.writer.jwt`) accepts the dashboard's write tokens: issuer `jwtIssuer(oc)`, the
   same value the dashboard signs with, and audiences the union of `audience` and `audiences`. It
   fetches keys from `jwksURL`, by default the in-cluster `http://<cr>-dashboard:3000/api/.well-known/jwks.json`.
-  The reconcile refuses an empty issuer and no audience (`engine_jwt.go`).
+  The reconcile refuses an empty issuer, no audience, and a writer host whose `https://` URL is not
+  an audience (`engine_jwt.go`).
 
 **Validated on AKS (2026-07-08):** per-component secrets are generated (the
 `search-secret` holds only `TYPESENSE_API_KEY`, **not** the Cloudflare token); the
@@ -630,14 +631,20 @@ Routed through the shared `reconcileApp` builder, so it inherits the workload-ha
 
 ## Cloudflare (`cloudflare.go`) — 🟡 implemented, not live-tested
 
-Cloudflare stays the permanent edge/geo-LB; the operator reconciles CF **DNS** via the
-CF API (raw HTTP): it upserts a proxied record pointing `dashboard.host` at this
-cluster's ingress address. **Safe no-op** unless fully configured — `enabled` +
-`apiTokenSecretRef` → a Secret with keys `token` + `zoneID` + `accountID` + `manageDNS` + a resolvable
-ingress target. The no-op path is validated on AKS (loop stays green with `enabled`
-but no token). `spec.cloudflare.zoneIDs` maps zone names to zone IDs; the host takes the longest
-matching zone suffix (else the Secret's `zoneID`) into its child's `spec.zoneID`, so one CR can serve
-`orama.ing` and `orama.com` names. The DNS child controller
+Cloudflare stays the permanent edge/geo-LB. The operator owns `<cr>-dashboard-dns`,
+`<cr>-writer-dns` and `<cr>-reader-dns` `CloudflareDNSRecord` CRs for their configured public hosts.
+Each record points at its own Ingress's assigned IP or hostname, with proxying enabled. The child
+controller makes the API call; the main reconciler only writes desired resources. It waits for an
+Ingress address and preserves an existing record while a replacement address is pending.
+
+Creation requires `enabled`, `manageDNS`, `apiTokenSecretRef` (keys `token`, `zoneID`, `accountID`)
+and an enabled component with a host. Clearing a host, disabling the component or disabling managed
+DNS deletes the owned child record; its finalizer removes external DNS. A foreign resource is never
+deleted on this path. A provisioned host or credential-reference change finalizes the old child
+before recreating its resource name, so name-based upsert cannot orphan the old record. Keep the
+old Cloudflare credential Secret available through finalization. `spec.cloudflare.zoneIDs` maps zone names to
+zone IDs; each host takes the longest matching zone suffix (else the Secret's `zoneID`) into its
+child's `spec.zoneID`, so one CR can serve `orama.ing` and `orama.com` names. The DNS child controller
 creates new records but changes existing ones no more than it did before operator#312 (owner
 decision 2026-10-12: existing DNS settings stay as they are). A record it
 creates carries the Cloudflare comment `orama-operator:<namespace>/<name>`; a foreign record that
@@ -646,12 +653,11 @@ cannot repoint Prod 1's record). Records created earlier are recognised by `stat
 any write and never gain the comment. A zone change on an existing record is refused (`ready: false`,
 nothing changes in either zone); mapping a host to the zone it is already in changes nothing. On
 delete, a commented record is removed only if it still carries its comment, and a legacy record is
-removed by ID as before (see `CloudflareDNSRecord` in `crd-reference.md`).
+removed by ID as before (see `CloudflareDNSRecord` in `crd-reference.md`). Prod 2's hosts are `app.orama.ing`, `reader.orama.ing` and
+`writer.orama.ing`, one level deep so Cloudflare's `*.orama.ing` certificate covers them (operator#317). Engine hosts reuse the dashboard's nginx ingress-class behavior.
 
-> **Follow-ups:** validate against a live Cloudflare account; add **Load Balancing**
-> (geo-steered pools + health checks across the regional clusters — the actual
-> geo-LB); deprovision records on teardown; surface the managed hostnames beyond just
-> the dashboard.
+These endpoint and DNS changes are unit-tested as of 2026-10-07 and have not been applied to AKS or
+Cloudflare. Prod 1's records remain read-only; this work makes no production calls.
 
 ## Zetta elastic capacity (`zetta_capacity.go`) — 🟡 implemented, opt-in, not live-tested
 
@@ -768,8 +774,6 @@ install** too. Opt-in via `OramaZettaCluster.spec.capacity.karpenter.install` (d
 > (`orama_control.scale_requests`); drain-safe, quorum-aware scale-down; multi-cluster
 > placement policy (per-operator identity already namespaces the state); consent-trail
 > integration (`add_nodes` / `approve_consent`); live validation on an EKS + AKS-NAP cluster.
-> **Follow-ups:** validate against a live Cloudflare account; deprovision records on
-> teardown; surface the managed hostnames beyond just the dashboard.
 
 ## Cloudflare global Load Balancer (`cloudflareloadbalancer_controller.go`) — 🟡 implemented, not live-tested
 

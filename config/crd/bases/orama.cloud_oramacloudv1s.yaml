@@ -1028,6 +1028,10 @@ spec:
                         type: integer
                       reader:
                         properties:
+                          host:
+                            description: Host publishes reads through an owned Ingress
+                              and optional Cloudflare DNS.
+                            type: string
                           hpa:
                             description: |-
                               HPA autoscales readers on load when set: the operator owns a HorizontalPodAutoscaler
@@ -1197,6 +1201,11 @@ spec:
                               writer's embeddings on CPU on a node without a GPU. (This is the main reason a GPU node is
                               needed at all; the other is an in-cluster vLLM — see spec.llm.gpu.)
                             type: boolean
+                          host:
+                            description: |-
+                              Host publishes the writer through an owned Ingress and optional Cloudflare DNS.
+                              Empty keeps the writer internal.
+                            type: string
                           jwt:
                             description: JWT enables the dashboard JWKS provider.
                               Unset preserves the existing config without JWT.
@@ -1209,7 +1218,8 @@ spec:
                               audiences:
                                 description: |-
                                   Audiences are the accepted audiences: each exact clusterWriterUrl the dashboard's token
-                                  endpoint signs for (the writer_url of a control-DB oramacore_clusters row).
+                                  endpoint signs for (the writer_url of a control-DB oramacore_clusters row). When the writer
+                                  has a host, https://<host> must be one of them.
                                 items:
                                   maxLength: 128
                                   minLength: 1

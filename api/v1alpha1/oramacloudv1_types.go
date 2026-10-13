@@ -381,6 +381,10 @@ type EngineHooksSpec struct {
 }
 
 type WriterSpec struct {
+	// Host publishes the writer through an owned Ingress and optional Cloudflare DNS.
+	// Empty keeps the writer internal.
+	// +optional
+	Host string `json:"host,omitempty"`
 	// JWT enables the dashboard JWKS provider. Unset preserves the existing config without JWT.
 	// +optional
 	JWT *WriterJWTSpec `json:"jwt,omitempty"`
@@ -423,7 +427,8 @@ type WriterJWTSpec struct {
 	// +optional
 	Audience string `json:"audience,omitempty"`
 	// Audiences are the accepted audiences: each exact clusterWriterUrl the dashboard's token
-	// endpoint signs for (the writer_url of a control-DB oramacore_clusters row).
+	// endpoint signs for (the writer_url of a control-DB oramacore_clusters row). When the writer
+	// has a host, https://<host> must be one of them.
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=128
 	// +optional
@@ -431,6 +436,9 @@ type WriterJWTSpec struct {
 }
 
 type ReaderSpec struct {
+	// Host publishes reads through an owned Ingress and optional Cloudflare DNS.
+	// +optional
+	Host string `json:"host,omitempty"`
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
 	// HPA autoscales readers on load when set: the operator owns a HorizontalPodAutoscaler

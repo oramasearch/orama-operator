@@ -401,21 +401,27 @@ func TestCloudflareZoneIDForHost(t *testing.T) {
 func TestCloudV1DNSZonePerHost(t *testing.T) {
 	oc := fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.Dashboard.Host = "app.orama.ing"
+		o.Spec.Components.Engine.Reader.Host = "app.orama.com"
+		o.Spec.Components.Engine.Writer.Host = "writer.example.net"
 		o.Spec.Cloudflare = oramav1alpha1.CloudflareSpec{Enabled: true, ManageDNS: true, APITokenSecretRef: &corev1.LocalObjectReference{Name: "cf"},
 			ZoneIDs: map[string]string{"orama.ing": "A", "orama.com": "B"}}
 	})
 	cl, r := reconcileOCV1(t, oc)
 	ctx := context.Background()
-	ing := getObj(t, cl, "v1-dashboard", &networkingv1.Ingress{})
-	ing.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{IP: "192.0.2.10"}}
-	if err := cl.Status().Update(ctx, ing); err != nil {
-		t.Fatal(err)
+	for _, component := range []string{"dashboard", "writer", "reader"} {
+		ing := getObj(t, cl, "v1-"+component, &networkingv1.Ingress{})
+		ing.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{IP: "192.0.2.10"}}
+		if err := cl.Status().Update(ctx, ing); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := r.reconcileCloudflare(ctx, oc); err != nil {
 		t.Fatal(err)
 	}
-	if got := getObj(t, cl, "v1-dashboard-dns", &oramav1alpha1.CloudflareDNSRecord{}).Spec.ZoneID; got != "A" {
-		t.Errorf("dashboard zoneID = %q, want %q", got, "A")
+	for component, want := range map[string]string{"dashboard": "A", "reader": "B", "writer": ""} {
+		if got := getObj(t, cl, "v1-"+component+"-dns", &oramav1alpha1.CloudflareDNSRecord{}).Spec.ZoneID; got != want {
+			t.Errorf("%s zoneID = %q, want %q", component, got, want)
+		}
 	}
 }
 

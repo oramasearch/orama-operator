@@ -104,6 +104,9 @@ func TestWriterJWTRefusesUnverifiableConfig(t *testing.T) {
 		{"empty issuer", writerJWTOC(oramav1alpha1.WriterJWTSpec{Audiences: []string{"https://writer.a.example"}},
 			func(o *oramav1alpha1.OramaCloudV1) { o.Spec.JWTIssuer = "" }),
 			"engine.writer.jwt requires spec.jwtIssuer"},
+		{"writer host not an audience", writerJWTOC(oramav1alpha1.WriterJWTSpec{Audiences: []string{"https://writer.a.example"}},
+			func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Engine.Writer.Host = "writer.b.example" }),
+			"do not include https://writer.b.example, the writer's public URL"},
 		{"no audience", writerJWTOC(oramav1alpha1.WriterJWTSpec{}, nil),
 			"requires at least one audience"},
 		{"no jwksURL without the dashboard", writerJWTOC(oramav1alpha1.WriterJWTSpec{Audiences: []string{"https://writer.a.example"}},
@@ -123,6 +126,12 @@ func TestWriterJWTRefusesUnverifiableConfig(t *testing.T) {
 				t.Fatalf("Ready condition = %+v", ready)
 			}
 		})
+	}
+
+	ok := writerJWTOC(oramav1alpha1.WriterJWTSpec{Audiences: []string{"https://writer.a.example", "https://writer.b.example"}},
+		func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Engine.Writer.Host = "writer.b.example" })
+	if err := validateWriterJWT(ok); err != nil {
+		t.Fatalf("writer host among the audiences refused: %v", err)
 	}
 }
 
