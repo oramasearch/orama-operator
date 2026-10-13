@@ -54,6 +54,8 @@ spec:
       minCount: 0
       maxCount: 100
       zones: ["1", "2", "3"]
+  # Azure tag names cannot contain a slash, so these are not Kubernetes-style names.
   tags:
-    orama.cloud/role: leaf
-    orama.cloud/purpose: nonprod
+    role: leaf
+    purpose: nonprod
+    managed-by: orama-operator

@@ -213,6 +213,17 @@ helm upgrade orama-operator chart/ -n orama-system -f <stored values> \
 `make check-crds CONTEXT=<context>` gains `--management` (`./hack/check-cluster-crds.sh <context>
 --management`) to include these definitions in the pre-upgrade check.
 
+### What lives in Azure for this (created 2026-10-12)
+
+| | |
+|---|---|
+| Custom role | `Orama Cluster Provisioner`: read the subscription; read, write and delete resource groups; everything under `Microsoft.ContainerService/managedClusters`; read `Microsoft.ContainerService/locations`. Assigned on the subscription, because creating a resource group is a subscription-level action. |
+| Managed identity | `orama-operator-cluster-management`, in `orama-production-cluster-01_group` |
+| Federated credential | The existing cluster's OIDC issuer, subject `system:serviceaccount:orama-system:orama-operator` |
+
+The role cannot touch machines, networks, storage, identities or role assignments directly. It can
+act on any AKS cluster in the subscription, the existing one included.
+
 ### Reaching Azure
 
 The operator needs an Azure identity that may create resource groups and managed clusters in the

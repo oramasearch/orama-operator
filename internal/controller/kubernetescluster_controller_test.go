@@ -507,6 +507,58 @@ func TestAksClusterReportsWhatTheSpecAsksForThatTheClusterLacks(t *testing.T) {
 	}
 }
 
+// Azure refuses a create call outright for one tag name with a slash in it. A Kubernetes-style
+// name is exactly that, so the refusal has to come from the operator, before Azure is called.
+func TestATagNameAzureWouldRefuseIsRefusedBeforeAzureIsCalled(t *testing.T) {
+	for name, want := range map[string]string{
+		"orama.cloud/role": "reserves",
+		"cost&centre":      "reserves",
+		"":                 "empty name",
+	} {
+		if got := azureTagProblem(map[string]string{name: "x"}); !strings.Contains(got, want) {
+			t.Errorf("tag %q: want a problem containing %q, got %q", name, want, got)
+		}
+	}
+	if got := azureTagProblem(map[string]string{"role": "leaf", "purpose": "nonprod", "orama.cloud-role": "leaf"}); got != "" {
+		t.Errorf("valid tags were refused: %s", got)
+	}
+	if got := azureTagProblem(map[string]string{"role": strings.Repeat("x", 257)}); !strings.Contains(got, "256") {
+		t.Errorf("an over-long value was not refused: %q", got)
+	}
+
+	// The concrete kind refuses and sends nothing.
+	azure := newFakeAzure(t)
+	concrete := testAksCluster(oramav1alpha1.ClusterDeletionDelete)
+	concrete.Spec.Tags = map[string]string{"orama.cloud/role": "leaf"}
+	c := clusterTestClient(t, concrete, azureCredentialsSecret(true))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	reconcileAks(t, r, concrete.Name)
+	got := getAks(t, c, concrete.Name)
+	if got.Status.Phase != clusterPhaseDegraded || !strings.Contains(got.Status.Message, `"orama.cloud/role"`) {
+		t.Fatalf("phase %q, message %q", got.Status.Phase, got.Status.Message)
+	}
+	if len(azure.requests) != 0 {
+		t.Fatalf("Azure was called for a cluster it would refuse: %v", azure.requests)
+	}
+
+	// The abstract kind says so too, and provisions nothing.
+	abstract := testKubernetesCluster()
+	abstract.Spec.Tags = map[string]string{"orama.cloud/role": "leaf"}
+	c = clusterTestClient(t, abstract, testProvider())
+	kr := &KubernetesClusterReconciler{Client: c, Scheme: clusterTestScheme(t)}
+	if _, err := kr.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: abstract.Name}}); err == nil {
+		t.Fatal("expected the reconcile to report the tag")
+	}
+	summary := getKC(t, c, abstract.Name)
+	if summary.Status.Phase != clusterPhaseDegraded || !strings.Contains(summary.Status.Message, "spec.tags") {
+		t.Fatalf("phase %q, message %q", summary.Status.Phase, summary.Status.Message)
+	}
+	var none oramav1alpha1.AksCluster
+	if err := c.Get(context.Background(), types.NamespacedName{Name: abstract.Name}, &none); !apierrors.IsNotFound(err) {
+		t.Fatal("a cluster with a refused tag must not provision anything")
+	}
+}
+
 func TestAzureTokenUsesTheServicePrincipalSecretOrTheFederatedToken(t *testing.T) {
 	azure := newFakeAzure(t)
 	ctx := context.Background()

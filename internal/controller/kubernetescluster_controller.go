@@ -141,6 +141,10 @@ func (r *KubernetesClusterReconciler) reconcileAKS(ctx context.Context, cluster 
 	if provider.Spec.AKS == nil {
 		return fmt.Errorf("KubernetesClusterProvider %q has type aks and no spec.aks", provider.Name)
 	}
+	// Azure's tag rules are the provider's, so they are checked where the provider is known.
+	if problem := azureTagProblem(cluster.Spec.Tags); problem != "" {
+		return fmt.Errorf("spec.tags: %s", problem)
+	}
 	desired := aksClusterSpecFor(cluster, provider)
 
 	concrete := &oramav1alpha1.AksCluster{ObjectMeta: metav1.ObjectMeta{Name: cluster.Name}}
