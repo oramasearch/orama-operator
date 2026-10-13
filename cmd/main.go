@@ -47,12 +47,12 @@ func main() {
 	flag.StringVar(&lakePolarsImage, "lake-polars-image", controller.DefaultLakePolarsImage,
 		"the lake-polars image for a Lake's polars services when its spec.services.polarsImage is empty")
 	// The e2e kinds are test fixtures. Production runs no e2e suites — that is what a testing
-	// environment is for — so their controllers stay unregistered unless a cluster asks, and their
-	// CRDs live outside the install chart (chart/e2e-crds). Off by default means the safe posture is
-	// the one you get by forgetting. See docs/operations/crd-rollout.md.
+	// environment is for — so their controllers stay unregistered unless a cluster asks. Their CRDs
+	// are in the chart with every other kind, on every cluster. Off by default means the safe
+	// posture is the one you get by forgetting. See docs/operations/crd-rollout.md.
 	flag.BoolVar(&enableE2EControllers, "enable-e2e-controllers", false,
 		"reconcile the e2e test kinds (OramaCloudV1E2ETest, ZettaClusterE2ETest, LakeE2ETest); "+
-			"testing environments only, and the cluster needs the chart/e2e-crds CRDs")
+			"testing environments only")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -285,9 +285,9 @@ func main() {
 		os.Exit(1)
 	}
 	// e2e kinds — testing environments only. Production reconciles no e2e resources, so these
-	// controllers are not registered and their CRDs are not installed.
+	// controllers are not registered. Their CRDs are installed everywhere, like every other kind.
 	if enableE2EControllers {
-		setupLog.Info("e2e controllers enabled; this cluster needs the chart/e2e-crds CRDs installed")
+		setupLog.Info("e2e controllers enabled")
 		if err = (&controller.OramaCloudV1E2ETestReconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),

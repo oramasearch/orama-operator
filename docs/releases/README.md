@@ -14,7 +14,7 @@ does not, what is knowingly still broken, and how it was verified.
 - **A release is three tags with one name**: the Git tag on the merge commit, the GitHub
   release, and the same tag on the image in Docker Hub, naming the digest that is deployed.
 - **A first release, or one after a long gap, lists everything in it**, not a summary: every
-  resource kind in `api/v1alpha1/`, checked against `chart/crds/` and `chart/e2e-crds/`.
+  resource kind in `api/v1alpha1/`, checked against `chart/crds/`.
 - **Say where each thing has run.** Implemented, validated on the cluster, and live-tested
   against a real external account are different claims;
   [`docs/components.md`](../components.md) holds the status of each reconciler.
