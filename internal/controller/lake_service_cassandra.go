@@ -71,6 +71,12 @@ func (k cassandraServiceKind) build(in catalogService, _ string) []catalogResour
 			"seccompProfile": map[string]interface{}{"type": "RuntimeDefault"},
 		}},
 		{path: []string{"spec", "cassandra", "resources"}, value: serviceResources("250m", "1Gi", "500m", "2Gi")},
+		// Cassandra sizes its heap from the machine's memory, not the container's limit: on a 32GiB
+		// node it asked for far more than 2Gi and was OOM-killed on start (operator#435). The heap
+		// is stated, at half the container's limit, leaving the rest for off-heap memory.
+		{path: []string{"spec", "cassandra", "config"}, value: map[string]interface{}{
+			"jvmOptions": map[string]interface{}{"heap_initial_size": "1Gi", "heap_max_size": "1Gi"},
+		}},
 		{path: []string{"spec", "cassandra", "containers"}, onChange: true, value: []interface{}{
 			restrictedContainer("cassandra", nil),
 			restrictedContainer("server-system-logger", serviceResources("20m", "64M", "100m", "128M")),
