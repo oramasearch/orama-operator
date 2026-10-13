@@ -631,6 +631,13 @@ host is set)**.
   `dashboard.crons` adds the scheduled calls Prod 1 runs from Vercel; see
   [Dashboard crons](#dashboard-crons).
 
+Every app container is pulled `Always` when its image is a tag (dev tags such as `v1-sandbox` are
+re-pushed) and `IfNotPresent` when it is digest-pinned (`repo@sha256:…` via
+`spec.images.overrides`), so a pinned production stack never depends on the registry to restart a
+pod. `spec.images.requireDigests: true` makes pinning mandatory: before anything is written, the
+reconcile (`validateImageDigests`, `helpers.go`) fails with `Ready=False` naming every enabled
+component whose image resolved through `spec.images` lacks `@sha256:<digest>` (operator#317).
+
 **Node placement.** `spec.placement.{nodeSelector,tolerations}` is applied to every pod the operator
 creates for the CR: apps, data stores, the engine (writer, readers), the demo-seed Job,
 the control-DB `PostgresSchema` migration Job (through `PostgresSchema.spec.nodeSelector/

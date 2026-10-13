@@ -165,7 +165,9 @@ type ImagesSpec struct {
 	// +kubebuilder:default="latest"
 	Tag string `json:"tag,omitempty"`
 	// Overrides maps a component key ("oramacore", "dashboard", "disco", ...) to a
-	// full image ref, bypassing registry/tag for that component.
+	// full image ref, bypassing registry/tag for that component. A digest-pinned ref
+	// (`repo@sha256:<digest>` or `repo:tag@sha256:<digest>`) is pulled IfNotPresent;
+	// a tag-only ref of an operator-built app is pulled Always.
 	// +optional
 	Overrides map[string]string `json:"overrides,omitempty"`
 	// PullSecretName is a docker-registry Secret (in the CR's namespace) used to pull
@@ -173,6 +175,12 @@ type ImagesSpec struct {
 	// build/images tooling pushes to. Attached to every pod the operator creates.
 	// +optional
 	PullSecretName string `json:"pullSecretName,omitempty"`
+	// RequireDigests, when true, fails the reconcile (Ready=False) while any enabled component's
+	// image resolved through registry/tag or overrides lacks `@sha256:<digest>`, so production never
+	// runs a floating tag. Data-store and helper images (Redis, busybox, curl, ...) are not checked.
+	// Default false: tag-only images such as `:latest` are allowed.
+	// +optional
+	RequireDigests bool `json:"requireDigests,omitempty"`
 }
 
 // LLMSpec configures the engine's language-model providers. v1 offers MULTIPLE providers at once

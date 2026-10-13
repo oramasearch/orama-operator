@@ -9,6 +9,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"slices"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -134,6 +137,17 @@ func imagePullSecrets(oc *oramav1alpha1.OramaCloudV1) []corev1.LocalObjectRefere
 	return []corev1.LocalObjectReference{{Name: oc.Spec.Images.PullSecretName}}
 }
 
+// appImagePullPolicy is the pull policy for an operator-built app image. Dev tags (e.g. v1-sandbox)
+// are MUTABLE — the same tag is re-pushed on each rebuild, so a tag-only ref is pulled Always to
+// pick up the latest build. A digest-pinned ref (`@sha256:`) can't change under the node's cache,
+// so it is pulled IfNotPresent: a node restart or reschedule then never depends on the registry.
+func appImagePullPolicy(image string) corev1.PullPolicy {
+	if strings.Contains(image, "@sha256:") {
+		return corev1.PullIfNotPresent
+	}
+	return corev1.PullAlways
+}
+
 // podPlacement is the CR-level node placement (spec.placement) for an operator-created pod. Both
 // are nil when unset, so a CR without placement renders the pod exactly as before.
 func podPlacement(oc *oramav1alpha1.OramaCloudV1) (map[string]string, []corev1.Toleration) {
@@ -207,6 +221,66 @@ func oramacoreSideImage(oc *oramav1alpha1.OramaCloudV1, side string) string {
 		return o
 	}
 	return oramacoreImage(oc)
+}
+
+// specImages lists the image, keyed by component, of every enabled component whose image resolves
+// through spec.images, as its reconciler resolves it. Keep it in step with the reconcilers.
+func specImages(oc *oramav1alpha1.OramaCloudV1) map[string]string {
+	c := oc.Spec.Components
+	images := map[string]string{}
+	if c.Engine.Enabled {
+		if oc.Spec.Region.Role == "primary" {
+			images["engine writer"] = oramacoreSideImage(oc, "writer")
+		}
+		images["engine reader"] = oramacoreSideImage(oc, "reader")
+	}
+	if c.Ingestion.Enabled {
+		images["index-builder"] = componentImage(oc, "index-builder", "index-builder")
+		if c.Ingestion.Harvest {
+			images["harvest-master"] = componentImage(oc, "harvest-master", "harvest-master")
+			images["harvest"] = componentImage(oc, "harvest", "harvest")
+		}
+	}
+	if c.Workers.Enabled && c.Workers.Image == "" {
+		images["workers"] = componentImage(oc, "workers", "orama-workers")
+	}
+	if c.Dashboard.Enabled {
+		images["dashboard"] = componentImage(oc, "dashboard", "dashboard")
+	}
+	if c.Docs.Enabled {
+		images["docs"] = componentImage(oc, "docs", "docs")
+	}
+	if c.Disco.Enabled {
+		images["disco"] = componentImage(oc, "disco", "disco")
+	}
+	if c.AnalyticsProcessor.Enabled {
+		images["analytics-processor"] = componentImage(oc, "analytics-processor", "analytics-processor")
+	}
+	if c.SearchWorkers.Enabled {
+		for _, w := range searchWorkerNames {
+			images[w] = componentImage(oc, w, w)
+		}
+	}
+	return images
+}
+
+// validateImageDigests enforces spec.images.requireDigests: with it set, every image specImages
+// lists must be pinned by digest, and the error names each one that is not. Unset allows any tag.
+func validateImageDigests(oc *oramav1alpha1.OramaCloudV1) error {
+	if !oc.Spec.Images.RequireDigests {
+		return nil
+	}
+	var floating []string
+	for component, image := range specImages(oc) {
+		if !digestReferencePattern.MatchString(image) {
+			floating = append(floating, fmt.Sprintf("%s (%s)", component, image))
+		}
+	}
+	if len(floating) == 0 {
+		return nil
+	}
+	slices.Sort(floating)
+	return fmt.Errorf("spec.images.requireDigests: not pinned by @sha256:<digest>: %s", strings.Join(floating, ", "))
 }
 
 func strPtr(s string) *string { return &s }

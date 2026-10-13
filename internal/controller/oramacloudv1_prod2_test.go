@@ -457,6 +457,45 @@ func TestWithoutDeletionProtectionBehavesAsBefore(t *testing.T) {
 	}
 }
 
+// --- 5. digest pinning ---
+
+func TestDigestPinnedImagesArePulledIfNotPresent(t *testing.T) {
+	const digest = "oramasearch/dashboard@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cl, _ := reconcileOCV1(t, fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Images.Overrides = map[string]string{
+			"dashboard": digest,
+			"oramacore": "oramasearch/oramacore:v1.2.3@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		}
+	}))
+	dash := getObj(t, cl, "v1-dashboard", &appsv1.Deployment{}).Spec.Template.Spec.Containers[0]
+	if dash.Image != digest || dash.ImagePullPolicy != corev1.PullIfNotPresent {
+		t.Errorf("dashboard image %q policy %q, want the digest ref pulled IfNotPresent", dash.Image, dash.ImagePullPolicy)
+	}
+	docs := getObj(t, cl, "v1-docs", &appsv1.Deployment{}).Spec.Template.Spec.Containers[0]
+	if docs.ImagePullPolicy != corev1.PullAlways {
+		t.Errorf("tag-only docs image policy %q, want Always (mutable tag, as before)", docs.ImagePullPolicy)
+	}
+	writer := getObj(t, cl, "v1-writer", &appsv1.StatefulSet{}).Spec.Template.Spec.Containers[0]
+	if writer.Image != "oramasearch/oramacore:v1.2.3@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+		t.Errorf("writer image %q, want the digest override verbatim", writer.Image)
+	}
+}
+
+func TestAppImagePullPolicy(t *testing.T) {
+	for image, want := range map[string]corev1.PullPolicy{
+		"oramasearch/dashboard:v1-sandbox":         corev1.PullAlways,
+		"oramasearch/dashboard":                    corev1.PullAlways,
+		"registry:5000/dashboard:v1":               corev1.PullAlways,
+		"oramasearch/dashboard@sha256:abc":         corev1.PullIfNotPresent,
+		"oramasearch/dashboard:v1@sha256:abc":      corev1.PullIfNotPresent,
+		"registry:5000/team/dashboard@sha256:abcd": corev1.PullIfNotPresent,
+	} {
+		if got := appImagePullPolicy(image); got != want {
+			t.Errorf("appImagePullPolicy(%q) = %q, want %q", image, got, want)
+		}
+	}
+}
+
 // --- 6. node placement ---
 
 var prod2Placement = oramav1alpha1.PlacementSpec{
