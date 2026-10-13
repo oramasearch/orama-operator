@@ -79,9 +79,41 @@ func pgURIEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
 		LocalObjectReference: corev1.LocalObjectReference{Name: controlDBSecret(oc)}, Key: "uri"}}}
 }
 
+// controlDBClusterName is the CNPG Cluster name; CNPG derives `<name>-app` (controlDBAppSecret)
+// and `<name>-rw` (the primary Service) from it.
+func controlDBClusterName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-controldb" }
+
+func controlDBScheduledBackupName(oc *oramav1alpha1.OramaCloudV1) string {
+	return controlDBClusterName(oc) + "-backup"
+}
+
+// controlDBInCluster reports whether the operator runs the control DB as a CNPG Cluster here.
+func controlDBInCluster(oc *oramav1alpha1.OramaCloudV1) bool {
+	db := oc.Spec.Components.ControlDB
+	return db.Enabled && db.Mode != "external"
+}
+
+// controlDBIsReplica reports whether this cluster's control DB is a CNPG replica of the primary
+// region's. A replica neither applies the schema nor takes backups (the primary does both).
+func controlDBIsReplica(oc *oramav1alpha1.OramaCloudV1) bool {
+	return oc.Spec.Region.Role == "read" && oc.Spec.Components.ControlDB.Replicate
+}
+
+// resolveControlDBBackup validates spec.components.controlDB.backup (see resolveControlDBBackupConfig).
+// The default bucket prefix is <namespace>/<name>/controldb. Backups are never configured on a
+// replica control DB.
+func (r *OramaCloudV1Reconciler) resolveControlDBBackup(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (controlDBBackupConfig, error) {
+	if !controlDBInCluster(oc) || controlDBIsReplica(oc) {
+		return controlDBBackupConfig{}, nil
+	}
+	return resolveControlDBBackupConfig(ctx, r.Client, oc.Namespace, oc.Spec.Components.ControlDB.Backup,
+		oc.Namespace+"/"+oc.Name+"/controldb")
+}
+
 // reconcileControlDB provisions the control-plane Postgres (PlanetScale in prod) as a
 // CloudNativePG Cluster. On the primary it bootstraps a fresh cluster; on a read tier
 // with replicate=true it stands up a replica cluster streaming from the primary peer.
+// spec.components.controlDB.backup adds a Barman object store + an owned ScheduledBackup.
 // Requires the CloudNativePG operator to be installed (see helmfile).
 func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	db := oc.Spec.Components.ControlDB
@@ -97,19 +129,23 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 	if !db.Enabled {
 		return r.teardownControlDB(ctx, oc) // disable ≠ leave running (#23)
 	}
+	backup, err := r.resolveControlDBBackup(ctx, oc)
+	if err != nil {
+		return err
+	}
 
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
-	cluster.SetName(oc.Name + "-controldb")
+	cluster.SetName(controlDBClusterName(oc))
 	cluster.SetNamespace(oc.Namespace)
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		cluster.SetLabels(labelsFor(oc, "controldb"))
 		spec := map[string]interface{}{
 			"instances": int64(profileInstances(oc)),
 			"storage":   map[string]interface{}{"size": "10Gi"},
 		}
-		if oc.Spec.Region.Role == "read" && db.Replicate {
+		if controlDBIsReplica(oc) {
 			// Replica cluster: stream from the primary region's Postgres endpoint.
 			// Credentials wiring (the streaming_replica secret) is a follow-up.
 			host, port := splitHostPort(primaryPostgresEndpoint(oc), "5432")
@@ -130,17 +166,39 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 				"initdb": map[string]interface{}{"database": controlDBName, "owner": controlDBName},
 			}
 		}
+		if backup.Enabled && backup.Valid {
+			spec["backup"] = controlDBBarmanBackup(backup)
+		}
 		cluster.Object["spec"] = spec
 		return controllerutil.SetControllerReference(oc, cluster, r.Scheme)
 	})
 	if err != nil {
 		return err
 	}
+	if err := r.reconcileControlDBScheduledBackup(ctx, oc, backup); err != nil {
+		return err
+	}
 	// Apply the dashboard schema on the PRIMARY (read-tier replicas stream it) — operator#34.
-	if oc.Spec.Region.Role == "read" && db.Replicate {
+	if controlDBIsReplica(oc) {
 		return nil
 	}
 	return r.reconcileControlDBMigrations(ctx, oc)
+}
+
+// reconcileControlDBScheduledBackup owns the control DB's ScheduledBackup while backups are
+// enabled and valid, and removes it otherwise. CNPG creates the individual Backup resources
+// (owned by the ScheduledBackup) on its schedule, starting immediately.
+func (r *OramaCloudV1Reconciler) reconcileControlDBScheduledBackup(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, backup controlDBBackupConfig) error {
+	scheduledBackup := newControlDBScheduledBackup(controlDBScheduledBackupName(oc), oc.Namespace)
+	if !backup.Enabled || !backup.Valid {
+		return deleteIfExists(ctx, r.Client, scheduledBackup)
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, scheduledBackup, func() error {
+		scheduledBackup.SetLabels(labelsFor(oc, "controldb"))
+		scheduledBackup.Object["spec"] = controlDBScheduledBackupSpec(backup, controlDBClusterName(oc))
+		return controllerutil.SetControllerReference(oc, scheduledBackup, r.Scheme)
+	})
+	return err
 }
 
 // reconcileControlDBMigrations applies the vendored dashboard schema (operator#34) as an owned,

@@ -108,12 +108,12 @@ func TestDashboardNeverMigratesControlDB(t *testing.T) {
 
 	inCluster := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
-		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
+		o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}}
 	})
 	external := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
-		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external",
-			CredentialsSecretRef: &corev1.LocalObjectReference{Name: "planetscale"}}
+		o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external",
+			CredentialsSecretRef: &corev1.LocalObjectReference{Name: "planetscale"}}}
 	})
 	for name, oc := range map[string]*oramav1alpha1.OramaCloudV1{"in-cluster": inCluster, "external": external} {
 		if n := len(dashboard(oc).Spec.Template.Spec.InitContainers); n != 0 {
@@ -134,7 +134,7 @@ func TestExternalControlDBRequiresCredentials(t *testing.T) {
 	s := ocv1TestScheme(t)
 	r := &OramaCloudV1Reconciler{Client: fake.NewClientBuilder().WithScheme(s).Build(), Scheme: s}
 	oc := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external", Endpoint: "pg.example.com:5432"}
+		o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external", Endpoint: "pg.example.com:5432"}}
 	})
 	if err := r.reconcileControlDB(context.Background(), oc); err == nil {
 		t.Error("external controlDB without credentialsSecretRef: want an error")

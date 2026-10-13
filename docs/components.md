@@ -75,9 +75,10 @@ secret only). Everything is owner-referenced → GC'd with the CR.
 Owner-GC only fires on CR *deletion*; so when a `components.<x>.enabled` toggle flips off, the
 reconciler actively **prunes** that component's owned resources by label
 (`internal/controller/teardown.go` — `teardownByComponent`), covering Deployments/StatefulSets/
-Services/ConfigMaps/Secrets/PDBs/Ingresses/Jobs (and the CNPG `Cluster` for `controlDB`). StatefulSet
-PVCs are left behind (data preserved). Idempotent — `enable → disable → enable` round-trips cleanly
-(validated on AKS: disabling `docs` pruned it, re-enabling restored it, `Ready 22/22`).
+Services/ConfigMaps/Secrets/PDBs/Ingresses/Jobs (and the CNPG `Cluster` + `ScheduledBackup` for
+`controlDB`). StatefulSet PVCs are left behind (data preserved). Idempotent — `enable → disable →
+enable` round-trips cleanly (validated on AKS: disabling `docs` pruned it, re-enabling restored it,
+`Ready 22/22`).
 
 - **JWT keypair (real, generated)** — the operator generates a **real RSA-2048
   keypair** once (create-if-absent) into `<cr>-jwt` (private + public, for the
@@ -246,6 +247,13 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   operator creates no `Cluster`, applies no `PostgresSchema`, runs no migration, omits the
   `POSTGRES_HOST/PORT/DB` ConfigMap keys, and does not run pgAdmin.
 - Owner ref on the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs).
+- **Backups** (`controlDB.backup`, opt-in, primary only) — the same Barman setup as the `Lake`'s,
+  in its own copy (`controldb_backup.go`): the Cluster gets `spec.backup.barmanObjectStore` (gzip WAL, `retentionPolicy`)
+  pointing at `s3://<bucket>/<namespace>/<name>/controldb` by default, and the operator owns a
+  `ScheduledBackup` `<cr>-controldb-backup` (six-field cron, default `0 0 3 * * *`, first backup
+  immediately). The CR's `BackupReady` condition reports the newest CNPG `Backup`; an invalid config
+  (no bucket, missing Secret or key) is reported there and configures nothing. R2 setup and the
+  verification commands are the same as in [lake/backups.md](lake/backups.md).
 - **Schema** — `assets/dashboard-schema.sql` is the dashboard's `.drizzle` migrations 0000..0008
   concatenated in journal order (19 tables), applied on the primary by the `<cr>-controldb-schema`
   `PostgresSchema` in one transaction, guarded on `crawler_configs` (created by 0000). A fresh control
@@ -260,7 +268,8 @@ primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the C
 CNPG bootstrapped Postgres; deleting the CR GC'd the cluster + its pods.
 
 > **Follow-ups:** the replica cluster's `streaming_replica` credentials/secret wiring;
-> exposing storage size + the DB name as CR fields; a Service alias the app can use.
+> exposing storage size + the DB name as CR fields; a Service alias the app can use; a restore
+> rehearsal for the control DB like `LakeRestoreRehearsal`.
 
 ## Data stores — cache / broker / analytics / search (`internal/controller/datastore.go`)
 

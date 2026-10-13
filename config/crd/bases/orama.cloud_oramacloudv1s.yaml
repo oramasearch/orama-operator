@@ -538,9 +538,61 @@ spec:
                     type: object
                   controlDB:
                     description: |-
-                      DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
-                      operator/chart), pointed at an external endpoint, or centrally located.
+                      ControlDBSpec is the control-plane Postgres: a DataStoreSpec (run as a CNPG Cluster when
+                      in-cluster) plus opt-in object-store backups.
                     properties:
+                      backup:
+                        description: |-
+                          Backup configures scheduled CNPG Barman object-store backups of the control DB. The
+                          credentials Secret lives in the CR's namespace. The default prefix is
+                          <namespace>/<name>/controldb.
+                        properties:
+                          destination:
+                            description: Destination identifies the object-store location.
+                              Bucket is required when Enabled is true.
+                            properties:
+                              bucket:
+                                description: Bucket is the object-store bucket name.
+                                  Required when backups are enabled.
+                                type: string
+                              endpointURL:
+                                description: EndpointURL overrides the Secret's s3ApiEndpoint.
+                                type: string
+                              path:
+                                description: Path is the bucket prefix. Empty defaults
+                                  to <namespace>/<name>/controldb.
+                                type: string
+                            type: object
+                          enabled:
+                            default: false
+                            description: Enabled turns on the CNPG Barman object store
+                              and ScheduledBackup. Default false.
+                            type: boolean
+                          retention:
+                            default: 30d
+                            description: Retention is the Barman retentionPolicy.
+                            type: string
+                          schedule:
+                            default: 0 0 3 * * *
+                            description: Schedule is a six-field CNPG cron expression.
+                            type: string
+                          secretRef:
+                            description: |-
+                              SecretRef names the R2/S3 credentials Secret in the CR's namespace. It is required when
+                              Enabled is true and must contain s3ApiEndpoint, accessKeyId, and secretAccessKey.
+                            properties:
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        type: object
                       credentialsSecretRef:
                         description: |-
                           CredentialsSecretRef (ExternalSecret-materialized) when Mode=external. For controlDB it is

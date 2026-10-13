@@ -35,7 +35,7 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
-| `controlDB` | data-store; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
+| `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
 | `analytics` | data-store | ClickHouse |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
@@ -45,6 +45,30 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 
 `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
+
+### `controlDB.backup`
+
+Opt-in CNPG Barman object-store backups of the control DB (`ControlDBBackupSpec`). It has the same
+fields as the `Lake`'s `spec.postgres.backup` (procedure in [lake/backups.md](lake/backups.md)). Only an
+in-cluster, non-replica control DB is backed up.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Configure the Cluster's `spec.backup.barmanObjectStore` and own a `ScheduledBackup` `<cr>-controldb-backup` (`immediate: true`, Backups owned by the ScheduledBackup). |
+| `schedule` | `0 0 3 * * *` | Six-field CNPG cron. |
+| `retention` | `30d` | Barman `retentionPolicy`. |
+| `destination.bucket` | — | Required when enabled. |
+| `destination.path` | `<namespace>/<name>/controldb` | Bucket prefix; give each cluster its own when sharing a bucket. |
+| `destination.endpointURL` | the Secret's `s3ApiEndpoint` | S3 endpoint override. |
+| `secretRef.name` | — | Required when enabled: a Secret in the CR's namespace with `s3ApiEndpoint`, `accessKeyId`, `secretAccessKey`. |
+
+`status.conditions[BackupReady]` is present only while backups are enabled: `True`
+(`BackupCompleted`) once the ScheduledBackup exists and the newest CNPG Backup completed; otherwise
+`False` with `ScheduledBackupPending`, `BackupPending`, `BackupNotCompleted`, or, for an invalid
+config, `BackupBucketRequired` / `BackupSecretRequired` / `BackupSecretNotFound` /
+`InvalidBackupSecret` (nothing is configured in CNPG until the config is valid). It does not change
+the stack's `phase`. While backups are enabled a Ready stack re-reads backup status every 5 minutes;
+unchanged reads write nothing.
 
 ## `OramaCloudV1E2ETest` (separate CRD)
 

@@ -60,16 +60,19 @@ func (r *OramaCloudV1Reconciler) teardownByComponent(ctx context.Context, oc *or
 	return nil
 }
 
-// teardownControlDB removes the CNPG Cluster when the control DB is disabled. CNPG's own reclaim
-// policy governs the underlying PVC; the operator just removes the Cluster CR + the component's
-// owned resources.
+// teardownControlDB removes the CNPG Cluster and its ScheduledBackup when the control DB is
+// disabled. CNPG's own reclaim policy governs the underlying PVC; the operator just removes the
+// Cluster CR + the component's owned resources.
 func (r *OramaCloudV1Reconciler) teardownControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
-	cluster.SetName(oc.Name + "-controldb")
+	cluster.SetName(controlDBClusterName(oc))
 	cluster.SetNamespace(oc.Namespace)
-	if err := r.Delete(ctx, cluster); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("teardown controldb cluster: %w", err)
+	scheduledBackup := newControlDBScheduledBackup(controlDBScheduledBackupName(oc), oc.Namespace)
+	for _, obj := range []*unstructured.Unstructured{scheduledBackup, cluster} {
+		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("teardown controldb %s: %w", obj.GetKind(), err)
+		}
 	}
 	return r.teardownByComponent(ctx, oc, "controldb")
 }
