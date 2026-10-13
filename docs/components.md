@@ -73,11 +73,15 @@ secret only). Everything is owner-referenced → GC'd with the CR.
 
 **Disable ≠ leave running ([#23](https://github.com/oramasearch/orama-operator/issues/23)).**
 Owner-GC only fires on CR *deletion*; so when a `components.<x>.enabled` toggle flips off, the
-reconciler actively **prunes** that component's owned resources by label
+reconciler actively **prunes** that component's owned resources selected by label
 (`internal/controller/teardown.go` — `teardownByComponent`), covering Deployments/StatefulSets/
 Services/ConfigMaps/Secrets/PDBs/Ingresses/Jobs (and the CNPG `Cluster` + `ScheduledBackup` for
 `controlDB`, unless `spec.deletionProtection` is on). StatefulSet PVCs are left behind (data
-preserved). Idempotent — `enable → disable → enable` round-trips cleanly (validated on AKS: disabling
+preserved). Each selected object must still be controller-owned by the exact CR UID; matching
+labels alone do not authorize deletion. Foreign or unowned objects stop reconciliation with an
+error. Deletes use UID and resource-version preconditions so a replacement object cannot be
+removed by a stale reconcile.
+Idempotent — `enable → disable → enable` round-trips cleanly (validated on AKS: disabling
 `docs` pruned it, re-enabling restored it, `Ready 22/22`).
 
 - **JWT keypair (real, generated)** — the operator generates a **real RSA-2048
@@ -250,7 +254,15 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
 - **Deletion protection** — with `spec.deletionProtection` the `Cluster` and its `ScheduledBackup`
   carry **no reference to the CR** (the operator removes an existing one), so deleting the CR leaves the
   database running; `controlDB.enabled: false` also leaves both in place (released from the CR), and
-  re-enabling adopts the same `Cluster`. To really remove a protected database, turn protection off
+  re-enabling adopts the same `Cluster`. Both objects record `orama.cloud/cloud-v1-owner-uid` before
+  releasing the owner reference. Reconciliation, disable and backup-schedule removal refuse a
+  foreign controller, a different recorded UID, or an existing unowned object without that marker.
+  A recreated CR with the same name has a different UID and cannot silently adopt the retained DB.
+  Legacy protected objects created without this annotation require a separately reviewed ownership
+  handover; labels and names are insufficient proof. An existing CR-owned database gains the marker
+  automatically, including when enabling protection and disabling the DB in the same edit.
+  Protection preserves data; it does not qualify restart, restore, capacity or reader freshness.
+  To really remove a protected database, turn protection off
   first, or delete the `Cluster` by hand.
 - **Backups** (`controlDB.backup`, opt-in, primary only) — the same Barman setup as the `Lake`'s,
   in its own copy (`controldb_backup.go`): the Cluster gets `spec.backup.barmanObjectStore` (gzip WAL, `retentionPolicy`)

@@ -14,7 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -51,7 +51,7 @@ func (r *OramaCloudV1Reconciler) teardownByComponent(ctx context.Context, oc *or
 			}
 			for _, it := range items {
 				obj := it.(client.Object)
-				if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+				if err := r.deleteCloudV1Owned(ctx, oc, obj); err != nil {
 					return fmt.Errorf("teardown %s/%s: %w", comp, obj.GetName(), err)
 				}
 			}
@@ -78,7 +78,7 @@ func (r *OramaCloudV1Reconciler) teardownControlDB(ctx context.Context, oc *oram
 			}
 			continue
 		}
-		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.deleteControlDBOwned(ctx, oc, obj); err != nil {
 			return fmt.Errorf("teardown controldb %s: %w", obj.GetKind(), err)
 		}
 	}
@@ -91,12 +91,24 @@ func (r *OramaCloudV1Reconciler) releaseFromCR(ctx context.Context, oc *oramav1a
 	if err := r.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
 		return client.IgnoreNotFound(err)
 	}
-	before := len(obj.GetOwnerReferences())
+	before := obj.DeepCopy()
 	if err := r.ownUnlessProtected(oc, obj); err != nil {
 		return err
 	}
-	if len(obj.GetOwnerReferences()) == before {
+	if equality.Semantic.DeepEqual(obj.GetOwnerReferences(), before.GetOwnerReferences()) &&
+		equality.Semantic.DeepEqual(obj.GetAnnotations(), before.GetAnnotations()) {
 		return nil
 	}
 	return r.Update(ctx, obj)
+}
+
+func (r *OramaCloudV1Reconciler) deleteControlDBOwned(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, obj client.Object) error {
+	if err := r.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if err := checkControlDBOwnership(oc, obj); err != nil {
+		return err
+	}
+	uid, version := obj.GetUID(), obj.GetResourceVersion()
+	return client.IgnoreNotFound(r.Delete(ctx, obj, client.Preconditions{UID: &uid, ResourceVersion: &version}))
 }
