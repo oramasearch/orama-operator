@@ -188,7 +188,7 @@ fields are in [`crd-reference.md`](../crd-reference.md#kubernetescluster-separat
 
 | Kind | Short name | What it is |
 |---|---|---|
-| `KubernetesCluster` | `kc` | The cluster that is wanted: region, version, node pools, deletion policy, and the provider to use |
+| `KubernetesCluster` | `kcluster` | The cluster that is wanted: region, version, node pools, deletion policy, and the provider to use |
 | `KubernetesClusterProvider` | `kcp` | A vendor, an account and its credentials, plus the settings with no neutral equivalent |
 | `AksCluster` | `aks` | One AKS managed cluster; created and owned by a `KubernetesCluster` |
 
