@@ -109,15 +109,21 @@ func TestControlDBRetainedOwnershipSurvivesDisableAndReenable(t *testing.T) {
 	}
 }
 
-func TestCloudV1TeardownRefusesForeignDeployment(t *testing.T) {
-	for _, action := range []string{"disable"} {
+func TestCloudV1TeardownAndReaderRetirementRefuseForeignDeployment(t *testing.T) {
+	for _, action := range []string{"disable", "retire-reader"} {
 		t.Run(action, func(t *testing.T) {
 			oc := fullStackOCV1(nil)
 			old := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "v1-reader", Namespace: oc.Namespace, Labels: labelsFor(oc, "reader")}}
 			scheme := ocv1TestScheme(t)
 			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(old).Build()
 			r := &OramaCloudV1Reconciler{Client: cl, Scheme: scheme}
-			err := r.teardownByComponent(context.Background(), oc, "reader")
+			var err error
+			if action == "disable" {
+				err = r.teardownByComponent(context.Background(), oc, "reader")
+			} else {
+				sts := &appsv1.StatefulSet{ObjectMeta: old.ObjectMeta, Spec: appsv1.StatefulSetSpec{Replicas: int32Ptr(2)}, Status: appsv1.StatefulSetStatus{ReadyReplicas: 2}}
+				err = r.retireReaderDeployment(context.Background(), oc, sts)
+			}
 			if err == nil {
 				t.Fatal("foreign Deployment deletion was accepted")
 			}

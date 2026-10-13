@@ -23,7 +23,7 @@ pointing at the primary); the full sample list is in
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
-| `deletionProtection` | bool | false | Keep the data through CR deletion and component disable. The CNPG control-DB `Cluster` and its `ScheduledBackup` release the CR owner reference and record `orama.cloud/cloud-v1-owner-uid`, so deleting the CR leaves them; `controlDB.enabled: false` keeps them too, and the same CR UID can re-enable them. A replacement CR or an unmarked, unowned legacy database requires reviewed ownership handover ([components.md](components.md#controldb-internalcontrollercontroldbgo)). Every operator StatefulSet (writer, stores) gets `persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`. Off: owned Cluster deletion/disable retains its existing behavior; foreign objects are refused. |
+| `deletionProtection` | bool | false | Keep the data through CR deletion and component disable. The CNPG control-DB `Cluster` and its `ScheduledBackup` release the CR owner reference and record `orama.cloud/cloud-v1-owner-uid`, so deleting the CR leaves them; `controlDB.enabled: false` keeps them too, and the same CR UID can re-enable them. A replacement CR or an unmarked, unowned legacy database requires reviewed ownership handover ([components.md](components.md#controldb-internalcontrollercontroldbgo)). Every operator StatefulSet (writer, readers, stores) gets `persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`. Off: owned Cluster deletion/disable retains its existing behavior; foreign objects are refused. |
 
 ## `spec.components`
 
@@ -32,7 +32,7 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations}`, `reader.{replicas,hpa,resources}`, `envoy` | OramaCore writer + readers + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations}`, `reader.{replicas,hpa,resources}`, `envoy` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
@@ -46,6 +46,11 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 
 `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
+
+`engine.reader.hpa` (`minReplicas` default `reader.replicas`, `maxReplicas` default
+2 × `minReplicas`, `targetCPUUtilization` default `70`) makes the operator own a
+`HorizontalPodAutoscaler` `<cr>-reader` on the reader StatefulSet; while it is set the operator
+sets the StatefulSet's replica count only when creating it. Clearing `hpa` deletes the HPA.
 
 ### `controlDB.backup`
 

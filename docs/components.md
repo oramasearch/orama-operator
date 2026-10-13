@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
+| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; **never migrates the control DB** — in-cluster, the operator's owned `PostgresSchema` applies the schema (a second Drizzle migrate collides, Postgres `42710`); external, the database's owner runs migrations ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)) | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -75,12 +75,12 @@ secret only). Everything is owner-referenced → GC'd with the CR.
 Owner-GC only fires on CR *deletion*; so when a `components.<x>.enabled` toggle flips off, the
 reconciler actively **prunes** that component's owned resources selected by label
 (`internal/controller/teardown.go` — `teardownByComponent`), covering Deployments/StatefulSets/
-Services/ConfigMaps/Secrets/PDBs/Ingresses/Jobs (and the CNPG `Cluster` + `ScheduledBackup` for
+Services/ConfigMaps/Secrets/PDBs/Ingresses/Jobs/HPAs (and the CNPG `Cluster` + `ScheduledBackup` for
 `controlDB`, unless `spec.deletionProtection` is on). StatefulSet PVCs are left behind (data
 preserved). Each selected object must still be controller-owned by the exact CR UID; matching
 labels alone do not authorize deletion. Foreign or unowned objects stop reconciliation with an
 error. Deletes use UID and resource-version preconditions so a replacement object cannot be
-removed by a stale reconcile.
+removed by a stale reconcile. This also applies when retiring the old reader Deployment.
 Idempotent — `enable → disable → enable` round-trips cleanly (validated on AKS: disabling
 `docs` pruned it, re-enabling restored it, `Ready 22/22`).
 
@@ -165,10 +165,28 @@ Driven by `spec.region.role`:
   a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
-- **Readers** (primary + read tiers) — a `Deployment` (`reader.replicas`) with the
-  `oramacore` container **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
-  127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set.
-  Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
+- **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` (`reader.replicas`,
+  `podManagementPolicy: Parallel`) with the `oramacore` container **+ an Envoy sidecar**
+  (`envoyproxy/envoy:v1.31.2`, `:80 → 127.0.0.1:8080`, from the generated `envoy.yaml`) when
+  `engine.envoy` is set. Service on `:80` (→ Envoy, or → `:8080` if Envoy is off). Each reader
+  has its own `data` PVC (`10Gi`) at `/app/.data`, holding its index and
+  the last replication-stream offset it applied; a restarted or rescheduled reader resumes from
+  that offset ([orama-bridge#141](https://github.com/oramasearch/orama-bridge/issues/141)). The
+  readers used an `emptyDir` before, so every new reader replayed `oramacore-operations` from
+  offset 0, and once the stream passed its 5 GB retention a new reader silently served a partial
+  index. A brand-new reader (scale-up, or a lost PVC) still builds from the stream, so the same
+  retention limit applies to it.
+  - **Moving an existing stack:** a CR reconciled before #141 has a reader `Deployment` with the
+    same name and labels. The operator creates the StatefulSet next to it, keeps the Deployment
+    serving (the Service selects both), and deletes the Deployment once every StatefulSet reader is
+    Ready. Until then `status.components[reader]` sums both (e.g. `3/6`, not ready). The new
+    readers replay the stream from offset 0 once, so this move has the same retention limit as any
+    new reader: check the stream still holds the full history before upgrading a stack whose
+    stream has passed 5 GB.
+  - **Autoscaling:** `reader.hpa` makes the operator own a `HorizontalPodAutoscaler` on the
+    StatefulSet (CPU utilization; defaults min = `replicas`, max = 2 × min, 70%). While it is set the
+    operator leaves the replica count to the HPA. Scale-down keeps the removed readers' PVCs (the
+    StatefulSet default), so a later scale-up reuses them.
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
   **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
@@ -209,8 +227,8 @@ Driven by `spec.region.role`:
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**
   get `maxUnavailable: 1` (roll one at a time, keep the rest serving).
 
-**Validated on AKS (2026-07-08):** applying a `primary` CR created the writer STS
-(+ dynamically-provisioned PVC), the reader Deployment, both Services, and the
+**Validated on AKS (2026-07-08, before the readers became a StatefulSet):** applying a `primary`
+CR created the writer STS (+ dynamically-provisioned PVC), the reader Deployment, both Services, and the
 ConfigMap; the CR reaches **`Phase=Ready`** once every owned workload is ready — a status
 roll-up over the live Deployment/StatefulSet + CNPG readiness (`internal/controller/status.go`,
 [#37](https://github.com/oramasearch/orama-operator/issues/37)). Phase is
@@ -229,7 +247,7 @@ while the rendered file in the pod holds the real value.
 > [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
 > tooling (`oramasearch/embeddings-server-py:{cpu,gpu}-latest`, private Docker Hub — the tag
 > is auto-picked from `writer.gpu`; just set `spec.images.pullSecretName`); RabbitMQ
-> writer→reader replication (currently in-memory transport, single-node); HPA + the
+> writer→reader replication (currently in-memory transport, single-node); the
 > reader→primary-writer endpoint on read tiers.
 
 ## controlDB (`internal/controller/controldb.go`)
