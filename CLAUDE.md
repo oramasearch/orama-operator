@@ -188,12 +188,12 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
   single-node **sandbox** (no GPU). Install the CRD + apply a sample into an isolated
   `orama-system` namespace. **No GPU node yet → set `writer.gpu: false`** when testing
   the engine, or the writer pod stays Pending.
-**e2e kinds do not run in production.** `OramaCloudV1E2ETest`, `ZettaClusterE2ETest` and
-`LakeE2ETest` are test fixtures: their controllers are gated behind `--enable-e2e-controllers`
-(**off by default**), their CRDs live in `chart/e2e-crds/` rather than the install chart, and
-their RBAC renders only under `e2e.enabled`. A testing environment opts in with both halves —
-`kubectl apply -f chart/e2e-crds/` **and** `--set e2e.enabled=true`. Production runs no e2e
-suites; that is what a testing environment is for
+**Every cluster gets every CRD; e2e suites run only where asked.** There is one CRD directory,
+`chart/crds`, installed on every cluster: the e2e test kinds and the cluster-management kinds
+included (Steve, 2026-10-12: *"no differences"*). Never add a second CRD directory applied only to
+some clusters. The e2e **controllers** (`OramaCloudV1E2ETest`, `ZettaClusterE2ETest`, `LakeE2ETest`)
+stay behind `--enable-e2e-controllers` (**off by default**; chart `e2e.enabled`, which also renders
+their RBAC): production runs no e2e suites
 ([#166](https://github.com/oramasearch/orama-operator/issues/166), decided 2026-09-09).
 
 - **Functional e2e (`OramaCloudV1E2ETest`):** the comprehensive suite lives at

@@ -43,8 +43,9 @@ var (
 	rbacResourcePattern = regexp.MustCompile(`(?m)^\s+- ([a-z0-9]+)$`)
 )
 
-// e2e kinds are gated behind --enable-e2e-controllers and their CRDs live in chart/e2e-crds, not
-// chart/crds: production runs no e2e suites. Keep this list in step with the gated block in main.go.
+// The e2e kinds' controllers are gated behind --enable-e2e-controllers. Their CRDs are in
+// chart/crds with every other kind: every cluster gets exactly the same CRDs (Steve, 2026-10-12,
+// "no differences"). Keep this list in step with the gated block in main.go.
 var e2eKinds = map[string]bool{
 	"OramaCloudV1E2ETest": true,
 	"ZettaClusterE2ETest": true,
@@ -88,10 +89,6 @@ func registeredKinds(t *testing.T) []string {
 
 func chartKinds(t *testing.T) []string { return kindsIn(t, filepath.Join("..", "chart", "crds")) }
 
-func e2eChartKinds(t *testing.T) []string {
-	return kindsIn(t, filepath.Join("..", "chart", "e2e-crds"))
-}
-
 func kindsIn(t *testing.T, dir string) []string {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
@@ -127,9 +124,6 @@ func TestEveryRegisteredControllerHasAChartCRD(t *testing.T) {
 	for _, kind := range chartKinds(t) {
 		chart[kind] = true
 	}
-	for _, kind := range e2eChartKinds(t) {
-		chart[kind] = true
-	}
 	var missing []string
 	for _, kind := range registeredKinds(t) {
 		if !chart[kind] {
@@ -153,7 +147,7 @@ func TestEveryChartCRDHasARegisteredController(t *testing.T) {
 		registered[kind] = true
 	}
 	var orphaned []string
-	for _, kind := range append(chartKinds(t), e2eChartKinds(t)...) {
+	for _, kind := range chartKinds(t) {
 		if !registered[kind] {
 			orphaned = append(orphaned, kind)
 		}
@@ -201,9 +195,6 @@ func TestManagementKindsShipAndRunOnEveryCluster(t *testing.T) {
 		if strings.Contains(string(data), "clusterManagement.enabled") || regexp.MustCompile(`(?m)^clusterManagement:\n  enabled:`).Match(data) {
 			t.Errorf("chart/%s switches cluster management on or off: the operator must not differ between clusters", file)
 		}
-	}
-	if _, err := os.Stat(filepath.Join("..", "chart", "management-crds")); err == nil {
-		t.Error("chart/management-crds exists again: the management kinds belong in chart/crds, installed everywhere")
 	}
 }
 
@@ -344,37 +335,44 @@ func readClusterRoles(t *testing.T, path string, template bool) []rbacv1.Cluster
 	return roles
 }
 
-// Production runs no e2e suites (that is what a testing environment is for), so the install chart
-// must not put an e2e CRD on every cluster. One of them — LakeE2ETest — is what crash-looped
-// production for twelve hours in operator#166 while reconciling nothing anyone wanted.
-func TestInstallChartShipsNoE2ECRD(t *testing.T) {
-	var leaked []string
-	for _, kind := range chartKinds(t) {
-		if e2eKinds[kind] {
-			leaked = append(leaked, kind)
+// Every cluster gets exactly the same CRDs: one chart, one directory. A second directory of CRDs
+// applied only to some clusters is how clusters come to differ, and it has been removed twice
+// (chart/e2e-crds and chart/management-crds, 2026-10-12).
+func TestTheChartHasOneCRDDirectoryWithEveryKind(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("..", "chart"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && strings.Contains(entry.Name(), "crds") && entry.Name() != "crds" {
+			t.Errorf("chart/%s exists: every CRD belongs in chart/crds, installed on every cluster", entry.Name())
 		}
 	}
-	if len(leaked) > 0 {
-		sort.Strings(leaked)
-		t.Fatalf("chart/crds ships e2e kinds: %s\n"+
-			"They belong in chart/e2e-crds, applied only by testing environments alongside "+
-			"--set e2e.enabled=true.", strings.Join(leaked, ", "))
+	shipped := make(map[string]bool)
+	for _, kind := range chartKinds(t) {
+		shipped[kind] = true
+	}
+	for kind := range e2eKinds {
+		if !shipped[kind] {
+			t.Errorf("%s has no CRD in chart/crds", kind)
+		}
 	}
 }
 
-// And the gate itself: every kind in chart/e2e-crds is one main.go registers behind the flag, so a
-// kind cannot quietly move between the two sets.
-func TestE2EChartHoldsExactlyTheGatedKinds(t *testing.T) {
-	seen := make(map[string]bool)
-	for _, kind := range e2eChartKinds(t) {
-		if !e2eKinds[kind] {
-			t.Errorf("chart/e2e-crds ships %s, which is not gated behind --enable-e2e-controllers", kind)
-		}
-		seen[kind] = true
+// The e2e controllers stay behind their flag: a cluster runs e2e suites only when asked to. The
+// flag is the same on every cluster by default, so it makes no cluster differ from another.
+func TestE2EControllersAreRegisteredBehindTheirFlag(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	gate := strings.Index(string(source), "if enableE2EControllers {")
+	if gate < 0 {
+		t.Fatal("main.go no longer gates the e2e kinds behind enableE2EControllers")
 	}
 	for kind := range e2eKinds {
-		if !seen[kind] {
-			t.Errorf("%s is gated behind --enable-e2e-controllers but chart/e2e-crds ships no CRD for it", kind)
+		if registration := strings.Index(string(source), "controller."+kind+"Reconciler{"); registration < gate {
+			t.Errorf("%sReconciler is registered outside the enableE2EControllers block", kind)
 		}
 	}
 }
@@ -384,7 +382,7 @@ func TestE2EChartHoldsExactlyTheGatedKinds(t *testing.T) {
 // CEL; the cluster refused ClusterHelmRelease for an empty-string literal in a validation rule on
 // 2026-10-12 (write size(x) > 0 instead). A validation rule in a shipped CRD is plain ASCII.
 func TestShippedCRDValidationRulesArePlainASCII(t *testing.T) {
-	for _, dir := range []string{"../chart/crds", "../chart/e2e-crds"} {
+	for _, dir := range []string{"../chart/crds"} {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatalf("read %s: %v", dir, err)
