@@ -278,6 +278,22 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "OramaOperator")
 		os.Exit(1)
 	}
+	// Sets (operator#391): Lake and OramaCloudV1 instances installed onto managed clusters from
+	// one template, with their versions and settings kept as described.
+	if err = (&controller.LakeSetReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeSet")
+		os.Exit(1)
+	}
+	if err = (&controller.OramaCloudV1SetReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1Set")
+		os.Exit(1)
+	}
 	// The e2e test kinds. Registered on every cluster like every other kind: no cluster's operator
 	// differs from another's. A cluster runs an e2e suite only when someone creates one of these
 	// resources on it.
