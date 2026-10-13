@@ -10,6 +10,11 @@ against a fake Azure API ([#354](https://github.com/oramasearch/orama-operator/i
 real cluster has been created with them yet. The first step is one non-production AKS cluster
 ([#355](https://github.com/oramasearch/orama-operator/issues/355)).
 
+> **Doing the work?** [`operations.md`](operations.md) is the runbook: create a cluster, upgrade
+> the operator, add or change an instance in a set, and what has gone wrong before. What is
+> deployed is in [`config/clusters/`](../../config/clusters/README.md). The `orama-clusters` Claude
+> skill in the umbrella bridge is the short form.
+
 ## The model
 
 There are two kinds of cluster, and **every cluster runs an instance of this operator**.

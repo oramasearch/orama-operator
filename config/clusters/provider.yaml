@@ -1,0 +1,25 @@
+apiVersion: orama.cloud/v1alpha1
+kind: KubernetesClusterProvider
+metadata:
+  name: azure-orama
+spec:
+  aks:
+    network:
+      dataplane: cilium
+      dnsServiceIP: 10.0.0.10
+      plugin: azure
+      pluginMode: overlay
+      podCIDR: 10.244.0.0/16
+      policy: cilium
+      serviceCIDR: 10.0.0.0/16
+    nodeOSUpgradeChannel: NodeImage
+    osDiskSizeGB: 256
+    resourceGroupSuffix: _group
+    skuTier: Standard
+    subscriptionID: aff019e7-3b91-47a8-8cd7-4ceef2ddb47e
+    upgradeChannel: patch
+    workloadIdentity: true
+  credentialsSecretRef:
+    name: azure-cluster-management
+    namespace: orama-system
+  type: aks
