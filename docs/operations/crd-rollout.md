@@ -83,11 +83,15 @@ because a second directory is how clusters come to differ.
 - The cluster-management controllers run in every cluster's operator, with no flag. A cluster
   manages others by holding the resources
   ([`infrastructure/README.md`](../infrastructure/README.md#one-operator-on-every-cluster)).
-- The e2e **controllers** still run only behind `--enable-e2e-controllers` (chart `e2e.enabled`,
-  off by default, which also renders their RBAC). Production runs no e2e suites, decided
-  2026-09-09 after `LakeE2ETest` crash-looped the manager for twelve hours
-  ([#166](https://github.com/oramasearch/orama-operator/issues/166)). That outage was a controller
-  watching a kind whose CRD was missing; with every CRD on every cluster it cannot recur either way.
+- The e2e controllers run in every cluster's operator too, with no flag. A cluster runs an e2e
+  suite only when someone creates one of those resources on it; production runs none because none
+  is created there. The earlier gate (`--enable-e2e-controllers`, chart `e2e.enabled`, decided
+  2026-09-09 after `LakeE2ETest` crash-looped the manager for twelve hours,
+  [#166](https://github.com/oramasearch/orama-operator/issues/166)) guarded against a controller
+  watching a kind whose CRD was missing. With every CRD on every cluster that cannot happen, and
+  the gate was a way for clusters to differ, so it is gone.
 
-`cmd/crd_coverage_test.go` holds this: it fails if the chart grows a second CRD directory, if a
-kind has no CRD in `chart/crds`, or if an e2e controller is registered outside its flag.
+`cmd/crd_coverage_test.go` holds this (`TestNoClusterDiffersFromAnother`,
+`TestTheChartHasOneCRDDirectoryWithEveryKind`): it fails if the chart grows a second CRD directory,
+if a controller is registered inside a condition, if a flag turns controllers on or off, or if the
+chart's RBAC or manager arguments render conditionally.

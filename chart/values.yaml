@@ -36,12 +36,6 @@ controlPlane:
 # Helm applies CRDs from chart/crds before templates (generate them with make manifests).
 installCRDs: true
 
-# The e2e kinds (OramaCloudV1E2ETest, ZettaClusterE2ETest, LakeE2ETest) are test fixtures. Their
-# CRDs are installed on every cluster with all the others; their controllers and RBAC run only
-# where this is true. See docs/operations/crd-rollout.md.
-e2e:
-  enabled: false
-
 # Every cluster's operator can manage other clusters (docs/infrastructure/README.md): the kinds
 # and controllers are the same everywhere. What a cluster that does manage others needs is a way
 # to call the cloud.
