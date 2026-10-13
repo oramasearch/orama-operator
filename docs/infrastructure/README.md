@@ -326,22 +326,48 @@ class as an image pull secret.
   credentials Secret holds only `tenantID` and `clientID`.
 - **Service principal:** the same Secret with a `clientSecret` as well.
 
-## The path from here
+## The clusters today, and the path from here
 
-1. **The existing cluster, `orama-production-cluster-01`, becomes the management cluster**, slowly
-   and intentionally. Today it also runs workloads, which is a leaf's job, so the conversion
-   finishes only when those have somewhere else to live.
-2. **The first leaf is a non-production cluster**: a second AKS cluster in the western US, for
-   staging, dev and testing environments.
-3. **Then an actual production cluster**, possibly in the EU.
+As of 2026-10-12. The resources themselves are in
+[`config/clusters/`](../../config/clusters/README.md), which is the record of what is deployed.
 
-Cluster names keep the existing convention:
+| Cluster | Region | Purpose | Role | Runs |
+|---|---|---|---|---|
+| `orama-production-cluster-01` | `eastus` | Development, despite its name | **The managing cluster**: holds every `KubernetesCluster`, `ClusterHelmRelease`, `OramaOperator` and set. Created by hand before these kinds existed, so it has no `KubernetesCluster` of its own | Also still runs workloads: `Lake/prod` (`lake.oramadev.net`) and the v1 sandbox (`app.oramadev.net`) |
+| `orama-nonprod-cluster-01` | `westus2` | `nonprod` | Managed | Lake `dev` and `staging`; Orama Cloud v1 `v1-dev` |
+| `orama-production-cluster-02` | `swedencentral` | `production` | Managed | Lake `shared`; Orama Cloud v1 `v1-eu` |
+| `orama-production-cluster-03` | `eastus` | `production` | Managed | Lake `shared-us`; Orama Cloud v1 `v1-us` |
 
-| Cluster | Role | For |
-|---|---|---|
-| `orama-production-cluster-01` | Becoming the management cluster | Today: the development environment, despite its name |
-| `orama-nonprod-cluster-01` | Leaf, first to be created | Staging, dev and testing |
-| `orama-production-cluster-02` | Leaf, after | Production |
+Every managed cluster has the same platform layer (CloudNativePG, ingress-nginx, cert-manager, and
+the Strimzi, ClickHouse, K8ssandra, TiDB and Valkey operators) and the same operator version as the
+managing cluster. Each has one system node and a user pool that scales from zero.
+
+The instances are in four sets, one per kind per purpose: `lake-nonprod`, `v1-nonprod`,
+`lake-prod`, `v1-prod`.
+
+What the path was, and where it stands:
+
+1. **The existing cluster becomes the management cluster**, slowly and intentionally. It manages
+   the other three now. It still runs workloads, which is a leaf's job, so the conversion finishes
+   only when `Lake/prod` and the v1 sandbox have moved.
+2. **A non-production cluster**: done, `orama-nonprod-cluster-01`.
+3. **Production clusters**: done twice, in the EU and the US.
+
+What the production clusters are **not** yet:
+
+- **Their instances use the nonprod settings.** The Lakes are minimal (no apps, builds, agents,
+  billing or model-provider key). Orama Cloud v1 is on the `light` profile with single replicas,
+  the mutable image tag `v1-sandbox`, and the component secrets the operator seeds for
+  development.
+- **Their hostnames are in the dev zone** (`lake-eu`, `lake-us`, `app-eu`, `app-us` under
+  `oramadev.net`). No hostname that production traffic uses points at them.
+- **The two v1 production instances are independent primaries.** v1's multi-region model is one
+  primary and read regions joined by `spec.peers`; nothing joins `v1-eu` and `v1-us`.
+- **No customer data is on them.**
+
+Still open for a healthy leaf: Karpenter and Istio (neither is in the helmfile or on any cluster),
+bridges between clusters, and the proof that a cluster can be destroyed and recreated from its
+resources alone.
 
 ## Workloads on managed clusters: `LakeSet` and `OramaCloudV1Set`
 

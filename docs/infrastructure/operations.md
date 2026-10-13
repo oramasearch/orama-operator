@@ -162,6 +162,7 @@ kubectl --context orama-production-cluster-01 get lset <name> \
 | `OramaOperator` is `Pending`: "the cluster lacks CRDs this operator version needs" | CloudNativePG is not on the cluster yet | Apply its `ClusterHelmRelease`; the operator installs by itself afterwards |
 | `OramaOperator` is `Degraded`: the chart cannot be pulled | The chart for that version was not published | `go run ./hack/pushchart -version <tag>` from the commit the image was built from |
 | A set member is `Pending`: "does not have the Lake kind" | The cluster's operator is not installed or not `Ready` | Fix the `OramaOperator` first |
+| A `ClusterHelmRelease` is `Degraded` with "pre-upgrade hooks failed … timed out", and its Helm revision climbs | A chart's hook (the ClickHouse operator's CRD-install Job) outlasted Helm's timeout while the new cluster was still pulling images. Fixed 2026-10-12: hooks get ten minutes, where they had 30 seconds | Nothing, on a current operator. It recovers once the hook's image is on the node; check `helm history` on the cluster shows a final `deployed` |
 | A cluster sits in `Creating` for many minutes with no error | Normal: a node takes about ten minutes to join | Read `kubectl get aks`'s `Operation` column; an error would be in `Message` |
 | The API server refuses a CRD: a validation rule does not compile | gofmt rewrote two single quotes in a `// +kubebuilder` marker into a typographic quote | Write `size(x) > 0` instead of comparing with an empty string |
 
