@@ -62,6 +62,20 @@ against production-readiness, not "does a pod start."
    operator matures to encapsulate this complexity (real writer→reader replication, real schema,
    real creds, …). **Never hack the test green** — make the operator correct and e2e follows.
 
+10. **Abstract kinds, concrete providers.** Steve, 2026-10-12: *"as a general rule, try to use
+    abstract objects (KubernetesCluster, DnsRecord, ServiceMesh) with a type that provisions a
+    concrete AksCluster, CloudflareDnsRecord, IstioServiceMesh ... that way, we can swap out
+    different providers if an enterprise client has hard requirements for one provider over
+    another."* A new kind for something a vendor provides is **two kinds**: an abstract one named
+    for the thing, which is what people and other reconcilers ask for, and a concrete one named for
+    the provider, which the abstract kind's type provisions and owns and which makes the vendor's
+    API calls. The vendor, the account and the credentials live on a **provider resource** that
+    the abstract kind points at (a `DnsProvider`, a `KubernetesClusterProvider`), not on each
+    record or cluster. Nothing outside the concrete kind's controller names the vendor. The kinds that
+    predate this rule (`CloudflareDNSRecord`, `CloudflareLoadBalancer`, `CloudflareKVNamespace`,
+    `CloudflareR2Bucket`, `ClerkApplication`) are concrete only; do not add another like them. See
+    [`docs/infrastructure/README.md`](docs/infrastructure/README.md).
+
 When in doubt, choose the option that makes the operator more complete and the system more
 deterministic/recoverable, even if it is more work now.
 
