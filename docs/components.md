@@ -609,7 +609,7 @@ a cluster manages others by holding the resources. `ClusterHelmRelease` and `Ora
 pinned chart releases and the operator itself onto a managed cluster with the Helm library.
 `LakeSet` and `OramaCloudV1Set` (`managedset_controller.go`,
 [#391](https://github.com/oramasearch/orama-operator/issues/391)) apply `Lake` and `OramaCloudV1`
-instances onto managed clusters from one template, each member in its own namespace, in order.
+instances onto managed clusters from one template, each member in its own namespace and independent of the others.
 
 | Controller | Reconciles | Creates |
 |---|---|---|

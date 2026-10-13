@@ -61,9 +61,9 @@ spec:
             properties:
               clusters:
                 description: |-
-                  Clusters are the members: one instance on one cluster each, applied in this order. A member
-                  waits until the one before it is Ready. Every member's cluster must carry the same
-                  `purpose` tag: a set never combines nonprod and production.
+                  Clusters are the members: one instance on one cluster each. Members are independent: none
+                  waits for another. Every member's cluster must carry the same `purpose` tag: a set never
+                  combines nonprod and production.
                 items:
                   description: SetMember is one instance on one cluster.
                   properties:
@@ -230,7 +230,8 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               memberStatuses:
-                description: MemberStatuses reports each member, in the set's order.
+                description: MemberStatuses reports each member, in the order the
+                  set lists them.
                 items:
                   description: SetMemberStatus is one instance as its cluster reports
                     it.
@@ -247,8 +248,8 @@ spec:
                       type: string
                     phase:
                       description: |-
-                        Phase is Pending (waiting for the cluster, a prerequisite or the member before it),
-                        Progressing (applied, not yet Ready), Ready or Degraded.
+                        Phase is Pending (waiting for the cluster or a prerequisite), Progressing (applied, not
+                        yet Ready), Ready or Degraded.
                       type: string
                     version:
                       description: 'Version is what the instance runs: a Lake''s image,

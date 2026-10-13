@@ -75,9 +75,9 @@ type ManagedSetSpec struct {
 	// +optional
 	Secrets []SetSecret `json:"secrets,omitempty"`
 
-	// Clusters are the members: one instance on one cluster each, applied in this order. A member
-	// waits until the one before it is Ready. Every member's cluster must carry the same
-	// `purpose` tag: a set never combines nonprod and production.
+	// Clusters are the members: one instance on one cluster each. Members are independent: none
+	// waits for another. Every member's cluster must carry the same `purpose` tag: a set never
+	// combines nonprod and production.
 	// +kubebuilder:validation:MinItems=1
 	Clusters []SetMember `json:"clusters"`
 
@@ -94,8 +94,8 @@ type SetMemberStatus struct {
 	Name    string `json:"name"`
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
-	// Phase is Pending (waiting for the cluster, a prerequisite or the member before it),
-	// Progressing (applied, not yet Ready), Ready or Degraded.
+	// Phase is Pending (waiting for the cluster or a prerequisite), Progressing (applied, not
+	// yet Ready), Ready or Degraded.
 	// +optional
 	Phase string `json:"phase,omitempty"`
 	// Version is what the instance runs: a Lake's image, an OramaCloudV1's image tag.
@@ -119,7 +119,7 @@ type ManagedSetStatus struct {
 	Members int32 `json:"members,omitempty"`
 	// +optional
 	ReadyMembers int32 `json:"readyMembers,omitempty"`
-	// MemberStatuses reports each member, in the set's order.
+	// MemberStatuses reports each member, in the order the set lists them.
 	// +optional
 	MemberStatuses []SetMemberStatus `json:"memberStatuses,omitempty"`
 	// +optional
