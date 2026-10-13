@@ -689,10 +689,14 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNamespace(
 	return false, r.Update(ctx, namespace)
 }
 
+// The quota does not cap the sum of CPU limits. A CPU limit is only the ceiling a container may
+// burst to, so their sum says nothing about what a workspace uses or reserves: with a default limit
+// of one CPU, a workspace of nine pods using a third of a CPU between them was reported full at
+// "8 of 8", and a Kafka and a Cassandra could not start (operator#428, operator#435). What a
+// workspace may reserve is capped by requests.cpu, and its memory by both memory entries.
 func defaultWorkspacePlan() oramav1alpha1.LakeWorkspacePlanSpec {
 	return oramav1alpha1.LakeWorkspacePlanSpec{
 		Quota: corev1.ResourceList{
-			corev1.ResourceLimitsCPU:              resource.MustParse("8"),
 			corev1.ResourceLimitsMemory:           resource.MustParse("16Gi"),
 			corev1.ResourcePods:                   resource.MustParse("50"),
 			corev1.ResourceRequestsCPU:            resource.MustParse("4"),
