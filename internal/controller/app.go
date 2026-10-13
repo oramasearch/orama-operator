@@ -80,6 +80,8 @@ type appDef struct {
 	env         []corev1.EnvVar
 	args        []string
 	ingressHost string
+	// ingress adds extra hosts and origin TLS to the Ingress on ingressHost.
+	ingress oramav1alpha1.IngressHostsSpec
 	// Optional config-file rendering: an init container renders a config file (from a
 	// ConfigMap template with secret placeholders) into a shared volume the app reads via
 	// CONFIG_PATH. initContainers/volumes are added to the pod; volumeMounts to the app container.
@@ -184,23 +186,33 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		return err
 	}
 	if def.ingressHost != "" {
-		return r.upsertIngress(ctx, oc, name, def.component, def.ingressHost, def.port)
+		return r.upsertIngress(ctx, oc, name, def.component, def.ingressHost, def.ingress, def.port)
 	}
 	return nil
 }
 
-func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, host string, port int32) error {
-	lbls := labelsFor(oc, component)
-	pathType := networkingv1.PathTypePrefix
+// upsertIngress owns the Ingress <name> routing host and every extra host to the Service <name>:port,
+// with one tls entry for all of them when ingress.tlsSecretName is set.
+func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, host string, ingress oramav1alpha1.IngressHostsSpec, port int32) error {
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
-		ing.Labels = lbls
-		// Bind to the helmfile-installed ingress-nginx controller. Without an ingressClassName the
-		// controller ignores the Ingress (no ADDRESS assigned → nothing routes). Configurable via
-		// spec.ingressClassName (default "nginx").
-		ing.Spec.IngressClassName = strPtr(ingressClassName(oc))
-		ing.Spec.Rules = []networkingv1.IngressRule{{
-			Host: host,
+		ing.Labels = labelsFor(oc, component)
+		ing.Spec = ingressSpec(oc, name, host, ingress, port)
+		return controllerutil.SetControllerReference(oc, ing, r.Scheme)
+	})
+	return err
+}
+
+// ingressSpec renders one Prefix "/" rule per host (host first, then the extra hosts), all to the
+// same backend. Without an ingressClassName the controller ignores the Ingress (no address is
+// assigned, nothing routes), so the class is always set: spec.ingressClassName, default nginx.
+func ingressSpec(oc *oramav1alpha1.OramaCloudV1, name, host string, ingress oramav1alpha1.IngressHostsSpec, port int32) networkingv1.IngressSpec {
+	hosts := append([]string{host}, ingress.ExtraHosts...)
+	pathType := networkingv1.PathTypePrefix
+	spec := networkingv1.IngressSpec{IngressClassName: strPtr(ingressClassName(oc))}
+	for _, h := range hosts {
+		spec.Rules = append(spec.Rules, networkingv1.IngressRule{
+			Host: h,
 			IngressRuleValue: networkingv1.IngressRuleValue{
 				HTTP: &networkingv1.HTTPIngressRuleValue{
 					Paths: []networkingv1.HTTPIngressPath{{
@@ -215,10 +227,12 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 					}},
 				},
 			},
-		}}
-		return controllerutil.SetControllerReference(oc, ing, r.Scheme)
-	})
-	return err
+		})
+	}
+	if ingress.TLSSecretName != "" {
+		spec.TLS = []networkingv1.IngressTLS{{Hosts: hosts, SecretName: ingress.TLSSecretName}}
+	}
+	return spec
 }
 
 // ---- workers + dashboard reconcilers ----
@@ -278,6 +292,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		image:       img,
 		port:        3000,
 		ingressHost: d.Host,
+		ingress:     d.IngressHostsSpec,
 		// The operator's env: the master key, the control DB from the CNPG or external Secret
 		// (#32/#34), the issuer and Firebase server keys.
 		env: env,
@@ -298,6 +313,7 @@ func (r *OramaCloudV1Reconciler) reconcileDocs(ctx context.Context, oc *oramav1a
 		image:       componentImage(oc, "docs", "docs"),
 		port:        3000,
 		ingressHost: d.Host,
+		ingress:     d.IngressHostsSpec,
 		resources:   resourcesOr(d.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }

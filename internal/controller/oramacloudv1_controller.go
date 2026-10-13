@@ -67,6 +67,8 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		name string
 		fn   func(context.Context, *oramav1alpha1.OramaCloudV1) error
 	}{
+		// Refuse conflicting Ingress hosts before anything is written (operator#313).
+		{"ingress hosts", func(_ context.Context, oc *oramav1alpha1.OramaCloudV1) error { return validateIngressHosts(oc) }},
 		{"bootstrap", r.reconcileBootstrap}, // shared config + dummy secrets first
 		{"engine", r.reconcileEngine},
 		{"controlDB", r.reconcileControlDB},

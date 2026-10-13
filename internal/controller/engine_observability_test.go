@@ -15,6 +15,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/yaml"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -199,8 +200,43 @@ func TestEnginePodsCarryPrometheusAnnotations(t *testing.T) {
 	}
 }
 
-func TestEnvoyDoesNotServeMetrics(t *testing.T) {
-	cl, _ := reconcileOCV1(t, fullStackOCV1(nil))
+func TestPublicEngineIngressesDoNotServeMetrics(t *testing.T) {
+	oc := fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
+		e := &o.Spec.Components.Engine
+		e.Writer.Host = "writer.orama.ing"
+		e.Writer.IngressHostsSpec = oramav1alpha1.IngressHostsSpec{ExtraHosts: []string{"writer.orama.com"}, TLSSecretName: "writer-cert"}
+		e.Reader.Host = "reader.orama.ing"
+		e.Reader.ExtraHosts = []string{"collections.orama.com"}
+	})
+	cl, r := reconcileOCV1(t, oc)
+	for _, c := range []struct{ name, host, extra string }{
+		{"v1-writer", "writer.orama.ing", "writer.orama.com"},
+		{"v1-reader", "reader.orama.ing", "collections.orama.com"},
+	} {
+		// The public Ingress itself routes only Prefix "/" (no /metrics rule of its own).
+		for _, rule := range getObj(t, cl, c.name, &networkingv1.Ingress{}).Spec.Rules {
+			if p := rule.HTTP.Paths; len(p) != 1 || p[0].Path != "/" {
+				t.Errorf("%s %s paths = %+v, want only /", c.name, rule.Host, p)
+			}
+		}
+		// Every one of its hosts has an Exact /metrics rule that ingress-nginx denies to everyone.
+		block := getObj(t, cl, c.name+"-metrics", &networkingv1.Ingress{})
+		if block.Annotations[metricsDenyAnnotation] != "0.0.0.0/0,::/0" {
+			t.Errorf("%s-metrics annotations = %v, want a deny-all source range", c.name, block.Annotations)
+		}
+		var hosts []string
+		for _, rule := range block.Spec.Rules {
+			hosts = append(hosts, rule.Host)
+			p := rule.HTTP.Paths
+			if len(p) != 1 || p[0].Path != "/metrics" || p[0].PathType == nil || *p[0].PathType != networkingv1.PathTypeExact {
+				t.Errorf("%s-metrics %s paths = %+v, want Exact /metrics", c.name, rule.Host, p)
+			}
+		}
+		if want := []string{c.host, c.extra}; !reflect.DeepEqual(hosts, want) {
+			t.Errorf("%s-metrics hosts = %v, want %v", c.name, hosts, want)
+		}
+	}
+
 	// Envoy in front of each reader answers /metrics itself, before the catch-all route to OramaCore.
 	var envoy struct {
 		StaticResources struct {
@@ -233,5 +269,14 @@ func TestEnvoyDoesNotServeMetrics(t *testing.T) {
 	if len(routes) != 2 || routes[0].Match["path"] != "/metrics" || routes[0].DirectResponse == nil ||
 		routes[0].DirectResponse.Status != 404 || routes[0].Route != nil || routes[1].Match["prefix"] != "/" {
 		t.Errorf("envoy routes = %+v, want /metrics answered 404 before the / route", routes)
+	}
+
+	// Removing a host removes its /metrics block with it.
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.Engine.Writer.Host = ""
+		o.Spec.Components.Engine.Writer.IngressHostsSpec = oramav1alpha1.IngressHostsSpec{}
+	})
+	if !absent(t, cl, "v1-writer-metrics", &networkingv1.Ingress{}) || !absent(t, cl, "v1-writer", &networkingv1.Ingress{}) {
+		t.Error("the writer's Ingresses outlived its host")
 	}
 }

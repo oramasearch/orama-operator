@@ -210,7 +210,11 @@ func deleteIfExists(ctx context.Context, c client.Client, obj client.Object) err
 	return nil
 }
 
-// ingressClassName is the IngressClass the operator binds its Ingresses to — the
-// helmfile-installed ingress-nginx (which fronts the cluster LoadBalancer). TODO: make
-// configurable via a spec field if a cluster uses a different controller.
-func ingressClassName(_ *oramav1alpha1.OramaCloudV1) string { return "nginx" }
+// ingressClassName is the IngressClass of every Ingress the CR owns: spec.ingressClassName, else
+// the helmfile-installed ingress-nginx (which fronts the cluster LoadBalancer).
+func ingressClassName(oc *oramav1alpha1.OramaCloudV1) string {
+	if oc.Spec.IngressClassName != "" {
+		return oc.Spec.IngressClassName
+	}
+	return "nginx"
+}

@@ -6,9 +6,13 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"context"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -26,6 +30,10 @@ const (
 
 	// oramacoreMetricsPath is OramaCore's Prometheus endpoint (http.with_prometheus).
 	oramacoreMetricsPath = "/metrics"
+
+	// metricsDenyAnnotation makes ingress-nginx answer 403 to every client on the locations of the
+	// Ingress that carries it.
+	metricsDenyAnnotation = "nginx.ingress.kubernetes.io/denylist-source-range"
 )
 
 // engineLogYAML is the log section. levels match Prod 1's engine configs. With
@@ -78,4 +86,33 @@ func sentryRenderExprs(oc *oramav1alpha1.OramaCloudV1, s engineSide) string {
 		exprs = ` -e "s#` + sidePlaceholder + `#` + s.name + `#g"`
 	}
 	return exprs + ` -e "/^  sentry_dns: ''$/d"`
+}
+
+// upsertMetricsBlockIngress owns the Ingress <name>-metrics, which keeps OramaCore's /metrics off the
+// public writer and reader hosts: an Exact /metrics rule on every host of <name>, denied to every
+// source address by ingress-nginx, which prefers it to <name>'s Prefix "/" rule. This covers the
+// writer, whose Ingress reaches OramaCore directly, and readers without Envoy; with Envoy the reader
+// also answers 404 itself (envoyConfig). It uses an annotation rather than a server snippet because
+// ingress-nginx refuses snippet annotations by default.
+func (r *OramaCloudV1Reconciler) upsertMetricsBlockIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, host string, ingress oramav1alpha1.IngressHostsSpec, port int32) error {
+	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name + "-metrics", Namespace: oc.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
+		ing.Labels = labelsFor(oc, component)
+		ing.Annotations = map[string]string{metricsDenyAnnotation: "0.0.0.0/0,::/0"}
+		ing.Spec = metricsBlockIngressSpec(oc, name, host, ingress, port)
+		return controllerutil.SetControllerReference(oc, ing, r.Scheme)
+	})
+	return err
+}
+
+// metricsBlockIngressSpec is ingressSpec with every rule narrowed to the Exact path /metrics.
+func metricsBlockIngressSpec(oc *oramav1alpha1.OramaCloudV1, name, host string, ingress oramav1alpha1.IngressHostsSpec, port int32) networkingv1.IngressSpec {
+	spec := ingressSpec(oc, name, host, ingress, port)
+	exact := networkingv1.PathTypeExact
+	for _, rule := range spec.Rules {
+		for i := range rule.HTTP.Paths {
+			rule.HTTP.Paths[i].Path, rule.HTTP.Paths[i].PathType = oramacoreMetricsPath, &exact
+		}
+	}
+	return spec
 }

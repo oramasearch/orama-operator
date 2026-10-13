@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); in-process embeddings, with `nvidia.com/gpu` on the writer when `writer.gpu`; Services; optional writer/reader Ingresses; engine `ConfigMap` with opt-in dashboard JWKS and Sentry; Prometheus scrape annotations; opt-in scheduled `VolumeSnapshot`s of the writer and reader data claims (`engine_snapshots.go`, #316) | ✅ **done** (validated on AKS; snapshots 🟡 fake-client tested, not live-tested) |
+| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); in-process embeddings, with `nvidia.com/gpu` on the writer when `writer.gpu`; Services; optional writer/reader Ingresses (with `/metrics` blocked); engine `ConfigMap` with opt-in dashboard JWKS and Sentry; Prometheus scrape annotations; opt-in scheduled `VolumeSnapshot`s of the writer and reader data claims (`engine_snapshots.go`, #316) | ✅ **done** (validated on AKS; snapshots 🟡 fake-client tested, not live-tested) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; **never migrates the control DB** — in-cluster, the operator's owned `PostgresSchema` applies the schema (a second Drizzle migrate collides, Postgres `42710`); external, the database's owner runs migrations ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)) | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -325,8 +325,13 @@ Driven by `spec.region.role`:
   replaces with the pod's side. Prod 1 reports as `production-writer-us` and
   `production-reader-{us,europe,asia}`. Writer and reader pods carry `prometheus.io/scrape`,
   `prometheus.io/port: "8080"` and `prometheus.io/path: /metrics`; OramaCore serves `/metrics` on
-  `:8080` (`http.with_prometheus`). Nothing in the cluster scrapes it yet (#15). Envoy answers
-  `/metrics` 404 before its catch-all route, so the readers' Service does not serve it.
+  `:8080` (`http.with_prometheus`). Nothing in the cluster scrapes it yet (#15). `/metrics` is kept off
+  the public hosts: Envoy answers it 404 before its catch-all route, and each engine Ingress has a
+  companion `<cr>-writer-metrics` / `<cr>-reader-metrics` Ingress with an Exact `/metrics` rule on every
+  one of its hosts, annotated `nginx.ingress.kubernetes.io/denylist-source-range: 0.0.0.0/0,::/0`, so
+  ingress-nginx answers 403 (it prefers the Exact rule to the Prefix `/` one). That covers the writer,
+  whose Ingress reaches OramaCore directly, and readers without Envoy. The deny is ingress-nginx's;
+  with another `spec.ingressClassName` only the readers' Envoy route applies.
 - **LLM providers** ([#304](https://github.com/oramasearch/orama-operator/issues/304), `engine_llm.go`)
   — `ai_server` mirrors the Prod 1 configs: `llm` is the `spec.llm.default` provider as an
   OpenAI-compatible remote (`local: false`, `host` = its base URL, `model` = its first model), which
@@ -590,7 +595,10 @@ host is set)**.
   **Selenium** grid Deployment.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
-- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`.
+- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`, with a rule for
+  each of `dashboard.extraHosts` and an optional `tls` entry from `dashboard.tlsSecretName`
+  ([crd-reference.md](crd-reference.md#public-hosts-and-origin-tls)). Every OramaCloudV1 Ingress
+  uses `spec.ingressClassName` (default `nginx`).
   With `idp.provider: firebase`, it gets `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL` and
   `FIREBASE_PRIVATE_KEY` through required keys in `idp.configSecretRef`, replacing the unused
   service-account JSON dummy. The default `none` adds no Firebase variables. The referenced Secret

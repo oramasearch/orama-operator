@@ -782,6 +782,18 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      extraHosts:
+                        description: |-
+                          ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+                          same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+                          ingress by hand. A host may appear once across the CR's components; an extra host equal to
+                          host fails the reconcile.
+                        items:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
                       host:
                         type: string
                       resources:
@@ -839,6 +851,13 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      tlsSecretName:
+                        description: |-
+                          TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+                          Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+                          with this Secret; empty, the Ingress has no tls section.
+                        maxLength: 253
+                        type: string
                     required:
                     - enabled
                     type: object
@@ -912,6 +931,18 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      extraHosts:
+                        description: |-
+                          ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+                          same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+                          ingress by hand. A host may appear once across the CR's components; an extra host equal to
+                          host fails the reconcile.
+                        items:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
                       host:
                         type: string
                       resources:
@@ -969,6 +1000,13 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      tlsSecretName:
+                        description: |-
+                          TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+                          Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+                          with this Secret; empty, the Ingress has no tls section.
+                        maxLength: 253
+                        type: string
                     required:
                     - enabled
                     type: object
@@ -1028,6 +1066,18 @@ spec:
                         type: integer
                       reader:
                         properties:
+                          extraHosts:
+                            description: |-
+                              ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+                              same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+                              ingress by hand. A host may appear once across the CR's components; an extra host equal to
+                              host fails the reconcile.
+                            items:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            type: array
+                            x-kubernetes-list-type: set
                           host:
                             description: Host publishes reads through an owned Ingress
                               and optional Cloudflare DNS.
@@ -1131,6 +1181,13 @@ spec:
                                   the cluster default StorageClass.
                                 type: string
                             type: object
+                          tlsSecretName:
+                            description: |-
+                              TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+                              Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+                              with this Secret; empty, the Ingress has no tls section.
+                            maxLength: 253
+                            type: string
                         type: object
                       sentry:
                         description: |-
@@ -1193,6 +1250,18 @@ spec:
                         type: object
                       writer:
                         properties:
+                          extraHosts:
+                            description: |-
+                              ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+                              same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+                              ingress by hand. A host may appear once across the CR's components; an extra host equal to
+                              host fails the reconcile.
+                            items:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            type: array
+                            x-kubernetes-list-type: set
                           gpu:
                             default: true
                             description: |-
@@ -1315,6 +1384,13 @@ spec:
                                   the cluster default StorageClass.
                                 type: string
                             type: object
+                          tlsSecretName:
+                            description: |-
+                              TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+                              Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+                              with this Secret; empty, the Ingress has no tls section.
+                            maxLength: 253
+                            type: string
                           tolerations:
                             items:
                               description: |-
@@ -1443,6 +1519,18 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      extraHosts:
+                        description: |-
+                          ExtraHosts are further names the component's Ingress answers, each with its own rule to the
+                          same backend as host. Only host gets a CloudflareDNSRecord: extra hosts are pointed at the
+                          ingress by hand. A host may appear once across the CR's components; an extra host equal to
+                          host fails the reconcile.
+                        items:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
                       host:
                         type: string
                       resources:
@@ -1500,6 +1588,13 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      tlsSecretName:
+                        description: |-
+                          TLSSecretName names a kubernetes.io/tls Secret in the CR's namespace, for example a Cloudflare
+                          Origin CA certificate. Set, the Ingress gets one tls entry listing host and every extra host
+                          with this Secret; empty, the Ingress has no tls section.
+                        maxLength: 253
+                        type: string
                     required:
                     - enabled
                     type: object
@@ -1962,6 +2057,12 @@ spec:
                     default: latest
                     type: string
                 type: object
+              ingressClassName:
+                description: |-
+                  IngressClassName is the IngressClass of every Ingress this CR owns (dashboard, docs, writer,
+                  reader). Empty means nginx, the helmfile-installed ingress-nginx.
+                maxLength: 253
+                type: string
               jwtIssuer:
                 description: |-
                   JWTIssuer is shared by dashboard token signing and writer verification. It has no CRD
