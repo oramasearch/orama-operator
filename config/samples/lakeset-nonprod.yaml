@@ -1,0 +1,32 @@
+# Lake environments on the nonprod cluster, from one template (operator#391). Each member is one
+# Lake in its own namespace (lake-<name>). A set never combines nonprod and production: every
+# cluster named here carries the tag purpose=nonprod.
+apiVersion: orama.cloud/v1alpha1
+kind: LakeSet
+metadata:
+  name: lake-nonprod
+spec:
+  template:                       # a Lake spec, the default for every member
+    image: oramasearch/lake:v0.1.0
+    pullSecretName: oramasearch-dockerhub
+    ingressEnabled: true
+    dnsSecretRef: {name: cloudflare-api-token}
+    zetta: {enabled: true, image: "oramasearch/zetta:v0.2.0", replicas: 1}
+    postgres: {enabled: true, instances: 1, storageSize: 50Gi}
+    # accessModes is stated: the default is ReadWriteMany, which a disk-backed class cannot provide.
+    store: {size: 100Gi, storageClassName: managed-csi, accessModes: [ReadWriteOnce]}
+  secrets:                        # copied from this cluster into each member's namespace
+    - {name: oramasearch-dockerhub, namespace: lake}
+    - {name: cloudflare-api-token, namespace: lake}
+  clusters:                       # independent of each other
+    - clusterRef: orama-nonprod-cluster-01
+      name: dev
+      spec:
+        host: lake-dev.oramadev.net
+    - clusterRef: orama-nonprod-cluster-01
+      name: staging
+      spec:                       # this member's settings, merged over the template
+        host: lake-staging.oramadev.net
+        postgres: {instances: 3}
+      secrets:                    # this member's own, replacing the set's of the same name
+        - {name: staging-cloudflare-token, namespace: lake, as: cloudflare-api-token}
