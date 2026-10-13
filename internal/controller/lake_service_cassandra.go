@@ -61,6 +61,24 @@ func (k cassandraServiceKind) build(in catalogService, _ string) []catalogResour
 		}},
 	}
 	return []catalogResource{{catalogObject: k.objects(in)[0], fields: []serviceField{
+		// A workspace namespace enforces the `restricted` Pod Security Standard and the API
+		// server refused cass-operator's pod, whose containers neither drop capabilities nor set
+		// a seccomp profile (operator#435). The pod and each of its four containers carry the
+		// security context here, and state their sizes so none takes the namespace default.
+		// cass-operator runs Cassandra as UID and GID 999.
+		{path: []string{"spec", "cassandra", "podSecurityContext"}, value: map[string]interface{}{
+			"runAsNonRoot": true, "runAsUser": int64(999), "runAsGroup": int64(999), "fsGroup": int64(999),
+			"seccompProfile": map[string]interface{}{"type": "RuntimeDefault"},
+		}},
+		{path: []string{"spec", "cassandra", "resources"}, value: serviceResources("250m", "1Gi", "500m", "2Gi")},
+		{path: []string{"spec", "cassandra", "containers"}, onChange: true, value: []interface{}{
+			restrictedContainer("cassandra", nil),
+			restrictedContainer("server-system-logger", serviceResources("20m", "64M", "100m", "128M")),
+		}},
+		{path: []string{"spec", "cassandra", "initContainers"}, onChange: true, value: []interface{}{
+			restrictedContainer("server-config-init-base", serviceResources("50m", "128M", "500m", "384M")),
+			restrictedContainer("server-config-init", serviceResources("50m", "256M", "500m", "384M")),
+		}},
 		{path: []string{"spec", "cassandra", "serverType"}, value: cassandraServerType},
 		{path: []string{"spec", "cassandra", "serverVersion"}, value: cassandraVersion},
 		// The cluster name cannot change, and the datacenter's items carry CRD defaults, so both

@@ -71,6 +71,33 @@ func clickHouseVolumeClaimTemplate(size string) []interface{} {
 	}}
 }
 
+const (
+	clickHousePodTemplateName = "restricted"
+	// The Altinity operator's default is clickhouse/clickhouse-server:latest, which changes under
+	// a running service. A pod template has to name its image, so it is pinned here.
+	clickHouseServerImage = "clickhouse/clickhouse-server:25.3"
+	clickHouseKeeperImage = "clickhouse/clickhouse-keeper:25.3"
+)
+
+// clickHousePodTemplates is the pod template every ClickHouse and Keeper pod is built from: the
+// `restricted` security context a workspace namespace requires (operator#435), running as the
+// image's own clickhouse user (UID and GID 101), with stated sizes.
+func clickHousePodTemplates(container, image string, resources map[string]interface{}) []interface{} {
+	return []interface{}{map[string]interface{}{
+		"name": clickHousePodTemplateName,
+		"spec": map[string]interface{}{
+			"securityContext": map[string]interface{}{
+				"runAsNonRoot": true, "runAsUser": int64(101), "runAsGroup": int64(101), "fsGroup": int64(101),
+				"seccompProfile": map[string]interface{}{"type": "RuntimeDefault"},
+			},
+			"containers": []interface{}{map[string]interface{}{
+				"name": container, "image": image,
+				"securityContext": restrictedContainerSecurityContext(), "resources": resources,
+			}},
+		},
+	}}
+}
+
 func (k clickHouseServiceKind) build(in catalogService, password string) []catalogResource {
 	objects := k.objects(in)
 	digest := sha256.Sum256([]byte(password))
@@ -94,6 +121,8 @@ func (k clickHouseServiceKind) build(in catalogService, password string) []catal
 	resources := []catalogResource{{catalogObject: objects[0], fields: []serviceField{
 		{path: []string{"spec", "configuration"}, value: configuration},
 		{path: []string{"spec", "defaults", "templates", "dataVolumeClaimTemplate"}, value: clickHouseVolumeTemplate},
+		{path: []string{"spec", "defaults", "templates", "podTemplate"}, value: clickHousePodTemplateName},
+		{path: []string{"spec", "templates", "podTemplates"}, onChange: true, value: clickHousePodTemplates("clickhouse", clickHouseServerImage, serviceResources("100m", "512Mi", "500m", "1Gi"))},
 		{path: []string{"spec", "templates", "volumeClaimTemplates"}, createOnly: true, value: clickHouseVolumeClaimTemplate(serviceStorage(in.spec))},
 	}}}
 	if replicated {
@@ -103,6 +132,8 @@ func (k clickHouseServiceKind) build(in catalogService, password string) []catal
 				"name": clickHouseKeeperName, "layout": map[string]interface{}{"replicasCount": int64(1)},
 			}}},
 			{path: []string{"spec", "defaults", "templates", "dataVolumeClaimTemplate"}, value: clickHouseVolumeTemplate},
+			{path: []string{"spec", "defaults", "templates", "podTemplate"}, value: clickHousePodTemplateName},
+			{path: []string{"spec", "templates", "podTemplates"}, onChange: true, value: clickHousePodTemplates("clickhouse-keeper", clickHouseKeeperImage, serviceResources("50m", "128Mi", "250m", "512Mi"))},
 			{path: []string{"spec", "templates", "volumeClaimTemplates"}, createOnly: true, value: clickHouseVolumeClaimTemplate(clickHouseKeeperStorage)},
 		}}
 		resources = append([]catalogResource{keeper}, resources...)

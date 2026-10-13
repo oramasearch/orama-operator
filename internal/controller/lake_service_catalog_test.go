@@ -928,3 +928,108 @@ func TestServicesKafkaReportsAQuotaRefusal(t *testing.T) {
 		t.Fatalf("want the quota refusal, got %q, %v", why, err)
 	}
 }
+
+// Every kind that renders an upstream operator's resource carries the `restricted` security
+// context a workspace namespace requires, and states its containers' sizes. On 2026-10-13 a Kafka
+// and then a Cassandra were refused in a workspace because theirs carried neither (operator#428,
+// operator#435). The check is on what is rendered: a field named securityContext must be
+// restricted, and every kind must have at least one, and at least one stated resources block.
+func TestServicesEveryUpstreamKindIsRestrictedAndSized(t *testing.T) {
+	in := catalogService{name: "prod-svc-0123456789ab", namespace: "ws", svc: &LakeService{Slug: "svc-0123456789ab"},
+		spec: lakeServiceSpec{Instances: 3, StorageGi: 10}}
+	for name, kind := range map[string]catalogKind{
+		"kafka": kafkaServiceKind{}, "cassandra": cassandraServiceKind{}, "clickhouse": clickHouseServiceKind{},
+		"tidb": tidbServiceKind{}, "valkey": valkeyServiceKind{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var containers, pods, sized int
+			var walk func(path string, node interface{})
+			walk = func(path string, node interface{}) {
+				switch typed := node.(type) {
+				case map[string]interface{}:
+					for key, value := range typed {
+						child, _ := value.(map[string]interface{})
+						switch {
+						case key == "securityContext" && child != nil && child["capabilities"] != nil:
+							containers++
+							drop, _, _ := unstructured.NestedSlice(child, "capabilities", "drop")
+							seccomp, _, _ := unstructured.NestedString(child, "seccompProfile", "type")
+							if child["allowPrivilegeEscalation"] != false || child["runAsNonRoot"] != true || len(drop) != 1 || drop[0] != "ALL" || seccomp != "RuntimeDefault" {
+								t.Errorf("%s.%s is not restricted: %+v", path, key, child)
+							}
+						case (key == "securityContext" || key == "podSecurityContext") && child != nil:
+							pods++
+							seccomp, _, _ := unstructured.NestedString(child, "seccompProfile", "type")
+							if child["runAsNonRoot"] != true || seccomp != "RuntimeDefault" {
+								t.Errorf("%s.%s is not restricted: %+v", path, key, child)
+							}
+						case key == "limits" && child != nil && child["cpu"] != nil && child["memory"] != nil:
+							sized++
+						}
+						walk(path+"."+key, value)
+					}
+				case []interface{}:
+					for _, value := range typed {
+						walk(path, value)
+					}
+				}
+			}
+			for _, resource := range kind.build(in, "password") {
+				for _, field := range resource.fields {
+					// A field whose own path ends in a security context or limits is one too.
+					leaf := field.path[len(field.path)-1]
+					walk(resource.gvk.Kind+"."+strings.Join(field.path[:len(field.path)-1], "."), map[string]interface{}{leaf: field.value})
+				}
+			}
+			if containers == 0 || pods == 0 {
+				t.Errorf("renders %d container and %d pod security contexts; a workspace namespace refuses a pod without them", containers, pods)
+			}
+			if sized == 0 {
+				t.Error("states no CPU and memory limits; its containers would take the namespace default")
+			}
+		})
+	}
+}
+
+// A service that is not ready reports Kubernetes' own last Warning about its objects, whatever
+// its kind: the refusal of a pod appears only as an event on the workload that tried to create it.
+func TestServicesReportTheLastWarningAboutTheirObjects(t *testing.T) {
+	in := catalogService{name: "prod-svc-f341b215d67b", namespace: "prod-ws-1", svc: &LakeService{Slug: "svc-f341b215d67b"}}
+	event := func(name, object, kind, message, when string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1", "kind": "Event",
+			"metadata":       map[string]interface{}{"name": name, "namespace": in.namespace},
+			"involvedObject": map[string]interface{}{"name": object},
+			"type":           kind, "message": message, "lastTimestamp": when,
+		}}
+	}
+	refusal := `Create Pod svc-f341b215d67b-svc-f341b215d67b-default-sts-0 failed error: pods "x" is forbidden: violates PodSecurity "restricted:latest"`
+	scheme := runtime.NewScheme()
+	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Version: "v1", Kind: "Event"}, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Version: "v1", Kind: "EventList"}, &unstructured.UnstructuredList{})
+	c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(
+		event("old", "svc-f341b215d67b-svc-f341b215d67b-default-sts", "Warning", "an older warning", "2026-10-13T18:00:00Z"),
+		event("new", "svc-f341b215d67b-svc-f341b215d67b-default-sts", "Warning", refusal, "2026-10-13T19:00:00Z"),
+		event("noise", "svc-f341b215d67b", "Warning", "pod x: pod not found, most likely statefulset controller has not caught up yet", "2026-10-13T19:30:00Z"),
+		event("normal", "svc-f341b215d67b-svc-f341b215d67b-default-sts", "Normal", "created", "2026-10-13T19:40:00Z"),
+		event("other", "prod-svc-000000000000-0", "Warning", "another service's problem", "2026-10-13T19:50:00Z"),
+	).Build()
+	why, err := serviceWarningReason(context.Background(), c, in)
+	if err != nil || why != refusal {
+		t.Fatalf("want the newest real warning about this service's objects, got %q, %v", why, err)
+	}
+}
+
+// The workspace quota does not cap the sum of CPU limits: it reported a workspace using a third
+// of a CPU as full, and nothing new could start in it (operator#435).
+func TestTheDefaultWorkspacePlanDoesNotCapTheSumOfCPULimits(t *testing.T) {
+	plan := defaultWorkspacePlan()
+	if _, capped := plan.Quota[corev1.ResourceLimitsCPU]; capped {
+		t.Fatal("the default plan caps limits.cpu again")
+	}
+	for _, kept := range []corev1.ResourceName{corev1.ResourceRequestsCPU, corev1.ResourceRequestsMemory, corev1.ResourceLimitsMemory, corev1.ResourcePods} {
+		if _, ok := plan.Quota[kept]; !ok {
+			t.Errorf("the default plan no longer caps %s", kept)
+		}
+	}
+}

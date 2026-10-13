@@ -53,10 +53,23 @@ func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
 	replicas := int64(in.spec.Instances)
 	storage := map[string]interface{}{"storage": serviceStorage(in.spec)}
 	fields := []serviceField{
+		// The `restricted` Pod Security Standard of a workspace namespace (operator#435): every
+		// pod of the cluster runs as a non-root user with the default seccomp profile, and each
+		// component's container drops its capabilities.
+		{path: []string{"spec", "podSecurityContext"}, value: map[string]interface{}{
+			"runAsNonRoot": true, "runAsUser": int64(1000), "runAsGroup": int64(1000), "fsGroup": int64(1000),
+			"seccompProfile": map[string]interface{}{"type": "RuntimeDefault"},
+		}},
+		{path: []string{"spec", "discovery", "securityContext"}, value: restrictedContainerSecurityContext()},
+		{path: []string{"spec", "discovery", "requests"}, value: map[string]interface{}{"cpu": "20m", "memory": "64Mi"}},
+		{path: []string{"spec", "discovery", "limits"}, value: map[string]interface{}{"cpu": "100m", "memory": "128Mi"}},
+		{path: []string{"spec", "pd", "limits"}, value: map[string]interface{}{"cpu": "250m", "memory": "512Mi"}},
+		{path: []string{"spec", "tikv", "limits"}, value: map[string]interface{}{"cpu": "500m", "memory": "1Gi"}},
+		{path: []string{"spec", "tidb", "limits"}, value: map[string]interface{}{"cpu": "250m", "memory": "512Mi"}},
+		{path: []string{"spec", "tidb", "requests"}, value: map[string]interface{}{"cpu": "100m", "memory": "256Mi"}},
 		{path: []string{"spec", "version"}, value: tidbVersion},
 		// The PVs of deleted claims go too; Retain (the default) would keep every disk.
 		{path: []string{"spec", "pvReclaimPolicy"}, value: "Delete"},
-		{path: []string{"spec", "discovery"}, createOnly: true, value: map[string]interface{}{}},
 		// PD places at most as many replicas of a region as there are TiKV stores.
 		{path: []string{"spec", "pd", "config"}, value: map[string]interface{}{
 			"replication": map[string]interface{}{"max-replicas": replicas},
@@ -71,14 +84,16 @@ func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
 		// password initializer waits for its endpoints.
 		{path: []string{"spec", "tidb", "service"}, value: map[string]interface{}{"type": "ClusterIP"}},
 		{path: []string{"spec", "tidb", "initializer"}, value: map[string]interface{}{"createPassword": true}},
-		{path: []string{"spec", "pd", "requests"}, createOnly: true, value: storage},
-		{path: []string{"spec", "tikv", "requests"}, createOnly: true, value: storage},
+		// Storage cannot be changed, so the requests are written once; they carry the sizes too.
+		{path: []string{"spec", "pd", "requests"}, createOnly: true, value: map[string]interface{}{"storage": storage["storage"], "cpu": "50m", "memory": "256Mi"}},
+		{path: []string{"spec", "tikv", "requests"}, createOnly: true, value: map[string]interface{}{"storage": storage["storage"], "cpu": "100m", "memory": "512Mi"}},
 	}
 	for _, component := range tidbComponents {
 		fields = append(fields,
 			serviceField{path: []string{"spec", component, "replicas"}, value: replicas},
 			// No failover pods: the service runs exactly instances of each component.
 			serviceField{path: []string{"spec", component, "maxFailoverCount"}, value: int64(0)},
+			serviceField{path: []string{"spec", component, "securityContext"}, value: restrictedContainerSecurityContext()},
 		)
 	}
 	return []catalogResource{{catalogObject: k.objects(in)[0], fields: fields}}

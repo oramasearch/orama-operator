@@ -142,6 +142,11 @@ rules:
   - apiGroups: ["kafka.strimzi.io"]
     resources: ["kafkas", "kafkanodepools", "kafkausers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # A service that is not ready reports Kubernetes' own last Warning about its objects, read from
+  # the events of its workspace namespace (operator#435).
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "create", "patch"]
   # Read only: where Strimzi records a broker pod the API server refused (operator#428).
   - apiGroups: ["core.strimzi.io"]
     resources: ["strimzipodsets"]
