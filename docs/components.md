@@ -598,12 +598,15 @@ What remains from that work is correctness, not quiet: `settle` never returns a 
 with an error, and the KV namespace and R2 bucket controllers write a failure to status only when
 it changes instead of on every retry.
 
-## Cluster management (`kubernetescluster_controller.go`, `akscluster_controller.go`, `azure_resource_manager.go`) — 🟡 implemented, not live-tested
+## Cluster management (`kubernetescluster_controller.go`, `akscluster_controller.go`, `azure_resource_manager.go`, `clusterhelmrelease_controller.go`, `oramaoperator_controller.go`, `leaf_operator_installer.go`) — ✅ live on `orama-nonprod-cluster-01` (2026-10-12)
 
-The management cluster's role ([`infrastructure/README.md`](infrastructure/README.md),
+Managing other clusters ([`infrastructure/README.md`](infrastructure/README.md),
 [#351](https://github.com/oramasearch/orama-operator/issues/351),
-[#354](https://github.com/oramasearch/orama-operator/issues/354)). Off unless the manager runs
-with `--enable-cluster-management`.
+[#354](https://github.com/oramasearch/orama-operator/issues/354),
+[#363](https://github.com/oramasearch/orama-operator/issues/363)). These controllers run in every
+cluster's operator, with no flag: the operator is the same on a management cluster and a leaf, and
+a cluster manages others by holding the resources. `ClusterHelmRelease` and `OramaOperator` install
+pinned chart releases and the operator itself onto a managed cluster with the Helm library.
 
 | Controller | Reconciles | Creates |
 |---|---|---|

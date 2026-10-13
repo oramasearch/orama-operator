@@ -41,8 +41,7 @@ spec:
         description: |-
           ClusterHelmRelease is one Helm chart release on a cluster this one manages, at a pinned
           version: the cluster-scoped software a leaf needs before and around its operator
-          (CloudNativePG, an ingress controller, the service operators). Reconciled by the management
-          cluster's operator only.
+          (CloudNativePG, an ingress controller, the service operators).
         properties:
           apiVersion:
             description: |-
@@ -114,6 +113,16 @@ spec:
                 - message: clusterRef cannot be changed; create another ClusterHelmRelease
                     for another cluster
                   rule: self == oldSelf
+              crdURLs:
+                description: |-
+                  CRDURLs are https URLs of manifests holding CRDs the chart ships apart from itself (TiDB's
+                  crd.yaml). Each is applied server-side before the chart, on every install and upgrade, and
+                  may hold only CustomResourceDefinitions. Pin the URL to a version.
+                items:
+                  pattern: ^https://
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               dependsOn:
                 description: |-
                   DependsOn names other ClusterHelmRelease resources, on the same cluster, that must be

@@ -47,8 +47,8 @@ type OramaOperatorSpec struct {
 	// +optional
 	ChartRepository string `json:"chartRepository,omitempty"`
 
-	// Values are chart values for the cluster's operator. The image, its pull secret and
-	// clusterManagement.enabled=false are set by this controller and win over anything here.
+	// Values are chart values for the cluster's operator. The image and its pull secret are set
+	// by this controller and win over anything here.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
 	Values *apiextensionsv1.JSON `json:"values,omitempty"`
@@ -103,8 +103,8 @@ type OramaOperatorStatus struct {
 //+kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
 
 // OramaOperator installs the Orama operator onto a cluster this one manages and keeps it at the
-// version named. Every cluster runs the operator; a leaf's is installed and versioned from here,
-// by the management cluster's operator. Reconciled by the management cluster's operator only.
+// version named. Every cluster runs the same operator with the same kinds; which cluster manages
+// which is decided by where these resources are created, not by how an operator is installed.
 type OramaOperator struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

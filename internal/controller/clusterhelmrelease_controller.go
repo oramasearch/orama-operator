@@ -100,7 +100,7 @@ func (r *ClusterHelmReleaseReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	state, err := r.installer().EnsureRelease(ctx, kubeconfig, helmReleaseRequest{
 		Release: rel.Spec.ReleaseName, Namespace: rel.Spec.Namespace, Chart: source, Values: values,
-		RequiredCRDs: rel.Spec.RequiredCRDs,
+		RequiredCRDs: rel.Spec.RequiredCRDs, CRDURLs: rel.Spec.CRDURLs,
 	})
 	rel.Status.ChartVersion, rel.Status.AppVersion = state.ChartVersion, state.AppVersion
 	rel.Status.Revision, rel.Status.ReleaseStatus = int32(state.Revision), state.Status

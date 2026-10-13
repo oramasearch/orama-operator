@@ -1,5 +1,6 @@
-# What the management cluster installs onto orama-nonprod-cluster-01 (operator#363), in the
-# order it must happen: the operator's prerequisite first, then the operator.
+# What the managing cluster installs onto orama-nonprod-cluster-01 (operator#363), in the
+# order it must happen: the operator's prerequisite first, then the operator. The operator
+# installed is the same one every cluster runs.
 #
 # The OramaOperator does not need dependsOn: it reads the CRDs its version requires from its own
 # chart and is not installed until the cluster has them. Apply both at once.

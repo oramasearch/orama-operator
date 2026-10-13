@@ -172,8 +172,8 @@ func TestOramaOperatorInstallsTheVersionAndFollowsTheLeaf(t *testing.T) {
 	if image["repository"] != "oramasearch/orama-operator" || image["tag"] != "dev-83242f9" || operatorValues["replicas"] != float64(2) {
 		t.Fatalf("values: %+v", req.Values)
 	}
-	if req.Values["clusterManagement"].(map[string]any)["enabled"] != false {
-		t.Fatal("a leaf must not manage clusters, whatever spec.values says")
+	if req.Values["clusterManagement"].(map[string]any)["enabled"] != true {
+		t.Fatal("spec.values must pass through untouched apart from the image and pull secret: the operator is the same on every cluster")
 	}
 
 	operator := getOperator(t, c)
@@ -471,10 +471,49 @@ func TestTheChartDeclaresTheCRDsTheManagerNeedsToStart(t *testing.T) {
 			t.Errorf("chart/Chart.yaml annotation %s does not list %s", requiredCRDsAnnotation, name)
 		}
 	}
-	// The management CRDs must not ride along as CRDs of the chart: a leaf does not get them.
+	// The chart carries the management kinds: the operator installed on a leaf is the same one,
+	// and that cluster can manage others.
+	shipped := map[string]bool{}
 	for _, crd := range chrt.CRDObjects() {
-		if strings.Contains(crd.Filename, "management-crds") || strings.Contains(crd.Filename, "e2e-crds") {
-			t.Errorf("%s would be installed on a leaf as a CRD", crd.Filename)
+		shipped[crd.Name] = true
+	}
+	for _, name := range []string{"crds/orama.cloud_kubernetesclusters.yaml", "crds/orama.cloud_oramaoperators.yaml", "crds/orama.cloud_clusterhelmreleases.yaml"} {
+		if !shipped[name] {
+			t.Errorf("the chart does not ship %s; have %v", name, shipped)
 		}
+	}
+}
+
+// Helm puts a resource whose manifest names no namespace in the kubeconfig's default namespace,
+// so the release's namespace must be that default. K8ssandra 1.33.0's Deployments landed in
+// `default` on the first leaf because it was not.
+func TestTheReleaseNamespaceIsTheKubeconfigsDefault(t *testing.T) {
+	kubeconfig := []byte(`apiVersion: v1
+kind: Config
+current-context: leaf
+clusters: [{name: leaf, cluster: {server: "https://leaf.invalid"}}]
+users: [{name: admin, user: {token: t}}]
+contexts: [{name: leaf, context: {cluster: leaf, user: admin}}]
+`)
+	getter, _, err := leafClients(kubeconfig, "k8ssandra-operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	namespace, _, err := getter.ToRawKubeConfigLoader().Namespace()
+	if err != nil || namespace != "k8ssandra-operator" {
+		t.Fatalf("Helm would place un-namespaced resources in %q (%v), not the release's namespace", namespace, err)
+	}
+}
+
+// A CRD manifest shipped apart from a chart is applied only if it holds nothing but CRDs.
+func TestCRDManifestsHoldOnlyCRDs(t *testing.T) {
+	c := leafTestClient(t)
+	err := applyCRDDocuments(context.Background(), c, "https://example.invalid/crd.yaml",
+		[]byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: sneaky\n"))
+	if err == nil || !strings.Contains(err.Error(), "only CustomResourceDefinitions are applied") {
+		t.Fatalf("want a non-CRD refused, got %v", err)
+	}
+	if err := applyCRDDocuments(context.Background(), c, "https://example.invalid/empty.yaml", []byte("# nothing\n")); err == nil {
+		t.Fatal("a manifest with no CRD is an error")
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -40,6 +41,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 )
@@ -87,6 +89,9 @@ type helmReleaseRequest struct {
 	Values    map[string]any
 	// RequiredCRDs are checked on the cluster before the chart is installed or upgraded.
 	RequiredCRDs []string
+	// CRDURLs are manifests of CRDs a chart ships apart from itself. They are applied before the
+	// chart, on every install and upgrade.
+	CRDURLs []string
 }
 
 // helmReleaseState is what the cluster has.
@@ -181,9 +186,9 @@ func leafChartVersion(version string) string {
 // LeafChartVersion exposes the rule to the chart publisher.
 func LeafChartVersion(version string) string { return leafChartVersion(version) }
 
-// leafOperatorValues are the chart values for a leaf: what the resource asks for, under what
-// this controller sets. A leaf never manages other clusters, so cluster management is off
-// whatever the resource says.
+// leafOperatorValues are the chart values for the cluster's operator: what the resource asks
+// for, under what this controller sets (the image and its pull secret). Nothing else differs
+// from any other cluster's operator: every cluster runs the same one, with the same kinds.
 func leafOperatorValues(extra map[string]any, imageRepository, version, pullSecretName string) map[string]any {
 	values := map[string]any{}
 	if extra != nil {
@@ -206,12 +211,6 @@ func leafOperatorValues(extra map[string]any, imageRepository, version, pullSecr
 		operator["imagePullSecrets"] = []any{map[string]any{"name": pullSecretName}}
 	}
 	values["operator"] = operator
-	management, _ := values["clusterManagement"].(map[string]any)
-	if management == nil {
-		management = map[string]any{}
-	}
-	management["enabled"] = false
-	values["clusterManagement"] = management
 	return values
 }
 
@@ -327,10 +326,15 @@ func (g *kubeconfigGetter) ToRESTMapper() (meta.RESTMapper, error) {
 func (g *kubeconfigGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig { return g.config }
 
 func leafClients(kubeconfig []byte, namespace string) (*kubeconfigGetter, client.Client, error) {
-	config, err := clientcmd.NewClientConfigFromBytes(kubeconfig)
+	raw, err := clientcmd.Load(kubeconfig)
 	if err != nil {
 		return nil, nil, fmt.Errorf("the cluster's kubeconfig cannot be read: %w", err)
 	}
+	// The release's namespace is the kubeconfig's default namespace: Helm puts a resource whose
+	// manifest names no namespace wherever the kubeconfig says, not in the release's namespace.
+	// Without this, K8ssandra 1.33.0's Deployments landed in `default` on 2026-10-12.
+	config := clientcmd.NewNonInteractiveClientConfig(*raw, raw.CurrentContext,
+		&clientcmd.ConfigOverrides{Context: clientcmdapi.Context{Namespace: namespace}}, nil)
 	getter := &kubeconfigGetter{config: config, namespace: namespace}
 	restConfig, err := getter.ToRESTConfig()
 	if err != nil {
@@ -429,6 +433,57 @@ func missingCRDs(ctx context.Context, c client.Client, names []string) ([]string
 		}
 	}
 	return missing, nil
+}
+
+// applyCRDManifestURL downloads a manifest and server-side applies the CRDs in it. Anything in
+// the manifest that is not a CustomResourceDefinition is refused: this is for a chart's CRDs and
+// nothing else.
+func applyCRDManifestURL(ctx context.Context, c client.Client, url string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("CRD manifest %s: %w", url, err)
+	}
+	response, err := (&http.Client{Timeout: 2 * time.Minute}).Do(request)
+	if err != nil {
+		return fmt.Errorf("CRD manifest %s cannot be downloaded: %w", url, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("CRD manifest %s cannot be downloaded: HTTP %d", url, response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
+	if err != nil {
+		return fmt.Errorf("CRD manifest %s cannot be read: %w", url, err)
+	}
+	return applyCRDDocuments(ctx, c, url, data)
+}
+
+// applyCRDDocuments server-side applies each CustomResourceDefinition in a multi-document YAML.
+func applyCRDDocuments(ctx context.Context, c client.Client, source string, data []byte) error {
+	applied := 0
+	for _, doc := range bytes.Split(data, []byte("\n---")) {
+		if len(bytes.TrimSpace(doc)) == 0 {
+			continue
+		}
+		obj := &unstructured.Unstructured{}
+		if err := yaml.Unmarshal(doc, &obj.Object); err != nil {
+			return fmt.Errorf("%s is not valid YAML: %w", source, err)
+		}
+		if obj.GetKind() == "" {
+			continue
+		}
+		if obj.GetKind() != "CustomResourceDefinition" {
+			return fmt.Errorf("%s holds a %s named %s; only CustomResourceDefinitions are applied from it", source, obj.GetKind(), obj.GetName())
+		}
+		if err := c.Patch(ctx, obj, client.Apply, client.FieldOwner(leafFieldOwner), client.ForceOwnership); err != nil {
+			return fmt.Errorf("the cluster refused CRD %s: %w", obj.GetName(), err)
+		}
+		applied++
+	}
+	if applied == 0 {
+		return fmt.Errorf("%s holds no CustomResourceDefinition", source)
+	}
+	return nil
 }
 
 // applyCRDs server-side applies the chart's CRDs. Helm applies a chart's crds/ only on the first
@@ -535,6 +590,11 @@ func (h *helmLeafInstaller) ensureRelease(ctx context.Context, getter *kubeconfi
 		}
 		if len(state.MissingCRDs) > 0 {
 			return state, nil
+		}
+		for _, url := range req.CRDURLs {
+			if err := applyCRDManifestURL(ctx, c, url); err != nil {
+				return state, err
+			}
 		}
 		// Helm applies a chart's crds/ only on the first install and never on an upgrade, and a
 		// new version needs its new CRDs before it starts. They are applied here every time.

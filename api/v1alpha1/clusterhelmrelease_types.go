@@ -67,6 +67,14 @@ type ClusterHelmReleaseSpec struct {
 	// +optional
 	// +listType=set
 	RequiredCRDs []string `json:"requiredCRDs,omitempty"`
+
+	// CRDURLs are https URLs of manifests holding CRDs the chart ships apart from itself (TiDB's
+	// crd.yaml). Each is applied server-side before the chart, on every install and upgrade, and
+	// may hold only CustomResourceDefinitions. Pin the URL to a version.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:items:Pattern=`^https://`
+	CRDURLs []string `json:"crdURLs,omitempty"`
 }
 
 // ClusterHelmReleaseStatus is what the cluster has.
@@ -117,8 +125,7 @@ type ClusterHelmReleaseStatus struct {
 
 // ClusterHelmRelease is one Helm chart release on a cluster this one manages, at a pinned
 // version: the cluster-scoped software a leaf needs before and around its operator
-// (CloudNativePG, an ingress controller, the service operators). Reconciled by the management
-// cluster's operator only.
+// (CloudNativePG, an ingress controller, the service operators).
 type ClusterHelmRelease struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
