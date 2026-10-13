@@ -142,6 +142,13 @@ rules:
   - update
   - watch
 - apiGroups:
+  - core.strimzi.io
+  resources:
+  - strimzipodsets
+  verbs:
+  - get
+  - list
+- apiGroups:
   - k8ssandra.io
   resources:
   - k8ssandraclusters

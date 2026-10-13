@@ -5,8 +5,20 @@ to the managing cluster (`kubectl` context `orama-production-cluster-01`). **The
 record of what is deployed.** Change a file here, apply it, and commit both in the same change; a
 `kubectl edit` or `kubectl patch` that is not followed by an update here leaves the record wrong.
 
+**These files and the operator are the only way a cluster is changed.** Nothing is done to a cluster
+by hand without Steve's explicit consent ([`CLAUDE.md`](../../CLAUDE.md), *Never change a cluster by
+hand*): a change made by hand is state outside the code, and is not reproducible.
+
 How to work with them: [`docs/infrastructure/operations.md`](../../docs/infrastructure/operations.md).
 Why they are shaped this way: [`docs/infrastructure/README.md`](../../docs/infrastructure/README.md).
+
+**These files are one of two installation paths, and they mirror the other.** The leaf clusters
+here are installed by the management cluster's operator from these files. The management cluster
+itself is installed from [`helmfile.yaml`](../../helmfile.yaml). Both must install the same charts,
+versions, namespaces and values: **a change to a `platform.yaml` is not finished until
+`helmfile.yaml` and every other cluster's `platform.yaml` have it too**
+([`docs/infrastructure/README.md`](../../docs/infrastructure/README.md#two-installation-paths-one-result);
+`cmd/platform_sync_test.go` fails when they differ).
 
 | File | What it holds |
 |---|---|
