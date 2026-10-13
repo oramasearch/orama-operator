@@ -39,6 +39,7 @@ import (
 // lake_service_<kind>.go; this file holds what every kind shares.
 //
 // +kubebuilder:rbac:groups=kafka.strimzi.io,resources=kafkas;kafkanodepools;kafkausers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.strimzi.io,resources=strimzipodsets,verbs=get;list
 // +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhouseinstallations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=clickhouse-keeper.altinity.com,resources=clickhousekeeperinstallations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pingcap.com,resources=tidbclusters,verbs=get;list;watch;create;update;patch;delete
@@ -319,6 +320,18 @@ func (r *LakeReconciler) reconcileCatalogService(ctx context.Context, lake *oram
 	endpoint := kind.endpoint(in)
 	ready, waiting := kind.ready(in, found)
 	if !ready {
+		// "Waiting" alone hides a service that will never start. A kind that can say what the
+		// upstream operator is stuck on (a pod the API server refuses, for one) says it here, so
+		// the reason reaches lake and the customer instead of staying in another operator's log.
+		if explainer, ok := kind.(catalogWaitExplainer); ok {
+			why, err := explainer.waitingReason(ctx, r.Client, in, found)
+			if err != nil {
+				return serviceResult{}, err
+			}
+			if why != "" {
+				waiting += ": " + why
+			}
+		}
 		return serviceResult{phase: ServicePhaseProvisioning, endpoint: endpoint, message: waiting}, nil
 	}
 	result := serviceResult{phase: ServicePhaseProvisioning, endpoint: endpoint, message: waiting, resourceReady: true}
@@ -560,6 +573,36 @@ func (r *LakeReconciler) liveCatalogObjects(ctx context.Context, lake *oramav1al
 
 // conditionTrue reports whether obj's status.conditions (or the conditions at path) holds a
 // condition of the given type with status "True".
+// catalogWaitExplainer is implemented by a kind that can say why its upstream resources are not
+// ready, in the upstream operator's own words.
+type catalogWaitExplainer interface {
+	waitingReason(ctx context.Context, c client.Reader, in catalogService, found map[string]*unstructured.Unstructured) (string, error)
+}
+
+// conditionMessage returns the message of a condition that is True, or "".
+func conditionMessage(obj map[string]interface{}, conditionType string) string {
+	conditions, _, _ := unstructured.NestedSlice(obj, "status", "conditions")
+	for _, raw := range conditions {
+		condition, ok := raw.(map[string]interface{})
+		if ok && condition["type"] == conditionType && condition["status"] == string(metav1.ConditionTrue) {
+			message, _ := condition["message"].(string)
+			return message
+		}
+	}
+	return ""
+}
+
+// serviceWaitReasonLimit bounds an upstream message stored in service_status.
+const serviceWaitReasonLimit = 700
+
+func boundedReason(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > serviceWaitReasonLimit {
+		text = text[:serviceWaitReasonLimit] + "..."
+	}
+	return text
+}
+
 func conditionTrue(obj map[string]interface{}, conditionType string, path ...string) bool {
 	if len(path) == 0 {
 		path = []string{"status", "conditions"}
