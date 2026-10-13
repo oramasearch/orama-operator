@@ -108,6 +108,20 @@ deterministic/recoverable, even if it is more work now.
     `TestTheChartHasOneCRDDirectoryWithEveryKind`, `TestManagementKindsShipAndRunOnEveryCluster`).
     **Never weaken or delete those tests to make a change pass.**
 
+## Clusters, their platform layer, and sets: where to look
+
+Creating a cluster, installing its platform layer and operator, and running Lake or Orama Cloud v1
+instances on it are all done by editing resources on the managing cluster:
+
+- **How**: [`docs/infrastructure/operations.md`](docs/infrastructure/operations.md), the runbook.
+  Read it before creating a cluster, upgrading the operator, or touching a set.
+- **What is deployed**: [`config/clusters/`](config/clusters/README.md), the resources as applied.
+  **Change the file, apply it, commit it, in one change.** Never leave a `kubectl edit` or
+  `kubectl patch` that the files do not show; `kubectl diff -R -f config/clusters/` must be empty.
+- **Why**: [`docs/infrastructure/README.md`](docs/infrastructure/README.md), the architecture.
+- **Short form for an agent**: the `orama-clusters` skill in the umbrella bridge
+  (https://github.com/oramasearch/orama-bridge/blob/main/.claude/skills/orama-clusters/SKILL.md).
+
 ## One Orama: Zetta is the operator's datastore (multi-cluster)
 
 Beyond deploying v1, this operator is becoming **symbiotic with Orama Zetta** (One Orama stage 2,

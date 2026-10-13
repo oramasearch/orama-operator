@@ -1,0 +1,59 @@
+apiVersion: orama.cloud/v1alpha1
+kind: LakeSet
+metadata:
+  name: lake-prod
+spec:
+  clusters:
+  - clusterRef: orama-production-cluster-02
+    name: shared
+    spec:
+      args:
+      - "--listen"
+      - 0.0.0.0:4900
+      - "--node"
+      - shared
+      env:
+      - name: LAKE_LOG_MODE
+        value: air-gapped
+      - name: LAKE_PUBLIC_HOST
+        value: lake-eu.oramadev.net
+      host: lake-eu.oramadev.net
+  - clusterRef: orama-production-cluster-03
+    name: shared-us
+    spec:
+      args:
+      - "--listen"
+      - 0.0.0.0:4900
+      - "--node"
+      - shared-us
+      env:
+      - name: LAKE_LOG_MODE
+        value: air-gapped
+      - name: LAKE_PUBLIC_HOST
+        value: lake-us.oramadev.net
+      host: lake-us.oramadev.net
+  deletionPolicy: Retain
+  secrets:
+  - name: oramasearch-dockerhub
+    namespace: lake
+  - name: cloudflare-api-token
+    namespace: lake
+  template:
+    dnsSecretRef:
+      name: cloudflare-api-token
+    image: oramasearch/lake:20261012a
+    ingressEnabled: true
+    postgres:
+      enabled: true
+      instances: 1
+      storageSize: 10Gi
+    pullSecretName: oramasearch-dockerhub
+    store:
+      accessModes:
+      - ReadWriteOnce
+      size: 20Gi
+      storageClassName: managed-csi
+    zetta:
+      enabled: true
+      image: oramasearch/zetta:main-4015ef76
+      replicas: 1
