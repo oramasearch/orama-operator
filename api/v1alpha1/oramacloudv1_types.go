@@ -297,10 +297,10 @@ type EngineSnapshotsSpec struct {
 }
 
 type WriterSpec struct {
-	// GPU requests nvidia.com/gpu for the writer's BUILT-IN embeddings generation
-	// (ONNX Runtime + CUDA; prod: L40S). Set false to use CPU embeddings or a remote
-	// embeddings server. (This is the main reason a GPU node is needed at all; the
-	// other is an in-cluster vLLM — see spec.llm.gpu.)
+	// GPU requests nvidia.com/gpu: 1 on the writer pod, where OramaCore computes embeddings
+	// in-process (ONNX Runtime + CUDA, falling back to CPU; prod: L40S). Set false to run the
+	// writer's embeddings on CPU on a node without a GPU. (This is the main reason a GPU node is
+	// needed at all; the other is an in-cluster vLLM — see spec.llm.gpu.)
 	// +kubebuilder:default=true
 	GPU bool `json:"gpu,omitempty"`
 	// Resources overrides the writer pod resources.
@@ -358,6 +358,11 @@ type IngestionSpec struct {
 	// Harvest enables the crawler (Deployment + Mongo + Selenium grid).
 	// +kubebuilder:default=true
 	Harvest bool `json:"harvest,omitempty"`
+	// EmbeddingsURL is the embeddings HTTP API index-builder POSTs to (its ORAMA_EMBEDDINGS_URL;
+	// Prod 1 uses the hosted embeddings API). Unset renders ORAMA_EMBEDDINGS_URL empty:
+	// index-builder requires the variable at boot, and nothing in the stack serves this API.
+	// +optional
+	EmbeddingsURL string `json:"embeddingsURL,omitempty"`
 	// Resources overrides the index-builder pod resources. When unset the operator applies
 	// a sensible per-component default (workload hardening, #18). HARVEST's master/Mongo/
 	// Selenium keep their own defaults.

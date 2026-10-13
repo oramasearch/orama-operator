@@ -16,7 +16,7 @@ pointing at the primary); the full sample list is in
 | `region.role` | enum | `primary` | `primary` (write path + stateful stores) or `read` (regional read tier). |
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
-| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile) run writer-only and reader-only OramaCore builds with side-only configs; unset, both sides fall back to `oramacore` and share the combined config (see [components.md](components.md#engine-internalcontrollerenginego)). |
+| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; override via `overrides.oramacore`. (`overrides.embeddings` is no longer read: OramaCore embeds in-process and the operator runs no embeddings server.) `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile) run writer-only and reader-only OramaCore builds with side-only configs; unset, both sides fall back to `oramacore` and share the combined config (see [components.md](components.md#engine-internalcontrollerenginego)). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers — end users pick per query. Each has `name` (`groq \| openai \| google \| anthropic \| vllm`), `models[]` (required; the first is its default model), optional `url` (overrides OramaCore's built-in OpenAI-compatible base URL) and optional `apiKeySecretRef: {name, key}` (`key` defaults to `<PROVIDER>_API_KEY`; unset ⇒ that key of `<cr>-engine-secret`). Rendered into the engine config's `ai_server.remote_llms`, one entry per provider. Empty ⇒ `groq` (`llama-3.3-70b-versatile`), `openai` (`gpt-5.2`), `anthropic` (`claude-sonnet-4-5`). Refused at reconcile (`Ready=False`): a provider listed twice or with no models, and `vllm` (in-cluster vLLM and its `gpu` field are not rendered yet). |
 | `llm.default` | string | `groq` | Provider used when a request doesn't name one: rendered as `ai_server.llm` (`local: false`, `host` = its base URL, `model` = its first model, its key). Must be one of `providers`, else the reconcile fails with `Ready=False`. |
@@ -60,7 +60,7 @@ increase in place when the StorageClass allows expansion.
 | `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
-| `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
+| `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
 | `analytics` | data-store | ClickHouse |
 | `cache` | data-store | Upstash Redis |
@@ -69,8 +69,14 @@ increase in place when the StorageClass allows expansion.
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
 
-`engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
-L40S). `workers` bundles all ported CF workers into one image → one Deployment.
+`engine.writer.gpu` puts an `nvidia.com/gpu: 1` limit on the writer container, where OramaCore
+computes embeddings in-process (prod runs an L40S), and renders `CUDAExecutionProvider` then
+`CPUExecutionProvider` in the writer's config; `false` runs them on CPU. There is no separate
+embeddings server. `workers` bundles all ported CF workers into one image → one Deployment.
+
+`ingestion.embeddingsURL` is the embeddings HTTP API index-builder POSTs to (its
+`ORAMA_EMBEDDINGS_URL`; Prod 1 uses the hosted embeddings API). Unset renders the variable empty,
+since index-builder requires it at boot and nothing in the stack serves that API.
 
 `engine.reader.hpa` (`minReplicas` default `reader.replicas`, `maxReplicas` default
 2 × `minReplicas`, `targetCPUUtilization` default `70`) makes the operator own a

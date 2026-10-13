@@ -104,7 +104,10 @@ func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav
 		{Name: "APIFY_DATASET_ENDPOINT", Value: "https://api.apify.com/v2/datasets/placeholder/items"},
 		{Name: "REDIS_URL", Value: "redis://" + n + "-cache:6379"}, // in-cluster Redis is passwordless
 		pgURIEnv(oc, "DATABASE_URL"),                               // CNPG-generated URI (real password), not a placeholder (#32)
-		{Name: "ORAMA_EMBEDDINGS_URL", Value: "http://" + n + "-disco:50051"},
+		// The embeddings HTTP API index-builder POSTs to. Nothing in the stack serves it, so it is
+		// empty unless spec.components.ingestion.embeddingsURL names one; the variable stays because
+		// index-builder's EnvSchema requires it at boot.
+		{Name: "ORAMA_EMBEDDINGS_URL", Value: oc.Spec.Components.Ingestion.EmbeddingsURL},
 		{Name: "DISCO_URL", Value: "http://" + n + "-disco:8080"},
 		{Name: "DISCO_PEERS", Value: ""},
 		{Name: "DECRYPTER_BASE_URL", Value: "http://" + n + "-openai-decrypter:8080"},

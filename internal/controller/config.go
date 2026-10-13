@@ -72,7 +72,6 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 			"DISCO_URL":             "http://" + n + "-disco:8080",
 			"ORAMACORE_WRITER_URL":  "http://" + n + "-writer:8080",
 			"ORAMACORE_READER_URL":  "http://" + n + "-reader",
-			"EMBEDDINGS_URL":        "http://" + n + "-disco:50051",
 			// #8 QStash-equivalent: the in-cluster RabbitMQ (a true QStash HTTP shim is a follow-up).
 			"QSTASH_URL": "http://" + n + "-broker:5672",
 			// #4 Airbyte: installed via its Helm chart (helmfile platformDeps); dashboard/index-builder use this.

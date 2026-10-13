@@ -11,7 +11,7 @@ For a Lake installation, use [install/k0s.md](install/k0s.md).
   with the operator image supplied below.
 - **Helm 3.x**, **helmfile**, and **kubectl**. These commands use Helmfile's `sync` command;
   they do not require the Helm diff plugin.
-- A default **StorageClass** with `ReadWriteOnce`, capacity for the engine, embeddings service,
+- A default **StorageClass** with `ReadWriteOnce`, capacity for the engine
   and broker, and node network access to the image registries and required model downloads.
   The sample sets `components.engine.writer.gpu: false`; no GPU is required.
 - **Private registry access from the Orama release maintainer:** a Docker Hub username and a
@@ -21,11 +21,11 @@ For a Lake installation, use [install/k0s.md](install/k0s.md).
   cluster's Linux architecture and compatible with this checkout's CRDs and RBAC. Set
   `OPERATOR_TAG` to that tag. This page does not supply or promise a published release tag;
   `v1-sandbox` is the chart's mutable default, not the tag to use for this installation.
-- For the sample in §3, **compatible published immutable image references** for OramaCore and its
-  CPU ai-server from their release maintainer. Set `ORAMACORE_IMAGE` and `EMBEDDINGS_IMAGE` to
-  those full references (`repository:tag` or `repository@sha256:digest`). Obtain registry access
-  to both; the global application tag does not select these two images. If their model artifacts
-  require credentials, arrange those with the maintainer before applying the sample.
+- For the sample in §3, a **compatible published immutable image reference** for OramaCore from
+  its release maintainer. Set `ORAMACORE_IMAGE` to that full reference (`repository:tag` or
+  `repository@sha256:digest`) and obtain registry access to it; the global application tag does
+  not select this image. OramaCore computes embeddings in-process and downloads its models from
+  Hugging Face on first start into the data volume, so nodes need outbound access to it.
 
 - **Node settings for the OramaCore writer and readers:** `vm.max_map_count` of at least 4194304
   and a container open-files limit of at least 65535. See
@@ -181,7 +181,7 @@ prove that all controllers have started. Pull failures and startup checks are co
 
 ## 3. Reconcile the CPU engine sample
 
-The minimal sample enables the writer, reader, shared CPU embeddings service, and RabbitMQ
+The minimal sample enables the writer, reader (both computing embeddings on CPU), and RabbitMQ
 broker used by writer-to-reader replication. It leaves external Cloudflare operations and demo
 seeding disabled. It does not enable the dashboard, SaaS integrations, or the rest of the v1
 application tier. The operator seeds development component credentials; it does **not** generate
@@ -189,7 +189,6 @@ the registry credential. Use an isolated installation for these development defa
 
 ```sh
 : "${ORAMACORE_IMAGE:?Set the supplied immutable OramaCore image reference}"
-: "${EMBEDDINGS_IMAGE:?Set the supplied immutable CPU ai-server image reference}"
 kubectl apply -n orama-system -f - <<EOF_SAMPLE
 apiVersion: orama.cloud/v1alpha1
 kind: OramaCloudV1
@@ -207,7 +206,6 @@ spec:
     pullSecretName: oramasearch-dockerhub
     overrides:
       oramacore: "${ORAMACORE_IMAGE}"
-      embeddings: "${EMBEDDINGS_IMAGE}"
   cloudflare:
     enabled: false
   demoSeed: false
@@ -255,9 +253,8 @@ Image selection is independent of the manager chart values:
 
 - `spec.images.registry` and `tag` select the operator-specific application images supplied by the
   owning projects, such as dashboard, workers, and ingestion. Obtain published builds first.
-- `oramacore` defaults to `oramasearch/oramacore:latest`; `embeddings` defaults to
-  `oramasearch/oramacore-ai-server:latest` on CPU, or `oramasearch/oramacore-ai-server-cuda:latest`
-  on GPU. They do not use the global `spec.images.tag`. §3 pins both through `overrides`.
+- `oramacore` defaults to `oramasearch/oramacore:latest` and does not use the global
+  `spec.images.tag`. §3 pins it through `overrides`.
 - `spec.images.overrides` maps component keys to full image references and wins over defaults.
   The manager image is selected only by `operator.image.repository` and `operator.image.tag`.
 
