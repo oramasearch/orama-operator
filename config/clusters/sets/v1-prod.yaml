@@ -11,6 +11,13 @@ spec:
       components:
         dashboard:
           host: app-eu.oramadev.net
+  - clusterRef: orama-production-cluster-03
+    name: v1-us
+    namespace: v1-us
+    spec:
+      components:
+        dashboard:
+          host: app-us.oramadev.net
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
