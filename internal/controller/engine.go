@@ -348,7 +348,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 				TerminationGracePeriodSeconds: int64Ptr(writerGracePeriodSeconds),
 			},
 		}
-		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC()}
+		setVolumeClaimTemplates(sts, dataPVC(w.Storage))
 		applyPVCRetention(oc, sts)
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
@@ -422,7 +422,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec:       podSpec,
 		}
-		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC()}
+		setVolumeClaimTemplates(sts, dataPVC(rd.Storage))
 		applyPVCRetention(oc, sts)
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
@@ -574,15 +574,38 @@ func configVolume(oc *oramav1alpha1.OramaCloudV1) corev1.Volume {
 	}
 }
 
-func dataPVC() corev1.PersistentVolumeClaim {
-	return corev1.PersistentVolumeClaim{
+// defaultDataVolumeSize sizes a component's data PVC when its storage.size is unset.
+const defaultDataVolumeSize = "10Gi"
+
+// dataPVC is the `data` volumeClaimTemplate for a StatefulSet, sized by the component's storage
+// spec (default 10Gi on the cluster default StorageClass).
+func dataPVC(v oramav1alpha1.VolumeSpec) corev1.PersistentVolumeClaim {
+	size := resource.MustParse(defaultDataVolumeSize)
+	if v.Size != nil {
+		size = *v.Size
+	}
+	pvc := corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "data"},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+				Requests: corev1.ResourceList{corev1.ResourceStorage: size},
 			},
 		},
+	}
+	if v.StorageClassName != "" {
+		pvc.Spec.StorageClassName = strPtr(v.StorageClassName)
+	}
+	return pvc
+}
+
+// setVolumeClaimTemplates sets a StatefulSet's volumeClaimTemplates only when the operator creates
+// it. The API server refuses any later change to them, and a refused update would fail every
+// reconcile step after this one, so an existing StatefulSet keeps the templates it was created
+// with. Resizing a running component's volume is a PVC expansion; see docs/components.md.
+func setVolumeClaimTemplates(sts *appsv1.StatefulSet, pvcs ...corev1.PersistentVolumeClaim) {
+	if sts.ResourceVersion == "" {
+		sts.Spec.VolumeClaimTemplates = pvcs
 	}
 }
 

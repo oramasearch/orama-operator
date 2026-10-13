@@ -162,14 +162,15 @@ caught the two capability exceptions above before merge (drop-ALL had crash-loop
 Driven by `spec.region.role`:
 
 - **Writer** (primary only) — a `StatefulSet` (1 replica) running `oramasearch/oramacore`,
-  a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
+  a `volumeClaimTemplate` for `/app/.data` sized by `writer.storage` (default `10Gi`), and the CR's
+  nodeSelector/tolerations. Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
 - **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` (`reader.replicas`,
   `podManagementPolicy: Parallel`) with the `oramacore` container **+ an Envoy sidecar**
   (`envoyproxy/envoy:v1.31.2`, `:80 → 127.0.0.1:8080`, from the generated `envoy.yaml`) when
   `engine.envoy` is set. Service on `:80` (→ Envoy, or → `:8080` if Envoy is off). Each reader
-  has its own `data` PVC (`10Gi`) at `/app/.data`, holding its index and
+  has its own `data` PVC (`reader.storage`, default `10Gi`) at `/app/.data`, holding its index and
   the last replication-stream offset it applied; a restarted or rescheduled reader resumes from
   that offset ([orama-bridge#141](https://github.com/oramasearch/orama-bridge/issues/141)). The
   readers used an `emptyDir` before, so every new reader replayed `oramacore-operations` from
@@ -257,7 +258,9 @@ provisioned as an **unstructured** object so the operator stays decoupled from C
 Go types/version. Requires the CNPG operator (installed via the helmfile).
 
 - **Primary** — a fresh cluster, `spec.instances` from the profile (light 1 / medium
-  2 / heavy 3), `10Gi` storage, `bootstrap.initdb` creating the `oramacore` database.
+  2 / heavy 3), storage from `controlDB.storage` (default `10Gi` on the default StorageClass;
+  CNPG grows the PVCs in place when the StorageClass allows expansion), `bootstrap.initdb`
+  creating the `oramacore` database.
 - **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** streaming
   from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
 - `mode: external` connects to a database the operator does not own, such as the shared
@@ -303,8 +306,8 @@ primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the C
 CNPG bootstrapped Postgres; deleting the CR GC'd the cluster + its pods.
 
 > **Follow-ups:** the replica cluster's `streaming_replica` credentials/secret wiring;
-> exposing storage size + the DB name as CR fields; a Service alias the app can use; a restore
-> rehearsal for the control DB like `LakeRestoreRehearsal`.
+> exposing the DB name as a CR field; a Service alias the app can use; a restore rehearsal for the
+> control DB like `LakeRestoreRehearsal`.
 
 ## Data stores — cache / broker / analytics / search (`internal/controller/datastore.go`)
 
@@ -326,10 +329,21 @@ and reference the primary's endpoint). Images are overridable via
 StatefulSets + Services + PVCs; **all four pods booted `1/1`**; deleting the CR
 removed the workloads.
 
-> **PVC retention:** StatefulSet PVCs are **retained** on delete (the k8s default — data is left
-> in place, not auto-deleted); `spec.deletionProtection` makes that explicit on every StatefulSet
-> (`persistentVolumeClaimRetentionPolicy: Retain/Retain`) so a cluster with a different default can't
-> delete them. Orphaned PVCs are cleaned up manually.
+> **PVC size + retention:** each store's PVC is sized by its `storage` (`size`, default `10Gi`;
+> `storageClassName`, default the cluster default). StatefulSet PVCs are **retained** on delete
+> (the k8s default — data is left in place, not auto-deleted); `spec.deletionProtection` makes that
+> explicit on every StatefulSet (`persistentVolumeClaimRetentionPolicy: Retain/Retain`) so a cluster
+> with a different default can't delete them. Orphaned PVCs are cleaned up manually.
+
+### Resizing a data volume
+
+`volumeClaimTemplates` are immutable, so the operator applies a `storage` change only when it
+creates a StatefulSet; an existing StatefulSet keeps the template it was created with (the reconcile
+does not fail). To grow a running component's volume, expand each PVC (`kubectl patch pvc
+data-<cr>-<component>-<n>` with the new `spec.resources.requests.storage`) on a StorageClass with
+`allowVolumeExpansion`; the AKS built-in `managed-csi*` classes allow it. Set the same size in the CR
+so a recreated StatefulSet matches. A different StorageClass needs a data migration and is not
+automated.
 
 Each store also gets the **workload-hardening baseline** (startup/readiness/liveness TCP probes, a
 per-container securityContext, requests + a generous per-store memory limit, a `60s` grace period,

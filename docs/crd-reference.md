@@ -28,11 +28,21 @@ pointing at the primary); the full sample list is in
 ## `spec.components`
 
 Every component has `enabled`. Data stores also have `mode: in-cluster|external`,
-`placement: local|central`, `replicate`, and `endpoint`/`credentialsSecretRef`.
+`placement: local|central`, `replicate`, `endpoint`/`credentialsSecretRef`, and
+`storage` (below).
+
+**`storage`** (a `VolumeSpec`) sizes a persistent volume: `size` (quantity, default `10Gi`) and
+`storageClassName` (default: the cluster default StorageClass). It exists on `engine.writer`,
+`engine.reader`, every data store (`analytics`, `cache`, `broker`, `search`) and `controlDB`, where it
+becomes the CNPG Cluster's `spec.storage.{size,storageClass}`. The StatefulSet volumes take it when
+the operator **creates** the StatefulSet: `volumeClaimTemplates` are immutable, so a later change is
+ignored for an existing StatefulSet (resize an existing PVC by expanding it; see
+[components.md](components.md#resizing-a-data-volume)). CNPG applies a `controlDB.storage.size`
+increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations}`, `reader.{replicas,hpa,resources}`, `envoy` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `reader.{replicas,hpa,resources,storage}`, `envoy` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |

@@ -114,7 +114,8 @@ func (r *OramaCloudV1Reconciler) resolveControlDBBackup(ctx context.Context, oc 
 // reconcileControlDB provisions the control-plane Postgres (PlanetScale in prod) as a
 // CloudNativePG Cluster. On the primary it bootstraps a fresh cluster; on a read tier
 // with replicate=true it stands up a replica cluster streaming from the primary peer.
-// spec.components.controlDB.backup adds a Barman object store + an owned ScheduledBackup. Under
+// spec.components.controlDB.storage sizes each instance's PVC, and controlDB.backup adds a Barman
+// object store + an owned ScheduledBackup. Under
 // spec.deletionProtection the Cluster and ScheduledBackup carry no owner reference, so deleting the
 // CR leaves them (and the data) in place.
 // Requires the CloudNativePG operator to be installed (see helmfile).
@@ -147,9 +148,16 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 			return err
 		}
 		cluster.SetLabels(labelsFor(oc, "controldb"))
+		storage := map[string]interface{}{"size": defaultDataVolumeSize}
+		if db.Storage.Size != nil {
+			storage["size"] = db.Storage.Size.String()
+		}
+		if db.Storage.StorageClassName != "" {
+			storage["storageClass"] = db.Storage.StorageClassName
+		}
 		spec := map[string]interface{}{
 			"instances": int64(profileInstances(oc)),
-			"storage":   map[string]interface{}{"size": "10Gi"},
+			"storage":   storage,
 		}
 		if controlDBIsReplica(oc) {
 			// Replica cluster: stream from the primary region's Postgres endpoint.
