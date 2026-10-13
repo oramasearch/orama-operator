@@ -69,6 +69,7 @@ increase in place when the StorageClass allows expansion.
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
 | `analytics` | data-store; external mode requires an HTTP(S) `endpoint` and `credentialsSecretRef` with `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` for the dashboard/processor | ClickHouse (Prod 2 keeps ClickHouse Cloud) |
+| `analyticsProcessor` | `resources`, `import.{enabled,schedule}` | Analytics import server and opt-in CronJob |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
 | `search` | data-store | Typesense hosted-search |
@@ -188,6 +189,31 @@ the dashboard as an explicit environment variable. `jwtIssuer` had a CRD default
 until operator#310; CRs created while it was served keep that stored value.
 The dashboard token endpoint reads writer/reader URLs from control-DB cluster rows; their copy must
 use the exact Prod 2 URLs. The operator does not rewrite those rows.
+
+### `analyticsProcessor.import`
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Own `<cr>-analytics-import`, a CronJob that sends `POST /import` to the processor Service on port 8080. Requires engine, analytics and controlDB enabled. |
+| `schedule` | `*/5 * * * *` | Five-field cron in UTC (`timeZone: Etc/UTC`); validated before scheduling. |
+
+A new stack opting in creates a headless governing reader Service `<cr>-reader-headless` alongside
+the normal customer-facing reader Service. The processor polls each reader ordinal on its own port
+8080, including HPA-driven replicas, exactly once per run, and the writer on a primary region.
+Configuration
+changes roll the processor through a deterministic config hash; ordinary unscheduled configurations
+retain their existing reader-Service polling. The processor now gets that hash annotation even
+without a schedule, so upgrading an existing processor rolls it once.
+
+Existing reader StatefulSets retain their immutable `serviceName`. Enabling imports on a legacy
+`<cr>-reader` governing Service returns a visible prerequisite error and creates no schedule.
+A separately reviewed reader migration is required first; the operator never deletes/recreates the
+StatefulSet to change this field. Disabling imports removes the schedule but keeps a headless Service
+already governing live readers. Disabling the processor removes its Deployment, config and schedule.
+Invalid prerequisites remove a previous schedule and degrade reconciliation. Trigger pods inherit
+pull secrets, mount no service-account token or credentials, forbid concurrent Jobs,
+and make no automatic request retries. See [components.md](components.md#analytics-import) for
+listener/image requirements and failure limits.
 
 ### `controlDB.backup`
 

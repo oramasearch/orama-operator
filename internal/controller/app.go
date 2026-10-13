@@ -98,6 +98,8 @@ type appDef struct {
 	// gracePeriodSeconds is terminationGracePeriodSeconds. 0 → the stateless-app default (30s).
 	// Stateful/slow-draining apps set a larger value. Workload hardening (#18).
 	gracePeriodSeconds int64
+	// configHash rolls workloads whose init container renders a config file.
+	configHash string
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
@@ -167,6 +169,9 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		dep.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec:       podSpec,
+		}
+		if def.configHash != "" {
+			dep.Spec.Template.Annotations = map[string]string{"orama.cloud/config-hash": def.configHash}
 		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
 	}); err != nil {

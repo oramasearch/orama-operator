@@ -28,7 +28,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
 | **disco** | `internal/controller/disco.go` | `Deployment` (DISCO, no embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
-| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — pulls `/v1/analytics` from the reader Service and the writer (master key) → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
+| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service + config; opt-in owned import CronJob polls every reader ordinal and the primary writer → ClickHouse | 🟡 **implemented**, unit-tested; scheduled import not live-tested ([orama-bridge#155](https://github.com/oramasearch/orama-bridge/issues/155)) |
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
 | **cloudflare** | `internal/controller/cloudflare.go` | CF DNS record via the CF API (safe no-op until configured) | 🟡 **implemented** (not live-tested) |
@@ -368,9 +368,10 @@ Driven by `spec.region.role`:
   `country`, …). Prod sets the block on readers only and with a dedicated key. With the combined config the
   writer's reader side logs too (it serves no search traffic, so normally nothing); `writer.yaml` has
   no reader side.
-  analytics-processor's `oramacores` lists the reader Service first and the writer second, both
-  with the master key. **Open gap:** the reader Service load-balances, so one `POST /import` drains
-  only the reader pod it lands on; nothing in-cluster calls `/import` yet.
+  With scheduled imports enabled, analytics-processor's `oramacores` lists each reader ordinal
+  through its headless governing Service (and the writer on a primary region), all with the
+  master key.
+  The unscheduled default retains reader-Service polling. See [Analytics import](#analytics-import).
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
   BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets
@@ -681,6 +682,50 @@ removed by ID as before (see `CloudflareDNSRecord` in `crd-reference.md`). Prod 
 
 These endpoint and DNS changes are unit-tested as of 2026-10-07 and have not been applied to AKS or
 Cloudflare. Prod 1's records remain read-only; this work makes no production calls.
+
+## Analytics import
+
+`spec.components.analyticsProcessor.import.enabled` owns a CronJob `<cr>-analytics-import`, which
+uses the existing `curlimages/curl:8.10.1` helper image to call
+`POST http://<cr>-analytics-processor:8080/import`. It uses the CR's pull secrets, has
+resource limits and the container hardening baseline, and mounts neither credentials nor a
+service-account token. The default schedule is every five minutes, in UTC. `Forbid` prevents
+concurrent Jobs; request retries and Job retries are off because imports drain reader logs.
+HTTP failures fail the Job, with a 10-second connect timeout, 240-second request timeout and
+300-second Job deadline. Histories retain one successful/failed Job each, with a one-hour TTL.
+The stack's readiness still measures workloads; import failures are visible in Job status/logs.
+A timed-out HTTP request may leave the server finishing an import, so check that run before
+manually triggering another. Importer delivery guarantees remain those of the source processor.
+
+The processor is one Deployment with an init-rendered YAML config. Every new opted-in reader stack
+uses `<cr>-reader-headless` as the StatefulSet's governing Service and polls
+`http://<cr>-reader-<ordinal>.<cr>-reader-headless.<namespace>.svc:8080/v1/analytics` for every current
+desired replica.
+
+An existing reader StatefulSet keeps its immutable governing Service name. If it still uses
+`<cr>-reader`, enabling imports fails visibly before creating Jobs; migrate its reader topology
+under a separate reviewed change first. The operator does not delete/recreate readers to do this.
+Disabling imports removes the CronJob and retains the live governing headless Service. Disabling
+the processor removes its workload, config and schedule. Missing enabled engine/analytics/controlDB,
+a bad schedule or a legacy governing Service removes any previous schedule and returns a reconcile
+error. External ClickHouse requires an HTTP(S) endpoint without embedded credentials and a referenced
+Secret holding `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD`; the processor renders those credentials
+in its private volume. Prod 2 keeps ClickHouse Cloud, with no new in-cluster ClickHouse store.
+`create_tables: true` is unchanged: use the separately provisioned Prod 2 analytics destination and
+check its grants/table compatibility before deployment; this is no authorization to alter Prod 1.
+
+**Source evidence (read 2026-10-07):** upstream
+[analytics server at `11a6c2d`](https://github.com/oramasearch/analytics-processor/blob/11a6c2dd5c6db86bed2c617940c09b43d36e2c62/src/bin/server.rs)
+binds `127.0.0.1:8888`. The existing bridge
+[Dockerfile at `8ae627b`](https://github.com/oramasearch/orama-cloud-v1-bridge/blob/8ae627bcbbc200e1f201ffb68e66cf65a46d0a97/build/images/analytics-processor/Dockerfile)
+patches it to `0.0.0.0:8080` and asserts the patch before compiling. The operator requires an image
+built with that listener contract; an unpatched upstream image cannot serve its Service or probes.
+No source repo changes or image builds were made for this issue. Writer JWT rendering follows
+[OramaCore's provider schema at `983442f`](https://github.com/oramasearch/oramacore/blob/983442f2984d95dee9c09447a03f4228a574eebd/src/auth/jwt_manager.rs);
+Firebase Secret keys and the exact JWT audience follow the
+[dashboard at `9507a1a`](https://github.com/oramasearch/dashboard/blob/9507a1a592a32da7be8d543d7bf0df6f70a08f4f/src/app/api/user/jwt/route.ts)
+and its `src/lib/auth/firebase-admin.ts`. Unit tests cover rendering, ownership, scheduling,
+scaling, disable and prerequisite behavior; live importer, DNS and sign-in validation remain pending.
 
 ## Zetta elastic capacity (`zetta_capacity.go`) — 🟡 implemented, opt-in, not live-tested
 
