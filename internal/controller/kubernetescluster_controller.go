@@ -303,7 +303,11 @@ func (r *KubernetesClusterReconciler) writeStatus(ctx context.Context, cluster *
 	if reflect.DeepEqual(&cluster.Status, observed) {
 		return nil
 	}
-	return r.Status().Update(ctx, cluster)
+	// A patch of what changed, with no version precondition: this controller is the only writer
+	// of this status, so a read that is one write behind must not make the write fail.
+	base := cluster.DeepCopy()
+	base.Status = *observed.DeepCopy()
+	return r.Status().Patch(ctx, cluster, client.MergeFrom(base))
 }
 
 func (r *KubernetesClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -414,7 +418,11 @@ func (r *KubernetesClusterProviderReconciler) writeStatus(ctx context.Context, p
 	if reflect.DeepEqual(&provider.Status, observed) {
 		return nil
 	}
-	return r.Status().Update(ctx, provider)
+	// A patch of what changed, with no version precondition: this controller is the only writer
+	// of this status, so a read that is one write behind must not make the write fail.
+	base := provider.DeepCopy()
+	base.Status = *observed.DeepCopy()
+	return r.Status().Patch(ctx, provider, client.MergeFrom(base))
 }
 
 func (r *KubernetesClusterProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {

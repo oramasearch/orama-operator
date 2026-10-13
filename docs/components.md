@@ -577,21 +577,26 @@ nothing, and a partial component/event pair retries only the missing append. Lak
 as deterministic JSON in the component detail. See [Zetta as the operator datastore](zetta-datastore.md)
 and the [Lake observed-state contract](lake/README.md#observed-state-in-zetta).
 
-## What is and is not an error in the log (`reconcile_results.go`)
+## The log is kept readable by fixing errors, never by hiding them
 
-The operator's log is read to see what is new, so two ordinary outcomes are kept out of it.
+Steve, 2026-10-12: the log is quieted by fixing errors, not by turning off logging.
 
-- **A write conflict is a quiet requeue.** The object changed between the cached read and the
-  write; the reconcile runs again from a fresh read and nothing is logged. `settle` does this, and
-  also never returns a result together with an error (the manager ignores the result and warns).
-- **A provider refusing a request because of configuration is rechecked every 30 minutes**, not
-  retried with backoff. A 4xx other than 408 or 429 from Cloudflare or Azure (a feature not enabled
-  on the account, a credential without the permission) is written to the resource's status, once,
-  and the resource is tried again later. `providerRefused` decides. A 5xx or a network error is
-  still an error and is retried with backoff.
+A reconcile that fails returns its error. The manager logs it and retries, and it stays in the log
+until its cause is fixed. No controller downgrades, swallows or slows down an error to make the log
+quieter. Two examples from the day the rule was stated:
 
-The `CloudflareKVNamespace` and `CloudflareR2Bucket` controllers and the three cluster-management
-controllers use both. The other controllers predate this and still return such errors.
+- **Cloudflare refused the v1 sandbox's R2 bucket** with 403 from July to October. The fix was
+  enabling R2 on the account, after which the bucket reconciled. A change that would have
+  rechecked it quietly every 30 minutes was written, and removed.
+- **A status write was refused as a conflict** on a new `KubernetesClusterProvider`. The cause was
+  the write itself: a full update with a version check, from a cached read one write behind. The
+  cluster-management controllers now write status as a patch of what changed, which has no version
+  check, because each is the only writer of its status. A change that would have swallowed the
+  conflict was written, and removed.
+
+What remains from that work is correctness, not quiet: `settle` never returns a result together
+with an error, and the KV namespace and R2 bucket controllers write a failure to status only when
+it changes instead of on every retry.
 
 ## Cluster management (`kubernetescluster_controller.go`, `akscluster_controller.go`, `azure_resource_manager.go`) — 🟡 implemented, not live-tested
 
