@@ -49,6 +49,16 @@ var e2eKinds = map[string]bool{
 	"LakeE2ETest":         true,
 }
 
+// The cluster-management kinds are gated behind --enable-cluster-management and their CRDs live in
+// chart/management-crds, not chart/crds: only the management cluster provisions other clusters
+// (operator#351), and a leaf's operator must not watch or need them. Keep this list in step with
+// the gated block in main.go.
+var managementKinds = map[string]bool{
+	"KubernetesCluster":         true,
+	"KubernetesClusterProvider": true,
+	"AksCluster":                true,
+}
+
 func registeredKinds(t *testing.T) []string {
 	t.Helper()
 	source, err := os.ReadFile("main.go")
@@ -77,6 +87,10 @@ func chartKinds(t *testing.T) []string { return kindsIn(t, filepath.Join("..", "
 
 func e2eChartKinds(t *testing.T) []string {
 	return kindsIn(t, filepath.Join("..", "chart", "e2e-crds"))
+}
+
+func managementChartKinds(t *testing.T) []string {
+	return kindsIn(t, filepath.Join("..", "chart", "management-crds"))
 }
 
 func kindsIn(t *testing.T, dir string) []string {
@@ -117,6 +131,9 @@ func TestEveryRegisteredControllerHasAChartCRD(t *testing.T) {
 	for _, kind := range e2eChartKinds(t) {
 		chart[kind] = true
 	}
+	for _, kind := range managementChartKinds(t) {
+		chart[kind] = true
+	}
 	var missing []string
 	for _, kind := range registeredKinds(t) {
 		if !chart[kind] {
@@ -140,7 +157,7 @@ func TestEveryChartCRDHasARegisteredController(t *testing.T) {
 		registered[kind] = true
 	}
 	var orphaned []string
-	for _, kind := range append(chartKinds(t), e2eChartKinds(t)...) {
+	for _, kind := range append(append(chartKinds(t), e2eChartKinds(t)...), managementChartKinds(t)...) {
 		if !registered[kind] {
 			orphaned = append(orphaned, kind)
 		}
@@ -152,6 +169,43 @@ func TestEveryChartCRDHasARegisteredController(t *testing.T) {
 	}
 }
 
+// A gated kind must live in its own folder, never in chart/crds: a management kind installed by
+// the chart would be put on every leaf, and one missing from chart/management-crds would crash the
+// management cluster's operator when the flag is on.
+func TestManagementKindsLiveOnlyInManagementCRDs(t *testing.T) {
+	for _, kind := range chartKinds(t) {
+		if managementKinds[kind] {
+			t.Errorf("%s is a cluster-management kind and must be in chart/management-crds, not chart/crds", kind)
+		}
+	}
+	shipped := make(map[string]bool)
+	for _, kind := range managementChartKinds(t) {
+		shipped[kind] = true
+		if !managementKinds[kind] {
+			t.Errorf("chart/management-crds ships %s, which is not in managementKinds", kind)
+		}
+	}
+	for kind := range managementKinds {
+		if !shipped[kind] {
+			t.Errorf("%s is a cluster-management kind with no CRD in chart/management-crds", kind)
+		}
+	}
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	gate := strings.Index(string(source), "if enableClusterManagement {")
+	if gate < 0 {
+		t.Fatal("main.go no longer gates cluster management behind enableClusterManagement")
+	}
+	for kind := range managementKinds {
+		registration := strings.Index(string(source), "controller."+kind+"Reconciler{")
+		if registration < gate {
+			t.Errorf("%sReconciler is registered outside the enableClusterManagement block", kind)
+		}
+	}
+}
+
 // The chart ClusterRole is hand-maintained, and a kind the manager watches without RBAC to list and
 // watch it fails its cache sync exactly like a missing CRD does — same crash, same blast radius,
 // third place to forget. CLAUDE.md warns about it; this makes the warning enforceable.
@@ -160,6 +214,13 @@ func TestEveryChartCRDIsCoveredByChartRBAC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob chart/crds: %v", err)
 	}
+	// The management kinds' RBAC is rendered only under clusterManagement.enabled; the resource
+	// names are in the template either way, which is what this checks.
+	management, err := filepath.Glob(filepath.Join("..", "chart", "management-crds", "*.yaml"))
+	if err != nil {
+		t.Fatalf("glob chart/management-crds: %v", err)
+	}
+	manifests = append(manifests, management...)
 	var plurals []string
 	for _, file := range manifests {
 		manifest, err := os.ReadFile(file)

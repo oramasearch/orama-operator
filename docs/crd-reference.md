@@ -514,3 +514,86 @@ resource namespace, and `spec.template.name`. The output is labelled
 | `status.lease` | Dynamic lease `{id, expiresAt, renewAt}`; no credential value. |
 | `status.mintedAt` / `.version` | For a lake source: the last delivery from lake and the secret version the Secret holds. An unpinned lake source is delivered again every five minutes. |
 | `status.conditions[Ready]` | `Delivered` or a stable refusal reason such as `UnsealFailed`, `SecretOwnershipConflict`, or `MintFailed`. |
+
+## `KubernetesCluster` (separate CRD, cluster-scoped) — a cluster the operator provisions
+
+The abstract kind of the infrastructure work ([#351](https://github.com/oramasearch/orama-operator/issues/351),
+[#354](https://github.com/oramasearch/orama-operator/issues/354); design in
+[`infrastructure/README.md`](infrastructure/README.md)). It says what cluster is wanted in
+provider-neutral terms and names a `KubernetesClusterProvider`. That provider's type decides the
+concrete kind the operator creates for it: `AksCluster` for type `aks`. The controller never calls
+a vendor's API.
+
+**Management cluster only.** The three kinds in this section are reconciled only when the manager
+runs with `--enable-cluster-management` (chart: `clusterManagement.enabled`), and their definitions
+are in `chart/management-crds/`, not the install chart.
+
+| Field | Meaning |
+|---|---|
+| `spec.providerRef` | Name of the `KubernetesClusterProvider`. Immutable. |
+| `spec.region` | The provider's name for the region, such as `westus2`. Immutable. |
+| `spec.kubernetesVersion` | `1.35` or `1.35.8`. |
+| `spec.nodePools[]` | `name`, `role` (`system` or `user`), `machineSize` (the provider's word, such as `Standard_D8as_v7`), and either `count` or `minCount` with `maxCount` (which turns on the provider's autoscaling between the two; `count` is then the starting size). Optional `zones`, `labels`, `taints`. At least one pool must be `system`, with at least one node. |
+| `spec.deletionPolicy` | **Required, no default.** `Delete` destroys the real cluster when the resource is deleted; `Retain` leaves it running. Clusters are ephemeral, so whoever writes the resource chooses. |
+| `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written (key `kubeconfig`). Default: `<name>-kubeconfig` in the namespace of the provider's credentials Secret. |
+| `spec.tags` | Attached to the cluster where the provider supports them. |
+| `status.phase` | `Pending`, `Provisioning`, `Ready`, `Degraded` or `Deleting`, summarized from the concrete resource. `kubectl get kc`. |
+| `status.concreteRef` | The concrete resource, as `AksCluster/<name>`. |
+| `status.endpoint` / `.kubernetesVersion` / `.nodePools[]` | The API server's address, the version running, and each pool's state and count. |
+| `status.kubeconfigSecretRef` | Set once the kubeconfig Secret holds a credential. |
+| `Ready` / `InSync` conditions | Carried across from the concrete resource. |
+
+A cluster whose spec is invalid in a way the schema cannot express (no system pool, `minCount`
+above `maxCount`) is `Degraded` with the reason, and nothing is provisioned. A cluster whose
+provider does not exist is `Pending` until it does.
+
+Sample: [`config/samples/kubernetescluster-nonprod.yaml`](../config/samples/kubernetescluster-nonprod.yaml).
+
+## `KubernetesClusterProvider` (separate CRD, cluster-scoped) — a vendor, an account, its credentials
+
+Written once per account and shared by every cluster in it. Swapping a provider for a client that
+requires a different one means pointing a `KubernetesCluster` at a different provider resource.
+
+| Field | Meaning |
+|---|---|
+| `spec.type` | `aks`. Immutable. |
+| `spec.credentialsSecretRef` | `{name, namespace}` of the Secret the operator authenticates with. For `aks`: keys `tenantID` and `clientID`, plus `clientSecret` for a service principal. **Without `clientSecret` the operator uses workload identity**: it exchanges its projected service-account token for an Azure token, so no long-lived secret exists. |
+| `spec.aks.subscriptionID` | The Azure subscription clusters are created in. |
+| `spec.aks.resourceGroupPrefix` / `.resourceGroupSuffix` | Each cluster's resource group is `<prefix><cluster name><suffix>`. The suffix defaults to `_group`. |
+| `spec.aks.skuTier` | `Free`, `Standard` (default) or `Premium`. |
+| `spec.aks.network` | `plugin` (`azure`), `pluginMode` (`overlay`), `dataplane` (`cilium`), `policy` (`cilium`), `podCIDR`, `serviceCIDR`, `dnsServiceIP`. The defaults are the existing cluster's. |
+| `spec.aks.upgradeChannel` / `.nodeOSUpgradeChannel` | Defaults `patch` and `NodeImage`. |
+| `spec.aks.osDiskSizeGB` | Default 256. |
+| `spec.aks.workloadIdentity` | Default `true`: turns on the OIDC issuer and workload identity in each cluster. |
+| `status.ready` | True once one cheap call (reading the subscription) succeeded with the credentials. |
+| `status.authMethod` | `workload-identity` or `service-principal`, as read from the Secret. |
+| `status.clusters` | How many `KubernetesCluster` resources point at this provider. **A provider cannot be deleted while that is above zero**; the delete is held and `status.message` says why. |
+
+## `AksCluster` (separate CRD, cluster-scoped) — one AKS managed cluster
+
+The concrete kind, and the only one whose controller calls Azure. A `KubernetesCluster` creates
+and owns it; its spec is complete on its own. It calls the Azure Resource Manager REST API
+directly, as the Cloudflare and Clerk controllers call theirs: there is no Azure SDK dependency.
+
+| Field | Meaning |
+|---|---|
+| `spec.subscriptionID` / `.resourceGroup` / `.location` | Where the cluster lives. Immutable. |
+| `spec.clusterName` | The managed cluster's name in Azure. Default: the resource's name. |
+| `spec.credentialsSecretRef` | The Azure credentials Secret, as on the provider. |
+| `spec.kubernetesVersion`, `.skuTier`, `.network`, `.upgradeChannel`, `.nodeOSUpgradeChannel`, `.workloadIdentity` | As on the provider and the abstract kind. |
+| `spec.nodePools[]` | `name`, `mode` (`System` or `User`), `vmSize`, `count`, `enableAutoScaling` with `minCount` and `maxCount`, `osDiskSizeGB`, `availabilityZones`, `nodeLabels`, `nodeTaints`. |
+| `spec.deletionPolicy` | Required. `Delete` deletes the managed cluster, then the resource group **if the operator created it**; `Retain` deletes nothing. |
+| `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written. The Secret is owned by the `AksCluster`. |
+| `status.phase` / `.provisioningState` / `.powerState` | The operator's phase, and Azure's own words. `kubectl get aks`. |
+| `status.resourceID`, `.fqdn`, `.kubernetesVersion`, `.nodeResourceGroup`, `.oidcIssuerURL`, `.nodePools[]` | What Azure reports. |
+| `status.createdResourceGroup` | True when the operator created the resource group, and so may delete it. |
+| `status.kubeconfigWritten` | True once the kubeconfig Secret holds a credential. |
+| `InSync` condition | False when the spec asks for something the cluster does not have. **This version reports the difference and does not act on it**: a cluster is not changed after it is created. |
+
+What a reconcile does: register the finalizer; ensure the resource group; create the managed
+cluster if it is absent; poll every 30 seconds until Azure reports `Succeeded`; fetch the admin
+credential once and write the kubeconfig Secret; then re-read the cluster every five minutes.
+Status is written only when it changes. On deletion with `Delete`, the resource is held until
+Azure reports the cluster gone; if the credentials are missing, it is held and says so, so a
+running cluster is never orphaned silently.
+

@@ -219,11 +219,14 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - aksclusters
   - clerkapplications
   - cloudflarednsrecords
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
+  - kubernetesclusterproviders
+  - kubernetesclusters
   - lakeapps
   - lakee2etests
   - lakeenvironments
@@ -247,11 +250,14 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - aksclusters/finalizers
   - clerkapplications/finalizers
   - cloudflarednsrecords/finalizers
   - cloudflarekvnamespaces/finalizers
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
+  - kubernetesclusterproviders/finalizers
+  - kubernetesclusters/finalizers
   - lakeapps/finalizers
   - lakeenvironments/finalizers
   - lakes/finalizers
@@ -263,11 +269,14 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - aksclusters/status
   - clerkapplications/status
   - cloudflarednsrecords/status
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
+  - kubernetesclusterproviders/status
+  - kubernetesclusters/status
   - lakeapps/status
   - lakee2etests/status
   - lakeenvironments/status

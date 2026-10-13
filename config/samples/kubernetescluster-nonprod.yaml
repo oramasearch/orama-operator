@@ -1,0 +1,59 @@
+# The first leaf cluster (operator#355): orama-nonprod-cluster-01, for staging, dev and testing.
+# Apply on the management cluster, with cluster management enabled
+# (docs/infrastructure/README.md).
+#
+# The provider is written once per Azure account. Its credentials Secret holds tenantID and
+# clientID; with no clientSecret the operator uses workload identity.
+apiVersion: orama.cloud/v1alpha1
+kind: KubernetesClusterProvider
+metadata:
+  name: azure-orama
+spec:
+  type: aks
+  credentialsSecretRef:
+    name: azure-cluster-management
+    namespace: orama-system
+  aks:
+    subscriptionID: 00000000-0000-0000-0000-000000000000   # the Azure subscription
+    resourceGroupSuffix: _group                            # orama-nonprod-cluster-01_group
+    skuTier: Standard
+    network:
+      plugin: azure
+      pluginMode: overlay
+      dataplane: cilium
+      policy: cilium
+    upgradeChannel: patch
+    nodeOSUpgradeChannel: NodeImage
+    osDiskSizeGB: 256
+    workloadIdentity: true
+---
+apiVersion: orama.cloud/v1alpha1
+kind: KubernetesCluster
+metadata:
+  name: orama-nonprod-cluster-01
+spec:
+  providerRef: azure-orama
+  region: westus2   # Washington state; chosen by Steve, 2026-10-12
+  kubernetesVersion: "1.35"
+  # Required, with no default. Delete destroys the cluster when this resource is deleted.
+  deletionPolicy: Delete
+  nodePools:
+    # One 8-core node to start, the machine type the management cluster uses. The pool may grow
+    # to five, the management cluster's range.
+    - name: agentpool
+      role: system
+      machineSize: Standard_D8as_v7
+      count: 1
+      minCount: 1
+      maxCount: 5
+      zones: ["1", "2", "3"]
+    # Empty until a workload needs it, so it costs nothing to start.
+    - name: userpool
+      role: user
+      machineSize: Standard_D8as_v7
+      minCount: 0
+      maxCount: 100
+      zones: ["1", "2", "3"]
+  tags:
+    orama.cloud/role: leaf
+    orama.cloud/purpose: nonprod

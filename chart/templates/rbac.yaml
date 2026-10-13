@@ -4,6 +4,10 @@ metadata:
   name: {{ .Values.serviceAccount.name }}
   namespace: {{ .Release.Namespace }}
   labels: {{- include "operator.labels" . | nindent 4 }}
+  {{- if and .Values.clusterManagement.enabled .Values.clusterManagement.azureWorkloadIdentityClientID }}
+  annotations:
+    azure.workload.identity/client-id: {{ .Values.clusterManagement.azureWorkloadIdentityClientID | quote }}
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -38,6 +42,11 @@ rules:
       - lakeapps
       - lakerestorerehearsals
       - lakesealedsecrets
+      {{- if .Values.clusterManagement.enabled }}
+      - kubernetesclusters
+      - kubernetesclusterproviders
+      - aksclusters
+      {{- end }}
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -75,6 +84,14 @@ rules:
       - lakeenvironments/finalizers
       - lakeapps/finalizers
       - lakesealedsecrets/finalizers
+      {{- if .Values.clusterManagement.enabled }}
+      - kubernetesclusters/status
+      - kubernetesclusters/finalizers
+      - kubernetesclusterproviders/status
+      - kubernetesclusterproviders/finalizers
+      - aksclusters/status
+      - aksclusters/finalizers
+      {{- end }}
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
