@@ -648,10 +648,10 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 |---|---|
 | `spec.template` | The instance's spec (a `Lake`'s, an `OramaCloudV1`'s), the default for every member. Validated by each member's cluster when applied. A `LakeSet` template does not set `namespace`; an `OramaCloudV1Set` template does not set `region.name`. |
 | `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. |
-| `spec.clusters[]` | The members, applied in order. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). |
+| `spec.clusters[]` | The members. Independent: none waits for another. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). |
 | `spec.deletionPolicy` | `Retain` (default): removing a member or deleting the set leaves the instance running. `Delete`: the instance is deleted from its cluster. |
 | `status.phase` | `Ready` (every member `Ready`), `Progressing`, or `Degraded` (the set was refused, or a member failed). |
 | `status.purpose` | The `purpose` tag all the members' clusters share. A set whose clusters differ in purpose, or lack one, applies nothing. |
 | `status.members`, `.readyMembers` | Counts. Columns of `kubectl get lset`. |
 | `status.memberStatuses[]` | Per member: `cluster`, `name`, `namespace`, `phase` (`Pending`, `Progressing`, `Ready`, `Degraded`), `version` (a Lake's image, a v1's image tag) and `message`. |
-| `status.message` | Which member is holding the set back, and what its cluster says about it. |
+| `status.message` | Which members are not `Ready`, and what each one's cluster says about it. |

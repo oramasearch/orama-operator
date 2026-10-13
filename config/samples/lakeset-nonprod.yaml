@@ -13,11 +13,12 @@ spec:
     dnsSecretRef: {name: cloudflare-api-token}
     zetta: {enabled: true, image: "oramasearch/zetta:v0.2.0", replicas: 1}
     postgres: {enabled: true, instances: 1, storageSize: 50Gi}
-    store: {size: 100Gi, storageClassName: managed-csi}
+    # accessModes is stated: the default is ReadWriteMany, which a disk-backed class cannot provide.
+    store: {size: 100Gi, storageClassName: managed-csi, accessModes: [ReadWriteOnce]}
   secrets:                        # copied from this cluster into each member's namespace
     - {name: oramasearch-dockerhub, namespace: lake}
     - {name: cloudflare-api-token, namespace: lake}
-  clusters:                       # applied in this order; each waits for the one before it
+  clusters:                       # independent of each other
     - clusterRef: orama-nonprod-cluster-01
       name: dev
       spec:

@@ -77,6 +77,14 @@ var lakeSetKind = setKind{
 		version, _, _ := unstructured.NestedString(obj.Object, "spec", "image")
 		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
 		ready, message := conditionOf(obj, "Ready")
+		// The Ready condition says only that the Deployment is not up; the condition that says
+		// why (a store that cannot be provisioned, Zetta not ready) is another one. All that are
+		// not met are reported. BackupReady is left out: backups being off is a setting.
+		for _, kind := range []string{"StoreReady", "ZettaReady"} {
+			if met, why := conditionOf(obj, kind); !met && why != "" && !ready {
+				message = strings.TrimPrefix(message+"; "+why, "; ")
+			}
+		}
 		return phase == "Ready" && ready, version, firstNonEmpty(message, phaseText(phase))
 	},
 }
@@ -465,9 +473,11 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 		return ctrl.Result{}, err
 	}
 
+	// Members are independent: each is applied on every pass, and none waits for another. One
+	// member failing or starting slowly does not hold back the rest.
 	statuses := make([]oramav1alpha1.SetMemberStatus, 0, len(members))
 	var ready int32
-	var blockedBy string
+	var notReady []string
 	var firstErr error
 	for _, resolved := range members {
 		entry := oramav1alpha1.SetMemberStatus{Cluster: resolved.member.ClusterRef, Name: resolved.member.Name, Namespace: resolved.namespace}
@@ -476,12 +486,6 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 				entry.Version = previous.Version
 			}
 		}
-		if blockedBy != "" {
-			// Ordered rollout: a member is not touched until the one before it is Ready.
-			entry.Phase, entry.Message = clusterPhasePending, "waiting for "+blockedBy+" to be Ready"
-			statuses = append(statuses, entry)
-			continue
-		}
 		isReady, err := r.applyMember(ctx, set, template, resolved, &entry)
 		if err != nil && firstErr == nil {
 			firstErr = err
@@ -489,7 +493,11 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 		if isReady {
 			ready++
 		} else {
-			blockedBy = resolved.member.Name + " on " + resolved.member.ClusterRef
+			line := resolved.member.Name + " on " + resolved.member.ClusterRef
+			if entry.Message != "" {
+				line += " (" + entry.Message + ")"
+			}
+			notReady = append(notReady, line)
 		}
 		statuses = append(statuses, entry)
 	}
@@ -508,13 +516,7 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 		setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), clusterPhaseReady, "AllMembersReady", "")
 		return settle(ctrl.Result{RequeueAfter: leafOperatorSteadyRecheck}, r.writeStatus(ctx, set, observed))
 	}
-	message := fmt.Sprintf("%d of %d members are Ready; %s is not", ready, len(members), blockedBy)
-	for _, entry := range statuses {
-		if entry.Phase != clusterPhaseReady && entry.Message != "" && !strings.HasPrefix(entry.Message, "waiting for ") {
-			message += ": " + entry.Message
-			break
-		}
-	}
+	message := fmt.Sprintf("%d of %d members are Ready; not Ready: %s", ready, len(members), strings.Join(notReady, "; "))
 	setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), setPhaseProgressing, "MembersNotReady", message)
 	return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.writeStatus(ctx, set, observed))
 }

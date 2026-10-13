@@ -128,20 +128,22 @@ func nonprodObjects() []client.Object {
 		setSecret("oramasearch-dockerhub", "hub"), setSecret("lake-prod-openai", "shared-key"), setSecret("staging-openai", "staging-key"))
 }
 
-// Members roll out in order, each in its own namespace, with its own settings over the template
-// and its own Secrets over the set's.
-func TestLakeSetAppliesMembersInOrderWithTheirOwnSettings(t *testing.T) {
-	members := &fakeMembers{ready: map[string]bool{}}
+// Members are independent: every one is applied at once, each in its own namespace, with its own
+// settings over the template and its own Secrets over the set's. One that is not Ready does not
+// hold back another (Steve, 2026-10-12: "staging should not need to wait for dev ... they're
+// independent").
+func TestLakeSetAppliesEveryMemberIndependentlyWithItsOwnSettings(t *testing.T) {
+	members := &fakeMembers{ready: map[string]bool{"staging": true}}
 	c := setTestClient(t, append(nonprodObjects(), nonprodLakeSet())...)
 
 	result, err := reconcileLakeSet(t, c, members, "lake-nonprod")
 	if err != nil || result.RequeueAfter != leafOperatorPollInterval {
 		t.Fatalf("got %v, %v", result, err)
 	}
-	if len(members.applied) != 1 || members.applied[0].Name != "dev" {
-		t.Fatalf("only the first member is applied until it is Ready; applied %d", len(members.applied))
+	if len(members.applied) != 2 || members.applied[0].Name != "dev" || members.applied[1].Name != "staging" {
+		t.Fatalf("every member is applied on the first pass, whatever the others' state; applied %d", len(members.applied))
 	}
-	dev := members.applied[0]
+	dev, staging := members.applied[0], members.applied[1]
 	if dev.Namespace != "lake-dev" || dev.Spec["namespace"] != "lake-dev" || dev.ObjectNamespace != "" || dev.Owner != "LakeSet.lake-nonprod" {
 		t.Fatalf("dev: namespace %q, spec.namespace %v, object namespace %q, owner %q", dev.Namespace, dev.Spec["namespace"], dev.ObjectNamespace, dev.Owner)
 	}
@@ -151,25 +153,8 @@ func TestLakeSetAppliesMembersInOrderWithTheirOwnSettings(t *testing.T) {
 	if len(dev.Secrets) != 2 || string(dev.Secrets[1].Data["key"]) != "shared-key" {
 		t.Fatalf("dev gets the set's secrets: %+v", dev.Secrets)
 	}
-	set := getLakeSet(t, c, "lake-nonprod")
-	if set.Status.Phase != setPhaseProgressing || set.Status.Purpose != "nonprod" || set.Status.Members != 2 || set.Status.ReadyMembers != 0 {
-		t.Fatalf("status: %+v", set.Status)
-	}
-	if got := set.Status.MemberStatuses; got[0].Phase != setPhaseProgressing || got[0].Message != "the control database is starting" ||
-		got[1].Phase != clusterPhasePending || got[1].Message != "waiting for dev on orama-nonprod-cluster-01 to be Ready" {
-		t.Fatalf("member statuses: %+v", got)
-	}
-	if !strings.Contains(set.Status.Message, "the control database is starting") {
-		t.Fatalf("the set's message carries what the member's cluster says: %q", set.Status.Message)
-	}
-
-	members.ready["dev"] = true
-	if _, err := reconcileLakeSet(t, c, members, "lake-nonprod"); err != nil {
-		t.Fatal(err)
-	}
-	staging := members.applied[len(members.applied)-1]
-	if staging.Name != "staging" || staging.Namespace != "lake-staging" {
-		t.Fatalf("staging follows once dev is Ready: %+v", staging)
+	if staging.Namespace != "lake-staging" {
+		t.Fatalf("staging: %+v", staging)
 	}
 	postgres := staging.Spec["postgres"].(map[string]any)
 	if staging.Spec["image"] != "oramasearch/lake:next" || postgres["instances"] != float64(3) || postgres["storageSize"] != "50Gi" {
@@ -182,12 +167,46 @@ func TestLakeSetAppliesMembersInOrderWithTheirOwnSettings(t *testing.T) {
 		t.Fatalf("a member's secret replaces the set's of the same name: %+v", staging.Secrets)
 	}
 
-	members.ready["staging"] = true
+	set := getLakeSet(t, c, "lake-nonprod")
+	if set.Status.Phase != setPhaseProgressing || set.Status.Purpose != "nonprod" || set.Status.Members != 2 || set.Status.ReadyMembers != 1 {
+		t.Fatalf("status: %+v", set.Status)
+	}
+	if got := set.Status.MemberStatuses; got[0].Phase != setPhaseProgressing || got[0].Message != "the control database is starting" ||
+		got[1].Phase != clusterPhaseReady || got[1].Version != "oramasearch/lake:next" {
+		t.Fatalf("staging is Ready while dev is still starting: %+v", got)
+	}
+	if want := "1 of 2 members are Ready; not Ready: dev on orama-nonprod-cluster-01 (the control database is starting)"; set.Status.Message != want {
+		t.Fatalf("message:\n got %q\nwant %q", set.Status.Message, want)
+	}
+
+	members.ready["dev"] = true
 	if result, err = reconcileLakeSet(t, c, members, "lake-nonprod"); err != nil || result.RequeueAfter != leafOperatorSteadyRecheck {
 		t.Fatalf("got %v, %v", result, err)
 	}
-	if set = getLakeSet(t, c, "lake-nonprod"); set.Status.Phase != clusterPhaseReady || set.Status.ReadyMembers != 2 || set.Status.MemberStatuses[1].Version != "oramasearch/lake:next" {
+	if set = getLakeSet(t, c, "lake-nonprod"); set.Status.Phase != clusterPhaseReady || set.Status.ReadyMembers != 2 {
 		t.Fatalf("status when all are ready: %+v", set.Status)
+	}
+}
+
+// A Lake that is not Ready reports every condition that is not met, so the cause is on the member:
+// the Ready condition alone says only that the Deployment is not up.
+func TestALakeMemberReportsTheConditionThatSaysWhy(t *testing.T) {
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"generation": int64(2)},
+		"spec":     map[string]any{"image": "oramasearch/lake:v0.1.0"},
+		"status": map[string]any{"phase": "Progressing", "conditions": []any{
+			map[string]any{"type": "Ready", "status": "False", "observedGeneration": int64(2), "message": "waiting for 1 Deployment replicas: 0 ready"},
+			map[string]any{"type": "BackupReady", "status": "False", "observedGeneration": int64(2), "message": "control-plane backups are disabled"},
+			map[string]any{"type": "StoreReady", "status": "False", "observedGeneration": int64(2), "message": "PersistentVolumeClaim lake-dev/lake-dev-store is not bound"},
+			map[string]any{"type": "ZettaReady", "status": "True", "observedGeneration": int64(2)},
+		}},
+	}}
+	ready, version, message := lakeSetKind.observe(obj)
+	if ready || version != "oramasearch/lake:v0.1.0" {
+		t.Fatalf("ready %t version %q", ready, version)
+	}
+	if want := "waiting for 1 Deployment replicas: 0 ready; PersistentVolumeClaim lake-dev/lake-dev-store is not bound"; message != want {
+		t.Fatalf("message:\n got %q\nwant %q", message, want)
 	}
 }
 
@@ -270,8 +289,8 @@ func TestASetReportsWhatAMembersClusterRefuses(t *testing.T) {
 		t.Fatalf("want the cluster's refusal returned, got %v", err)
 	}
 	got := getLakeSet(t, c, "lake-nonprod")
-	if got.Status.MemberStatuses[0].Message != refused.Error() || got.Status.MemberStatuses[1].Phase != clusterPhasePending {
-		t.Fatalf("statuses: %+v", got.Status.MemberStatuses)
+	if got.Status.MemberStatuses[0].Message != refused.Error() || got.Status.MemberStatuses[1].Message != refused.Error() {
+		t.Fatalf("each member reports its own cluster's refusal: %+v", got.Status.MemberStatuses)
 	}
 }
 

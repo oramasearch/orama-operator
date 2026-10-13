@@ -355,7 +355,7 @@ metadata: {name: lake-prod}
 spec:
   template: {...}                 # a Lake spec, the default for every member
   secrets: [...]                  # copied from this cluster into each member's namespace
-  clusters:                       # applied in this order
+  clusters:                       # independent of each other
     - clusterRef: orama-production-cluster-02
       name: shared                # general production, for all shared accounts
       spec: {host: lake.eu.example}
@@ -383,15 +383,17 @@ What a set does for each member, in order:
 2. **Creates the member's namespace and writes its Secrets** into it, before the instance: an
    instance whose pull secret or credentials are absent starts failing.
 3. **Applies the instance**, labelled `orama.cloud/managed-by-set: <Kind>.<set>`.
-4. **Reports what the cluster says**: the version running, and the instance's own reason when it is
-   not `Ready`. What the cluster's API server refuses (a field the kind does not accept) is on the
+4. **Reports what the cluster says**: the version running, and the instance's own reasons when it is
+   not `Ready` (for a Lake, every condition that is not met, such as a store that cannot be
+   provisioned). What the cluster's API server refuses (a field the kind does not accept) is on the
    member and returned as an error.
 
 Further behavior:
 
-- **Ordered rollout.** Members are applied in list order, and a member is not touched until the one
-  before it is `Ready`. A template change therefore reaches the first member first; order the list
-  so that is the one you want to see it first.
+- **Members are independent** (Steve, 2026-10-12: *"staging should not need to wait for dev ...
+  they're independent"*). Every member is applied on every pass and none waits for another: one
+  that fails or starts slowly does not hold back the rest. A template change reaches all members
+  at once, except those that pin the field.
 - **Pinning.** A member whose `spec` sets the version (a Lake's `image`) ignores the template's.
 - **Removal keeps the instance.** Removing a member or deleting the set leaves the instance running
   and unmanaged, unless the set says `deletionPolicy: Delete`.
