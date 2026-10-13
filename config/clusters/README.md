@@ -21,6 +21,7 @@ Why they are shaped this way: [`docs/infrastructure/README.md`](../../docs/infra
 |---|---|---|---|
 | `orama-nonprod-cluster-01` | `westus2` | `nonprod` | `Delete` |
 | `orama-production-cluster-02` | `swedencentral` | `production` | `Retain` |
+| `orama-production-cluster-03` | `eastus` | `production` | `Retain` |
 
 The managing cluster, `orama-production-cluster-01`, was created by hand before these kinds
 existed and has no `KubernetesCluster` of its own.
