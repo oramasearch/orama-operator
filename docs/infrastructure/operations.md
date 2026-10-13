@@ -7,6 +7,19 @@ instances on it, by editing resources on the managing cluster. The design and th
 (https://github.com/oramasearch/orama-bridge/blob/main/.claude/skills/orama-clusters/SKILL.md) is the
 short form of this page.
 
+## The rule before any procedure: nothing is changed by hand
+
+Steve, 2026-10-13: *"the operator is how we affect change (or changing the CRs for the lakeset or
+v1 set)"*; *"that's state changes outside of our code, and therefore not reproducible"*.
+
+Every procedure on this page changes a cluster in one of two ways: a change to the operator, or a
+change to a resource file in `config/clusters/` that is then applied. **Nothing else is done to any
+cluster without Steve's explicit consent for that action**: no `helm` against a cluster, no
+`kubectl patch`, `edit`, `delete`, `scale` or `rollout restart`, no deleting an object so that it is
+recreated, on nonprod or production ([`CLAUDE.md`](../../CLAUDE.md), *Never change a cluster by
+hand*). Reading is always allowed. Where this page reaches a step that can only be done by hand
+today, it says so, and that step is a question for Steve and a gap to close in the operator.
+
 ## Where things are
 
 | What | Where |
@@ -82,9 +95,11 @@ Every one of them has a `Message` that says, in the words of whatever refused, w
 
 Every cluster runs the same operator version (rule 11 in [`CLAUDE.md`](../../CLAUDE.md)).
 
-1. Merge the change into `dev`. Build, publish the chart and roll the managing cluster:
-   `~/dev/oramasearch/codex-work/build/scripts/build-operator.sh` does all three from the
-   operator checkout's current commit and prints the tag, `dev-<sha>`. It publishes the chart for the same tag, without which a managed cluster cannot
+1. Merge the change into `dev`. **Ask Steve before rolling the managing cluster**: it is not managed
+   by a resource yet, so its operator is rolled by a script that runs `helm upgrade` against it.
+   With his consent, `~/dev/oramasearch/codex-work/build/scripts/build-operator.sh` builds the
+   image, publishes the chart and rolls it from the operator checkout's current commit, and prints
+   the tag, `dev-<sha>`. It publishes the chart for the same tag, without which a managed cluster cannot
    install that version.
 2. Set that version on every `OramaOperator`, in `config/clusters/<cluster>/operator.yaml`, and apply.
    Each managed cluster's operator is upgraded, CRDs first.
@@ -158,7 +173,7 @@ kubectl --context orama-production-cluster-01 get lset <name> \
 
 | Symptom | Cause | What to do |
 |---|---|---|
-| A Lake member stays `Progressing` with "PersistentVolumeClaim … is not bound" | A Lake's store defaults to `ReadWriteMany`, which a disk-backed storage class cannot provide | State `store.accessModes: [ReadWriteOnce]` in the template. A claim's access mode cannot be changed, so the claim that never bound has to be deleted for the cluster's operator to recreate it; on production, ask first |
+| A Lake member stays `Progressing` with "PersistentVolumeClaim … is not bound" | A Lake's store defaults to `ReadWriteMany`, which a disk-backed storage class cannot provide | State `store.accessModes: [ReadWriteOnce]` in the template. A claim's access mode cannot be changed, so the claim that never bound has to be replaced, and the operator does not do that yet: **ask Steve before deleting it**, on any cluster |
 | `OramaOperator` is `Pending`: "the cluster lacks CRDs this operator version needs" | CloudNativePG is not on the cluster yet | Apply its `ClusterHelmRelease`; the operator installs by itself afterwards |
 | `OramaOperator` is `Degraded`: the chart cannot be pulled | The chart for that version was not published | `go run ./hack/pushchart -version <tag>` from the commit the image was built from |
 | A set member is `Pending`: "does not have the Lake kind" | The cluster's operator is not installed or not `Ready` | Fix the `OramaOperator` first |
@@ -173,8 +188,8 @@ kubectl --context orama-production-cluster-01 get lset <name> \
   everywhere ([`CLAUDE.md`](../../CLAUDE.md) rule 11).
 - **A set never combines nonprod and production.**
 - **Per-instance keys are never copied** between clusters; only the Secrets a set lists travel.
-- **On a production cluster, ask before anything destructive**: deleting an instance, a claim, a
-  namespace, a release or the cluster.
+- **Nothing is changed by hand on any cluster without Steve's explicit consent** (the section at
+  the top of this page). Change the operator, or change a resource file and apply it.
 - **A hostname that production traffic already uses is never pointed at a new cluster** without an
   explicit decision. Instances created so far use names in `oramadev.net`.
 - **Pull requests target `dev`.**

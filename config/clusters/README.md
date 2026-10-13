@@ -5,6 +5,10 @@ to the managing cluster (`kubectl` context `orama-production-cluster-01`). **The
 record of what is deployed.** Change a file here, apply it, and commit both in the same change; a
 `kubectl edit` or `kubectl patch` that is not followed by an update here leaves the record wrong.
 
+**These files and the operator are the only way a cluster is changed.** Nothing is done to a cluster
+by hand without Steve's explicit consent ([`CLAUDE.md`](../../CLAUDE.md), *Never change a cluster by
+hand*): a change made by hand is state outside the code, and is not reproducible.
+
 How to work with them: [`docs/infrastructure/operations.md`](../../docs/infrastructure/operations.md).
 Why they are shaped this way: [`docs/infrastructure/README.md`](../../docs/infrastructure/README.md).
 
