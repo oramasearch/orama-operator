@@ -1070,6 +1070,34 @@ spec:
                                 type: string
                             type: object
                         type: object
+                      snapshots:
+                        description: |-
+                          Snapshots takes scheduled CSI VolumeSnapshots of the writer's and every reader's data
+                          claim. Unset or disabled, no snapshot is taken. See docs/components.md.
+                        properties:
+                          enabled:
+                            description: Enabled takes snapshots. Disabling stops
+                              new snapshots and pruning; it never deletes one.
+                            type: boolean
+                          keep:
+                            description: Keep is how many ready snapshots of each
+                              claim are kept. Default 7, as on Prod 1.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          schedule:
+                            description: |-
+                              Schedule is a 5-field cron expression (minute hour day-of-month month day-of-week) in UTC.
+                              Default "0 3 * * *", daily at 03:00 UTC as on Prod 1.
+                            type: string
+                          volumeSnapshotClassName:
+                            description: |-
+                              VolumeSnapshotClassName is the class every snapshot names. Default orama-cloud-v1-retain,
+                              which the operator creates for disk.csi.azure.com with deletionPolicy Retain when it is
+                              absent. A named class must exist and have deletionPolicy Retain, so a snapshot's contents
+                              outlive the snapshot, the CR and its namespace.
+                            type: string
+                        type: object
                       writer:
                         properties:
                           gpu:
@@ -2009,6 +2037,44 @@ spec:
                   - type
                   type: object
                 type: array
+              engineSnapshots:
+                description: |-
+                  EngineSnapshots is the newest snapshot of each engine data claim, set while
+                  spec.components.engine.snapshots is enabled.
+                items:
+                  description: EngineSnapshotStatus is the newest VolumeSnapshot of
+                    one engine data claim.
+                  properties:
+                    claim:
+                      description: Claim is the PersistentVolumeClaim, e.g. data-<name>-writer-0.
+                      type: string
+                    component:
+                      description: Component is writer or reader.
+                      type: string
+                    error:
+                      description: Error is the snapshot's status.error.message, when
+                        the snapshotter reported one.
+                      type: string
+                    readyToUse:
+                      description: ReadyToUse is the snapshot's status.readyToUse.
+                      type: boolean
+                    snapshotName:
+                      description: SnapshotName is the newest VolumeSnapshot of the
+                        claim; empty before the first.
+                      type: string
+                    snapshotTime:
+                      description: SnapshotTime is when the operator took it.
+                      format: date-time
+                      type: string
+                  required:
+                  - claim
+                  - component
+                  - readyToUse
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - claim
+                x-kubernetes-list-type: map
               observedGeneration:
                 format: int64
                 type: integer

@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
+| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap`; opt-in scheduled `VolumeSnapshot`s of the writer and reader data claims (`engine_snapshots.go`, #316) | ✅ **done** (validated on AKS; snapshots 🟡 fake-client tested, not live-tested) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; **never migrates the control DB** — in-cluster, the operator's owned `PostgresSchema` applies the schema (a second Drizzle migrate collides, Postgres `42710`); external, the database's owner runs migrations ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)) | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -227,6 +227,79 @@ Driven by `spec.region.role`:
   singleton — voluntary disruptions like node drains/autoscaler are blocked so it
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**
   get `maxUnavailable: 1` (roll one at a time, keep the rest serving).
+
+### Engine volume snapshots ([#316](https://github.com/oramasearch/orama-operator/issues/316), `engine_snapshots.go`)
+
+On Prod 2 the writer's `data` claim is the only copy of every index, and a reader rebuilds from the
+replication stream only while the stream still holds the history. With
+`spec.components.engine.snapshots.enabled` the reconciler (no CronJob, no extra service account) takes
+CSI `VolumeSnapshot`s of `data-<cr>-writer-0` and of every `data-<cr>-reader-<n>` up to the reader
+StatefulSet's current replica count, as Prod 1 snapshots its EBS volumes daily and keeps 7:
+
+- **Schedule** — a 5-field cron in UTC, default `0 3 * * *`. A claim with no snapshot is snapshotted
+  at once; after that, a claim is due when the schedule's next time after its newest snapshot has come.
+  Timing comes only from the snapshots' `orama.cloud/snapshot-at` annotations, so an operator restart
+  neither skips nor repeats a run. An invalid schedule (not five fields, a descriptor such as `@daily`,
+  a time zone, or one that never fires) fails the reconcile with `Ready=False`/`ReconcileError`; the
+  step runs last, so nothing else is blocked.
+- **Snapshots** — named `<claim>-<UTC timestamp>` (`data-v1-writer-0-20261012t030000z`), labelled
+  with the standard labels (`app.kubernetes.io/instance: <cr>`, `component: writer|reader`), with no
+  owner reference: deleting the CR never deletes a snapshot.
+- **Class** — default `orama-cloud-v1-retain`, created when absent for `disk.csi.azure.com` with
+  `deletionPolicy: Retain`, as Lake's (DESIGN decision 39). A named class must exist and be `Retain`;
+  otherwise no snapshot is taken and `SnapshotsReady` says why.
+- **Pruning** — the same rules as Lake's, in the engine's own `pruneEngineSnapshots`: only ready snapshots count toward `keep`
+  (default 7), the newest ready one is never deleted, only the newest failed one is kept, and a pruned
+  snapshot's content is switched to `deletionPolicy: Delete` first so its disk snapshot goes with it.
+  A snapshot whose content is not bound, or not bound back to it by the class's driver, is kept and
+  logged. Snapshots of other CRs and hand-made ones are never touched.
+- **Contents** — the content bound to each claim's newest ready snapshot gets the CR's labels and
+  `orama.cloud/snapshot-{namespace,name,claim,at}` annotations, so it can be found after its
+  namespace is gone.
+- **Status** — `status.engineSnapshots[]` holds each claim's newest snapshot (name, time,
+  `readyToUse`, error); `SnapshotsReady` is `False` while a claim's newest snapshot failed, its newest
+  ready one is older than two schedule periods, or none is ready yet. Neither changes the phase. The
+  CR is requeued at the next due time, and every 30 s while a snapshot is being cut.
+
+**Restore a claim from a snapshot.** Prod 2 is production: a restore is a reviewed, approved step.
+Snapshots of one run share a timestamp; restore the writer and readers from the same run so they agree.
+Writes accepted after the snapshot are lost from the restored writer.
+
+1. Pick the snapshot: `kubectl -n <ns> get volumesnapshot -l app.kubernetes.io/instance=<cr>` (the
+   `readyToUse` column must be `true`), or `status.engineSnapshots`.
+2. Stop the operator, which would otherwise scale the StatefulSet back:
+   `kubectl -n orama-system scale deployment/orama-operator --replicas=0`. This pauses every CR it
+   reconciles, so keep the window short.
+3. Scale the component down: `kubectl -n <ns> scale statefulset <cr>-writer --replicas=0` (or
+   `<cr>-reader`), and wait for its pods to go.
+4. Keep the old volume: `kubectl patch pv <pv of the claim> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'`,
+   then `kubectl -n <ns> delete pvc data-<cr>-writer-0`.
+5. Recreate the claim under the same name from the snapshot, with the StorageClass of the old claim and
+   at least the snapshot's `status.restoreSize`:
+
+   ```yaml
+   apiVersion: v1
+   kind: PersistentVolumeClaim
+   metadata:
+     name: data-<cr>-writer-0
+     namespace: <ns>
+   spec:
+     accessModes: [ReadWriteOnce]
+     storageClassName: <class of the old claim>
+     resources: {requests: {storage: <size>}}
+     dataSource:
+       apiGroup: snapshot.storage.k8s.io
+       kind: VolumeSnapshot
+       name: data-<cr>-writer-0-<timestamp>
+   ```
+6. Scale the StatefulSet back (`--replicas=1` for the writer, the reader count for readers), then the
+   operator (`--replicas=1`). Check the CR is `Ready` and the writer answers `GET /health`; delete the
+   retained old PV once the restore is confirmed.
+
+If the namespace or the `VolumeSnapshot` is gone, the retained content is still there: find it with
+`kubectl get volumesnapshotcontent -l app.kubernetes.io/instance=<cr>` and bind a new `VolumeSnapshot`
+to it statically, as in [lake/volume-snapshots.md](lake/volume-snapshots.md), then restore as above.
+Copying snapshots off Azure is [#33](https://github.com/oramasearch/orama-operator/issues/33).
 
 **Validated on AKS (2026-07-08, before the readers became a StatefulSet):** applying a `primary`
 CR created the writer STS (+ dynamically-provisioned PVC), the reader Deployment, both Services, and the

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -102,9 +103,10 @@ func replicasOf(p *int32) int32 {
 
 // applyReadiness rolls the per-component states up into the CR status: phase (Ready when every
 // component is ready; Degraded when one regressed after having been Ready; else Progressing),
-// componentsReady ("n/total"), the per-component list, and a standard Ready condition. Returns
-// whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
-func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) bool {
+// componentsReady ("n/total"), the per-component list, a standard Ready condition, and the engine
+// snapshots' status and SnapshotsReady condition from this pass. Returns whether the stack is fully
+// ready. Writes the status subresource ONLY on a real transition.
+func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, snapshots engineSnapshots) bool {
 	comps := r.componentReadiness(ctx, oc)
 	ready, notReady := 0, []string(nil)
 	for _, c := range comps {
@@ -141,6 +143,16 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 		conditions = append(conditions, *backupCondition)
 	default: // backups off: drop a BackupReady left from when they were on
 		otherChanged = meta.RemoveStatusCondition(&oc.Status.Conditions, "BackupReady")
+	}
+	// status.engineSnapshots and SnapshotsReady (#316); both dropped while snapshots are off.
+	if !equality.Semantic.DeepEqual(snapshots.statuses, oc.Status.EngineSnapshots) {
+		oc.Status.EngineSnapshots = snapshots.statuses
+		otherChanged = true
+	}
+	if snapshots.condition != nil {
+		conditions = append(conditions, *snapshots.condition)
+	} else if meta.RemoveStatusCondition(&oc.Status.Conditions, engineSnapshotsConditionType) {
+		otherChanged = true
 	}
 	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, otherChanged, conditions...)
 	return allReady

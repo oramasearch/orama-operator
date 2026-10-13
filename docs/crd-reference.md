@@ -42,7 +42,7 @@ increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `reader.{replicas,hpa,resources,storage}`, `envoy` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `reader.{replicas,hpa,resources,storage}`, `envoy`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
@@ -61,6 +61,19 @@ L40S). `workers` bundles all ported CF workers into one image → one Deployment
 2 × `minReplicas`, `targetCPUUtilization` default `70`) makes the operator own a
 `HorizontalPodAutoscaler` `<cr>-reader` on the reader StatefulSet; while it is set the operator
 sets the StatefulSet's replica count only when creating it. Clearing `hpa` deletes the HPA.
+
+### Engine volume snapshots
+
+| Field under `spec.components.engine.snapshots` | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Take scheduled CSI `VolumeSnapshot`s of the writer's and every reader's `data` claim ([operator#316](https://github.com/oramasearch/orama-operator/issues/316)). Disabling stops new snapshots and pruning and drops the status; it never deletes a snapshot. |
+| `schedule` | `0 3 * * *` | 5-field cron (minute hour day-of-month month day-of-week), UTC; daily at 03:00 as on Prod 1. A descriptor (`@daily`), a time zone or an invalid expression fails the reconcile (`Ready=False`, `ReconcileError`). |
+| `keep` | `7` | Ready snapshots kept per claim, as on Prod 1; the oldest beyond it are deleted with their disk snapshots. Minimum 1. |
+| `volumeSnapshotClassName` | `orama-cloud-v1-retain` | Class every snapshot names. The default is created when absent (`disk.csi.azure.com`, `deletionPolicy: Retain`); a named class must exist and be `Retain`. |
+
+Snapshots are named `<claim>-<UTC timestamp>`, carry the CR's standard labels and no owner reference,
+and are timed from the newest existing snapshot of each claim. Behaviour and the restore runbook:
+[components.md](components.md#engine-volume-snapshots-316-engine_snapshotsgo).
 
 ### `controlDB.backup`
 
@@ -85,6 +98,17 @@ config, `BackupBucketRequired` / `BackupSecretRequired` / `BackupSecretNotFound`
 `InvalidBackupSecret` (nothing is configured in CNPG until the config is valid). It does not change
 the stack's `phase`. While backups are enabled a Ready stack re-reads backup status every 5 minutes;
 unchanged reads write nothing.
+
+### `status.engineSnapshots` and `status.conditions[SnapshotsReady]`
+
+Present while `engine.snapshots` is enabled. `engineSnapshots[]` has one entry per existing engine
+data claim (`claim`, `component`, and its newest snapshot's `snapshotName`, `snapshotTime`,
+`readyToUse`, `error`). `SnapshotsReady` is `True` (`SnapshotsCurrent`) when every claim has a ready
+snapshot within two schedule periods; otherwise `False` with `SnapshotFailed` (a claim's newest
+snapshot reports an error), `SnapshotStale` (a claim's newest ready snapshot is older than two
+schedule periods), `SnapshotPending` (no ready snapshot yet), `ClassNotUsable` (no snapshot CRDs, a
+missing class, or a class that is not `Retain`) or `NoClaims`. It does not change the stack's
+`phase`. Written only when it changes.
 
 ## `OramaCloudV1E2ETest` (separate CRD)
 
