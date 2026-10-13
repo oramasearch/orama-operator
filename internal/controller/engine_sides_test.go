@@ -199,4 +199,14 @@ func TestEngineConfigChangeRollsOnlyItsSide(t *testing.T) {
 		t.Errorf("reader-only change touched the writer pod annotations: %v -> %v", writer, got)
 	}
 
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.JWTIssuer = "https://app.example.com"
+		o.Spec.Components.Engine.Writer.JWT = &oramav1alpha1.WriterJWTSpec{JWKSURL: "https://app.example.com/jwks.json", Audience: "writer"}
+	})
+	if got := annotations("v1-reader"); !maps.Equal(got, reader) {
+		t.Errorf("writer-only change touched the reader pod annotations: %v -> %v", reader, got)
+	}
+	if maps.Equal(annotations("v1-writer"), writer) {
+		t.Error("writer JWT change did not roll the writer")
+	}
 }

@@ -1189,6 +1189,25 @@ spec:
                               writer's embeddings on CPU on a node without a GPU. (This is the main reason a GPU node is
                               needed at all; the other is an in-cluster vLLM — see spec.llm.gpu.)
                             type: boolean
+                          jwt:
+                            description: JWT enables the dashboard JWKS provider.
+                              Unset preserves the existing config without JWT.
+                            properties:
+                              audience:
+                                description: Audience must match the exact clusterWriterUrl
+                                  used by the dashboard's token endpoint.
+                                maxLength: 128
+                                minLength: 1
+                                type: string
+                              jwksURL:
+                                description: JWKSURL is the dashboard's JWKS endpoint,
+                                  e.g. https://app.orama.ing/api/.well-known/jwks.json.
+                                pattern: ^https?://
+                                type: string
+                            required:
+                            - audience
+                            - jwksURL
+                            type: object
                           nodeSelector:
                             additionalProperties:
                               type: string
@@ -1814,7 +1833,8 @@ spec:
                   configSecretRef:
                     description: |-
                       ConfigSecretRef points at an ExternalSecret-materialized secret holding the
-                      provider config (e.g. Firebase service account, Clerk keys). Ignored for "none".
+                      provider config. For firebase, the dashboard reads FIREBASE_PROJECT_ID,
+                      FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY from this Secret. Ignored for "none".
                     properties:
                       name:
                         default: ""
@@ -1918,6 +1938,12 @@ spec:
                     default: latest
                     type: string
                 type: object
+              jwtIssuer:
+                default: orama-cloud
+                description: JWTIssuer is shared by dashboard token signing and writer
+                  verification.
+                maxLength: 128
+                type: string
               llm:
                 default:
                   default: groq

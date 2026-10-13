@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -238,12 +239,35 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 	})
 }
 
+// dashboardOperatorEnv is the explicit env the operator gives the dashboard: the master key, the
+// control DB, the JWT issuer when set, and Firebase server keys.
+func dashboardOperatorEnv(oc *oramav1alpha1.OramaCloudV1) ([]corev1.EnvVar, error) {
+	env := []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
+	if oc.Spec.JWTIssuer != "" {
+		env = append(env, corev1.EnvVar{Name: "JWT_ISSUER", Value: jwtIssuer(oc)})
+	}
+	if oc.Spec.IDP.Provider == "firebase" {
+		ref := oc.Spec.IDP.ConfigSecretRef
+		if ref == nil || ref.Name == "" {
+			return nil, fmt.Errorf("idp.configSecretRef is required for Firebase dashboard credentials")
+		}
+		for _, key := range []string{"FIREBASE_PROJECT_ID", "FIREBASE_CLIENT_EMAIL", "FIREBASE_PRIVATE_KEY"} {
+			env = append(env, secretKeyEnv(key, ref.Name, key))
+		}
+	}
+	return env, nil
+}
+
 func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	d := oc.Spec.Components.Dashboard
 	if !d.Enabled {
 		return r.teardownByComponent(ctx, oc, "dashboard")
 	}
 	img := componentImage(oc, "dashboard", "dashboard")
+	env, err := dashboardOperatorEnv(oc)
+	if err != nil {
+		return err
+	}
 	// Schema ownership: the dashboard never migrates the control DB. In-cluster, the operator's
 	// PostgresSchema applies the schema (operator#40); a dashboard drizzle-kit migrate on top of it
 	// collides (Postgres 42710, "type already exists"). External, the database belongs to someone
@@ -254,9 +278,9 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		image:       img,
 		port:        3000,
 		ingressHost: d.Host,
-		// The master key, and the control-DB password + DATABASE_URL for Drizzle from the CNPG or
-		// external Secret (#32, #34).
-		env: []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
+		// The operator's env: the master key, the control DB from the CNPG or external Secret
+		// (#32/#34), the issuer and Firebase server keys.
+		env: env,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
 	})

@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); in-process embeddings, with `nvidia.com/gpu` on the writer when `writer.gpu`; Services; engine `ConfigMap` with opt-in Sentry; Prometheus scrape annotations; opt-in scheduled `VolumeSnapshot`s of the writer and reader data claims (`engine_snapshots.go`, #316) | ✅ **done** (validated on AKS; snapshots 🟡 fake-client tested, not live-tested) |
+| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); in-process embeddings, with `nvidia.com/gpu` on the writer when `writer.gpu`; Services; engine `ConfigMap` with opt-in dashboard JWKS and Sentry; Prometheus scrape annotations; opt-in scheduled `VolumeSnapshot`s of the writer and reader data claims (`engine_snapshots.go`, #316) | ✅ **done** (validated on AKS; snapshots 🟡 fake-client tested, not live-tested) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; **never migrates the control DB** — in-cluster, the operator's owned `PostgresSchema` applies the schema (a second Drizzle migrate collides, Postgres `42710`); external, the database's owner runs migrations ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)) | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -148,7 +148,13 @@ Idempotent — `enable → disable → enable` round-trips cleanly (validated on
   keypair** once (create-if-absent) into `<cr>-jwt` (private + public, for the
   **dashboard** to sign the OramaCore writer JWT) and `<cr>-jwt-pub` (public **only**,
   for the **engine** to verify). Least-privilege: the engine never receives the
-  private key. `JWT_ISSUER` is non-secret (in the ConfigMap).
+  private key. `JWT_ISSUER` is non-secret (`spec.jwtIssuer`, default `orama-cloud`, in the ConfigMap).
+  Prod 2 generates its own pair; it does not copy Prod 1's signing keys. If the public-only
+  Secret is lost or generation was interrupted, the operator recovers it from the preserved signing
+  Secret without rotating that pair. The optional writer JWT
+  provider (`engine.writer.jwt`) accepts the dashboard's write tokens: issuer `jwtIssuer(oc)`, the
+  same value the dashboard signs with, and `audience`. It fetches keys from `jwksURL`. The reconcile
+  refuses a `jwksURL` that is not HTTP(S) or carries credentials, and an empty audience.
 
 **Validated on AKS (2026-07-08):** per-component secrets are generated (the
 `search-secret` holds only `TYPESENSE_API_KEY`, **not** the Cloudflare token); the
@@ -303,7 +309,7 @@ Driven by `spec.region.role`:
   newline is safe. OramaCore reads the result via `CONFIG_PATH=/etc/oramacore/config.yaml` (env
   override can't reach nested keys such as `writer_side.master_api_key` — `config`'s `ORAMACORE_`
   provider splits on `_`). The writer and reader pod templates each carry an
-  `orama.cloud/config-hash` of their own template, so a config change (LLM providers, …) rolls
+  `orama.cloud/config-hash` of their own template, so a config change (JWT, LLM providers, …) rolls
   the pods that render it, and with side-only configs only the side it affects. Key values are not
   in the template: after rotating a key in its Secret, restart the writer and readers. All children
   set an owner reference to the CR, so deleting the CR cascade-deletes them.
@@ -583,6 +589,11 @@ host is set)**.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
 - **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`.
+  With `idp.provider: firebase`, it gets `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL` and
+  `FIREBASE_PRIVATE_KEY` through required keys in `idp.configSecretRef`, replacing the unused
+  service-account JSON dummy. The default `none` adds no Firebase variables. The referenced Secret
+  is never copied into a ConfigMap or another Secret. Missing references degrade reconciliation;
+  missing Secret keys block pod startup. Existing component Secrets may retain the unused old key.
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.

@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"maps"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -88,6 +89,12 @@ static_resources:
 func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.Engine.Enabled {
 		return r.teardownByComponent(ctx, oc, "engine", "embeddings", "writer", "reader")
+	}
+	if jwt := oc.Spec.Components.Engine.Writer.JWT; jwt != nil {
+		u, err := url.Parse(jwt.JWKSURL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || jwt.Audience == "" {
+			return fmt.Errorf("engine.writer.jwt requires an HTTP(S) jwksURL without credentials and a nonempty audience")
+		}
 	}
 	if err := validateEngineImages(oc); err != nil {
 		return err
@@ -274,14 +281,26 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
     client_provided_name: %s
     producer_name: %s
 %s  master_api_key: '__MASTER_API_KEY__'
-  config:
+%s  config:
     data_dir: /app/.data/writer
     embedding_queue_limit: 50000
     insert_batch_commit_size: 50000000
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
     commit_interval: 1m
-`, oc.Name+"-broker", client.connection, client.endpoint, hooksYAML(oc))
+`, oc.Name+"-broker", client.connection, client.endpoint, hooksYAML(oc), writerJWTYAML(oc))
+}
+
+// writerJWTYAML is the writer_side jwt block, or "" when writer JWT verification is off. It accepts
+// the dashboard's write tokens: issuer jwtIssuer(oc), the value the dashboard signs with, and the
+// configured audience.
+func writerJWTYAML(oc *oramav1alpha1.OramaCloudV1) string {
+	cfg := oc.Spec.Components.Engine.Writer.JWT
+	if cfg == nil {
+		return ""
+	}
+	return fmt.Sprintf("  jwt:\n    providers:\n      - name: dashboard\n        jwks_url: %q\n        issuers: [%q]\n        audiences: [%q]\n        refresh_interval: 1h\n",
+		cfg.JWKSURL, jwtIssuer(oc), cfg.Audience)
 }
 
 // readerSideYAML is the reader_side section. Each reader persists its index and the last stream

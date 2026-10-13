@@ -16,6 +16,8 @@ pointing at the primary); the full sample list is in
 | `region.role` | enum | `primary` | `primary` (write path + stateful stores) or `read` (regional read tier). |
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
+| `idp.configSecretRef` | Secret reference | — | With `provider: firebase`, required dashboard server keys: `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. Other providers retain their existing behavior. |
+| `jwtIssuer` | string | `orama-cloud` | Dashboard signing issuer (`JWT_ISSUER`) and the writer JWKS provider's only accepted issuer (maximum 128 characters); both read it through one function, `jwtIssuer`. Prod 1 uses `https://app.orama.com`; Prod 2 uses `https://app.orama.ing`. |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; override via `overrides.oramacore`. (`overrides.embeddings` is no longer read: OramaCore embeds in-process and the operator runs no embeddings server.) `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile) run writer-only and reader-only OramaCore builds with side-only configs; unset, both sides fall back to `oramacore` and share the combined config (see [components.md](components.md#engine-internalcontrollerenginego)). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers — end users pick per query. Each has `name` (`groq \| openai \| google \| anthropic \| vllm`), `models[]` (required; the first is its default model), optional `url` (overrides OramaCore's built-in OpenAI-compatible base URL) and optional `apiKeySecretRef: {name, key}` (`key` defaults to `<PROVIDER>_API_KEY`; unset ⇒ that key of `<cr>-engine-secret`). Rendered into the engine config's `ai_server.remote_llms`, one entry per provider. Empty ⇒ `groq` (`llama-3.3-70b-versatile`), `openai` (`gpt-5.2`), `anthropic` (`claude-sonnet-4-5`). Refused at reconcile (`Ready=False`): a provider listed twice or with no models, and `vllm` (in-cluster vLLM and its `gpu` field are not rendered yet). |
@@ -59,7 +61,7 @@ increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `sentry.{dsnSecretRef.{name,key},environment}`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `engine` | `writer.gpu`, `writer.{jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `sentry.{dsnSecretRef.{name,key},environment}`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
@@ -126,6 +128,25 @@ annotation-driven scraper; Envoy answers `/metrics` 404 on the readers' Service.
 Snapshots are named `<claim>-<UTC timestamp>`, carry the CR's standard labels and no owner reference,
 and are timed from the newest existing snapshot of each claim. Behaviour and the restore runbook:
 [components.md](components.md#engine-volume-snapshots-316-engine_snapshotsgo).
+
+### Prod 2 auth and public endpoints
+
+| Field under `spec.components` | Default | Purpose |
+|---|---|---|
+| `engine.writer.jwt` | unset | Enables `writer_side.jwt.providers` in OramaCore. Unset preserves the existing engine config without JWT. |
+| `engine.writer.jwt.jwksURL` | — | HTTP(S) dashboard JWKS URL without credentials. |
+| `engine.writer.jwt.audience` | — | Accepted JWT audience: the exact `clusterWriterUrl` the dashboard signs tokens for (the copied control DB's `oramacore_clusters.writer_url`). |
+
+`idp.provider: firebase` injects the three server variables through required Secret key references.
+The operator creates no Firebase credentials and no longer seeds the unused `FIREBASE_SERVICE_ACCOUNT`
+placeholder. With the default `none`, it adds no Firebase variables. Browser Firebase configuration
+belongs to the dashboard image; authorizing `app.orama.ing` in Firebase remains a separately approved
+production change. The operator generates Prod 2's own RSA keypair once through `ensureJWTSecrets`;
+no shared Prod 1 keypair is needed. A missing public-only Secret is recovered from the preserved pair
+without rotation. JWT configuration changes roll the init-rendered engine config. A set `jwtIssuer` is also given to
+the dashboard as an explicit environment variable.
+The dashboard token endpoint reads writer/reader URLs from control-DB cluster rows; their copy must
+use the exact Prod 2 URLs. The operator does not rewrite those rows.
 
 ### `controlDB.backup`
 
