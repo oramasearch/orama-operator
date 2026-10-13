@@ -1,0 +1,13 @@
+apiVersion: orama.cloud/v1alpha1
+kind: OramaOperator
+metadata:
+  name: orama-nonprod-cluster-01
+spec:
+  chartRepository: registry-1.docker.io/oramasearch/orama-operator-chart
+  clusterRef: orama-nonprod-cluster-01
+  imagePullSecretRef:
+    name: oramasearch-dockerhub
+    namespace: orama-system
+  imageRepository: oramasearch/orama-operator
+  namespace: orama-system
+  version: dev-a85768f
