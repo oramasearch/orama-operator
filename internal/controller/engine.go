@@ -289,8 +289,13 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
 
 // readerSideYAML is the reader_side section. Each reader persists its index and the last stream
 // offset it applied under config.data_dir, which sits on the reader's PVC (#141), so a replaced
-// reader resumes from that offset instead of replaying the stream from 0. hooks is hooksYAML, as on
-// the writer side.
+// reader resumes from that offset instead of replaying the stream from 0.
+//
+// analytics (#55) turns on OramaCore's search-event log: without it the reader records nothing and
+// GET /v1/analytics answers 500, so analytics-processor imports zero rows. Its api_key is the same
+// __MASTER_API_KEY__ placeholder, because that is the key the processor polls with
+// (analyticsProcessorConfigYAML). metadata_from_headers mirrors the prod reader configs: the
+// Cloudflare request headers become per-event metadata. hooks is hooksYAML, as on the writer side.
 func readerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string {
 	return fmt.Sprintf(`reader_side:
   input:
@@ -307,6 +312,23 @@ func readerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
     data_dir: /app/.data/reader
     insert_batch_commit_size: 50000000
     commit_interval: 1m
+  analytics:
+    api_key: '__MASTER_API_KEY__'
+    metadata_from_headers:
+      - header: user-agent
+        metadata_key: ua
+      - header: CF-Connecting-IP
+        metadata_key: ip
+      - header: CF-IPCountry
+        metadata_key: country
+      - header: continent
+        metadata_key: continent
+      - header: colo
+        metadata_key: colo
+      - header: latitude
+        metadata_key: latitude
+      - header: longitude
+        metadata_key: longitude
 `, oc.Name+"-broker", client.connection, client.endpoint, hooksYAML(oc))
 }
 
@@ -447,8 +469,8 @@ func engineInitContainers(oc *oramav1alpha1.OramaCloudV1, s engineSide) []corev1
 
 // renderConfigInit substitutes the secret placeholders into the side's config template (the
 // ConfigMap key s.configKey) and writes the rendered file to the shared rendered-config emptyDir that
-// the OramaCore container reads via CONFIG_PATH: MASTER_API_KEY (writer_side.master_api_key) from
-// the master API key Secret, BROKER_USERNAME and BROKER_PASSWORD
+// the OramaCore container reads via CONFIG_PATH: MASTER_API_KEY (writer_side.master_api_key and
+// reader_side.analytics.api_key) from the master API key Secret, BROKER_USERNAME and BROKER_PASSWORD
 // from <cr>-broker-admin, each LLM provider's <PROVIDER>_API_KEY from the engine Secret via
 // envFrom, or from a provider's apiKeySecretRef via an env entry that overrides it, and SENTRY_DSN
 // from spec.components.engine.sentry.dsnSecretRef. This

@@ -173,6 +173,9 @@ func TestRenderConfigSubstitutesLLMKeys(t *testing.T) {
 			t.Errorf("%s api_key = %q, want %q", m["provider"], m["api_key"], want)
 		}
 	}
+	if got := cfg["reader_side"].(map[string]any)["analytics"].(map[string]any)["api_key"]; got != keys["MASTER_API_KEY"] {
+		t.Errorf("analytics.api_key = %q, want the master key", got)
+	}
 }
 
 func TestLLMKeysStayOutOfConfigMaps(t *testing.T) {
