@@ -710,6 +710,45 @@ type DashboardSpec struct {
 	// as for envFrom. A change to a referenced Secret or ConfigMap key rolls the dashboard.
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
+	// Crons runs the dashboard's scheduled calls (Prod 1's Vercel crons) as CronJobs. Off by default.
+	// +optional
+	Crons DashboardCronsSpec `json:"crons,omitempty"`
+}
+
+// DashboardCronsSpec turns the dashboard's three scheduled calls into CronJobs (operator#17). Each one
+// is a GET to the in-cluster dashboard Service with `Authorization: Bearer $CRON_SECRET`; a non-2xx
+// response fails the Job. Running them on two stacks at once crawls and bills twice, so they are off
+// by default and, once enabled, suspended until suspend is set to false at the cutover.
+type DashboardCronsSpec struct {
+	// Enabled creates the CronJobs (requires the dashboard). Turning it off deletes the CR-owned ones.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Suspend stops new runs without deleting the CronJobs. Unset means true.
+	// +kubebuilder:default=true
+	// +optional
+	Suspend *bool `json:"suspend,omitempty"`
+	// SecretRef is the Secret key holding CRON_SECRET. Unset means wherever the dashboard itself reads
+	// CRON_SECRET from (a dashboard.envFrom Secret or a dashboard.env secretKeyRef); the reconcile fails
+	// when that is not a Secret key. Set this only when it must differ, since the dashboard compares
+	// the bearer with its own CRON_SECRET.
+	// +optional
+	SecretRef *corev1.SecretKeySelector `json:"secretRef,omitempty"`
+	// Schedules overrides individual cron schedules (five fields, UTC). An empty entry keeps its default.
+	// +optional
+	Schedules DashboardCronSchedules `json:"schedules,omitempty"`
+}
+
+// DashboardCronSchedules holds per-call schedule overrides; the defaults are Prod 1's vercel.json.
+type DashboardCronSchedules struct {
+	// Crawler schedules GET /api/private/v1/run-crawler-cron. Default "*/1 * * * *".
+	// +optional
+	Crawler string `json:"crawler,omitempty"`
+	// IndexGC schedules GET /api/private/v1/run-index-gc-cron. Default "0 * * * *".
+	// +optional
+	IndexGC string `json:"indexGC,omitempty"`
+	// ConsumptionSync schedules GET /api/billing/queue-consumption-sync. Default "0 */6 * * *".
+	// +optional
+	ConsumptionSync string `json:"consumptionSync,omitempty"`
 }
 
 // PeerSpec identifies another region for cross-cluster wiring (no mesh).
