@@ -225,6 +225,7 @@ rules:
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
+  - clusterhelmreleases
   - kubernetesclusterproviders
   - kubernetesclusters
   - lakeapps
@@ -235,6 +236,7 @@ rules:
   - lakesealedsecrets
   - oramacloudv1e2etests
   - oramacloudv1s
+  - oramaoperators
   - oramazettaclusters
   - postgresschemas
   - rabbitmqtopologies
@@ -256,12 +258,14 @@ rules:
   - cloudflarekvnamespaces/finalizers
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
+  - clusterhelmreleases/finalizers
   - kubernetesclusterproviders/finalizers
   - kubernetesclusters/finalizers
   - lakeapps/finalizers
   - lakeenvironments/finalizers
   - lakes/finalizers
   - lakesealedsecrets/finalizers
+  - oramaoperators/finalizers
   - oramazettaclusters/finalizers
   - rabbitmqtopologies/finalizers
   verbs:
@@ -275,6 +279,7 @@ rules:
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
+  - clusterhelmreleases/status
   - kubernetesclusterproviders/status
   - kubernetesclusters/status
   - lakeapps/status
@@ -285,6 +290,7 @@ rules:
   - lakesealedsecrets/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
+  - oramaoperators/status
   - oramazettaclusters/status
   - postgresschemas/status
   - rabbitmqtopologies/status

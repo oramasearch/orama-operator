@@ -103,6 +103,50 @@ The starting point is what `helmfile.yaml` installs today:
 | Strimzi, Altinity ClickHouse, TiDB, K8ssandra, Valkey operators | Lake's managed service kinds |
 | orama-operator | The leaf's own operator |
 
+### Installing it: `ClusterHelmRelease` and `OramaOperator`
+
+Steve, 2026-10-12: *"we need to create an operator CR in the management cluster that will install
+and control the version of the leaf operator"*, and, of installing it alone: *"you can't install
+something without its prerequisites"*.
+
+The operator is one item in an ordered list, and the list is the helmfile. Two management kinds
+install it from inside the management cluster's operator, which reaches the leaf with the
+kubeconfig Secret its `KubernetesCluster` wrote:
+
+| Kind | What it is |
+|---|---|
+| `ClusterHelmRelease` | One Helm chart release on a managed cluster, at a pinned version: chart repository or OCI, values, `dependsOn` other releases, `requiredCRDs`. One per helmfile entry. |
+| `OramaOperator` | The cluster's own Orama operator at a named version. Changing `spec.version` upgrades the leaf, CRDs first. |
+
+What the install requires, and who makes it true:
+
+| Requirement ([`install.md`](../install.md)) | Met by |
+|---|---|
+| CloudNativePG before the operator. The manager watches CNPG kinds and a missing CRD is fatal by design ([`crd-rollout.md`](../operations/crd-rollout.md)) | A `ClusterHelmRelease` for CloudNativePG. The operator's chart lists the CRDs it needs in its `orama.cloud/required-crds` annotation, and `OramaOperator` **does not install** onto a cluster that lacks one: it stays `Pending` and names them. |
+| The namespace, then the pull secret in it, before the release | `OramaOperator` creates the namespace and copies `spec.imagePullSecretRef` from the management cluster, on every reconcile, so a rotated secret reaches the leaf. |
+| A chart whose CRDs and RBAC match the image | The chart is published with every image to the private repository `oramasearch/orama-operator-chart` (`hack/pushchart`), and `OramaOperator` pulls the one for `spec.version`. A release `v0.1.0` has the chart `0.1.0`; a build `dev-83242f9` has `0.0.0-dev-83242f9`. |
+| CRDs applied on every upgrade (Helm applies `crds/` only on first install) | Both kinds server-side apply the chart's CRDs before every install and upgrade. |
+| A default StorageClass and the volume snapshot CRDs | AKS provides both. |
+| ingress-nginx, cert-manager and the service operators | A `ClusterHelmRelease` each, when the leaf needs them. cert-manager before K8ssandra is `dependsOn`. |
+
+A leaf's chart is installed with `clusterManagement.enabled=false` whatever `spec.values` says, and
+the management CRDs are not among the chart's CRDs: a leaf does not manage clusters.
+
+Both kinds report what the leaf says. A release that is not ready lists each Deployment,
+StatefulSet or DaemonSet that is not rolled out and what its pods report (an image that cannot be
+pulled, a container that keeps exiting, a pod that cannot be scheduled). A refusal by the chart
+repository, Helm or the leaf's API server is recorded on the resource and returned as an error.
+
+Deleting either resource uninstalls its release from a cluster that still exists. CRDs stay, so
+removing an operator never deletes what it was running. A `ClusterHelmRelease` that others depend
+on is not uninstalled until they are gone.
+
+Not covered yet: TiDB's CRDs, which come from a file outside its chart (the helmfile applies them
+with a presync hook); `requiredCRDs` makes that release wait for them, but nothing applies them.
+
+[`config/samples/leaf-nonprod-operator.yaml`](../../config/samples/leaf-nonprod-operator.yaml) is
+the pair for `orama-nonprod-cluster-01`.
+
 Two components named for a leaf are **not** in the helmfile today and are not on the existing
 cluster: **Karpenter** and **Istio**. Karpenter can already be installed by the operator from an
 `OramaZettaCluster` ([`karpenter-cloud-iam-prerequisite.md`](../karpenter-cloud-iam-prerequisite.md));

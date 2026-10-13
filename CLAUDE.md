@@ -271,6 +271,9 @@ A release promotes `dev` to `main` and tags the result. The pages and their conv
    `chart/management-crds/` on the management cluster), and upgrade the release with the stored
    values as a file (liquid-bridge's `liquid-dev` skill has the commands). Confirm the pod runs the
    new digest and that every `Lake` and `OramaZettaCluster` is still `Ready`.
+   Publish the chart for the same tag, so a management cluster can install this version on a
+   leaf: `go run ./hack/pushchart -version <image tag>` (and again for `vX.Y.Z` after step 8). It
+   goes to the private repository `oramasearch/orama-operator-chart`.
 8. **Tag the image `vX.Y.Z` in Docker Hub**, naming the same digest that is deployed, without
    rebuilding: `retag-image.py orama-operator main-<sha> vX.Y.Z` (in the `liquid-dev` skill). Check
    that an anonymous request for the repository still answers 404.
