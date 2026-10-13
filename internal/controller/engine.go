@@ -252,7 +252,8 @@ log: {}
 
 // writerSideYAML is the writer_side section. The writer replicates to the readers over the RabbitMQ
 // stream oramacore-operations on the broker Service :5552 (#41); OramaCore creates the stream on
-// connect and the broker advertises the Service host so reconnect works.
+// connect and the broker advertises the Service host so reconnect works. Its hooks block is
+// hooksYAML, the same as the reader side's (#306).
 func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string {
 	return fmt.Sprintf(`writer_side:
   output:
@@ -265,15 +266,7 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
     stream_name: oramacore-operations
     client_provided_name: %s
     producer_name: %s
-  hooks:
-    select_embeddings_properties:
-      check_interval: 60s
-      max_idle_time: 20s
-      instances_count_per_code: 3
-      queue_capacity: 100
-      max_execution_time: 1s
-      max_startup_time: 100ms
-  master_api_key: '__MASTER_API_KEY__'
+%s  master_api_key: '__MASTER_API_KEY__'
   config:
     data_dir: /app/.data/writer
     embedding_queue_limit: 50000
@@ -281,12 +274,13 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
     commit_interval: 1m
-`, oc.Name+"-broker", client.connection, client.endpoint)
+`, oc.Name+"-broker", client.connection, client.endpoint, hooksYAML(oc))
 }
 
 // readerSideYAML is the reader_side section. Each reader persists its index and the last stream
 // offset it applied under config.data_dir, which sits on the reader's PVC (#141), so a replaced
-// reader resumes from that offset instead of replaying the stream from 0.
+// reader resumes from that offset instead of replaying the stream from 0. hooks is hooksYAML, as on
+// the writer side.
 func readerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string {
 	return fmt.Sprintf(`reader_side:
   input:
@@ -299,11 +293,11 @@ func readerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
     stream_name: oramacore-operations
     client_provided_name: %s
     consumer_name: %s
-  config:
+%s  config:
     data_dir: /app/.data/reader
     insert_batch_commit_size: 50000000
     commit_interval: 1m
-`, oc.Name+"-broker", client.connection, client.endpoint)
+`, oc.Name+"-broker", client.connection, client.endpoint, hooksYAML(oc))
 }
 
 // engineModelsCacheDir is where OramaCore's in-process embeddings keep the models they download from

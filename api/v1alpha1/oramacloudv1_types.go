@@ -267,6 +267,11 @@ type EngineSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	MinOpenFiles *int64 `json:"minOpenFiles,omitempty"`
+	// Hooks tunes the runtime that runs customer JavaScript hooks on the writer and readers. The
+	// operator always renders an outbound deny list (Prod 1's private, loopback, link-local and
+	// reserved ranges plus the cluster's own names); this only adds to it and sets the timeouts.
+	// +optional
+	Hooks *EngineHooksSpec `json:"hooks,omitempty"`
 	// Snapshots takes scheduled CSI VolumeSnapshots of the writer's and every reader's data
 	// claim. Unset or disabled, no snapshot is taken. See docs/components.md.
 	// +optional
@@ -294,6 +299,24 @@ type EngineSnapshotsSpec struct {
 	// outlive the snapshot, the CR and its namespace.
 	// +optional
 	VolumeSnapshotClassName string `json:"volumeSnapshotClassName,omitempty"`
+}
+
+// EngineHooksSpec adds to the hooks runtime's outbound deny list and sets its timeouts. There is no
+// allow list: OramaCore refuses a config that sets both lists.
+type EngineHooksSpec struct {
+	// ExtraDeniedDomains are appended to the default deny list, once each. An entry is a host
+	// pattern matched against the URL host a hook fetches (not the resolved address): a literal
+	// host, or a glob in which "*" stays within one dot-separated label and "**" spans labels
+	// ("10.244.**" denies every 10.244.x.y). CIDR notation does not match anything, so it is refused.
+	// +kubebuilder:validation:items:Pattern=`^[^/\s]+$`
+	// +optional
+	ExtraDeniedDomains []string `json:"extraDeniedDomains,omitempty"`
+	// EvaluationTimeout bounds loading a hook's code. Default 200ms, as on Prod 1.
+	// +optional
+	EvaluationTimeout *metav1.Duration `json:"evaluationTimeout,omitempty"`
+	// ExecutionTimeout bounds one run of a hook. Default 1s, as on Prod 1.
+	// +optional
+	ExecutionTimeout *metav1.Duration `json:"executionTimeout,omitempty"`
 }
 
 type WriterSpec struct {

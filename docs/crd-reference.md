@@ -57,7 +57,7 @@ increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
@@ -89,8 +89,12 @@ sets the StatefulSet's replica count only when creating it. Clearing `hpa` delet
 | `reader.startupTimeout` | `40m` | The same for each reader, which loads its whole index before it answers; a restart begins the load again. `1h` gives `failureThreshold: 360`. |
 | `minMaxMapCount` | `4194304` | The `preflight` init container fails when the node's `vm.max_map_count` is lower. Set it on the node pool ([install.md](install.md#node-settings-for-the-engine)); `0` skips the check. |
 | `minOpenFiles` | `65535` | The `preflight` init container fails when the pod's open-files limit (`ulimit -n`) is lower; `0` skips the check. With both minimums at `0` the pods have no `preflight` container. |
+| `hooks.extraDeniedDomains` | — | Host patterns appended, once each, to the deny list the writer and readers apply to outbound HTTP from customer JavaScript hooks (see [components.md](components.md#hooks-deny-list)). A pattern matches the URL host, not the resolved address; `*` stays within one dot-separated label and `**` spans labels, so write `10.244.**`, not `10.244.*` or `10.244.0.0/16` (an entry containing `/` is refused). There is no allow list. |
+| `hooks.evaluationTimeout` | `200ms` | How long OramaCore lets a hook's code load. |
+| `hooks.executionTimeout` | `1s` | How long one run of a hook may take. |
 
-The defaults are Prod 1's: its reader unit allows 20 minutes for the port and 40 for the unit to
+
+The defaults are Prod 1's (the hooks timeouts are also OramaCore's own): its reader unit allows 20 minutes for the port and 40 for the unit to
 start, its units set `LimitNOFILE=65535`, and its reader hosts set `vm.max_map_count=4194304`.
 Changing a timeout or a minimum rolls the writer or reader StatefulSet.
 
