@@ -44,7 +44,9 @@ const (
 )
 
 // envoyConfig is the static Envoy bootstrap that matches prod: listen :80, proxy to
-// the local OramaCore on 127.0.0.1:8080 (see techops-docs Envoy topology).
+// the local OramaCore on 127.0.0.1:8080 (see techops-docs Envoy topology). It answers 404 to
+// /metrics itself, so OramaCore's Prometheus endpoint is never public through the reader Ingress;
+// Prometheus scrapes it on the pod's :8080 instead (enginePodAnnotations, #314).
 const envoyConfig = `admin:
   address: { socket_address: { address: 127.0.0.1, port_value: 9901 } }
 static_resources:
@@ -62,6 +64,8 @@ static_resources:
             - name: local
               domains: ["*"]
               routes:
+              - match: { path: "/metrics" }
+                direct_response: { status: 404 }
               - match: { prefix: "/" }
                 route: { cluster: oramacore, timeout: 60s }
           http_filters:
@@ -130,6 +134,7 @@ const (
 // config template (and its ConfigMap key) their render-config init container renders, and how long
 // their startup probe waits for OramaCore to answer.
 type engineSide struct {
+	name           string // "writer" or "reader"
 	image          string
 	configKey      string
 	template       string
@@ -151,7 +156,7 @@ const (
 // (engineSidesSeparated) each side renders its own config; otherwise both render today's combined
 // config, whose image also starts the other side.
 func engineSideFor(oc *oramav1alpha1.OramaCloudV1, side string) engineSide {
-	s := engineSide{image: oramacoreSideImage(oc, side), configKey: combinedConfigKey, template: oramacoreConfigYAML(oc)}
+	s := engineSide{name: side, image: oramacoreSideImage(oc, side), configKey: combinedConfigKey, template: oramacoreConfigYAML(oc)}
 	s.startupTimeout = durationOr(oc.Spec.Components.Engine.Reader.StartupTimeout, defaultReaderStartupTimeout)
 	if side == "writer" {
 		s.startupTimeout = durationOr(oc.Spec.Components.Engine.Writer.StartupTimeout, defaultWriterStartupTimeout)
@@ -221,14 +226,14 @@ var (
 // OramaCore can't take them from env — config's ORAMACORE_ override splits on "_" and can't reach
 // nested keys such as writer_side.master_api_key or a remote_llms entry.
 func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
-	return engineCommonYAML() + writerSideYAML(oc, combinedWriterClient) + readerSideYAML(oc, combinedReaderClient) + aiServerYAML(oc, oc.Spec.Components.Engine.Writer.GPU)
+	return engineCommonYAML(oc, sidePlaceholder) + writerSideYAML(oc, combinedWriterClient) + readerSideYAML(oc, combinedReaderClient) + aiServerYAML(oc, oc.Spec.Components.Engine.Writer.GPU)
 }
 
 // oramacoreWriterConfigYAML is the writer-only config (no reader_side). The writer is a singleton, so
 // its stream connection is named <cr>-writer.
 func oramacoreWriterConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	name := oc.Name + "-writer"
-	return engineCommonYAML() + writerSideYAML(oc, streamClient{connection: name, endpoint: name}) + aiServerYAML(oc, oc.Spec.Components.Engine.Writer.GPU)
+	return engineCommonYAML(oc, "writer") + writerSideYAML(oc, streamClient{connection: name, endpoint: name}) + aiServerYAML(oc, oc.Spec.Components.Engine.Writer.GPU)
 }
 
 // oramacoreReaderConfigYAML is the reader-only config (no writer_side). Each reader names its stream
@@ -236,18 +241,18 @@ func oramacoreWriterConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 // Readers never get a GPU, so their embeddings run on CPU only, as in Prod 1's reader config.
 func oramacoreReaderConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	pod := streamClient{connection: podNamePlaceholder, endpoint: podNamePlaceholder}
-	return engineCommonYAML() + readerSideYAML(oc, pod) + aiServerYAML(oc, false)
+	return engineCommonYAML(oc, "reader") + readerSideYAML(oc, pod) + aiServerYAML(oc, false)
 }
 
-// engineCommonYAML is the http and log sections every OramaCore config carries.
-func engineCommonYAML() string {
+// engineCommonYAML is the http and log sections every OramaCore config carries. side names the
+// Sentry environment's suffix (engineLogYAML).
+func engineCommonYAML(oc *oramav1alpha1.OramaCloudV1, side string) string {
 	return `http:
   host: 0.0.0.0
   port: 8080
   allow_cors: true
   with_prometheus: true
-log: {}
-`
+` + engineLogYAML(oc, side)
 }
 
 // writerSideYAML is the writer_side section. The writer replicates to the readers over the RabbitMQ
@@ -439,7 +444,8 @@ func engineInitContainers(oc *oramav1alpha1.OramaCloudV1, s engineSide) []corev1
 // ConfigMap key s.configKey) and writes the rendered file to the shared rendered-config emptyDir that
 // the OramaCore container reads via CONFIG_PATH: MASTER_API_KEY (writer_side.master_api_key) and
 // each LLM provider's <PROVIDER>_API_KEY come from the engine Secret via envFrom, or from a
-// provider's apiKeySecretRef via an env entry that overrides it. This keeps the credentials out of
+// provider's apiKeySecretRef via an env entry that overrides it, and SENTRY_DSN from
+// spec.components.engine.sentry.dsnSecretRef. This keeps the credentials out of
 // the ConfigMap while leaving the reviewable config in one. Values may hold any character but a
 // newline (renderConfigScript escapes them).
 //
@@ -452,6 +458,7 @@ func renderConfigInit(oc *oramav1alpha1.OramaCloudV1, s engineSide) corev1.Conta
 			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}}}
 	}
 	env = append(env, llmKeySecretEnv(oc)...)
+	env = append(env, sentryDSNSecretEnv(oc)...)
 	return corev1.Container{
 		Name:    "render-config",
 		Image:   "busybox:1.37",
@@ -506,7 +513,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 			c.Resources.Limits[resourceNvidiaGPU] = resource.MustParse("1")
 		}
 		sts.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side)},
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: enginePodAnnotations(side)},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets:              imagePullSecrets(oc),
 				NodeSelector:                  w.NodeSelector,
@@ -587,7 +594,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			podSpec.TopologySpreadConstraints = spreadConstraints(lbls)
 		}
 		sts.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side)},
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: enginePodAnnotations(side)},
 			Spec:       podSpec,
 		}
 		setVolumeClaimTemplates(sts, dataPVC(rd.Storage))
@@ -805,10 +812,19 @@ func (r *OramaCloudV1Reconciler) upsertPDB(ctx context.Context, oc *oramav1alpha
 	return err
 }
 
-// engineConfigAnnotations carries the hash of the side's config template, because an init-rendered
-// config needs a rollout to apply: a change to the LLM settings rolls the pods that render it.
-// Side-only configs are hashed separately, so a change rolls only the side it affects. Key values
-// are not in the template, so rotating a key in its Secret needs a manual rollout restart.
-func engineConfigAnnotations(s engineSide) map[string]string {
-	return map[string]string{"orama.cloud/config-hash": fmt.Sprintf("%x", sha256.Sum256([]byte(s.template)))}
+// enginePodAnnotations are the writer and reader pod annotations. orama.cloud/config-hash carries
+// the hash of the side's config template, because an init-rendered config needs a rollout to apply:
+// a change to the JWT, LLM or Sentry settings rolls the pods that render it. Side-only configs are
+// hashed separately, so a change rolls only the side it affects. Key values (and the Sentry DSN) are
+// not in the template, so rotating one in its Secret needs a manual rollout restart.
+//
+// The prometheus.io annotations let an annotation-driven Prometheus or Grafana Alloy scrape
+// OramaCore's /metrics on the pod's :8080 (http.with_prometheus); the public Ingresses never serve it.
+func enginePodAnnotations(s engineSide) map[string]string {
+	return map[string]string{
+		"orama.cloud/config-hash": fmt.Sprintf("%x", sha256.Sum256([]byte(s.template))),
+		"prometheus.io/scrape":    "true",
+		"prometheus.io/port":      strconv.Itoa(oramacorePort),
+		"prometheus.io/path":      oramacoreMetricsPath,
+	}
 }

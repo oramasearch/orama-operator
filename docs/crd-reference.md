@@ -57,7 +57,7 @@ increase in place when the StorageClass allows expansion.
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `sentry.{dsnSecretRef.{name,key},environment}`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
@@ -97,6 +97,20 @@ sets the StatefulSet's replica count only when creating it. Clearing `hpa` delet
 The defaults are Prod 1's (the hooks timeouts are also OramaCore's own): its reader unit allows 20 minutes for the port and 40 for the unit to
 start, its units set `LimitNOFILE=65535`, and its reader hosts set `vm.max_map_count=4194304`.
 Changing a timeout or a minimum rolls the writer or reader StatefulSet.
+
+### Engine Sentry and metrics
+
+| Field under `spec.components.engine` | Default | Purpose |
+|---|---|---|
+| `sentry` | unset | Turns on OramaCore's Sentry client on the writer and readers. Unset renders no `sentry_dns`, so OramaCore starts without Sentry. |
+| `sentry.dsnSecretRef.{name,key}` | — | Secret key (in the CR's namespace) holding the DSN. The ConfigMap carries `sentry_dns: '__SENTRY_DSN__'`; the `render-config` init container substitutes the value, and an empty value leaves Sentry off. |
+| `sentry.environment` | `spec.region.name` | Environment prefix: the writer reports as `<environment>-writer`, the readers as `<environment>-reader`. |
+
+Every engine config renders `log.levels` `oramacore: info` and `orama_js_pool: info`, as Prod 1 does.
+Setting, changing or removing `sentry` changes the config hash and rolls the writer and readers; a new
+DSN value in the same Secret key needs a manual rollout restart. Writer and reader pods carry
+`prometheus.io/scrape: "true"`, `prometheus.io/port: "8080"` and `prometheus.io/path: /metrics` for an
+annotation-driven scraper; Envoy answers `/metrics` 404 on the readers' Service.
 
 ### Engine volume snapshots
 

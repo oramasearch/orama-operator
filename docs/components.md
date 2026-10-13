@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); in-process embeddings, with `nvidia.com/gpu` on the writer when `writer.gpu`; Services; engine `ConfigMap`; opt-in scheduled `VolumeSnapshot`s of the writer and reader data claims (`engine_snapshots.go`, #316) | ✅ **done** (validated on AKS; snapshots 🟡 fake-client tested, not live-tested) |
+| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar, optional HPA); in-process embeddings, with `nvidia.com/gpu` on the writer when `writer.gpu`; Services; engine `ConfigMap` with opt-in Sentry; Prometheus scrape annotations; opt-in scheduled `VolumeSnapshot`s of the writer and reader data claims (`engine_snapshots.go`, #316) | ✅ **done** (validated on AKS; snapshots 🟡 fake-client tested, not live-tested) |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; **never migrates the control DB** — in-cluster, the operator's owned `PostgresSchema` applies the schema (a second Drizzle migrate collides, Postgres `42710`); external, the database's owner runs migrations ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)) | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -245,6 +245,18 @@ Driven by `spec.region.role`:
   the pods that render it, and with side-only configs only the side it affects. Key values are not
   in the template: after rotating a key in its Secret, restart the writer and readers. All children
   set an owner reference to the CR, so deleting the CR cascade-deletes them.
+- **Sentry, log levels and metrics** ([#314](https://github.com/oramasearch/orama-operator/issues/314),
+  `engine_observability.go`) — every config's `log` section carries Prod 1's `levels`
+  (`oramacore: info`, `orama_js_pool: info`). With `engine.sentry` set it also carries
+  `sentry_dns: '__SENTRY_DSN__'`, which `render-config` fills from `sentry.dsnSecretRef` (an explicit
+  `env` entry, so the DSN never sits in the ConfigMap; an empty value deletes the line, leaving Sentry
+  off), and `sentry_environment` `<environment>-writer` or `<environment>-reader` (default prefix
+  `spec.region.name`). The combined config holds `<environment>-__ENGINE_SIDE__`, which `render-config`
+  replaces with the pod's side. Prod 1 reports as `production-writer-us` and
+  `production-reader-{us,europe,asia}`. Writer and reader pods carry `prometheus.io/scrape`,
+  `prometheus.io/port: "8080"` and `prometheus.io/path: /metrics`; OramaCore serves `/metrics` on
+  `:8080` (`http.with_prometheus`). Nothing in the cluster scrapes it yet (#15). Envoy answers
+  `/metrics` 404 before its catch-all route, so the readers' Service does not serve it.
 - **LLM providers** ([#304](https://github.com/oramasearch/orama-operator/issues/304), `engine_llm.go`)
   — `ai_server` mirrors the Prod 1 configs: `llm` is the `spec.llm.default` provider as an
   OpenAI-compatible remote (`local: false`, `host` = its base URL, `model` = its first model), which

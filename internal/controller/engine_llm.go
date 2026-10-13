@@ -133,17 +133,22 @@ func llmKeySecretEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 }
 
 // engineKeyEnvs are the variables whose values replace their placeholders in the engine config:
-// the master key and one key per LLM provider.
+// the master key, one key per LLM provider, and the Sentry DSN when spec.components.engine.sentry
+// is set.
 func engineKeyEnvs(oc *oramav1alpha1.OramaCloudV1) []string {
 	envs := []string{"MASTER_API_KEY"}
 	for _, p := range llmProviders(oc) {
 		envs = append(envs, llmKeyEnv(p.Name))
 	}
+	if oc.Spec.Components.Engine.Sentry != nil {
+		envs = append(envs, sentryDSNEnv)
+	}
 	return envs
 }
 
 // renderConfigScript is the render-config init container's shell command: one sed expression per
-// secret placeholder (and __POD_NAME__ for side-only configs). esc makes a value safe both as a sed
+// secret placeholder (and __POD_NAME__ for side-only configs, and the Sentry expressions of
+// sentryRenderExprs). esc makes a value safe both as a sed
 // replacement (backslash, ampersand and the # delimiter) and inside the template's single-quoted YAML
 // (it doubles a single quote).
 func renderConfigScript(oc *oramav1alpha1.OramaCloudV1, s engineSide) string {
@@ -155,6 +160,7 @@ func renderConfigScript(oc *oramav1alpha1.OramaCloudV1, s engineSide) string {
 	if s.configKey != combinedConfigKey {
 		b.WriteString(` -e "s#` + podNamePlaceholder + `#${POD_NAME}#g"`)
 	}
+	b.WriteString(sentryRenderExprs(oc, s))
 	b.WriteString(" /tmpl/" + s.configKey + " > /etc/oramacore/config.yaml")
 	return b.String()
 }
