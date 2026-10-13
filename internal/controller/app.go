@@ -100,6 +100,10 @@ type appDef struct {
 	gracePeriodSeconds int64
 	// configHash rolls workloads whose init container renders a config file.
 	configHash string
+	// extraEnvFrom is appended after the operator's envFrom sources (a later source wins).
+	extraEnvFrom []corev1.EnvFromSource
+	// envHash rolls the pod when user-referenced env data changes (dashboardEnvHashAnnotation).
+	envHash string
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
@@ -148,7 +152,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 				Args:            def.args,
 				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
 				Env:             def.env,
-				EnvFrom:         envFromFor(oc, def.component),
+				EnvFrom:         append(envFromFor(oc, def.component), def.extraEnvFrom...),
 				VolumeMounts:    def.volumeMounts,
 				Resources:       *res,
 				// Startup gates liveness/readiness so a slow boot isn't killed; readiness gates
@@ -170,8 +174,15 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec:       podSpec,
 		}
+		annotations := map[string]string{}
 		if def.configHash != "" {
-			dep.Spec.Template.Annotations = map[string]string{"orama.cloud/config-hash": def.configHash}
+			annotations["orama.cloud/config-hash"] = def.configHash
+		}
+		if def.envHash != "" {
+			annotations[dashboardEnvHashAnnotation] = def.envHash
+		}
+		if len(annotations) > 0 {
+			dep.Spec.Template.Annotations = annotations
 		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
 	}); err != nil {
@@ -258,8 +269,8 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 	})
 }
 
-// dashboardOperatorEnv is the explicit env the operator gives the dashboard: the master key, the
-// control DB, the JWT issuer when set, Firebase server keys and external ClickHouse.
+// dashboardOperatorEnv is the explicit env the operator gives the dashboard, before dashboard.env:
+// the master key, the control DB, the JWT issuer when set, Firebase server keys and external ClickHouse.
 func dashboardOperatorEnv(oc *oramav1alpha1.OramaCloudV1) ([]corev1.EnvVar, error) {
 	env := []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
 	if oc.Spec.JWTIssuer != "" {
@@ -295,6 +306,19 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if err != nil {
 		return err
 	}
+	// User env (operator#311): dashboard.envFrom after the operator's sources, dashboard.env after
+	// (and replacing) the operator's env; operator-owned names are refused (dashboard_env.go).
+	if err := validateDashboardEnv(oc); err != nil {
+		return err
+	}
+	sources, err := r.dashboardEnvSources(ctx, oc)
+	if err != nil {
+		return err
+	}
+	envHash, err := r.dashboardEnvHash(ctx, oc, sources)
+	if err != nil {
+		return err
+	}
 	// Schema ownership: the dashboard never migrates the control DB. In-cluster, the operator's
 	// PostgresSchema applies the schema (operator#40); a dashboard drizzle-kit migrate on top of it
 	// collides (Postgres 42710, "type already exists"). External, the database belongs to someone
@@ -306,9 +330,10 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		port:        3000,
 		ingressHost: d.Host,
 		ingress:     d.IngressHostsSpec,
-		// The operator's env: the master key, the control DB from the CNPG or external Secret
-		// (#32/#34), the issuer, Firebase server keys and external ClickHouse.
-		env: env,
+		// The operator's env (control DB from the CNPG or external Secret, #32/#34), then dashboard.env.
+		env:          overrideEnv(env, d.Env),
+		extraEnvFrom: d.EnvFrom,
+		envHash:      envHash,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
 	})

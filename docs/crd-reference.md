@@ -64,7 +64,7 @@ increase in place when the StorageClass allows expansion.
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
 | `engine` | `writer.gpu`, `writer.{host,extraHosts,tlsSecretName,jwt,resources,nodeSelector,tolerations,storage,startupTimeout}`, `reader.{host,extraHosts,tlsSecretName,replicas,hpa,resources,storage,startupTimeout}`, `envoy`, `minMaxMapCount`, `minOpenFiles`, `hooks.{extraDeniedDomains,evaluationTimeout,executionTimeout}`, `sentry.{dsnSecretRef.{name,key},environment}`, `snapshots.{enabled,schedule,keep,volumeSnapshotClassName}` | OramaCore writer + readers (StatefulSets with a `data` PVC each) + Envoy |
-| `dashboard` | `host`, `extraHosts`, `tlsSecretName` (see [below](#public-hosts-and-origin-tls)) | app.orama.com (Next.js) |
+| `dashboard` | `host`, `extraHosts`, `tlsSecretName` (see [below](#public-hosts-and-origin-tls)), `envFrom`, `env` (see [below](#dashboardenvfrom-and-dashboardenv)) | app.orama.com (Next.js) |
 | `docs` | `host`, `extraHosts`, `tlsSecretName` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
@@ -189,6 +189,38 @@ the dashboard as an explicit environment variable. `jwtIssuer` had a CRD default
 until operator#310; CRs created while it was served keep that stored value.
 The dashboard token endpoint reads writer/reader URLs from control-DB cluster rows; their copy must
 use the exact Prod 2 URLs. The operator does not rewrite those rows.
+
+### `dashboard.envFrom` and `dashboard.env`
+
+The environment the dashboard needs beyond the operator's wiring (Prod 1 sets 48 variables in Vercel:
+Stripe, Airbyte, S3, Slack, Upstash, the cron and private-API secrets, and others) comes from Secrets
+and ConfigMaps the user creates in the CR's namespace ([operator#311](https://github.com/oramasearch/orama-operator/issues/311)).
+
+| Field | Type | Behavior |
+|---|---|---|
+| `dashboard.envFrom` | `[]EnvFromSource` | Secrets and ConfigMaps appended after the operator's envFrom sources (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`), so a key here overrides the shared ConfigMap and the seeded dashboard Secret; among these sources a later one wins. A key here does not override the operator's explicit env (below); use `env` for that. |
+| `dashboard.env` | `[]EnvVar` | Appended after the operator's explicit env. An entry replaces the operator's variable of the same name, so each name appears once: for example `CLICKHOUSE_HOST` set to the ClickHouse proxy URL while `analytics.endpoint` points the processor at ClickHouse Cloud. |
+
+Precedence, lowest to highest: operator envFrom, `dashboard.envFrom`, operator explicit env
+(`MASTER_API_KEY`, `POSTGRES_PASSWORD`, `DATABASE_URL`, a set `JWT_ISSUER`, the `FIREBASE_*` keys with
+`idp.provider: firebase`, and `CLICKHOUSE_HOST`/`USER`/`PASSWORD` with external analytics),
+`dashboard.env`.
+
+Operator-owned variables are never taken from the user: `DATABASE_URL` and `POSTGRES_PASSWORD` (the
+control DB), `JWT_PRIVATE_KEY` and `JWT_PUBLIC_KEY` (the generated `<cr>-jwt`), `JWT_ISSUER`
+(`jwtIssuer`) and `MASTER_API_KEY` (`masterAPIKeySecretRef`). Naming one in `env`, or a source in
+`envFrom` that holds one (after its `prefix`), fails the reconcile with a message naming the field,
+the source and the variable, never its value.
+
+A referenced Secret or ConfigMap that does not exist fails the reconcile (`Ready=False` naming it)
+unless the reference is `optional`; so does a missing key behind a non-optional `env` `valueFrom`.
+The operator watches the referenced objects: a change to their data rolls the dashboard through the
+pod-template annotation `orama.cloud/dashboard-env-hash`, a SHA-256 over the referenced data. Values
+are never written anywhere else. A dashboard with no user references carries no annotation.
+
+`CredentialsReady` follows the user env: a seeded `<cr>-dashboard-secret` key (`STRIPE_SECRET_KEY`,
+`RESEND_API_KEY`, ...) that `env` or `envFrom` provides is checked in the Secret the dashboard really
+reads it from, and not checked at all when it comes from a literal or a ConfigMap.
 
 ### `analyticsProcessor.import`
 

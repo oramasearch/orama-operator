@@ -262,7 +262,7 @@ type CloudflareSpec struct {
 // ComponentsSpec toggles + configures each part of v1.
 type ComponentsSpec struct {
 	Engine    EngineSpec     `json:"engine,omitempty"`    // OramaCore writer + readers + Envoy
-	Dashboard ToggleWithHost `json:"dashboard,omitempty"` // app.orama.com (Next.js)
+	Dashboard DashboardSpec  `json:"dashboard,omitempty"` // app.orama.com (Next.js)
 	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
@@ -691,6 +691,25 @@ type IngressHostsSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	TLSSecretName string `json:"tlsSecretName,omitempty"`
+}
+
+// DashboardSpec is the dashboard toggle and host, plus the environment a user supplies on top of
+// the operator's wiring (the Stripe, Airbyte, S3, Slack, Upstash and other keys Prod 1 sets in Vercel).
+type DashboardSpec struct {
+	ToggleWithHost `json:",inline"`
+	// EnvFrom lists Secrets and ConfigMaps in the CR's namespace, appended after the operator's own
+	// envFrom sources (the shared ConfigMap, <cr>-dashboard-secret, <cr>-jwt), so a key here
+	// overrides the shared ConfigMap and the seeded dashboard Secret. It does not override explicit
+	// env (use env for that). A source that is missing (and not optional) or that carries an
+	// operator-owned key (DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY,
+	// JWT_ISSUER, MASTER_API_KEY) fails the reconcile. A change to a source's data rolls the dashboard.
+	// +optional
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
+	// Env is appended after the operator's explicit env; an entry replaces the operator's variable of
+	// the same name (e.g. CLICKHOUSE_HOST for external analytics). Operator-owned names are refused
+	// as for envFrom. A change to a referenced Secret or ConfigMap key rolls the dashboard.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
 }
 
 // PeerSpec identifies another region for cross-cluster wiring (no mesh).
