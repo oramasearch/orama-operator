@@ -27,6 +27,10 @@ For a Lake installation, use [install/k0s.md](install/k0s.md).
   to both; the global application tag does not select these two images. If their model artifacts
   require credentials, arrange those with the maintainer before applying the sample.
 
+- **Node settings for the OramaCore writer and readers:** `vm.max_map_count` of at least 4194304
+  and a container open-files limit of at least 65535. See
+  [Node settings for the engine](#node-settings-for-the-engine).
+
 If an image or access grant is missing, obtain it before continuing. Maintainers publish the
 operator through cluster BuildKit with `buildctl`; the native checks, remote build procedure, and
 published-image alternative are in [development.md](development.md#obtain-or-publish-the-operator-image).
@@ -225,8 +229,10 @@ kubectl -n orama-system get ocv1 v1
 kubectl -n orama-system get pods,statefulsets,deployments,svc,pvc
 ```
 
-The `Ready` condition must be true and every entry in `.status.components` ready. If it does
-not converge, inspect `kubectl -n orama-system describe ocv1 v1`, workload events, and the manager
+The `Ready` condition must be true and every entry in `.status.components` ready. On a node
+without the [engine's node settings](#node-settings-for-the-engine) the writer and reader stop in
+their `preflight` init container; set the node setting, or add `minMaxMapCount: 0` under
+`components.engine` for a short-lived test. If it does not converge, inspect `kubectl -n orama-system describe ocv1 v1`, workload events, and the manager
 logs. Check image access, bound PVCs, model downloads, broker readiness, and node capacity.
 The manager's successful rollout and the sample's Ready condition are separate checks.
 
@@ -288,6 +294,38 @@ registry access.
   ingress, and Cloudflare credentials appropriate to that deployment; use the read-tier sample
   and [provisioning-runbook.md](provisioning-runbook.md). Shared Zetta behavior is described in
   [zetta-datastore.md](zetta-datastore.md) and [zetta-cluster-mtls.md](zetta-cluster-mtls.md).
+
+## Node settings for the engine
+
+The writer and reader pods start with a `preflight` init container that fails, naming the setting,
+when the node's `vm.max_map_count` is below `spec.components.engine.minMaxMapCount` (default 4194304)
+or the pod's open-files limit is below `spec.components.engine.minOpenFiles` (default 65535). A
+reader keeps every memory mapping it opens until it restarts, so with the Ubuntu default of 1048576
+`mmap` fails after about 20 days. `vm.max_map_count` is a node setting that no pod can change, so set
+it on every node pool that runs the engine. AKS nodes default to 65530 (Ubuntu 22.04) or 1048576
+(Ubuntu 24.04, Azure Linux 3.0), both below the minimum.
+
+On AKS, set it through the node pool's Linux OS configuration (`linuxOSConfig.sysctls.vmMaxMapCount`),
+which is given when the pool is created; for an existing pool, add a new pool with it and move the
+engine there:
+
+```sh
+cat > linuxosconfig.json <<'EOF_OSCONFIG'
+{ "sysctls": { "vmMaxMapCount": 4194304 } }
+EOF_OSCONFIG
+az aks nodepool add --resource-group <rg> --cluster-name <cluster> --name <pool> \
+  --linux-os-config ./linuxosconfig.json ...
+```
+
+In Terraform it is `linux_os_config { sysctl_config { vm_max_map_count = 4194304 } }` on the node
+pool. On other clusters, set `vm.max_map_count = 4194304` in the node's `/etc/sysctl.d/` and apply it
+with `sysctl --system`. Check a node with `cat /proc/sys/vm/max_map_count`; a failing pod shows the
+value in `kubectl logs <pod> -c preflight`.
+
+The open-files limit is the one the container runtime gives containers (containerd's
+`LimitNOFILE`); if the check fails, raise it in the runtime's service on the node. A development
+cluster that does not need these limits can set `minMaxMapCount: 0` or `minOpenFiles: 0` to skip a
+check.
 
 ## Uninstall
 

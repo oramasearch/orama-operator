@@ -220,6 +220,20 @@ type EngineSpec struct {
 	// Envoy enables the per-reader :80->:8080 reverse proxy (matches prod).
 	// +kubebuilder:default=true
 	Envoy bool `json:"envoy,omitempty"`
+	// MinMaxMapCount is the lowest node vm.max_map_count the writer and reader pods start on: a
+	// preflight init container fails below it. A reader holds every mapping it opens until it
+	// restarts, so the Ubuntu default (1048576) runs out within weeks. vm.max_map_count is not a
+	// namespaced sysctl; it is set on the node pool (see docs/install.md). Unset means 4194304,
+	// Prod 1's value; 0 skips the check.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MinMaxMapCount *int64 `json:"minMaxMapCount,omitempty"`
+	// MinOpenFiles is the lowest open-files limit (ulimit -n) the writer and reader pods start
+	// with: the preflight init container fails below it. Unset means 65535, Prod 1's
+	// LimitNOFILE; 0 skips the check.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MinOpenFiles *int64 `json:"minOpenFiles,omitempty"`
 	// Snapshots takes scheduled CSI VolumeSnapshots of the writer's and every reader's data
 	// claim. Unset or disabled, no snapshot is taken. See docs/components.md.
 	// +optional
@@ -269,6 +283,11 @@ type WriterSpec struct {
 	// API server; see docs/components.md for the resize procedure.
 	// +optional
 	Storage VolumeSpec `json:"storage,omitempty"`
+	// StartupTimeout is how long the writer may take to answer GET /health before it is
+	// restarted (the startup probe's failureThreshold × periodSeconds). Default 20m, Prod 1's
+	// port-open timeout.
+	// +optional
+	StartupTimeout *metav1.Duration `json:"startupTimeout,omitempty"`
 }
 
 type ReaderSpec struct {
@@ -285,6 +304,12 @@ type ReaderSpec struct {
 	// replaying the replication stream from offset 0.
 	// +optional
 	Storage VolumeSpec `json:"storage,omitempty"`
+	// StartupTimeout is how long a reader may take to load its index and answer GET /health
+	// before it is restarted (the startup probe's failureThreshold × periodSeconds). A restart
+	// begins the load again, so a large reader needs the full time. Default 40m, Prod 1's unit
+	// start timeout.
+	// +optional
+	StartupTimeout *metav1.Duration `json:"startupTimeout,omitempty"`
 }
 
 type HPASpec struct {
