@@ -148,13 +148,14 @@ Idempotent — `enable → disable → enable` round-trips cleanly (validated on
   keypair** once (create-if-absent) into `<cr>-jwt` (private + public, for the
   **dashboard** to sign the OramaCore writer JWT) and `<cr>-jwt-pub` (public **only**,
   for the **engine** to verify). Least-privilege: the engine never receives the
-  private key. `JWT_ISSUER` is non-secret (`spec.jwtIssuer`, default `orama-cloud`, in the ConfigMap).
+  private key. `JWT_ISSUER` is non-secret (`spec.jwtIssuer`, in the ConfigMap; `orama-cloud` when unset and the writer does not verify tokens).
   Prod 2 generates its own pair; it does not copy Prod 1's signing keys. If the public-only
   Secret is lost or generation was interrupted, the operator recovers it from the preserved signing
   Secret without rotating that pair. The optional writer JWT
   provider (`engine.writer.jwt`) accepts the dashboard's write tokens: issuer `jwtIssuer(oc)`, the
-  same value the dashboard signs with, and `audience`. It fetches keys from `jwksURL`. The reconcile
-  refuses a `jwksURL` that is not HTTP(S) or carries credentials, and an empty audience.
+  same value the dashboard signs with, and audiences the union of `audience` and `audiences`. It
+  fetches keys from `jwksURL`, by default the in-cluster `http://<cr>-dashboard:3000/api/.well-known/jwks.json`.
+  The reconcile refuses an empty issuer and no audience (`engine_jwt.go`).
 
 **Validated on AKS (2026-07-08):** per-component secrets are generated (the
 `search-secret` holds only `TYPESENSE_API_KEY`, **not** the Cloudflare token); the

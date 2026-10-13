@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"maps"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -90,11 +89,8 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	if !oc.Spec.Components.Engine.Enabled {
 		return r.teardownByComponent(ctx, oc, "engine", "embeddings", "writer", "reader")
 	}
-	if jwt := oc.Spec.Components.Engine.Writer.JWT; jwt != nil {
-		u, err := url.Parse(jwt.JWKSURL)
-		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || jwt.Audience == "" {
-			return fmt.Errorf("engine.writer.jwt requires an HTTP(S) jwksURL without credentials and a nonempty audience")
-		}
+	if err := validateWriterJWT(oc); err != nil {
+		return err
 	}
 	if err := validateEngineImages(oc); err != nil {
 		return err
@@ -289,18 +285,6 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
     javascript_queue_limit: 500000
     commit_interval: 1m
 `, oc.Name+"-broker", client.connection, client.endpoint, hooksYAML(oc), writerJWTYAML(oc))
-}
-
-// writerJWTYAML is the writer_side jwt block, or "" when writer JWT verification is off. It accepts
-// the dashboard's write tokens: issuer jwtIssuer(oc), the value the dashboard signs with, and the
-// configured audience.
-func writerJWTYAML(oc *oramav1alpha1.OramaCloudV1) string {
-	cfg := oc.Spec.Components.Engine.Writer.JWT
-	if cfg == nil {
-		return ""
-	}
-	return fmt.Sprintf("  jwt:\n    providers:\n      - name: dashboard\n        jwks_url: %q\n        issuers: [%q]\n        audiences: [%q]\n        refresh_interval: 1h\n",
-		cfg.JWKSURL, jwtIssuer(oc), cfg.Audience)
 }
 
 // readerSideYAML is the reader_side section. Each reader persists its index and the last stream

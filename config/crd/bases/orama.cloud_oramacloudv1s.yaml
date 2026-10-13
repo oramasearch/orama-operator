@@ -1194,19 +1194,25 @@ spec:
                               Unset preserves the existing config without JWT.
                             properties:
                               audience:
-                                description: Audience must match the exact clusterWriterUrl
-                                  used by the dashboard's token endpoint.
+                                description: 'Audience is a single accepted audience.
+                                  Deprecated: use Audiences; both are merged.'
                                 maxLength: 128
-                                minLength: 1
                                 type: string
+                              audiences:
+                                description: |-
+                                  Audiences are the accepted audiences: each exact clusterWriterUrl the dashboard's token
+                                  endpoint signs for (the writer_url of a control-DB oramacore_clusters row).
+                                items:
+                                  maxLength: 128
+                                  minLength: 1
+                                  type: string
+                                type: array
                               jwksURL:
-                                description: JWKSURL is the dashboard's JWKS endpoint,
-                                  e.g. https://app.orama.ing/api/.well-known/jwks.json.
+                                description: |-
+                                  JWKSURL is the dashboard's JWKS endpoint. Unset uses the in-cluster dashboard Service,
+                                  http://<cr>-dashboard:3000/api/.well-known/jwks.json, which requires the dashboard enabled.
                                 pattern: ^https?://
                                 type: string
-                            required:
-                            - audience
-                            - jwksURL
                             type: object
                           nodeSelector:
                             additionalProperties:
@@ -1939,9 +1945,10 @@ spec:
                     type: string
                 type: object
               jwtIssuer:
-                default: orama-cloud
-                description: JWTIssuer is shared by dashboard token signing and writer
-                  verification.
+                description: |-
+                  JWTIssuer is shared by dashboard token signing and writer verification. It has no CRD
+                  default: engine.writer.jwt requires it set, so a production issuer is always chosen on
+                  purpose. A CR without writer JWT verification falls back to "orama-cloud" for the dashboard.
                 maxLength: 128
                 type: string
               llm:
