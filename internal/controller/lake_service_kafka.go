@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -85,7 +87,8 @@ func (k kafkaServiceKind) build(in catalogService, _ string) []catalogResource {
 			// The entity operator's pod meets the `restricted` Pod Security Standard by what is
 			// written here, not by how Strimzi happens to be installed on the cluster.
 			{path: []string{"spec", "entityOperator"}, value: map[string]interface{}{
-				"topicOperator": map[string]interface{}{}, "userOperator": map[string]interface{}{},
+				"topicOperator": map[string]interface{}{"resources": kafkaOperatorResources()},
+				"userOperator":  map[string]interface{}{"resources": kafkaOperatorResources()},
 				"template": map[string]interface{}{
 					"pod":                    map[string]interface{}{"securityContext": restrictedPodSecurityContext()},
 					"topicOperatorContainer": map[string]interface{}{"securityContext": restrictedContainerSecurityContext()},
@@ -96,6 +99,7 @@ func (k kafkaServiceKind) build(in catalogService, _ string) []catalogResource {
 		{catalogObject: objects[1], labels: cluster, fields: []serviceField{
 			{path: []string{"spec", "replicas"}, value: brokers},
 			{path: []string{"spec", "roles"}, value: []interface{}{"controller", "broker"}},
+			{path: []string{"spec", "resources"}, value: kafkaBrokerResources()},
 			// A workspace namespace enforces the `restricted` Pod Security Standard, and the API
 			// server refuses a broker pod that does not meet it (operator#428). The security
 			// context is part of the resource this operator writes, so a Kafka service starts
@@ -131,6 +135,26 @@ func (kafkaServiceKind) ready(_ catalogService, found map[string]*unstructured.U
 		return false, "waiting for the Kafka cluster"
 	}
 	return true, ""
+}
+
+// A Kafka service is three containers: the broker and the entity operator's topic and user
+// operators. Left without resources each takes the workspace namespace's LimitRange default, one
+// CPU of limit apiece, so a one-broker Kafka cost three CPUs of a workspace's eight and the entity
+// operator's pod was refused by the quota (operator#428). They are stated here instead, so that a
+// one-broker Kafka costs one CPU of limits in all, what every other single-instance service costs:
+// 500m for the broker and 250m for each operator.
+func kafkaBrokerResources() map[string]interface{} {
+	return map[string]interface{}{
+		"requests": map[string]interface{}{"cpu": "100m", "memory": "512Mi"},
+		"limits":   map[string]interface{}{"cpu": "500m", "memory": "1Gi"},
+	}
+}
+
+func kafkaOperatorResources() map[string]interface{} {
+	return map[string]interface{}{
+		"requests": map[string]interface{}{"cpu": "50m", "memory": "128Mi"},
+		"limits":   map[string]interface{}{"cpu": "250m", "memory": "256Mi"},
+	}
 }
 
 // restrictedPodSecurityContext and restrictedContainerSecurityContext are what the `restricted`
@@ -176,6 +200,20 @@ func (kafkaServiceKind) waitingReason(ctx context.Context, c client.Reader, in c
 			}
 			if message, _ := condition["message"].(string); message != "" {
 				return boundedReason(message), nil
+			}
+		}
+	}
+	// The entity operator is a Deployment. A pod of it the API server refuses (the workspace's
+	// quota, for one) is recorded on the Deployment's ReplicaFailure condition, while the Kafka
+	// says only that it timed out waiting.
+	var deployments appsv1.DeploymentList
+	if err := c.List(ctx, &deployments, client.InNamespace(in.namespace), client.MatchingLabels{strimziClusterLabel: in.name}); err != nil {
+		return "", fmt.Errorf("list the Kafka's Deployments: %w", err)
+	}
+	for _, deployment := range deployments.Items {
+		for _, condition := range deployment.Status.Conditions {
+			if condition.Type == appsv1.DeploymentReplicaFailure && condition.Status == corev1.ConditionTrue && condition.Message != "" {
+				return boundedReason(condition.Message), nil
 			}
 		}
 	}
