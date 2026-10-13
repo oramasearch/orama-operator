@@ -102,6 +102,14 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	name := aksClusterAzureName(&cluster)
 	az := r.azure()
 
+	// Refused here, before any Azure state exists, with a reason that names the tag.
+	if problem := azureTagProblem(spec.Tags); problem != "" {
+		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
+			cluster.Generation, clusterPhaseDegraded, "InvalidTags", problem)
+		cluster.Status.ObservedGeneration = cluster.Generation
+		return ctrl.Result{}, r.writeStatus(ctx, &cluster, observed)
+	}
+
 	created, err := az.ensureResourceGroup(ctx, creds, spec.SubscriptionID, spec.ResourceGroup, spec.Location, spec.Tags)
 	if err != nil {
 		return r.fail(ctx, &cluster, observed, "ResourceGroupFailed", err)

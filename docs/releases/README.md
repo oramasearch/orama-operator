@@ -9,8 +9,8 @@ does not, what is knowingly still broken, and how it was verified.
 
 ## Conventions
 
-- **Cut a release from `main`**, which is what the cluster runs. The steps are in the root
-  `CLAUDE.md`, under *Cutting a release*.
+- **A release promotes `dev` to `main`.** Work lands on `dev`; `main` moves only on a release and
+  equals the last tag in between. The steps are in the root `CLAUDE.md`, under *Cutting a release*.
 - **A release is three tags with one name**: the Git tag on the merge commit, the GitHub
   release, and the same tag on the image in Docker Hub, naming the digest that is deployed.
 - **A first release, or one after a long gap, lists everything in it**, not a summary: every

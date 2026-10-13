@@ -103,7 +103,8 @@ The production v1 system this operator models is documented in
   components page for a reconciler change, the development guide for a build or deploy change,
   the `DESIGN.md` decision table for a decision. This README is a summary and never holds the
   only copy of anything.
-- PR-based workflow. Never fast-forward `main`; open a PR and leave it open for review.
+- **Work lands on `dev`, through a pull request.** `main` moves only when a release is cut, by
+  promoting `dev`. Never push to either directly; open a PR and leave it open for review.
 - No AI attribution in commits or PRs.
 - Reuse published `oramasearch/*` images; deploy by immutable tag.
 - The ops truth for the production system lives in `techops-docs`, not here.

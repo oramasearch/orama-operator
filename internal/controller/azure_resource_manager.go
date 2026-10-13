@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -424,6 +425,34 @@ func aksClusterAzureName(cluster *oramav1alpha1.AksCluster) string {
 		return cluster.Spec.ClusterName
 	}
 	return cluster.Name
+}
+
+// azureTagProblem says why Azure would refuse a set of tags, or "" when it would not. Azure
+// rejects the whole create call for one bad tag name (InvalidTagNameCharacters), so this is checked
+// before anything is sent. A Kubernetes-style name such as orama.cloud/role is not a valid Azure
+// tag name: the slash is reserved.
+func azureTagProblem(tags map[string]string) string {
+	if len(tags) > 50 {
+		return fmt.Sprintf("Azure allows 50 tags on a resource, and %d were given", len(tags))
+	}
+	names := make([]string, 0, len(tags))
+	for name := range tags {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		switch {
+		case name == "":
+			return "a tag has an empty name"
+		case len(name) > 512:
+			return fmt.Sprintf("tag name %q is longer than the 512 characters Azure allows", name[:40]+"...")
+		case strings.ContainsAny(name, `<>%&\?/`):
+			return fmt.Sprintf("tag name %q contains a character Azure reserves (one of < > %% & \\ ? /)", name)
+		case len(tags[name]) > 256:
+			return fmt.Sprintf("the value of tag %q is longer than the 256 characters Azure allows", name)
+		}
+	}
+	return ""
 }
 
 // ── operations ────────────────────────────────────────────────────────────────
