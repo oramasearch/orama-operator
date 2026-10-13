@@ -171,3 +171,31 @@ func TestCloudV1PublicIngressAndDNSLifecycle(t *testing.T) {
 		}
 	}
 }
+
+func TestCloudV1ExternalClickHouseSecretReferences(t *testing.T) {
+	oc := fullStackOCV1(nil)
+	oc.Spec.Components.Analytics = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external", Endpoint: "https://clickhouse.example.com:8443", CredentialsSecretRef: &corev1.LocalObjectReference{Name: "external-clickhouse"}}
+	cl, _ := reconcileOCV1(t, oc)
+	if !absent(t, cl, "v1-analytics", &appsv1.StatefulSet{}) {
+		t.Error("external ClickHouse created an in-cluster store")
+	}
+	dep := getObj(t, cl, "v1-analytics-processor", &appsv1.Deployment{})
+	for _, key := range []string{"CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD"} {
+		if !slices.ContainsFunc(dep.Spec.Template.Spec.InitContainers[0].Env, func(e corev1.EnvVar) bool {
+			return e.Name == key && e.ValueFrom.SecretKeyRef.Name == "external-clickhouse"
+		}) {
+			t.Errorf("missing external %s", key)
+		}
+	}
+	if cfg := getObj(t, cl, "v1-analytics-processor-config", &corev1.ConfigMap{}).Data["config.yaml"]; !strings.Contains(cfg, oc.Spec.Components.Analytics.Endpoint) || !strings.Contains(cfg, "__CLICKHOUSE_USER__") {
+		t.Error("external config failed to retain endpoint and credential placeholders")
+	}
+
+	// No Secret values are fetched to render either workload; missing keys block startup through required refs.
+	s := ocv1TestScheme(t)
+	r := &OramaCloudV1Reconciler{Scheme: s, Client: fake.NewClientBuilder().WithScheme(s).Build()}
+	oc.Spec.Components.Analytics.CredentialsSecretRef = nil
+	if err := r.reconcileDashboard(context.Background(), oc); err == nil {
+		t.Error("external dashboard without credential reference must fail")
+	}
+}

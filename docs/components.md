@@ -617,6 +617,8 @@ host is set)**.
   service-account JSON dummy. The default `none` adds no Firebase variables. The referenced Secret
   is never copied into a ConfigMap or another Secret. Missing references degrade reconciliation;
   missing Secret keys block pod startup. Existing component Secrets may retain the unused old key.
+  External ClickHouse uses `analytics.endpoint` as `CLICKHOUSE_HOST` and the referenced
+  `CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD`; in-cluster wiring retains its existing defaults.
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.

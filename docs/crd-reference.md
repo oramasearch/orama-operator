@@ -68,7 +68,7 @@ increase in place when the StorageClass allows expansion.
 | `docs` | `host`, `extraHosts`, `tlsSecretName` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
-| `analytics` | data-store | ClickHouse |
+| `analytics` | data-store; external mode requires an HTTP(S) `endpoint` and `credentialsSecretRef` with `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` for the dashboard/processor | ClickHouse (Prod 2 keeps ClickHouse Cloud) |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
 | `search` | data-store | Typesense hosted-search |

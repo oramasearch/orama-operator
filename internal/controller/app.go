@@ -254,7 +254,7 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 }
 
 // dashboardOperatorEnv is the explicit env the operator gives the dashboard: the master key, the
-// control DB, the JWT issuer when set, and Firebase server keys.
+// control DB, the JWT issuer when set, Firebase server keys and external ClickHouse.
 func dashboardOperatorEnv(oc *oramav1alpha1.OramaCloudV1) ([]corev1.EnvVar, error) {
 	env := []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
 	if oc.Spec.JWTIssuer != "" {
@@ -268,6 +268,14 @@ func dashboardOperatorEnv(oc *oramav1alpha1.OramaCloudV1) ([]corev1.EnvVar, erro
 		for _, key := range []string{"FIREBASE_PROJECT_ID", "FIREBASE_CLIENT_EMAIL", "FIREBASE_PRIVATE_KEY"} {
 			env = append(env, secretKeyEnv(key, ref.Name, key))
 		}
+	}
+	if analyticsExternal(oc) {
+		if err := validateExternalAnalytics(oc); err != nil {
+			return nil, err
+		}
+		ref := oc.Spec.Components.Analytics.CredentialsSecretRef.Name
+		env = append(env, corev1.EnvVar{Name: "CLICKHOUSE_HOST", Value: oc.Spec.Components.Analytics.Endpoint},
+			secretKeyEnv("CLICKHOUSE_USER", ref, "CLICKHOUSE_USER"), secretKeyEnv("CLICKHOUSE_PASSWORD", ref, "CLICKHOUSE_PASSWORD"))
 	}
 	return env, nil
 }
@@ -294,7 +302,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		ingressHost: d.Host,
 		ingress:     d.IngressHostsSpec,
 		// The operator's env: the master key, the control DB from the CNPG or external Secret
-		// (#32/#34), the issuer and Firebase server keys.
+		// (#32/#34), the issuer, Firebase server keys and external ClickHouse.
 		env: env,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
