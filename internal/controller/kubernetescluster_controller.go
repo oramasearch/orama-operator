@@ -59,7 +59,7 @@ func (r *KubernetesClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if !controllerutil.ContainsFinalizer(&cluster, kubernetesClusterFinalizer) {
 		controllerutil.AddFinalizer(&cluster, kubernetesClusterFinalizer)
 		if err := r.Update(ctx, &cluster); err != nil {
-			return ctrl.Result{}, err
+			return settle(ctrl.Result{}, err)
 		}
 	}
 
@@ -67,7 +67,7 @@ func (r *KubernetesClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhaseDegraded, "InvalidSpec", problem)
 		cluster.Status.ObservedGeneration = cluster.Generation
-		return ctrl.Result{}, r.writeStatus(ctx, &cluster, observed)
+		return settle(ctrl.Result{}, r.writeStatus(ctx, &cluster, observed))
 	}
 
 	var provider oramav1alpha1.KubernetesClusterProvider
@@ -80,7 +80,7 @@ func (r *KubernetesClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			cluster.Generation, clusterPhasePending, "ProviderNotFound",
 			fmt.Sprintf("KubernetesClusterProvider %q does not exist", cluster.Spec.ProviderRef))
 		cluster.Status.ObservedGeneration = cluster.Generation
-		return ctrl.Result{}, r.writeStatus(ctx, &cluster, observed)
+		return settle(ctrl.Result{}, r.writeStatus(ctx, &cluster, observed))
 	}
 	cluster.Status.ProviderType = provider.Spec.Type
 
@@ -90,7 +90,7 @@ func (r *KubernetesClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 				cluster.Generation, clusterPhaseDegraded, "ProvisionFailed", err.Error())
 			if statusErr := r.writeStatus(ctx, &cluster, observed); statusErr != nil {
-				return ctrl.Result{}, statusErr
+				return settle(ctrl.Result{}, statusErr)
 			}
 			return ctrl.Result{}, err
 		}
@@ -100,7 +100,7 @@ func (r *KubernetesClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			fmt.Sprintf("this operator has no concrete kind for provider type %q", provider.Spec.Type))
 	}
 	cluster.Status.ObservedGeneration = cluster.Generation
-	return ctrl.Result{}, r.writeStatus(ctx, &cluster, observed)
+	return settle(ctrl.Result{}, r.writeStatus(ctx, &cluster, observed))
 }
 
 // validateKubernetesCluster checks what the schema cannot.
@@ -293,10 +293,10 @@ func (r *KubernetesClusterReconciler) finalize(ctx context.Context, cluster *ora
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhaseDeleting, "Deleting", message)
 		// The concrete resource's removal triggers the next reconcile through the Owns watch.
-		return ctrl.Result{}, r.writeStatus(ctx, cluster, observed)
+		return settle(ctrl.Result{}, r.writeStatus(ctx, cluster, observed))
 	}
 	controllerutil.RemoveFinalizer(cluster, kubernetesClusterFinalizer)
-	return ctrl.Result{}, r.Update(ctx, cluster)
+	return settle(ctrl.Result{}, r.Update(ctx, cluster))
 }
 
 func (r *KubernetesClusterReconciler) writeStatus(ctx context.Context, cluster *oramav1alpha1.KubernetesCluster, observed *oramav1alpha1.KubernetesClusterStatus) error {
@@ -368,15 +368,15 @@ func (r *KubernetesClusterProviderReconciler) Reconcile(ctx context.Context, req
 		if inUse > 0 {
 			provider.Status.Ready = false
 			provider.Status.Message = fmt.Sprintf("cannot be deleted while %d KubernetesCluster resource(s) point at it", inUse)
-			return ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &provider, observed)
+			return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &provider, observed))
 		}
 		controllerutil.RemoveFinalizer(&provider, kubernetesClusterProviderFinalizer)
-		return ctrl.Result{}, r.Update(ctx, &provider)
+		return settle(ctrl.Result{}, r.Update(ctx, &provider))
 	}
 	if !controllerutil.ContainsFinalizer(&provider, kubernetesClusterProviderFinalizer) {
 		controllerutil.AddFinalizer(&provider, kubernetesClusterProviderFinalizer)
 		if err := r.Update(ctx, &provider); err != nil {
-			return ctrl.Result{}, err
+			return settle(ctrl.Result{}, err)
 		}
 	}
 
@@ -388,26 +388,26 @@ func (r *KubernetesClusterProviderReconciler) Reconcile(ctx context.Context, req
 		creds, err := readAzureCredentials(ctx, r.Client, provider.Spec.CredentialsSecretRef)
 		if err != nil {
 			provider.Status.Ready, provider.Status.AuthMethod, provider.Status.Message = false, "", err.Error()
-			return ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &provider, observed)
+			return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &provider, observed))
 		}
 		provider.Status.AuthMethod = creds.authMethod()
 		if provider.Spec.AKS == nil {
 			provider.Status.Ready, provider.Status.Message = false, "spec.aks is required when type is aks"
-			return ctrl.Result{}, r.writeStatus(ctx, &provider, observed)
+			return settle(ctrl.Result{}, r.writeStatus(ctx, &provider, observed))
 		}
 		if r.Azure == nil {
 			r.Azure = newAzureClient()
 		}
 		if err := r.Azure.subscriptionReachable(ctx, creds, provider.Spec.AKS.SubscriptionID); err != nil {
 			provider.Status.Ready, provider.Status.Message = false, err.Error()
-			return ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &provider, observed)
+			return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &provider, observed))
 		}
 		provider.Status.Ready, provider.Status.Message = true, ""
 	default:
 		provider.Status.Ready = false
 		provider.Status.Message = fmt.Sprintf("this operator does not know provider type %q", provider.Spec.Type)
 	}
-	return ctrl.Result{RequeueAfter: aksSteadyRecheck}, r.writeStatus(ctx, &provider, observed)
+	return settle(ctrl.Result{RequeueAfter: aksSteadyRecheck}, r.writeStatus(ctx, &provider, observed))
 }
 
 func (r *KubernetesClusterProviderReconciler) writeStatus(ctx context.Context, provider *oramav1alpha1.KubernetesClusterProvider, observed *oramav1alpha1.KubernetesClusterProviderStatus) error {
