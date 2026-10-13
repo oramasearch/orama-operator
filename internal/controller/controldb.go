@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -113,7 +114,9 @@ func (r *OramaCloudV1Reconciler) resolveControlDBBackup(ctx context.Context, oc 
 // reconcileControlDB provisions the control-plane Postgres (PlanetScale in prod) as a
 // CloudNativePG Cluster. On the primary it bootstraps a fresh cluster; on a read tier
 // with replicate=true it stands up a replica cluster streaming from the primary peer.
-// spec.components.controlDB.backup adds a Barman object store + an owned ScheduledBackup.
+// spec.components.controlDB.backup adds a Barman object store + an owned ScheduledBackup. Under
+// spec.deletionProtection the Cluster and ScheduledBackup carry no owner reference, so deleting the
+// CR leaves them (and the data) in place.
 // Requires the CloudNativePG operator to be installed (see helmfile).
 func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	db := oc.Spec.Components.ControlDB
@@ -170,7 +173,7 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 			spec["backup"] = controlDBBarmanBackup(backup)
 		}
 		cluster.Object["spec"] = spec
-		return controllerutil.SetControllerReference(oc, cluster, r.Scheme)
+		return r.ownUnlessProtected(oc, cluster)
 	})
 	if err != nil {
 		return err
@@ -196,9 +199,27 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBScheduledBackup(ctx context.C
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, scheduledBackup, func() error {
 		scheduledBackup.SetLabels(labelsFor(oc, "controldb"))
 		scheduledBackup.Object["spec"] = controlDBScheduledBackupSpec(backup, controlDBClusterName(oc))
-		return controllerutil.SetControllerReference(oc, scheduledBackup, r.Scheme)
+		return r.ownUnlessProtected(oc, scheduledBackup)
 	})
 	return err
+}
+
+// ownUnlessProtected controller-references a control-DB object (Cluster, ScheduledBackup) to the
+// CR. Under spec.deletionProtection it instead drops any reference to the CR, so garbage
+// collection never deletes the database when the CR is deleted.
+func (r *OramaCloudV1Reconciler) ownUnlessProtected(oc *oramav1alpha1.OramaCloudV1, obj client.Object) error {
+	if !oc.Spec.DeletionProtection {
+		return controllerutil.SetControllerReference(oc, obj, r.Scheme)
+	}
+	refs := obj.GetOwnerReferences()
+	kept := refs[:0]
+	for _, ref := range refs {
+		if ref.UID != oc.UID {
+			kept = append(kept, ref)
+		}
+	}
+	obj.SetOwnerReferences(kept)
+	return nil
 }
 
 // reconcileControlDBMigrations applies the vendored dashboard schema (operator#34) as an owned,

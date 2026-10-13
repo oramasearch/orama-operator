@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -207,5 +208,70 @@ func TestControlDBWithoutBackupRendersAsBefore(t *testing.T) {
 	}
 	if c := apimeta.FindStatusCondition(getObj(t, cl, "v1", &oramav1alpha1.OramaCloudV1{}).Status.Conditions, "BackupReady"); c != nil {
 		t.Errorf("old CR got a BackupReady condition: %+v", c)
+	}
+}
+
+// --- 4. deletion protection ---
+
+func TestDeletionProtectionKeepsControlDBAndVolumes(t *testing.T) {
+	cl, r := reconcileOCV1(t, fullStackOCV1(func(o *oramav1alpha1.OramaCloudV1) {
+		withBackup(o)
+		o.Spec.DeletionProtection = true
+	}), backupSecret())
+
+	if refs := controlDBCluster(t, cl).GetOwnerReferences(); len(refs) != 0 {
+		t.Errorf("protected Cluster owner refs = %+v, want none (CR deletion must not GC it)", refs)
+	}
+	if sb, err := scheduledBackup(cl); err != nil || len(sb.GetOwnerReferences()) != 0 {
+		t.Errorf("protected ScheduledBackup err=%v owners=%+v, want present and unowned", err, sb.GetOwnerReferences())
+	}
+	for _, name := range []string{"v1-writer", "v1-analytics", "v1-harvest-mongo"} {
+		p := getObj(t, cl, name, &appsv1.StatefulSet{}).Spec.PersistentVolumeClaimRetentionPolicy
+		if p == nil || p.WhenDeleted != appsv1.RetainPersistentVolumeClaimRetentionPolicyType || p.WhenScaled != appsv1.RetainPersistentVolumeClaimRetentionPolicyType {
+			t.Errorf("%s PVC retention = %+v, want Retain/Retain", name, p)
+		}
+	}
+
+	// Disabling the control DB keeps the Cluster and its ScheduledBackup.
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.ControlDB.Enabled = false })
+	controlDBCluster(t, cl)
+	if _, err := scheduledBackup(cl); err != nil {
+		t.Errorf("protected ScheduledBackup deleted on disable: %v", err)
+	}
+}
+
+// Turning protection on for a CR whose control DB disable lands in the same edit must still release
+// the Cluster from the CR, so a later CR deletion can't garbage-collect it.
+func TestDeletionProtectionReleasesClusterOwnedBefore(t *testing.T) {
+	cl, r := reconcileOCV1(t, fullStackOCV1(nil))
+	if len(controlDBCluster(t, cl).GetOwnerReferences()) != 1 {
+		t.Fatal("an unprotected Cluster should be owned by the CR")
+	}
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.DeletionProtection = true
+		o.Spec.Components.ControlDB.Enabled = false
+	})
+	if refs := controlDBCluster(t, cl).GetOwnerReferences(); len(refs) != 0 {
+		t.Errorf("Cluster still owned after protection was turned on: %+v", refs)
+	}
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.ControlDB.Enabled = true })
+	if refs := controlDBCluster(t, cl).GetOwnerReferences(); len(refs) != 0 {
+		t.Errorf("re-enabled protected Cluster re-owned: %+v", refs)
+	}
+}
+
+func TestWithoutDeletionProtectionBehavesAsBefore(t *testing.T) {
+	cl, r := reconcileOCV1(t, fullStackOCV1(nil))
+	if refs := controlDBCluster(t, cl).GetOwnerReferences(); len(refs) != 1 || refs[0].UID != "uid-v1" {
+		t.Errorf("Cluster owner refs = %+v, want the CR", refs)
+	}
+	if p := getObj(t, cl, "v1-writer", &appsv1.StatefulSet{}).Spec.PersistentVolumeClaimRetentionPolicy; p != nil {
+		t.Errorf("old CR's writer gained a PVC retention policy %+v", p)
+	}
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.ControlDB.Enabled = false })
+	cluster := &unstructured.Unstructured{}
+	cluster.SetGroupVersionKind(cnpgClusterGVK)
+	if !absent(t, cl, "v1-controldb", cluster) {
+		t.Error("unprotected control DB disable must still delete the Cluster")
 	}
 }

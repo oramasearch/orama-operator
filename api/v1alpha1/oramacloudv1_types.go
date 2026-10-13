@@ -56,6 +56,13 @@ type OramaCloudV1Spec struct {
 	// fresh install answers queries out of the box.
 	// +optional
 	DemoSeed bool `json:"demoSeed,omitempty"`
+
+	// DeletionProtection keeps the stack's data through CR deletion and component disable: the
+	// CNPG control-DB Cluster (and its ScheduledBackup) carry no owner reference and are never
+	// deleted by the operator, and every StatefulSet sets
+	// persistentVolumeClaimRetentionPolicy Retain/Retain. Default false.
+	// +optional
+	DeletionProtection bool `json:"deletionProtection,omitempty"`
 }
 
 // RegionSpec selects the cluster role.

@@ -23,6 +23,7 @@ pointing at the primary); the full sample list is in
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
+| `deletionProtection` | bool | false | Keep the data through CR deletion and component disable. The CNPG control-DB `Cluster` and its `ScheduledBackup` get **no owner reference** (an existing one is removed), so deleting the CR leaves them; `controlDB.enabled: false` keeps them too, and re-enabling adopts the same Cluster. Every operator StatefulSet (writer, stores) gets `persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`. Off: as before (CR deletion garbage-collects the Cluster; disable deletes it). |
 
 ## `spec.components`
 

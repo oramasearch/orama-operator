@@ -76,9 +76,9 @@ Owner-GC only fires on CR *deletion*; so when a `components.<x>.enabled` toggle 
 reconciler actively **prunes** that component's owned resources by label
 (`internal/controller/teardown.go` — `teardownByComponent`), covering Deployments/StatefulSets/
 Services/ConfigMaps/Secrets/PDBs/Ingresses/Jobs (and the CNPG `Cluster` + `ScheduledBackup` for
-`controlDB`). StatefulSet PVCs are left behind (data preserved). Idempotent — `enable → disable →
-enable` round-trips cleanly (validated on AKS: disabling `docs` pruned it, re-enabling restored it,
-`Ready 22/22`).
+`controlDB`, unless `spec.deletionProtection` is on). StatefulSet PVCs are left behind (data
+preserved). Idempotent — `enable → disable → enable` round-trips cleanly (validated on AKS: disabling
+`docs` pruned it, re-enabling restored it, `Ready 22/22`).
 
 - **JWT keypair (real, generated)** — the operator generates a **real RSA-2048
   keypair** once (create-if-absent) into `<cr>-jwt` (private + public, for the
@@ -246,7 +246,12 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   index-builder, analytics-processor — reads that Secret instead of `<cr>-controldb-app`. The
   operator creates no `Cluster`, applies no `PostgresSchema`, runs no migration, omits the
   `POSTGRES_HOST/PORT/DB` ConfigMap keys, and does not run pgAdmin.
-- Owner ref on the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs).
+- Owner ref on the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs), unless deletion protection is on.
+- **Deletion protection** — with `spec.deletionProtection` the `Cluster` and its `ScheduledBackup`
+  carry **no reference to the CR** (the operator removes an existing one), so deleting the CR leaves the
+  database running; `controlDB.enabled: false` also leaves both in place (released from the CR), and
+  re-enabling adopts the same `Cluster`. To really remove a protected database, turn protection off
+  first, or delete the `Cluster` by hand.
 - **Backups** (`controlDB.backup`, opt-in, primary only) — the same Barman setup as the `Lake`'s,
   in its own copy (`controldb_backup.go`): the Cluster gets `spec.backup.barmanObjectStore` (gzip WAL, `retentionPolicy`)
   pointing at `s3://<bucket>/<namespace>/<name>/controldb` by default, and the operator owns a
@@ -291,9 +296,10 @@ and reference the primary's endpoint). Images are overridable via
 StatefulSets + Services + PVCs; **all four pods booted `1/1`**; deleting the CR
 removed the workloads.
 
-> **PVC retention:** StatefulSet PVCs are **retained** on delete (the k8s default —
-> data is left in place, not auto-deleted). Orphaned PVCs are cleaned up manually.
-> (A configurable `delete`-on-teardown option can be added later.)
+> **PVC retention:** StatefulSet PVCs are **retained** on delete (the k8s default — data is left
+> in place, not auto-deleted); `spec.deletionProtection` makes that explicit on every StatefulSet
+> (`persistentVolumeClaimRetentionPolicy: Retain/Retain`) so a cluster with a different default can't
+> delete them. Orphaned PVCs are cleaned up manually.
 
 Each store also gets the **workload-hardening baseline** (startup/readiness/liveness TCP probes, a
 per-container securityContext, requests + a generous per-store memory limit, a `60s` grace period,

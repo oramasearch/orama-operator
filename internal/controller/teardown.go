@@ -62,7 +62,9 @@ func (r *OramaCloudV1Reconciler) teardownByComponent(ctx context.Context, oc *or
 
 // teardownControlDB removes the CNPG Cluster and its ScheduledBackup when the control DB is
 // disabled. CNPG's own reclaim policy governs the underlying PVC; the operator just removes the
-// Cluster CR + the component's owned resources.
+// Cluster CR + the component's owned resources. Under spec.deletionProtection the Cluster and
+// ScheduledBackup are kept (and released from the CR's ownership, so a later CR deletion can't
+// garbage-collect them either); re-enabling the control DB adopts the same Cluster again.
 func (r *OramaCloudV1Reconciler) teardownControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
@@ -70,9 +72,31 @@ func (r *OramaCloudV1Reconciler) teardownControlDB(ctx context.Context, oc *oram
 	cluster.SetNamespace(oc.Namespace)
 	scheduledBackup := newControlDBScheduledBackup(controlDBScheduledBackupName(oc), oc.Namespace)
 	for _, obj := range []*unstructured.Unstructured{scheduledBackup, cluster} {
+		if oc.Spec.DeletionProtection {
+			if err := r.releaseFromCR(ctx, oc, obj); err != nil {
+				return fmt.Errorf("retain controldb %s: %w", obj.GetKind(), err)
+			}
+			continue
+		}
 		if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("teardown controldb %s: %w", obj.GetKind(), err)
 		}
 	}
 	return r.teardownByComponent(ctx, oc, "controldb")
+}
+
+// releaseFromCR removes the CR's owner reference from an existing object (no-op when it is absent
+// or already unowned).
+func (r *OramaCloudV1Reconciler) releaseFromCR(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, obj *unstructured.Unstructured) error {
+	if err := r.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	before := len(obj.GetOwnerReferences())
+	if err := r.ownUnlessProtected(oc, obj); err != nil {
+		return err
+	}
+	if len(obj.GetOwnerReferences()) == before {
+		return nil
+	}
+	return r.Update(ctx, obj)
 }

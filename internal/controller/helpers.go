@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -131,6 +132,19 @@ func imagePullSecrets(oc *oramav1alpha1.OramaCloudV1) []corev1.LocalObjectRefere
 		return nil
 	}
 	return []corev1.LocalObjectReference{{Name: oc.Spec.Images.PullSecretName}}
+}
+
+// applyPVCRetention sets Retain/Retain on a StatefulSet's PVC retention policy when the CR has
+// spec.deletionProtection, so neither CR deletion nor a scale-down ever deletes its volumes even on
+// a cluster whose default differs. Without protection the field is left as the API server has it.
+func applyPVCRetention(oc *oramav1alpha1.OramaCloudV1, sts *appsv1.StatefulSet) {
+	if !oc.Spec.DeletionProtection {
+		return
+	}
+	sts.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+		WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+		WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+	}
 }
 
 // componentImage resolves the image for a component: an explicit override wins,
