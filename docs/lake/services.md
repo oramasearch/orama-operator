@@ -21,6 +21,34 @@ operator's side of it. Field definitions are in the
 customer's **stores** (volumes, the customer's own buckets, and Lake-run buckets and filesystems;
 lake#196, lake#664) ride the same poll, connection and Secret: see [Stores](#stores-lake196).
 
+## A service's pods must meet its namespace's Pod Security level
+
+A service created in a workspace runs in that workspace's namespace, which enforces the
+`restricted` Pod Security Standard ([`workspaces.md`](workspaces.md)). The API server refuses a pod
+that does not meet it, so the upstream operator behind a kind must produce `restricted` pods.
+
+| Kind | How its pods meet `restricted` |
+|---|---|
+| Postgres | CloudNativePG's pods do, as shipped. |
+| SQLite, DuckDB, Polars | The operator runs them and sets the security context itself. |
+| Kafka | **The operator writes the security context itself**, on the `KafkaNodePool`'s pod and broker container and on the `Kafka`'s entity operator, so a Kafka service starts whatever Strimzi's defaults are on a cluster. Strimzi is also installed with `STRIMZI_POD_SECURITY_PROVIDER_CLASS=restricted` (`helmfile.yaml`, and every cluster's `ClusterHelmRelease`), which covers any pod Strimzi creates that the operator does not template ([#428](https://github.com/oramasearch/orama-operator/issues/428)). |
+| ClickHouse, TiDB, Cassandra, Valkey | **Not verified in a workspace namespace.** Their resources are rendered without a security context; each needs the same check ([#428](https://github.com/oramasearch/orama-operator/issues/428)). |
+
+### What a service costs a workspace's quota
+
+A workspace namespace has a ResourceQuota (8 CPUs of limits by default) and a LimitRange that
+gives any container without resources a limit of one CPU and 1Gi. A kind whose containers state
+nothing therefore costs one CPU of limits per container.
+
+| Kind | Containers | CPU limits charged |
+|---|---|---|
+| Postgres, Zetta, SQLite, DuckDB, Polars | 1 per instance | 1 per instance (the namespace default) |
+| Kafka | broker, plus the entity operator's topic and user operators | **1 for a one-broker Kafka**, stated by the operator: 500m for the broker and 250m for each operator. Before 2026-10-13 nothing was stated, a Kafka cost 3, and the entity operator's pod was refused in a full workspace ([#428](https://github.com/oramasearch/orama-operator/issues/428)). |
+
+A service that is not ready says why where the kind can tell: a Kafka's `service_status.message`
+carries what Strimzi is stuck on, including the API server's reason for refusing a pod, whether
+that is the Pod Security level or the workspace's quota.
+
 ## Turning it on
 
 ```yaml
