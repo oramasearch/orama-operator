@@ -607,6 +607,9 @@ Managing other clusters ([`infrastructure/README.md`](infrastructure/README.md),
 cluster's operator, with no flag: the operator is the same on a management cluster and a leaf, and
 a cluster manages others by holding the resources. `ClusterHelmRelease` and `OramaOperator` install
 pinned chart releases and the operator itself onto a managed cluster with the Helm library.
+`LakeSet` and `OramaCloudV1Set` (`managedset_controller.go`,
+[#391](https://github.com/oramasearch/orama-operator/issues/391)) apply `Lake` and `OramaCloudV1`
+instances onto managed clusters from one template, each member in its own namespace, in order.
 
 | Controller | Reconciles | Creates |
 |---|---|---|
