@@ -104,6 +104,12 @@ is available only for an allowance Kubernetes NetworkPolicy cannot represent; cl
 CRD do not get a Cilium watch, so the common NetworkPolicy-only case starts everywhere. The
 controller reports stable Ready status with policy counts and does not rewrite unchanged status.
 
+The Lake, Lake-workspaces and Orama Cloud v1 reconcilers each own one sandbox in every namespace
+they manage and render it before workloads. Their complete policy inventory, public-address
+exclusions, inferred paths and recovery behavior are in
+[`infrastructure/network-sandbox.md`](infrastructure/network-sandbox.md). Workspace policy names
+and specs are preserved across the ownership migration.
+
 ## Workload hardening — applied to EVERY component ([#18](https://github.com/oramasearch/orama-operator/issues/18))
 
 The engine used to be the only component wired with full probes/resources/grace/PDB; every other

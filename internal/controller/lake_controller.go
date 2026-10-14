@@ -48,6 +48,9 @@ import (
 type LakeReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// OperatorNamespace is the namespace of the manager pod that reads Lake's control database and
+	// Zetta API. Empty omits those in-cluster ingress allowances in local unit tests.
+	OperatorNamespace string
 	// ServiceStores opens lake's control Postgres for the managed-services poll. Nil uses pgx;
 	// tests substitute a fake store.
 	ServiceStores LakeServiceStoreOpener
@@ -230,6 +233,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		"app.kubernetes.io/name":       "lake",
 		"app.kubernetes.io/instance":   lake.Name,
 		"app.kubernetes.io/managed-by": "orama-operator",
+	}
+	if err := r.reconcileLakeNetworkSandbox(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile network sandbox: %w", err)
 	}
 	name := "lake-" + lake.Name
 	zetta, err := r.reconcileLakeZetta(ctx, &lake, ns, labels)
@@ -1697,6 +1703,7 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
 		Owns(&oramav1alpha1.LakeSealedSecret{}).
+		Owns(&oramav1alpha1.NetworkSandbox{}).
 		Owns(&oramav1alpha1.OramaZettaCluster{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
 		Owns(newCNPGScheduledBackup(nil, ""))

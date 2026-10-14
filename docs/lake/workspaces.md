@@ -140,8 +140,8 @@ Every workspace namespace receives all of the following:
   operator-owned service pods also set `automountServiceAccountToken: false` on their pod specs.
   The operator creates no Role or RoleBinding in the namespace and binds no ClusterRole to it.
 - One `ResourceQuota` and `LimitRange` selected by the workspace's declarative plan.
-- A default-deny NetworkPolicy for both ingress and egress, followed only by the explicit policies
-  below.
+- An owned `NetworkSandbox` that renders default-deny for both ingress and egress, followed only by
+  the explicit policies below. The migration preserves every former policy name and spec.
 - A local copy of the Lake image-pull Secret, when configured. Zetta's admin and cluster tokens are
   minted by the Zetta controller in this namespace. Agent provider and service credentials are
   copied here, and per-run and synchronized-app credentials are minted here. The trusted Lake pod
@@ -181,9 +181,11 @@ RFC1918/private ranges, the metadata endpoint `169.254.169.254`, and non-DNS tra
 Internet egress is denied by default. `spec.workspaces.overrides[<workspace UUID>].internetEgress`
 adds or removes the TCP 443 policy for that workspace alone. Before enabling it, the operator reads
 the `default/kubernetes` Service and Endpoints plus every Node address and pod CIDR, then adds them
-as exclusions. If those reads fail, it refuses to create the internet policy; the base default-deny
-and narrow internal policies are installed before that calculation, and any older internet policy
-is removed so a stale exclusion list cannot remain active.
+as exclusions. If those reads fail on a new namespace, it refuses to create the internet policy;
+the base default-deny and narrow internal policies are installed before that calculation. An
+existing sandbox retains its last successfully discovered public rule and returns an error for
+retry, so a transient API read cannot remove a required route or replace it with a guessed
+exclusion list.
 
 ## Datastore operator flows (operator#268)
 

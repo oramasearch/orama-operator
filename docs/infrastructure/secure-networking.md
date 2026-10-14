@@ -4,9 +4,9 @@ The design for [#437](https://github.com/oramasearch/orama-operator/issues/437) 
 half) and [lake#724](https://github.com/oramasearch/lake/issues/724) (Lake's half). It follows the
 research in [`docs/research/secure-networking/`](../research/secure-networking/README.md).
 
-**Status: decided, 2026-10-14.** Steve took the proposals for D1–D6 (*"yes do all d1-6"*) and
-decided D7 and D8; the table at the end records each. Work is tracked in the issues listed in
-section 10.
+**Status: stage 1 namespace sandboxes implemented, 2026-10-14.** `NetworkSandbox` now protects
+Lake instances, Lake workspaces and Orama Cloud v1 stacks (#465). Engine destination narrowing
+(#466) and tenant policy RBAC (#467) remain open. The design decisions are recorded in section 9.
 
 ---
 
@@ -42,18 +42,16 @@ Added since:
 - **ACNS is off.** Azure's Advanced Container Networking Services (`advancedNetworking.enabled:
   false` on `orama-production-cluster-01`) is what AKS requires for **FQDN (DNS name) egress
   filtering** and for Hubble flow logs. Without it, policy is by address and port only.
-- **Lake workspace namespaces are locked down today**, by NetworkPolicies the operator writes
+- **Lake workspace namespaces are locked down today**, by NetworkPolicies generated from their
+  operator-owned `NetworkSandbox`
   (`lake_workspaces.go`, `lake_workspace_datastore_policies.go`, #268): `default-deny` (ingress and
   egress), `allow-workspace-internal`, `allow-dns-egress`, `allow-lake-ingress` and
   `allow-lake-egress`, `allow-internet-https` when the workspace's `internetEgress` is on (port 443
   to `0.0.0.0/0` except private, link-local, node and pod ranges), one ingress policy per datastore
   operator, one API-server egress policy per operand that needs it, and one access policy per app.
-- **Nothing else is locked down.** On `orama-nonprod-cluster-01`, `orama-production-cluster-02` and
-  `-03` the only NetworkPolicy is AKS's own `konnectivity-agent`. On the managing cluster, only the
-  workspace namespaces and one Lake build namespace have policies. **Every Lake instance namespace
-  (`lake`, `lake-shared`, `lake-dev`, `lake-staging`), every Orama Cloud v1 namespace (`v1-eu`,
-  `v1-dev`, `v1-us`), `orama-system` and the platform namespaces have no NetworkPolicy at all**:
-  every pod in them can reach every pod on its cluster and the internet.
+- **Before #465, nothing else was locked down.** The operator now creates a `NetworkSandbox` for
+  every Lake instance and Orama Cloud v1 namespace. This implementation has native test coverage
+  but has not yet been rolled out and connectivity-probed on the named production clusters.
 - **Inside a workspace, everything reaches everything** (`allow-workspace-internal`): an app reaches
   every service in its workspace with that service's one credential.
 - **Ingress** is ingress-nginx (retired upstream), with no TLS to the origin (#457).
@@ -210,9 +208,8 @@ Each stage ends with its tests passing on `orama-nonprod-cluster-01`, then the p
 through the operator, with nothing by hand.
 
 1. **Sandbox everything the operator creates.** `NetworkSandbox` for every Lake instance, workspace
-   and Orama Cloud v1 namespace; the Cloud v1 engine's outbound lockdown; tenants unable to write
-   policy. Tests: from each workload, allowed and forbidden paths, across workspaces and namespaces,
-   the metadata address, DNS over UDP and TCP, and after restarts.
+   and Orama Cloud v1 namespace is implemented in #465. Cloud v1 engine destination narrowing is
+   #466; tenant policy RBAC is #467. Live allowed/forbidden path probes remain before rollout.
 2. **Declared connections inside workspaces**, replacing `allow-workspace-internal`, with Lake's
    capabilities and pages. Credentials on connections, Postgres first.
 3. **Egress by DNS name** (after D3).

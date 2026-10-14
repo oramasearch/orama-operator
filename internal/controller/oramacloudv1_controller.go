@@ -27,7 +27,9 @@ import (
 // OramaCloudV1Reconciler reconciles an OramaCloudV1 object into the full v1 stack.
 type OramaCloudV1Reconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme            *runtime.Scheme
+	APIReader         client.Reader
+	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s,verbs=get;list;watch;create;update;patch;delete
@@ -53,6 +55,9 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	l.Info("reconciling OramaCloudV1", "region", oc.Spec.Region.Name, "role", oc.Spec.Region.Role, "profile", oc.Spec.Profile)
+	if err := r.reconcileNetworkSandbox(ctx, &oc); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile network sandbox: %w", err)
+	}
 
 	// Reconcile each component in order. Add new component reconcilers to this list.
 	steps := []struct {
@@ -117,6 +122,7 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Owns(&oramav1alpha1.CloudflareKVNamespace{}).
 		Owns(&oramav1alpha1.CloudflareR2Bucket{}).
+		Owns(&oramav1alpha1.NetworkSandbox{}).
 		Owns(&oramav1alpha1.RabbitMQTopology{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
 		Complete(r)

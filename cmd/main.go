@@ -80,8 +80,10 @@ func main() {
 	}
 
 	if err = (&controller.OramaCloudV1Reconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		APIReader:         mgr.GetAPIReader(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1")
 		os.Exit(1)
@@ -158,14 +160,15 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.LakeReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		SQLiteImage:   lakeSQLiteImage,
-		DuckDBImage:   lakeDuckDBImage,
-		PolarsImage:   lakePolarsImage,
-		ServiceEvents: servicesListener.Events,
-		APIReader:     mgr.GetAPIReader(),
-		Clientset:     clientset,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		SQLiteImage:       lakeSQLiteImage,
+		DuckDBImage:       lakeDuckDBImage,
+		PolarsImage:       lakePolarsImage,
+		ServiceEvents:     servicesListener.Events,
+		APIReader:         mgr.GetAPIReader(),
+		Clientset:         clientset,
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lake")
 		os.Exit(1)
