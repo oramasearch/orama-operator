@@ -433,6 +433,12 @@ type LakeWorkspaceOverrideSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	InternetEgress bool `json:"internetEgress,omitempty"`
+
+	// Mesh enrols the workspace's pods in zetta-tunnel's mesh through its NetworkSandbox
+	// (docs/infrastructure/mesh.md). Every path between them must then be a declared Connection.
+	// +kubebuilder:default=false
+	// +optional
+	Mesh bool `json:"mesh,omitempty"`
 }
 
 // LakeTLSSpec configures HTTPS termination for a Lake Ingress.

@@ -1151,6 +1151,12 @@ spec:
                             InternetEgress permits outbound TCP 443 to public addresses. Private, link-local, metadata,
                             node and cluster ranges remain denied.
                           type: boolean
+                        mesh:
+                          default: false
+                          description: |-
+                            Mesh enrols the workspace's pods in zetta-tunnel's mesh through its NetworkSandbox
+                            (docs/infrastructure/mesh.md). Every path between them must then be a declared Connection.
+                          type: boolean
                         plan:
                           description: Plan selects one entry in spec.workspaces.plans,
                             or the built-in "default" plan.

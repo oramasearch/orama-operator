@@ -142,6 +142,21 @@ func reconcileOwnedNetworkSandbox(
 	podSelector metav1.LabelSelector,
 	policies []oramav1alpha1.NetworkSandboxPolicy,
 ) (*oramav1alpha1.NetworkSandbox, error) {
+	return reconcileOwnedMeshNetworkSandbox(ctx, kube, scheme, owner, namespace, labels, podSelector, policies, nil)
+}
+
+// reconcileOwnedMeshNetworkSandbox is reconcileOwnedNetworkSandbox with the sandbox's mesh enrolment.
+func reconcileOwnedMeshNetworkSandbox(
+	ctx context.Context,
+	kube client.Client,
+	scheme *runtime.Scheme,
+	owner client.Object,
+	namespace string,
+	labels map[string]string,
+	podSelector metav1.LabelSelector,
+	policies []oramav1alpha1.NetworkSandboxPolicy,
+	mesh *oramav1alpha1.NetworkSandboxMesh,
+) (*oramav1alpha1.NetworkSandbox, error) {
 	sandbox := &oramav1alpha1.NetworkSandbox{
 		ObjectMeta: metav1.ObjectMeta{Name: networkSandboxName, Namespace: namespace},
 	}
@@ -159,6 +174,7 @@ func reconcileOwnedNetworkSandbox(
 			PodSelector:  *podSelector.DeepCopy(),
 			PolicyLabels: copyStringMap(labels),
 			Policies:     append([]oramav1alpha1.NetworkSandboxPolicy(nil), policies...),
+			Mesh:         mesh.DeepCopy(),
 		}
 		return controllerutil.SetControllerReference(owner, sandbox, scheme)
 	})

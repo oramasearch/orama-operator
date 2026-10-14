@@ -33,6 +33,9 @@ cluster. See [Peer connections](peer-connections.md).
 The ingress half of stage 6 is implemented and native-tested (#473): the operator runs zetta-tunnel's
 ingress gateway on every cluster, and a host moves to it by its Ingress class, per cluster. See
 [Ingress](ingress.md).
+The mesh half of stage 6 is implemented and native-tested (#474): the operator runs zetta-tunnel's node
+agent on every node, and a namespace is enrolled through its `NetworkSandbox`; enrolling real
+workspaces waits on zetta-tunnel. See [Mesh](mesh.md).
 
 ---
 
@@ -224,15 +227,22 @@ to what, into the workspace Zetta.
   desired state the operator enforces in the control plane (decision D1).
 - Lake names a tunnel, never a vendor.
 
-## 7. Zetta's part (to be filed when the design is agreed)
+## 7. Zetta's part
+
+Filed 2026-10-14; each is in an open pull request in `oramasearch/zetta`.
 
 - **Scoped access for apps** to a workspace Zetta, so a `Connection` to Zetta carries a credential
-  limited to what the app needs.
-- **The store** for connections, grants, tunnel sessions and network activity in each workspace.
-- **Zetta-to-Zetta links between clusters**, if peering covers Zetta clusters ("peer connections
-  between k8s clusters or zetta clusters").
-- **Reuse:** Zetta's transport (Corosio, mTLS 1.3, join tokens) as a building block for the peer
-  gateway and possibly zetta-tunnel.
+  limited to what the app needs: [zetta#1280](https://github.com/oramasearch/zetta/issues/1280).
+- **The store** for connections, grants, tunnel sessions and network activity in each workspace:
+  [zetta#1281](https://github.com/oramasearch/zetta/issues/1281).
+- **Zetta-to-Zetta links between clusters** through peer connections:
+  [zetta#1282](https://github.com/oramasearch/zetta/issues/1282).
+- **Reuse:** Zetta's transport (Corosio, mTLS 1.3) shared with zetta-tunnel:
+  [zetta#1283](https://github.com/oramasearch/zetta/issues/1283).
+
+The architecture across all four repositories is in Lake's
+[`docs/architecture/secure-networking.md`](https://github.com/oramasearch/lake/blob/dev/docs/architecture/secure-networking.md)
+and zetta-tunnel's [`docs/architecture.md`](https://github.com/oramasearch/zetta-tunnel/blob/dev/docs/architecture.md).
 
 ## 8. Order of work
 
@@ -281,7 +291,7 @@ Filed 2026-10-14; the list is kept on the epics: #437 (operator, zetta-tunnel, Z
 - https://github.com/oramasearch/orama-operator/issues/471: Tunnel: the kind, with ZettaTunnel and a customer's own CloudflareTunnel as providers (stage 4, implemented and native-tested; nonprod acceptance pending)
 - https://github.com/oramasearch/orama-operator/issues/472: PeerConnection: named services between clusters through zetta-tunnel gateways (stage 5, implemented and native-tested; two-cluster rehearsal pending)
 - https://github.com/oramasearch/orama-operator/issues/473: Ingress through zetta-tunnel, replacing ingress-nginx (stage 6, implemented and native-tested; per-cluster cutover pending #457)
-- https://github.com/oramasearch/orama-operator/issues/474: Mesh: zetta-tunnel's node agent on every cluster (stage 6)
+- https://github.com/oramasearch/orama-operator/issues/474: Mesh: zetta-tunnel's node agent on every cluster (stage 6, implemented and native-tested; live fail-closed proof pending)
 
 **zetta-tunnel**
 
