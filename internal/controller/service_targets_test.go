@@ -41,6 +41,10 @@ func serviceTargetFixture(t *testing.T) client.Client {
 		}
 		return s
 	}
+	headless := func(s *corev1.Service) *corev1.Service {
+		s.Spec.ClusterIP = corev1.ClusterIPNone
+		return s
+	}
 	zetta := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: ns,
 		Labels: map[string]string{serviceIDLabel: "zetta-id"}}}
 	tidbSelector := func(component string) map[string]string {
@@ -59,6 +63,7 @@ func serviceTargetFixture(t *testing.T) client.Client {
 		service("prod-svc-4f18cc589625-tidb", tidbSelector("tidb"), 4000, 10080),
 		service("prod-svc-4f18cc589625-pd", tidbSelector("pd"), 2379),
 		service(ns+"-zetta", zettaSelector, 4800),
+		headless(service(ns+"-zetta-headless", zettaSelector, 7777, 4800)),
 		service("app-4578260eadb0", map[string]string{"orama.cloud/app": "other"}, 80),
 	).Build()
 }

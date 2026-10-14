@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -121,11 +122,8 @@ func (w *lakeHTTPSecretWriter) credentialMount(
 			Name string `json:"name"`
 		} `json:"items"`
 	}
-	if err := w.call(ctx, lake, token, "list_secret_mounts", map[string]any{
-		"customer_id":  customerID,
-		"workspace_id": workspaceID,
-		"limit":        500,
-	}, &listed); err != nil {
+	query := url.Values{"customer_id": {customerID}, "workspace_id": {workspaceID}, "limit": {"500"}}
+	if err := w.read(ctx, lake, token, "list_secret_mounts", query, &listed); err != nil {
 		return "", err
 	}
 	for _, mount := range listed.Items {
@@ -150,6 +148,23 @@ func (w *lakeHTTPSecretWriter) credentialMount(
 	return created.ID, nil
 }
 
+// read calls a Lake read capability. Lake answers a read only to GET with a query string; a POST
+// gets method_not_allowed.
+func (w *lakeHTTPSecretWriter) read(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	token, capability string,
+	query url.Values,
+	output any,
+) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, w.baseURL(lake)+"/v1/"+capability+"?"+query.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	return w.do(request, token, capability, output)
+}
+
+// call calls a Lake action capability: POST with a JSON body.
 func (w *lakeHTTPSecretWriter) call(
 	ctx context.Context,
 	lake *oramav1alpha1.Lake,
@@ -166,6 +181,10 @@ func (w *lakeHTTPSecretWriter) call(
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	return w.do(request, token, capability, output)
+}
+
+func (w *lakeHTTPSecretWriter) do(request *http.Request, token, capability string, output any) error {
 	request.Header.Set("Authorization", "Bearer "+token)
 	httpClient := w.HTTPClient
 	if httpClient == nil {

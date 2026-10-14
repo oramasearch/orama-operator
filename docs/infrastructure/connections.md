@@ -60,7 +60,8 @@ kind's StatefulSet. So `resolveServiceTarget` (`internal/controller/service_targ
    for Postgres, `app.kubernetes.io/component=zetta-node` with the cluster's instance for Zetta. TiDB
    selects the TiDB servers only, never PD or TiKV;
 3. takes ports from the Services whose `spec.selector` holds every label of that selector, plus any
-   Service labelled with it.
+   Service labelled with it. Headless Services are skipped: they carry a datastore's own node-to-node
+   traffic (Zetta's 7777), which no client connection needs.
 
 If no primary resource carries the id, pods labelled `orama.cloud/service-id=<id>` are the target.
 Tunnels (`resolveTunnelTarget`), egress rules with a service source, and the credential's kind lookup

@@ -39,8 +39,20 @@ func (f *fakeLakeSecretsAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var input map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&input)
 	answer := func(value any) { _ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "value": value}) }
+	// Like Lake: a read answers only GET with a query string, an action only POST.
+	reads := map[string]bool{"list_secret_mounts": true}
+	if reads[capability] != (r.Method == http.MethodGet) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": map[string]string{"code": "method_not_allowed", "message": capability + " called with " + r.Method}})
+		return
+	}
 	switch capability {
 	case "list_secret_mounts":
+		if r.URL.Query().Get("customer_id") == "" || r.URL.Query().Get("workspace_id") == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": map[string]string{"code": "invalid_input", "message": "customer_id and workspace_id are required"}})
+			return
+		}
 		answer(map[string]any{"items": f.mounts})
 	case "create_secret_mount":
 		mount := map[string]string{"id": testCredentialMountID, "name": input["name"].(string)}
