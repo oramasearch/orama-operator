@@ -1,7 +1,8 @@
 # Network sandboxes
 
 `NetworkSandbox` is the namespace network boundary implemented for
-[#465](https://github.com/oramasearch/orama-operator/issues/465). The operator creates one named
+[#465](https://github.com/oramasearch/orama-operator/issues/465) and narrowed for Cloud v1 engine
+egress in [#466](https://github.com/oramasearch/orama-operator/issues/466). The operator creates one named
 `network-sandbox` in every Lake instance namespace, every Lake workspace namespace and every
 `OramaCloudV1` stack namespace. Its controller always renders `NetworkPolicy/default-deny` for
 both ingress and egress, then renders only the named allowances in the resource.
@@ -54,6 +55,10 @@ Kubernetes API rules include both the `default/kubernetes` Service addresses and
 not-ready endpoint addresses. Public rules start with IPv4 and IPv6 internet CIDRs, then exclude
 private, loopback, link-local, metadata, multicast and reserved ranges plus the API Service,
 API endpoints, every node address and every node pod CIDR.
+
+The exclusions are applied to the resolved destination address by the cluster dataplane. A public
+name that resolves to a private, metadata, node or pod address is therefore refused even though
+OramaCore's JavaScript runtime accepted the original host name.
 
 Those values come from live cluster discovery. On a transient discovery failure an existing
 sandbox retains its last successfully discovered API and public policies and the reconcile returns
@@ -158,7 +163,7 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | Policy | Allowed path and reason |
 |---|---|
 | `allow-dns-egress` | Stack workloads reach CoreDNS over UDP/TCP 53. |
-| `allow-engine-egress`, `allow-broker-ingress`, `allow-embeddings-ingress` | Writer/readers reach RabbitMQ stream 5552 and embeddings gRPC 50051; broker also accepts workers/HARVEST AMQP 5672; embeddings also accepts DISCO. |
+| `allow-engine-egress`, `allow-broker-ingress`, `allow-embeddings-ingress` | Writer/readers reach their RabbitMQ replication stream on 5552 and the engine-owned embeddings gRPC service on 50051, which preserves writes, replication and vector searches; broker also accepts workers/HARVEST AMQP 5672; embeddings also accepts DISCO. |
 | `allow-dashboard-egress` | Dashboard reaches control DB 5432, cache 6379, ClickHouse 8123, Typesense 8108, writer 8080, readers 80/8080, Keycloak 8080 and Airbyte 8001. |
 | `allow-workers-egress` | Bundled workers reach broker 5672, cache 6379 and OramaCore writer/readers. |
 | `allow-analytics-processor-egress` | Analytics processor reaches ClickHouse 8123, writer 8080 and control DB 5432. |
@@ -173,7 +178,7 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-cnpg-operator-ingress`, `allow-cnpg-apiserver-egress` | CloudNativePG manages control DB through 8000/5432 and its selected pods/jobs reach the API. |
 | `allow-operator-to-broker-management` | The Orama operator's `RabbitMQTopology` reconciler reaches management port 15672. |
 | `allow-dashboard-ingress-nginx`, `allow-docs-ingress-nginx` | ingress-nginx reaches only dashboard/docs port 3000. |
-| `allow-engine-public-internet` | Writer/readers retain public TCP 80/443. This is intentionally broad until #466 audits and narrows engine destinations. |
+| `allow-engine-public-internet` | Writer/readers reach public IPv4 and IPv6 addresses on any TCP port for customer JavaScript hook URLs. Private, link-local, metadata, carrier-grade NAT, API-server, node-address and pod-CIDR destinations are excluded after DNS resolution. |
 | `allow-dashboard-public-https`, `allow-workers-public-https`, `allow-index-builder-public-https`, `allow-harvest-public-https`, `allow-embeddings-public-https`, `allow-search-workers-public-https` | Selected application components reach public HTTPS for their configured providers and downloads. |
 | `allow-selenium-public-internet` | Selenium reaches public TCP 80/443 for customer-requested crawls. |
 | `allow-controldb-primary-replication` | A read-region CNPG cluster reaches its configured primary on public TCP 5432. |
@@ -185,9 +190,13 @@ are **inferred** from component contracts, configuration fields and the Secret-h
 They are documented as such because the reconciled workload code does not contain a complete stable
 destination list. Every inferred public rule still excludes private and cluster ranges.
 
+Native tests enumerate every writer egress policy, prove that unrelated stack services such as
+control Postgres are not selected, retain RabbitMQ and the engine-owned embeddings path, check
+TCP and UDP DNS, and assert the static and discovered IPv4/IPv6 exclusions. The existing functional
+suite remains the write, replication, full-text, vector and hybrid-search proof.
+
 ## Deferred work
 
-- [#466](https://github.com/oramasearch/orama-operator/issues/466) narrows engine public egress.
 - [#467](https://github.com/oramasearch/orama-operator/issues/467) prevents tenants from writing
   policy resources.
 - [#468](https://github.com/oramasearch/orama-operator/issues/468) replaces workspace-wide internal

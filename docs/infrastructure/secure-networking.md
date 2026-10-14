@@ -4,10 +4,12 @@ The design for [#437](https://github.com/oramasearch/orama-operator/issues/437) 
 half) and [lake#724](https://github.com/oramasearch/lake/issues/724) (Lake's half). It follows the
 research in [`docs/research/secure-networking/`](../research/secure-networking/README.md).
 
-**Status: stage 1 owner-scoped sandboxes implemented, 2026-10-14.** `NetworkSandbox` now protects
-Lake instances, Lake workspaces and Orama Cloud v1 stacks (#465), selecting only owner pods in
-shared namespaces such as `orama-system`. Workspaces retain namespace-wide scope. Engine destination narrowing
-(#466) and tenant policy RBAC (#467) remain open. The design decisions are recorded in section 9.
+**Status: stage 1 owner-scoped sandboxes and Cloud v1 engine egress lockdown implemented,
+2026-10-14.** `NetworkSandbox` now protects Lake instances, Lake workspaces and Orama Cloud v1
+stacks (#465), selecting only owner pods in shared namespaces such as `orama-system`. Workspaces
+retain namespace-wide scope. Cloud v1 writer and reader public egress excludes private and cluster
+destinations after resolution (#466). Tenant policy RBAC (#467) remains open. The design decisions
+are recorded in section 9.
 
 ---
 
@@ -210,7 +212,7 @@ through the operator, with nothing by hand.
 
 1. **Sandbox everything the operator creates.** `NetworkSandbox` for every Lake instance, workspace
    and Orama Cloud v1 namespace is implemented in #465. Cloud v1 engine destination narrowing is
-   #466; tenant policy RBAC is #467. Live allowed/forbidden path probes remain before rollout.
+   implemented in #466; tenant policy RBAC is #467. Live allowed/forbidden path probes remain before rollout.
 2. **Declared connections inside workspaces**, replacing `allow-workspace-internal`, with Lake's
    capabilities and pages. Credentials on connections, Postgres first.
 3. **Egress by DNS name** (after D3).
@@ -242,7 +244,7 @@ Filed 2026-10-14; the list is kept on the epics: #437 (operator, zetta-tunnel, Z
 **Operator (stage)**
 
 - https://github.com/oramasearch/orama-operator/issues/465: NetworkSandbox: default-deny for every namespace the operator creates (stage 1)
-- https://github.com/oramasearch/orama-operator/issues/466: Orama Cloud v1 engine: outbound only to its broker, DNS and the public internet (stage 1)
+- https://github.com/oramasearch/orama-operator/issues/466: Orama Cloud v1 engine: outbound only to its broker, DNS and the public internet (stage 1, implemented)
 - https://github.com/oramasearch/orama-operator/issues/467: Tenants cannot write network policy (stage 1)
 - https://github.com/oramasearch/orama-operator/issues/468: Connection: declared connections between workloads, replacing allow-workspace-internal (stage 2)
 - https://github.com/oramasearch/orama-operator/issues/469: Credentials on connections: native datastore roles, Postgres first (stage 2)

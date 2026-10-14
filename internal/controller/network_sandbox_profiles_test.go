@@ -44,24 +44,28 @@ func sandboxDiscoveryObjects() []client.Object {
 			ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
 			Spec: corev1.ServiceSpec{
 				ClusterIP:  "10.96.0.1",
-				ClusterIPs: []string{"10.96.0.1"},
+				ClusterIPs: []string{"10.96.0.1", "fd00:96::1"},
 				Ports:      []corev1.ServicePort{{Port: 443}},
 			},
 		},
 		&corev1.Endpoints{
 			ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
 			Subsets: []corev1.EndpointSubset{{
-				Addresses: []corev1.EndpointAddress{{IP: "192.0.2.10"}},
-				Ports:     []corev1.EndpointPort{{Port: 6443}},
+				Addresses:         []corev1.EndpointAddress{{IP: "20.237.72.161"}, {IP: "2603:1030:20e:3::10"}},
+				NotReadyAddresses: []corev1.EndpointAddress{{IP: "20.237.72.162"}, {IP: "2603:1030:20e:3::11"}},
+				Ports:             []corev1.EndpointPort{{Port: 6443}},
 			}},
 		},
 		&corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{Name: "worker-1"},
-			Spec:       corev1.NodeSpec{PodCIDR: "10.244.0.0/24", PodCIDRs: []string{"10.244.0.0/24"}},
-			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{
-				Type:    corev1.NodeInternalIP,
-				Address: "192.0.2.20",
-			}}},
+			Spec: corev1.NodeSpec{
+				PodCIDR:  "11.244.0.0/24",
+				PodCIDRs: []string{"11.244.0.0/24", "2603:1030:20e:42::/64"},
+			},
+			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: "20.51.1.20"},
+				{Type: corev1.NodeInternalIP, Address: "2603:1030:20e:3::20"},
+			}},
 		},
 	}
 }
@@ -146,7 +150,7 @@ func TestLakeNetworkSandboxListsOnlyJustifiedNarrowPaths(t *testing.T) {
 	}
 }
 
-func TestOramaCloudNetworkSandboxKeepsEngineHTTPForIssue466(t *testing.T) {
+func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) {
 	ctx := context.Background()
 	scheme := ocv1TestScheme(t)
 	stack := newOCV1(nil)
@@ -167,15 +171,96 @@ func TestOramaCloudNetworkSandboxKeepsEngineHTTPForIssue466(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertJustifiedNarrowAllowances(t, &sandbox)
-	engine := allowanceByName(t, &sandbox, "allow-engine-public-internet")
-	if len(engine.Spec.Egress) != 1 || !reflect.DeepEqual(policyPorts(t, engine.Spec.Egress[0].Ports), []int32{80, 443}) {
-		t.Fatalf("engine public ports = %+v, want [80 443] until issue #466", engine.Spec.Egress)
+	for _, component := range []string{"writer", "reader"} {
+		engineLabels := labelsFor(stack, component)
+		var enginePolicyNames []string
+		for _, allowance := range sandbox.Spec.Policies {
+			if len(allowance.Spec.Egress) > 0 && selects(t, allowance.Spec.PodSelector, engineLabels) {
+				enginePolicyNames = append(enginePolicyNames, allowance.Name)
+			}
+		}
+		if !reflect.DeepEqual(enginePolicyNames, []string{
+			"allow-dns-egress",
+			"allow-engine-egress",
+			"allow-engine-public-internet",
+		}) {
+			t.Fatalf("%s egress policies = %v", component, enginePolicyNames)
+		}
 	}
-	if len(engine.Spec.Egress[0].To) != 2 || engine.Spec.Egress[0].To[0].IPBlock == nil || len(engine.Spec.Egress[0].To[0].IPBlock.Except) == 0 {
-		t.Fatalf("engine public rule does not exclude private and cluster ranges: %+v", engine.Spec.Egress[0].To)
+
+	internal := allowanceByName(t, &sandbox, "allow-engine-egress")
+	if len(internal.Spec.Egress) != 2 {
+		t.Fatalf("engine internal egress = %+v", internal.Spec.Egress)
+	}
+	if !selects(t, *internal.Spec.Egress[0].To[0].PodSelector, labelsFor(stack, "broker")) ||
+		!reflect.DeepEqual(policyPorts(t, internal.Spec.Egress[0].Ports), []int32{5552}) {
+		t.Fatalf("engine broker rule = %+v", internal.Spec.Egress[0])
+	}
+	if !selects(t, *internal.Spec.Egress[1].To[0].PodSelector, labelsFor(stack, "embeddings")) ||
+		!reflect.DeepEqual(policyPorts(t, internal.Spec.Egress[1].Ports), []int32{50051}) {
+		t.Fatalf("engine embeddings rule = %+v", internal.Spec.Egress[1])
+	}
+
+	dns := allowanceByName(t, &sandbox, "allow-dns-egress")
+	if len(dns.Spec.Egress) != 1 || len(dns.Spec.Egress[0].Ports) != 2 {
+		t.Fatalf("engine DNS rule = %+v", dns.Spec.Egress)
+	}
+	protocols := map[corev1.Protocol]bool{}
+	for _, port := range dns.Spec.Egress[0].Ports {
+		if port.Protocol == nil || port.Port == nil || port.Port.IntVal != 53 {
+			t.Fatalf("engine DNS port = %+v", port)
+		}
+		protocols[*port.Protocol] = true
+	}
+	if !protocols[corev1.ProtocolTCP] || !protocols[corev1.ProtocolUDP] {
+		t.Fatalf("engine DNS protocols = %v", protocols)
+	}
+
+	engine := allowanceByName(t, &sandbox, "allow-engine-public-internet")
+	if len(engine.Spec.Egress) != 1 || len(engine.Spec.Egress[0].Ports) != 1 {
+		t.Fatalf("engine public rule must allow every public URL TCP port: %+v", engine.Spec.Egress)
+	}
+	publicPort := engine.Spec.Egress[0].Ports[0]
+	if publicPort.Protocol == nil || *publicPort.Protocol != corev1.ProtocolTCP || publicPort.Port != nil || publicPort.EndPort != nil {
+		t.Fatalf("engine public port restriction = %+v", publicPort)
+	}
+	excluded := map[string]bool{}
+	cidrs := map[string]bool{}
+	for _, peer := range engine.Spec.Egress[0].To {
+		if peer.IPBlock == nil {
+			t.Fatalf("engine public peer is not an IP block: %+v", peer)
+		}
+		cidrs[peer.IPBlock.CIDR] = true
+		for _, value := range peer.IPBlock.Except {
+			excluded[value] = true
+		}
+	}
+	if !cidrs["0.0.0.0/0"] || !cidrs["::/0"] || len(cidrs) != 2 {
+		t.Fatalf("engine public CIDRs = %v", cidrs)
+	}
+	for _, value := range []string{
+		"10.0.0.0/8",
+		"100.64.0.0/10",
+		"169.254.0.0/16",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"::1/128",
+		"fc00::/7",
+		"fe80::/10",
+		"11.244.0.0/24",
+		"2603:1030:20e:42::/64",
+		"20.51.1.20/32",
+		"2603:1030:20e:3::20/128",
+		"20.237.72.161/32",
+		"20.237.72.162/32",
+		"2603:1030:20e:3::10/128",
+		"2603:1030:20e:3::11/128",
+	} {
+		if !excluded[value] {
+			t.Errorf("engine public rule does not exclude %s", value)
+		}
 	}
 	for _, name := range []string{
-		"allow-engine-egress",
 		"allow-dashboard-egress",
 		"allow-cnpg-apiserver-egress",
 		"allow-dashboard-ingress-nginx",
