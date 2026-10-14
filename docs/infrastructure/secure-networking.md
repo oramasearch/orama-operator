@@ -30,6 +30,7 @@ Added since:
 | 2026-10-14 | Everything runs self-contained, on-prem and air-gapped; the only outside services are Clerk, Cloudflare and, later, Resend. |
 | 2026-10-14 | Orama's own tunnel is a new private C++26 project, [`oramasearch/zetta-tunnel`](https://github.com/oramasearch/zetta-tunnel). |
 | 2026-10-14 | It needs Lake UI changes and probably Zetta changes too. |
+| 2026-10-14 | **The mesh (D7) and the ingress (D8) are zetta-tunnel too**: *"d7 and d8 are zetta-tunnel too"*. |
 
 ## 2. Where things stand (checked 2026-10-14)
 
@@ -88,6 +89,8 @@ operator (or by the operator itself for Orama's own stacks), and reconciled by t
 | `Connection` | **One** source workload may reach **one** destination (a service, an app, a stack component) on named ports. Optionally carries a credential scope (decision D4). | Generated policy on both sides; a credential through the broker |
 | `EgressRule` | A workload may reach an outside destination: CIDR and port, or a DNS name and port. | CIDR: generated policy. DNS name: decision D3 |
 | `Tunnel` | A person may reach one target from outside the cluster, for a time. | **zetta-tunnel** (`ZettaTunnel`); optionally a customer's own Cloudflare account (`CloudflareTunnel`) |
+
+zetta-tunnel is also the mesh and the ingress (D7, D8); their kinds are designed with them.
 | `PeerConnection` | Another cluster or network may reach named services here, and the reverse, through gateways, never by routing addresses. | Gateways built in C++ (decision D6) |
 
 What the existing objects become: the workspace's NetworkPolicies are generated from its
@@ -152,17 +155,24 @@ needs (for example read-only, one schema), and revocable:
 - Built in C++ (decision D6): on Corosio and OpenSSL, as Zetta's node-to-node links are, or on
   zetta-tunnel's transport.
 
-### A mesh (decision D7)
+### A mesh (D7, decided: zetta-tunnel)
 
-Transparent workload-to-workload mTLS (Istio ambient's ztunnel, or our own per-node proxy) is not
-needed for any of the above: sandboxes and connections are enforced by Cilium, and every component
-of ours speaks TLS itself. The research advises against leading with our own per-node proxy (it is
-a security boundary that must not fail open). Proposed: no mesh in the first stages; decide after.
+Transparent mTLS between workloads, and the identity each connection carries, is zetta-tunnel's
+(Steve, 2026-10-14). It is not needed for stage 1 (sandboxes and connections are enforced by Cilium)
+and comes after the tunnel itself. What it must get right, from the research:
+- **It is a security boundary that must not fail open**: traffic that escapes capture escapes the
+  policy. Capture, enrolment races, restarts and the proxy's own traffic need tests that prove it
+  fails closed. Istio ambient's CNI plugin and ztunnel are the benchmark to meet.
+- **It sits beside AKS-managed Cilium**, which stays the enforcer and cannot be reconfigured freely.
+  Redirection happens inside each pod's network namespace through a platform-owned node agent; the
+  workloads stay under restricted Pod Security with no `NET_ADMIN`.
+- **Cilium policy stays** as defence in depth behind it.
 
-### Ingress (decision D8)
+### Ingress (D8, decided: zetta-tunnel)
 
-ingress-nginx is retired upstream. Its replacement is a Gateway API implementation (Envoy Gateway,
-Apache-2.0, or Istio's gateway if D7 brings Istio). Origin TLS is #457 either way.
+zetta-tunnel replaces ingress-nginx (retired upstream) as the way traffic enters a cluster (Steve,
+2026-10-14). It terminates TLS with the certificates cert-manager issues (#457) and routes each host
+to its Service. Until it does, ingress-nginx stays, and #457 puts TLS on it first.
 
 ### Observability
 
@@ -206,7 +216,7 @@ through the operator, with nothing by hand.
 3. **Egress by DNS name** (after D3).
 4. **zetta-tunnel**: developer tunnels, with Lake's grants and audit.
 5. **Peer connections**: service-addressed gateways; Cloud v1's US readers once #458 is done.
-6. **Ingress** replaced (after D8); a mesh only if D7 says so.
+6. **zetta-tunnel as the ingress** (D8), replacing ingress-nginx, and **as the mesh** (D7).
 
 ## 9. Decisions for Steve
 
@@ -218,5 +228,5 @@ through the operator, with nothing by hand.
 | D4 | Credentials on connections | Native datastore roles first, protocol-aware endpoints only where needed; which kinds in the first scope |
 | D5 | zetta-tunnel's transport | WireGuard through the OS kernel (kernel WireGuard is GPL-2.0, used, not shipped), QUIC (MsQuic, MIT), or TLS over Corosio like Zetta's links |
 | D6 | Peer gateways | Built on Corosio and OpenSSL as Zetta is, on zetta-tunnel's transport, or a third party |
-| D7 | A mesh | None in the first stages (proposed), Istio ambient, or our own per-node proxy later |
-| D8 | Ingress after ingress-nginx | Envoy Gateway, Istio's gateway, or our own |
+| D7 | A mesh | **Decided 2026-10-14: zetta-tunnel** |
+| D8 | Ingress after ingress-nginx | **Decided 2026-10-14: zetta-tunnel** |
