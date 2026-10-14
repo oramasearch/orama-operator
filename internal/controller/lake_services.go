@@ -146,6 +146,8 @@ type LakeServiceStore interface {
 	// network_guard before reading either desired or status rows.
 	ListNetworkConnections(ctx context.Context) (LakeNetworkSnapshot, error)
 	UpsertNetworkConnectionStatus(ctx context.Context, status LakeNetworkConnectionStatus) error
+	ListNetworkEgressRules(ctx context.Context) (LakeNetworkEgressSnapshot, error)
+	UpsertNetworkEgressRuleStatus(ctx context.Context, status LakeNetworkEgressRuleStatus) error
 	ListStores(ctx context.Context) ([]LakeStore, error)
 	UpsertStoreStatus(ctx context.Context, status LakeStoreStatus) error
 	// The store mounts half (lake_store_mounts.go, lake#666). ListStoreMounts and ListStoreUsage
@@ -414,6 +416,9 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 	defer func() { _ = store.Close(context.Background()) }()
 	changing := false
 	if lakeWorkspacesEnabled(lake) && r.reconcileLakeConnections(passCtx, lake, store) {
+		changing = true
+	}
+	if lakeWorkspacesEnabled(lake) && r.reconcileLakeEgressRules(passCtx, lake, store) {
 		changing = true
 	}
 	if lakeServicesEnabled(lake) {

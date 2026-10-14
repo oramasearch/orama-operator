@@ -253,19 +253,31 @@ func (r *ConnectionReconciler) workspaceSandbox(
 	ctx context.Context,
 	connection *oramav1alpha1.Connection,
 ) (*oramav1alpha1.NetworkSandbox, error) {
+	return lakeWorkspaceSandbox(ctx, r.Client, connection.Spec.LakeRef, connection, "Connection")
+}
+
+// lakeWorkspaceSandbox returns the workspace NetworkSandbox that a Lake-controlled resource adds
+// its allowances to, after checking that the Lake controls both.
+func lakeWorkspaceSandbox(
+	ctx context.Context,
+	reader client.Reader,
+	lakeRef string,
+	owned client.Object,
+	kind string,
+) (*oramav1alpha1.NetworkSandbox, error) {
 	var lake oramav1alpha1.Lake
-	if err := r.Get(ctx, client.ObjectKey{Name: connection.Spec.LakeRef}, &lake); err != nil {
+	if err := reader.Get(ctx, client.ObjectKey{Name: lakeRef}, &lake); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("Lake %q does not exist", connection.Spec.LakeRef)
+			return nil, fmt.Errorf("Lake %q does not exist", lakeRef)
 		}
 		return nil, err
 	}
-	if !metav1.IsControlledBy(connection, &lake) {
-		return nil, fmt.Errorf("Connection is not controlled by Lake %q", lake.Name)
+	if !metav1.IsControlledBy(owned, &lake) {
+		return nil, fmt.Errorf("%s is not controlled by Lake %q", kind, lake.Name)
 	}
 	var sandbox oramav1alpha1.NetworkSandbox
-	key := client.ObjectKey{Namespace: connection.Namespace, Name: networkSandboxName}
-	if err := r.Get(ctx, key, &sandbox); err != nil {
+	key := client.ObjectKey{Namespace: owned.GetNamespace(), Name: networkSandboxName}
+	if err := reader.Get(ctx, key, &sandbox); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, connectionPendingError{message: "waiting for the workspace NetworkSandbox"}
 		}
@@ -283,6 +295,19 @@ func (r *ConnectionReconciler) workloadSelector(
 	kind string,
 	id string,
 ) (metav1.LabelSelector, error) {
+	return lakeWorkloadSelector(ctx, r.Client, connection.Spec.LakeRef, connection.Namespace, kind, id)
+}
+
+// lakeWorkloadSelector maps a Lake workload id to the operator-owned labels of its pods in one
+// workspace namespace. Connections and EgressRules share it.
+func lakeWorkloadSelector(
+	ctx context.Context,
+	reader client.Reader,
+	lakeRef string,
+	namespace string,
+	kind string,
+	id string,
+) (metav1.LabelSelector, error) {
 	switch kind {
 	case oramav1alpha1.ConnectionSourceService:
 		return metav1.LabelSelector{MatchLabels: map[string]string{serviceIDLabel: id}}, nil
@@ -292,11 +317,11 @@ func (r *ConnectionReconciler) workloadSelector(
 		return metav1.LabelSelector{MatchLabels: map[string]string{connectionTunnelIDLabel: id}}, nil
 	case oramav1alpha1.ConnectionSourceApp:
 		var lake oramav1alpha1.Lake
-		if err := r.Get(ctx, client.ObjectKey{Name: connection.Spec.LakeRef}, &lake); err != nil {
+		if err := reader.Get(ctx, client.ObjectKey{Name: lakeRef}, &lake); err != nil {
 			return metav1.LabelSelector{}, err
 		}
 		var apps oramav1alpha1.LakeAppList
-		if err := r.List(
+		if err := reader.List(
 			ctx,
 			&apps,
 			client.InNamespace(lakeNamespace(&lake)),
@@ -306,14 +331,14 @@ func (r *ConnectionReconciler) workloadSelector(
 		}
 		for i := range apps.Items {
 			app := &apps.Items[i]
-			if app.Spec.Sync == nil || app.Spec.Sync.ID != id || app.Spec.Sync.WorkspaceNamespace != connection.Namespace {
+			if app.Spec.Sync == nil || app.Spec.Sync.ID != id || app.Spec.Sync.WorkspaceNamespace != namespace {
 				continue
 			}
 			return metav1.LabelSelector{MatchLabels: map[string]string{
 				lakeAppIdentityLabel: lakeAppLabels(app)[lakeAppIdentityLabel],
 			}}, nil
 		}
-		return metav1.LabelSelector{}, connectionPendingError{message: fmt.Sprintf("waiting for app %s in workspace %s", id, connection.Namespace)}
+		return metav1.LabelSelector{}, connectionPendingError{message: fmt.Sprintf("waiting for app %s in workspace %s", id, namespace)}
 	default:
 		return metav1.LabelSelector{}, fmt.Errorf("unsupported workload kind %q", kind)
 	}

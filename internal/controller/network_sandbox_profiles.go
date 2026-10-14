@@ -34,7 +34,36 @@ func readKubernetesAPIServerTarget(ctx context.Context, reader client.Reader) (w
 }
 
 func publicInternetPeers(ctx context.Context, reader client.Reader) ([]networkingv1.NetworkPolicyPeer, error) {
-	exceptions := append([]string(nil), workspacePublicIPExceptions...)
+	cluster, err := clusterAddressExceptions(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	exceptions := append(append([]string(nil), workspacePublicIPExceptions...), cluster...)
+	sort.Strings(exceptions)
+	exceptions = sortedUnique(exceptions)
+	var ipv4, ipv6 []string
+	for _, value := range exceptions {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid public internet exclusion %q: %w", value, err)
+		}
+		if prefix.Addr().Is4() {
+			ipv4 = append(ipv4, value)
+		} else {
+			ipv6 = append(ipv6, value)
+		}
+	}
+	return []networkingv1.NetworkPolicyPeer{
+		{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0", Except: ipv4}},
+		{IPBlock: &networkingv1.IPBlock{CIDR: "::/0", Except: ipv6}},
+	}, nil
+}
+
+// clusterAddressExceptions is every address inside the cluster that an outside-destination rule
+// must never reach: the Kubernetes API Service and its endpoints, every node address and every
+// node's pod range.
+func clusterAddressExceptions(ctx context.Context, reader client.Reader) ([]string, error) {
+	var exceptions []string
 	var kubernetes corev1.Service
 	if err := reader.Get(ctx, client.ObjectKey{Namespace: "default", Name: "kubernetes"}, &kubernetes); err != nil {
 		return nil, fmt.Errorf("read the Kubernetes API Service before allowing internet egress: %w", err)
@@ -66,23 +95,7 @@ func publicInternetPeers(ctx context.Context, reader client.Reader) ([]networkin
 		}
 	}
 	sort.Strings(exceptions)
-	exceptions = sortedUnique(exceptions)
-	var ipv4, ipv6 []string
-	for _, value := range exceptions {
-		prefix, err := netip.ParsePrefix(value)
-		if err != nil {
-			return nil, fmt.Errorf("invalid public internet exclusion %q: %w", value, err)
-		}
-		if prefix.Addr().Is4() {
-			ipv4 = append(ipv4, value)
-		} else {
-			ipv6 = append(ipv6, value)
-		}
-	}
-	return []networkingv1.NetworkPolicyPeer{
-		{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0", Except: ipv4}},
-		{IPBlock: &networkingv1.IPBlock{CIDR: "::/0", Except: ipv6}},
-	}, nil
+	return sortedUnique(exceptions), nil
 }
 
 func sandboxAllowance(comment string, policy *networkingv1.NetworkPolicy) oramav1alpha1.NetworkSandboxPolicy {

@@ -189,7 +189,9 @@ audit and paired-path tests are documented in
 [`../infrastructure/network-sandbox.md`](../infrastructure/network-sandbox.md).
 
 Internet egress is denied by default. `spec.workspaces.overrides[<workspace UUID>].internetEgress`
-adds or removes the TCP 443 policy for that workspace alone. Before enabling it, the operator reads
+adds or removes the TCP 443 policy for that workspace alone. Since operator#470 the policy is
+rendered by the operator-owned `EgressRule/internet-https` (`publicInternet: true`, port 443) under
+its original name and spec; see [egress rules](../infrastructure/egress-rules.md#internetegress-is-an-egressrule). Before enabling it, the operator reads
 the `default/kubernetes` Service and Endpoints plus every Node address and pod CIDR, then adds them
 as exclusions. If those reads fail on a new namespace, it refuses to create the internet policy;
 the base default-deny and narrow internal policies are installed before that calculation. An
