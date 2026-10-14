@@ -268,20 +268,27 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 Short name: `netsandbox`. One resource describes the network boundary of its owner's pods.
 Required `spec.podSelector` identifies those pods; explicit `{}` is appropriate only in a fully
 owned workspace namespace. The controller always renders `NetworkPolicy/default-deny`, selecting
-only those pods for both ingress and egress with no rules. Each allowance selector is intersected
-with the owner selector, including Cilium endpoint selectors. `spec.policies` lists exceptions expressible as
-Kubernetes NetworkPolicy; each item has a unique `name`, a required human `comment` identifying
+only those pods for both ingress and egress with no rules. It also always renders the owner-scoped
+`CiliumNetworkPolicy/deny-cloud-metadata`, denying all egress to `169.254.169.254/32`,
+`168.63.129.16/32` and `fd00:ec2::254/128`, regardless of other allows. Cilium v2 API and dataplane
+support are required. Each allowance selector is intersected with the owner selector, including
+Cilium endpoint selectors. `spec.policies` lists exceptions expressible as Kubernetes NetworkPolicy;
+each item has a unique `name`, a required human `comment` identifying
 the component and reason, and the complete `networking.k8s.io/v1` policy `spec`. The comment is
 copied to the rendered policy as `orama.cloud/network-policy-comment`.
 
 `spec.ciliumPolicies` has the same name/comment contract and a Cilium v2 `spec`. It is only for a
 path Kubernetes NetworkPolicy cannot express and is empty for ordinary pod, namespace, CIDR and
-port rules. `spec.policyLabels` is copied to all rendered policies so a parent can preserve its
-existing ownership labels while the sandbox adopts live policies.
+port rules. The mandatory metadata deny is generated even when this field is empty, and its name
+is reserved: declarations cannot override it. `spec.policyLabels` is copied to all rendered policies
+so a parent can preserve its existing ownership labels while the sandbox adopts live policies.
 
 The controller owns the rendered policies, removes an owned policy no longer declared, and refuses
 to take over a policy controlled by another resource. It reports `status.observedGeneration`, the
-ordinary and Cilium policy counts, and `conditions[Ready]`. Stable reconciliation writes no status.
+ordinary and Cilium policy counts (including mandatory denies), and `conditions[Ready]`. Stable
+reconciliation writes no status. Owner watches repair both kinds; owner references garbage-collect
+them with the sandbox. Details and the AKS live observation are in
+[`infrastructure/network-sandbox.md`](infrastructure/network-sandbox.md#mandatory-cloud-metadata-deny).
 
 ## `ClerkApplication` (separate CRD) — Clerk auth per environment
 

@@ -5,7 +5,8 @@
 egress in [#466](https://github.com/oramasearch/orama-operator/issues/466). The operator creates one named
 `network-sandbox` in every Lake instance namespace, every Lake workspace namespace and every
 `OramaCloudV1` stack namespace. Its controller always renders `NetworkPolicy/default-deny` for
-both ingress and egress, then renders only the named allowances in the resource.
+both ingress and egress and `CiliumNetworkPolicy/deny-cloud-metadata`, then renders the named
+allowances in the resource.
 
 Every sandbox has a required `spec.podSelector`. Default-deny selects only these owner pods;
 each allowance's selector is intersected with it, never substituted for it. Conflicting label
@@ -44,10 +45,65 @@ is refused. Status changes only when the observed generation, counts or Ready co
 
 Every allowance has a required `comment`, copied to the rendered policy's
 `orama.cloud/network-policy-comment` annotation. An empty comment is rejected by the CRD. No
-allowance has an empty ingress `from` or egress `to`, which would mean every peer. Kubernetes
-NetworkPolicy expresses every path in this stage, so the generated sandboxes currently have no
-`CiliumNetworkPolicy`. `spec.ciliumPolicies` is reserved for a later path that NetworkPolicy cannot
-represent.
+allowance has an empty ingress `from` or egress `to`, which would mean every peer. Ordinary
+allowances use Kubernetes NetworkPolicy; `spec.ciliumPolicies` can declare additional paths that
+NetworkPolicy cannot represent. The mandatory metadata deny is generated independently of that
+field and cannot be removed or overridden by a declaration.
+
+## Mandatory cloud metadata deny
+
+The live #466 proof on `orama-production-cluster-01` on **2026-10-14** found that a pod carrying
+the reader's labels reached `http://169.254.169.254/` and received HTTP **400**, even though
+`allow-engine-public-internet` excluded `169.254.0.0/16` and no other policy allowed the address.
+On AKS-managed Cilium, NetworkPolicy `ipBlock` exclusions alone did not police this metadata
+traffic. An explicit CiliumNetworkPolicy `egressDeny` with `toCIDR: [169.254.169.254/32]` blocked
+the same probe, while public HTTPS still worked. This observation was supplied by the live
+operator proof; it was not a cluster mutation performed by this change.
+
+Every sandbox profile now gets one mandatory namespaced `deny-cloud-metadata` CiliumNetworkPolicy:
+
+```yaml
+spec:
+  endpointSelector: # sandbox spec.podSelector, with Kubernetes label-source prefixes
+    matchLabels:
+      k8s:app.kubernetes.io/instance: v1
+      k8s:app.kubernetes.io/managed-by: orama-cloud-v1-operator
+  egressDeny:
+    - toCIDR:
+        - 169.254.169.254/32
+        - 168.63.129.16/32
+        - fd00:ec2::254/128
+```
+
+These are the cloud metadata address, Azure's host-service address and the IPv6 metadata
+counterpart. The deny covers all ports and protocols. It takes precedence over every allow,
+including another Kubernetes or Cilium policy; see [Cilium deny policy semantics](https://docs.cilium.io/en/stable/security/policy/deny/).
+It neither grants public access nor changes the existing DNS, internal-service or public-internet
+allowances. The existing `ipBlock` exclusions remain in place for all other restricted ranges.
+
+The selector is exactly the sandbox owner's scope, including match expressions and the `k8s:`
+label source. Shared Lake and Cloud v1 namespaces exclude unrelated pods and the operator.
+A workspace uses `{}` because it owns its entire namespace; the namespaced Cilium policy cannot
+select another workspace. There are no cluster-specific flags or opt-outs. Cilium v2 policy API
+and dataplane support are required: the controller watches CiliumNetworkPolicies unconditionally,
+and a render failure reports `Ready=False` rather than skipping this protection. Parent reconcilers
+do not advance workload reconciliation when policy rendering fails.
+
+Rendering installs default-deny, then the mandatory Cilium deny, before any declared allowances.
+`deny-cloud-metadata` is a reserved Cilium policy name. The controller adopts an unowned policy of
+that name, rejects foreign ownership, repairs selector/rule/metadata drift and recreates deleted
+policies through its owner watch. Each policy has a controller owner reference to the sandbox,
+so Kubernetes garbage collection deletes it with the sandbox. Terminating sandboxes do not
+recreate policies. `status.ciliumNetworkPolicies` includes this baseline (one for each current
+profile); unchanged policy and status objects are not rewritten.
+
+Native tests cover all three profiles, exact deny CIDRs and owner selectors, reserved-name and
+foreign-owner rejection, creation, updates, deletion recovery, deletion ownership, stable status
+and failure before allowances when the Cilium API is absent. The opt-in envtest covers actual
+API persistence and owner-watch-driven drift/deletion repair. Its minimal external Cilium CRD
+fixture is also installed by the workspace envtests; it is not a dataplane test or upstream schema
+validation. Neither fake clients nor envtest run Kubernetes garbage collection, so deletion tests
+check the exact owner reference and that terminating/deleted sandboxes do not recreate policies.
 
 ## Address discovery and recovery
 
@@ -57,8 +113,9 @@ private, loopback, link-local, metadata, multicast and reserved ranges plus the 
 API endpoints, every node address and every node pod CIDR.
 
 The exclusions are applied to the resolved destination address by the cluster dataplane. A public
-name that resolves to a private, metadata, node or pod address is therefore refused even though
-OramaCore's JavaScript runtime accepted the original host name.
+name that resolves to a private, node or pod address is therefore refused even though OramaCore's
+JavaScript runtime accepted the original host name. The mandatory Cilium deny above separately
+blocks the three metadata/host-service addresses, where `ipBlock` alone is insufficient on AKS.
 
 Those values come from live cluster discovery. On a transient discovery failure an existing
 sandbox retains its last successfully discovered API and public policies and the reconcile returns
@@ -202,6 +259,8 @@ suite remains the write, replication, full-text, vector and hybrid-search proof.
 - [#468](https://github.com/oramasearch/orama-operator/issues/468) replaces workspace-wide internal
   reachability with declared `Connection` resources.
 
-No production cluster mutation or live connectivity probe is part of this change. The native
-controller and render suites prove resource creation, migration equivalence, fail-closed rules and
-recovery behavior; live rollout remains an operational follow-up.
+No production cluster mutation or new live connectivity probe is part of this change. The native
+controller and render suites cover resource creation, migration equivalence, fail-closed rules and
+recovery behavior. The live observation above validates the Azure metadata deny mechanism;
+rollout verification of the generated policy across all three profiles, including the host-service
+and IPv6 destinations, remains an operational follow-up.

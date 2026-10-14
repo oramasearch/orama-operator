@@ -102,12 +102,18 @@ not replace a current Job. `TestZettaControlPlaneReplacesStaleSchemaJob` retains
 and assertions, including replacement of an unowned stale Job.
 
 `NetworkSandboxReconciler` turns one namespaced `NetworkSandbox` into a mandatory ingress-and-egress
-`default-deny` NetworkPolicy plus every explicitly named and justified allowance in the resource.
+`default-deny` NetworkPolicy, an owner-scoped `deny-cloud-metadata` CiliumNetworkPolicy for
+`169.254.169.254/32`, `168.63.129.16/32` and `fd00:ec2::254/128`, and every explicitly named and
+justified allowance in the resource. The Cilium deny is installed before allowances and cannot
+be overridden by a declaration or another allow policy.
 It adopts existing unowned policies with the declared names, owns the rendered objects, removes
-stale owned policies, and refuses a name already controlled by another resource. Cilium v2 policy
-is available only for an allowance Kubernetes NetworkPolicy cannot represent; clusters without its
-CRD do not get a Cilium watch, so the common NetworkPolicy-only case starts everywhere. The
-controller reports stable Ready status with policy counts and does not rewrite unchanged status.
+stale owned policies, and refuses a name already controlled by another resource. Cilium v2 API and
+dataplane support are required: both policy kinds are watched unconditionally for drift/deletion
+repair. A missing Cilium API is an error, not an optional skip. Kubernetes garbage collection removes
+the policies with their sandbox; terminating sandboxes do not recreate them. The controller reports
+stable Ready status with policy counts (including the mandatory Cilium deny) and does not rewrite
+unchanged status. AKS-managed Cilium's metadata path requires explicit deny because NetworkPolicy
+`ipBlock` exclusions alone did not block it in the live 2026-10-14 proof.
 
 The Lake, Lake-workspaces and Orama Cloud v1 reconcilers each own one sandbox in every namespace
 they manage and render it before workloads. Their complete policy inventory, public-address

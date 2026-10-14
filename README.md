@@ -47,8 +47,11 @@ Every `OramaCloudV1` component reconciler is implemented and was validated on AK
 load balancer and the Karpenter capacity slices are implemented but not yet live-tested.
 The owner-scoped `NetworkSandbox` rollout for Lake, workspace and Cloud v1 workloads, including
 resolved-address public egress lockdown for Cloud v1 writer and reader pods, is implemented and
-native-tested but has not yet been connectivity-probed on AKS. Shared namespaces leave unrelated
-pods, including the operator, outside the sandbox.
+native-tested. The 2026-10-14 AKS probe found that metadata traffic bypassed NetworkPolicy `ipBlock`
+exclusions; an explicit Cilium deny blocked it while public HTTPS worked. Every sandbox now renders
+that mandatory owner-scoped deny for cloud metadata and host-service addresses; generated-policy
+rollout verification remains pending. Shared namespaces leave unrelated pods, including the
+operator, outside the sandbox. Details: [`Network sandboxes`](docs/infrastructure/network-sandbox.md).
 Per-reconciler status and the remaining hardening work are in
 [`docs/components.md`](docs/components.md).
 

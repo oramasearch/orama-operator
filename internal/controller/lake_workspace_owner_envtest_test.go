@@ -35,6 +35,7 @@ func startWorkspaceEnvtest(t *testing.T) (client.Client, *runtime.Scheme, *orama
 	environment := &envtest.Environment{
 		BinaryAssetsDirectory: assets,
 		CRDDirectoryPaths:     []string{crdPath},
+		CRDs:                  networkSandboxCiliumTestCRDs(),
 		ErrorIfCRDPathMissing: true,
 	}
 	config, err := environment.Start()

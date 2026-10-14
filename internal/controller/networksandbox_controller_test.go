@@ -51,7 +51,7 @@ func TestNetworkSandboxRendersDefaultDenyAndExplicitAllowances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 2 || ciliumCount != 0 {
+	if count != 2 || ciliumCount != 1 {
 		t.Fatalf("rendered counts = %d, %d", count, ciliumCount)
 	}
 
