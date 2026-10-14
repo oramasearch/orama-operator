@@ -560,8 +560,12 @@ func (r *ConnectionReconciler) connectionsInNamespace(
 	ctx context.Context,
 	object client.Object,
 ) []reconcile.Request {
+	return r.connectionsInNamespaceNamed(ctx, object.GetNamespace())
+}
+
+func (r *ConnectionReconciler) connectionsInNamespaceNamed(ctx context.Context, namespace string) []reconcile.Request {
 	var connections oramav1alpha1.ConnectionList
-	if err := r.List(ctx, &connections, client.InNamespace(object.GetNamespace())); err != nil {
+	if err := r.List(ctx, &connections, client.InNamespace(namespace)); err != nil {
 		return nil
 	}
 	requests := make([]reconcile.Request, 0, len(connections.Items))
@@ -579,8 +583,11 @@ func (r *ConnectionReconciler) connectionsForApp(
 	if !ok || app.Spec.Sync == nil || strings.TrimSpace(app.Spec.Sync.WorkspaceNamespace) == "" {
 		return nil
 	}
-	app.Namespace = app.Spec.Sync.WorkspaceNamespace
-	return r.connectionsInNamespace(ctx, app)
+	// object is the informer's shared cached copy: a handler must never change it. Setting its
+	// namespace here once corrupted every reader's LakeApp (dev-d6699eb on Lake/prod): app
+	// identities were hashed from the workspace namespace, so every Connection and EgressRule
+	// selected no pod, and the LakeApp controller could not find its own apps.
+	return r.connectionsInNamespaceNamed(ctx, app.Spec.Sync.WorkspaceNamespace)
 }
 
 func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
