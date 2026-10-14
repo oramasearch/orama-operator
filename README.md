@@ -18,9 +18,14 @@ into running systems:
   `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `ClerkApplication`,
   `LakeSealedSecret`, `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and the three e2e
   test CRDs, including `LakeE2ETest`.
+- The infrastructure kinds: `KubernetesClusterProvider`, `KubernetesCluster` and `AksCluster`
+  create clusters; `ClusterHelmRelease` and `OramaOperator` install a managed cluster's platform
+  layer and its own operator; `LakeSet` and `OramaCloudV1Set` run instances on managed clusters
+  from one template.
 
-That is 17 resource kinds. The [release notes](docs/releases/v0.1.0.md) say what each one
-reconciles.
+That is 24 resource kinds, all installed by the chart on every cluster. The release notes say what
+each one reconciles: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
+[v0.2.0](docs/releases/v0.2.0.md) for the rest.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -28,12 +33,16 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.1.0** (2026-10-12), the first tagged release;
-[`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md) lists everything in it.
+The current release is **v0.2.0** (2026-10-14);
+[`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md) says what is new since v0.1.0, the first.
 
-The operator runs on Orama's AKS cluster, which is the development environment (there is no
-production environment yet, whatever the cluster's name says). `Lake/prod` is live at
-https://lake.oramadev.net on this operator, with its workspace Zettas, apps, agents and services.
+The operator runs on four AKS clusters. The management cluster, `orama-production-cluster-01`, is
+the development environment whatever its name says; it runs `Lake/prod`, live at
+https://lake.oramadev.net with its workspace Zettas, apps, agents and services. It manages three
+clusters it created: `orama-nonprod-cluster-01` and the production clusters
+`orama-production-cluster-02` and `-03`, which hold no customers yet. Where each runs and how they
+are operated: [`config/clusters/`](config/clusters/README.md) and
+[`docs/infrastructure/operations.md`](docs/infrastructure/operations.md).
 Every `OramaCloudV1` component reconciler is implemented and was validated on AKS; the Cloudflare
 load balancer and the Karpenter capacity slices are implemented but not yet live-tested.
 Per-reconciler status and the remaining hardening work are in
@@ -73,6 +82,8 @@ Existing AKS installations that use the former release name must follow the sche
 - [`DESIGN.md`](DESIGN.md): architecture and the decision log.
 - [`docs/crd-reference.md`](docs/crd-reference.md): the field reference for every CRD.
 - [`docs/components.md`](docs/components.md): what each reconciler creates, and its status.
+- [`docs/infrastructure/README.md`](docs/infrastructure/README.md): management and leaf clusters, the
+  design the operator's infrastructure work follows.
 - [`docs/install/k0s.md`](docs/install/k0s.md): install one Lake on connected or air-gapped liquid k0s.
 - [`docs/lake/README.md`](docs/lake/README.md): the `Lake` CR, with
   [`environments.md`](docs/lake/environments.md), [`apps.md`](docs/lake/apps.md), [`builds.md`](docs/lake/builds.md),
@@ -101,7 +112,8 @@ The production v1 system this operator models is documented in
   components page for a reconciler change, the development guide for a build or deploy change,
   the `DESIGN.md` decision table for a decision. This README is a summary and never holds the
   only copy of anything.
-- PR-based workflow. Never fast-forward `main`; open a PR and leave it open for review.
+- **Work lands on `dev`, through a pull request.** `main` moves only when a release is cut, by
+  promoting `dev`. Never push to either directly; open a PR and leave it open for review.
 - No AI attribution in commits or PRs.
 - Reuse published `oramasearch/*` images; deploy by immutable tag.
 - The ops truth for the production system lives in `techops-docs`, not here.

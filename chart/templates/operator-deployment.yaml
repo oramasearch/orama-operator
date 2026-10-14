@@ -13,6 +13,9 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
+        {{- if .Values.clusterManagement.azureWorkloadIdentityClientID }}
+        azure.workload.identity/use: "true"
+        {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- with .Values.operator.imagePullSecrets }}
@@ -25,9 +28,6 @@ spec:
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           args:
             - --leader-elect
-            {{- if .Values.e2e.enabled }}
-            - --enable-e2e-controllers
-            {{- end }}
             - --control-plane-bind-address=:{{ .Values.controlPlane.service.port }}
             {{- with .Values.lakeServices.sqliteImage }}
             - --lake-sqlite-image={{ . }}

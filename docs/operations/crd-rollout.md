@@ -69,40 +69,29 @@ tests and scripts rather than a paragraph.
 If this is ever revisited, revisit it here, with the reasoning — do not let it change by accident of
 `SetupWithManager` ordering.
 
-## The e2e kinds do not run in production
+## Every cluster gets every CRD
 
-`LakeE2ETest`, `ZettaClusterE2ETest` and `OramaCloudV1E2ETest` are test fixtures. **Production runs
-no e2e suites — that is what a testing environment is for** (decided 2026-09-09), so:
+Steve, 2026-10-12: *"install the same operator everywhere... all crds"*, *"no differences"*.
 
-- their controllers are registered only behind `--enable-e2e-controllers`, **off by default**;
-- their CRDs live in `chart/e2e-crds/`, which the install chart does not apply;
-- their RBAC renders only under `e2e.enabled`.
+There is one chart and one CRD directory, `chart/crds`, and every cluster gets all of it: the
+cluster-management kinds (`KubernetesCluster`, `KubernetesClusterProvider`, `AksCluster`,
+`ClusterHelmRelease`, `OramaOperator`) and the e2e test kinds (`LakeE2ETest`,
+`ZettaClusterE2ETest`, `OramaCloudV1E2ETest`) included. `chart/e2e-crds/` (2026-09-09) and
+`chart/management-crds/` (2026-10-12) each held CRDs applied only to some clusters; both are gone,
+because a second directory is how clusters come to differ.
 
-Off by default matters: the safe posture is the one you get by forgetting. Production installs
-nothing e2e and reconciles nothing e2e without someone deliberately turning it on.
+- The cluster-management controllers run in every cluster's operator, with no flag. A cluster
+  manages others by holding the resources
+  ([`infrastructure/README.md`](../infrastructure/README.md#one-operator-on-every-cluster)).
+- The e2e controllers run in every cluster's operator too, with no flag. A cluster runs an e2e
+  suite only when someone creates one of those resources on it; production runs none because none
+  is created there. The earlier gate (`--enable-e2e-controllers`, chart `e2e.enabled`, decided
+  2026-09-09 after `LakeE2ETest` crash-looped the manager for twelve hours,
+  [#166](https://github.com/oramasearch/orama-operator/issues/166)) guarded against a controller
+  watching a kind whose CRD was missing. With every CRD on every cluster that cannot happen, and
+  the gate was a way for clusters to differ, so it is gone.
 
-A testing environment opts in with both halves — the CRDs and the flag:
-
-```sh
-kubectl apply -f chart/e2e-crds/
-helm upgrade --install orama-operator ./chart -n orama-system --set e2e.enabled=true
-./hack/check-cluster-crds.sh <context> --e2e
-```
-
-This is not only tidiness. The twelve-hour outage was caused by `LakeE2ETest` — a kind production
-had no use for, crash-looping the manager that runs everything else. Not installing it removes that
-failure entirely rather than guarding it.
-
-`cmd/crd_coverage_test.go` holds the split: the install chart may ship no e2e CRD, and
-`chart/e2e-crds` must hold exactly the kinds gated behind the flag, so a kind cannot drift between
-the two sets.
-
-### Left on the production cluster
-
-The three e2e CRDs are still installed on `orama-production-cluster-01` from before this change —
-one of them applied during the incident. They are inert once the controllers stop, but removing a
-CRD deletes its custom resources, so retire them deliberately, having checked there are none:
-
-```sh
-kubectl --context orama-production-cluster-01 get lakee2etests,zettaclustere2etests,oramacloudv1e2etests -A
-```
+`cmd/crd_coverage_test.go` holds this (`TestNoClusterDiffersFromAnother`,
+`TestTheChartHasOneCRDDirectoryWithEveryKind`): it fails if the chart grows a second CRD directory,
+if a controller is registered inside a condition, if a flag turns controllers on or off, or if the
+chart's RBAC or manager arguments render conditionally.

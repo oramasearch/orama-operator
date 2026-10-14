@@ -2,5 +2,12 @@ apiVersion: v2
 name: orama-operator
 description: Installs the Orama Cloud v1 operator (+ CRDs, RBAC). The operator then reconciles one OramaCloudV1 CR into the full in-cluster v1 stack. CloudNativePG and ingress-nginx are composed via the repo's helmfile.yaml, not as subchart dependencies.
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
+annotations:
+  # CRDs that must exist on a cluster before this version of the operator can start: it watches
+  # their kinds, and a missing CRD is fatal by design (docs/operations/crd-rollout.md). An
+  # OramaOperator on a management cluster reads this and does not install onto a cluster that
+  # lacks any of them. These are CloudNativePG's; cmd/crd_coverage_test.go holds the list to the
+  # kinds the controllers use.
+  orama.cloud/required-crds: "clusters.postgresql.cnpg.io,scheduledbackups.postgresql.cnpg.io,backups.postgresql.cnpg.io,databases.postgresql.cnpg.io"

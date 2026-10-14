@@ -11,34 +11,26 @@
 # both accumulated un-applied, and the operator was down for ~12 hours. Run this BEFORE and AFTER
 # every helm upgrade.
 #
-# The e2e CRDs are NOT part of this check by default: production runs no e2e suites, so
-# chart/e2e-crds is installed only by testing environments (alongside --set e2e.enabled=true).
-# Pass --e2e to include them.
+# Every CRD is in chart/crds, and every cluster gets all of them: the e2e test kinds and the
+# cluster-management kinds included. --e2e and --management are still accepted, and do nothing.
 #
 #   ./hack/check-cluster-crds.sh                              # current kube-context
 #   ./hack/check-cluster-crds.sh orama-production-cluster-01   # explicit context
 #   ./hack/check-cluster-crds.sh <context> --apply             # apply what is missing
-#   ./hack/check-cluster-crds.sh <context> --e2e               # a testing environment
 #
 # Requires: kubectl with access to the target cluster.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART_CRDS="${REPO_ROOT}/chart/crds"
-E2E_CRDS="${REPO_ROOT}/chart/e2e-crds"
 CONTEXT="${1:-}"
 APPLY=0
-WITH_E2E=0
 for arg in "$@"; do
   [ "$arg" = "--apply" ] && APPLY=1
-  [ "$arg" = "--e2e" ] && WITH_E2E=1
 done
-case "$CONTEXT" in --apply|--e2e) CONTEXT="" ;; esac
+case "$CONTEXT" in --apply|--e2e|--management) CONTEXT="" ;; esac
 
 DIRS=("$CHART_CRDS")
-if [ "$WITH_E2E" -eq 1 ]; then
-  DIRS+=("$E2E_CRDS")
-fi
 
 kube() {
   if [ -n "$CONTEXT" ]; then
@@ -102,4 +94,4 @@ for file in "${missing[@]}"; do
   kube apply -f "$file"
 done
 echo ">> re-checking"
-exec "$0" ${CONTEXT:+"$CONTEXT"} $([ "$WITH_E2E" -eq 1 ] && echo --e2e)
+exec "$0" ${CONTEXT:+"$CONTEXT"}

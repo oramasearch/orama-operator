@@ -57,6 +57,19 @@ func valkeyUsers(secretName string) []interface{} {
 func (k valkeyServiceKind) build(in catalogService, _ string) []catalogResource {
 	secretName, _ := k.passwordSecret(in.name)
 	return []catalogResource{{catalogObject: k.objects(in)[0], fields: []serviceField{
+		// The `restricted` Pod Security Standard of a workspace namespace (operator#435), on the
+		// pod and on both of its containers, with their sizes stated.
+		// The valkey image declares no numeric user, so with runAsNonRoot alone the kubelet refuses
+		// to start it ("image will run as root"). 999 and 1000 are the image's own valkey user and
+		// group.
+		{path: []string{"spec", "podSecurityContext"}, value: map[string]interface{}{
+			"runAsNonRoot": true, "runAsUser": int64(999), "runAsGroup": int64(1000), "fsGroup": int64(1000),
+			"seccompProfile": map[string]interface{}{"type": "RuntimeDefault"},
+		}},
+		{path: []string{"spec", "resources"}, value: serviceResources("50m", "128Mi", "250m", "256Mi")},
+		{path: []string{"spec", "containers"}, onChange: true, value: []interface{}{restrictedContainer("server", nil)}},
+		{path: []string{"spec", "exporter", "securityContext"}, value: restrictedContainerSecurityContext()},
+		{path: []string{"spec", "exporter", "resources"}, value: serviceResources("10m", "32Mi", "50m", "64Mi")},
 		{path: []string{"spec", "shards"}, value: int64(valkeyShards)},
 		{path: []string{"spec", "replicas"}, value: int64(in.spec.Instances - 1)},
 		{path: []string{"spec", "users"}, value: valkeyUsers(secretName)},

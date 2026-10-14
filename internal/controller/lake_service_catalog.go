@@ -39,6 +39,8 @@ import (
 // lake_service_<kind>.go; this file holds what every kind shares.
 //
 // +kubebuilder:rbac:groups=kafka.strimzi.io,resources=kafkas;kafkanodepools;kafkausers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.strimzi.io,resources=strimzipodsets,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=events,verbs=get;list;create;patch
 // +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhouseinstallations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=clickhouse-keeper.altinity.com,resources=clickhousekeeperinstallations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pingcap.com,resources=tidbclusters,verbs=get;list;watch;create;update;patch;delete
@@ -319,6 +321,26 @@ func (r *LakeReconciler) reconcileCatalogService(ctx context.Context, lake *oram
 	endpoint := kind.endpoint(in)
 	ready, waiting := kind.ready(in, found)
 	if !ready {
+		// "Waiting" alone hides a service that will never start. A kind that can say what the
+		// upstream operator is stuck on (a pod the API server refuses, for one) says it here, so
+		// the reason reaches lake and the customer instead of staying in another operator's log.
+		why := ""
+		if explainer, ok := kind.(catalogWaitExplainer); ok {
+			if why, err = explainer.waitingReason(ctx, r.Client, in, found); err != nil {
+				return serviceResult{}, err
+			}
+		}
+		if why == "" {
+			// Every kind: what Kubernetes itself last refused or failed for this service's
+			// objects (a pod the API server would not admit, a quota, an image that cannot be
+			// pulled, a container that keeps exiting).
+			if why, err = serviceWarningReason(ctx, r.Client, in); err != nil {
+				return serviceResult{}, err
+			}
+		}
+		if why != "" {
+			waiting += ": " + why
+		}
 		return serviceResult{phase: ServicePhaseProvisioning, endpoint: endpoint, message: waiting}, nil
 	}
 	result := serviceResult{phase: ServicePhaseProvisioning, endpoint: endpoint, message: waiting, resourceReady: true}
@@ -560,6 +582,96 @@ func (r *LakeReconciler) liveCatalogObjects(ctx context.Context, lake *oramav1al
 
 // conditionTrue reports whether obj's status.conditions (or the conditions at path) holds a
 // condition of the given type with status "True".
+// catalogWaitExplainer is implemented by a kind that can say why its upstream resources are not
+// ready, in the upstream operator's own words.
+type catalogWaitExplainer interface {
+	waitingReason(ctx context.Context, c client.Reader, in catalogService, found map[string]*unstructured.Unstructured) (string, error)
+}
+
+// serviceWarningReason returns the most recent Warning event about one of a service's objects, in
+// Kubernetes' own words. It is how a kind whose upstream operator records nothing useful still
+// says why it is stuck: a pod refused by Pod Security or by a quota appears only as a FailedCreate
+// event on the StatefulSet or ReplicaSet that tried to create it. Read uncached, and only for a
+// service that is not ready.
+func serviceWarningReason(ctx context.Context, c client.Reader, in catalogService) (string, error) {
+	events := &unstructured.UnstructuredList{}
+	events.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "EventList"})
+	if err := c.List(ctx, events, client.InNamespace(in.namespace)); err != nil {
+		return "", fmt.Errorf("list the namespace's events: %w", err)
+	}
+	slug := ""
+	if in.svc != nil {
+		slug = in.svc.Slug
+	}
+	var newest, reason string
+	for _, event := range events.Items {
+		if kind, _, _ := unstructured.NestedString(event.Object, "type"); kind != corev1.EventTypeWarning {
+			continue
+		}
+		object, _, _ := unstructured.NestedString(event.Object, "involvedObject", "name")
+		if !strings.Contains(object, in.name) && (slug == "" || !strings.Contains(object, slug)) {
+			continue
+		}
+		message, _, _ := unstructured.NestedString(event.Object, "message")
+		// A controller that has merely not caught up is not a reason.
+		if message == "" || strings.Contains(message, "has not caught up yet") || strings.Contains(message, "no pods were ready to be started") {
+			continue
+		}
+		when, _, _ := unstructured.NestedString(event.Object, "lastTimestamp")
+		if when == "" {
+			when, _, _ = unstructured.NestedString(event.Object, "eventTime")
+		}
+		if when >= newest {
+			newest, reason = when, message
+		}
+	}
+	return boundedReason(reason), nil
+}
+
+// serviceResources is a container's requests and limits as an upstream resource takes them.
+// Every container of every kind states them: a container that states nothing takes the workspace
+// namespace's LimitRange default, which is how a three-container Kafka came to cost three CPUs.
+func serviceResources(requestCPU, requestMemory, limitCPU, limitMemory string) map[string]interface{} {
+	return map[string]interface{}{
+		"requests": map[string]interface{}{"cpu": requestCPU, "memory": requestMemory},
+		"limits":   map[string]interface{}{"cpu": limitCPU, "memory": limitMemory},
+	}
+}
+
+// restrictedContainer is a named container override that carries the `restricted` security
+// context, and resources when given.
+func restrictedContainer(name string, resources map[string]interface{}) map[string]interface{} {
+	container := map[string]interface{}{"name": name, "securityContext": restrictedContainerSecurityContext()}
+	if resources != nil {
+		container["resources"] = resources
+	}
+	return container
+}
+
+// conditionMessage returns the message of a condition that is True, or "".
+func conditionMessage(obj map[string]interface{}, conditionType string) string {
+	conditions, _, _ := unstructured.NestedSlice(obj, "status", "conditions")
+	for _, raw := range conditions {
+		condition, ok := raw.(map[string]interface{})
+		if ok && condition["type"] == conditionType && condition["status"] == string(metav1.ConditionTrue) {
+			message, _ := condition["message"].(string)
+			return message
+		}
+	}
+	return ""
+}
+
+// serviceWaitReasonLimit bounds an upstream message stored in service_status.
+const serviceWaitReasonLimit = 700
+
+func boundedReason(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > serviceWaitReasonLimit {
+		text = text[:serviceWaitReasonLimit] + "..."
+	}
+	return text
+}
+
 func conditionTrue(obj map[string]interface{}, conditionType string, path ...string) bool {
 	if len(path) == 0 {
 		path = []string{"status", "conditions"}

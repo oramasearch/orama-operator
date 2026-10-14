@@ -62,8 +62,139 @@ against production-readiness, not "does a pod start."
    operator matures to encapsulate this complexity (real writer→reader replication, real schema,
    real creds, …). **Never hack the test green** — make the operator correct and e2e follows.
 
+10. **Abstract kinds, concrete providers.** Steve, 2026-10-12: *"as a general rule, try to use
+    abstract objects (KubernetesCluster, DnsRecord, ServiceMesh) with a type that provisions a
+    concrete AksCluster, CloudflareDnsRecord, IstioServiceMesh ... that way, we can swap out
+    different providers if an enterprise client has hard requirements for one provider over
+    another."* A new kind for something a vendor provides is **two kinds**: an abstract one named
+    for the thing, which is what people and other reconcilers ask for, and a concrete one named for
+    the provider, which the abstract kind's type provisions and owns and which makes the vendor's
+    API calls. The vendor, the account and the credentials live on a **provider resource** that
+    the abstract kind points at (a `DnsProvider`, a `KubernetesClusterProvider`), not on each
+    record or cluster. Nothing outside the concrete kind's controller names the vendor. The kinds that
+    predate this rule (`CloudflareDNSRecord`, `CloudflareLoadBalancer`, `CloudflareKVNamespace`,
+    `CloudflareR2Bucket`, `ClerkApplication`) are concrete only; do not add another like them. See
+    [`docs/infrastructure/README.md`](docs/infrastructure/README.md).
+
 When in doubt, choose the option that makes the operator more complete and the system more
 deterministic/recoverable, even if it is more work now.
+
+11. **One operator: no differences between clusters (non-negotiable).** Steve, 2026-10-12, three
+    times in one session before it was done: *"install the same operator everywhere... all crds"*,
+    *"no differences between management and leaf operator"*, *"any leaf can be a mgnt cluster
+    too... no differences"*, then *"I said no differences!!! I said it like 3 times"*.
+
+    The operator is **identical on every cluster**: the same chart, the same image, **every CRD**,
+    **every controller running**, the same RBAC. A cluster's role (management, leaf, testing,
+    production) is decided **only by which resources exist on it**, never by how its operator is
+    installed. Concretely, **never**:
+
+    - add a flag, environment variable or chart value that turns a controller, a kind or a
+      permission on or off (`--enable-cluster-management` and `--enable-e2e-controllers` both
+      existed and were both removed);
+    - put a CRD anywhere but `chart/crds`, or apply some CRDs only to some clusters
+      (`chart/management-crds` and `chart/e2e-crds` both existed and were both removed);
+    - register a controller inside a condition in `cmd/main.go`;
+    - have `OramaOperator`, a build script or a runbook set a value on one cluster that it does
+      not set on another, beyond the image, its pull secret and the cluster's own cloud identity;
+    - keep "one small exception" because a difference seems reasonable. When Steve says no
+      differences, there are none: if you believe an exception is needed, **stop and ask before
+      writing it**, do not ship it and mention it afterwards.
+
+    What may differ is a cluster's **configuration**, not its operator: where images are pulled
+    from, and the identity the pod uses to call a cloud.
+
+    `cmd/crd_coverage_test.go` enforces this (`TestNoClusterDiffersFromAnother`,
+    `TestTheChartHasOneCRDDirectoryWithEveryKind`, `TestManagementKindsShipAndRunOnEveryCluster`).
+    **Never weaken or delete those tests to make a change pass.**
+
+## Two installation paths, one result: `helmfile.yaml` and the operator stay in sync (STRICT)
+
+Steve, 2026-10-13: *"both the helmfile and the operator need to be kept in sync so that operators
+on mgnt clusters and leaf clusters are effectively the same, even though mgmt cluster will need the
+helmfile installation path and leaf clusters will be installed by the mgmt operator"*.
+
+- **The management cluster is installed from [`helmfile.yaml`](helmfile.yaml).** It has to be: it
+  is the cluster the managing operator runs on, so it exists before any operator can install
+  anything.
+- **Every leaf cluster is installed by the management cluster's operator**, from the
+  `ClusterHelmRelease` and `OramaOperator` resources in
+  [`config/clusters/<cluster>/`](config/clusters/README.md).
+- **Both must install the same thing**: same charts, same chart versions, same namespaces, same
+  values, same order, same operator version. A management cluster and a leaf are effectively the
+  same cluster.
+
+**Every platform change is made in both places, in the same pull request.** Change a release in
+`helmfile.yaml` and you change the matching `ClusterHelmRelease` in every
+`config/clusters/*/platform.yaml`; change a `ClusterHelmRelease` and you change `helmfile.yaml`
+and every other cluster's file. Roll a new operator version onto the leaves and the management
+cluster gets the same version. **A change that is in only one of them is not finished, and must
+not be merged.**
+
+`cmd/platform_sync_test.go` fails when they differ. **Never weaken or delete it to make a change
+pass**; fix the side that is behind.
+
+Neither path is a command typed at a cluster. Applying the helmfile to the management cluster is
+done from the merged file, with Steve's consent (next section). The full statement, with the table
+of who installs what, is
+[`docs/infrastructure/README.md`](docs/infrastructure/README.md#two-installation-paths-one-result).
+
+## Never change a cluster by hand: the operator is how change happens (STRICT)
+
+Steve, 2026-10-13: *"I said no one-offs ... make a strict rule that you're not able to directly
+manipulate the clusters without my explicit consent ... the operator is how we affect change (or
+changing the CRs for the lakeset or v1 set)"*, and *"that's state changes outside of our code, and
+therefore not reproducible"*.
+
+**You may not directly manipulate any cluster without Steve's explicit consent for that specific
+action.** Every cluster: the managing one and every managed one, nonprod and production.
+
+There are two ways to change what runs on a cluster, and only two:
+
+1. **Change this operator**: code, chart, CRDs, merged into `dev`. If the operator cannot make a
+   change, the fix is to teach it, not to do the change by hand.
+2. **Change a custom resource the operator reconciles**, by editing its file in
+   [`config/clusters/`](config/clusters/README.md) and applying that file. File, apply and commit
+   go together.
+
+Without his explicit consent you do not run, against any cluster: `helm install`, `upgrade`,
+`uninstall` or `rollback`; `kubectl apply`, `create`, `patch`, `edit`, `replace`, `scale`,
+`rollout restart`, `label`, `annotate`, `delete`, or a writing `exec`, on anything but the
+operator's own custom resources applied from their committed files; a cloud CLI change; a write to
+a database on a cluster. Deleting an object "so it is recreated" is included, on nonprod too, even
+when it holds no data. Reading is always allowed: `get`, `describe`, `logs`, `diff`, `wait`, a
+server dry-run, `helm list`, `get`, `history` and `template`, a read-only `select`.
+
+**When a by-hand action looks like the fix, stop.** Say what is wrong and make the operator, or a
+resource, do it. Never offer a by-hand action as an option you might take.
+
+**What this means for the operator's design**: anything an operator of the clusters would need to
+do by hand is a missing feature. Examples already hit: a volume claim whose access mode was wrong
+had to be deleted by hand; a chart setting on the managing cluster had to be applied with `helm`
+because that cluster has no `ClusterHelmRelease`; a workload refused by a quota had no remedy but a
+manual one. Each is work for the operator, to be filed and built.
+
+**Known gap, not a licence**: the managing cluster's own operator and platform charts are not
+managed by a resource yet, so rolling a new build onto it is a `helm upgrade` by
+`build-operator.sh`. That roll needs Steve's explicit consent each time, until the managing cluster
+is managed like the others.
+
+The org-wide form of this rule is in the umbrella bridge's `CLAUDE.md`
+(https://github.com/oramasearch/orama-bridge/blob/main/CLAUDE.md).
+
+## Clusters, their platform layer, and sets: where to look
+
+Creating a cluster, installing its platform layer and operator, and running Lake or Orama Cloud v1
+instances on it are all done by editing resources on the managing cluster:
+
+- **How**: [`docs/infrastructure/operations.md`](docs/infrastructure/operations.md), the runbook.
+  Read it before creating a cluster, upgrading the operator, or touching a set.
+- **What is deployed**: [`config/clusters/`](config/clusters/README.md), the resources as applied.
+  **Change the file, apply it, commit it, in one change.** Never leave a `kubectl edit` or
+  `kubectl patch` that the files do not show; `kubectl diff -R -f config/clusters/` must be empty.
+- **Why**: [`docs/infrastructure/README.md`](docs/infrastructure/README.md), the architecture.
+- **Short form for an agent**: the `orama-clusters` skill in the umbrella bridge
+  (https://github.com/oramasearch/orama-bridge/blob/main/.claude/skills/orama-clusters/SKILL.md).
 
 ## One Orama: Zetta is the operator's datastore (multi-cluster)
 
@@ -174,13 +305,11 @@ Go lives at `/opt/homebrew/bin` (`export PATH="/opt/homebrew/bin:$(go env GOPATH
   single-node **sandbox** (no GPU). Install the CRD + apply a sample into an isolated
   `orama-system` namespace. **No GPU node yet → set `writer.gpu: false`** when testing
   the engine, or the writer pod stays Pending.
-**e2e kinds do not run in production.** `OramaCloudV1E2ETest`, `ZettaClusterE2ETest` and
-`LakeE2ETest` are test fixtures: their controllers are gated behind `--enable-e2e-controllers`
-(**off by default**), their CRDs live in `chart/e2e-crds/` rather than the install chart, and
-their RBAC renders only under `e2e.enabled`. A testing environment opts in with both halves —
-`kubectl apply -f chart/e2e-crds/` **and** `--set e2e.enabled=true`. Production runs no e2e
-suites; that is what a testing environment is for
-([#166](https://github.com/oramasearch/orama-operator/issues/166), decided 2026-09-09).
+**Every cluster gets every CRD and runs every controller** (principle 11). The e2e kinds
+(`OramaCloudV1E2ETest`, `ZettaClusterE2ETest`, `LakeE2ETest`) are in `chart/crds` and reconciled on
+every cluster; a cluster runs an e2e suite only when one of those resources is created on it.
+Production runs no e2e suites because none is created there
+([#166](https://github.com/oramasearch/orama-operator/issues/166)).
 
 - **Functional e2e (`OramaCloudV1E2ETest`):** the comprehensive suite lives at
   `internal/controller/assets/e2e-functional.sh` (a curl+jq script embedded via `go:embed`,
@@ -216,28 +345,50 @@ suites; that is what a testing environment is for
   cross-repository suite. Watch `kubectl get lakee2e`; logs are on Job `<name>-e2e` in the Lake
   namespace.
 
+## Branches: work lands on `dev`, `main` is the last release
+
+Steve, 2026-10-12, after two pull requests were merged into `main` the day `v0.1.0` was cut:
+*"shouldn't you be merging into dev branch? we're not cutting a release yet"*.
+
+- **Every pull request targets `dev`.** `dev` is the integration branch.
+- **`main` moves only on a release**, by a pull request that promotes `dev` to `main`. Between
+  releases `main` equals the last tag.
+- **Never push to `dev` or `main` directly.**
+- **The development cluster runs `dev`** between releases: the manager's image is built from the
+  tip of `dev` and tagged `dev-<sha>`. A release image is built from the tag and tagged
+  `main-<sha>`.
+- Until 2026-10-12 this repository had no `dev` and pull requests went to `main`. Older pages,
+  issues and skills that say so are out of date.
+
 ## Cutting a release
 
-A release is a tag on `main`, which is what the cluster runs. The pages and their conventions are
-in [`docs/releases/`](docs/releases/README.md). `v0.1.0` (2026-10-12) was the first.
+A release promotes `dev` to `main` and tags the result. The pages and their conventions are in
+[`docs/releases/`](docs/releases/README.md). `v0.1.0` (2026-10-12) was the first.
 
-1. **Steve names the version.** Confirm what is deployed is `main`: the manager's image tag is
-   `main-<sha>`, and that commit must be an ancestor of `origin/main`.
-2. **On a branch `docs/release-vX.Y.Z`**, write `docs/releases/vX.Y.Z.md` and add it to
+1. **Steve names the version.** `dev` is what gets released, so confirm it is what the cluster
+   runs: the manager's image tag is `dev-<sha>`, and that commit must be the tip of `origin/dev`,
+   or an ancestor with nothing unproven after it.
+2. **On a branch off `dev`**, `docs/release-vX.Y.Z`, write `docs/releases/vX.Y.Z.md` and add it to
    `docs/releases/README.md`: what the release includes, what it does not, known issues, and
    verification. Say where each thing has run (implemented, validated on the cluster, live-tested).
    Move `version` and `appVersion` in `chart/Chart.yaml` when the version changes.
 3. **Prove it**: `go build ./...`, `go vet ./...`, `go test ./...` with the envtest assets, and
    `helm lint chart`. Put the results in the page, and say which opt-in tests did not run.
-4. **Open the pull request into `main`** and merge it with a merge commit, never a squash.
-5. **Tag the merge commit** `vX.Y.Z` and publish the GitHub release from the page
+4. **Open the pull request into `dev`** and merge it with a merge commit, never a squash.
+5. **Promote `dev` to `main`** with a pull request titled `release: vX.Y.Z — ...`, merged with a
+   merge commit. `dev` is kept. Then merge `main` back into `dev` with a pull request, so the two
+   share history.
+6. **Tag the merge commit on `main`** `vX.Y.Z` and publish the GitHub release from the page
    (`gh release create vX.Y.Z --repo oramasearch/orama-operator --verify-tag --title "Release vX.Y.Z" --notes-file <page without its first heading, relative links made absolute at the tag>`).
-6. **Build the image from the tag and roll it.** `make check-crds CONTEXT=<context>` first, then
+7. **Build the image from the tag and roll it.** `make check-crds CONTEXT=<context>` first, then
    build `oramasearch/orama-operator:main-<sha>` on the cluster BuildKit, apply `chart/crds/`, and
-   upgrade the release with the stored values as a file (liquid-bridge's `liquid-dev` skill has
-   the commands). Confirm the pod runs the new digest and that every `Lake` and
-   `OramaZettaCluster` is still `Ready`.
-7. **Tag the image `vX.Y.Z` in Docker Hub**, naming the same digest that is deployed, without
+   upgrade the release with the stored
+   values as a file (liquid-bridge's `liquid-dev` skill has the commands). Confirm the pod runs the
+   new digest and that every `Lake` and `OramaZettaCluster` is still `Ready`.
+   Publish the chart for the same tag, so a management cluster can install this version on a
+   leaf: `go run ./hack/pushchart -version <image tag>` (and again for `vX.Y.Z` after step 8). It
+   goes to the private repository `oramasearch/orama-operator-chart`.
+8. **Tag the image `vX.Y.Z` in Docker Hub**, naming the same digest that is deployed, without
    rebuilding: `retag-image.py orama-operator main-<sha> vX.Y.Z` (in the `liquid-dev` skill). Check
    that an anonymous request for the repository still answers 404.
 
@@ -251,10 +402,11 @@ the cluster runs that image.
 - **Reuse published `oramasearch/*` images** — no build-from-source of the app
   components in this repo.
 - Conventional Commits (`feat:`/`fix:`/`docs:`/`chore:`).
-- Shipping: commit + push this repo → bump the pointer in the umbrella `orama-bridge`
-  (fast-forward to `main`). This repo left `orama-cloud-v1-bridge` on 2026-09-09 when it was renamed
-  from `orama-cloud-v1-operator` and promoted to a top-level module — it is no longer v1-specific,
-  so there is no v1-bridge pointer in the chain any more.
+- Shipping: a pull request into `dev` (see *Branches* above), merged with a merge commit → bump the
+  pointer in the umbrella `orama-bridge` (fast-forward to its `main`). This repo left
+  `orama-cloud-v1-bridge` on 2026-09-09 when it was renamed from `orama-cloud-v1-operator` and
+  promoted to a top-level module — it is no longer v1-specific, so there is no v1-bridge pointer in
+  the chain any more.
 - Before any `helm upgrade`, run `make check-crds CONTEXT=<kube-context>`. Helm applies
   `chart/crds` on install only, so an upgrade never adds a new CRD; see
   [`docs/operations/crd-rollout.md`](docs/operations/crd-rollout.md).

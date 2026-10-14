@@ -1,0 +1,33 @@
+apiVersion: orama.cloud/v1alpha1
+kind: KubernetesCluster
+metadata:
+  name: orama-production-cluster-03
+spec:
+  deletionPolicy: Retain
+  kubernetesVersion: '1.35'
+  nodePools:
+  - count: 1
+    machineSize: Standard_D8as_v7
+    maxCount: 5
+    minCount: 1
+    name: agentpool
+    role: system
+    zones:
+    - '1'
+    - '2'
+    - '3'
+  - machineSize: Standard_D8as_v7
+    maxCount: 100
+    minCount: 0
+    name: userpool
+    role: user
+    zones:
+    - '1'
+    - '2'
+    - '3'
+  providerRef: azure-orama
+  region: eastus
+  tags:
+    managed-by: orama-operator
+    purpose: production
+    role: leaf

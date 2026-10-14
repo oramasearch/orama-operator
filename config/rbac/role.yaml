@@ -34,6 +34,15 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - events
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+- apiGroups:
+  - ""
+  resources:
   - namespaces
   verbs:
   - create
@@ -142,6 +151,13 @@ rules:
   - update
   - watch
 - apiGroups:
+  - core.strimzi.io
+  resources:
+  - strimzipodsets
+  verbs:
+  - get
+  - list
+- apiGroups:
   - k8ssandra.io
   resources:
   - k8ssandraclusters
@@ -219,19 +235,26 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - aksclusters
   - clerkapplications
   - cloudflarednsrecords
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
+  - clusterhelmreleases
+  - kubernetesclusterproviders
+  - kubernetesclusters
   - lakeapps
   - lakee2etests
   - lakeenvironments
   - lakerestorerehearsals
   - lakes
   - lakesealedsecrets
+  - lakesets
   - oramacloudv1e2etests
   - oramacloudv1s
+  - oramacloudv1sets
+  - oramaoperators
   - oramazettaclusters
   - postgresschemas
   - rabbitmqtopologies
@@ -247,15 +270,22 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - aksclusters/finalizers
   - clerkapplications/finalizers
   - cloudflarednsrecords/finalizers
   - cloudflarekvnamespaces/finalizers
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
+  - clusterhelmreleases/finalizers
+  - kubernetesclusterproviders/finalizers
+  - kubernetesclusters/finalizers
   - lakeapps/finalizers
   - lakeenvironments/finalizers
   - lakes/finalizers
   - lakesealedsecrets/finalizers
+  - lakesets/finalizers
+  - oramacloudv1sets/finalizers
+  - oramaoperators/finalizers
   - oramazettaclusters/finalizers
   - rabbitmqtopologies/finalizers
   verbs:
@@ -263,19 +293,26 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - aksclusters/status
   - clerkapplications/status
   - cloudflarednsrecords/status
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
+  - clusterhelmreleases/status
+  - kubernetesclusterproviders/status
+  - kubernetesclusters/status
   - lakeapps/status
   - lakee2etests/status
   - lakeenvironments/status
   - lakerestorerehearsals/status
   - lakes/status
   - lakesealedsecrets/status
+  - lakesets/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
+  - oramacloudv1sets/status
+  - oramaoperators/status
   - oramazettaclusters/status
   - postgresschemas/status
   - rabbitmqtopologies/status

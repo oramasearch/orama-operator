@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/yaml"
+
 	rbacv1 "k8s.io/api/rbac/v1"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
@@ -41,12 +43,25 @@ var (
 	rbacResourcePattern = regexp.MustCompile(`(?m)^\s+- ([a-z0-9]+)$`)
 )
 
-// e2e kinds are gated behind --enable-e2e-controllers and their CRDs live in chart/e2e-crds, not
-// chart/crds: production runs no e2e suites. Keep this list in step with the gated block in main.go.
+// The e2e test kinds. Their CRDs are in chart/crds and their controllers run on every cluster,
+// like every other kind (Steve, 2026-10-12, "no differences").
 var e2eKinds = map[string]bool{
 	"OramaCloudV1E2ETest": true,
 	"ZettaClusterE2ETest": true,
 	"LakeE2ETest":         true,
+}
+
+// The cluster-management kinds ship in chart/crds and their controllers run on every cluster:
+// there is no difference between a management cluster's operator and a leaf's, and any cluster
+// can manage others (Steve, 2026-10-12; operator#351). This list holds them to that.
+var managementKinds = map[string]bool{
+	"KubernetesCluster":         true,
+	"KubernetesClusterProvider": true,
+	"AksCluster":                true,
+	"ClusterHelmRelease":        true,
+	"OramaOperator":             true,
+	"LakeSet":                   true,
+	"OramaCloudV1Set":           true,
 }
 
 func registeredKinds(t *testing.T) []string {
@@ -74,10 +89,6 @@ func registeredKinds(t *testing.T) []string {
 }
 
 func chartKinds(t *testing.T) []string { return kindsIn(t, filepath.Join("..", "chart", "crds")) }
-
-func e2eChartKinds(t *testing.T) []string {
-	return kindsIn(t, filepath.Join("..", "chart", "e2e-crds"))
-}
 
 func kindsIn(t *testing.T, dir string) []string {
 	t.Helper()
@@ -114,9 +125,6 @@ func TestEveryRegisteredControllerHasAChartCRD(t *testing.T) {
 	for _, kind := range chartKinds(t) {
 		chart[kind] = true
 	}
-	for _, kind := range e2eChartKinds(t) {
-		chart[kind] = true
-	}
 	var missing []string
 	for _, kind := range registeredKinds(t) {
 		if !chart[kind] {
@@ -140,7 +148,7 @@ func TestEveryChartCRDHasARegisteredController(t *testing.T) {
 		registered[kind] = true
 	}
 	var orphaned []string
-	for _, kind := range append(chartKinds(t), e2eChartKinds(t)...) {
+	for _, kind := range chartKinds(t) {
 		if !registered[kind] {
 			orphaned = append(orphaned, kind)
 		}
@@ -149,6 +157,40 @@ func TestEveryChartCRDHasARegisteredController(t *testing.T) {
 		t.Fatalf("chart/crds ships CRDs no controller reconciles: %s\n"+
 			"Either the controller was dropped and its CRD left behind, or the CRD should not be "+
 			"installed on every cluster.", strings.Join(orphaned, ", "))
+	}
+}
+
+// The operator is the same on every cluster. The management kinds are in the install chart, their
+// controllers are registered unconditionally, and neither the manager nor the chart has a switch
+// that would make one cluster's operator differ from another's in what it can manage.
+func TestManagementKindsShipAndRunOnEveryCluster(t *testing.T) {
+	shipped := make(map[string]bool)
+	for _, kind := range chartKinds(t) {
+		shipped[kind] = true
+	}
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	for kind := range managementKinds {
+		if !shipped[kind] {
+			t.Errorf("%s has no CRD in chart/crds, so a cluster installed from the chart could not manage others", kind)
+		}
+		if !strings.Contains(string(source), "controller."+kind+"Reconciler{") {
+			t.Errorf("%sReconciler is not registered", kind)
+		}
+	}
+	if strings.Contains(string(source), "enable-cluster-management") {
+		t.Error("main.go has an --enable-cluster-management flag again: the operator must not differ between clusters")
+	}
+	for _, file := range []string{"values.yaml", "templates/rbac.yaml", "templates/operator-deployment.yaml"} {
+		data, err := os.ReadFile(filepath.Join("..", "chart", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "clusterManagement.enabled") || regexp.MustCompile(`(?m)^clusterManagement:\n  enabled:`).Match(data) {
+			t.Errorf("chart/%s switches cluster management on or off: the operator must not differ between clusters", file)
+		}
 	}
 }
 
@@ -289,37 +331,128 @@ func readClusterRoles(t *testing.T, path string, template bool) []rbacv1.Cluster
 	return roles
 }
 
-// Production runs no e2e suites (that is what a testing environment is for), so the install chart
-// must not put an e2e CRD on every cluster. One of them — LakeE2ETest — is what crash-looped
-// production for twelve hours in operator#166 while reconciling nothing anyone wanted.
-func TestInstallChartShipsNoE2ECRD(t *testing.T) {
-	var leaked []string
-	for _, kind := range chartKinds(t) {
-		if e2eKinds[kind] {
-			leaked = append(leaked, kind)
+// Every cluster gets exactly the same CRDs: one chart, one directory. A second directory of CRDs
+// applied only to some clusters is how clusters come to differ, and it has been removed twice
+// (chart/e2e-crds and chart/management-crds, 2026-10-12).
+func TestTheChartHasOneCRDDirectoryWithEveryKind(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("..", "chart"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && strings.Contains(entry.Name(), "crds") && entry.Name() != "crds" {
+			t.Errorf("chart/%s exists: every CRD belongs in chart/crds, installed on every cluster", entry.Name())
 		}
 	}
-	if len(leaked) > 0 {
-		sort.Strings(leaked)
-		t.Fatalf("chart/crds ships e2e kinds: %s\n"+
-			"They belong in chart/e2e-crds, applied only by testing environments alongside "+
-			"--set e2e.enabled=true.", strings.Join(leaked, ", "))
+	shipped := make(map[string]bool)
+	for _, kind := range chartKinds(t) {
+		shipped[kind] = true
+	}
+	for kind := range e2eKinds {
+		if !shipped[kind] {
+			t.Errorf("%s has no CRD in chart/crds", kind)
+		}
 	}
 }
 
-// And the gate itself: every kind in chart/e2e-crds is one main.go registers behind the flag, so a
-// kind cannot quietly move between the two sets.
-func TestE2EChartHoldsExactlyTheGatedKinds(t *testing.T) {
-	seen := make(map[string]bool)
-	for _, kind := range e2eChartKinds(t) {
-		if !e2eKinds[kind] {
-			t.Errorf("chart/e2e-crds ships %s, which is not gated behind --enable-e2e-controllers", kind)
-		}
-		seen[kind] = true
+// THE RULE (CLAUDE.md, "One operator: no differences between clusters"): the operator is the same
+// on every cluster. Nothing in the manager or the chart may make one cluster's operator differ
+// from another's in which kinds it has, which controllers it runs, or what it is allowed to do.
+// Steve said it three times on 2026-10-12 before it was done; this test is why it stays done.
+func TestNoClusterDiffersFromAnother(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
 	}
-	for kind := range e2eKinds {
-		if !seen[kind] {
-			t.Errorf("%s is gated behind --enable-e2e-controllers but chart/e2e-crds ships no CRD for it", kind)
+	// Every controller is registered at the top level of main, never inside a condition.
+	registration := regexp.MustCompile(`(?m)^(\t+)if err = \(&controller\.([A-Za-z0-9]+)Reconciler\{`)
+	matches := registration.FindAllStringSubmatch(string(source), -1)
+	if len(matches) == 0 {
+		t.Fatal("found no controller registrations in main.go; the pattern this test relies on changed")
+	}
+	for _, match := range matches {
+		if match[1] != "\t" {
+			t.Errorf("%sReconciler is registered inside a condition: every controller runs on every cluster", match[2])
+		}
+	}
+	for _, kind := range registeredKinds(t) {
+		found := false
+		for _, match := range matches {
+			found = found || match[2] == kind
+		}
+		if !found {
+			t.Errorf("%sReconciler is registered in a form this test cannot see; register it like the others", kind)
+		}
+	}
+	// No flag turns a set of controllers on or off.
+	if flagPattern := regexp.MustCompile(`"enable-[a-z0-9-]*(controllers?|management)[a-z0-9-]*"`); flagPattern.Match(source) {
+		t.Errorf("main.go has a flag that turns controllers on or off (%s): no cluster's operator may differ from another's", flagPattern.Find(source))
+	}
+	// The chart's RBAC and manager arguments do not depend on values.
+	for _, file := range []string{"templates/rbac.yaml", "templates/operator-deployment.yaml"} {
+		data, err := os.ReadFile(filepath.Join("..", "chart", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for number, line := range strings.Split(string(data), "\n") {
+			if !strings.Contains(line, "{{- if") {
+				continue
+			}
+			// Allowed: where images are pulled from and how the pod calls a cloud. These are a
+			// cluster's configuration, not a different operator.
+			if strings.Contains(line, "imagePullSecrets") || strings.Contains(line, "azureWorkloadIdentityClientID") {
+				continue
+			}
+			t.Errorf("chart/%s:%d renders conditionally (%s): RBAC and manager arguments are the same on every cluster", file, number+1, strings.TrimSpace(line))
+		}
+	}
+}
+
+// A CRD the API server will refuse must not ship. gofmt treats a "// +kubebuilder" marker as
+// comment text and rewrites two single quotes in it into a typographic quote, which is not valid
+// CEL; the cluster refused ClusterHelmRelease for an empty-string literal in a validation rule on
+// 2026-10-12 (write size(x) > 0 instead). A validation rule in a shipped CRD is plain ASCII.
+func TestShippedCRDValidationRulesArePlainASCII(t *testing.T) {
+	for _, dir := range []string{"../chart/crds"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		for _, entry := range entries {
+			if !strings.HasSuffix(entry.Name(), ".yaml") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Parsed, because YAML wraps a long rule over several lines.
+			var crd any
+			if err := yaml.Unmarshal(data, &crd); err != nil {
+				t.Fatalf("%s/%s: %v", dir, entry.Name(), err)
+			}
+			var walk func(node any)
+			walk = func(node any) {
+				switch typed := node.(type) {
+				case map[string]any:
+					for key, value := range typed {
+						if rule, ok := value.(string); ok && key == "rule" {
+							for _, r := range rule {
+								if r > 126 {
+									t.Errorf("%s/%s: a validation rule has the non-ASCII character %q: %s", dir, entry.Name(), r, rule)
+									break
+								}
+							}
+						}
+						walk(value)
+					}
+				case []any:
+					for _, value := range typed {
+						walk(value)
+					}
+				}
+			}
+			walk(crd)
 		}
 	}
 }

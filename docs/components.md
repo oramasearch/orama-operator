@@ -577,6 +577,60 @@ nothing, and a partial component/event pair retries only the missing append. Lak
 as deterministic JSON in the component detail. See [Zetta as the operator datastore](zetta-datastore.md)
 and the [Lake observed-state contract](lake/README.md#observed-state-in-zetta).
 
+## The log is kept readable by fixing errors, never by hiding them
+
+Steve, 2026-10-12: the log is quieted by fixing errors, not by turning off logging.
+
+A reconcile that fails returns its error. The manager logs it and retries, and it stays in the log
+until its cause is fixed. No controller downgrades, swallows or slows down an error to make the log
+quieter. Two examples from the day the rule was stated:
+
+- **Cloudflare refused the v1 sandbox's R2 bucket** with 403 from July to October. The fix was
+  enabling R2 on the account, after which the bucket reconciled. A change that would have
+  rechecked it quietly every 30 minutes was written, and removed.
+- **A status write was refused as a conflict** on a new `KubernetesClusterProvider`. The cause was
+  the write itself: a full update with a version check, from a cached read one write behind. The
+  cluster-management controllers now write status as a patch of what changed, which has no version
+  check, because each is the only writer of its status. A change that would have swallowed the
+  conflict was written, and removed.
+
+What remains from that work is correctness, not quiet: `settle` never returns a result together
+with an error, and the KV namespace and R2 bucket controllers write a failure to status only when
+it changes instead of on every retry.
+
+## Cluster management (`kubernetescluster_controller.go`, `akscluster_controller.go`, `azure_resource_manager.go`, `clusterhelmrelease_controller.go`, `oramaoperator_controller.go`, `leaf_operator_installer.go`) — ✅ live on `orama-nonprod-cluster-01` (2026-10-12)
+
+Managing other clusters ([`infrastructure/README.md`](infrastructure/README.md),
+[#351](https://github.com/oramasearch/orama-operator/issues/351),
+[#354](https://github.com/oramasearch/orama-operator/issues/354),
+[#363](https://github.com/oramasearch/orama-operator/issues/363)). These controllers run in every
+cluster's operator, with no flag: the operator is the same on a management cluster and a leaf, and
+a cluster manages others by holding the resources. `ClusterHelmRelease` and `OramaOperator` install
+pinned chart releases and the operator itself onto a managed cluster with the Helm library.
+`LakeSet` and `OramaCloudV1Set` (`managedset_controller.go`,
+[#391](https://github.com/oramasearch/orama-operator/issues/391)) apply `Lake` and `OramaCloudV1`
+instances onto managed clusters from one template, each member in its own namespace and independent of the others.
+
+| Controller | Reconciles | Creates |
+|---|---|---|
+| `KubernetesClusterReconciler` | `KubernetesCluster` (abstract) | One owned `AksCluster` when the provider has type `aks`; nothing else |
+| `KubernetesClusterProviderReconciler` | `KubernetesClusterProvider` | Nothing; it checks the credentials and holds the provider while a cluster uses it |
+| `AksClusterReconciler` | `AksCluster` (concrete) | In Azure: a resource group and a managed cluster. In the cluster: the owned kubeconfig Secret |
+
+- **Only `azure_resource_manager.go` and `akscluster_controller.go` name Azure.** The abstract
+  controller maps the neutral fields and the provider's settings onto an `AksCluster` with a pure
+  function, so the same pair always produces the same concrete resource.
+- **Create, observe and delete only.** A cluster is not changed after it exists; the `InSync`
+  condition reports what differs.
+- **What goes on a new cluster** is installed by `ClusterHelmRelease` and `OramaOperator`, and
+  its instances by `LakeSet` and `OramaCloudV1Set`
+  ([`infrastructure/README.md`](infrastructure/README.md)).
+- **Live.** Three clusters have been created with these kinds (`orama-nonprod-cluster-01`,
+  `orama-production-cluster-02`, `orama-production-cluster-03`), each with its platform layer,
+  operator and instances installed from the managing cluster. The unit tests run against a fake
+  Azure Resource Manager. Deleting a cluster, and changing one after creation, have not been
+  exercised against Azure.
+
 ## `Lake` — the lake service (liquid project)
 
 Reconciler: `internal/controller/lake_controller.go`. Full page: [`lake/README.md`](lake/README.md);

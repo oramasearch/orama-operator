@@ -4,6 +4,10 @@ metadata:
   name: {{ .Values.serviceAccount.name }}
   namespace: {{ .Release.Namespace }}
   labels: {{- include "operator.labels" . | nindent 4 }}
+  {{- if .Values.clusterManagement.azureWorkloadIdentityClientID }}
+  annotations:
+    azure.workload.identity/client-id: {{ .Values.clusterManagement.azureWorkloadIdentityClientID | quote }}
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -19,10 +23,8 @@ rules:
     resources:
       - oramacloudv1s
       - oramazettaclusters
-      {{- if .Values.e2e.enabled }}
       - oramacloudv1e2etests
       - zettaclustere2etests
-      {{- end }}
       - cloudflarednsrecords
       - cloudflarekvnamespaces
       - cloudflarer2buckets
@@ -31,22 +33,25 @@ rules:
       - postgresschemas
       - clerkapplications
       - lakes
-      {{- if .Values.e2e.enabled }}
       - lakee2etests
-      {{- end }}
       - lakeenvironments
       - lakeapps
       - lakerestorerehearsals
       - lakesealedsecrets
+      - kubernetesclusters
+      - kubernetesclusterproviders
+      - aksclusters
+      - clusterhelmreleases
+      - oramaoperators
+      - lakesets
+      - oramacloudv1sets
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
       - oramacloudv1s/status
       - oramazettaclusters/status
-      {{- if .Values.e2e.enabled }}
       - oramacloudv1e2etests/status
       - zettaclustere2etests/status
-      {{- end }}
       - cloudflarednsrecords/status
       - cloudflarekvnamespaces/status
       - cloudflarer2buckets/status
@@ -54,9 +59,7 @@ rules:
       - rabbitmqtopologies/status
       - postgresschemas/status
       - lakes/status
-      {{- if .Values.e2e.enabled }}
       - lakee2etests/status
-      {{- end }}
       - lakeenvironments/status
       - lakeapps/status
       - lakerestorerehearsals/status
@@ -75,6 +78,20 @@ rules:
       - lakeenvironments/finalizers
       - lakeapps/finalizers
       - lakesealedsecrets/finalizers
+      - kubernetesclusters/status
+      - kubernetesclusters/finalizers
+      - kubernetesclusterproviders/status
+      - kubernetesclusterproviders/finalizers
+      - aksclusters/status
+      - aksclusters/finalizers
+      - clusterhelmreleases/status
+      - clusterhelmreleases/finalizers
+      - oramaoperators/status
+      - oramaoperators/finalizers
+      - lakesets/status
+      - lakesets/finalizers
+      - oramacloudv1sets/status
+      - oramacloudv1sets/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
@@ -125,6 +142,15 @@ rules:
   - apiGroups: ["kafka.strimzi.io"]
     resources: ["kafkas", "kafkanodepools", "kafkausers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # A service that is not ready reports Kubernetes' own last Warning about its objects, read from
+  # the events of its workspace namespace (operator#435).
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "create", "patch"]
+  # Read only: where Strimzi records a broker pod the API server refused (operator#428).
+  - apiGroups: ["core.strimzi.io"]
+    resources: ["strimzipodsets"]
+    verbs: ["get", "list"]
   - apiGroups: ["pingcap.com"]
     resources: ["tidbclusters"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

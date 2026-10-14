@@ -35,7 +35,7 @@ func init() {
 
 func main() {
 	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage, lakeDuckDBImage, lakePolarsImage string
-	var enableLeaderElection, enableE2EControllers bool
+	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.StringVar(&controlPlaneAddr, "control-plane-bind-address", ":8090", "deployment control-plane endpoint")
@@ -46,13 +46,6 @@ func main() {
 		"the lake-duckdb image for a Lake's duckdb services when its spec.services.duckdbImage is empty")
 	flag.StringVar(&lakePolarsImage, "lake-polars-image", controller.DefaultLakePolarsImage,
 		"the lake-polars image for a Lake's polars services when its spec.services.polarsImage is empty")
-	// The e2e kinds are test fixtures. Production runs no e2e suites — that is what a testing
-	// environment is for — so their controllers stay unregistered unless a cluster asks, and their
-	// CRDs live outside the install chart (chart/e2e-crds). Off by default means the safe posture is
-	// the one you get by forgetting. See docs/operations/crd-rollout.md.
-	flag.BoolVar(&enableE2EControllers, "enable-e2e-controllers", false,
-		"reconcile the e2e test kinds (OramaCloudV1E2ETest, ZettaClusterE2ETest, LakeE2ETest); "+
-			"testing environments only, and the cluster needs the chart/e2e-crds CRDs")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -242,32 +235,88 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeSealedSecret")
 		os.Exit(1)
 	}
-	// e2e kinds — testing environments only. Production reconciles no e2e resources, so these
-	// controllers are not registered and their CRDs are not installed.
-	if enableE2EControllers {
-		setupLog.Info("e2e controllers enabled; this cluster needs the chart/e2e-crds CRDs installed")
-		if err = (&controller.OramaCloudV1E2ETestReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1E2ETest")
-			os.Exit(1)
-		}
-		if err = (&controller.ZettaClusterE2ETestReconciler{
-			Client:    mgr.GetClient(),
-			Scheme:    mgr.GetScheme(),
-			Clientset: clientset,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ZettaClusterE2ETest")
-			os.Exit(1)
-		}
-		if err = (&controller.LakeE2ETestReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "LakeE2ETest")
-			os.Exit(1)
-		}
+	// Infrastructure (operator#351, #354, #363): the abstract KubernetesCluster, the provider it
+	// points at, the concrete AksCluster, and what is installed on a managed cluster. Every
+	// cluster's operator runs these: there is no difference between a management cluster's
+	// operator and a leaf's, and any cluster can manage others (Steve, 2026-10-12). A cluster
+	// with none of these resources reconciles nothing.
+	if err = (&controller.KubernetesClusterProviderReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KubernetesClusterProvider")
+		os.Exit(1)
+	}
+	if err = (&controller.KubernetesClusterReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KubernetesCluster")
+		os.Exit(1)
+	}
+	if err = (&controller.AksClusterReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AksCluster")
+		os.Exit(1)
+	}
+	// What the management cluster puts on a cluster it manages (operator#363): pinned chart
+	// releases, and the cluster's own Orama operator.
+	if err = (&controller.ClusterHelmReleaseReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterHelmRelease")
+		os.Exit(1)
+	}
+	if err = (&controller.OramaOperatorReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OramaOperator")
+		os.Exit(1)
+	}
+	// Sets (operator#391): Lake and OramaCloudV1 instances installed onto managed clusters from
+	// one template, with their versions and settings kept as described.
+	if err = (&controller.LakeSetReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeSet")
+		os.Exit(1)
+	}
+	if err = (&controller.OramaCloudV1SetReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1Set")
+		os.Exit(1)
+	}
+	// The e2e test kinds. Registered on every cluster like every other kind: no cluster's operator
+	// differs from another's. A cluster runs an e2e suite only when someone creates one of these
+	// resources on it.
+	if err = (&controller.OramaCloudV1E2ETestReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1E2ETest")
+		os.Exit(1)
+	}
+	if err = (&controller.ZettaClusterE2ETestReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Clientset: clientset,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ZettaClusterE2ETest")
+		os.Exit(1)
+	}
+	if err = (&controller.LakeE2ETestReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeE2ETest")
+		os.Exit(1)
 	}
 
 	if controlPlaneAddr != "" {
