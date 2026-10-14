@@ -647,6 +647,10 @@ func TestServicesPostgresCreateAndCredential(t *testing.T) {
 	if instances != 3 || size != "15Gi" || class != "managed-premium" || database != "app" || owner != "app" {
 		t.Fatalf("unexpected CNPG spec: %v", cluster.Object["spec"])
 	}
+	// operator#469: the operator signs in as the superuser to keep per-connection roles.
+	if superuser, _, _ := unstructured.NestedBool(cluster.Object, "spec", "enableSuperuserAccess"); !superuser {
+		t.Fatalf("superuser access is off: %v", cluster.Object["spec"])
+	}
 	endpoint := "prod-svc-222222222222-rw.lake.svc.cluster.local:5432"
 	expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "waiting for the Postgres instances", endpoint)
 

@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -48,10 +49,12 @@ type LakeNetworkConnection struct {
 	TargetKind         string
 	TargetID           string
 	Ports              []int32
-	HasCredentialScope bool
-	Desired            string
-	Generation         int64
-	Status             *LakeNetworkConnectionStatus
+	// CredentialScope is the raw credential_scope jsonb, empty when NULL (operator#469):
+	// {"access": "read"|"write", "schema": "<name>"?}.
+	CredentialScope string
+	Desired         string
+	Generation      int64
+	Status          *LakeNetworkConnectionStatus
 }
 
 // LakeNetworkConnectionStatus is written only to network_connection_status.
@@ -208,6 +211,7 @@ func (r *LakeReconciler) syncLakeConnection(
 	} else if !apierrors.IsNotFound(err) {
 		return LakeNetworkConnectionStatus{}, err
 	}
+	scope, _ := parseConnectionCredentialScope(row)
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, connection, func() error {
 		if connection.ResourceVersion != "" {
 			if !metav1.IsControlledBy(connection, lake) ||
@@ -221,17 +225,18 @@ func (r *LakeReconciler) syncLakeConnection(
 			workspaceLabel:    row.WorkspaceID,
 		})
 		connection.Spec = oramav1alpha1.ConnectionSpec{
-			LakeRef:      lake.Name,
-			ConnectionID: row.ID,
-			CustomerID:   row.CustomerID,
-			WorkspaceID:  row.WorkspaceID,
-			SourceKind:   row.SourceKind,
-			SourceID:     row.SourceID,
-			TargetKind:   row.TargetKind,
-			TargetID:     row.TargetID,
-			Ports:        append([]int32(nil), row.Ports...),
-			Desired:      row.Desired,
-			Generation:   row.Generation,
+			LakeRef:         lake.Name,
+			ConnectionID:    row.ID,
+			CustomerID:      row.CustomerID,
+			WorkspaceID:     row.WorkspaceID,
+			SourceKind:      row.SourceKind,
+			SourceID:        row.SourceID,
+			TargetKind:      row.TargetKind,
+			TargetID:        row.TargetID,
+			Ports:           append([]int32(nil), row.Ports...),
+			CredentialScope: scope,
+			Desired:         row.Desired,
+			Generation:      row.Generation,
 		}
 		return controllerutil.SetControllerReference(lake, connection, r.Scheme)
 	})
@@ -247,6 +252,8 @@ func (r *LakeReconciler) syncLakeConnection(
 	if connection.Status.ObservedGeneration == row.Generation && connection.Status.Phase != "" {
 		status.Phase = connection.Status.Phase
 		status.Message = connection.Status.Message
+		// Only the reference to the workspace secret, never the credential.
+		status.CredentialSecret = connection.Status.CredentialSecret
 	}
 	if row.Desired == oramav1alpha1.ConnectionDesiredAbsent &&
 		status.Phase == oramav1alpha1.ConnectionPhaseDeleted &&
@@ -298,10 +305,32 @@ func validateNetworkConnection(row *LakeNetworkConnection) string {
 			return "ports must be between 1 and 65535"
 		}
 	}
-	if row.HasCredentialScope {
-		return "credential_scope requires operator issue #469"
+	if _, message := parseConnectionCredentialScope(row); message != "" {
+		return message
 	}
 	return ""
+}
+
+// parseConnectionCredentialScope decodes credential_scope. Unknown fields are refused, so a scope
+// the operator does not understand is never silently widened or narrowed.
+func parseConnectionCredentialScope(row *LakeNetworkConnection) (*oramav1alpha1.ConnectionCredentialScope, string) {
+	raw := strings.TrimSpace(row.CredentialScope)
+	if raw == "" || raw == "null" {
+		return nil, ""
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var scope oramav1alpha1.ConnectionCredentialScope
+	if err := decoder.Decode(&scope); err != nil {
+		return nil, "credential_scope must be {\"access\": \"read\"|\"write\", \"schema\"?: \"<name>\"}"
+	}
+	if !validConnectionScope(&scope) {
+		return nil, "credential_scope access must be read or write, and schema a plain identifier"
+	}
+	if row.SourceKind != oramav1alpha1.ConnectionSourceApp || row.TargetKind != oramav1alpha1.ConnectionTargetService {
+		return nil, "credential_scope is valid only from an app to a service"
+	}
+	return &scope, ""
 }
 
 func failedNetworkConnectionStatus(

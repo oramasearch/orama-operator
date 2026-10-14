@@ -958,6 +958,12 @@ func (r *LakeReconciler) reconcilePostgresService(ctx context.Context, lake *ora
 		if err := unstructured.SetNestedField(cluster.Object, int64(spec.Instances), "spec", "instances"); err != nil {
 			return err
 		}
+		// The operator signs in as the superuser to keep one role per credential-scoped
+		// Connection (operator#469). CloudNativePG writes the <cluster>-superuser Secret, which
+		// only the operator reads; it is never delivered to an app.
+		if err := unstructured.SetNestedField(cluster.Object, true, "spec", "enableSuperuserAccess"); err != nil {
+			return err
+		}
 		if creating {
 			storage := map[string]interface{}{"size": fmt.Sprintf("%dGi", spec.StorageGi)}
 			if class := lake.Spec.Postgres.StorageClassName; class != "" {
