@@ -95,6 +95,13 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkSandbox")
 		os.Exit(1)
 	}
+	if err = (&controller.ConnectionReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Connection")
+		os.Exit(1)
+	}
 	if err = (&controller.OramaZettaClusterReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),

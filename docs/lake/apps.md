@@ -293,7 +293,10 @@ labelled pod and declared port. The Lake rule pairs with its sandbox's exact-bac
 proxying; port changes update both ends. Neither rule adds general operator access or selects
 another app. The policy carries a component justification annotation. Synchronized apps can reach the Lake
 Service for source, workspace reads and event publication; their scoped Zetta bearer is validated
-by Lake, not sent directly to Zetta. Each service binding gets a rule selecting that service ID.
+by Lake, not sent directly to Zetta. Before the workspace activates declared connections, each
+service binding keeps its compatibility rule selecting that service ID. Afterwards those binding
+rules are removed and paired `Connection` allowances are the only app-to-workload paths; see
+[`../infrastructure/connections.md`](../infrastructure/connections.md).
 Standalone apps retain their direct workspace/bus Zetta policies. No general internet egress opens.
 
 The pod runs as uid/gid 10001, drops all capabilities, prevents privilege escalation, uses runtime

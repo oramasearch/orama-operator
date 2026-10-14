@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -188,7 +189,11 @@ func TestLakeAppBackendIngressPairsWithLakeEgress(t *testing.T) {
 				app.Spec.Sync = &oramav1alpha1.LakeAppSync{ID: "app-id", WorkspaceNamespace: testWorkspaceName}
 			}
 			scheme := newLakeAppScheme(t)
-			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app).Build()
+			objects := []client.Object{app}
+			if synchronized {
+				objects = append(objects, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testWorkspaceName}})
+			}
+			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 			r := &LakeAppReconciler{Client: kube, Scheme: scheme}
 			key := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppAccessPolicyName(app)}
 			for _, port := range []int32{9123, 8765} {
@@ -225,6 +230,34 @@ func TestLakeAppBackendIngressPairsWithLakeEgress(t *testing.T) {
 	}
 }
 
+func TestSynchronizedAppServiceEgressComesOnlyFromConnectionsAfterActivation(t *testing.T) {
+	lake := testWorkspaceLake()
+	app := &oramav1alpha1.LakeApp{
+		ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: lakeNamespace(lake)},
+		Spec: oramav1alpha1.LakeAppSpec{
+			LakeRef: lake.Name,
+			Sync: &oramav1alpha1.LakeAppSync{
+				ID:                 "app-id",
+				WorkspaceNamespace: testWorkspaceName,
+			},
+			Bindings: &oramav1alpha1.LakeAppBindings{
+				Services: []string{testPostgresID},
+			},
+		},
+	}
+	rules := lakeAppEgressRules(lake, app, true)
+	if len(rules) != 2 {
+		t.Fatalf("active app egress has %d rules, want DNS and Lake only: %#v", len(rules), rules)
+	}
+	for _, rule := range rules {
+		for _, peer := range rule.To {
+			if peer.PodSelector != nil && peer.PodSelector.MatchLabels[serviceIDLabel] != "" {
+				t.Fatalf("legacy service binding still opens egress: %#v", rules)
+			}
+		}
+	}
+}
+
 func assertLakeAppBackendPolicy(t *testing.T, lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, policy *networkingv1.NetworkPolicy) {
 	t.Helper()
 	if !reflect.DeepEqual(policy.Spec.PodSelector, metav1.LabelSelector{MatchLabels: lakeAppLabels(app)}) || len(policy.Spec.Ingress) != 2 {
@@ -237,7 +270,7 @@ func assertLakeAppBackendPolicy(t *testing.T, lake *oramav1alpha1.Lake, app *ora
 		From:  []networkingv1.NetworkPolicyPeer{{NamespaceSelector: namespaceNameSelector("ingress-nginx")}},
 		Ports: tcpPorts(app.Spec.Port),
 	}
-	if !reflect.DeepEqual(policy.Spec.Ingress[0], wantNginx) || !reflect.DeepEqual(policy.Spec.Egress, lakeAppEgressRules(lake, app)) {
+	if !reflect.DeepEqual(policy.Spec.Ingress[0], wantNginx) || !reflect.DeepEqual(policy.Spec.Egress, lakeAppEgressRules(lake, app, false)) {
 		t.Fatal("existing nginx ingress or app egress changed")
 	}
 	rule := policy.Spec.Ingress[1]

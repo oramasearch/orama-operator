@@ -48,6 +48,12 @@ type fakeServiceStore struct {
 	services []LakeService
 	upserts  []LakeServiceStatus
 	opened   int
+	// network and networkUpserts are the Connection desired/status half. networkMissing models a
+	// schema before migration 0084_network installed network_guard.
+	network        LakeNetworkSnapshot
+	networkUpserts []LakeNetworkConnectionStatus
+	networkMissing bool
+	networkErr     error
 	// stores and storeUpserts are the stores half (lake_stores_test.go). storesMissing makes
 	// ListStores fail as a schema before 0028_stores does; storesErr fails it any other way.
 	stores        []LakeStore
@@ -101,6 +107,45 @@ type fakeServiceStore struct {
 	deployments             []LakeMethodologyDeployment
 	deploymentStatusUpserts []LakeMethodologyDeploymentStatus
 	deploymentsMissing      bool
+}
+
+func (f *fakeServiceStore) ListNetworkConnections(context.Context) (LakeNetworkSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkMissing {
+		return LakeNetworkSnapshot{}, errNetworkGuardMissing
+	}
+	if f.networkErr != nil {
+		return LakeNetworkSnapshot{}, f.networkErr
+	}
+	out := LakeNetworkSnapshot{
+		Workspaces:  append([]LakeNetworkWorkspace(nil), f.network.Workspaces...),
+		Connections: append([]LakeNetworkConnection(nil), f.network.Connections...),
+	}
+	for i := range out.Connections {
+		out.Connections[i].Ports = append([]int32(nil), out.Connections[i].Ports...)
+		if out.Connections[i].Status != nil {
+			status := *out.Connections[i].Status
+			out.Connections[i].Status = &status
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeServiceStore) UpsertNetworkConnectionStatus(
+	_ context.Context,
+	status LakeNetworkConnectionStatus,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.networkUpserts = append(f.networkUpserts, status)
+	for i := range f.network.Connections {
+		if f.network.Connections[i].ID == status.ConnectionID {
+			copied := status
+			f.network.Connections[i].Status = &copied
+		}
+	}
+	return nil
 }
 
 func (f *fakeServiceStore) ListBuilds(context.Context) ([]LakeBuild, error) {

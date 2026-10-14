@@ -290,6 +290,29 @@ reconciliation writes no status. Owner watches repair both kinds; owner referenc
 them with the sandbox. Details and the AKS live observation are in
 [`infrastructure/network-sandbox.md`](infrastructure/network-sandbox.md#mandatory-cloud-metadata-deny).
 
+## `Connection` (separate CRD, namespaced) — one declared workload path
+
+Short name: `conn`. Lake's guarded Postgres intake creates one resource in the owning workspace
+namespace for each `network_connections` row. Users and tenant workloads do not write this kind.
+The controller resolves Lake IDs to operator-owned pod labels, writes paired ingress and egress
+allowances into that workspace's `NetworkSandbox`, and renders them synchronously. The sandbox,
+not the `Connection`, owns the resulting `NetworkPolicy` objects. Details:
+[`infrastructure/connections.md`](infrastructure/connections.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.lakeRef` | Cluster-scoped Lake that owns and materialized the resource. Immutable. |
+| `spec.connectionId` | Immutable UUID of the Lake `network_connections` row. |
+| `spec.customerId` / `.workspaceId` | Immutable Lake ownership UUIDs. The resource must be in the reconciled namespace of that workspace. |
+| `spec.sourceKind` / `.sourceId` | Source identity: `app \| service \| agent \| tunnel` plus its Lake UUID. Apps resolve through their existing `LakeApp` workload identity; services and agents use operator-owned ID labels. |
+| `spec.targetKind` / `.targetId` | Destination identity: `service \| app` plus its Lake UUID. Selection is restricted to the CR's namespace. |
+| `spec.ports[]` | Destination TCP ports, each 1–65535. Empty resolves to the target's Kubernetes Service target ports, including named ports; it never means all pod ports. |
+| `spec.desired` | `present \| absent`. Absent removes both rendered sides before status becomes `Deleted`. |
+| `spec.generation` | Lake row generation, minimum 1. |
+| `status.phase` / `.message` | `Pending \| Ready \| Failed \| Deleted` and a stable explanation. |
+| `status.observedGeneration` | Lake generation represented by the status and returned to Postgres. |
+| `status.conditions[Ready]` | True only after the paired policies have been rendered. Stable reconciliation does not rewrite it. |
+
 ## `ClerkApplication` (separate CRD) — Clerk auth per environment
 
 Provisions a **Clerk application per environment** (dev/testing/staging/prod) via the Clerk

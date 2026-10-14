@@ -27,8 +27,9 @@ Lake uses a dedicated `orama.cloud/lake-instance=<Lake name>` label on its Deplo
 owned Zetta pods, control CNPG instances/bootstrap Jobs, library agents and schema Jobs. This label
 is propagated through the Zetta CR and CNPG inherited metadata. Existing immutable workload
 selectors are unchanged. Database and schema pods do not inherit Lake's application Service
-selector, so application requests cannot be sent to them. Workspace workload labels and all
-pre-existing workspace policy names and specs are unchanged; the additional client-ingress
+selector, so application requests cannot be sent to them. The stage-1 ownership migration leaves
+workspace workload labels and pre-existing policy specs unchanged. Stage 2 deliberately retires
+only `allow-workspace-internal` after the guarded Connection rollout; the additional client-ingress
 policies approved during review are listed below.
 
 An existing immutable PostgresSchema Job missing its scope labels is replaced with foreground deletion
@@ -158,7 +159,7 @@ ports, reject other Lakes, operator and unlabelled source pods, and check stable
 
 | Policy | Allowed path and reason |
 |---|---|
-| `allow-workspace-internal` | Pods in the same workspace communicate for existing Zetta, service and app behavior. Issue #468 replaces this broad in-workspace rule with declared connections. |
+| `allow-workspace-internal` | Compatibility only before Lake's `network_guard` exists and while every seeded initial `Connection` becomes Ready. It is then retired permanently; declared paths are documented in [`connections.md`](connections.md). |
 | `allow-lake-ingress` | The owning Lake and operator reach workspace Zetta and agent HTTP ports 4800 and 8080. |
 | `allow-lake-service-postgres-ingress` | Only the owning Lake in its exact namespace reaches CNPG-labelled Postgres pods on 5432 for Data / Connections and connection checks. |
 | `allow-lake-service-kafka-ingress` | Only the owning Lake reaches Strimzi Kafka client pods on 9092 using its projected service credentials. |
@@ -182,7 +183,8 @@ ports, reject other Lakes, operator and unlabelled source pods, and check stable
 | `allow-internet-https` | Only when the workspace opts in, all workspace pods reach public TCP 443 with the cluster/private exclusions above. |
 
 App-specific access policies remain owned by `LakeApp` and select only that app's identity labels.
-Their existing ingress-nginx rule and egress rules are unchanged. One additional ingress rule
+Their ingress-nginx, DNS and owning-Lake rules remain. Binding-derived egress is kept during rollout
+and removed after declared connections activate. One additional ingress rule
 admits only the owning Lake pod in its exact namespace on `LakeApp.spec.port`, for backend
 proxying. It applies to synchronized and standalone apps, follows port changes, carries a
 component comment, and is tested against the matching Lake egress rule. It grants no new
@@ -279,8 +281,9 @@ suite remains the write, replication, full-text, vector and hybrid-search proof.
 
 ## Deferred work
 
-- [#468](https://github.com/oramasearch/orama-operator/issues/468) replaces workspace-wide internal
-  reachability with declared `Connection` resources.
+- The [#468](https://github.com/oramasearch/orama-operator/issues/468) named nonprod probe remains:
+  prove a connected app reaches one service, an unconnected app is refused, and an absent row closes
+  the path after one reconcile.
 
 No production cluster mutation or new live connectivity probe is part of this change. The native
 controller and render suites cover resource creation, migration equivalence, fail-closed rules and

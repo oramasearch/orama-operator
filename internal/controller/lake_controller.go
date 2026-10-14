@@ -310,7 +310,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("read deployment while waiting for schema: %w", err)
 	}
 
-	// Lake-owned control rows (services, stores, agents, builds): best-effort, never fail the Lake.
+	// Lake-owned control rows (connections, services, stores, agents, builds): best-effort, never fail the Lake.
 	// The tables exist only once the schema has applied, so the poll waits for it.
 	controlRowsChanging := false
 	if lakeControlRowsEnabled(&lake) && schemaReady {

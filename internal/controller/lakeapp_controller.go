@@ -433,19 +433,31 @@ func (r *LakeAppReconciler) reconcileLakeAppAccessPolicy(
 	app *oramav1alpha1.LakeApp,
 	namespace string,
 ) error {
+	connectionsActive := false
+	if app.Spec.Sync != nil {
+		var workspace corev1.Namespace
+		if err := r.reader().Get(ctx, client.ObjectKey{Name: namespace}, &workspace); err != nil {
+			return fmt.Errorf("read workspace connection rollout state: %w", err)
+		}
+		connectionsActive = workspace.Annotations[workspaceConnectionsActiveAnnotation] == "true"
+	}
 	access := &networkingv1.NetworkPolicy{
 		ObjectMeta: lakeAppObjectMeta(app, lakeAppAccessPolicyName(app), namespace),
 	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, access, func() error {
+		comment := "ingress-nginx serves this app and its owning Lake proxies its backend on the declared app port; app egress retains DNS, Lake and explicit bindings."
+		if connectionsActive {
+			comment = "ingress-nginx and the owning Lake reach this app; app egress retains DNS and Lake while declared workload paths come from Connection resources."
+		}
 		access.Labels = lakeAppLabels(app)
 		access.Annotations = map[string]string{
 			lakeAppOwnerAnnotation:          lakeAppOwner(app),
-			networkSandboxCommentAnnotation: "ingress-nginx serves this app and its owning Lake proxies its backend on the declared app port; app egress retains DNS, Lake and explicit bindings.",
+			networkSandboxCommentAnnotation: comment,
 		}
 		access.Spec.PodSelector = metav1.LabelSelector{MatchLabels: lakeAppLabels(app)}
 		access.Spec.PolicyTypes = []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress}
 		access.Spec.Ingress = lakeAppIngressRules(lake, app)
-		access.Spec.Egress = lakeAppEgressRules(lake, app)
+		access.Spec.Egress = lakeAppEgressRules(lake, app, connectionsActive)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("reconcile app access NetworkPolicy: %w", err)
@@ -477,7 +489,11 @@ func lakeAppIngressRules(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) [
 	return rules
 }
 
-func lakeAppEgressRules(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) []networkingv1.NetworkPolicyEgressRule {
+func lakeAppEgressRules(
+	lake *oramav1alpha1.Lake,
+	app *oramav1alpha1.LakeApp,
+	connectionsActive bool,
+) []networkingv1.NetworkPolicyEgressRule {
 	rules := []networkingv1.NetworkPolicyEgressRule{{
 		To: []networkingv1.NetworkPolicyPeer{{
 			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
@@ -497,6 +513,9 @@ func lakeAppEgressRules(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) []
 	}
 	if mode == oramav1alpha1.LakeAppModeRuntime || app.Spec.Sync != nil {
 		rules = append(rules, lakeAppLakeEgressRule(lake, app.Namespace))
+	}
+	if connectionsActive && app.Spec.Sync != nil {
+		return rules
 	}
 	if app.Spec.Sync == nil && app.Spec.Bindings != nil && app.Spec.Bindings.Zetta != nil {
 		customer := serviceCustomerLabelValue(app.Spec.Bindings.Zetta.CustomerID)

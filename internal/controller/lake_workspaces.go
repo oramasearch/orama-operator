@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sort"
 	"strings"
 	"time"
 
@@ -811,11 +812,11 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 	labels map[string]string,
 	internet bool,
 ) error {
+	connectionsActive, err := r.workspaceConnectionsActive(ctx, namespace)
+	if err != nil {
+		return err
+	}
 	policies := []oramav1alpha1.NetworkSandboxPolicy{
-		sandboxAllowance(
-			"Existing workspace workloads need the same-namespace traffic this stage preserves until Connection resources replace it in issue #468.",
-			workspaceInternalPolicy(namespace, labels),
-		),
 		sandboxAllowance(
 			"Lake and the operator need workspace Zetta and agent HTTP ports to reconcile the workspace and its workloads.",
 			workspaceLakeIngressPolicy(lake, r.OperatorNamespace, namespace, labels),
@@ -829,6 +830,12 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 			workspaceLakeEgressPolicy(lake, namespace, labels),
 		),
 	}
+	if !connectionsActive {
+		policies = append(policies, sandboxAllowance(
+			"Existing workspace workloads retain same-namespace traffic until every initial Lake Connection is enforced.",
+			workspaceInternalPolicy(namespace, labels),
+		))
+	}
 	for _, allowance := range workspaceOperatorIngresses {
 		policies = append(
 			policies,
@@ -836,6 +843,8 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 		)
 	}
 	policies = append(policies, workspaceLakeServiceIngressAllowances(lake)...)
+	connectionPolicies, connectionErr := r.existingWorkspaceConnectionAllowances(ctx, namespace)
+	policies = append(policies, connectionPolicies...)
 	target, apiErr := r.readWorkspaceAPIServerTarget(ctx)
 	if apiErr == nil {
 		for _, apiClient := range workspaceAPIServerClients {
@@ -884,7 +893,41 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 		metav1.LabelSelector{},
 		policies,
 	)
-	return errors.Join(apiErr, internetErr, reconcileErr)
+	return errors.Join(connectionErr, apiErr, internetErr, reconcileErr)
+}
+
+func (r *LakeWorkspacesReconciler) workspaceConnectionsActive(
+	ctx context.Context,
+	namespace string,
+) (bool, error) {
+	var workspace corev1.Namespace
+	if err := r.Get(ctx, client.ObjectKey{Name: namespace}, &workspace); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read workspace connection rollout state: %w", err)
+	}
+	return workspace.Annotations[workspaceConnectionsActiveAnnotation] == "true", nil
+}
+
+func (r *LakeWorkspacesReconciler) existingWorkspaceConnectionAllowances(
+	ctx context.Context,
+	namespace string,
+) ([]oramav1alpha1.NetworkSandboxPolicy, error) {
+	var connections oramav1alpha1.ConnectionList
+	if err := r.List(ctx, &connections, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list workspace Connections: %w", err)
+	}
+	var names []string
+	for i := range connections.Items {
+		connection := &connections.Items[i]
+		if connection.Spec.Desired != oramav1alpha1.ConnectionDesiredPresent || !connection.DeletionTimestamp.IsZero() {
+			continue
+		}
+		names = append(names, connectionAllowanceNames(connection)...)
+	}
+	sort.Strings(names)
+	return existingSandboxAllowances(ctx, r.Client, namespace, names...)
 }
 
 func (r *LakeWorkspacesReconciler) reconcileWorkspaceInternet(
