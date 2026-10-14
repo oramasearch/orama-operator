@@ -33,7 +33,7 @@ lakeServices:
 # private: its pods use their Lake's spec.pullSecretName. cloudflared runs only for a
 # CloudflareTunnel, in a customer's own Cloudflare account.
 networking:
-  zettaTunnelImage: oramasearch/zetta-tunnel:dev-933d6fc
+  zettaTunnelImage: oramasearch/zetta-tunnel:dev-00be276
   cloudflaredImage: cloudflare/cloudflared:2026.10.0
 
 controlPlane:

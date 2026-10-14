@@ -54,7 +54,7 @@ A name rule never opens a path to its destination. Its three allowances are:
 | `egress-<id>-gateway-egress` | the gateway pods | egress to public addresses on the rule's ports (private, shared, link-local, multicast, reserved and cluster ranges excepted) |
 
 **The gateway** is zetta-tunnel's `egress` role ([its contract](https://github.com/oramasearch/zetta-tunnel/blob/issue-8-image/docs/egress.md)),
-image `oramasearch/zetta-tunnel:dev-933d6fc` pulled with the Lake's `pullSecretName`. The operator
+image `oramasearch/zetta-tunnel:dev-00be276` pulled with the Lake's `pullSecretName`. The operator
 runs one Deployment `zetta-tunnel-egress` per workspace that has at least one name rule, and removes
 it with the last one:
 

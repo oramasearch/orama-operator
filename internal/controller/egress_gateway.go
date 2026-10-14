@@ -44,7 +44,7 @@ const (
 	egressGatewayRulesVersionKey = "orama.cloud/egress-rules-version"
 	// egressGatewayImage is zetta-tunnel's private image. Moving it is an operator change, like
 	// every other image the operator runs; the Lake's pull Secret pulls it.
-	egressGatewayImage = "oramasearch/zetta-tunnel:dev-933d6fc"
+	egressGatewayImage = DefaultZettaTunnelImage
 	// The gateway's own limits (docs/egress.md).
 	egressGatewayMaxRules     = 10000
 	egressGatewayMaxSourceIPs = 256

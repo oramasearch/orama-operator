@@ -4280,3 +4280,168 @@ CREATE TABLE IF NOT EXISTS methodology_deployments_guard (
 );
 INSERT INTO schema_migrations (version) VALUES ('0083_methodology_deployments')
     ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0084_network: the secure-networking desired/observed contract (lake#727).
+-- See docs/control-plane/network.md. Lake writes desired state; the operator writes status.
+-- ---------------------------------------------------------------------------------------------
+-- One declared path: one source workload may reach one target on named ports (Connection).
+CREATE TABLE IF NOT EXISTS network_connections (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id      uuid        NOT NULL,
+    workspace_id     uuid        NOT NULL REFERENCES workspaces(id),
+    source_kind      text        NOT NULL CHECK (source_kind IN ('app', 'service', 'agent', 'tunnel')),
+    source_id        uuid        NOT NULL,
+    target_kind      text        NOT NULL CHECK (target_kind IN ('service', 'app')),
+    target_id        uuid        NOT NULL,
+    ports            integer[]   NOT NULL DEFAULT '{}',   -- empty: the target's own service ports
+    credential_scope jsonb,                               -- NULL: no credential. {"access": "read"|"write", "schema": "<name>"?}
+    desired          text        NOT NULL DEFAULT 'present' CHECK (desired IN ('present', 'absent')),
+    generation       bigint      NOT NULL DEFAULT 1,
+    created_by       uuid,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS network_connection_status (
+    connection_id       uuid        PRIMARY KEY REFERENCES network_connections(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',  -- Pending | Ready | Failed | Deleted
+    message             text        NOT NULL DEFAULT '',
+    credential_secret   text        NOT NULL DEFAULT '',  -- workspace secret name holding the scoped credential, if any
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+-- Outbound from a workload (or the whole workspace) by CIDR or by DNS name (EgressRule).
+CREATE TABLE IF NOT EXISTS network_egress_rules (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id  uuid        NOT NULL,
+    workspace_id uuid        NOT NULL REFERENCES workspaces(id),
+    source_kind  text        CHECK (source_kind IN ('app', 'service', 'agent')),  -- NULL: every workload in the workspace
+    source_id    uuid,
+    cidr         cidr,
+    dns_name     text,
+    ports        integer[]   NOT NULL,
+    desired      text        NOT NULL DEFAULT 'present' CHECK (desired IN ('present', 'absent')),
+    generation   bigint      NOT NULL DEFAULT 1,
+    created_by   uuid,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    CHECK ((cidr IS NULL) <> (dns_name IS NULL)),
+    CHECK ((source_kind IS NULL) = (source_id IS NULL))
+);
+CREATE TABLE IF NOT EXISTS network_egress_rule_status (
+    rule_id             uuid        PRIMARY KEY REFERENCES network_egress_rules(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',
+    message             text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+-- One person may reach one target from outside the cluster until expires_at (Tunnel).
+CREATE TABLE IF NOT EXISTS network_tunnel_grants (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id  uuid        NOT NULL,
+    workspace_id uuid        NOT NULL REFERENCES workspaces(id),
+    user_id      uuid        NOT NULL,
+    target_kind  text        NOT NULL CHECK (target_kind IN ('service', 'app')),
+    target_id    uuid        NOT NULL,
+    port         integer     NOT NULL,
+    expires_at   timestamptz NOT NULL,
+    revoked_at   timestamptz,
+    generation   bigint      NOT NULL DEFAULT 1,
+    created_by   uuid,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS network_tunnel_grant_status (
+    grant_id            uuid        PRIMARY KEY REFERENCES network_tunnel_grants(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',  -- Pending | Ready | Expired | Revoked | Failed
+    message             text        NOT NULL DEFAULT '',
+    endpoint            text        NOT NULL DEFAULT '',  -- what the developer's client connects to
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+-- Named services exchanged with another cluster or network through gateways (PeerConnection).
+CREATE TABLE IF NOT EXISTS network_peers (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id  uuid        NOT NULL,
+    workspace_id uuid        NOT NULL REFERENCES workspaces(id),
+    name         text        NOT NULL,
+    remote       text        NOT NULL,                    -- the remote gateway's address
+    exports      jsonb       NOT NULL DEFAULT '[]',       -- [{"target_kind","target_id","port"}]
+    imports      jsonb       NOT NULL DEFAULT '[]',       -- [{"name","port"}]
+    desired      text        NOT NULL DEFAULT 'present' CHECK (desired IN ('present', 'absent')),
+    generation   bigint      NOT NULL DEFAULT 1,
+    created_by   uuid,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS network_peer_status (
+    peer_id             uuid        PRIMARY KEY REFERENCES network_peers(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',
+    message             text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+
+CREATE OR REPLACE FUNCTION notify_lake_network() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        PERFORM pg_notify('lake_network', OLD.id::text);
+        RETURN OLD;
+    END IF;
+    PERFORM pg_notify('lake_network', NEW.id::text);
+    RETURN NEW;
+END $$;
+
+CREATE INDEX IF NOT EXISTS network_connections_workspace_idx
+    ON network_connections (customer_id, workspace_id, created_at, id);
+DROP TRIGGER IF EXISTS network_connections_changed ON network_connections;
+CREATE TRIGGER network_connections_changed AFTER INSERT OR UPDATE OR DELETE ON network_connections
+    FOR EACH ROW EXECUTE FUNCTION notify_lake_network();
+
+CREATE INDEX IF NOT EXISTS network_egress_rules_workspace_idx
+    ON network_egress_rules (customer_id, workspace_id, created_at, id);
+DROP TRIGGER IF EXISTS network_egress_rules_changed ON network_egress_rules;
+CREATE TRIGGER network_egress_rules_changed AFTER INSERT OR UPDATE OR DELETE ON network_egress_rules
+    FOR EACH ROW EXECUTE FUNCTION notify_lake_network();
+
+CREATE INDEX IF NOT EXISTS network_tunnel_grants_workspace_idx
+    ON network_tunnel_grants (customer_id, workspace_id, created_at, id);
+DROP TRIGGER IF EXISTS network_tunnel_grants_changed ON network_tunnel_grants;
+CREATE TRIGGER network_tunnel_grants_changed AFTER INSERT OR UPDATE OR DELETE ON network_tunnel_grants
+    FOR EACH ROW EXECUTE FUNCTION notify_lake_network();
+
+CREATE INDEX IF NOT EXISTS network_peers_workspace_idx
+    ON network_peers (customer_id, workspace_id, created_at, id);
+DROP TRIGGER IF EXISTS network_peers_changed ON network_peers;
+CREATE TRIGGER network_peers_changed AFTER INSERT OR UPDATE OR DELETE ON network_peers
+    FOR EACH ROW EXECUTE FUNCTION notify_lake_network();
+
+-- Preserve the paths existing apps can use, exactly once. Reapplying the schema must never
+-- recreate a path a person has since withdrawn. Stopped apps/workspaces can be resumed.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0084_network') THEN
+        INSERT INTO network_connections
+            (customer_id, workspace_id, source_kind, source_id, target_kind, target_id)
+        SELECT a.customer_id, a.workspace_id, 'app', a.id, 'service', s.id
+        FROM apps a
+        JOIN workspaces w ON w.id = a.workspace_id AND w.customer_id = a.customer_id
+        JOIN services s ON s.workspace_id = w.id AND s.customer_id = w.customer_id
+        WHERE a.desired <> 'deleted' AND w.desired <> 'deleted' AND s.desired = 'present';
+    END IF;
+END $$;
+
+-- internetEgress is only in the Lake CR. Its implicit rule remains the operator's responsibility.
+CREATE TABLE IF NOT EXISTS network_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0084_network') ON CONFLICT DO NOTHING;
+
+-- 0085_network_tunnel_ca (lake#730): public trust material for the developer tunnel.
+-- Lake pins the customer's client CA at grant creation; the operator reports relay trust.
+-- Section 11.1 of the operator's secure-networking contract. No private keys live here.
+ALTER TABLE network_tunnel_grants ADD COLUMN IF NOT EXISTS client_ca_pem text NOT NULL DEFAULT '';
+ALTER TABLE network_tunnel_grant_status ADD COLUMN IF NOT EXISTS relay_ca_pem text NOT NULL DEFAULT '';
+INSERT INTO schema_migrations (version) VALUES ('0085_network_tunnel_ca') ON CONFLICT DO NOTHING;
