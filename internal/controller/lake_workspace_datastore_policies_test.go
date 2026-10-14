@@ -82,6 +82,11 @@ func TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs(t *testing.T)
 	reconciler, kube := newWorkspaceHarness(t, lake)
 	store := &fakeWorkspacesStore{rows: []LakeWorkspaceRow{testWorkspaceRow("running")}}
 	reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows)
+	// internetEgress is now the EgressRule internet-https (operator#470): its controller renders
+	// allow-internet-https, which must stay exactly the legacy policy below, and a second workspace
+	// pass must keep it.
+	renderWorkspaceEgressRules(t, kube, testWorkspaceName)
+	reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows)
 
 	labels := workspaceLabels(lake, &store.rows[0])
 	target, err := workspaceAPIServerTargetFrom(testKubernetesService(), testKubernetesEndpoints("20.237.72.161", 443))

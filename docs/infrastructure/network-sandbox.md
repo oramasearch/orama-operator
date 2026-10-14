@@ -181,7 +181,8 @@ ports, reject other Lakes, operator and unlabelled source pods, and check stable
 | `allow-cnpg-apiserver-egress` | CNPG instances and bootstrap jobs reach only the discovered Kubernetes API addresses and ports. |
 | `allow-strimzi-apiserver-egress` | Strimzi entity operators reach only the API for topics, users and credential Secrets. |
 | `allow-tidb-discovery-apiserver-egress` | TiDB discovery reaches only the API to read its `TidbCluster`. |
-| `allow-internet-https` | Only when the workspace opts in, all workspace pods reach public TCP 443 with the cluster/private exclusions above. |
+| `allow-internet-https` | Only when the workspace opts in, all workspace pods reach public TCP 443 with the cluster/private exclusions above. Rendered by the workspace's `EgressRule/internet-https` (#470). |
+| `egress-<id>` (and, for a DNS name, `egress-<id>-gateway-ingress`, `egress-<id>-gateway-egress`) | A Lake-declared `EgressRule`: a CIDR rule's source reaches its range; a name rule's source reaches only the workspace egress gateway, which alone reaches public addresses on the rule's ports ([egress rules](egress-rules.md), #470). |
 
 App-specific access policies remain owned by `LakeApp` and select only that app's identity labels.
 Their ingress-nginx, DNS and owning-Lake rules remain. Binding-derived egress is kept during rollout
