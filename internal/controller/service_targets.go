@@ -135,7 +135,9 @@ func serviceTargetPods(kind, lakeRef, name, id string) (map[string]string, error
 }
 
 // servicesSelecting returns the Services in namespace that select the pods pods selects: those
-// whose spec.selector holds every one of its labels. A Service with no selector selects nothing.
+// whose spec.selector holds every one of its labels. A Service with no selector selects nothing. A
+// headless Service is skipped: it is how a datastore's own nodes find each other (Zetta's 7777),
+// not how a client reaches it, so its ports are never opened to a connection.
 func servicesSelecting(ctx context.Context, c client.Reader, namespace string, pods map[string]string) ([]corev1.Service, error) {
 	var services corev1.ServiceList
 	if err := c.List(ctx, &services, client.InNamespace(namespace)); err != nil {
@@ -143,7 +145,8 @@ func servicesSelecting(ctx context.Context, c client.Reader, namespace string, p
 	}
 	var selecting []corev1.Service
 	for _, service := range services.Items {
-		if !service.DeletionTimestamp.IsZero() || len(service.Spec.Selector) == 0 || len(pods) == 0 {
+		if !service.DeletionTimestamp.IsZero() || len(service.Spec.Selector) == 0 || len(pods) == 0 ||
+			service.Spec.ClusterIP == corev1.ClusterIPNone {
 			continue
 		}
 		matches := true
