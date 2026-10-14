@@ -316,6 +316,32 @@ not the `Connection`, owns the resulting `NetworkPolicy` objects. Details:
 | `status.credentialRole` / `.credentialGeneration` | The datastore role issued for this connection and the generation it was issued for. |
 | `status.conditions[Ready]` | True only after the paired policies have been rendered. Stable reconciliation does not rewrite it. |
 
+## `EgressRule` (separate CRD, namespaced) — one outside destination
+
+Short name: `egr`. Lake's guarded Postgres intake creates one resource per `network_egress_rules`
+row in the owning workspace namespace (`egress-<row id>`); the workspace reconciler keeps one more,
+`internet-https`, for a workspace whose `internetEgress` override is on. Users and tenant workloads
+do not write this kind. The controller adds the rule's allowances to the workspace `NetworkSandbox`
+and, for a DNS name, keeps the workspace's zetta-tunnel egress gateway. Details:
+[`infrastructure/egress-rules.md`](infrastructure/egress-rules.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.lakeRef` | Cluster-scoped Lake that owns the resource. Immutable. |
+| `spec.ruleId` | Immutable UUID of the Lake row. Empty only for the operator's `internet-https` rule. |
+| `spec.customerId` / `.workspaceId` | Lake ownership UUIDs. |
+| `spec.sourceKind` / `.sourceId` | `app \| service \| agent` and its Lake UUID, set together. Unset: every workload in the workspace. |
+| `spec.cidr` | An outside range, enforced by policy. Loopback, link-local and cluster addresses inside it are always excepted; a range wholly inside them is refused. |
+| `spec.dnsName` | An exact lower-case host name, enforced by the egress gateway; the source may reach only the gateway. |
+| `spec.publicInternet` | Every public address, as `internetEgress` has always allowed. Only the operator's own rule. |
+| `spec.ports[]` | 1 to 64 distinct TCP ports. |
+| `spec.desired` | `present \| absent`. Absent removes every allowance and re-renders the gateway snapshot before `Deleted`. |
+| `spec.generation` | Lake row generation, minimum 1. |
+| `status.phase` / `.message` | `Pending \| Ready \| Failed \| Deleted`; a Ready name rule's message names the gateway address. |
+| `status.observedGeneration` | Lake generation represented by the status and returned to Postgres. |
+
+Exactly one of `cidr`, `dnsName` and `publicInternet` is set (a CEL rule on the CRD).
+
 ## `Tunnel` (separate CRD, namespaced) — one person, one target, for a time
 
 Short name: `tun`. The abstract kind (principle 10): Lake's guarded intake creates one per
@@ -521,7 +547,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.snapshots.enabled` / `.className` / `.driver` | **Default `false`.** Scheduled CSI snapshots of lake's store volume and of every workspace Zetta's volumes, from lake's `volume_snapshot_policies` (lake migration `0069`, operator#260). The operator creates the `VolumeSnapshotClass` `className` (default `lake-retain`) for `driver` (default `disk.csi.azure.com`) with `deletionPolicy: Retain` when it is absent, and refuses an existing one that is not `Retain`. Each target's claims get a `VolumeSnapshot` `<claim>-<UTC timestamp>` labelled `orama.cloud/snapshot-target`, when the schedule comes due, when there is none yet and when lake's `requested_at` is newer than the last; only `readyToUse` snapshots count toward `keep` and the newest ready one is never deleted; the newest failed one is kept for diagnosis and older failed ones deleted; before a live target's snapshot is pruned its bound content (checked for the driver and its binding) is switched to `deletionPolicy: Delete` so the cloud snapshot goes too; hand-made and other targets' snapshots are never touched; bound contents are labelled with the target; requests and schedules are judged by Postgres's `now()`; a schedule that never fires is reported and takes nothing (a request still works); and `volume_snapshot_status` reports the newest. `lake_volume_snapshots` notifications wake the controller; it also polls every 60 seconds. Requires Postgres and the `snapshot.storage.k8s.io` CRDs. See [`lake/volume-snapshots.md`](lake/volume-snapshots.md). |
 | `spec.workspaces.maxWorkspaces` | Cap on running or stopped workspace namespaces. `0` is unlimited. Lowering it never removes an existing namespace. A new row over the cap is `Failed` with `workspace quota reached (<n>)`. |
 | `spec.workspaces.defaultPlan` / `.plans` | Named workspace ResourceQuota and LimitRange profiles. Empty `defaultPlan` selects the built-in `default` plan. A custom plan provides `quota`, `defaultRequest` and `default` ResourceLists; missing or incomplete plans fail closed. |
-| `spec.workspaces.overrides[uuid]` | Per-workspace `{plan, internetEgress}`. A missing override uses the default plan and denies internet access. `internetEgress: true` allows only public TCP 443 while excluding private/reserved ranges, metadata, Kubernetes API Service and endpoints, and current Node addresses and Pod CIDRs. |
+| `spec.workspaces.overrides[uuid]` | Per-workspace `{plan, internetEgress}`. A missing override uses the default plan and denies internet access. `internetEgress: true` allows only public TCP 443 while excluding private/reserved ranges, metadata, Kubernetes API Service and endpoints, and current Node addresses and Pod CIDRs; the operator carries it as the workspace's `EgressRule/internet-https`. |
 | `status.readyReplicas` / `.phase` | Replica count and overall service state: `Progressing \| Ready \| Degraded`. `Ready` requires the current Deployment generation with the desired positive ready/updated/available replica counts, a Bound store, enabled Postgres readiness and current applied schema, enabled Zetta readiness, and valid enabled backup configuration. Replica count alone does not establish readiness. Written only on a real transition. |
 | `status.conditions[Ready]` | `LakeReady` on success. Pending work reports `Progressing` with `DeploymentProgressing`, `PostgresNotReady`, `SchemaPending`, `SchemaNotCurrent`, or the store/Zetta reason. Failed schema (`SchemaFailed`), Deployment replica failure (`ReplicaFailure`) or progress deadline (`ProgressDeadlineExceeded`), degraded Zetta, and invalid enabled backup configuration report `Degraded`. Failures take precedence over pending work; messages explain the blocker. Unchanged observations preserve transition times and write no status. |
 | `status.store` / `conditions[StoreReady]` | Selected `claimName`, PVC `phase`, and bound `capacity`. `StoreReady=False` reports a missing or unbound claim; an unbound store keeps the overall phase out of `Ready`. |
