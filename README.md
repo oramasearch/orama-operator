@@ -66,7 +66,8 @@ is complete and the named nonprod connectivity probe remains pending. Details:
 by zetta-tunnel (one relay per cluster, one endpoint per grant) or a customer's own Cloudflare account:
 [`Developer tunnels`](docs/infrastructure/tunnels.md). Peers exchange named services between clusters
 through zetta-tunnel gateways, with credentials only from the managing cluster:
-[`Peer connections`](docs/infrastructure/peer-connections.md).
+[`Peer connections`](docs/infrastructure/peer-connections.md). zetta-tunnel's ingress gateway runs on every
+cluster beside ingress-nginx until each cluster's cutover: [`Ingress`](docs/infrastructure/ingress.md).
 Per-reconciler status and the remaining hardening work are in
 [`docs/components.md`](docs/components.md).
 

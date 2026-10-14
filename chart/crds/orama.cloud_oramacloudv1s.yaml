@@ -1104,6 +1104,16 @@ spec:
                     required:
                     - enabled
                     type: object
+                  ingressClassName:
+                    description: |-
+                      IngressClassName is the ingress controller that serves this resource's Ingresses: "nginx"
+                      (ingress-nginx, the default until a cluster's cutover) or "zetta-tunnel" (zetta-tunnel's
+                      ingress gateway, docs/infrastructure/ingress.md). Changing it moves the hosts' DNS, because DNS
+                      follows the Ingress's load-balancer address.
+                    enum:
+                    - nginx
+                    - zetta-tunnel
+                    type: string
                   oramasearchApp:
                     description: |-
                       Deprecated: oramasearch-app (api.askorama.ai, the legacy "old dashboard") just redirects to

@@ -207,6 +207,13 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]
+  # zetta-tunnel's ingress gateway: its IngressClass, and the address of the Ingresses it serves.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingressclasses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses/status"]
+    verbs: ["get", "update", "patch"]
   # Every NetworkSandbox requires an owner-scoped CiliumNetworkPolicy metadata deny.
   # The controller watches these policies for drift and deletion repair.
   - apiGroups: ["cilium.io"]

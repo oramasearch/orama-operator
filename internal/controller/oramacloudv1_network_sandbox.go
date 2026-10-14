@@ -389,23 +389,23 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	allowances = append(
 		allowances,
 		sandboxAllowance(
-			"ingress-nginx needs the dashboard HTTP port for its Ingress backend.",
+			"ingress-nginx and zetta-tunnel's ingress gateway need the dashboard HTTP port for its Ingress backend.",
 			oramaCloudIngressPolicy(
 				"allow-dashboard-ingress-nginx",
 				dashboard,
 				networkingv1.NetworkPolicyIngressRule{
-					From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"})},
+					From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"}), zettaTunnelIngressPeer()},
 					Ports: tcpPorts(3000),
 				},
 			),
 		),
 		sandboxAllowance(
-			"ingress-nginx needs the docs HTTP port for its Ingress backend.",
+			"ingress-nginx and zetta-tunnel's ingress gateway need the docs HTTP port for its Ingress backend.",
 			oramaCloudIngressPolicy(
 				"allow-docs-ingress-nginx",
 				docs,
 				networkingv1.NetworkPolicyIngressRule{
-					From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"})},
+					From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"}), zettaTunnelIngressPeer()},
 					Ports: tcpPorts(3000),
 				},
 			),

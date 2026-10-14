@@ -30,6 +30,9 @@ zetta-tunnel's relay and a per-grant endpoint, or by a customer's own Cloudflare
 Stage 5 is implemented and native-tested (#472): `network_peers` rows become `PeerConnection`s, one
 zetta-tunnel peer gateway per end, with credentials delivered only by a `PeerLink` on the managing
 cluster. See [Peer connections](peer-connections.md).
+The ingress half of stage 6 is implemented and native-tested (#473): the operator runs zetta-tunnel's
+ingress gateway on every cluster, and a host moves to it by its Ingress class, per cluster. See
+[Ingress](ingress.md).
 
 ---
 
@@ -78,7 +81,8 @@ Added since:
 - **In the deployed pre-stage-2 state, everything inside a workspace reaches everything**
   (`allow-workspace-internal`). The implemented Connection rollout retains that only before
   `network_guard` and while initial rows become Ready; the named nonprod probe remains pending.
-- **Ingress** is ingress-nginx (retired upstream), with no TLS to the origin (#457).
+- **Ingress** is ingress-nginx (retired upstream), with no TLS to the origin (#457). zetta-tunnel's
+  gateway now runs beside it on every cluster; hosts move to it per cluster ([Ingress](ingress.md)).
 - **No mesh, no tunnels, no peering.** Every AKS VNet uses `10.224.0.0/12`, so clusters cannot be
   peered by routing.
 
@@ -276,7 +280,7 @@ Filed 2026-10-14; the list is kept on the epics: #437 (operator, zetta-tunnel, Z
 - https://github.com/oramasearch/orama-operator/issues/470: EgressRule: outbound by address and by DNS name (stage 3, implemented and tested against the zetta-tunnel binary; nonprod probe pending)
 - https://github.com/oramasearch/orama-operator/issues/471: Tunnel: the kind, with ZettaTunnel and a customer's own CloudflareTunnel as providers (stage 4, implemented and native-tested; nonprod acceptance pending)
 - https://github.com/oramasearch/orama-operator/issues/472: PeerConnection: named services between clusters through zetta-tunnel gateways (stage 5, implemented and native-tested; two-cluster rehearsal pending)
-- https://github.com/oramasearch/orama-operator/issues/473: Ingress through zetta-tunnel, replacing ingress-nginx (stage 6)
+- https://github.com/oramasearch/orama-operator/issues/473: Ingress through zetta-tunnel, replacing ingress-nginx (stage 6, implemented and native-tested; per-cluster cutover pending #457)
 - https://github.com/oramasearch/orama-operator/issues/474: Mesh: zetta-tunnel's node agent on every cluster (stage 6)
 
 **zetta-tunnel**

@@ -76,6 +76,11 @@ releases:
     version: 0.29.0   # operator 1.30.0; the same pin every leaf's ClusterHelmRelease has
     installed: true   # REQUIRED — control DB is a CNPG Cluster CR + managed roles
 
+  # ingress-nginx is being replaced by zetta-tunnel's ingress gateway, which the operator itself runs
+  # on every cluster (docs/infrastructure/ingress.md). It stays here, and in every
+  # config/clusters/*/platform.yaml, until every cluster's hosts are cut over; then it is removed
+  # from all of them in one pull request.
+  #
   # ingress controller with a Service type=LoadBalancer — the cloud provisions a public IP so the
   # operator's Ingresses (app./docs./api.) get an address for Cloudflare DNS to point at
   # (operator#38). ingressClassResource.default=true so operator Ingresses need no explicit class.

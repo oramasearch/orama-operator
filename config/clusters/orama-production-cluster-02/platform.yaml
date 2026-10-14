@@ -11,6 +11,8 @@ spec:
   namespace: cnpg-system
   releaseName: cnpg
 ---
+# Kept until every cluster is cut over to zetta-tunnel's ingress gateway (docs/infrastructure/ingress.md),
+# then removed here, in every other platform.yaml and in helmfile.yaml together.
 apiVersion: orama.cloud/v1alpha1
 kind: ClusterHelmRelease
 metadata:
