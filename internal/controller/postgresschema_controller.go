@@ -130,7 +130,7 @@ func (r *PostgresSchemaReconciler) ensureMigrationJob(ctx context.Context, ps *o
 		if !job.DeletionTimestamp.IsZero() {
 			return nil, nil
 		}
-		if job.Annotations[pgSchemaVersionAnnotation] != ps.Spec.Version {
+		if job.Annotations[pgSchemaVersionAnnotation] != ps.Spec.Version || !pgMigrationScopeCurrent(ps, job) {
 			policy := metav1.DeletePropagationForeground
 			options := &client.DeleteOptions{
 				PropagationPolicy: &policy,
@@ -145,7 +145,7 @@ func (r *PostgresSchemaReconciler) ensureMigrationJob(ctx context.Context, ps *o
 	} else if !apierrors.IsNotFound(err) {
 		return nil, err
 	}
-	job.Labels = map[string]string{"app.kubernetes.io/managed-by": "orama-cloud-v1-operator", "orama.cloud/postgresschema": ps.Name}
+	job.Labels = pgMigrationPodLabels(ps)
 	job.Annotations = map[string]string{pgSchemaVersionAnnotation: ps.Spec.Version}
 	job.Spec = pgMigrationJobSpec(ps)
 	if err := controllerutil.SetControllerReference(ps, job, r.Scheme); err != nil {
@@ -155,6 +155,30 @@ func (r *PostgresSchemaReconciler) ensureMigrationJob(ctx context.Context, ps *o
 		return nil, err
 	}
 	return job, nil
+}
+
+func pgMigrationPodLabels(ps *oramav1alpha1.PostgresSchema) map[string]string {
+	labels := map[string]string{
+		"app.kubernetes.io/managed-by": "orama-cloud-v1-operator",
+		"orama.cloud/postgresschema":   ps.Name,
+	}
+	// Copy only sandbox identity, not application Service labels. In particular a Lake Service
+	// must never send application requests to a schema Job.
+	for _, key := range []string{"app.kubernetes.io/instance", lakeInstanceLabel} {
+		if value := ps.Labels[key]; value != "" {
+			labels[key] = value
+		}
+	}
+	return labels
+}
+
+func pgMigrationScopeCurrent(ps *oramav1alpha1.PostgresSchema, job *batchv1.Job) bool {
+	for key, value := range pgMigrationPodLabels(ps) {
+		if job.Spec.Template.Labels[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 // schemaMigrationPattern matches a schema file's migration records,
@@ -212,7 +236,7 @@ echo "applying schema (version ` + ps.Spec.Version + `)..."
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f ` + schemaFile + `
 echo "postgres-schema: done"`
 
-	lbls := map[string]string{"app.kubernetes.io/managed-by": "orama-cloud-v1-operator", "orama.cloud/postgresschema": ps.Name}
+	lbls := pgMigrationPodLabels(ps)
 	return batchv1.JobSpec{
 		BackoffLimit: int32Ptr(20), // retry while the database comes up
 		Template: corev1.PodTemplateSpec{

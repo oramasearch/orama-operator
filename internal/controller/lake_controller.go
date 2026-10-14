@@ -48,6 +48,9 @@ import (
 type LakeReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// OperatorNamespace is the namespace of the manager pod that reads Lake's control database and
+	// Zetta API. Empty omits those in-cluster ingress allowances in local unit tests.
+	OperatorNamespace string
 	// ServiceStores opens lake's control Postgres for the managed-services poll. Nil uses pgx;
 	// tests substitute a fake store.
 	ServiceStores LakeServiceStoreOpener
@@ -230,6 +233,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		"app.kubernetes.io/name":       "lake",
 		"app.kubernetes.io/instance":   lake.Name,
 		"app.kubernetes.io/managed-by": "orama-operator",
+	}
+	if err := r.reconcileLakeNetworkSandbox(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile network sandbox: %w", err)
 	}
 	name := "lake-" + lake.Name
 	zetta, err := r.reconcileLakeZetta(ctx, &lake, ns, labels)
@@ -503,7 +509,7 @@ func (r *LakeReconciler) reconcileLakeZetta(
 	// Postgres, not an operator schema on Zetta.
 	operatorSchema := false
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, zetta, func() error {
-		zetta.Labels = labels
+		zetta.Labels = withLabels(labels, lakeInstancePodLabels(lake))
 		zetta.Spec = oramav1alpha1.OramaZettaClusterSpec{
 			Replicas:                replicas,
 			Image:                   lake.Spec.Zetta.Image,
@@ -608,7 +614,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 		deployment.Spec.Replicas = &replicas
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		deployment.Spec.Strategy = strategy
-		deployment.Spec.Template.ObjectMeta.Labels = labels
+		deployment.Spec.Template.ObjectMeta.Labels = withLabels(labels, lakeInstancePodLabels(lake))
 		deployment.Spec.Template.Spec = corev1.PodSpec{
 			// ndots:2, so the full Service names lake dials resolve on the first query.
 			DNSConfig: lakePodDNSConfig(),
@@ -1294,6 +1300,11 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 			}
 		}
 		cluster.Object["spec"] = spec
+		// CNPG propagates inherited metadata to instances and bootstrap Jobs. Do not copy Lake's
+		// application labels: its Service must not select the database pods.
+		if err := unstructured.SetNestedStringMap(cluster.Object, lakeInstancePodLabels(lake), "spec", "inheritedMetadata", "labels"); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)
 	})
 	if err != nil {
@@ -1478,7 +1489,7 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 		return err
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ps, func() error {
-		ps.Labels = lbls
+		ps.Labels = withLabels(lbls, lakeInstancePodLabels(lake))
 		ps.Spec = oramav1alpha1.PostgresSchemaSpec{
 			ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: lakeControlDB(lake.Name) + "-app", Key: "uri"},
 			SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: cmName, Key: "schema.sql"},
@@ -1697,6 +1708,8 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
 		Owns(&oramav1alpha1.LakeSealedSecret{}).
+		Owns(&oramav1alpha1.NetworkSandbox{}).
+		Watches(&oramav1alpha1.LakeApp{}, handler.EnqueueRequestsFromMapFunc(lakeRequestsForAppSandbox)).
 		Owns(&oramav1alpha1.OramaZettaCluster{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
 		Owns(newCNPGScheduledBackup(nil, ""))

@@ -140,8 +140,8 @@ Every workspace namespace receives all of the following:
   operator-owned service pods also set `automountServiceAccountToken: false` on their pod specs.
   The operator creates no Role or RoleBinding in the namespace and binds no ClusterRole to it.
 - One `ResourceQuota` and `LimitRange` selected by the workspace's declarative plan.
-- A default-deny NetworkPolicy for both ingress and egress, followed only by the explicit policies
-  below.
+- An owned `NetworkSandbox` that renders default-deny for both ingress and egress, followed only by
+  the explicit policies below. The migration preserves every former policy name and spec.
 - A local copy of the Lake image-pull Secret, when configured. Zetta's admin and cluster tokens are
   minted by the Zetta controller in this namespace. Agent provider and service credentials are
   copied here, and per-run and synchronized-app credentials are minted here. The trusted Lake pod
@@ -170,6 +170,8 @@ RFC1918/private ranges, the metadata endpoint `169.254.169.254`, and non-DNS tra
 |---|---|---|---|
 | workspace pod | pod in the same workspace namespace | all | Zetta peers, customer services and local applications must communicate inside their trust boundary |
 | Lake pod in the Lake namespace | workspace pod | TCP 4800, 8080 | Lake calls Zetta and agent HTTP APIs; namespace and pod selectors prevent another workspace from using this rule |
+| owning Lake pod in its exact namespace | vendor-labelled workspace service pods | TCP 5432 (Postgres), 9092 (Kafka), 8123/9000 (ClickHouse), 4000 (TiDB), 9042 (Cassandra), 6379 (Valkey) | six separate client-ingress policies pair with Lake egress for the projected Data / Connections endpoints; no management ports or new Orama operator access |
+| owning Lake pod in its exact namespace | its synchronized app's labelled pod | the app's declared port | app backend proxying; the app's access policy admits only this Lake and exact app port |
 | operator pod in its release namespace | workspace pod | TCP 4800, 8080 | operational reconciliation and verification use the same narrow application ports; the chart supplies the release namespace through `POD_NAMESPACE`, so a tenant cannot gain access by copying the operator pod label |
 | nginx ingress pod in `ingress-nginx` | synchronized app pod | the app's declared port | serves an app host; the per-app policy selects only that app's identity labels and port |
 | workspace pod | CoreDNS pods in `kube-system` | UDP/TCP 53 | service discovery |
@@ -178,12 +180,19 @@ RFC1918/private ranges, the metadata endpoint `169.254.169.254`, and non-DNS tra
 | datastore operator pod in its own namespace | the operand pods it manages | per kind, below | the CNPG, Altinity, TiDB, K8ssandra and Valkey operators reconcile their pods over the network |
 | CNPG pods, Strimzi entity operator, TiDB discovery | the Kubernetes API Service address and its endpoints | the Service port and each endpoint port | these pods read and write their own custom resources with their own ServiceAccount |
 
+The six Lake service-ingress policies are additions approved during the NetworkSandbox review;
+all former workspace policies keep their names and specs. The inferred client contract, code
+audit and paired-path tests are documented in
+[`../infrastructure/network-sandbox.md`](../infrastructure/network-sandbox.md).
+
 Internet egress is denied by default. `spec.workspaces.overrides[<workspace UUID>].internetEgress`
 adds or removes the TCP 443 policy for that workspace alone. Before enabling it, the operator reads
 the `default/kubernetes` Service and Endpoints plus every Node address and pod CIDR, then adds them
-as exclusions. If those reads fail, it refuses to create the internet policy; the base default-deny
-and narrow internal policies are installed before that calculation, and any older internet policy
-is removed so a stale exclusion list cannot remain active.
+as exclusions. If those reads fail on a new namespace, it refuses to create the internet policy;
+the base default-deny and narrow internal policies are installed before that calculation. An
+existing sandbox retains its last successfully discovered public rule and returns an error for
+retry, so a transient API read cannot remove a required route or replace it with a guessed
+exclusion list.
 
 ## Datastore operator flows (operator#268)
 

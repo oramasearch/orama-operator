@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"sort"
 	"strings"
 	"time"
 
@@ -812,25 +811,80 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 	labels map[string]string,
 	internet bool,
 ) error {
-	policies := []*networkingv1.NetworkPolicy{
-		workspaceDefaultDenyPolicy(namespace, labels),
-		workspaceInternalPolicy(namespace, labels),
-		workspaceLakeIngressPolicy(lake, r.OperatorNamespace, namespace, labels),
-		workspaceDNSPolicy(namespace, labels),
-		workspaceLakeEgressPolicy(lake, namespace, labels),
+	policies := []oramav1alpha1.NetworkSandboxPolicy{
+		sandboxAllowance(
+			"Existing workspace workloads need the same-namespace traffic this stage preserves until Connection resources replace it in issue #468.",
+			workspaceInternalPolicy(namespace, labels),
+		),
+		sandboxAllowance(
+			"Lake and the operator need workspace Zetta and agent HTTP ports to reconcile the workspace and its workloads.",
+			workspaceLakeIngressPolicy(lake, r.OperatorNamespace, namespace, labels),
+		),
+		sandboxAllowance(
+			"Every workspace workload needs cluster DNS over UDP and TCP for Service discovery.",
+			workspaceDNSPolicy(namespace, labels),
+		),
+		sandboxAllowance(
+			"Workspace workloads call their owning Lake API for control-plane operations and status.",
+			workspaceLakeEgressPolicy(lake, namespace, labels),
+		),
 	}
 	for _, allowance := range workspaceOperatorIngresses {
-		policies = append(policies, workspaceOperatorIngressPolicy(allowance, namespace, labels))
+		policies = append(
+			policies,
+			sandboxAllowance(allowance.comment, workspaceOperatorIngressPolicy(allowance, namespace, labels)),
+		)
 	}
-	for _, desired := range policies {
-		if err := r.reconcileWorkspaceNetworkPolicy(ctx, labels, desired); err != nil {
-			return err
+	policies = append(policies, workspaceLakeServiceIngressAllowances(lake)...)
+	target, apiErr := r.readWorkspaceAPIServerTarget(ctx)
+	if apiErr == nil {
+		for _, apiClient := range workspaceAPIServerClients {
+			policies = append(
+				policies,
+				sandboxAllowance(
+					apiClient.comment,
+					workspaceAPIServerEgressPolicy(apiClient, target, namespace, labels),
+				),
+			)
+		}
+	} else {
+		var names []string
+		for _, apiClient := range workspaceAPIServerClients {
+			names = append(names, apiClient.name)
+		}
+		preserved, preserveErr := existingSandboxAllowances(ctx, r.Client, namespace, names...)
+		policies = append(policies, preserved...)
+		apiErr = errors.Join(apiErr, preserveErr)
+	}
+	var internetErr error
+	if internet {
+		var policy *networkingv1.NetworkPolicy
+		policy, internetErr = r.workspaceInternetPolicy(ctx, namespace, labels)
+		if internetErr == nil {
+			policies = append(
+				policies,
+				sandboxAllowance(
+					"This workspace explicitly enables HTTPS to public addresses while excluding private, metadata, API, pod and node ranges.",
+					policy,
+				),
+			)
+		} else {
+			preserved, preserveErr := existingSandboxAllowances(ctx, r.Client, namespace, workspaceInternetName)
+			policies = append(policies, preserved...)
+			internetErr = errors.Join(internetErr, preserveErr)
 		}
 	}
-	// Both remaining policies depend on the Kubernetes API address; each is attempted so a failure
-	// of one never leaves the other stale.
-	apiErr := r.reconcileWorkspaceAPIServerPolicies(ctx, namespace, labels)
-	return errors.Join(apiErr, r.reconcileWorkspaceInternet(ctx, namespace, labels, internet))
+	_, reconcileErr := reconcileOwnedNetworkSandbox(
+		ctx,
+		r.Client,
+		r.Scheme,
+		lake,
+		namespace,
+		labels,
+		metav1.LabelSelector{},
+		policies,
+	)
+	return errors.Join(apiErr, internetErr, reconcileErr)
 }
 
 func (r *LakeWorkspacesReconciler) reconcileWorkspaceInternet(
@@ -1011,50 +1065,9 @@ func (r *LakeWorkspacesReconciler) workspaceInternetPolicy(
 	namespace string,
 	labels map[string]string,
 ) (*networkingv1.NetworkPolicy, error) {
-	exceptions := append([]string(nil), workspacePublicIPExceptions...)
-	var kubernetes corev1.Service
-	if err := r.apiReader().Get(ctx, client.ObjectKey{Namespace: "default", Name: "kubernetes"}, &kubernetes); err != nil {
-		return nil, fmt.Errorf("read the Kubernetes API Service before allowing internet egress: %w", err)
-	}
-	for _, ip := range append([]string{kubernetes.Spec.ClusterIP}, kubernetes.Spec.ClusterIPs...) {
-		exceptions = appendAddressException(exceptions, ip)
-	}
-	var endpoints corev1.Endpoints
-	if err := r.apiReader().Get(ctx, client.ObjectKey{Namespace: "default", Name: "kubernetes"}, &endpoints); err != nil {
-		return nil, fmt.Errorf("read the Kubernetes API endpoints before allowing internet egress: %w", err)
-	}
-	for _, subset := range endpoints.Subsets {
-		for _, address := range append(subset.Addresses, subset.NotReadyAddresses...) {
-			exceptions = appendAddressException(exceptions, address.IP)
-		}
-	}
-	var nodes corev1.NodeList
-	if err := r.apiReader().List(ctx, &nodes); err != nil {
-		return nil, fmt.Errorf("list node addresses before allowing internet egress: %w", err)
-	}
-	for i := range nodes.Items {
-		for _, cidr := range append([]string{nodes.Items[i].Spec.PodCIDR}, nodes.Items[i].Spec.PodCIDRs...) {
-			if prefix, err := netip.ParsePrefix(cidr); err == nil {
-				exceptions = append(exceptions, prefix.Masked().String())
-			}
-		}
-		for _, address := range nodes.Items[i].Status.Addresses {
-			exceptions = appendAddressException(exceptions, address.Address)
-		}
-	}
-	sort.Strings(exceptions)
-	exceptions = sortedUnique(exceptions)
-	var ipv4, ipv6 []string
-	for _, value := range exceptions {
-		prefix, err := netip.ParsePrefix(value)
-		if err != nil {
-			return nil, fmt.Errorf("invalid workspace internet exclusion %q: %w", value, err)
-		}
-		if prefix.Addr().Is4() {
-			ipv4 = append(ipv4, value)
-		} else {
-			ipv6 = append(ipv6, value)
-		}
+	peers, err := publicInternetPeers(ctx, r.apiReader())
+	if err != nil {
+		return nil, err
 	}
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: workspacePolicyMeta(workspaceInternetName, namespace, labels),
@@ -1062,10 +1075,7 @@ func (r *LakeWorkspacesReconciler) workspaceInternetPolicy(
 			PodSelector: metav1.LabelSelector{},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 			Egress: []networkingv1.NetworkPolicyEgressRule{{
-				To: []networkingv1.NetworkPolicyPeer{
-					{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0", Except: ipv4}},
-					{IPBlock: &networkingv1.IPBlock{CIDR: "::/0", Except: ipv6}},
-				},
+				To:    peers,
 				Ports: []networkingv1.NetworkPolicyPort{workspaceTCPPort(443)},
 			}},
 		},
@@ -1288,6 +1298,7 @@ func (r *LakeWorkspacesReconciler) deleteLegacyWorkspace(
 func (r *LakeWorkspacesReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.Lake{}).
+		Owns(&oramav1alpha1.NetworkSandbox{}).
 		Owns(&oramav1alpha1.OramaZettaCluster{})
 	if r.Events != nil {
 		builder = builder.WatchesRawSource(source.Channel(r.Events, &handler.EnqueueRequestForObject{}))

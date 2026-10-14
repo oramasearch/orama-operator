@@ -127,6 +127,18 @@ rules:
   - update
   - watch
 - apiGroups:
+  - cilium.io
+  resources:
+  - ciliumnetworkpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - clickhouse-keeper.altinity.com
   resources:
   - clickhousekeeperinstallations
@@ -251,6 +263,7 @@ rules:
   - lakes
   - lakesealedsecrets
   - lakesets
+  - networksandboxes
   - oramacloudv1e2etests
   - oramacloudv1s
   - oramacloudv1sets
@@ -309,6 +322,7 @@ rules:
   - lakes/status
   - lakesealedsecrets/status
   - lakesets/status
+  - networksandboxes/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
   - oramacloudv1sets/status

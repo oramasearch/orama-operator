@@ -263,6 +263,26 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `ReplacingMigrationJob` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
 
+## `NetworkSandbox` (separate CRD, namespaced) — default-deny with explicit paths
+
+Short name: `netsandbox`. One resource describes the network boundary of its owner's pods.
+Required `spec.podSelector` identifies those pods; explicit `{}` is appropriate only in a fully
+owned workspace namespace. The controller always renders `NetworkPolicy/default-deny`, selecting
+only those pods for both ingress and egress with no rules. Each allowance selector is intersected
+with the owner selector, including Cilium endpoint selectors. `spec.policies` lists exceptions expressible as
+Kubernetes NetworkPolicy; each item has a unique `name`, a required human `comment` identifying
+the component and reason, and the complete `networking.k8s.io/v1` policy `spec`. The comment is
+copied to the rendered policy as `orama.cloud/network-policy-comment`.
+
+`spec.ciliumPolicies` has the same name/comment contract and a Cilium v2 `spec`. It is only for a
+path Kubernetes NetworkPolicy cannot express and is empty for ordinary pod, namespace, CIDR and
+port rules. `spec.policyLabels` is copied to all rendered policies so a parent can preserve its
+existing ownership labels while the sandbox adopts live policies.
+
+The controller owns the rendered policies, removes an owned policy no longer declared, and refuses
+to take over a policy controlled by another resource. It reports `status.observedGeneration`, the
+ordinary and Cilium policy counts, and `conditions[Ready]`. Stable reconciliation writes no status.
+
 ## `ClerkApplication` (separate CRD) — Clerk auth per environment
 
 Provisions a **Clerk application per environment** (dev/testing/staging/prod) via the Clerk

@@ -44,7 +44,8 @@ single-build scoped; the Job pushes through Lake's in-cluster registry, reuses a
 cache, and reports its digest, size, progress, and failures. See [`builds.md`](builds.md).
 
 With `spec.workspaces.enabled`, the operator follows lake's `workspaces` table and creates one
-restricted namespace and Zetta data plane per workspace. Default-deny network policy, restricted
+restricted namespace and Zetta data plane per workspace. An owned `NetworkSandbox` renders
+default-deny network policy, restricted
 Pod Security Admission, tokenless service accounts, plan quotas and local credentials make the
 namespace the trust boundary; see [`workspaces.md`](workspaces.md). Narrow per-kind policies let
 the datastore operators reach their pods there, and let CNPG, Strimzi's entity operator and TiDB

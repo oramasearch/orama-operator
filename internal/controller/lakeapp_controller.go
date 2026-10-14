@@ -438,10 +438,13 @@ func (r *LakeAppReconciler) reconcileLakeAppAccessPolicy(
 	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, access, func() error {
 		access.Labels = lakeAppLabels(app)
-		access.Annotations = map[string]string{lakeAppOwnerAnnotation: lakeAppOwner(app)}
+		access.Annotations = map[string]string{
+			lakeAppOwnerAnnotation:          lakeAppOwner(app),
+			networkSandboxCommentAnnotation: "ingress-nginx serves this app and its owning Lake proxies its backend on the declared app port; app egress retains DNS, Lake and explicit bindings.",
+		}
 		access.Spec.PodSelector = metav1.LabelSelector{MatchLabels: lakeAppLabels(app)}
 		access.Spec.PolicyTypes = []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress}
-		access.Spec.Ingress = lakeAppIngressRules(app)
+		access.Spec.Ingress = lakeAppIngressRules(lake, app)
 		access.Spec.Egress = lakeAppEgressRules(lake, app)
 		return nil
 	}); err != nil {
@@ -450,8 +453,8 @@ func (r *LakeAppReconciler) reconcileLakeAppAccessPolicy(
 	return nil
 }
 
-func lakeAppIngressRules(app *oramav1alpha1.LakeApp) []networkingv1.NetworkPolicyIngressRule {
-	return []networkingv1.NetworkPolicyIngressRule{{
+func lakeAppIngressRules(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) []networkingv1.NetworkPolicyIngressRule {
+	rules := []networkingv1.NetworkPolicyIngressRule{{
 		From: []networkingv1.NetworkPolicyPeer{{
 			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
 				"kubernetes.io/metadata.name": "ingress-nginx",
@@ -462,6 +465,16 @@ func lakeAppIngressRules(app *oramav1alpha1.LakeApp) []networkingv1.NetworkPolic
 			Port:     intstrPtr(intstr.FromInt32(app.Spec.Port)),
 		}},
 	}}
+	// Lake proxies this app's backend; only the owning Lake pod in its exact namespace may dial it.
+	lakePods := lakePodSelector(lake)
+	rules = append(rules, networkingv1.NetworkPolicyIngressRule{
+		From: []networkingv1.NetworkPolicyPeer{{
+			NamespaceSelector: namespaceNameSelector(lakeNamespace(lake)),
+			PodSelector:       &lakePods,
+		}},
+		Ports: tcpPorts(app.Spec.Port),
+	})
+	return rules
 }
 
 func lakeAppEgressRules(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) []networkingv1.NetworkPolicyEgressRule {

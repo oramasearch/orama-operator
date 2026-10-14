@@ -288,7 +288,10 @@ CRs retain their stable private `lake-<lake>-app-<10-hex-hash>` namespace, deriv
 - a proxied `CloudflareDNSRecord` for a custom host when Lake DNS credentials are configured.
 
 The workspace's baseline policies admit DNS and Lake. The per-app policy admits the nginx ingress
-controller only to that app's labelled pod and port. Synchronized apps can reach the Lake
+controller and, in a separate rule, only the owning Lake pod in its exact namespace to that app's
+labelled pod and declared port. The Lake rule pairs with its sandbox's exact-backend egress for
+proxying; port changes update both ends. Neither rule adds general operator access or selects
+another app. The policy carries a component justification annotation. Synchronized apps can reach the Lake
 Service for source, workspace reads and event publication; their scoped Zetta bearer is validated
 by Lake, not sent directly to Zetta. Each service binding gets a rule selecting that service ID.
 Standalone apps retain their direct workspace/bus Zetta policies. No general internet egress opens.

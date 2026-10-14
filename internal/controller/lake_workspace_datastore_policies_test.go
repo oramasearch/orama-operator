@@ -15,6 +15,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
 func policyPorts(t *testing.T, ports []networkingv1.NetworkPolicyPort) []int32 {
@@ -63,6 +65,71 @@ func TestWorkspaceAPIServerTarget(t *testing.T) {
 	// No endpoint address must never become an egress rule with no destination.
 	if _, err := workspaceAPIServerTargetFrom(testKubernetesService(), &corev1.Endpoints{}); err == nil {
 		t.Fatal("an empty endpoint list produced a target")
+	}
+}
+
+// TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs is the live-migration guard for
+// issue #465: moving policy ownership under NetworkSandbox must not change what an existing
+// policy allows. The expected objects are rendered by the pre-sandbox policy functions.
+// Review separately authorized six new Lake-only service ingress policies, exhaustively checked
+// by TestWorkspaceServiceIngressPairsWithLakeEgress; no legacy policy comparison is removed.
+func TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs(t *testing.T) {
+	ctx := context.Background()
+	lake := testWorkspaceLake()
+	lake.Spec.Workspaces.Overrides = map[string]oramav1alpha1.LakeWorkspaceOverrideSpec{
+		testWorkspaceID: {InternetEgress: true},
+	}
+	reconciler, kube := newWorkspaceHarness(t, lake)
+	store := &fakeWorkspacesStore{rows: []LakeWorkspaceRow{testWorkspaceRow("running")}}
+	reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows)
+
+	labels := workspaceLabels(lake, &store.rows[0])
+	target, err := workspaceAPIServerTargetFrom(testKubernetesService(), testKubernetesEndpoints("20.237.72.161", 443))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := []*networkingv1.NetworkPolicy{
+		workspaceDefaultDenyPolicy(testWorkspaceName, labels),
+		workspaceInternalPolicy(testWorkspaceName, labels),
+		workspaceLakeIngressPolicy(lake, "orama-system", testWorkspaceName, labels),
+		workspaceDNSPolicy(testWorkspaceName, labels),
+		workspaceLakeEgressPolicy(lake, testWorkspaceName, labels),
+	}
+	for _, allowance := range workspaceOperatorIngresses {
+		expected = append(expected, workspaceOperatorIngressPolicy(allowance, testWorkspaceName, labels))
+	}
+	for _, apiClient := range workspaceAPIServerClients {
+		expected = append(expected, workspaceAPIServerEgressPolicy(apiClient, target, testWorkspaceName, labels))
+	}
+	internetPolicy, err := reconciler.workspaceInternetPolicy(ctx, testWorkspaceName, labels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected = append(expected, internetPolicy)
+
+	var sandbox oramav1alpha1.NetworkSandbox
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: networkSandboxName}, &sandbox); err != nil {
+		t.Fatal(err)
+	}
+	wantAllowances := len(expected) - 1 + 6
+	if len(sandbox.Spec.Policies) != wantAllowances {
+		t.Fatalf("sandbox allowances = %d, want %d", len(sandbox.Spec.Policies), wantAllowances)
+	}
+	comments := map[string]string{}
+	for _, allowance := range sandbox.Spec.Policies {
+		comments[allowance.Name] = allowance.Comment
+	}
+	for _, want := range expected {
+		var got networkingv1.NetworkPolicy
+		if err := kube.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: want.Name}, &got); err != nil {
+			t.Fatalf("policy %s: %v", want.Name, err)
+		}
+		if !reflect.DeepEqual(got.Spec, want.Spec) {
+			t.Errorf("policy %s spec changed\ngot:  %#v\nwant: %#v", want.Name, got.Spec, want.Spec)
+		}
+		if want.Name != networkSandboxDefaultDenyName && comments[want.Name] == "" {
+			t.Errorf("policy %s has no component comment", want.Name)
+		}
 	}
 }
 

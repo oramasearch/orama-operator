@@ -22,6 +22,7 @@ rules:
   - apiGroups: ["orama.cloud"]
     resources:
       - oramacloudv1s
+      - networksandboxes
       - oramazettaclusters
       - oramacloudv1e2etests
       - zettaclustere2etests
@@ -49,6 +50,7 @@ rules:
   - apiGroups: ["orama.cloud"]
     resources:
       - oramacloudv1s/status
+      - networksandboxes/status
       - oramazettaclusters/status
       - oramacloudv1e2etests/status
       - zettaclustere2etests/status
@@ -181,6 +183,11 @@ rules:
     verbs: ["get", "list", "watch", "patch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
+    verbs: ["*"]
+  # NetworkSandbox uses a CiliumNetworkPolicy only for an allowance ordinary NetworkPolicy cannot
+  # express. The grant is harmless on clusters without the optional Cilium CRD.
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
     verbs: ["*"]
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
