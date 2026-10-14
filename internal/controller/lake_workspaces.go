@@ -912,7 +912,8 @@ func (r *LakeWorkspacesReconciler) workspaceConnectionsActive(
 	namespace string,
 ) (bool, error) {
 	var workspace corev1.Namespace
-	if err := r.Get(ctx, client.ObjectKey{Name: namespace}, &workspace); err != nil {
+	// Uncached: the operator never lists or watches Namespaces (operator#106).
+	if err := r.apiReader().Get(ctx, client.ObjectKey{Name: namespace}, &workspace); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
