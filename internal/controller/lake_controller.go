@@ -1709,6 +1709,7 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Secret{}).
 		Owns(&oramav1alpha1.LakeSealedSecret{}).
 		Owns(&oramav1alpha1.NetworkSandbox{}).
+		Watches(&oramav1alpha1.LakeApp{}, handler.EnqueueRequestsFromMapFunc(lakeRequestsForAppSandbox)).
 		Owns(&oramav1alpha1.OramaZettaCluster{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
 		Owns(newCNPGScheduledBackup(nil, ""))

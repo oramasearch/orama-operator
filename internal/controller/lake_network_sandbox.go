@@ -8,11 +8,13 @@ package controller
 import (
 	"context"
 	"errors"
+	"sort"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -191,7 +193,7 @@ func (r *LakeReconciler) reconcileLakeNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"Lake reaches the Zetta and agent HTTP services in workspace namespaces it manages.",
+			"Lake reaches workspace Zetta on 4800 and agents plus SQLite, DuckDB and Polars HTTP wrappers on 8080.",
 			networkPolicy(
 				"allow-lake-to-workspaces",
 				lakeSelector,
@@ -201,6 +203,15 @@ func (r *LakeReconciler) reconcileLakeNetworkSandbox(
 			),
 		),
 	}
+	allowances = append(allowances, lakeInternalIngressAllowances(lake, lakeSelector, cnpgSelector, zettaSelector, agentSelector, schemaSelector)...)
+	allowances = append(allowances, lakeWorkspaceServiceAllowances(lakeSelector, workspaceNamespaces)...)
+	appAllowances, appErr := r.lakeAppProxyAllowances(ctx, lake, lakeSelector)
+	if appErr != nil {
+		preserved, preserveErr := existingSandboxAllowances(ctx, r.Client, namespace, "allow-lake-to-apps")
+		appAllowances = preserved
+		appErr = errors.Join(appErr, preserveErr)
+	}
+	allowances = append(allowances, appAllowances...)
 
 	if r.OperatorNamespace != "" {
 		operatorPeer := namespacePodPeer(r.OperatorNamespace, map[string]string{"app.kubernetes.io/name": "orama-operator"})
@@ -365,5 +376,104 @@ func (r *LakeReconciler) reconcileLakeNetworkSandbox(
 	if r.APIReader == nil && apierrors.IsNotFound(internetErr) {
 		internetErr = nil
 	}
-	return errors.Join(apiErr, internetErr, reconcileErr)
+	return errors.Join(apiErr, internetErr, appErr, reconcileErr)
+}
+
+// Both ends of a connection need an allowance when the source and destination are isolated.
+func lakeInternalIngressAllowances(
+	lake *oramav1alpha1.Lake,
+	lakePods, databasePods, zettaPods, agentPods, schemaPods metav1.LabelSelector,
+) []oramav1alpha1.NetworkSandboxPolicy {
+	paths := []struct {
+		name    string
+		comment string
+		pods    metav1.LabelSelector
+		from    []networkingv1.NetworkPolicyPeer
+		port    int32
+	}{
+		{"allow-lake-clients-to-controldb", "Lake and its PostgresSchema Job need ingress to their control database.", databasePods,
+			[]networkingv1.NetworkPolicyPeer{{PodSelector: &lakePods}, {PodSelector: &schemaPods}}, 5432},
+		{"allow-lake-ingress-to-zetta", "Lake needs ingress to its owned Zetta data-plane API.", zettaPods,
+			[]networkingv1.NetworkPolicyPeer{{PodSelector: &lakePods}}, zettaAPIPort},
+		{"allow-lake-ingress-to-agents", "Library agents need to accept calls from their owning Lake.", agentPods,
+			[]networkingv1.NetworkPolicyPeer{{PodSelector: &lakePods}}, agentPort},
+		{"allow-agent-ingress-to-lake", "Lake needs to accept API calls from its library agents.", lakePods,
+			[]networkingv1.NetworkPolicyPeer{{PodSelector: &agentPods}}, int32(lakeContainerPort(lake))},
+		{"allow-build-ingress-to-lake", "BuildKit Jobs fetch source, push registry images and publish build events to their owning Lake; Lake does not dial BuildKit.", lakePods,
+			[]networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{buildLakeLabel: lake.Name}},
+				PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{buildLakeLabel: lake.Name, "app.kubernetes.io/name": "lake-builder"}},
+			}}, int32(lakeContainerPort(lake))},
+	}
+	policies := make([]oramav1alpha1.NetworkSandboxPolicy, 0, len(paths))
+	for _, path := range paths {
+		policies = append(policies, sandboxAllowance(path.comment, networkPolicy(
+			path.name, path.pods, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			[]networkingv1.NetworkPolicyIngressRule{{From: path.from, Ports: tcpPorts(path.port)}}, nil,
+		)))
+	}
+	return policies
+}
+
+// Lake receives these connection endpoints in LAKE_SERVICE_DIR (Data / Connections and
+// service_connection checks). Select vendor pod identities only inside this Lake's workspaces.
+func lakeWorkspaceServiceAllowances(lakePods metav1.LabelSelector, namespaces *metav1.LabelSelector) []oramav1alpha1.NetworkSandboxPolicy {
+	paths := []struct {
+		kind  string
+		pods  metav1.LabelSelector
+		ports []int32
+	}{
+		{"postgres", metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{labelExists("cnpg.io/cluster")}}, []int32{servicePostgresPort}},
+		{"kafka", metav1.LabelSelector{MatchLabels: map[string]string{strimziKindLabel: "Kafka"}, MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(strimziClusterLabel)}}, []int32{kafkaListenerPort}},
+		{"clickhouse", metav1.LabelSelector{MatchLabels: map[string]string{clickHouseAppLabel: clickHouseAppValue}, MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(clickHouseInstallationLabel)}}, []int32{clickHouseHTTPPort, clickHouseNativePort}},
+		{"tidb", tidbComponentPods("tidb"), []int32{tidbPort}},
+		{"cassandra", metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(cassandraClusterLabel)}}, []int32{cassandraPort}},
+		{"valkey", metav1.LabelSelector{MatchLabels: map[string]string{workspaceManagedByLabel: valkeyManagedBy}, MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(valkeyClusterLabel)}}, []int32{valkeyPort}},
+	}
+	policies := make([]oramav1alpha1.NetworkSandboxPolicy, 0, len(paths))
+	for _, path := range paths {
+		policies = append(policies, sandboxAllowance(
+			"Lake uses workspace "+path.kind+" connection endpoints from its services Secret for Data / Connections and service_connection checks.",
+			networkPolicy("allow-lake-to-workspace-"+path.kind, lakePods, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil,
+				[]networkingv1.NetworkPolicyEgressRule{{To: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: namespaces, PodSelector: &path.pods}}, Ports: tcpPorts(path.ports...)}},
+			),
+		))
+	}
+	return policies
+}
+
+func lakeRequestsForAppSandbox(_ context.Context, object client.Object) []reconcile.Request {
+	app, ok := object.(*oramav1alpha1.LakeApp)
+	if !ok || app.Spec.LakeRef == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: app.Spec.LakeRef}}}
+}
+
+func (r *LakeReconciler) lakeAppProxyAllowances(ctx context.Context, lake *oramav1alpha1.Lake, pods metav1.LabelSelector) ([]oramav1alpha1.NetworkSandboxPolicy, error) {
+	var apps oramav1alpha1.LakeAppList
+	if err := r.List(ctx, &apps, client.InNamespace(lakeNamespace(lake))); err != nil {
+		return nil, err
+	}
+	sort.Slice(apps.Items, func(i, j int) bool {
+		return apps.Items[i].Name < apps.Items[j].Name
+	})
+	var rules []networkingv1.NetworkPolicyEgressRule
+	for i := range apps.Items {
+		app := &apps.Items[i]
+		if app.Spec.LakeRef != lake.Name || app.Spec.Port < 1 || app.Spec.Port > 65535 {
+			continue
+		}
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+			To:    []networkingv1.NetworkPolicyPeer{namespacePodPeer(lakeAppNamespace(app), lakeAppLabels(app))},
+			Ports: tcpPorts(app.Spec.Port),
+		})
+	}
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	return []oramav1alpha1.NetworkSandboxPolicy{sandboxAllowance(
+		"Lake may proxy its LakeApp backends; inferred from each app's declared backend namespace, pod identity and container port.",
+		networkPolicy("allow-lake-to-apps", pods, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil, rules),
+	)}, nil
 }

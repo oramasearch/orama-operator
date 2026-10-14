@@ -100,6 +100,28 @@ declared ports. This stage does not change those specs.
 | `allow-agents-public-https` | Library agents reach configured model providers over public 443. |
 | `allow-controldb-backup-public-https` | CNPG reaches configured R2/S3 backup endpoints over public 443. |
 | `allow-ingress-nginx` | ingress-nginx reaches only Lake's application port for its own Ingress and LakeApp auth subrequests. |
+| `allow-lake-clients-to-controldb`, `allow-lake-ingress-to-zetta`, `allow-lake-ingress-to-agents`, `allow-agent-ingress-to-lake` | Destination-side ingress matching the Lake, schema and library-agent egress rules above. Both isolated ends need a rule. |
+| `allow-build-ingress-to-lake` | Only this Lake's builder pods in its labelled build namespaces reach the Lake application port for source, registry and build events. |
+| `allow-lake-to-workspace-postgres`, `allow-lake-to-workspace-kafka`, `allow-lake-to-workspace-clickhouse`, `allow-lake-to-workspace-tidb`, `allow-lake-to-workspace-cassandra`, `allow-lake-to-workspace-valkey` | Lake reaches vendor-labelled pods only in its workspace namespaces on 5432, 9092, 8123/9000, 4000, 9042 and 6379 respectively. |
+| `allow-lake-to-apps` | Lake egress to each of its declared LakeApp backend namespaces, exact app pod labels and configured container ports. App changes and deletion requeue Lake to update or remove these rules. |
+
+The traffic audit covered `lake_controller.go`, `lake_apps*.go`, `lake_builds.go`,
+`lake_services*.go` and the service-kind renderers. `LAKE_SERVICE_DIR` contains Zetta, Postgres
+and catalog connection credentials; the Data / Connections and `service_connection` consumers
+are **inferred** from that runtime contract (their implementation is outside this repository).
+SQLite, DuckDB and Polars wrappers already use 8080, covered by `allow-lake-to-workspaces`;
+Zetta uses 4800. Catalog egress uses only the ports emitted in the credentials.
+
+BuildKit runs inside each build Job. Source fetches, registry pushes and events flow from the
+builder to Lake (`buildEnv` and `buildEgressRules`); Lake does not connect to a BuildKit daemon.
+The operator reads build logs via the Kubernetes API, not via Lake pod egress. App-proxy egress
+is **inferred** from the declared LakeApp backend Service and port; the generated public app URL
+is also reachable through Lake's existing public HTTPS allowance.
+
+These new egress rules do not broaden the existing workspace or LakeApp ingress policies.
+Workspace ingress from Lake remains 4800/8080; app-specific ingress remains ingress-nginx-only.
+Direct database/catalog or app-backend connections therefore still require a separate approved
+destination-side ingress change. Preserving those policies is the workspace migration gate.
 
 The backup endpoint path is **inferred** from Lake's CNPG backup contract: the resource supplies an
 object-store endpoint, but the reconciled CNPG object does not expose a stable destination CIDR.
