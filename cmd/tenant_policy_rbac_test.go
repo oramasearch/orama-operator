@@ -48,6 +48,7 @@ var protectedPolicyResources = []protectedPolicyResource{
 	{group: "orama.cloud", resource: "peerconnections"},
 	{group: "orama.cloud", resource: "zettatunnels"},
 	{group: "orama.cloud", resource: "cloudflaretunnels"},
+	{group: "orama.cloud", resource: "tunnelproviders"},
 }
 
 var (

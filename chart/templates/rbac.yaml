@@ -24,6 +24,10 @@ rules:
       - oramacloudv1s
       - networksandboxes
       - connections
+      - tunnels
+      - tunnelproviders
+      - zettatunnels
+      - cloudflaretunnels
       - oramazettaclusters
       - oramacloudv1e2etests
       - zettaclustere2etests
@@ -53,6 +57,10 @@ rules:
       - oramacloudv1s/status
       - networksandboxes/status
       - connections/status
+      - tunnels/status
+      - tunnelproviders/status
+      - zettatunnels/status
+      - cloudflaretunnels/status
       - oramazettaclusters/status
       - oramacloudv1e2etests/status
       - zettaclustere2etests/status
@@ -70,6 +78,9 @@ rules:
       - lakesealedsecrets/status
       - oramacloudv1s/finalizers
       - connections/finalizers
+      - tunnels/finalizers
+      - zettatunnels/finalizers
+      - cloudflaretunnels/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
       - cloudflarekvnamespaces/finalizers

@@ -40,7 +40,7 @@ Lake IDs are mapped to labels the operator owns:
 | app | the existing `orama.cloud/lake-app-id` workload identity resolved from the Lake-owned `LakeApp` carrying `orama.cloud/app-id=<source_id>` |
 | service | `orama.cloud/service-id=<id>` |
 | agent | `orama.cloud/agent-id=<id>` |
-| tunnel | `orama.cloud/tunnel-grant-id=<id>`; the tunnel workload arrives with #471 |
+| tunnel | `orama.cloud/tunnel-grant-id=<id>`: the grant's zetta-tunnel endpoint or `cloudflared` connector. The operator generates `Connection/connection-tunnel-<grant id>` itself, controlled by the `ZettaTunnel` or `CloudflareTunnel` of the same Lake and grant ([tunnels](tunnels.md)) |
 
 Targets are services or apps. A peer with only a pod selector is namespace-local, so even a bad ID
 cannot select a workload in another workspace. Explicit `ports` are TCP destination ports. An empty

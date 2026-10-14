@@ -17,6 +17,9 @@ and build identities are denied (#467). The design decisions are recorded in sec
 After Lake migration `0084_network` installs `network_guard`, one `Connection` is materialized per
 desired row and supplies paired sandbox-owned policy; the blanket workspace path is retired only
 after every initial row is Ready (#468). See [Declared workspace connections](connections.md).
+Stage 4 is implemented and native-tested (#471): Lake tunnel grants become `Tunnel`s carried by
+zetta-tunnel's relay and a per-grant endpoint, or by a customer's own Cloudflare account; status returns
+`endpoint` and `relay_ca_pem` (section 11.1). See [Developer tunnels](tunnels.md).
 
 ---
 
@@ -260,7 +263,7 @@ Filed 2026-10-14; the list is kept on the epics: #437 (operator, zetta-tunnel, Z
 - https://github.com/oramasearch/orama-operator/issues/468: Connection: declared connections between workloads, replacing allow-workspace-internal (stage 2, implemented and native-tested; nonprod probe pending)
 - https://github.com/oramasearch/orama-operator/issues/469: Credentials on connections: native datastore roles, Postgres first (stage 2)
 - https://github.com/oramasearch/orama-operator/issues/470: EgressRule: outbound by address and by DNS name (stage 3)
-- https://github.com/oramasearch/orama-operator/issues/471: Tunnel: the kind, with ZettaTunnel and a customer's own CloudflareTunnel as providers (stage 4)
+- https://github.com/oramasearch/orama-operator/issues/471: Tunnel: the kind, with ZettaTunnel and a customer's own CloudflareTunnel as providers (stage 4, implemented and native-tested; nonprod acceptance pending)
 - https://github.com/oramasearch/orama-operator/issues/472: PeerConnection: named services between clusters through zetta-tunnel gateways (stage 5)
 - https://github.com/oramasearch/orama-operator/issues/473: Ingress through zetta-tunnel, replacing ingress-nginx (stage 6)
 - https://github.com/oramasearch/orama-operator/issues/474: Mesh: zetta-tunnel's node agent on every cluster (stage 6)

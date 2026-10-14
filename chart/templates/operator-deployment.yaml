@@ -38,6 +38,8 @@ spec:
             {{- with .Values.lakeServices.polarsImage }}
             - --lake-polars-image={{ . }}
             {{- end }}
+            - --zetta-tunnel-image={{ .Values.networking.zettaTunnelImage }}
+            - --cloudflared-image={{ .Values.networking.cloudflaredImage }}
           ports:
             - name: control-plane
               containerPort: {{ .Values.controlPlane.service.port }}

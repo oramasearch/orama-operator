@@ -313,6 +313,75 @@ not the `Connection`, owns the resulting `NetworkPolicy` objects. Details:
 | `status.observedGeneration` | Lake generation represented by the status and returned to Postgres. |
 | `status.conditions[Ready]` | True only after the paired policies have been rendered. Stable reconciliation does not rewrite it. |
 
+## `Tunnel` (separate CRD, namespaced) — one person, one target, for a time
+
+Short name: `tun`. The abstract kind (principle 10): Lake's guarded intake creates one per
+`network_tunnel_grants` row in the workspace namespace, named `tunnel-<grant id>`. Users and tenant
+workloads do not write it. The controller picks the concrete kind from `spec.providerRef`, keeps
+exactly that child, mirrors its status, and on expiry or revocation deletes the child before
+reporting `Expired` or `Revoked`. Details: [`infrastructure/tunnels.md`](infrastructure/tunnels.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.lakeRef` / `.grantId` | The Lake and the grant row id. Immutable. The grant id is the identity in the developer's certificate. |
+| `spec.customerId` / `.workspaceId` | Immutable Lake ownership UUIDs. |
+| `spec.userId` | The Lake user the grant is for. |
+| `spec.targetKind` / `.targetId` / `.port` | `service \| app`, its Lake UUID and the target Service's port (1–65535). Nothing else is reachable. |
+| `spec.expiresAt` / `.revokedAt` | The grant ends at `expiresAt`, or at once when `revokedAt` is set. |
+| `spec.clientCAPEM` | Lake's per-customer CA (public), from `client_ca_pem` (Lake 0085). Required by `ZettaTunnel`. |
+| `spec.subject` | The person's e-mail address, set only for a `cloudflare` provider (Cloudflare Access). |
+| `spec.providerRef` | A `TunnelProvider` in the namespace. Empty: Orama's own `ZettaTunnel`. |
+| `spec.generation` | Lake row generation, minimum 1. |
+| `status.phase` / `.message` | `Pending \| Ready \| Expired \| Revoked \| Failed`. |
+| `status.provider` | `ZettaTunnel` or `CloudflareTunnel`. |
+| `status.endpoint` / `.relayCAPEM` | What the client connects to, and the relay's CA, only while `Ready`; returned to `network_tunnel_grant_status`. |
+| `status.observedGeneration` / `.conditions[Ready]` | Lake generation acknowledged; comparison-gated. |
+
+## `TunnelProvider` (separate CRD, namespaced) — the vendor, account and credentials behind tunnels
+
+Short name: `tunprov`. A `TunnelProvider` named `default` in a workspace namespace is the provider
+for that workspace's Lake-granted tunnels. CEL rules require `spec.cloudflare` for type `cloudflare`
+and forbid it for `zetta`. The controller reports `conditions[Ready]` (the token Secret and key
+exist); it never calls the vendor.
+
+| Field | Meaning |
+|---|---|
+| `spec.type` | `zetta` (Orama's own zetta-tunnel) or `cloudflare` (the customer's own account only). |
+| `spec.customerId` | The Lake customer it belongs to. A `Tunnel` of another customer is refused. |
+| `spec.cloudflare.accountId` / `.zoneId` / `.domain` | The customer's account, zone and the domain under which hostnames `tunnel-<grant id>.<domain>` are made. |
+| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of a Secret in the namespace: the customer's API token (Cloudflare Tunnel edit, Access apps and policies edit, DNS edit). Never written or logged by the operator. |
+
+## `ZettaTunnel` (separate CRD, namespaced) — a tunnel carried by zetta-tunnel
+
+Short name: `ztun`. Created and owned by a `Tunnel`. Runs the grant's zetta-tunnel endpoint in the
+workspace (Secret, Service and Deployment `tunnel-<grant id>`), the generated
+`Connection/connection-tunnel-<grant id>` from the endpoint to the target, and the workspace sandbox
+allowance admitting only the relay. Every `ZettaTunnel` feeds the cluster's one relay in namespace
+`zetta-tunnel`. A finalizer removes the allowance, the endpoint and the Connection before it goes.
+
+| Field | Meaning |
+|---|---|
+| `spec.lakeRef`, `.grantId`, `.customerId`, `.workspaceId`, `.targetKind`, `.targetId`, `.port`, `.expiresAt` | The grant, copied from the `Tunnel`. |
+| `spec.clientCAPEM` | The CA(s) the relay trusts for this grant's developer certificates. |
+| `status.phase` / `.message` | `Pending \| Ready \| Expired \| Failed`. |
+| `status.endpoint` / `.relayCAPEM` | The relay's public `host:443` and its server CA, while `Ready`. |
+| `status.target` | The in-cluster `host:port` the endpoint is fixed to. |
+
+## `CloudflareTunnel` (separate CRD, namespaced) — a tunnel carried by the customer's Cloudflare account
+
+Short name: `cftun`. Created and owned by a `Tunnel` whose provider is of type `cloudflare`. Makes a
+remotely managed tunnel, a CNAME and an Access application admitting only `spec.subject` in the
+customer's account, and runs `cloudflared` in the workspace with the generated Connection to the
+target. A finalizer deletes those Cloudflare objects with the customer's token.
+
+| Field | Meaning |
+|---|---|
+| grant fields | As on `ZettaTunnel`. |
+| `spec.providerRef` | The `cloudflare` `TunnelProvider`. |
+| `spec.subject` | The one e-mail address Cloudflare Access admits. |
+| `status.endpoint` | The hostname `tunnel-<grant id>.<domain>`. |
+| `status.tunnelId` / `.dnsRecordId` / `.accessApplicationId` | The Cloudflare objects made, deleted exactly at teardown. |
+
 ## `ClerkApplication` (separate CRD) — Clerk auth per environment
 
 Provisions a **Clerk application per environment** (dev/testing/staging/prod) via the Clerk

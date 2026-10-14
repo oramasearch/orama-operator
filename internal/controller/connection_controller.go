@@ -209,7 +209,7 @@ func (r *ConnectionReconciler) workspaceSandbox(
 		}
 		return nil, err
 	}
-	if !metav1.IsControlledBy(connection, &lake) {
+	if !metav1.IsControlledBy(connection, &lake) && !connectionControlledByLakeTunnel(ctx, r.Client, connection) {
 		return nil, fmt.Errorf("Connection is not controlled by Lake %q", lake.Name)
 	}
 	var sandbox oramav1alpha1.NetworkSandbox
