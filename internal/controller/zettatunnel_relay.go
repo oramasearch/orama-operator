@@ -63,9 +63,11 @@ type zettaTunnelGrantsDocument struct {
 // projects the live grants and the union of their client CAs into the files the relay reads.
 type zettaTunnelRelayReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Image  string
-	Now    func() time.Time
+	// APIReader reads Namespaces uncached; the operator never lists or watches them (operator#106).
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Image     string
+	Now       func() time.Time
 }
 
 func (r *zettaTunnelRelayReconciler) now() time.Time {
@@ -116,11 +118,11 @@ func (r *zettaTunnelRelayReconciler) Reconcile(ctx context.Context, _ ctrl.Reque
 		return ctrl.Result{}, r.removeRelay(ctx)
 	}
 	now := r.now()
-	namespace, err := ensureOperatorNamespace(ctx, r.Client, zettaTunnelNamespace, tunnelNamespaceLabels())
+	namespace, err := ensureOperatorNamespace(ctx, r.APIReader, r.Client, zettaTunnelNamespace, tunnelNamespaceLabels())
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	pki, err := ensureZettaTunnelPKI(ctx, r.Client, now)
+	pki, err := ensureZettaTunnelPKI(ctx, r.APIReader, r.Client, now)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

@@ -213,7 +213,7 @@ func (r *ZettaTunnelReconciler) reconcileLive(
 		}
 		return ctrl.Result{}, zettaTunnelInvalid{message: err.Error()}
 	}
-	pki, err := ensureZettaTunnelPKI(ctx, r.Client, now)
+	pki, err := ensureZettaTunnelPKI(ctx, r.APIReader, r.Client, now)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -688,7 +688,7 @@ func (r *ZettaTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r); err != nil {
 		return err
 	}
-	relay := &zettaTunnelRelayReconciler{Client: r.Client, Scheme: r.Scheme, Image: r.Image, Now: r.Now}
+	relay := &zettaTunnelRelayReconciler{Client: r.Client, APIReader: r.APIReader, Scheme: r.Scheme, Image: r.Image, Now: r.Now}
 	if err := relay.SetupWithManager(mgr); err != nil {
 		return err
 	}

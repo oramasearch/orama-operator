@@ -106,7 +106,7 @@ func TestIngressGatewayServesEveryOperatorHostItCanAndRefusesTheRest(t *testing.
 		WithStatusSubresource(&networkingv1.Ingress{}, &corev1.Service{}, &appsv1.Deployment{}, &oramav1alpha1.NetworkSandbox{}).
 		WithObjects(objects...).Build()
 	t.Setenv("HOSTNAME", "orama-operator-abc")
-	r := &zettaTunnelIngressReconciler{Client: kube, APIReader: kube, Scheme: scheme, OperatorNamespace: "orama-system"}
+	r := &zettaTunnelIngressReconciler{Client: namespaceCacheGuard{kube}, APIReader: kube, Scheme: scheme, OperatorNamespace: "orama-system"}
 	reconcile := func() {
 		t.Helper()
 		for i := 0; i < 2; i++ {

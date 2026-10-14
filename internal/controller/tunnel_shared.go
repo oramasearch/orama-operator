@@ -73,16 +73,21 @@ func tunnelNamespaceLabels() map[string]string {
 }
 
 // ensureOperatorNamespace creates namespace with labels, or confirms an existing one is the
-// operator's. It never adopts a namespace someone else made.
-func ensureOperatorNamespace(ctx context.Context, c client.Client, name string, labels map[string]string) (*corev1.Namespace, error) {
+// operator's. It never adopts a namespace someone else made. Namespaces are read through reader,
+// which must be uncached: the operator may get Namespaces but never list or watch them
+// (operator#106), so a cached read would start an informer that can never sync.
+func ensureOperatorNamespace(ctx context.Context, reader client.Reader, c client.Client, name string, labels map[string]string) (*corev1.Namespace, error) {
+	if reader == nil {
+		reader = c
+	}
 	var namespace corev1.Namespace
-	err := c.Get(ctx, client.ObjectKey{Name: name}, &namespace)
+	err := reader.Get(ctx, client.ObjectKey{Name: name}, &namespace)
 	if apierrors.IsNotFound(err) {
 		namespace = corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: copyStringMap(labels)}}
 		if err := c.Create(ctx, &namespace); err != nil && !apierrors.IsAlreadyExists(err) {
 			return nil, fmt.Errorf("create namespace %s: %w", name, err)
 		}
-		if err := c.Get(ctx, client.ObjectKey{Name: name}, &namespace); err != nil {
+		if err := reader.Get(ctx, client.ObjectKey{Name: name}, &namespace); err != nil {
 			return nil, err
 		}
 	} else if err != nil {
@@ -112,8 +117,8 @@ func ensureOperatorNamespace(ctx context.Context, c client.Client, name string, 
 
 // ensureZettaTunnelPKI returns the CAs, minting them once. They are never rotated by the operator;
 // a rotation is a deliberate deletion of the Secret, which reissues every leaf.
-func ensureZettaTunnelPKI(ctx context.Context, c client.Client, now time.Time) (zettaTunnelPKI, error) {
-	if _, err := ensureOperatorNamespace(ctx, c, zettaTunnelNamespace, tunnelNamespaceLabels()); err != nil {
+func ensureZettaTunnelPKI(ctx context.Context, reader client.Reader, c client.Client, now time.Time) (zettaTunnelPKI, error) {
+	if _, err := ensureOperatorNamespace(ctx, reader, c, zettaTunnelNamespace, tunnelNamespaceLabels()); err != nil {
 		return zettaTunnelPKI{}, err
 	}
 	key := client.ObjectKey{Namespace: zettaTunnelNamespace, Name: zettaTunnelPKISecret}
