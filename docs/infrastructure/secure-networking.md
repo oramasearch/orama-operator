@@ -27,6 +27,9 @@ path; `internetEgress` is now the operator's own rule with the same policy (#470
 Stage 4 is implemented and native-tested (#471): Lake tunnel grants become `Tunnel`s carried by
 zetta-tunnel's relay and a per-grant endpoint, or by a customer's own Cloudflare account; status returns
 `endpoint` and `relay_ca_pem` (section 11.1). See [Developer tunnels](tunnels.md).
+Stage 5 is implemented and native-tested (#472): `network_peers` rows become `PeerConnection`s, one
+zetta-tunnel peer gateway per end, with credentials delivered only by a `PeerLink` on the managing
+cluster. See [Peer connections](peer-connections.md).
 
 ---
 
@@ -272,7 +275,7 @@ Filed 2026-10-14; the list is kept on the epics: #437 (operator, zetta-tunnel, Z
 - https://github.com/oramasearch/orama-operator/issues/469: Credentials on connections: native datastore roles, Postgres first (stage 2, Postgres implemented and tested against a real server; nonprod probe pending)
 - https://github.com/oramasearch/orama-operator/issues/470: EgressRule: outbound by address and by DNS name (stage 3, implemented and tested against the zetta-tunnel binary; nonprod probe pending)
 - https://github.com/oramasearch/orama-operator/issues/471: Tunnel: the kind, with ZettaTunnel and a customer's own CloudflareTunnel as providers (stage 4, implemented and native-tested; nonprod acceptance pending)
-- https://github.com/oramasearch/orama-operator/issues/472: PeerConnection: named services between clusters through zetta-tunnel gateways (stage 5)
+- https://github.com/oramasearch/orama-operator/issues/472: PeerConnection: named services between clusters through zetta-tunnel gateways (stage 5, implemented and native-tested; two-cluster rehearsal pending)
 - https://github.com/oramasearch/orama-operator/issues/473: Ingress through zetta-tunnel, replacing ingress-nginx (stage 6)
 - https://github.com/oramasearch/orama-operator/issues/474: Mesh: zetta-tunnel's node agent on every cluster (stage 6)
 

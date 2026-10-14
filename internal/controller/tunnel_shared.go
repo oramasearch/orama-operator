@@ -351,8 +351,8 @@ func connectionControlledByLakeTunnel(ctx context.Context, c client.Reader, conn
 		grant.TargetID == connection.Spec.TargetID
 }
 
-// workspaceTunnelAllowanceNames lists the sandbox allowances the namespace's live tunnels own, so the
-// Lake workspace renderer keeps them when it rewrites the sandbox.
+// workspaceTunnelAllowanceNames lists the sandbox allowances the namespace's live tunnels and peers
+// own, so the Lake workspace renderer keeps them when it rewrites the sandbox.
 func workspaceTunnelAllowanceNames(ctx context.Context, c client.Client, namespace string) ([]string, error) {
 	var names []string
 	var zetta oramav1alpha1.ZettaTunnelList
@@ -373,5 +373,9 @@ func workspaceTunnelAllowanceNames(ctx context.Context, c client.Client, namespa
 			names = append(names, cloudflareTunnelEgressAllowance(cloudflare.Items[i].Spec.GrantID))
 		}
 	}
-	return names, nil
+	peers, err := peerAllowanceNames(ctx, c, namespace)
+	if err != nil {
+		return nil, err
+	}
+	return append(names, peers...), nil
 }

@@ -274,3 +274,48 @@ func TestTunnelCRDsRefuseMalformedResources(t *testing.T) {
 		}
 	}
 }
+
+func TestPeerCRDsRefuseMalformedResources(t *testing.T) {
+	assets := os.Getenv("KUBEBUILDER_ASSETS")
+	if assets == "" {
+		t.Skip("KUBEBUILDER_ASSETS is required for the PeerConnection CRD envtest")
+	}
+	environment := &envtest.Environment{BinaryAssetsDirectory: assets, CRDDirectoryPaths: []string{"../../config/crd/bases"}, ErrorIfCRDPathMissing: true}
+	config, err := environment.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = environment.Stop() })
+	kube, err := client.New(config, client.Options{Scheme: newLakeScheme(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for name, spec := range map[string]oramav1alpha1.PeerConnectionSpec{
+		"kubernetesService without serviceName": {PeerID: testPeerID, Exports: []oramav1alpha1.PeerExport{{TargetKind: "kubernetesService", Port: 1}}},
+		"service without targetId":              {PeerID: testPeerID, Exports: []oramav1alpha1.PeerExport{{TargetKind: "service", Port: 1}}},
+		"wildcard import":                       {PeerID: testPeerID, Imports: []oramav1alpha1.PeerImport{{Name: "*.eu", Port: 1}}},
+		"peer id":                               {PeerID: "x"},
+	} {
+		peer := &oramav1alpha1.PeerConnection{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"}, Spec: spec}
+		if err := kube.Create(ctx, peer); !apierrors.IsInvalid(err) {
+			t.Fatalf("%s: accepted (%v)", name, err)
+		}
+	}
+	peer := &oramav1alpha1.PeerConnection{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"}, Spec: oramav1alpha1.PeerConnectionSpec{PeerID: testPeerID}}
+	if err := kube.Create(ctx, peer); err != nil {
+		t.Fatal(err)
+	}
+	if peer.Spec.Desired != "present" || peer.Spec.Generation != 1 {
+		t.Fatalf("defaults = %+v", peer.Spec)
+	}
+	for name, ends := range map[string][]oramav1alpha1.PeerLinkEnd{
+		"one end":        {{Name: "eu", Namespace: "a", PeerConnection: "p"}},
+		"same end names": {{Name: "eu", Namespace: "a", PeerConnection: "p"}, {Name: "eu", Namespace: "b", PeerConnection: "p"}},
+	} {
+		link := &oramav1alpha1.PeerLink{ObjectMeta: metav1.ObjectMeta{Name: "l"}, Spec: oramav1alpha1.PeerLinkSpec{PeerID: testPeerID, Ends: ends}}
+		if err := kube.Create(ctx, link); !apierrors.IsInvalid(err) {
+			t.Fatalf("%s: accepted (%v)", name, err)
+		}
+	}
+}

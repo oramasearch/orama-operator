@@ -1,0 +1,308 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: peerconnections.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: PeerConnection
+    listKind: PeerConnectionList
+    plural: peerconnections
+    shortNames:
+    - peer
+    singular: peerconnection
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.address
+      name: Address
+      type: string
+    - jsonPath: .spec.remote
+      name: Remote
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PeerConnection is one end of a peer: named services exchanged with another cluster or network
+          through zetta-tunnel's peer gateway.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PeerConnectionSpec exchanges named services with another cluster or network through
+              zetta-tunnel's peer gateway at each end (decision D6). No address is routed.
+            properties:
+              credentialsSecretName:
+                description: |-
+                  CredentialsSecretName holds this gateway's tls.crt and tls.key, the trust root ca.crt and the
+                  other end's identity peer-name (and optionally remote). The managing cluster's PeerLink writes
+                  it; nobody writes it by hand. Empty means <name>-credentials.
+                type: string
+              customerId:
+                description: CustomerID and WorkspaceID are Lake's, for a Lake peer.
+                format: uuid
+                type: string
+              desired:
+                default: present
+                description: Desired removes the gateway, its Services and its policies
+                  before the CR goes when absent.
+                enum:
+                - present
+                - absent
+                type: string
+              exports:
+                description: Exports are the named services the other end may reach
+                  here, and nothing else.
+                items:
+                  description: PeerExport is one named service this end offers the
+                    other end.
+                  properties:
+                    name:
+                      description: Name is what the other end imports. Empty means
+                        the target Kubernetes Service's name.
+                      maxLength: 253
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      type: string
+                    port:
+                      description: Port is the target Service's TCP port.
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    serviceName:
+                      description: ServiceName is a kubernetesService target.
+                      minLength: 1
+                      type: string
+                    targetId:
+                      description: TargetID is the Lake id of a service or app target.
+                      format: uuid
+                      type: string
+                    targetKind:
+                      description: |-
+                        TargetKind is a Lake service or app (by Lake id), or a Kubernetes Service in this namespace
+                        (Orama's own stacks).
+                      enum:
+                      - service
+                      - app
+                      - kubernetesService
+                      type: string
+                  required:
+                  - port
+                  - targetKind
+                  type: object
+                  x-kubernetes-validations:
+                  - message: a kubernetesService export names serviceName; a service
+                      or app export names targetId
+                    rule: 'self.targetKind == ''kubernetesService'' ? has(self.serviceName)
+                      : has(self.targetId)'
+                maxItems: 256
+                type: array
+              generation:
+                default: 1
+                description: Generation is the desired-row generation, acknowledged
+                  in status.
+                format: int64
+                minimum: 1
+                type: integer
+              imports:
+                description: Imports are the other end's named services made reachable
+                  here.
+                items:
+                  description: PeerImport is one named service of the other end made
+                    reachable here.
+                  properties:
+                    name:
+                      description: Name is the other end's export name.
+                      maxLength: 253
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      type: string
+                    port:
+                      description: Port is the other end's export port, and the port
+                        of the local Service that reaches it.
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                  required:
+                  - name
+                  - port
+                  type: object
+                maxItems: 256
+                type: array
+              lakeRef:
+                description: LakeRef names the Lake whose control plane declared this
+                  peer. Empty for Orama's own stacks.
+                type: string
+              peerId:
+                description: |-
+                  PeerID is the identity both ends share: the gateways refuse a request naming another one.
+                  For a Lake peer it is the network_peers row id.
+                format: uuid
+                type: string
+                x-kubernetes-validations:
+                - message: peerId is immutable
+                  rule: self == oldSelf
+              pullSecretName:
+                description: PullSecretName is the image pull secret for the gateway.
+                  A Lake peer uses the Lake's.
+                type: string
+              remote:
+                description: |-
+                  Remote is the other gateway's host:port. Empty means the address the managing cluster's
+                  PeerLink wrote into the credentials Secret (key "remote").
+                type: string
+              workspaceId:
+                format: uuid
+                type: string
+            required:
+            - peerId
+            type: object
+          status:
+            description: PeerConnectionStatus is returned to network_peer_status for
+              a Lake peer.
+            properties:
+              address:
+                description: Address is this gateway's public host:port, the other
+                  end's remote.
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              exports:
+                items:
+                  description: PeerExportStatus is what an export resolved to.
+                  properties:
+                    name:
+                      type: string
+                    port:
+                      format: int32
+                      type: integer
+                    target:
+                      type: string
+                  required:
+                  - name
+                  - port
+                  - target
+                  type: object
+                type: array
+              identity:
+                description: Identity is the name in this gateway's certificate.
+                type: string
+              imports:
+                items:
+                  description: PeerImportStatus is where an import is reachable in
+                    this namespace.
+                  properties:
+                    name:
+                      type: string
+                    port:
+                      format: int32
+                      type: integer
+                    service:
+                      description: Service is the ClusterIP Service in this namespace
+                        that reaches the import.
+                      type: string
+                  required:
+                  - name
+                  - port
+                  - service
+                  type: object
+                type: array
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: Phase is Pending, Ready, Failed or Deleted.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
