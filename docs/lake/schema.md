@@ -8,13 +8,11 @@ Job and pods to disappear. This is a metadata upgrade, not a schema version chan
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit 396e55caf21f4aba9a36d7573118d6a51d30597d](https://github.com/oramasearch/lake/blob/396e55caf21f4aba9a36d7573118d6a51d30597d/db/schema.sql)
-(branch `integration-final`: lake `main` through `0079_mcp_connection_dispatch`, then the lake PRs
-that add `0080_store_mounts` (lake#666), `0081_app_transfer` (lake#661), `0082_methodology_run_queue`
-(orama-operator#293) and `0083_methodology_deployments` (lake#690), merged in that order). Its
-SHA-256 is
-`dc99d51ca205bf4326fb34b8169340e57d2b6efdd0e59396b2cd06ceb5cc5347`. Re-pin to lake `main` once
-those PRs land there.
+[`oramasearch/lake` commit 6fdf829db9f87552cd8040814732ce68af2cc52d](https://github.com/oramasearch/lake/blob/6fdf829db9f87552cd8040814732ce68af2cc52d/db/schema.sql)
+(lake `dev` through `0085_network_tunnel_ca`: `0084_network` (lake#727) adds the secure-networking
+desired-state tables, their operator-owned status twins and `network_guard`; `0085_network_tunnel_ca`
+(lake#730) adds the tunnel client and relay CA columns). Its SHA-256 is
+`f86b8ecd58348ab29dc62e62e94fe806b0dafdcaf5e1ba9159709e539df0d5cb`. Re-pin to lake `main` at its next release.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.

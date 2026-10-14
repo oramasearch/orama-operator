@@ -29,7 +29,7 @@ const (
 	// DefaultZettaTunnelImage is the zetta-tunnel image every role runs unless the manager's
 	// --zetta-tunnel-image flag says otherwise. The repository is private: pods use their owner's
 	// pull secret.
-	DefaultZettaTunnelImage = "oramasearch/zetta-tunnel:dev-933d6fc"
+	DefaultZettaTunnelImage = "oramasearch/zetta-tunnel:dev-00be276"
 
 	zettaTunnelNamespace     = "zetta-tunnel"
 	zettaTunnelPKISecret     = "zetta-tunnel-pki"

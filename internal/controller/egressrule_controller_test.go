@@ -258,7 +258,7 @@ func TestNameRuleAllowsTheSourceOnlyTheGateway(t *testing.T) {
 		"egress", "--rules", "/etc/zetta-tunnel/egress/rules.json", "--listen", "0.0.0.0:7445",
 		"--health-listen", "0.0.0.0:8080", "--sni-port", "443", "--audit", "-",
 	}
-	if container.Image != "oramasearch/zetta-tunnel:dev-933d6fc" || !reflect.DeepEqual(container.Args, wantArgs) ||
+	if container.Image != DefaultZettaTunnelImage || !reflect.DeepEqual(container.Args, wantArgs) ||
 		len(container.Env) != 0 || deployment.Spec.Template.Spec.ImagePullSecrets[0].Name != "dockerhub" ||
 		*deployment.Spec.Template.Spec.AutomountServiceAccountToken || !*container.SecurityContext.ReadOnlyRootFilesystem ||
 		*deployment.Spec.Template.Spec.SecurityContext.RunAsUser != 65532 || !metav1.IsControlledBy(&deployment, f.lake) {
