@@ -118,6 +118,7 @@ func (r *LakeWorkspacesReconciler) apiReader() client.Reader {
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=orama.cloud,resources=egressrules,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;secrets;resourcequotas;limitranges;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;endpoints;nodes,verbs=get;list;watch
@@ -758,6 +759,11 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceProfile(
 	internet bool,
 ) error {
 	labels := workspaceLabels(lake, row)
+	// internetEgress is an EgressRule (operator#470). It is written before the sandbox is rebuilt,
+	// so the rebuild keeps the rule's allowance and the path never closes during the change.
+	if err := r.reconcileWorkspaceInternetRule(ctx, lake, row, namespace, internet); err != nil {
+		return err
+	}
 	if err := r.reconcileWorkspaceNetworkPolicies(ctx, lake, namespace, labels, internet); err != nil {
 		return err
 	}
@@ -871,24 +877,18 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 		policies = append(policies, preserved...)
 		apiErr = errors.Join(apiErr, preserveErr)
 	}
+	// The internetEgress allowance is rendered by its EgressRule (internet-https); while the
+	// override is on, the rebuild keeps what that rule rendered. Turning the override off drops it
+	// here at once, and the rule is deleted.
 	var internetErr error
 	if internet {
-		var policy *networkingv1.NetworkPolicy
-		policy, internetErr = r.workspaceInternetPolicy(ctx, namespace, labels)
-		if internetErr == nil {
-			policies = append(
-				policies,
-				sandboxAllowance(
-					"This workspace explicitly enables HTTPS to public addresses while excluding private, metadata, API, pod and node ranges.",
-					policy,
-				),
-			)
-		} else {
-			preserved, preserveErr := existingSandboxAllowances(ctx, r.Client, namespace, workspaceInternetName)
-			policies = append(policies, preserved...)
-			internetErr = errors.Join(internetErr, preserveErr)
-		}
+		var preserved []oramav1alpha1.NetworkSandboxPolicy
+		preserved, internetErr = existingSandboxAllowances(ctx, r.Client, namespace, workspaceInternetName)
+		policies = append(policies, preserved...)
 	}
+	egressPolicies, egressErr := r.existingWorkspaceEgressAllowances(ctx, namespace)
+	policies = append(policies, egressPolicies...)
+	internetErr = errors.Join(internetErr, egressErr)
 	var mesh *oramav1alpha1.NetworkSandboxMesh
 	if lake.Spec.Workspaces.Overrides[labels[workspaceLabel]].Mesh {
 		mesh = &oramav1alpha1.NetworkSandboxMesh{Enrolled: true}
@@ -944,6 +944,79 @@ func (r *LakeWorkspacesReconciler) existingWorkspaceConnectionAllowances(
 	names = append(names, tunnelNames...)
 	sort.Strings(names)
 	return existingSandboxAllowances(ctx, r.Client, namespace, names...)
+}
+
+// existingWorkspaceEgressAllowances keeps what the workspace's Lake-declared EgressRules rendered.
+func (r *LakeWorkspacesReconciler) existingWorkspaceEgressAllowances(
+	ctx context.Context,
+	namespace string,
+) ([]oramav1alpha1.NetworkSandboxPolicy, error) {
+	var rules oramav1alpha1.EgressRuleList
+	if err := r.List(ctx, &rules, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list workspace EgressRules: %w", err)
+	}
+	var names []string
+	for i := range rules.Items {
+		rule := &rules.Items[i]
+		if rule.Spec.RuleID == "" || rule.Spec.Desired != oramav1alpha1.EgressRuleDesiredPresent || !rule.DeletionTimestamp.IsZero() {
+			continue
+		}
+		names = append(names, egressRuleAllowanceNames(rule)...)
+	}
+	sort.Strings(names)
+	return existingSandboxAllowances(ctx, r.Client, namespace, names...)
+}
+
+// reconcileWorkspaceInternetRule keeps the EgressRule that carries the workspace's internetEgress:
+// port 443 to every public address, exactly what the override has always allowed. It is the
+// operator's own rule (Lake writes no row for it) and is deleted when the override is off.
+func (r *LakeWorkspacesReconciler) reconcileWorkspaceInternetRule(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	row *LakeWorkspaceRow,
+	namespace string,
+	internet bool,
+) error {
+	rule := &oramav1alpha1.EgressRule{ObjectMeta: metav1.ObjectMeta{Name: workspaceInternetRuleName, Namespace: namespace}}
+	if !internet {
+		if err := r.Get(ctx, client.ObjectKeyFromObject(rule), rule); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if !metav1.IsControlledBy(rule, lake) || !rule.DeletionTimestamp.IsZero() {
+			return nil
+		}
+		if err := r.Delete(ctx, rule); err != nil && client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("remove the workspace internet EgressRule: %w", err)
+		}
+		return nil
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, rule, func() error {
+		if rule.ResourceVersion != "" && !metav1.IsControlledBy(rule, lake) {
+			return fmt.Errorf("EgressRule %s/%s is not controlled by Lake %q", namespace, rule.Name, lake.Name)
+		}
+		rule.Labels = withLabels(rule.Labels, map[string]string{
+			serviceLakeLabel: lake.Name,
+			workspaceLabel:   row.ID,
+		})
+		customer := ""
+		if parsed, err := uuid.Parse(row.CustomerID); err == nil && parsed.String() == row.CustomerID {
+			customer = row.CustomerID
+		}
+		rule.Spec = oramav1alpha1.EgressRuleSpec{
+			LakeRef:        lake.Name,
+			CustomerID:     customer,
+			WorkspaceID:    row.ID,
+			PublicInternet: true,
+			Ports:          []int32{443},
+			Desired:        oramav1alpha1.EgressRuleDesiredPresent,
+			Generation:     1,
+		}
+		return controllerutil.SetControllerReference(lake, rule, r.Scheme)
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile the workspace internet EgressRule: %w", err)
+	}
+	return nil
 }
 
 func (r *LakeWorkspacesReconciler) reconcileWorkspaceInternet(

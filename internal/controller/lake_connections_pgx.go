@@ -40,47 +40,59 @@ ON CONFLICT (connection_id) DO UPDATE SET
     observed_generation = EXCLUDED.observed_generation,
     updated_at = now()`
 
-func (s *pgxServiceStore) ListNetworkConnections(ctx context.Context) (LakeNetworkSnapshot, error) {
+// requireNetworkGuard answers errNetworkGuardMissing until Lake's 0084_network installed the
+// guard; nothing else of the network tables is read before it.
+func (s *pgxServiceStore) requireNetworkGuard(ctx context.Context) error {
 	var installed bool
 	guardRows, err := s.db.Query(ctx, networkGuardSQL)
 	if err != nil {
-		return LakeNetworkSnapshot{}, err
+		return err
 	}
 	if !guardRows.Next() {
 		err := guardRows.Err()
 		guardRows.Close()
 		if err != nil {
-			return LakeNetworkSnapshot{}, err
+			return err
 		}
-		return LakeNetworkSnapshot{}, errors.New("network guard query returned no row")
+		return errors.New("network guard query returned no row")
 	}
 	if err := guardRows.Scan(&installed); err != nil {
 		guardRows.Close()
-		return LakeNetworkSnapshot{}, err
+		return err
 	}
 	guardRows.Close()
 	if !installed {
-		return LakeNetworkSnapshot{}, errNetworkGuardMissing
+		return errNetworkGuardMissing
 	}
+	return nil
+}
 
+func (s *pgxServiceStore) listNetworkWorkspaces(ctx context.Context) ([]LakeNetworkWorkspace, error) {
 	workspaceRows, err := s.db.Query(ctx, listNetworkWorkspacesSQL)
 	if err != nil {
-		return LakeNetworkSnapshot{}, err
+		return nil, err
 	}
-	var snapshot LakeNetworkSnapshot
+	defer workspaceRows.Close()
+	var workspaces []LakeNetworkWorkspace
 	for workspaceRows.Next() {
 		var workspace LakeNetworkWorkspace
 		if err := workspaceRows.Scan(&workspace.ID, &workspace.Namespace); err != nil {
-			workspaceRows.Close()
-			return LakeNetworkSnapshot{}, err
+			return nil, err
 		}
-		snapshot.Workspaces = append(snapshot.Workspaces, workspace)
+		workspaces = append(workspaces, workspace)
 	}
-	if err := workspaceRows.Err(); err != nil {
-		workspaceRows.Close()
+	return workspaces, workspaceRows.Err()
+}
+
+func (s *pgxServiceStore) ListNetworkConnections(ctx context.Context) (LakeNetworkSnapshot, error) {
+	if err := s.requireNetworkGuard(ctx); err != nil {
 		return LakeNetworkSnapshot{}, err
 	}
-	workspaceRows.Close()
+	workspaces, err := s.listNetworkWorkspaces(ctx)
+	if err != nil {
+		return LakeNetworkSnapshot{}, err
+	}
+	snapshot := LakeNetworkSnapshot{Workspaces: workspaces}
 
 	rows, err := s.db.Query(ctx, listNetworkConnectionsSQL)
 	if err != nil {

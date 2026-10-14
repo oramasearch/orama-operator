@@ -16,7 +16,9 @@ real cluster has been created with them yet. The first step is one non-productio
 > skill in the umbrella bridge is the short form.
 >
 > **Secure networking** (sandboxes, connections, tunnels, peering; #437) is designed in
-> [`secure-networking.md`](secure-networking.md).
+> [`secure-networking.md`](secure-networking.md); what is built is in
+> [`network-sandbox.md`](network-sandbox.md), [`connections.md`](connections.md) and
+> [`egress-rules.md`](egress-rules.md).
 
 ## The model
 

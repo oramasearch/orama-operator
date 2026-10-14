@@ -320,7 +320,7 @@ func pullSecretsFor(name string) []corev1.LocalObjectReference {
 // connectionControlledByLakeTunnel accepts a Connection generated for a tunnel: its controller is a
 // ZettaTunnel or CloudflareTunnel in the same namespace, for the same Lake and grant, whose source is
 // that grant's workload.
-func connectionControlledByLakeTunnel(ctx context.Context, c client.Client, connection *oramav1alpha1.Connection) bool {
+func connectionControlledByLakeTunnel(ctx context.Context, c client.Reader, connection *oramav1alpha1.Connection) bool {
 	owner := metav1.GetControllerOf(connection)
 	if owner == nil || owner.APIVersion != oramav1alpha1.GroupVersion.String() ||
 		connection.Spec.SourceKind != oramav1alpha1.ConnectionSourceTunnel {
