@@ -3,6 +3,10 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.2.0](v0.2.0.md) — 2026-10-14. The operator manages clusters: AKS clusters, their platform
+  layer and their own operator, and Lake and Orama Cloud v1 instances on them from sets, with one
+  identical operator on every cluster. Every Lake service kind starts in a workspace. 24 resource
+  kinds.
 - [v0.1.0](v0.1.0.md) — 2026-10-12. The first tagged release, so the page is the full inventory:
   all 17 resource kinds and what each reconciles, the deployment control plane, and how the
   operator is installed.

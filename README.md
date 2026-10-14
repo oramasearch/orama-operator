@@ -18,9 +18,14 @@ into running systems:
   `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `ClerkApplication`,
   `LakeSealedSecret`, `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and the three e2e
   test CRDs, including `LakeE2ETest`.
+- The infrastructure kinds: `KubernetesClusterProvider`, `KubernetesCluster` and `AksCluster`
+  create clusters; `ClusterHelmRelease` and `OramaOperator` install a managed cluster's platform
+  layer and its own operator; `LakeSet` and `OramaCloudV1Set` run instances on managed clusters
+  from one template.
 
-That is 17 resource kinds. The [release notes](docs/releases/v0.1.0.md) say what each one
-reconciles.
+That is 24 resource kinds, all installed by the chart on every cluster. The release notes say what
+each one reconciles: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
+[v0.2.0](docs/releases/v0.2.0.md) for the rest.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -28,12 +33,16 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.1.0** (2026-10-12), the first tagged release;
-[`docs/releases/v0.1.0.md`](docs/releases/v0.1.0.md) lists everything in it.
+The current release is **v0.2.0** (2026-10-14);
+[`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md) says what is new since v0.1.0, the first.
 
-The operator runs on Orama's AKS cluster, which is the development environment (there is no
-production environment yet, whatever the cluster's name says). `Lake/prod` is live at
-https://lake.oramadev.net on this operator, with its workspace Zettas, apps, agents and services.
+The operator runs on four AKS clusters. The management cluster, `orama-production-cluster-01`, is
+the development environment whatever its name says; it runs `Lake/prod`, live at
+https://lake.oramadev.net with its workspace Zettas, apps, agents and services. It manages three
+clusters it created: `orama-nonprod-cluster-01` and the production clusters
+`orama-production-cluster-02` and `-03`, which hold no customers yet. Where each runs and how they
+are operated: [`config/clusters/`](config/clusters/README.md) and
+[`docs/infrastructure/operations.md`](docs/infrastructure/operations.md).
 Every `OramaCloudV1` component reconciler is implemented and was validated on AKS; the Cloudflare
 load balancer and the Karpenter capacity slices are implemented but not yet live-tested.
 Per-reconciler status and the remaining hardening work are in
