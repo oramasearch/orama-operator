@@ -308,6 +308,16 @@ Present while the engine is enabled. `True` (`SideImages`) when `spec.images.ove
 `False` (`CombinedImage`) while both sides run the shared `oramacore` image with the combined config,
 which means every reader also starts a writer side. It does not change the stack's `phase`.
 
+### `status.conditions[ClusterRowReady]`
+
+Present while the stack inserts its own `oramacore_clusters` row: an in-cluster control DB that is
+not a replica, outside a read region, with the engine enabled. `True` (`RowPresent`) once the Job
+`<cr>-controldb-cluster-row` succeeded, meaning the control DB has a row: the Job inserted the `c1`
+row into an empty table, or found a row and left it unchanged (its log says which). `False` with
+`WaitingForSchema` (the control DB schema is not applied yet), `Inserting` (the Job is running) or
+`JobFailed`. It does not change the stack's `phase`. See
+[components.md](components.md#controldb-internalcontrollercontroldbgo).
+
 ### `status.conditions[CredentialsReady]`
 
 Always present. `False` (`SeededOrMissingCredentials`) lists every `Secret/key` the running stack reads

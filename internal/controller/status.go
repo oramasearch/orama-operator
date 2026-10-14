@@ -105,8 +105,8 @@ func replicasOf(p *int32) int32 {
 // component is ready; Degraded when one regressed after having been Ready, or when
 // spec.requireRealCredentials is set and CredentialsReady is False; else Progressing),
 // componentsReady ("n/total"), the per-component list, the Ready and CredentialsReady
-// conditions, status.analyticsImport, and the engine snapshots' status and SnapshotsReady condition
-// from this pass. Returns whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
+// conditions, the ClusterRowReady condition, status.analyticsImport, and the engine snapshots' status
+// and SnapshotsReady condition from this pass. Returns whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
 func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, snapshots engineSnapshots) bool {
 	comps := r.componentReadiness(ctx, oc)
 	ready, notReady := 0, []string(nil)
@@ -159,6 +159,15 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 		conditions = append(conditions, *backupCondition)
 	default: // backups off: drop a BackupReady left from when they were on
 		otherChanged = meta.RemoveStatusCondition(&oc.Status.Conditions, "BackupReady")
+	}
+	// ClusterRowReady (#443), dropped when the stack inserts no oramacore_clusters row.
+	switch rowCondition, err := r.controlDBClusterRowCondition(ctx, oc); {
+	case err != nil:
+		log.FromContext(ctx).Error(err, "read control DB cluster-row Job")
+	case rowCondition != nil:
+		conditions = append(conditions, *rowCondition)
+	default:
+		otherChanged = meta.RemoveStatusCondition(&oc.Status.Conditions, clusterRowReadyCondition) || otherChanged
 	}
 	// status.analyticsImport (#315): written on a real change only, like the rest of the status.
 	if analyticsImport, err := r.analyticsImportStatus(ctx, oc); err != nil {

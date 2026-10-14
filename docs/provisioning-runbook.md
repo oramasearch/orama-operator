@@ -151,6 +151,15 @@ for a prod-grade deployment.
   > the dashboard (`POSTGRES_PASSWORD` ← `.password`), and index-builder (`DATABASE_URL` ← `.uri`).
   > **Redis** runs with `requirepass` from `<cr>-cache-auth`; harvest-master's `REDIS_HOST` and
   > index-builder's `REDIS_URL` carry it ([operator#307](https://github.com/oramasearch/orama-operator/issues/307)).
+- **The `oramacore_clusters` row:** on an in-cluster control DB with no row, the operator inserts
+  one (prefix `c1`, `writer_url` `https://<engine.writer.host>`, `reader_url`
+  `https://<engine.reader.host>`, in-cluster URLs when a host is unset, and the master API key) once
+  the schema is applied; `ClusterRowReady=True` says the control DB has a row. It inserts nothing
+  when the table already has any row (a copied control DB keeps its rows, and the master key Secret
+  must then equal theirs), for an external or replica control DB, or without the engine. Set the
+  writer and reader hosts and the master key before the control DB first comes up: the row is
+  written once and never updated. See
+  [components.md](components.md#controldb-internalcontrollercontroldbgo).
 - **In-cluster endpoints** (no external service): `ORAMACORE_WRITER_URL`/`READER_URL`,
   `DISCO_URL`, `HARVEST_MASTER_ENDPOINT` (→ the
   harvest-master service), `DECRYPTER_BASE_URL` (→ the `openai-decrypter` worker),

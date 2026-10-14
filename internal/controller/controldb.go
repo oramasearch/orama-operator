@@ -117,8 +117,10 @@ func (r *OramaCloudV1Reconciler) resolveControlDBBackup(ctx context.Context, oc 
 // with replicate=true it stands up a replica cluster streaming from the primary peer.
 // spec.components.controlDB.storage sizes each instance's PVC, spec.placement pins the instances
 // through the Cluster's affinity, and controlDB.backup adds a Barman object store + an owned
-// ScheduledBackup. Under spec.deletionProtection the Cluster and ScheduledBackup carry no owner
-// reference, so deleting the CR leaves them (and the data) in place.
+// ScheduledBackup. On the primary it applies the dashboard schema, then inserts the stack's
+// oramacore_clusters row when the table is empty (controldb_cluster_row.go). Under
+// spec.deletionProtection the Cluster and ScheduledBackup carry no owner reference, so deleting the
+// CR leaves them (and the data) in place.
 // Requires the CloudNativePG operator to be installed (see helmfile).
 func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	db := oc.Spec.Components.ControlDB
@@ -204,7 +206,11 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 	if controlDBIsReplica(oc) {
 		return nil
 	}
-	return r.reconcileControlDBMigrations(ctx, oc)
+	if err := r.reconcileControlDBMigrations(ctx, oc); err != nil {
+		return err
+	}
+	// Once the schema is applied, insert the stack's oramacore_clusters row into an empty table (#443).
+	return r.reconcileControlDBClusterRow(ctx, oc)
 }
 
 // reconcileControlDBScheduledBackup owns the control DB's ScheduledBackup while backups are

@@ -19,7 +19,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; **never migrates the control DB** — in-cluster, the operator's owned `PostgresSchema` applies the schema (a second Drizzle migrate collides, Postgres `42710`); external, the database's owner runs migrations ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)) | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
-| **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica); + an owned **`PostgresSchema`** applying the dashboard's Drizzle schema (migrations 0000..0008, guard `crawler_configs`) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
+| **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica); + an owned **`PostgresSchema`** applying the dashboard's Drizzle schema (migrations 0000..0008, guard `crawler_configs`); + a Job inserting the `c1` `oramacore_clusters` row into an empty table (#443) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
 | **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data) | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
 | **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
@@ -90,8 +90,9 @@ expands from an earlier `secretKeyRef` env entry (for example
 URL-safe (the generated ones are hex). `MASTER_API_KEY` is an explicit `env` entry, which wins over
 any old `MASTER_API_KEY` still in a component Secret (those copies are no longer read).
 
-`<cr>-master-api-key` must equal the copied control DB's `oramacore_clusters.master_api_key`. A new
-stack gets a random key; a stack reconciled before #307 starts with the value from
+`<cr>-master-api-key` must equal the copied control DB's `oramacore_clusters.master_api_key`; on a
+control DB with no row the operator inserts the `c1` row with this key (see
+[controlDB](#controldb-internalcontrollercontroldbgo)). A new stack gets a random key; a stack reconciled before #307 starts with the value from
 `<cr>-engine-secret` so nothing changes on upgrade. To use an existing Secret instead, set
 `spec.masterAPIKeySecretRef` (`name`, `key` default `MASTER_API_KEY`).
 
@@ -540,6 +541,22 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   `0008_bouncy_ravenous.sql` by hand, which is fully guarded and safe to re-run. 0008 adds the
   `teams.subscription_plan_id` foreign key, so on a database with existing `teams` rows the default
   `subscription_plans` row must exist first.
+- **Cluster row** ([#443](https://github.com/oramasearch/orama-operator/issues/443),
+  `controldb_cluster_row.go`) — once the `PostgresSchema` reports `Applied`, the operator runs the
+  Job `<cr>-controldb-cluster-row` (once, never replaced), which inserts one `oramacore_clusters`
+  row **only when the table has no row at all**, soft-deleted rows included: `name` = the CR name,
+  `cluster_prefix` = `c1`, `writer_url` = `https://<engine.writer.host>`, `reader_url` =
+  `https://<engine.reader.host>` (each falling back to the in-cluster `http://<cr>-writer:8080` /
+  `http://<cr>-reader` when the host is unset), `master_api_key` from the stack's master API key
+  Secret, `cluster_reader_replica_count` = `engine.reader.replicas`, `cluster_writer_count` = 1, and
+  both region columns `["<spec.region.name>"]`. The check and the insert run under a table lock in
+  one transaction. A control DB that already has a row, such as one copied from Prod 1, is never
+  updated or deleted; the Job only logs `already has a row; left unchanged`. No row is inserted for
+  an external or replica control DB, a read region, or a stack without the engine. Values reach
+  `psql` from the environment, so the key is in no argv, log or status. The CR's `ClusterRowReady`
+  condition reports the Job (`WaitingForSchema`, `Inserting`, `RowPresent`, `JobFailed`). The row's
+  `id` is generated: with one row, a dashboard with `ORAMACORE_PLACEMENT_CLUSTER_ID` unset places
+  projects on it.
 
 **Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
