@@ -261,6 +261,11 @@ func (kafkaServiceKind) credential(ctx context.Context, c client.Reader, in cata
 	return credential, "", err
 }
 
+// podSelector: the Kafka's broker and controller pods.
+func (kafkaServiceKind) podSelector(in catalogService) map[string]string {
+	return map[string]string{strimziClusterLabel: in.name, strimziKindLabel: "Kafka"}
+}
+
 // claimSelectors: Strimzi labels every broker and controller claim with the Kafka's name.
 func (kafkaServiceKind) claimSelectors(in catalogService) []client.MatchingLabels {
 	return []client.MatchingLabels{{strimziClusterLabel: in.name, strimziKindLabel: "Kafka"}}

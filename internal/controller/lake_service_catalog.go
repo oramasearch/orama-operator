@@ -163,6 +163,10 @@ type catalogKind interface {
 	// claimSelectors select the PersistentVolumeClaims the upstream operator creates for the
 	// service. Deletion removes them once the upstream objects are gone.
 	claimSelectors(in catalogService) []client.MatchingLabels
+	// podSelector selects the pods a client of the service reaches, by the labels the upstream
+	// operator puts on them. Connections and tunnels select their target with it, and take its
+	// ports from the Services whose selector holds all of it (service_targets.go).
+	podSelector(in catalogService) map[string]string
 	// nameOverhead is how many characters the upstream operator adds to <lake>-<slug> in the
 	// longest name it derives (counting a StatefulSet's 11-character controller-revision-hash
 	// suffix, which must fit a 63-character label value).

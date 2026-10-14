@@ -117,6 +117,11 @@ func (valkeyServiceKind) credential(_ context.Context, _ client.Reader, in catal
 	return credential, "", err
 }
 
+// podSelector: every node of the cluster.
+func (valkeyServiceKind) podSelector(in catalogService) map[string]string {
+	return map[string]string{valkeyClusterLabel: in.name}
+}
+
 // claimSelectors: each ValkeyNode's claim carries the cluster label.
 func (valkeyServiceKind) claimSelectors(in catalogService) []client.MatchingLabels {
 	return []client.MatchingLabels{{valkeyClusterLabel: in.name, "app.kubernetes.io/managed-by": valkeyManagedBy}}

@@ -153,6 +153,11 @@ func (cassandraServiceKind) credential(ctx context.Context, c client.Reader, in 
 	return credential, "", err
 }
 
+// podSelector: every Cassandra node of the cluster.
+func (cassandraServiceKind) podSelector(in catalogService) map[string]string {
+	return map[string]string{cassandraClusterLabel: cassandraSlugName(in)}
+}
+
 // claimSelectors: cass-operator keeps a datacenter's claims after it is deleted.
 func (cassandraServiceKind) claimSelectors(in catalogService) []client.MatchingLabels {
 	return []client.MatchingLabels{{cassandraClusterLabel: cassandraSlugName(in)}}

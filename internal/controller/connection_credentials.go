@@ -162,21 +162,14 @@ func (r *ConnectionReconciler) postgresServiceFor(
 	}, nil
 }
 
-// targetServiceKind reads the kind of the target service from the label every service resource
-// carries, or "" when none is found.
+// targetServiceKind reads the kind of the target service from its primary resource (the one
+// resource that carries its id and kind labels), or "" when none is found.
 func (r *ConnectionReconciler) targetServiceKind(ctx context.Context, connection *oramav1alpha1.Connection) (string, error) {
-	var services corev1.ServiceList
-	if err := r.List(ctx, &services, client.InNamespace(connection.Namespace), client.MatchingLabels{
-		serviceIDLabel: connection.Spec.TargetID,
-	}); err != nil {
+	target, err := resolveServiceTarget(ctx, r.Client, connection.Spec.LakeRef, connection.Namespace, connection.Spec.TargetID)
+	if err != nil {
 		return "", err
 	}
-	for i := range services.Items {
-		if kind := services.Items[i].Labels[serviceKindLabel]; kind != "" {
-			return kind, nil
-		}
-	}
-	return "", nil
+	return target.Kind, nil
 }
 
 // reconcileCredential issues, rotates or re-scopes the connection's credential and returns the
