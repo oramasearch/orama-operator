@@ -227,15 +227,22 @@ to what, into the workspace Zetta.
   desired state the operator enforces in the control plane (decision D1).
 - Lake names a tunnel, never a vendor.
 
-## 7. Zetta's part (to be filed when the design is agreed)
+## 7. Zetta's part
+
+Filed 2026-10-14; each is in an open pull request in `oramasearch/zetta`.
 
 - **Scoped access for apps** to a workspace Zetta, so a `Connection` to Zetta carries a credential
-  limited to what the app needs.
-- **The store** for connections, grants, tunnel sessions and network activity in each workspace.
-- **Zetta-to-Zetta links between clusters**, if peering covers Zetta clusters ("peer connections
-  between k8s clusters or zetta clusters").
-- **Reuse:** Zetta's transport (Corosio, mTLS 1.3, join tokens) as a building block for the peer
-  gateway and possibly zetta-tunnel.
+  limited to what the app needs: [zetta#1280](https://github.com/oramasearch/zetta/issues/1280).
+- **The store** for connections, grants, tunnel sessions and network activity in each workspace:
+  [zetta#1281](https://github.com/oramasearch/zetta/issues/1281).
+- **Zetta-to-Zetta links between clusters** through peer connections:
+  [zetta#1282](https://github.com/oramasearch/zetta/issues/1282).
+- **Reuse:** Zetta's transport (Corosio, mTLS 1.3) shared with zetta-tunnel:
+  [zetta#1283](https://github.com/oramasearch/zetta/issues/1283).
+
+The architecture across all four repositories is in Lake's
+[`docs/architecture/secure-networking.md`](https://github.com/oramasearch/lake/blob/dev/docs/architecture/secure-networking.md)
+and zetta-tunnel's [`docs/architecture.md`](https://github.com/oramasearch/zetta-tunnel/blob/dev/docs/architecture.md).
 
 ## 8. Order of work
 
