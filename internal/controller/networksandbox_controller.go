@@ -29,6 +29,7 @@ import (
 const (
 	networkSandboxName              = "network-sandbox"
 	networkSandboxDefaultDenyName   = "default-deny"
+	networkSandboxMetadataDenyName  = "deny-cloud-metadata"
 	networkSandboxCommentAnnotation = "orama.cloud/network-policy-comment"
 )
 
@@ -54,6 +55,9 @@ func (r *NetworkSandboxReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	var sandbox oramav1alpha1.NetworkSandbox
 	if err := r.Get(ctx, req.NamespacedName, &sandbox); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if !sandbox.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
 	}
 
 	policyCount, ciliumCount, err := reconcileNetworkSandboxPolicies(ctx, r.Client, r.Scheme, &sandbox)
@@ -104,13 +108,15 @@ func (r *NetworkSandboxReconciler) updateStatus(
 	return nil
 }
 
-// SetupWithManager registers the controller unconditionally. CiliumNetworkPolicy is deliberately
-// not watched: clusters without the optional Cilium CRD must still start, and current sandboxes use
-// ordinary NetworkPolicy for every expressible path.
+// SetupWithManager watches both policy kinds so deletion and drift repair the mandatory denies.
+// CiliumNetworkPolicy support is required for every sandbox, including on AKS-managed Cilium.
 func (r *NetworkSandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	ciliumPolicy := &unstructured.Unstructured{}
+	ciliumPolicy.SetGroupVersionKind(ciliumNetworkPolicyGVK)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.NetworkSandbox{}).
 		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(ciliumPolicy).
 		Complete(r)
 }
 
@@ -124,15 +130,21 @@ func reconcileNetworkSandboxPolicies(
 	if err := reconcileSandboxNetworkPolicy(ctx, kube, scheme, sandbox, defaultDenyNetworkPolicy(sandbox)); err != nil {
 		return 0, 0, err
 	}
+	// Install the explicit metadata deny before any allowances. NetworkPolicy ipBlock exclusions
+	// alone do not block Azure metadata traffic on AKS-managed Cilium.
+	ciliumCount, err := reconcileSandboxCiliumPolicies(ctx, kube, scheme, sandbox)
+	if err != nil {
+		return 1, ciliumCount, err
+	}
 
 	policies := append([]oramav1alpha1.NetworkSandboxPolicy(nil), sandbox.Spec.Policies...)
 	sort.Slice(policies, func(i, j int) bool { return policies[i].Name < policies[j].Name })
 	for _, allowance := range policies {
 		if allowance.Name == networkSandboxDefaultDenyName {
-			return 1, 0, fmt.Errorf("policy %q is reserved for the mandatory default deny", allowance.Name)
+			return int32(len(desiredNames)), ciliumCount, fmt.Errorf("policy %q is reserved for the mandatory default deny", allowance.Name)
 		}
 		if desiredNames[allowance.Name] {
-			return 1, 0, fmt.Errorf("policy name %q is duplicated", allowance.Name)
+			return int32(len(desiredNames)), ciliumCount, fmt.Errorf("policy name %q is duplicated", allowance.Name)
 		}
 		desiredNames[allowance.Name] = true
 		policy := &networkingv1.NetworkPolicy{
@@ -146,15 +158,13 @@ func reconcileNetworkSandboxPolicies(
 		}
 		policy.Spec.PodSelector = intersectSandboxSelectors(policy.Spec.PodSelector, sandbox.Spec.PodSelector)
 		if err := reconcileSandboxNetworkPolicy(ctx, kube, scheme, sandbox, policy); err != nil {
-			return int32(len(desiredNames) - 1), 0, err
+			return int32(len(desiredNames) - 1), ciliumCount, err
 		}
 	}
 	if err := deleteStaleSandboxNetworkPolicies(ctx, kube, sandbox, desiredNames); err != nil {
-		return int32(len(desiredNames)), 0, err
+		return int32(len(desiredNames)), ciliumCount, err
 	}
-
-	ciliumCount, err := reconcileSandboxCiliumPolicies(ctx, kube, scheme, sandbox)
-	return int32(len(desiredNames)), ciliumCount, err
+	return int32(len(desiredNames)), ciliumCount, nil
 }
 
 func defaultDenyNetworkPolicy(sandbox *oramav1alpha1.NetworkSandbox) *networkingv1.NetworkPolicy {
@@ -252,10 +262,28 @@ func reconcileSandboxCiliumPolicies(
 	scheme *runtime.Scheme,
 	sandbox *oramav1alpha1.NetworkSandbox,
 ) (int32, error) {
+	metadataDeny := map[string]interface{}{
+		"egressDeny": []interface{}{
+			map[string]interface{}{
+				"toCIDR": []interface{}{
+					"169.254.169.254/32",
+					"168.63.129.16/32",
+					"fd00:ec2::254/128",
+				},
+			},
+		},
+	}
+	if err := reconcileSandboxCiliumPolicy(ctx, kube, scheme, sandbox, networkSandboxMetadataDenyName,
+		"Deny cloud metadata and host-service addresses regardless of other allowances.", metadataDeny); err != nil {
+		return 0, err
+	}
 	policies := append([]oramav1alpha1.NetworkSandboxCiliumPolicy(nil), sandbox.Spec.CiliumPolicies...)
 	sort.Slice(policies, func(i, j int) bool { return policies[i].Name < policies[j].Name })
-	desiredNames := map[string]bool{}
+	desiredNames := map[string]bool{networkSandboxMetadataDenyName: true}
 	for _, allowance := range policies {
+		if allowance.Name == networkSandboxMetadataDenyName {
+			return int32(len(desiredNames)), fmt.Errorf("Cilium policy %q is reserved for the mandatory metadata deny", allowance.Name)
+		}
 		if desiredNames[allowance.Name] {
 			return int32(len(desiredNames)), fmt.Errorf("Cilium policy name %q is duplicated", allowance.Name)
 		}
@@ -267,47 +295,54 @@ func reconcileSandboxCiliumPolicies(
 		if spec == nil {
 			return int32(len(desiredNames) - 1), fmt.Errorf("CiliumNetworkPolicy %q spec must be a JSON object", allowance.Name)
 		}
-		if err := scopeCiliumSandboxPolicy(spec, sandbox.Spec.PodSelector); err != nil {
-			return int32(len(desiredNames) - 1), fmt.Errorf("scope CiliumNetworkPolicy %q: %w", allowance.Name, err)
-		}
-		desired := &unstructured.Unstructured{Object: map[string]interface{}{
-			"apiVersion": "cilium.io/v2",
-			"kind":       "CiliumNetworkPolicy",
-			"metadata": map[string]interface{}{
-				"name":      allowance.Name,
-				"namespace": sandbox.Namespace,
-				"annotations": map[string]interface{}{
-					networkSandboxCommentAnnotation: allowance.Comment,
-				},
-			},
-			"spec": spec,
-		}}
-		desired.SetGroupVersionKind(ciliumNetworkPolicyGVK)
-		desired.SetLabels(copyStringMap(sandbox.Spec.PolicyLabels))
-		current := &unstructured.Unstructured{}
-		current.SetGroupVersionKind(ciliumNetworkPolicyGVK)
-		current.SetName(allowance.Name)
-		current.SetNamespace(sandbox.Namespace)
-		_, err := controllerutil.CreateOrUpdate(ctx, kube, current, func() error {
-			if owner := metav1.GetControllerOf(current); owner != nil && !metav1.IsControlledBy(current, sandbox) {
-				return fmt.Errorf("CiliumNetworkPolicy %s/%s is controlled by %s %s", current.GetNamespace(), current.GetName(), owner.Kind, owner.Name)
-			}
-			current.SetLabels(desired.GetLabels())
-			current.SetAnnotations(desired.GetAnnotations())
-			current.Object["spec"] = desired.Object["spec"]
-			return controllerutil.SetControllerReference(sandbox, current, scheme)
-		})
-		if err != nil {
-			return int32(len(desiredNames) - 1), fmt.Errorf("reconcile CiliumNetworkPolicy %s/%s: %w", sandbox.Namespace, allowance.Name, err)
+		if err := reconcileSandboxCiliumPolicy(ctx, kube, scheme, sandbox, allowance.Name, allowance.Comment, spec); err != nil {
+			return int32(len(desiredNames) - 1), err
 		}
 	}
-	if len(policies) == 0 && sandbox.Status.CiliumNetworkPolicies == 0 {
-		return 0, nil
+	return int32(len(desiredNames)), deleteStaleSandboxCiliumPolicies(ctx, kube, sandbox, desiredNames)
+}
+
+func reconcileSandboxCiliumPolicy(
+	ctx context.Context,
+	kube client.Client,
+	scheme *runtime.Scheme,
+	sandbox *oramav1alpha1.NetworkSandbox,
+	name, comment string,
+	spec map[string]interface{},
+) error {
+	if err := scopeCiliumSandboxPolicy(spec, sandbox.Spec.PodSelector); err != nil {
+		return fmt.Errorf("scope CiliumNetworkPolicy %q: %w", name, err)
 	}
+	policy := &unstructured.Unstructured{}
+	policy.SetGroupVersionKind(ciliumNetworkPolicyGVK)
+	policy.SetName(name)
+	policy.SetNamespace(sandbox.Namespace)
+	_, err := controllerutil.CreateOrUpdate(ctx, kube, policy, func() error {
+		if owner := metav1.GetControllerOf(policy); owner != nil && !metav1.IsControlledBy(policy, sandbox) {
+			return fmt.Errorf("CiliumNetworkPolicy %s/%s is controlled by %s %s", policy.GetNamespace(), policy.GetName(), owner.Kind, owner.Name)
+		}
+		policy.SetLabels(copyStringMap(sandbox.Spec.PolicyLabels))
+		policy.SetAnnotations(map[string]string{networkSandboxCommentAnnotation: comment})
+		policy.Object["spec"] = spec
+		delete(policy.Object, "specs")
+		return controllerutil.SetControllerReference(sandbox, policy, scheme)
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile CiliumNetworkPolicy %s/%s: %w", sandbox.Namespace, name, err)
+	}
+	return nil
+}
+
+func deleteStaleSandboxCiliumPolicies(
+	ctx context.Context,
+	kube client.Client,
+	sandbox *oramav1alpha1.NetworkSandbox,
+	desiredNames map[string]bool,
+) error {
 	list := &unstructured.UnstructuredList{}
 	list.SetGroupVersionKind(schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicyList"})
 	if err := kube.List(ctx, list, client.InNamespace(sandbox.Namespace)); err != nil {
-		return int32(len(desiredNames)), fmt.Errorf("list CiliumNetworkPolicies in %s: %w", sandbox.Namespace, err)
+		return fmt.Errorf("list CiliumNetworkPolicies in %s: %w", sandbox.Namespace, err)
 	}
 	for i := range list.Items {
 		policy := &list.Items[i]
@@ -315,10 +350,10 @@ func reconcileSandboxCiliumPolicies(
 			continue
 		}
 		if err := kube.Delete(ctx, policy); err != nil && !apierrors.IsNotFound(err) {
-			return int32(len(desiredNames)), fmt.Errorf("delete stale CiliumNetworkPolicy %s/%s: %w", policy.GetNamespace(), policy.GetName(), err)
+			return fmt.Errorf("delete stale CiliumNetworkPolicy %s/%s: %w", policy.GetNamespace(), policy.GetName(), err)
 		}
 	}
-	return int32(len(desiredNames)), nil
+	return nil
 }
 
 func scopeCiliumSandboxPolicy(spec map[string]interface{}, scope metav1.LabelSelector) error {

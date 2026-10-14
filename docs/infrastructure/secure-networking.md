@@ -8,8 +8,11 @@ research in [`docs/research/secure-networking/`](../research/secure-networking/R
 2026-10-14.** `NetworkSandbox` now protects Lake instances, Lake workspaces and Orama Cloud v1
 stacks (#465), selecting only owner pods in shared namespaces such as `orama-system`. Workspaces
 retain namespace-wide scope. Cloud v1 writer and reader public egress excludes private and cluster
-destinations after resolution (#466). Tenant policy RBAC (#467) remains open. The design decisions
-are recorded in section 9.
+destinations after resolution (#466). The 2026-10-14 live AKS probe found metadata bypassing
+NetworkPolicy exclusions; every sandbox now also renders an owner-scoped Cilium `egressDeny` for
+cloud metadata and host-service addresses. The observation, mandatory addresses and rollout
+verification boundary are documented in [Network sandboxes](network-sandbox.md#mandatory-cloud-metadata-deny).
+Tenant policy RBAC (#467) remains open. The design decisions are recorded in section 9.
 
 ---
 

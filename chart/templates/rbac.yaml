@@ -184,8 +184,8 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["*"]
-  # NetworkSandbox uses a CiliumNetworkPolicy only for an allowance ordinary NetworkPolicy cannot
-  # express. The grant is harmless on clusters without the optional Cilium CRD.
+  # Every NetworkSandbox requires an owner-scoped CiliumNetworkPolicy metadata deny.
+  # The controller watches these policies for drift and deletion repair.
   - apiGroups: ["cilium.io"]
     resources: ["ciliumnetworkpolicies"]
     verbs: ["*"]
