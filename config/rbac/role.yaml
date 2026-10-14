@@ -254,6 +254,7 @@ rules:
   - cloudflareloadbalancers
   - cloudflarer2buckets
   - clusterhelmreleases
+  - connections
   - kubernetesclusterproviders
   - kubernetesclusters
   - lakeapps
@@ -290,6 +291,7 @@ rules:
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
   - clusterhelmreleases/finalizers
+  - connections/finalizers
   - kubernetesclusterproviders/finalizers
   - kubernetesclusters/finalizers
   - lakeapps/finalizers
@@ -313,6 +315,7 @@ rules:
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
   - clusterhelmreleases/status
+  - connections/status
   - kubernetesclusterproviders/status
   - kubernetesclusters/status
   - lakeapps/status

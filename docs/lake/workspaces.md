@@ -141,7 +141,8 @@ Every workspace namespace receives all of the following:
   The operator creates no Role or RoleBinding in the namespace and binds no ClusterRole to it.
 - One `ResourceQuota` and `LimitRange` selected by the workspace's declarative plan.
 - An owned `NetworkSandbox` that renders default-deny for both ingress and egress, followed only by
-  the explicit policies below. The migration preserves every former policy name and spec.
+  the explicit policies below. The stage-1 ownership migration preserves former policy specs;
+  stage 2 retires only `allow-workspace-internal` after initial Connections are Ready.
 - A local copy of the Lake image-pull Secret, when configured. Zetta's admin and cluster tokens are
   minted by the Zetta controller in this namespace. Agent provider and service credentials are
   copied here, and per-run and synchronized-app credentials are minted here. The trusted Lake pod
@@ -168,7 +169,8 @@ RFC1918/private ranges, the metadata endpoint `169.254.169.254`, and non-DNS tra
 
 | From | To | Ports | Why |
 |---|---|---|---|
-| workspace pod | pod in the same workspace namespace | all | Zetta peers, customer services and local applications must communicate inside their trust boundary |
+| workspace pod | pod in the same workspace namespace | all | rollout compatibility only before `network_guard` and while every seeded initial `Connection` becomes Ready; then this path is removed permanently |
+| declared app, service, agent or tunnel source | declared service or app target in the same workspace | explicit TCP ports, or only the target Service ports when empty | paired ingress and egress generated from one Lake `network_connections` row; see [`../infrastructure/connections.md`](../infrastructure/connections.md) |
 | Lake pod in the Lake namespace | workspace pod | TCP 4800, 8080 | Lake calls Zetta and agent HTTP APIs; namespace and pod selectors prevent another workspace from using this rule |
 | owning Lake pod in its exact namespace | vendor-labelled workspace service pods | TCP 5432 (Postgres), 9092 (Kafka), 8123/9000 (ClickHouse), 4000 (TiDB), 9042 (Cassandra), 6379 (Valkey) | six separate client-ingress policies pair with Lake egress for the projected Data / Connections endpoints; no management ports or new Orama operator access |
 | owning Lake pod in its exact namespace | its synchronized app's labelled pod | the app's declared port | app backend proxying; the app's access policy admits only this Lake and exact app port |
@@ -180,8 +182,9 @@ RFC1918/private ranges, the metadata endpoint `169.254.169.254`, and non-DNS tra
 | datastore operator pod in its own namespace | the operand pods it manages | per kind, below | the CNPG, Altinity, TiDB, K8ssandra and Valkey operators reconcile their pods over the network |
 | CNPG pods, Strimzi entity operator, TiDB discovery | the Kubernetes API Service address and its endpoints | the Service port and each endpoint port | these pods read and write their own custom resources with their own ServiceAccount |
 
-The six Lake service-ingress policies are additions approved during the NetworkSandbox review;
-all former workspace policies keep their names and specs. The inferred client contract, code
+The six Lake service-ingress policies are additions approved during the NetworkSandbox review.
+Former workspace policies keep their names and specs until connection activation; that transition
+removes only `allow-workspace-internal`. The inferred client contract, code
 audit and paired-path tests are documented in
 [`../infrastructure/network-sandbox.md`](../infrastructure/network-sandbox.md).
 

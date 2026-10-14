@@ -4,7 +4,7 @@ The design for [#437](https://github.com/oramasearch/orama-operator/issues/437) 
 half) and [lake#724](https://github.com/oramasearch/lake/issues/724) (Lake's half). It follows the
 research in [`docs/research/secure-networking/`](../research/secure-networking/README.md).
 
-**Status: stage 1 owner-scoped sandboxes, Cloud v1 engine egress lockdown and tenant policy RBAC implemented,
+**Status: stage 1 and the operator half of stage 2 declared connections implemented and native-tested,
 2026-10-14.** `NetworkSandbox` now protects Lake instances, Lake workspaces and Orama Cloud v1
 stacks (#465), selecting only owner pods in shared namespaces such as `orama-system`. Workspaces
 retain namespace-wide scope. Cloud v1 writer and reader public egress excludes private and cluster
@@ -14,6 +14,9 @@ cloud metadata and host-service addresses. The observation, mandatory addresses 
 verification boundary are documented in [Network sandboxes](network-sandbox.md#mandatory-cloud-metadata-deny).
 Only the operator manager may write network policy or `NetworkSandbox`; tenant, Lake, app, agent
 and build identities are denied (#467). The design decisions are recorded in section 9.
+After Lake migration `0084_network` installs `network_guard`, one `Connection` is materialized per
+desired row and supplies paired sandbox-owned policy; the blanket workspace path is retired only
+after every initial row is Ready (#468). See [Declared workspace connections](connections.md).
 
 ---
 
@@ -59,8 +62,9 @@ Added since:
 - **Before #465, nothing else was locked down.** The operator now creates a `NetworkSandbox` for
   every Lake instance and Orama Cloud v1 namespace. This implementation has native test coverage
   but has not yet been rolled out and connectivity-probed on the named production clusters.
-- **Inside a workspace, everything reaches everything** (`allow-workspace-internal`): an app reaches
-  every service in its workspace with that service's one credential.
+- **In the deployed pre-stage-2 state, everything inside a workspace reaches everything**
+  (`allow-workspace-internal`). The implemented Connection rollout retains that only before
+  `network_guard` and while initial rows become Ready; the named nonprod probe remains pending.
 - **Ingress** is ingress-nginx (retired upstream), with no TLS to the origin (#457).
 - **No mesh, no tunnels, no peering.** Every AKS VNet uses `10.224.0.0/12`, so clusters cannot be
   peered by routing.
@@ -85,7 +89,7 @@ Added since:
    (decision 51), so what it must enforce is desired state there, as services and workspaces are
    today. The exact split is decision D1 below.
 
-## 4. The resource kinds (proposed)
+## 4. The resource kinds
 
 Names to settle (decision D2). Each is namespaced unless said otherwise, written by Lake through the
 operator (or by the operator itself for Orama's own stacks), and reconciled by the operator.
@@ -253,7 +257,7 @@ Filed 2026-10-14; the list is kept on the epics: #437 (operator, zetta-tunnel, Z
 - https://github.com/oramasearch/orama-operator/issues/465: NetworkSandbox: default-deny for every namespace the operator creates (stage 1)
 - https://github.com/oramasearch/orama-operator/issues/466: Orama Cloud v1 engine: outbound only to its broker, DNS and the public internet (stage 1, implemented)
 - https://github.com/oramasearch/orama-operator/issues/467: Tenants cannot write network policy (stage 1)
-- https://github.com/oramasearch/orama-operator/issues/468: Connection: declared connections between workloads, replacing allow-workspace-internal (stage 2)
+- https://github.com/oramasearch/orama-operator/issues/468: Connection: declared connections between workloads, replacing allow-workspace-internal (stage 2, implemented and native-tested; nonprod probe pending)
 - https://github.com/oramasearch/orama-operator/issues/469: Credentials on connections: native datastore roles, Postgres first (stage 2)
 - https://github.com/oramasearch/orama-operator/issues/470: EgressRule: outbound by address and by DNS name (stage 3)
 - https://github.com/oramasearch/orama-operator/issues/471: Tunnel: the kind, with ZettaTunnel and a customer's own CloudflareTunnel as providers (stage 4)

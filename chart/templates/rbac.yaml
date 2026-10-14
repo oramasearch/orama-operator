@@ -23,6 +23,7 @@ rules:
     resources:
       - oramacloudv1s
       - networksandboxes
+      - connections
       - oramazettaclusters
       - oramacloudv1e2etests
       - zettaclustere2etests
@@ -51,6 +52,7 @@ rules:
     resources:
       - oramacloudv1s/status
       - networksandboxes/status
+      - connections/status
       - oramazettaclusters/status
       - oramacloudv1e2etests/status
       - zettaclustere2etests/status
@@ -67,6 +69,7 @@ rules:
       - lakerestorerehearsals/status
       - lakesealedsecrets/status
       - oramacloudv1s/finalizers
+      - connections/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
       - cloudflarekvnamespaces/finalizers

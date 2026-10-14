@@ -596,7 +596,10 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 	}
 	status.CredentialSHA256 = credentialDigest(credential)
 	name := agentLaunchName(lake.Name, launch.Slug)
-	launchLabels := agentLabels(labels, "agent-runtime", name, map[string]string{agentLaunchIDLabel: launch.ID})
+	launchLabels := agentLabels(labels, "agent-runtime", name, map[string]string{
+		agentLaunchIDLabel:     launch.ID,
+		connectionAgentIDLabel: launch.AgentID,
+	})
 	if launch.Mode == agentLaunchModeService {
 		selector := map[string]string{"app.kubernetes.io/name": "agent-runtime", "app.kubernetes.io/instance": name}
 		available, err := r.reconcileAgentService(ctx, lake, namespace, name, launchLabels, selector,

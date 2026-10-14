@@ -19,9 +19,11 @@ const (
 	lakeServicesChannel = "lake_services"
 	// lakeBuildsChannel is notified when lake queues or cancels an in-cluster build.
 	lakeBuildsChannel = "lake_builds"
+	// lakeNetworkChannel is notified when Lake changes secure-networking desired state.
+	lakeNetworkChannel = "lake_network"
 )
 
-// LakeServicesListener wakes the Lake reconciler the moment lake writes a service or build row,
+// LakeServicesListener wakes the Lake reconciler the moment lake writes a service, build or network row,
 // instead of on the next poll. It keeps one LISTEN connection to each enabled Lake's control
 // Postgres and sends that Lake on Events for every notification. The poll stays as the recovery
 // path for a missed notification, reconnect, or restart.
@@ -180,7 +182,7 @@ func (l *LakeServicesListener) listen(ctx context.Context, lake *oramav1alpha1.L
 
 // pgxListen listens to every lake row channel on one Postgres connection, then waits.
 func pgxListen(ctx context.Context, uri string, notify func()) error {
-	return pgxListenChannels(ctx, uri, []string{lakeServicesChannel, lakeBuildsChannel}, notify)
+	return pgxListenChannels(ctx, uri, []string{lakeServicesChannel, lakeBuildsChannel, lakeNetworkChannel}, notify)
 }
 
 func pgxListenChannel(ctx context.Context, uri, channel string, notify func()) error {
