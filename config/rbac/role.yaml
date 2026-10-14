@@ -253,6 +253,7 @@ rules:
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
+  - cloudflaretunnels
   - clusterhelmreleases
   - connections
   - egressrules
@@ -273,7 +274,9 @@ rules:
   - oramazettaclusters
   - postgresschemas
   - rabbitmqtopologies
+  - tunnels
   - zettaclustere2etests
+  - zettatunnels
   verbs:
   - create
   - delete
@@ -291,6 +294,7 @@ rules:
   - cloudflarekvnamespaces/finalizers
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
+  - cloudflaretunnels/finalizers
   - clusterhelmreleases/finalizers
   - connections/finalizers
   - egressrules/finalizers
@@ -305,6 +309,8 @@ rules:
   - oramaoperators/finalizers
   - oramazettaclusters/finalizers
   - rabbitmqtopologies/finalizers
+  - tunnels/finalizers
+  - zettatunnels/finalizers
   verbs:
   - update
 - apiGroups:
@@ -316,6 +322,7 @@ rules:
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
+  - cloudflaretunnels/status
   - clusterhelmreleases/status
   - connections/status
   - egressrules/status
@@ -336,11 +343,24 @@ rules:
   - oramazettaclusters/status
   - postgresschemas/status
   - rabbitmqtopologies/status
+  - tunnelproviders/status
+  - tunnels/status
   - zettaclustere2etests/status
+  - zettatunnels/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - orama.cloud
+  resources:
+  - tunnelproviders
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - pingcap.com
   resources:

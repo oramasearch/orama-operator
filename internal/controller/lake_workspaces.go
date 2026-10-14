@@ -932,6 +932,11 @@ func (r *LakeWorkspacesReconciler) existingWorkspaceConnectionAllowances(
 		}
 		names = append(names, connectionAllowanceNames(connection)...)
 	}
+	tunnelNames, err := workspaceTunnelAllowanceNames(ctx, r.Client, namespace)
+	if err != nil {
+		return nil, err
+	}
+	names = append(names, tunnelNames...)
 	sort.Strings(names)
 	return existingSandboxAllowances(ctx, r.Client, namespace, names...)
 }

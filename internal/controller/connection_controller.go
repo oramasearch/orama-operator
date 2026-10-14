@@ -272,7 +272,12 @@ func lakeWorkspaceSandbox(
 		}
 		return nil, err
 	}
-	if !metav1.IsControlledBy(owned, &lake) {
+	controlled := metav1.IsControlledBy(owned, &lake)
+	if connection, ok := owned.(*oramav1alpha1.Connection); ok && !controlled {
+		// A Connection generated for a tunnel is controlled by its ZettaTunnel or CloudflareTunnel.
+		controlled = connectionControlledByLakeTunnel(ctx, reader, connection)
+	}
+	if !controlled {
 		return nil, fmt.Errorf("%s is not controlled by Lake %q", kind, lake.Name)
 	}
 	var sandbox oramav1alpha1.NetworkSandbox

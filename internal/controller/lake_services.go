@@ -421,6 +421,9 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 	if lakeWorkspacesEnabled(lake) && r.reconcileLakeEgressRules(passCtx, lake, store) {
 		changing = true
 	}
+	if lakeWorkspacesEnabled(lake) && r.reconcileLakeTunnels(passCtx, lake, store) {
+		changing = true
+	}
 	if lakeServicesEnabled(lake) {
 		services, err := store.ListServices(passCtx)
 		if err != nil {

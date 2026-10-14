@@ -16,17 +16,19 @@ into running systems:
   control-plane DB, analytics, cache, broker, ingestion, workers), one CR per cluster.
 - The supporting CRDs those own: `PostgresSchema`, `RabbitMQTopology`, `CloudflareDNSRecord`,
   `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `ClerkApplication`,
-  `NetworkSandbox`, `Connection`, `LakeSealedSecret`, `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and
+  `NetworkSandbox`, `Connection`, `Tunnel`, `TunnelProvider`, `ZettaTunnel`, `CloudflareTunnel`,
+  `LakeSealedSecret`, `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and
   the three e2e test CRDs, including `LakeE2ETest`.
 - The infrastructure kinds: `KubernetesClusterProvider`, `KubernetesCluster` and `AksCluster`
   create clusters; `ClusterHelmRelease` and `OramaOperator` install a managed cluster's platform
   layer and its own operator; `LakeSet` and `OramaCloudV1Set` run instances on managed clusters
   from one template.
 
-That is 26 resource kinds, all installed by the chart on every cluster. The release notes cover the
+That is 30 resource kinds, all installed by the chart on every cluster. The release notes cover the
 first 25: [v0.1.0](docs/releases/v0.1.0.md) for the first 17 and
 [v0.2.0](docs/releases/v0.2.0.md) for the next eight. `Connection` is documented in
-[`Declared workspace connections`](docs/infrastructure/connections.md) for the next release.
+[`Declared workspace connections`](docs/infrastructure/connections.md) and the four tunnel kinds in
+[`Developer tunnels`](docs/infrastructure/tunnels.md), for the next release.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -58,7 +60,9 @@ outside the sandbox. Lake `Connection` rows now become paired, sandbox-owned ing
 the broad workspace-internal allowance remains only until every initial row is enforced. Native proof
 is complete and the named nonprod connectivity probe remains pending. Details:
 [`Network sandboxes`](docs/infrastructure/network-sandbox.md) and
-[`Declared connections`](docs/infrastructure/connections.md).
+[`Declared connections`](docs/infrastructure/connections.md). Lake tunnel grants become `Tunnel`s carried
+by zetta-tunnel (one relay per cluster, one endpoint per grant) or a customer's own Cloudflare account:
+[`Developer tunnels`](docs/infrastructure/tunnels.md).
 Per-reconciler status and the remaining hardening work are in
 [`docs/components.md`](docs/components.md).
 
