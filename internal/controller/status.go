@@ -109,6 +109,15 @@ func replicasOf(p *int32) int32 {
 // from this pass. Returns whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
 func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, snapshots engineSnapshots) bool {
 	comps := r.componentReadiness(ctx, oc)
+	// The cross-cluster read path (#396) is one more component: what a primary publishes, or the
+	// peer a read member reads from.
+	cross, crossErr := r.crossClusterReadiness(ctx, oc)
+	if crossErr != nil {
+		log.FromContext(ctx).Error(crossErr, "read the cross-cluster read path")
+	} else if cross.component != nil {
+		comps = append(comps, *cross.component)
+		sort.Slice(comps, func(i, j int) bool { return comps[i].Name < comps[j].Name })
+	}
 	ready, notReady := 0, []string(nil)
 	for _, c := range comps {
 		if c.Ready {
@@ -181,6 +190,20 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 		conditions = append(conditions, engineSidesCondition(oc))
 	} else if meta.RemoveStatusCondition(&oc.Status.Conditions, engineSidesConditionType) {
 		otherChanged = true
+	}
+	// status.remoteRead, RemoteReadPublished and PeerReady (#396); dropped where they do not apply.
+	if crossErr == nil {
+		if !equality.Semantic.DeepEqual(cross.remoteRead, oc.Status.RemoteRead) {
+			oc.Status.RemoteRead = cross.remoteRead
+			otherChanged = true
+		}
+		for _, kind := range []string{remoteReadConditionType, peerConditionType} {
+			if cross.condition != nil && cross.condition.Type == kind {
+				conditions = append(conditions, *cross.condition)
+			} else if meta.RemoveStatusCondition(&oc.Status.Conditions, kind) {
+				otherChanged = true
+			}
+		}
 	}
 	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, otherChanged, conditions...)
 	return allReady

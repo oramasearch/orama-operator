@@ -59,6 +59,12 @@ type setKind struct {
 	finish func(spec map[string]any, namespace string, cluster *oramav1alpha1.KubernetesCluster) error
 	// observe reads an instance as its cluster reports it.
 	observe func(obj *unstructured.Unstructured) (ready bool, version, message string)
+	// link, when set, connects the members of one set once each has its spec: it may write a
+	// member's spec, make a member wait, or name the member another reads from (memberPass.source),
+	// which is applied first. A *setError refuses the whole set.
+	link func(passes []*memberPass) error
+	// connect, when set, finishes a member that reads from another once that one has been applied.
+	connect func(ctx context.Context, r *managedSetReconciler, p *memberPass)
 }
 
 var lakeSetKind = setKind{
@@ -104,8 +110,16 @@ var oramaCloudV1SetKind = setKind{
 		}
 		region["name"] = cluster.Spec.Region
 		spec["region"] = region
+		// The set connects read members to their primary (linkReadMembers); neither side is stated.
+		for _, owned := range []string{"remoteReaders", "peers"} {
+			if _, stated := spec[owned]; stated {
+				return fmt.Errorf("spec.%s is written by the set, which connects read members to their primary: remove it from the template and the member's spec", owned)
+			}
+		}
 		return nil
 	},
+	link:    linkReadMembers,
+	connect: connectReadMember,
 	observe: func(obj *unstructured.Unstructured) (bool, string, string) {
 		version, _, _ := unstructured.NestedString(obj.Object, "spec", "images", "tag")
 		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
@@ -208,11 +222,14 @@ type memberState struct {
 	Object *unstructured.Unstructured
 }
 
-// leafMemberApplier applies, reads and deletes one instance on a cluster reached by a kubeconfig.
-// The set controllers hold one as an injected dependency; tests give a fake.
+// leafMemberApplier applies, reads and deletes one instance on a cluster reached by a kubeconfig,
+// and reads a Secret there (a primary's remote-read credentials, for its read members). The set
+// controllers hold one as an injected dependency; tests give a fake.
 type leafMemberApplier interface {
 	ApplyMember(ctx context.Context, kubeconfig []byte, req memberRequest) (memberState, error)
 	DeleteMember(ctx context.Context, kubeconfig []byte, req memberRequest) error
+	// ReadSecret returns nil, nil when the Secret does not exist.
+	ReadSecret(ctx context.Context, kubeconfig []byte, namespace, name string) (*corev1.Secret, error)
 }
 
 type clientMemberApplier struct{}
@@ -264,7 +281,7 @@ func applyMemberWith(ctx context.Context, c client.Client, req memberRequest) (m
 		sec := &corev1.Secret{}
 		sec.APIVersion, sec.Kind = "v1", "Secret"
 		sec.Name, sec.Namespace = source.Name, req.Namespace
-		sec.Type, sec.Data = source.Type, source.Data
+		sec.Labels, sec.Type, sec.Data = source.Labels, source.Type, source.Data
 		if err := c.Patch(ctx, sec, client.Apply, client.FieldOwner(leafFieldOwner), client.ForceOwnership); err != nil {
 			return memberState{}, fmt.Errorf("the cluster refused Secret %s/%s: %w", req.Namespace, source.Name, err)
 		}
@@ -303,6 +320,21 @@ func deleteMemberWith(ctx context.Context, c client.Client, req memberRequest) e
 		return fmt.Errorf("the cluster refused to delete %s %s: %w", req.Kind.Kind, req.Name, err)
 	}
 	return nil
+}
+
+func (clientMemberApplier) ReadSecret(ctx context.Context, kubeconfig []byte, namespace, name string) (*corev1.Secret, error) {
+	_, c, err := leafClients(kubeconfig, namespace)
+	if err != nil {
+		return nil, err
+	}
+	sec := &corev1.Secret{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, sec); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("Secret %s/%s cannot be read on the cluster: %w", namespace, name, err)
+	}
+	return sec, nil
 }
 
 func apimetaNoMatch(err error) bool {
@@ -454,11 +486,7 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 	}
 	var refused *setError
 	if errors.As(err, &refused) {
-		// The set as written cannot be applied. Nothing is touched on any cluster.
-		status.Members, status.ReadyMembers = int32(len(spec.Clusters)), 0
-		setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), clusterPhaseDegraded, refused.reason, refused.message)
-		status.ObservedGeneration = set.GetGeneration()
-		return settle(ctrl.Result{}, r.writeStatus(ctx, set, observed))
+		return r.refuse(ctx, set, observed, refused)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -473,33 +501,60 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 		return ctrl.Result{}, err
 	}
 
-	// Members are independent: each is applied on every pass, and none waits for another. One
+	// Members are independent: each is applied on every pass, and none waits for another, with one
+	// exception: an OramaCloudV1Set read member waits for its primary's published endpoints. One
 	// member failing or starting slowly does not hold back the rest.
-	statuses := make([]oramav1alpha1.SetMemberStatus, 0, len(members))
+	passes := make([]*memberPass, 0, len(members))
+	for _, resolved := range members {
+		p := &memberPass{resolved: resolved, entry: oramav1alpha1.SetMemberStatus{Cluster: resolved.member.ClusterRef, Name: resolved.member.Name, Namespace: resolved.namespace}}
+		for _, previous := range observed.MemberStatuses {
+			if previous.Cluster == p.entry.Cluster && previous.Name == p.entry.Name {
+				p.entry.Version = previous.Version
+			}
+		}
+		r.prepareMember(ctx, set, template, p)
+		passes = append(passes, p)
+	}
+	if r.kind.link != nil {
+		if err := r.kind.link(passes); err != nil {
+			if errors.As(err, &refused) {
+				return r.refuse(ctx, set, observed, refused)
+			}
+			return ctrl.Result{}, err
+		}
+	}
+	// A member another reads from is applied first.
+	for _, p := range passes {
+		if p.source == nil {
+			r.applyMember(ctx, p)
+		}
+	}
+	for _, p := range passes {
+		if p.source != nil {
+			if !p.done && r.kind.connect != nil {
+				r.kind.connect(ctx, r, p)
+			}
+			r.applyMember(ctx, p)
+		}
+	}
+	statuses := make([]oramav1alpha1.SetMemberStatus, 0, len(passes))
 	var ready int32
 	var notReady []string
 	var firstErr error
-	for _, resolved := range members {
-		entry := oramav1alpha1.SetMemberStatus{Cluster: resolved.member.ClusterRef, Name: resolved.member.Name, Namespace: resolved.namespace}
-		for _, previous := range observed.MemberStatuses {
-			if previous.Cluster == entry.Cluster && previous.Name == entry.Name {
-				entry.Version = previous.Version
-			}
+	for _, p := range passes {
+		if p.err != nil && firstErr == nil {
+			firstErr = p.err
 		}
-		isReady, err := r.applyMember(ctx, set, template, resolved, &entry)
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
-		if isReady {
+		if p.ready {
 			ready++
 		} else {
-			line := resolved.member.Name + " on " + resolved.member.ClusterRef
-			if entry.Message != "" {
-				line += " (" + entry.Message + ")"
+			line := p.resolved.member.Name + " on " + p.resolved.member.ClusterRef
+			if p.entry.Message != "" {
+				line += " (" + p.entry.Message + ")"
 			}
 			notReady = append(notReady, line)
 		}
-		statuses = append(statuses, entry)
+		statuses = append(statuses, p.entry)
 	}
 	status.MemberStatuses = statuses
 	status.Members, status.ReadyMembers = int32(len(members)), ready
@@ -521,57 +576,104 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 	return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.writeStatus(ctx, set, observed))
 }
 
-// applyMember brings one member to its settings and fills in its status. It returns whether the
-// member is Ready, and an error only for something that failed (a wait is not an error).
-func (r *managedSetReconciler) applyMember(ctx context.Context, set managedSet, template map[string]any, resolved resolvedMember, entry *oramav1alpha1.SetMemberStatus) (bool, error) {
-	fail := func(err error) (bool, error) {
-		entry.Phase, entry.Message = clusterPhaseDegraded, err.Error()
-		return false, fmt.Errorf("member %s on %s: %w", resolved.member.Name, resolved.member.ClusterRef, err)
-	}
-	wait := func(message string) (bool, error) {
-		entry.Phase, entry.Message = clusterPhasePending, message
-		return false, nil
-	}
-	kubeconfig, waiting, err := managedClusterKubeconfig(ctx, r.Client, resolved.member.ClusterRef)
-	if err != nil {
-		return fail(err)
-	}
-	if waiting != "" || resolved.cluster == nil {
-		return wait(firstNonEmpty(waiting, "KubernetesCluster "+resolved.member.ClusterRef+" does not exist"))
-	}
+// refuse reports a set that cannot be applied as written. Nothing is touched on any cluster.
+func (r *managedSetReconciler) refuse(ctx context.Context, set managedSet, observed *oramav1alpha1.ManagedSetStatus, refused *setError) (ctrl.Result, error) {
+	spec, status := set.SetSpec(), set.SetStatus()
+	status.Members, status.ReadyMembers = int32(len(spec.Clusters)), 0
+	setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), clusterPhaseDegraded, refused.reason, refused.message)
+	status.ObservedGeneration = set.GetGeneration()
+	return settle(ctrl.Result{}, r.writeStatus(ctx, set, observed))
+}
+
+// memberPass is one member through one reconcile: prepared, linked to the others, then applied.
+type memberPass struct {
+	resolved resolvedMember
+	entry    oramav1alpha1.SetMemberStatus
+	// spec is the member's merged settings, known even while the member waits for its cluster; it
+	// is req.Spec once the member is prepared, so a write to one is a write to the other.
+	spec       map[string]any
+	kubeconfig []byte
+	req        memberRequest
+	// source is the member this one reads from (a read member's primary). It is applied first.
+	source *memberPass
+	// done is set once the pass has its outcome without being applied: it failed, or it waits.
+	done  bool
+	ready bool
+	err   error
+	state memberState
+}
+
+func (p *memberPass) fail(err error) {
+	p.entry.Phase, p.entry.Message = clusterPhaseDegraded, err.Error()
+	p.err = fmt.Errorf("member %s on %s: %w", p.resolved.member.Name, p.resolved.member.ClusterRef, err)
+	p.done = true
+}
+
+func (p *memberPass) wait(message string) {
+	p.entry.Phase, p.entry.Message = clusterPhasePending, message
+	p.done = true
+}
+
+// prepareMember works out a member's settings and Secrets, or why it fails or waits.
+func (r *managedSetReconciler) prepareMember(ctx context.Context, set managedSet, template map[string]any, p *memberPass) {
+	resolved := p.resolved
 	var override map[string]any
 	if resolved.member.Spec != nil {
+		var err error
 		if override, err = jsonObject(resolved.member.Spec.Raw, "the member's spec"); err != nil {
-			return fail(err)
+			p.fail(err)
+			return
 		}
 	}
 	// A copy through JSON, so nothing shared with the template is written.
 	merged := mergeSpec(template, override)
 	raw, _ := json.Marshal(merged)
 	_ = json.Unmarshal(raw, &merged)
-	if err := r.kind.finish(merged, resolved.namespace, resolved.cluster); err != nil {
-		return fail(err)
-	}
-	req := r.request(set, resolved)
-	req.Spec = merged
-	if req.Secrets, err = r.secretsFor(ctx, set.SetSpec(), resolved.member); err != nil {
-		return fail(err)
-	}
-	state, err := r.applier.ApplyMember(ctx, kubeconfig, req)
+	p.spec = merged
+	kubeconfig, waiting, err := managedClusterKubeconfig(ctx, r.Client, resolved.member.ClusterRef)
 	if err != nil {
-		return fail(err)
+		p.fail(err)
+		return
 	}
+	if waiting != "" || resolved.cluster == nil {
+		p.wait(firstNonEmpty(waiting, "KubernetesCluster "+resolved.member.ClusterRef+" does not exist"))
+		return
+	}
+	if err := r.kind.finish(merged, resolved.namespace, resolved.cluster); err != nil {
+		p.fail(err)
+		return
+	}
+	p.kubeconfig = kubeconfig
+	p.req = r.request(set, resolved)
+	p.req.Spec = merged
+	if p.req.Secrets, err = r.secretsFor(ctx, set.SetSpec(), resolved.member); err != nil {
+		p.fail(err)
+	}
+}
+
+// applyMember brings a prepared member to its settings and fills in its status: whether it is
+// Ready, and an error only for something that failed (a wait is not an error).
+func (r *managedSetReconciler) applyMember(ctx context.Context, p *memberPass) {
+	if p.done {
+		return
+	}
+	state, err := r.applier.ApplyMember(ctx, p.kubeconfig, p.req)
+	if err != nil {
+		p.fail(err)
+		return
+	}
+	p.state = state
 	if state.MissingCRD {
-		return wait(fmt.Sprintf("cluster %s does not have the %s kind (%s): its Orama operator is not installed yet", resolved.member.ClusterRef, r.kind.instance.Kind, r.kind.crd))
+		p.wait(fmt.Sprintf("cluster %s does not have the %s kind (%s): its Orama operator is not installed yet", p.resolved.member.ClusterRef, r.kind.instance.Kind, r.kind.crd))
+		return
 	}
 	isReady, version, message := r.kind.observe(state.Object)
-	entry.Version = version
+	p.entry.Version = version
 	if isReady {
-		entry.Phase, entry.Message = clusterPhaseReady, ""
-		return true, nil
+		p.entry.Phase, p.entry.Message, p.ready = clusterPhaseReady, "", true
+		return
 	}
-	entry.Phase, entry.Message = setPhaseProgressing, message
-	return false, nil
+	p.entry.Phase, p.entry.Message = setPhaseProgressing, message
 }
 
 // release handles members that were in the set's status and are no longer in its spec. Under

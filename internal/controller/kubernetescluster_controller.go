@@ -176,6 +176,7 @@ func (r *KubernetesClusterReconciler) reconcileAKS(ctx context.Context, cluster 
 		ref := desired.KubeconfigSecretRef
 		status.KubeconfigSecretRef = &ref
 	}
+	status.EgressIPs = concrete.Status.EgressIPs
 	pools := make([]oramav1alpha1.ClusterNodePoolStatus, 0, len(concrete.Status.NodePools))
 	for _, pool := range concrete.Status.NodePools {
 		pools = append(pools, oramav1alpha1.ClusterNodePoolStatus{Name: pool.Name, State: pool.ProvisioningState, Count: pool.Count, Error: pool.Error})
@@ -184,7 +185,7 @@ func (r *KubernetesClusterReconciler) reconcileAKS(ctx context.Context, cluster 
 	status.NodePools = pools
 
 	// Carry the concrete resource's conditions across, restamped with this generation.
-	for _, kind := range []string{clusterConditionReady, clusterConditionInSync} {
+	for _, kind := range []string{clusterConditionReady, clusterConditionInSync, clusterConditionEgressIPs} {
 		from := apimeta.FindStatusCondition(concrete.Status.Conditions, kind)
 		if from == nil {
 			if kind == clusterConditionReady {

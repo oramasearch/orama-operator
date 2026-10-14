@@ -33,6 +33,10 @@ type fakeMembers struct {
 	missing   bool            // the instance's CRD is not on the cluster
 	applyErr  error
 	kubeconfs []string
+	// published is an instance's status.remoteRead, by instance name.
+	published map[string]map[string]any
+	// secrets are the Secrets ReadSecret finds, by kubeconfig and namespace/name.
+	secrets map[string]*corev1.Secret
 }
 
 func (f *fakeMembers) ApplyMember(_ context.Context, kubeconfig []byte, req memberRequest) (memberState, error) {
@@ -54,12 +58,19 @@ func (f *fakeMembers) ApplyMember(_ context.Context, kubeconfig []byte, req memb
 		obj.Object["status"] = map[string]any{"phase": "Progressing",
 			"conditions": []any{map[string]any{"type": "Ready", "status": "False", "observedGeneration": int64(3), "message": "the control database is starting"}}}
 	}
+	if published := f.published[req.Name]; published != nil {
+		obj.Object["status"].(map[string]any)["remoteRead"] = published
+	}
 	return memberState{Object: obj}, nil
 }
 
 func (f *fakeMembers) DeleteMember(_ context.Context, _ []byte, req memberRequest) error {
 	f.deleted = append(f.deleted, req.Name)
 	return nil
+}
+
+func (f *fakeMembers) ReadSecret(_ context.Context, kubeconfig []byte, namespace, name string) (*corev1.Secret, error) {
+	return f.secrets[string(kubeconfig)+" "+namespace+"/"+name], nil
 }
 
 func managedCluster(name, region, purpose string) []client.Object {

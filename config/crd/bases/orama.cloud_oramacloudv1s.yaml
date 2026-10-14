@@ -2433,7 +2433,9 @@ spec:
                   MasterAPIKeySecretRef names the Secret key holding OramaCore's MASTER_API_KEY, which feeds
                   every component that reads it (engine, analytics-processor, index-builder, dashboard,
                   workers). Unset, the operator uses <cr>-master-api-key (key MASTER_API_KEY), creating it once
-                  if absent. The value must equal the control DB's oramacore_clusters.master_api_key.
+                  if absent; a read member with a remote peer uses the peer's credentials Secret instead, so it
+                  shares its primary's key. The value must equal the control DB's
+                  oramacore_clusters.master_api_key.
                 properties:
                   key:
                     description: Key in the Secret. Defaults to MASTER_API_KEY.
@@ -2447,17 +2449,43 @@ spec:
                 type: object
               peers:
                 description: |-
-                  Peers lists the other regions (used by read tiers to reach the primary's
-                  writer + Postgres; and by the primary to know its replicas). No mesh.
+                  Peers lists the other regions. A read member takes its primary's replication stream, control
+                  database and credentials from the first peer that names a brokerStreamEndpoint and a
+                  credentialsSecretRef. An OramaCloudV1Set writes this field on its read members; it is never
+                  stated in a set. No mesh.
                 items:
                   description: PeerSpec identifies another region for cross-cluster
                     wiring (no mesh).
                   properties:
+                    brokerStreamEndpoint:
+                      description: |-
+                        BrokerStreamEndpoint is the primary's TLS replication stream as host:port (its
+                        status.remoteRead.brokerStreamEndpoint). The readers of a read member consume from it.
+                      type: string
+                    credentialsSecretRef:
+                      description: |-
+                        CredentialsSecretRef names a Secret in this namespace holding a copy of the primary's
+                        remote-read credentials (its status.remoteRead.credentialsSecret): the broker CA, the
+                        read-only broker user, MASTER_API_KEY, and the control database's CA and streaming_replica
+                        client certificate.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
                     name:
                       type: string
                     postgresEndpoint:
-                      description: PostgresEndpoint is the primary's control-plane
-                        DB (for replica streaming).
+                      description: |-
+                        PostgresEndpoint is the primary's control-plane DB as host:port, which a read member with
+                        controlDB.replicate streams from (the primary's status.remoteRead.controlDBEndpoint).
                       type: string
                     region:
                       type: string
@@ -2553,6 +2581,24 @@ spec:
                 required:
                 - name
                 - role
+                type: object
+              remoteReaders:
+                description: |-
+                  RemoteReaders, on a primary, publishes the replication stream (and the in-cluster control
+                  database) to read members in other clusters: a TLS stream listener on the broker, source-
+                  restricted LoadBalancer Services, a read-only broker user, and a credentials Secret, reported
+                  in status.remoteRead. Unset or with no ranges, none of them exist. An OramaCloudV1Set writes
+                  this field on its primary from its read members' egress IPs; it is never stated in a set.
+                properties:
+                  allowedSourceRanges:
+                    description: |-
+                      AllowedSourceRanges are the CIDRs the remote Services accept connections from: each read
+                      member's egress IPs as /32. Every other source is dropped by the cloud load balancer.
+                    items:
+                      pattern: ^[0-9a-fA-F.:]+/[0-9]{1,3}$
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
                 type: object
               requireRealCredentials:
                 description: |-
@@ -2740,6 +2786,28 @@ spec:
                   Phase: Progressing (coming up) | Ready (all components ready) | Degraded (was ready, a
                   component regressed) | Pending.
                 type: string
+              remoteRead:
+                description: |-
+                  RemoteRead is where read members in other clusters connect, set on a primary with
+                  spec.remoteReaders once everything it names is in place.
+                properties:
+                  brokerStreamEndpoint:
+                    description: BrokerStreamEndpoint is the TLS replication stream,
+                      as host:port.
+                    type: string
+                  controlDBEndpoint:
+                    description: |-
+                      ControlDBEndpoint is the control database's primary instance, as host:port. Empty when the
+                      control database does not run in this cluster.
+                    type: string
+                  credentialsSecret:
+                    description: CredentialsSecret is the Secret, in this namespace,
+                      that a read member gets a copy of.
+                    type: string
+                required:
+                - brokerStreamEndpoint
+                - credentialsSecret
+                type: object
             type: object
         type: object
     served: true

@@ -40,6 +40,8 @@ const (
 
 	clusterConditionReady  = "Ready"
 	clusterConditionInSync = "InSync"
+	// clusterConditionEgressIPs is False while the cluster's egress IPs are unknown.
+	clusterConditionEgressIPs = "EgressIPsKnown"
 
 	// kubeconfigSecretKey is the key the admin kubeconfig is written under.
 	kubeconfigSecretKey = "kubeconfig"
@@ -155,6 +157,7 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return r.fail(ctx, &cluster, observed, "KubeconfigFailed", err)
 		}
 		cluster.Status.KubeconfigWritten = true
+		r.observeEgressIPs(ctx, &cluster, creds, found)
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhaseReady, "Provisioned", "")
 		setInSync(&cluster.Status.Conditions, cluster.Generation, aksDrift(&cluster, found))
@@ -270,6 +273,26 @@ func (r *AksClusterReconciler) observe(cluster *oramav1alpha1.AksCluster, found 
 	}
 	sort.Slice(pools, func(i, j int) bool { return pools[i].Name < pools[j].Name })
 	status.NodePools = pools
+}
+
+// observeEgressIPs records the cluster's egress IPs and the EgressIPsKnown condition. Not knowing
+// them does not make the cluster less Ready: only a primary that accepts this cluster's connections
+// needs them, so a failed read keeps the addresses last read and says why in the condition.
+func (r *AksClusterReconciler) observeEgressIPs(ctx context.Context, cluster *oramav1alpha1.AksCluster, creds azureCredentials, found *azureManagedCluster) {
+	condition := metav1.Condition{
+		Type: clusterConditionEgressIPs, Status: metav1.ConditionTrue, Reason: "Resolved", ObservedGeneration: cluster.Generation,
+	}
+	switch addresses, err := r.azure().egressIPs(ctx, creds, found); {
+	case err != nil:
+		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "ReadFailed", err.Error()
+	case len(addresses) == 0:
+		cluster.Status.EgressIPs = nil
+		condition.Status, condition.Reason = metav1.ConditionFalse, "NoneReported"
+		condition.Message = "Azure reports no outbound IPs on the cluster's load balancer"
+	default:
+		cluster.Status.EgressIPs = addresses
+	}
+	apimeta.SetStatusCondition(&cluster.Status.Conditions, condition)
 }
 
 // observeOperation copies Azure's latest operation into status. Azure keeping none clears it.

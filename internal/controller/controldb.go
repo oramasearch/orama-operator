@@ -114,7 +114,8 @@ func (r *OramaCloudV1Reconciler) resolveControlDBBackup(ctx context.Context, oc 
 
 // reconcileControlDB provisions the control-plane Postgres (PlanetScale in prod) as a
 // CloudNativePG Cluster. On the primary it bootstraps a fresh cluster; on a read tier
-// with replicate=true it stands up a replica cluster streaming from the primary peer.
+// with replicate=true it stands up a replica cluster that copies the primary peer's control DB with
+// pg_basebackup and then streams from it, once the peer is usable (peerProblem).
 // spec.components.controlDB.storage sizes each instance's PVC, spec.placement pins the instances
 // through the Cluster's affinity, and controlDB.backup adds a Barman object store + an owned
 // ScheduledBackup. Under spec.deletionProtection the Cluster and ScheduledBackup carry no owner
@@ -134,6 +135,13 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 	if !db.Enabled {
 		return r.teardownControlDB(ctx, oc) // disable ≠ leave running (#23)
 	}
+	if controlDBIsReplica(oc) {
+		// A replica bootstraps from its primary's backup stream, so it waits for a usable peer;
+		// PeerReady says what is missing.
+		if problem, err := r.peerProblem(ctx, oc); err != nil || problem != "" {
+			return err
+		}
+	}
 	backup, err := r.resolveControlDBBackup(ctx, oc)
 	if err != nil {
 		return err
@@ -152,6 +160,12 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 		if err := r.ownUnlessProtected(oc, cluster); err != nil {
 			return err
 		}
+		// A database created as a primary has its own history and cannot start following another
+		// one: a replica is a new Cluster, copied from its primary.
+		if wasReplica, _, _ := unstructured.NestedBool(cluster.Object, "spec", "replica", "enabled"); controlDBIsReplica(oc) &&
+			cluster.GetResourceVersion() != "" && !wasReplica {
+			return fmt.Errorf("control DB %s was created as a primary and cannot become a replica: a read member needs a new instance (see docs/infrastructure/operations.md)", cluster.GetName())
+		}
 		cluster.SetLabels(labelsFor(oc, "controldb"))
 		storage := map[string]interface{}{"size": defaultDataVolumeSize}
 		if db.Storage.Size != nil {
@@ -168,21 +182,9 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 			spec["affinity"] = affinity
 		}
 		if controlDBIsReplica(oc) {
-			// Replica cluster: stream from the primary region's Postgres endpoint.
-			// Credentials wiring (the streaming_replica secret) is a follow-up.
-			host, port := splitHostPort(primaryPostgresEndpoint(oc), "5432")
+			spec["bootstrap"] = map[string]interface{}{"pg_basebackup": map[string]interface{}{"source": "primary"}}
 			spec["replica"] = map[string]interface{}{"enabled": true, "source": "primary"}
-			spec["externalClusters"] = []interface{}{
-				map[string]interface{}{
-					"name": "primary",
-					"connectionParameters": map[string]interface{}{
-						"host":   host,
-						"port":   port,
-						"dbname": controlDBName,
-						"user":   "streaming_replica",
-					},
-				},
-			}
+			spec["externalClusters"] = []interface{}{controlDBPrimaryExternalCluster(remotePeer(oc))}
 		} else {
 			spec["bootstrap"] = map[string]interface{}{
 				"initdb": map[string]interface{}{"database": controlDBName, "owner": controlDBName},
@@ -347,13 +349,35 @@ func profileInstances(oc *oramav1alpha1.OramaCloudV1) int {
 	}
 }
 
-func primaryPostgresEndpoint(oc *oramav1alpha1.OramaCloudV1) string {
-	for _, p := range oc.Spec.Peers {
-		if p.PostgresEndpoint != "" {
-			return p.PostgresEndpoint
-		}
+// controlDBPrimaryExternalCluster is how a replica control DB reaches its primary (operator#396):
+// the primary's remote control-DB endpoint, as CNPG's streaming_replica user, authenticated by the
+// primary's replication client certificate. Certificate, key and the CA that verifies the primary
+// come from the peer's credentials Secret, which follows the primary's CNPG Secrets.
+//
+// sslmode is verify-ca, not verify-full: the primary's CNPG server certificate names only its
+// in-cluster Services, never the load balancer's public address the replica connects to. The CA is
+// the primary cluster's own, so verify-ca still proves the server is that cluster's Postgres.
+// pg_basebackup and streaming connect to the postgres database, which CNPG's pg_hba allows for
+// streaming_replica with a certificate.
+func controlDBPrimaryExternalCluster(p *oramav1alpha1.PeerSpec) map[string]interface{} {
+	host, port := splitHostPort(p.PostgresEndpoint, "5432")
+	secret := p.CredentialsSecretRef.Name
+	selector := func(key string) map[string]interface{} {
+		return map[string]interface{}{"name": secret, "key": key}
 	}
-	return ""
+	return map[string]interface{}{
+		"name": "primary",
+		"connectionParameters": map[string]interface{}{
+			"host":    host,
+			"port":    port,
+			"dbname":  "postgres",
+			"user":    "streaming_replica",
+			"sslmode": "verify-ca",
+		},
+		"sslCert":     selector(remoteReadControlDBCertKey),
+		"sslKey":      selector(remoteReadControlDBKeyKey),
+		"sslRootCert": selector(remoteReadControlDBCAKey),
+	}
 }
 
 func splitHostPort(endpoint, defaultPort string) (string, string) {

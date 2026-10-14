@@ -60,10 +60,20 @@ type OramaCloudV1Spec struct {
 	// enabled/disabled independently.
 	Components ComponentsSpec `json:"components,omitempty"`
 
-	// Peers lists the other regions (used by read tiers to reach the primary's
-	// writer + Postgres; and by the primary to know its replicas). No mesh.
+	// Peers lists the other regions. A read member takes its primary's replication stream, control
+	// database and credentials from the first peer that names a brokerStreamEndpoint and a
+	// credentialsSecretRef. An OramaCloudV1Set writes this field on its read members; it is never
+	// stated in a set. No mesh.
 	// +optional
 	Peers []PeerSpec `json:"peers,omitempty"`
+
+	// RemoteReaders, on a primary, publishes the replication stream (and the in-cluster control
+	// database) to read members in other clusters: a TLS stream listener on the broker, source-
+	// restricted LoadBalancer Services, a read-only broker user, and a credentials Secret, reported
+	// in status.remoteRead. Unset or with no ranges, none of them exist. An OramaCloudV1Set writes
+	// this field on its primary from its read members' egress IPs; it is never stated in a set.
+	// +optional
+	RemoteReaders *RemoteReadersSpec `json:"remoteReaders,omitempty"`
 
 	// DemoSeed, when true, has the operator seed a demo project + index so a
 	// fresh install answers queries out of the box.
@@ -86,7 +96,9 @@ type OramaCloudV1Spec struct {
 	// MasterAPIKeySecretRef names the Secret key holding OramaCore's MASTER_API_KEY, which feeds
 	// every component that reads it (engine, analytics-processor, index-builder, dashboard,
 	// workers). Unset, the operator uses <cr>-master-api-key (key MASTER_API_KEY), creating it once
-	// if absent. The value must equal the control DB's oramacore_clusters.master_api_key.
+	// if absent; a read member with a remote peer uses the peer's credentials Secret instead, so it
+	// shares its primary's key. The value must equal the control DB's
+	// oramacore_clusters.master_api_key.
 	// +optional
 	MasterAPIKeySecretRef *MasterAPIKeySecretRef `json:"masterAPIKeySecretRef,omitempty"`
 
@@ -95,6 +107,17 @@ type OramaCloudV1Spec struct {
 	// reported but the phase follows component readiness only.
 	// +optional
 	RequireRealCredentials bool `json:"requireRealCredentials,omitempty"`
+}
+
+// RemoteReadersSpec says who may read the primary's replication stream and control database from
+// outside its cluster.
+type RemoteReadersSpec struct {
+	// AllowedSourceRanges are the CIDRs the remote Services accept connections from: each read
+	// member's egress IPs as /32. Every other source is dropped by the cloud load balancer.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:items:Pattern=`^[0-9a-fA-F.:]+/[0-9]{1,3}$`
+	AllowedSourceRanges []string `json:"allowedSourceRanges,omitempty"`
 }
 
 // MasterAPIKeySecretRef names the Secret key that holds the master API key.
@@ -782,9 +805,33 @@ type PeerSpec struct {
 	// WriterEndpoint is the primary's OramaCore writer (read tiers write via this).
 	// +optional
 	WriterEndpoint string `json:"writerEndpoint,omitempty"`
-	// PostgresEndpoint is the primary's control-plane DB (for replica streaming).
+	// PostgresEndpoint is the primary's control-plane DB as host:port, which a read member with
+	// controlDB.replicate streams from (the primary's status.remoteRead.controlDBEndpoint).
 	// +optional
 	PostgresEndpoint string `json:"postgresEndpoint,omitempty"`
+	// BrokerStreamEndpoint is the primary's TLS replication stream as host:port (its
+	// status.remoteRead.brokerStreamEndpoint). The readers of a read member consume from it.
+	// +optional
+	BrokerStreamEndpoint string `json:"brokerStreamEndpoint,omitempty"`
+	// CredentialsSecretRef names a Secret in this namespace holding a copy of the primary's
+	// remote-read credentials (its status.remoteRead.credentialsSecret): the broker CA, the
+	// read-only broker user, MASTER_API_KEY, and the control database's CA and streaming_replica
+	// client certificate.
+	// +optional
+	CredentialsSecretRef *corev1.LocalObjectReference `json:"credentialsSecretRef,omitempty"`
+}
+
+// RemoteReadStatus is where a primary's read members in other clusters connect. It is set only
+// once every endpoint has an address and the credentials Secret is complete.
+type RemoteReadStatus struct {
+	// BrokerStreamEndpoint is the TLS replication stream, as host:port.
+	BrokerStreamEndpoint string `json:"brokerStreamEndpoint"`
+	// ControlDBEndpoint is the control database's primary instance, as host:port. Empty when the
+	// control database does not run in this cluster.
+	// +optional
+	ControlDBEndpoint string `json:"controlDBEndpoint,omitempty"`
+	// CredentialsSecret is the Secret, in this namespace, that a read member gets a copy of.
+	CredentialsSecret string `json:"credentialsSecret"`
 }
 
 // ComponentStatus is the readiness of ONE deployable component (middle granularity — one entry
@@ -829,6 +876,10 @@ type OramaCloudV1Status struct {
 	// +listType=map
 	// +listMapKey=claim
 	EngineSnapshots []EngineSnapshotStatus `json:"engineSnapshots,omitempty"`
+	// RemoteRead is where read members in other clusters connect, set on a primary with
+	// spec.remoteReaders once everything it names is in place.
+	// +optional
+	RemoteRead *RemoteReadStatus `json:"remoteRead,omitempty"`
 }
 
 // EngineSnapshotStatus is the newest VolumeSnapshot of one engine data claim.

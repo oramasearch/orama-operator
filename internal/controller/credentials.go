@@ -51,7 +51,8 @@ const (
 func cacheAuthSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-cache-auth" }
 
 // masterAPIKeyRef is the Secret and key every component reads MASTER_API_KEY from:
-// spec.masterAPIKeySecretRef, or <cr>-master-api-key.
+// spec.masterAPIKeySecretRef; else, on a read member with a remote peer, the peer's credentials
+// Secret, so the member answers to its primary's key; else <cr>-master-api-key.
 func masterAPIKeyRef(oc *oramav1alpha1.OramaCloudV1) (name, key string) {
 	if ref := oc.Spec.MasterAPIKeySecretRef; ref != nil && ref.Name != "" {
 		key = ref.Key
@@ -60,7 +61,16 @@ func masterAPIKeyRef(oc *oramav1alpha1.OramaCloudV1) (name, key string) {
 		}
 		return ref.Name, key
 	}
-	return oc.Name + "-master-api-key", masterAPIKeyKey
+	if p := remotePeer(oc); p != nil {
+		return p.CredentialsSecretRef.Name, masterAPIKeyKey
+	}
+	return generatedMasterAPIKeySecretName(oc), masterAPIKeyKey
+}
+
+// generatedMasterAPIKeySecretName is the master API key Secret the operator creates when nothing
+// else names one.
+func generatedMasterAPIKeySecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-master-api-key"
 }
 
 // masterAPIKeyEnv is the MASTER_API_KEY variable of every component that reads it. An explicit env
@@ -76,6 +86,19 @@ func brokerCredentialEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 		secretKeyEnv(brokerUserEnv, brokerAdminSecretName(oc), "username"),
 		secretKeyEnv(brokerPasswordEnv, brokerAdminSecretName(oc), "password"),
 	}
+}
+
+// engineBrokerCredentialEnv is the broker account an engine side (writer or reader) authenticates
+// to the stream with: the remote reader account from the peer's credentials Secret on a read
+// member's readers, the in-cluster broker admin otherwise.
+func engineBrokerCredentialEnv(oc *oramav1alpha1.OramaCloudV1, side string) []corev1.EnvVar {
+	if p := remotePeer(oc); p != nil && side == "reader" {
+		return []corev1.EnvVar{
+			secretKeyEnv(brokerUserEnv, p.CredentialsSecretRef.Name, remoteReadBrokerUserKey),
+			secretKeyEnv(brokerPasswordEnv, p.CredentialsSecretRef.Name, remoteReadBrokerPasswordKey),
+		}
+	}
+	return brokerCredentialEnv(oc)
 }
 
 // redisPasswordEnvVar carries the Redis password from <cr>-cache-auth.
@@ -132,12 +155,11 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 			return fmt.Errorf("cache auth secret: %w", err)
 		}
 	}
-	if oc.Spec.MasterAPIKeySecretRef == nil || oc.Spec.MasterAPIKeySecretRef.Name == "" {
+	if name, _ := masterAPIKeyRef(oc); name == generatedMasterAPIKeySecretName(oc) {
 		key, err := r.initialMasterAPIKey(ctx, oc)
 		if err != nil {
 			return err
 		}
-		name, _ := masterAPIKeyRef(oc)
 		if err := r.createSecretIfAbsent(ctx, oc, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace, Labels: lbls},
 			StringData: map[string]string{masterAPIKeyKey: key},
@@ -202,8 +224,12 @@ func (r *OramaCloudV1Reconciler) credentialChecks(ctx context.Context, oc *orama
 		}
 	}
 	c := oc.Spec.Components
-	if storeInCluster(oc, c.Broker) || c.Engine.Enabled || (c.Ingestion.Enabled && c.Ingestion.Harvest) {
+	peer := remotePeer(oc)
+	if storeInCluster(oc, c.Broker) || (c.Engine.Enabled && peer == nil) || (c.Ingestion.Enabled && c.Ingestion.Harvest) {
 		checks = append(checks, credentialCheck{secret: brokerAdminSecretName(oc), key: "password"})
+	}
+	if c.Engine.Enabled && peer != nil {
+		checks = append(checks, credentialCheck{secret: peer.CredentialsSecretRef.Name, key: remoteReadBrokerPasswordKey})
 	}
 	if storeInCluster(oc, c.Cache) || c.Ingestion.Enabled {
 		checks = append(checks, credentialCheck{secret: cacheAuthSecretName(oc), key: "password"})

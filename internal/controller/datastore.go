@@ -56,6 +56,11 @@ type dataStoreDef struct {
 	gracePeriodSeconds int64
 	// storage sizes the data PVC; the zero value is 10Gi on the default StorageClass.
 	storage oramav1alpha1.VolumeSpec
+	// volumes and mounts add further volumes to the pod and mounts to the store's container (the
+	// broker's TLS files); podAnnotations are added to the pod template, so a change to one rolls it.
+	volumes        []corev1.Volume
+	mounts         []corev1.VolumeMount
+	podAnnotations map[string]string
 }
 
 // reconcileDataStore provisions (or skips) one data store per its DataStoreSpec.
@@ -140,6 +145,14 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 			// A rendered file changes only when the pod starts again, so a template change rolls it.
 			annotations = map[string]string{"orama.cloud/config-hash": fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprint(data))))}
 		}
+	}
+	volumes = append(volumes, def.volumes...)
+	mounts = append(mounts, def.mounts...)
+	if len(def.podAnnotations) > 0 {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		maps.Copy(annotations, def.podAnnotations)
 	}
 
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
@@ -276,16 +289,44 @@ const (
 // RABBITMQ_DEFAULT_USER env, because a mounted rabbitmq.conf and that env conflict). RabbitMQ applies
 // them only to an empty data directory; see docs/components.md for changing an existing broker's
 // password.
-func rabbitmqConfTemplate(advertisedHost string) string {
-	return "default_user = " + keyPlaceholder(brokerUserEnv) + "\n" +
+//
+// With streamTLS the broker also listens for TLS stream connections on 5551 for remote readers
+// (spec.remoteReaders, operator#396). Readers authenticate with a password, so the broker asks for
+// no client certificate. A remote consumer of a single-node broker reads over the connection it
+// opened, so the in-cluster advertised host does not reach it.
+func rabbitmqConfTemplate(advertisedHost string, streamTLS bool) string {
+	conf := "default_user = " + keyPlaceholder(brokerUserEnv) + "\n" +
 		"default_pass = " + keyPlaceholder(brokerPasswordEnv) + "\n" +
 		"stream.listeners.tcp.1 = 5552\n" +
 		"stream.advertised_host = " + advertisedHost + "\n" +
 		"stream.advertised_port = 5552\n"
+	if streamTLS {
+		conf += fmt.Sprintf("stream.listeners.ssl.default = %d\n", brokerStreamTLSPort) +
+			"ssl_options.cacertfile = " + brokerTLSDir + "/ca.crt\n" +
+			"ssl_options.certfile = " + brokerTLSDir + "/tls.crt\n" +
+			"ssl_options.keyfile = " + brokerTLSDir + "/tls.key\n" +
+			"ssl_options.verify = verify_none\n" +
+			"ssl_options.fail_if_no_peer_cert = false\n"
+	}
+	return conf
 }
 
 func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	advertised := oc.Name + "-broker." + oc.Namespace + ".svc.cluster.local"
+	// The TLS stream listener runs once remote readers are on and the server certificate exists
+	// (reconcileRemoteRead issues it when the remote Service has an address).
+	tlsHash, err := r.brokerStreamTLS(ctx, oc)
+	if err != nil {
+		return err
+	}
+	var tlsVolumes []corev1.Volume
+	var tlsMounts []corev1.VolumeMount
+	var tlsAnnotations map[string]string
+	if tlsHash != "" {
+		volume, mounts := brokerTLSVolume(oc)
+		tlsVolumes, tlsMounts = []corev1.Volume{volume}, mounts
+		tlsAnnotations = map[string]string{brokerTLSCertAnnotation: tlsHash}
+	}
 	if err := r.reconcileDataStore(ctx, oc, oc.Spec.Components.Broker, dataStoreDef{
 		component: "broker",
 		image:     "rabbitmq:3.13-management",
@@ -299,8 +340,11 @@ func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav
 		// topology (no vendor operator, #41). subPath-mounted so we add to /etc/rabbitmq, not clobber it.
 		configMount:     "/etc/rabbitmq",
 		configFiles:     map[string]string{"enabled_plugins": "[rabbitmq_management,rabbitmq_stream].\n"},
-		configTemplates: map[string]string{"rabbitmq.conf": rabbitmqConfTemplate(advertised)},
+		configTemplates: map[string]string{"rabbitmq.conf": rabbitmqConfTemplate(advertised, tlsHash != "")},
 		templateEnv:     brokerCredentialEnv(oc),
+		volumes:         tlsVolumes,
+		mounts:          tlsMounts,
+		podAnnotations:  tlsAnnotations,
 		// Right-size (#18): RabbitMQ 3.13 detects the cgroup memory limit and derives its
 		// vm_memory_high_watermark from it, so this limit is binary-aware. Generous default; override
 		// via spec.components.broker.resources.

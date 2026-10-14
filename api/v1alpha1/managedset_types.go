@@ -76,8 +76,9 @@ type ManagedSetSpec struct {
 	Secrets []SetSecret `json:"secrets,omitempty"`
 
 	// Clusters are the members: one instance on one cluster each. Members are independent: none
-	// waits for another. Every member's cluster must carry the same `purpose` tag: a set never
-	// combines nonprod and production.
+	// waits for another, except that an OramaCloudV1Set read member (region.role read) waits for
+	// its primary's published endpoints. Every member's cluster must carry the same `purpose` tag:
+	// a set never combines nonprod and production.
 	// +kubebuilder:validation:MinItems=1
 	Clusters []SetMember `json:"clusters"`
 
@@ -171,7 +172,10 @@ type LakeSetList struct {
 //+kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
 
 // OramaCloudV1Set installs OramaCloudV1 instances onto clusters this one manages and keeps their
-// versions and settings as described. Each instance's region is its cluster's.
+// versions and settings as described. Each instance's region is its cluster's. With read members
+// (region.role read) the set has exactly one primary: it writes the primary's spec.remoteReaders
+// from the read members' egress IPs, and each read member's spec.peers from what the primary
+// publishes, copying the primary's credentials Secret to it.
 type OramaCloudV1Set struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

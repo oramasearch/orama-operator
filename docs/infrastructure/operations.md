@@ -175,6 +175,8 @@ instance keeps running and is no longer managed. Only `deletionPolicy: Delete` d
 - two members on one cluster with the same name or namespace;
 - a `LakeSet` whose template or member `spec` sets `namespace` (use the member's `namespace` field);
 - an `OramaCloudV1Set` member whose `spec` sets a `region.name` other than its cluster's region;
+- an `OramaCloudV1Set` template or member that states `remoteReaders` or `peers` (the set writes
+  both), and an `OramaCloudV1Set` with read members and not exactly one primary;
 - an instance of the same name on the cluster that the set did not create.
 
 **Check a set**:
@@ -184,6 +186,129 @@ kubectl --context orama-production-cluster-01 get lset,ocv1set
 kubectl --context orama-production-cluster-01 get lset <name> \
   -o jsonpath='{range .status.memberStatuses[*]}{.name} {.namespace} {.phase} {.version} | {.message}{"\n"}{end}'
 ```
+
+## Rehearse a cross-cluster read member
+
+A `read` member serves its region from a primary in another cluster
+([README](README.md#read-members-follow-a-primary-in-another-cluster), DESIGN.md decision 69). It
+has not run anywhere yet, so it is rehearsed on nonprod first: a second `v1-nonprod` member in
+another region, as `read`, which must pass the read checks below before anything changes in
+`v1-prod`. Every step is a change to a file in `config/clusters/` applied to the managing cluster,
+or a read.
+
+**Before you start**
+
+- Every cluster runs an operator version that has the read path (#396): the managing cluster's
+  roll needs Steve's consent ([Upgrade the operator](#upgrade-the-operator)).
+- The provider's Azure identity can read public IP addresses in each cluster's node resource group
+  (`MC_...`). On a Ready cluster, `kubectl get aks <cluster> -o jsonpath='{.status.egressIPs}'` lists
+  its egress addresses and the `EgressIPsKnown` condition is `True`; `ReadFailed` there means the
+  identity lacks that read.
+- The set's engine runs side-only images: `images.overrides` sets `oramacore-writer` and
+  `oramacore-reader`. A read member refuses the combined image, which starts a writer in every reader.
+
+**1. Create the second nonprod cluster.** Follow [Create a cluster](#create-a-cluster) for
+`orama-nonprod-cluster-02` in a region other than `orama-nonprod-cluster-01`'s `westus2`, with the
+`nonprod` purpose tag. Wait until it is `Ready` and its `status.egressIPs` is filled:
+
+```sh
+kubectl --context orama-production-cluster-01 get kcluster orama-nonprod-cluster-02 \
+  -o jsonpath='{.status.phase} {.status.egressIPs}{"\n"}'
+```
+
+**2. Add the read member to `config/clusters/sets/v1-nonprod.yaml`**, then apply and commit:
+
+```yaml
+  - clusterRef: orama-nonprod-cluster-02
+    name: v1-dev-read
+    namespace: v1-dev-read
+    spec:
+      region: {role: read}
+      components:
+        controlDB: {replicate: true}
+        broker: {placement: central}     # the readers use the primary's broker
+        ingestion: {enabled: false}      # the write path stays on the primary
+        dashboard: {enabled: false}
+        docs: {enabled: false}
+        analyticsProcessor: {enabled: false}
+        searchWorkers: {enabled: false}
+        pgAdmin: {enabled: false}
+```
+
+The set then opens `v1-dev` to the new cluster's egress IPs (`v1-dev` restarts its broker once, to
+add the TLS listener), waits for `v1-dev` to publish, and applies `v1-dev-read` with its peer and a
+copy of `v1-dev-remote-read`.
+
+**3. Watch it connect.** On the managing cluster:
+
+```sh
+kubectl --context orama-production-cluster-01 get ocv1set v1-nonprod \
+  -o jsonpath='{range .status.memberStatuses[*]}{.name} {.phase} | {.message}{"\n"}{end}'
+```
+
+`v1-dev-read` goes `Pending` ("waiting for primary v1-dev ... to publish its replication stream"),
+then `Progressing`, then `Ready`. On `orama-nonprod-cluster-01` (a kubeconfig as in
+[Where things are](#where-things-are)):
+
+```sh
+kubectl -n v1-dev get ocv1 v1-dev -o jsonpath='{.status.remoteRead}{"\n"}'
+kubectl -n v1-dev get svc v1-dev-broker-remote v1-dev-controldb-remote \
+  -o custom-columns=NAME:.metadata.name,ADDRESS:.status.loadBalancer.ingress[0].ip,ALLOWED:.spec.loadBalancerSourceRanges
+kubectl -n v1-dev get ocv1 v1-dev -o jsonpath='{.status.conditions[?(@.type=="RemoteReadPublished")].message}{"\n"}'
+```
+
+`ALLOWED` must be exactly the new cluster's egress IPs as `/32`. On `orama-nonprod-cluster-02`:
+
+```sh
+kubectl -n v1-dev-read get ocv1 v1-dev-read -o jsonpath='{.status.phase} {.status.conditions[?(@.type=="PeerReady")].message}{"\n"}'
+kubectl -n v1-dev-read logs v1-dev-read-reader-0 -c oramacore | grep -i 'rabbitmq consumer'
+kubectl -n v1-dev-read get clusters.postgresql.cnpg.io v1-dev-read-controldb
+```
+
+The reader logs `Created rabbitmq consumer oramacore-operations`. The broker on
+`orama-nonprod-cluster-01` lists it as a consumer from the new cluster's address:
+
+```sh
+kubectl -n v1-dev exec v1-dev-broker-0 -- rabbitmq-streams list_stream_connections user peer_host
+kubectl -n v1-dev exec v1-dev-broker-0 -- rabbitmq-streams list_stream_consumers stream offset_lag
+```
+
+Replica lag, on the primary and on the replica (read-only queries; the instance is `-1` unless CNPG
+has failed over, which `kubectl get clusters.postgresql.cnpg.io` shows):
+
+```sh
+kubectl -n v1-dev exec v1-dev-controldb-1 -c postgres -- psql -Atc \
+  "select application_name, client_addr, state, replay_lag from pg_stat_replication"
+kubectl -n v1-dev-read exec v1-dev-read-controldb-1 -c postgres -- psql -Atc \
+  "select pg_is_in_recovery(), now() - pg_last_xact_replay_timestamp()"
+```
+
+**4. Run the read checks.** All must hold before `v1-prod` changes:
+
+- **Follows writes.** Write a document to a throwaway index through `v1-dev`'s writer; it is found
+  by a search on `v1-dev-read`'s readers within seconds, with the same key `v1-dev` accepts.
+  Delete it on `v1-dev`; it disappears from `v1-dev-read`.
+- **Serves what was there before.** A search on an existing index returns the same hits on both.
+- **Survives restarts.** When a reader or `v1-dev`'s broker restarts (an operator rollout, a node
+  upgrade), the reader resumes from its stored offset (no replay from offset 0 in its log) and
+  catches up. Restarting a pod by hand needs Steve's consent, like any other change.
+- **Control DB matches.** A read-only count of `oramacore_clusters` and `projects` on the replica
+  equals the primary's, and `pg_is_in_recovery()` is true.
+- **Closed to everyone else.** From an address not in `ALLOWED` (a laptop), `nc -vz -w 5 <address> 5551`
+  and `5432` time out. `5552` is not exposed at all.
+- **TLS is verified.** From a pod in `orama-nonprod-cluster-02`,
+  `openssl s_client -connect <address>:5551 -CAfile <broker-ca.crt from v1-dev-remote-read>` ends with
+  `Verify return code: 0 (ok)`; with any other CA file it fails.
+
+**5. Only then, and only with Steve's consent, `v1-prod`.** Switching `v1-us` to `read` puts the
+production broker stream and control Postgres on public addresses (TLS, password or client
+certificate, source-restricted): Steve confirms it first. An existing primary cannot be switched in
+place: its control DB was created as a primary, and the operator refuses to turn it into a replica.
+So the change to `config/clusters/sets/v1-prod.yaml` is a new member on
+`orama-production-cluster-03` with the spec from step 2 (its own name and namespace), next to the
+existing `v1-us`, applied with Steve's consent. Once it passes the same checks against `v1-eu`, US
+traffic moves to it in Cloudflare, and what happens to the old `v1-us` primary and its data is a
+separate decision with Steve.
 
 ## Things that have gone wrong, and what they looked like
 

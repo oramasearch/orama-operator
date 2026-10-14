@@ -150,6 +150,10 @@ type AksClusterStatus struct {
 	// OIDCIssuerURL is set when workload identity is on.
 	// +optional
 	OIDCIssuerURL string `json:"oidcIssuerURL,omitempty"`
+	// EgressIPs are the public addresses the cluster's outbound traffic leaves from: the
+	// effective outbound IPs of its load balancer, resolved to addresses, sorted.
+	// +optional
+	EgressIPs []string `json:"egressIPs,omitempty"`
 	// CreatedResourceGroup is true when the operator created the resource group, and so may
 	// delete it.
 	// +optional
@@ -173,7 +177,8 @@ type AksClusterStatus struct {
 	Message string `json:"message,omitempty"`
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-	// Conditions: Ready, and InSync.
+	// Conditions: Ready, InSync, and EgressIPsKnown (false when Azure reports no outbound IPs or
+	// they cannot be read).
 	// +optional
 	// +listType=map
 	// +listMapKey=type

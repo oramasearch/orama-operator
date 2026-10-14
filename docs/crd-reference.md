@@ -42,12 +42,13 @@ llm:
 
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
 | `cloudflare.zoneIDs` | map | — | Zone name → Cloudflare zone ID (e.g. `{orama.ing: <id>, orama.com: <id>}`). Each managed DNS host uses the zone with the longest matching suffix and falls back to the Secret's `zoneID`, so one CR can manage names in several zones. An existing record is never moved: if a host's zone changes, its `CloudflareDNSRecord` reports `ready: false` and nothing changes in either zone. Mapping a host to the zone it is already in changes nothing. |
-| `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
+| `peers[]` | list | — | Other regions; no mesh. A `read` member follows the first peer with `brokerStreamEndpoint` and `credentialsSecretRef`: see [Cross-cluster read](#cross-cluster-read-remotereaders-peers-and-statusremoteread). An `OramaCloudV1Set` writes it on its read members. |
+| `remoteReaders.allowedSourceRanges[]` | list | — | On a `primary`: publish the replication stream and the control DB to read members in other clusters, accepting connections only from these CIDRs. Unset or empty: nothing is published, and whatever was is removed. An `OramaCloudV1Set` writes it from its read members' egress IPs. See [Cross-cluster read](#cross-cluster-read-remotereaders-peers-and-statusremoteread). |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
 | `placement.nodeSelector` | map | — | Added to every pod the operator creates for the CR: apps, data stores, writer, readers, the demo-seed Job, the control-DB `PostgresSchema` migration Job, and the CNPG instances (through the Cluster's `spec.affinity`). `engine.writer.nodeSelector`, when set, replaces it for the writer. Unset = no selector, as before. |
 | `placement.tolerations` | list | — | Same scope as `placement.nodeSelector`; `engine.writer.tolerations`, when set, replaces it for the writer. |
 | `deletionProtection` | bool | false | Keep the data through CR deletion and component disable. The CNPG control-DB `Cluster` and its `ScheduledBackup` release the CR owner reference and record `orama.cloud/cloud-v1-owner-uid`, so deleting the CR leaves them; `controlDB.enabled: false` keeps them too, and the same CR UID can re-enable them. A replacement CR or an unmarked, unowned legacy database requires reviewed ownership handover ([components.md](components.md#controldb-internalcontrollercontroldbgo)). Every operator StatefulSet (writer, readers, stores) gets `persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`. Off: owned Cluster deletion/disable retains its existing behavior; foreign objects are refused. |
-| `masterAPIKeySecretRef` | object | — | `{name, key}` of the Secret holding `MASTER_API_KEY` (`key` defaults to `MASTER_API_KEY`). Engine, analytics-processor, index-builder, dashboard and workers all read it, and nothing else. Unset: `<cr>-master-api-key`, created once (from `<cr>-engine-secret`'s old value on an existing stack, random on a new one). Must equal the control DB's `oramacore_clusters.master_api_key`. |
+| `masterAPIKeySecretRef` | object | — | `{name, key}` of the Secret holding `MASTER_API_KEY` (`key` defaults to `MASTER_API_KEY`). Engine, analytics-processor, index-builder, dashboard and workers all read it, and nothing else. Unset: `<cr>-master-api-key`, created once (from `<cr>-engine-secret`'s old value on an existing stack, random on a new one); on a `read` member with a remote peer, the peer's credentials Secret instead, so the member uses its primary's key. Must equal the control DB's `oramacore_clusters.master_api_key`. |
 | `requireRealCredentials` | bool | false | Make the phase `Degraded` (and `Ready=False`, reason `CredentialsNotReady`) while `CredentialsReady` is False. Off: the condition is reported only. Prod 2 sets it. |
 
 ## `spec.components`
@@ -337,6 +338,67 @@ reader ordinals `0..n-1` once each, where `n` is the larger of the reader count 
 ordinal with a `data-<cr>-reader-<ordinal>` PVC plus one, then the writer when `includeWriter` is set.
 `enabled: false` marks an ordinal with a PVC and no pod. `lastSuccessfulTime` is the import CronJob's
 `status.lastSuccessfulTime`. Written only when either changes, so a successful run causes one write.
+
+### Cross-cluster read: `remoteReaders`, `peers` and `status.remoteRead`
+
+A `read` member in one cluster serves searches from its primary's data in another
+([operator#396](https://github.com/oramasearch/orama-operator/issues/396)): its readers consume the
+primary's replication stream and, with `controlDB.replicate`, its control DB is a CNPG replica of the
+primary's. The connections go over public load balancers that accept only the read members' egress
+IPs, authenticated and encrypted (DESIGN.md decision 69). In an `OramaCloudV1Set` none of these fields
+is written by hand; the set writes them (see the set's section below).
+
+**On the primary**, `remoteReaders.allowedSourceRanges` (role `primary`, at least one CIDR) makes the
+operator reconcile:
+
+| Object | What it is |
+|---|---|
+| `<cr>-broker-remote` | `LoadBalancer` Service exposing only the broker's TLS stream port, `5551`, with `loadBalancerSourceRanges` set to the allowed ranges and `externalTrafficPolicy: Local`. The plain `5552` listener stays in-cluster. |
+| `<cr>-broker-tls` | The broker's TLS material: a CA minted once (`ca.crt`, `ca.key`) and a server certificate (`tls.crt`, `tls.key`) for the broker's in-cluster names and `<cr>-broker-remote`'s address. Issued once the load balancer has an address, reissued when the address changes or a month before it expires. The broker mounts the certificate, its key and the CA certificate, never the CA key, and restarts when they change. |
+| `<cr>-broker-remote-read` | A `RabbitMQTopology` declaring the broker user `oramacore-remote-reader` (password in `<cr>-broker-remote-reader`, generated once), allowed to configure and read `oramacore-operations` and to write nothing. OramaCore's reader declares the stream when it connects, which RabbitMQ authorizes as a configure. |
+| `<cr>-controldb-remote` | With an in-cluster control DB: a `LoadBalancer` Service on `5432` selecting the CNPG primary instance (`cnpg.io/cluster`, `cnpg.io/instanceRole: primary`), with the same ranges. |
+| `<cr>-remote-read` | The credentials a read member needs: `broker-ca.crt`, `broker-username`, `broker-password`, `MASTER_API_KEY`, and with an in-cluster control DB `controldb-ca.crt` (from CNPG's `<cluster>-ca`) and `controldb-replication.crt` / `.key` (CNPG's `streaming_replica` client certificate, from `<cluster>-replication`). Re-read every 10 minutes, so a CNPG certificate rotation reaches it. |
+
+The broker is required in-cluster (`broker.enabled`, `mode: in-cluster`, `placement: local`); otherwise
+the reconcile fails and says so. Enabling remote readers restarts the broker once, when its TLS
+listener is added. Removing `remoteReaders`, or emptying its ranges, deletes every object above
+(the topology's finalizer deletes the broker user) and the broker restarts without the listener.
+
+`status.remoteRead` is set only when everything is in place: both Services have an address, the
+broker has restarted with the current certificate, and `<cr>-remote-read` holds every key.
+
+| Field | Meaning |
+|---|---|
+| `status.remoteRead.brokerStreamEndpoint` | `<address>:5551`. |
+| `status.remoteRead.controlDBEndpoint` | `<address>:5432`; empty without an in-cluster control DB. |
+| `status.remoteRead.credentialsSecret` | `<cr>-remote-read`. |
+| `remote-read` component | Ready once published (`published`), else `waiting`. Counts toward the phase. |
+| `RemoteReadPublished` condition | `True` (`Published`) with the endpoints, or `False` (`Waiting`) saying what is missing: a Service's address, the server certificate, the broker's restart, or a key of the Secret. Removed when `remoteReaders` is off. |
+
+**On a read member** (`region.role: read`), the first `peers[]` entry with both of these fields is
+its primary:
+
+| Field | Meaning |
+|---|---|
+| `peers[].brokerStreamEndpoint` | The primary's `status.remoteRead.brokerStreamEndpoint`. |
+| `peers[].postgresEndpoint` | The primary's `status.remoteRead.controlDBEndpoint`; required with `controlDB.replicate`. |
+| `peers[].credentialsSecretRef.name` | A Secret in the member's namespace holding a copy of the primary's `<cr>-remote-read`. |
+
+The readers' `reader_side.input` connects to the peer's host and port with `tls.enabled: true` and
+`root_certificates_path` set to the peer's broker CA (mounted from the Secret), as
+`oramacore-remote-reader`; the wait init container waits on that host and port. Every component
+reads `MASTER_API_KEY` from the Secret unless `masterAPIKeySecretRef` is set. With
+`controlDB.replicate` the CNPG Cluster is a replica: `bootstrap.pg_basebackup` and `replica` from the
+external cluster `primary`, which connects to `postgresEndpoint` as `streaming_replica` on database
+`postgres` with `sslmode: verify-ca` and the client certificate, key and CA from the Secret. A read
+member runs no writer, needs side-only engine images (`images.overrides` `oramacore-writer` and
+`oramacore-reader`; the combined image would start a writer in every reader), and should run its
+broker `placement: central` so it runs none.
+
+| Field | Meaning |
+|---|---|
+| `peer` component | Ready once the peer is usable (detail: the peer's name), else `waiting`. Counts toward the phase. |
+| `PeerReady` condition | `True` naming the peer and endpoint, or `False` (`PeerNotReady`) saying what is missing: no such peer, a malformed endpoint, no `postgresEndpoint` with `controlDB.replicate`, the Secret, or a key in it. Until it is `True` no reader and no replica is created. |
 
 ## `OramaCloudV1E2ETest` (separate CRD)
 
@@ -884,7 +946,8 @@ manages others by holding these resources.
 | `status.endpoint` / `.kubernetesVersion` / `.nodePools[]` | The API server's address, the version running, and each pool's state, count and the provider's `error` for it. |
 | `status.message` | Why the cluster is not `Ready`, in the provider's words, copied from the concrete resource. A column of `kubectl get kcluster`. |
 | `status.kubeconfigSecretRef` | Set once the kubeconfig Secret holds a credential. |
-| `Ready` / `InSync` conditions | Carried across from the concrete resource. |
+| `status.egressIPs` | The public addresses the cluster's outbound traffic leaves from, sorted, copied from the concrete resource. A primary in another cluster allows them ([cross-cluster read](#cross-cluster-read-remotereaders-peers-and-statusremoteread)). |
+| `Ready` / `InSync` / `EgressIPsKnown` conditions | Carried across from the concrete resource. |
 
 A cluster whose spec is invalid in a way the schema cannot express (no system pool, `minCount`
 above `maxCount`) is `Degraded` with the reason, and nothing is provisioned. A cluster whose
@@ -934,11 +997,14 @@ directly, as the Cloudflare and Clerk controllers call theirs: there is no Azure
 | `status.message` | Why the cluster is not `Ready`, in Azure's words: the provisioning state, the operation's progress, and every error Azure reports on the operation, the cluster and each pool. The same text is the `Ready` condition's message and is copied to the `KubernetesCluster`. `kubectl get aks -o wide`, `kubectl get kcluster`. A failure is also logged by the operator as an error, once per distinct failure. |
 | `status.createdResourceGroup` | True when the operator created the resource group, and so may delete it. |
 | `status.kubeconfigWritten` | True once the kubeconfig Secret holds a credential. |
+| `status.egressIPs` | The cluster's egress addresses: Azure's `networkProfile.loadBalancerProfile.effectiveOutboundIPs`, each public IP resource read (`Microsoft.Network/publicIPAddresses`, API `2024-05-01`) for its `ipAddress`, sorted, without repeats. Read on every reconcile of a provisioned cluster; the credentials need read access to the public IPs in the node resource group. |
 | `InSync` condition | False when the spec asks for something the cluster does not have. **This version reports the difference and does not act on it**: a cluster is not changed after it is created. |
+| `EgressIPsKnown` condition | `True` (`Resolved`), or `False`: `NoneReported` (no outbound IPs on the load balancer; `egressIPs` is cleared) or `ReadFailed` (a public IP could not be read; the addresses last read are kept). It does not change the phase. |
 
 What a reconcile does: register the finalizer; ensure the resource group; create the managed
 cluster if it is absent; poll every 30 seconds until Azure reports `Succeeded`; fetch the admin
-credential once and write the kubeconfig Secret; then re-read the cluster every five minutes.
+credential once and write the kubeconfig Secret; then re-read the cluster and its egress IPs every
+five minutes.
 Status is written only when it changes. On deletion with `Delete`, the resource is held until
 Azure reports the cluster gone; if the credentials are missing, it is held and says so, so a
 running cluster is never orphaned silently.
@@ -987,12 +1053,31 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 
 | Field | Meaning |
 |---|---|
-| `spec.template` | The instance's spec (a `Lake`'s, an `OramaCloudV1`'s), the default for every member. Validated by each member's cluster when applied. A `LakeSet` template does not set `namespace`; an `OramaCloudV1Set` template does not set `region.name`. |
+| `spec.template` | The instance's spec (a `Lake`'s, an `OramaCloudV1`'s), the default for every member. Validated by each member's cluster when applied. A `LakeSet` template does not set `namespace`; an `OramaCloudV1Set` template does not set `region.name`, `remoteReaders` or `peers`, and neither does a member's `spec` (a member that does fails with the field named). |
 | `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. |
-| `spec.clusters[]` | The members. Independent: none waits for another. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). |
+| `spec.clusters[]` | The members. Independent: none waits for another, except that an `OramaCloudV1Set` read member waits for its primary's published endpoints. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). |
 | `spec.deletionPolicy` | `Retain` (default): removing a member or deleting the set leaves the instance running. `Delete`: the instance is deleted from its cluster. |
 | `status.phase` | `Ready` (every member `Ready`), `Progressing`, or `Degraded` (the set was refused, or a member failed). |
 | `status.purpose` | The `purpose` tag all the members' clusters share. A set whose clusters differ in purpose, or lack one, applies nothing. |
 | `status.members`, `.readyMembers` | Counts. Columns of `kubectl get lset`. |
 | `status.memberStatuses[]` | Per member: `cluster`, `name`, `namespace`, `phase` (`Pending`, `Progressing`, `Ready`, `Degraded`), `version` (a Lake's image, a v1's image tag) and `message`. |
 | `status.message` | Which members are not `Ready`, and what each one's cluster says about it. |
+
+**Read members of an `OramaCloudV1Set`.** When any member's merged spec has `region.role: read`, the
+set must have exactly one `primary`; otherwise it is refused (`Degraded`, reason `InvalidRoles`) and
+nothing is applied. A set with no read member, such as two primaries, is applied as before. On each
+pass the set:
+
+- writes the primary's `remoteReaders.allowedSourceRanges`: every `status.egressIPs` address of every
+  read member's `KubernetesCluster`, as a `/32` (`/128` for IPv6), sorted. A read member whose cluster
+  reports none is `Pending` ("waiting for KubernetesCluster ... to report its egress IPs");
+- applies the primary first, then each read member. A read member is `Pending`, and not applied,
+  until the primary's `status.remoteRead` names a stream endpoint and a credentials Secret, a
+  `controlDBEndpoint` too when the member sets `controlDB.replicate`, and that Secret can be read on
+  the primary's cluster. The message names the primary and what it waits for;
+- writes the read member's `peers` (the primary's name, region, `brokerStreamEndpoint`,
+  `postgresEndpoint` with `controlDB.replicate`, `credentialsSecretRef`) and copies the primary's
+  credentials Secret, under the same name and labelled `cnpg.io/reload`, into the read member's
+  namespace, keeping it in step on every pass.
+
+Status is written only when it changes.

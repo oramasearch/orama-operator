@@ -25,6 +25,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
 | **broker** | `internal/controller/datastore.go` | RabbitMQ `StatefulSet` + Service (5672/15672/5552), central placement; + an owned **`RabbitMQTopology`** (vhost/users/permissions/`oramacore-operations` stream) reconciled via the management API | ✅ **done** (validated on AKS); topology CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40)/[#41](https://github.com/oramasearch/orama-operator/issues/41)) — see [`datastore-crds.md`](datastore-crds.md) |
 | **broker-topology** | `internal/controller/rabbitmqtopology_controller.go` | reconciles the broker's vhosts/users/permissions/streams via its management HTTP API (:15672) from an owned `RabbitMQTopology` CRD (finalizer teardown); least-privilege per-service users + the `oramacore-operations` replication stream, declared with the **same `x-max-length-bytes` (5 GB) OramaCore uses** on its own stream-protocol Create — a mismatched/absent arg makes RabbitMQ 400 the redeclare and fails the whole reconcile before the users exist (the reader then can't auth) | ✅ **done** (validated on AKS) ([#40](https://github.com/oramasearch/orama-operator/issues/40)/[#41](https://github.com/oramasearch/orama-operator/issues/41)) |
+| **remote-read** | `internal/controller/remote_read.go` | on a primary with `remoteReaders`: the broker's TLS stream listener (`5551`) and its CA + server certificate, `LoadBalancer` Services for the stream and the CNPG primary restricted to the read members' egress IPs, a read-only broker user (own `RabbitMQTopology`), and the `<cr>-remote-read` credentials Secret; on a read member: readers on the primary's stream over TLS and a CNPG replica of its control DB ([#396](https://github.com/oramasearch/orama-operator/issues/396)) | 🟡 **implemented**, unit-tested; not live-tested ([rehearsal](infrastructure/operations.md#rehearse-a-cross-cluster-read-member)) |
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
 | **disco** | `internal/controller/disco.go` | `Deployment` (DISCO, no embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
@@ -238,7 +239,9 @@ Driven by `spec.region.role`:
   `:8080`. When `writer.gpu` is set the writer container gets an `nvidia.com/gpu: 1` limit (added
   to `writer.resources` or the default caps): OramaCore computes embeddings in-process, so the GPU
   belongs to the writer ([#305](https://github.com/oramasearch/orama-operator/issues/305)).
-- **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` (`reader.replicas`,
+- **Readers** (primary + read tiers; on a read tier they follow the primary's stream in another
+  cluster, see [Cross-cluster read](#cross-cluster-read-remote_readgo-managedset_read_membersgo)) —
+  a `StatefulSet` `<cr>-reader` (`reader.replicas`,
   `podManagementPolicy: Parallel`) with the `oramacore` container (the shared or the reader-only
   image) **+ an Envoy sidecar**
   (`envoyproxy/envoy:v1.31.2`, `:80 → 127.0.0.1:8080`, from the generated `envoy.yaml`) when
@@ -488,7 +491,7 @@ boots** (`Configuration loaded successfully` → `Starting web server on
 http://0.0.0.0:8080`); the ConfigMap shows only `master_api_key: "__MASTER_API_KEY__"`
 while the rendered file in the pod holds the real value.
 
-> **Follow-ups:** the reader→primary-writer endpoint on read tiers.
+> **Follow-ups:** the reader→primary-writer endpoint on read tiers (writes sent to a read tier).
 
 ## controlDB (`internal/controller/controldb.go`)
 
@@ -501,8 +504,12 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   CNPG grows the PVCs in place when the StorageClass allows expansion), `bootstrap.initdb`
   creating the `oramacore` database. `spec.placement` becomes the Cluster's
   `spec.affinity.{nodeSelector,tolerations}`, which CNPG puts on every instance pod.
-- **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** streaming
-  from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
+- **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** of the primary's control
+  DB in another cluster: `bootstrap.pg_basebackup` from the external cluster `primary`, then
+  `replica.enabled` streaming from it, at the peer's `postgresEndpoint`, as `streaming_replica` with
+  the primary's client certificate and `sslmode: verify-ca` (see
+  [Cross-cluster read](#cross-cluster-read-remote_readgo-managedset_read_membersgo)). No schema, no
+  backups. It is not created until the peer is usable (`PeerReady`).
 - `mode: external` connects to a database the operator does not own, such as the shared
   production PlanetScale while v1 migrates project by project
   ([orama-bridge#142](https://github.com/oramasearch/orama-bridge/issues/142)). It requires
@@ -545,8 +552,7 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
 CNPG bootstrapped Postgres; deleting the CR GC'd the cluster + its pods.
 
-> **Follow-ups:** the replica cluster's `streaming_replica` credentials/secret wiring;
-> exposing the DB name as a CR field; a Service alias the app can use; a restore rehearsal for the
+> **Follow-ups:** exposing the DB name as a CR field; a Service alias the app can use; a restore rehearsal for the
 > control DB like `LakeRestoreRehearsal`.
 
 ## Data stores — cache / broker / analytics / search (`internal/controller/datastore.go`)
@@ -600,6 +606,75 @@ and a `maxUnavailable: 0` PDB) — see [Workload hardening](#workload-hardening-
 > a clustered Typesense; the Typesense API key is a seeded placeholder (reported by
 > `CredentialsReady`). Binary-side right-sizing derived from the memory limits (Redis
 > `maxmemory`, etc.) is [#42](https://github.com/oramasearch/orama-operator/issues/42).
+
+## Cross-cluster read (`remote_read.go`, `managedset_read_members.go`)
+
+🟡 Implemented and unit-tested ([#396](https://github.com/oramasearch/orama-operator/issues/396)); not
+live-tested yet. The rehearsal is in
+[operations.md](infrastructure/operations.md#rehearse-a-cross-cluster-read-member); why the
+connection is public rather than private is DESIGN.md decision 69. Field reference:
+[crd-reference.md](crd-reference.md#cross-cluster-read-remotereaders-peers-and-statusremoteread).
+
+A `read` member serves searches in its region from its primary's data in another cluster. Prod 1
+does this over a private network: readers in other regions consume the writer's stream at a private
+IP on `5552` without TLS. Here the clusters' networks cannot be peered, so the primary publishes two
+endpoints on public load balancers that accept only the read members' egress IPs.
+
+**The primary** (`role: primary`, `spec.remoteReaders.allowedSourceRanges` set), in the `remote
+read` step after the broker and control DB:
+
+- **Remote broker endpoint.** `<cr>-broker-remote`, a `LoadBalancer` Service exposing only `5551`,
+  the broker's TLS stream listener, to the allowed ranges (`externalTrafficPolicy: Local`, so the
+  client's address is kept). Once Azure gives it an address, the operator issues the broker's server
+  certificate for that address and the broker's in-cluster names, from a CA it minted once
+  (`<cr>-broker-tls`). On the next pass the broker's `rabbitmq.conf` gets
+  `stream.listeners.ssl.default = 5551` and the `ssl_options` files, mounted by `subPath` under
+  `/etc/rabbitmq/tls` (the CA key is never mounted), and the pod template's
+  `orama.cloud/stream-tls-cert` annotation changes, so the broker restarts with them. That is one
+  restart when remote readers are enabled, and one each time the certificate is reissued (address
+  change, or a month before its one-year expiry). The in-cluster `5552` listener is unchanged.
+- **Remote broker user.** `oramacore-remote-reader`, declared by its own `RabbitMQTopology`
+  (`<cr>-broker-remote-read`) so that deleting the topology deletes the user from the broker. It may
+  configure and read `oramacore-operations` and write nothing: OramaCore's reader sends a stream
+  create when it connects, which RabbitMQ authorizes as a configure on the stream. The password is
+  generated once into `<cr>-broker-remote-reader`.
+- **Remote control-DB endpoint.** With an in-cluster control DB, `<cr>-controldb-remote`, a
+  `LoadBalancer` Service on `5432` selecting the CNPG primary instance (`cnpg.io/cluster`,
+  `cnpg.io/instanceRole: primary`), so it follows a failover. CNPG's default `pg_hba` already lets
+  `streaming_replica` in with a client certificate over TLS.
+- **The handoff Secret.** `<cr>-remote-read` collects everything a read member needs: the broker CA,
+  the remote user and its password, `MASTER_API_KEY`, and CNPG's server CA and `streaming_replica`
+  client certificate and key (from `<cluster>-ca` and `<cluster>-replication`). It is rewritten on
+  every pass and re-read every 10 minutes while remote readers are on, so a CNPG certificate
+  rotation reaches it.
+- **Status.** `status.remoteRead` (stream endpoint, control-DB endpoint, Secret name) is set once
+  both Services have addresses, the broker has restarted with the current certificate, and the
+  Secret is complete. The `remote-read` component and the `RemoteReadPublished` condition say what
+  it is waiting for until then.
+- **Off.** Removing `remoteReaders` (or emptying it) deletes the topology (and with it the user),
+  both Services and the three Secrets, and the broker restarts without its TLS listener.
+
+**The read member** (`role: read`, a peer with `brokerStreamEndpoint` and `credentialsSecretRef`):
+
+- **Readers.** `reader_side.input` takes the peer's host and port with `tls.enabled: true` and
+  `root_certificates_path: /etc/oramacore-broker/ca.crt`, the broker CA mounted from the peer's
+  Secret. The stream client checks the broker's certificate against it, with the configured host as
+  the server name; the operator never renders `tls.enabled` without the root path, which would make
+  the client accept any certificate. The `render-config` init container fills the user and password
+  from the Secret's `broker-username` and `broker-password`, and `wait-for-broker` waits on the
+  peer's host and port. No writer runs, and the engine must run side-only images.
+- **Master API key.** Every component reads `MASTER_API_KEY` from the peer's Secret (unless
+  `masterAPIKeySecretRef` names another), so the read member accepts the primary's key and the
+  operator mints none.
+- **Replica control DB.** With `controlDB.replicate`, the CNPG Cluster bootstraps with
+  `pg_basebackup` from the primary and streams from it; see [controlDB](#controldb-internalcontrollercontroldbgo).
+- **Waiting.** Until the peer is usable (it exists, its endpoints parse, its Secret holds every key,
+  and it has a `postgresEndpoint` when the control DB replicates), no reader and no replica is
+  created, and the `peer` component and `PeerReady` condition say what is missing.
+
+**The set** writes both sides from `KubernetesCluster.status.egressIPs` and the primary's
+`status.remoteRead`, and copies the primary's `<cr>-remote-read` into the read member's namespace;
+see [infrastructure/README.md](infrastructure/README.md#read-members-follow-a-primary-in-another-cluster).
 
 ## App compute — ingestion / workers / dashboard / docs (`app.go`, `ingestion.go`)
 

@@ -177,7 +177,9 @@ talk between them.
   cluster, and each takes advantage of the bridges.
 - **A bridge is a resource on the management cluster**, reconciled by its operator.
 
-The rest is to be worked out.
+The rest is to be worked out. Until a bridge exists, Cloud v1's cross-cluster read path uses public,
+source-restricted load balancers ([Read members follow a primary in another cluster](#read-members-follow-a-primary-in-another-cluster));
+over a bridge, the same Services become internal load balancers.
 
 ## Abstract kinds and concrete providers
 
@@ -476,7 +478,8 @@ Further behavior:
 - **Members are independent** (Steve, 2026-10-12: *"staging should not need to wait for dev ...
   they're independent"*). Every member is applied on every pass and none waits for another: one
   that fails or starts slowly does not hold back the rest. A template change reaches all members
-  at once, except those that pin the field.
+  at once, except those that pin the field. The one exception is an `OramaCloudV1Set` read member,
+  which waits for its primary's published endpoints and nothing else (below).
 - **Pinning.** A member whose `spec` sets the version (a Lake's `image`) ignores the template's.
 - **Removal keeps the instance.** Removing a member or deleting the set leaves the instance running
   and unmanaged, unless the set says `deletionPolicy: Delete`.
@@ -487,6 +490,35 @@ Further behavior:
 
 [`config/samples/lakeset-nonprod.yaml`](../../config/samples/lakeset-nonprod.yaml) is a nonprod set
 with two environments.
+
+### Read members follow a primary in another cluster
+
+An `OramaCloudV1Set` member with `region.role: read` serves its region from the data of the set's
+primary in another cluster: its readers follow the primary's replication stream, and with
+`controlDB.replicate` its control DB is a replica of the primary's
+([#396](https://github.com/oramasearch/orama-operator/issues/396)). This is how `v1-us` is meant to
+serve US searches from `v1-eu`'s data, rather than run a second primary that knows none of the EU's
+customers. The connections are public, TLS, authenticated, and accepted only from the read members'
+egress IPs; DESIGN.md decision 69 says why they are not private yet.
+
+Nothing is copied or typed by hand. The set:
+
+1. **Checks the roles.** With any read member, exactly one member must be `primary`, or the set is
+   refused whole. A set without read members (two primaries, as `v1-prod` has today) is unchanged.
+2. **Opens the primary to the read members' clusters.** It writes the primary's
+   `remoteReaders.allowedSourceRanges` from each read member's `KubernetesCluster.status.egressIPs`
+   (which the `AksCluster` controller reads from Azure). The primary's operator then publishes its
+   endpoints in `status.remoteRead`.
+3. **Points each read member at the primary.** Once the primary publishes, the set writes the read
+   member's `peers` and copies the primary's `<cr>-remote-read` Secret from the primary's cluster
+   into the read member's namespace, and keeps it in step on every pass.
+
+Until then the read member is `Pending`, and its message names the primary and what it waits for:
+its own cluster's egress IPs, the primary's published endpoints, or the primary's Secret. Both
+fields belong to the set: a template or member that states `remoteReaders` or `peers` is refused.
+The rehearsal before production is in
+[operations.md](operations.md#rehearse-a-cross-cluster-read-member); the fields are in
+[crd-reference.md](../crd-reference.md#cross-cluster-read-remotereaders-peers-and-statusremoteread).
 
 ## Left out on purpose
 

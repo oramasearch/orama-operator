@@ -154,6 +154,10 @@ type KubernetesClusterStatus struct {
 	// KubeconfigSecretRef is where the admin kubeconfig was written.
 	// +optional
 	KubeconfigSecretRef *ClusterSecretReference `json:"kubeconfigSecretRef,omitempty"`
+	// EgressIPs are the public addresses the cluster's outbound traffic leaves from, sorted. Another
+	// cluster that accepts connections from this one allows these addresses.
+	// +optional
+	EgressIPs []string `json:"egressIPs,omitempty"`
 	// NodePools reports each pool.
 	// +optional
 	// +listType=map
@@ -165,8 +169,8 @@ type KubernetesClusterStatus struct {
 	// ObservedGeneration is the spec generation last reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-	// Conditions: Ready, and InSync (false when the spec asks for something the cluster does not
-	// have and this version of the operator does not apply).
+	// Conditions: Ready, InSync (false when the spec asks for something the cluster does not
+	// have and this version of the operator does not apply), and EgressIPsKnown.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

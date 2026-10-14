@@ -98,8 +98,24 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	if err := validateLLM(oc); err != nil {
 		return err
 	}
+	// A read member runs no writer, and the combined image starts one in every reader: its
+	// writer_side would produce to a broker this cluster does not have.
+	if oc.Spec.Region.Role == "read" && !engineSidesSeparated(oc) {
+		return fmt.Errorf("region.role read needs side-only engine images: set spec.images.overrides oramacore-writer and oramacore-reader")
+	}
 	if _, err := r.ensureComponentSecret(ctx, oc, "engine"); err != nil {
 		return fmt.Errorf("engine secret: %w", err)
+	}
+	if oc.Spec.Region.Role == "read" {
+		// A read member never runs a writer, including one left from when it was a primary.
+		if err := r.teardownByComponent(ctx, oc, "writer"); err != nil {
+			return err
+		}
+		// The readers follow the primary's stream. Until the peer is usable they are not started;
+		// the peer component and PeerReady condition say what is missing.
+		if problem, err := r.peerProblem(ctx, oc); err != nil || problem != "" {
+			return err
+		}
 	}
 	if err := r.reconcileEngineConfig(ctx, oc); err != nil {
 		return fmt.Errorf("engine config: %w", err)
@@ -259,6 +275,22 @@ func engineCommonYAML(oc *oramav1alpha1.OramaCloudV1, side string) string {
 ` + engineLogYAML(oc, side)
 }
 
+// streamSource is where a reader consumes the replication stream: the in-cluster broker's plain
+// listener, or on a read member its primary's TLS listener (operator#396), verified against the
+// broker CA from the peer's credentials Secret.
+type streamSource struct {
+	host, port string
+	tls        bool
+}
+
+func readerStreamSource(oc *oramav1alpha1.OramaCloudV1) streamSource {
+	if p := remotePeer(oc); p != nil {
+		host, port := splitHostPort(p.BrokerStreamEndpoint, strconv.Itoa(brokerStreamTLSPort))
+		return streamSource{host: host, port: port, tls: true}
+	}
+	return streamSource{host: oc.Name + "-broker", port: strconv.Itoa(brokerStreamPort)}
+}
+
 // writerSideYAML is the writer_side section. The writer replicates to the readers over the RabbitMQ
 // stream oramacore-operations on the broker Service :5552 (#41); OramaCore creates the stream on
 // connect and the broker advertises the Service host so reconnect works. Both sides authenticate as
@@ -296,15 +328,23 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
 // __MASTER_API_KEY__ placeholder, because that is the key the processor polls with
 // (analyticsProcessorConfigYAML). metadata_from_headers mirrors the prod reader configs: the
 // Cloudflare request headers become per-event metadata. hooks is hooksYAML, as on the writer side.
+//
+// On a read member the input is the primary's TLS stream listener. root_certificates_path is always
+// set with tls.enabled: without it the stream client accepts any server certificate.
 func readerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string {
+	source := readerStreamSource(oc)
+	tls := ""
+	if source.tls {
+		tls = "    tls:\n      enabled: true\n      root_certificates_path: " + readerBrokerCAPath + "\n"
+	}
 	return fmt.Sprintf(`reader_side:
   input:
     type: rabbitmq
     host: %s
-    port: 5552
+    port: %s
     user: '__BROKER_USERNAME__'
     password: '__BROKER_PASSWORD__'
-    v_host: /
+%s    v_host: /
     stream_name: oramacore-operations
     client_provided_name: %s
     consumer_name: %s
@@ -329,7 +369,7 @@ func readerSideYAML(oc *oramav1alpha1.OramaCloudV1, client streamClient) string 
         metadata_key: latitude
       - header: longitude
         metadata_key: longitude
-`, oc.Name+"-broker", client.connection, client.endpoint, hooksYAML(oc))
+`, source.host, source.port, tls, client.connection, client.endpoint, hooksYAML(oc))
 }
 
 // engineModelsCacheDir is where OramaCore's in-process embeddings keep the models they download from
@@ -385,13 +425,19 @@ func (r *OramaCloudV1Reconciler) retireEmbeddings(ctx context.Context, oc *orama
 
 // waitForBrokerInit blocks OramaCore startup until the broker's stream listener (:5552) is up.
 // OramaCore's RabbitMQ *producer* does NOT retry — it exits 1 with "Cannot create RabbitMQ sender:
-// Connection refused" if the broker isn't ready — so gate on it instead of crash-looping (#41).
-func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
-	broker := oc.Name + "-broker"
+// Connection refused" if the broker isn't ready — so gate on it instead of crash-looping (#41). A
+// read member's readers wait on the primary's remote TLS listener instead. side is "writer" or
+// "reader"; the writer always produces to the in-cluster broker.
+func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1, side string) corev1.Container {
+	source := streamSource{host: oc.Name + "-broker", port: strconv.Itoa(brokerStreamPort)}
+	if side == "reader" {
+		source = readerStreamSource(oc)
+	}
+	target := source.host + " " + source.port
 	return corev1.Container{
 		Name:            "wait-for-broker",
 		Image:           "busybox:1.37",
-		Command:         []string{"sh", "-c", "until nc -z " + broker + " 5552; do echo 'waiting for broker stream :5552'; sleep 2; done"},
+		Command:         []string{"sh", "-c", "until nc -z " + target + "; do echo 'waiting for broker stream " + target + "'; sleep 2; done"},
 		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
 	}
 }
@@ -460,7 +506,7 @@ func int64Or(p *int64, def int64) int64 {
 // engineInitContainers are the writer and reader init containers, in order: the broker wait, the
 // preflight checks when any is enabled, then render-config.
 func engineInitContainers(oc *oramav1alpha1.OramaCloudV1, s engineSide) []corev1.Container {
-	inits := []corev1.Container{waitForBrokerInit(oc)}
+	inits := []corev1.Container{waitForBrokerInit(oc, s.name)}
 	if c, ok := preflightInit(oc); ok {
 		inits = append(inits, c)
 	}
@@ -486,7 +532,7 @@ func renderConfigInit(oc *oramav1alpha1.OramaCloudV1, s engineSide) corev1.Conta
 			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}}}
 	}
 	env = append(env, masterAPIKeyEnv(oc))
-	env = append(env, brokerCredentialEnv(oc)...)
+	env = append(env, engineBrokerCredentialEnv(oc, s.name)...)
 	env = append(env, llmKeySecretEnv(oc)...)
 	env = append(env, sentryDSNSecretEnv(oc)...)
 	return corev1.Container{
@@ -631,6 +677,13 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		// schedules; a real cluster honors it). #18.
 		if replicas > 1 || rd.HPA != nil {
 			podSpec.TopologySpreadConstraints = spreadConstraints(lbls)
+		}
+		// A read member's readers verify the primary's broker against its CA.
+		if p := remotePeer(oc); p != nil {
+			podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{Name: "broker-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+				SecretName: p.CredentialsSecretRef.Name, Items: []corev1.KeyToPath{{Key: remoteReadBrokerCAKey, Path: "ca.crt"}}}}})
+			c := &podSpec.Containers[0]
+			c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "broker-ca", MountPath: readerBrokerCADir, ReadOnly: true})
 		}
 		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: enginePodAnnotations(side)},

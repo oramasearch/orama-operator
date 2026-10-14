@@ -51,6 +51,8 @@ type fakeAzure struct {
 	operationsDown bool                       // the latest-operation read answers 500
 	rejectToken    bool
 	deleteFinishes bool // a DELETE removes the cluster at once instead of marking it Deleting
+	// publicIPs are the addresses of public IP resources, by resource ID; one missing answers 404.
+	publicIPs map[string]string
 }
 
 func newFakeAzure(t *testing.T) *fakeAzure {
@@ -126,6 +128,13 @@ func (f *fakeAzure) serve(w http.ResponseWriter, r *http.Request) {
 
 	path := strings.TrimPrefix(r.URL.Path, "/subscriptions/"+testSubscription)
 	switch {
+	case strings.Contains(path, "/providers/Microsoft.Network/publicIPAddresses/"):
+		address, ok := f.publicIPs[r.URL.Path]
+		if !ok || r.URL.Query().Get("api-version") != azureAPIPublicIPAddresses {
+			notFound()
+			return
+		}
+		respond(http.StatusOK, map[string]any{"properties": map[string]string{"ipAddress": address}})
 	case path == "":
 		respond(http.StatusOK, map[string]string{"subscriptionId": testSubscription})
 	case strings.Contains(path, "/managedClusters/") && strings.HasSuffix(path, "/listClusterAdminCredential"):
@@ -715,9 +724,11 @@ func TestKubernetesClusterProvisionsTheConcreteKindItsProviderNames(t *testing.T
 	concrete.Status = oramav1alpha1.AksClusterStatus{
 		Phase: clusterPhaseReady, KubernetesVersion: "1.35.8", FQDN: "nonprod.hcp.westus2.azmk8s.io", KubeconfigWritten: true,
 		NodePools: []oramav1alpha1.AksNodePoolStatus{{Name: "agentpool", ProvisioningState: "Succeeded", Count: 2}},
+		EgressIPs: []string{"20.0.0.10", "20.0.0.9"},
 		Conditions: []metav1.Condition{
 			{Type: clusterConditionReady, Status: metav1.ConditionTrue, Reason: "Provisioned", LastTransitionTime: metav1.Now()},
 			{Type: clusterConditionInSync, Status: metav1.ConditionTrue, Reason: "InSync", LastTransitionTime: metav1.Now()},
+			{Type: clusterConditionEgressIPs, Status: metav1.ConditionTrue, Reason: "Resolved", LastTransitionTime: metav1.Now()},
 		},
 	}
 	if err := c.Status().Update(context.Background(), concrete); err != nil {
@@ -730,8 +741,12 @@ func TestKubernetesClusterProvisionsTheConcreteKindItsProviderNames(t *testing.T
 		abstract.Status.KubeconfigSecretRef.Name != name+"-kubeconfig" || len(abstract.Status.NodePools) != 1 {
 		t.Fatalf("summarized status: %+v", abstract.Status)
 	}
-	if !apimeta.IsStatusConditionTrue(abstract.Status.Conditions, clusterConditionReady) {
+	if !apimeta.IsStatusConditionTrue(abstract.Status.Conditions, clusterConditionReady) ||
+		!apimeta.IsStatusConditionTrue(abstract.Status.Conditions, clusterConditionEgressIPs) {
 		t.Fatalf("conditions: %+v", abstract.Status.Conditions)
+	}
+	if got := abstract.Status.EgressIPs; len(got) != 2 || got[0] != "20.0.0.10" || got[1] != "20.0.0.9" {
+		t.Fatalf("egress IPs are the concrete resource's: %v", got)
 	}
 
 	// Steady: no write.
@@ -1003,5 +1018,55 @@ func TestAzureErrorTextIncludesNestedDetailsAndIsBounded(t *testing.T) {
 	}
 	if (*azureErrorDetail)(nil).text() != "" {
 		t.Fatal("no error renders as empty text")
+	}
+}
+
+// A Ready cluster reports the addresses its outbound traffic leaves from, read from Azure: the load
+// balancer's effective outbound IP resources, each resolved to its address, sorted without repeats.
+// Not being able to read them is reported and does not make the cluster less Ready.
+func TestAksClusterReportsItsEgressIPs(t *testing.T) {
+	azure := newFakeAzure(t)
+	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	name := "orama-nonprod-cluster-01"
+	reconcileAks(t, r, name)
+	azure.setState(name, "Succeeded")
+
+	ipID := func(n string) string {
+		return "/subscriptions/" + testSubscription + "/resourceGroups/MC_" + name + "/providers/Microsoft.Network/publicIPAddresses/" + n
+	}
+	azure.mu.Lock()
+	azure.clusters[name].Properties.NetworkProfile.LoadBalancerProfile = &azureLoadBalancerProfile{
+		EffectiveOutboundIPs: []azureResourceReference{{ID: ipID("b")}, {ID: ipID("a")}, {ID: ipID("c")}},
+	}
+	azure.publicIPs = map[string]string{ipID("a"): "20.0.0.9", ipID("b"): "20.0.0.10", ipID("c"): "20.0.0.9"}
+	azure.mu.Unlock()
+
+	reconcileAks(t, r, name)
+	cluster := getAks(t, c, name)
+	if got := cluster.Status.EgressIPs; len(got) != 2 || got[0] != "20.0.0.10" || got[1] != "20.0.0.9" {
+		t.Fatalf("egress IPs: %v", got)
+	}
+	if cluster.Status.Phase != clusterPhaseReady || !apimeta.IsStatusConditionTrue(cluster.Status.Conditions, clusterConditionEgressIPs) {
+		t.Fatalf("phase %q, conditions %+v", cluster.Status.Phase, cluster.Status.Conditions)
+	}
+
+	before := cluster.ResourceVersion
+	reconcileAks(t, r, name)
+	if getAks(t, c, name).ResourceVersion != before {
+		t.Fatal("unchanged egress IPs wrote the status")
+	}
+
+	azure.mu.Lock()
+	delete(azure.publicIPs, ipID("a"))
+	azure.mu.Unlock()
+	reconcileAks(t, r, name)
+	cluster = getAks(t, c, name)
+	condition := apimeta.FindStatusCondition(cluster.Status.Conditions, clusterConditionEgressIPs)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "ReadFailed" || !strings.Contains(condition.Message, ipID("a")) {
+		t.Fatalf("an unreadable outbound IP is reported: %+v", condition)
+	}
+	if len(cluster.Status.EgressIPs) != 2 || cluster.Status.Phase != clusterPhaseReady {
+		t.Fatalf("the last addresses read are kept and the cluster stays Ready: %v, %q", cluster.Status.EgressIPs, cluster.Status.Phase)
 	}
 }

@@ -41,6 +41,8 @@ const (
 	// ("CreatingAgentPools: 0/1 nodes completed"); 2024-09-01 answers only "InProgress".
 	azureAPIOperations    = "2025-05-01"
 	azureAPISubscriptions = "2022-12-01"
+	// Microsoft.Network, for reading the address of a cluster's outbound public IPs.
+	azureAPIPublicIPAddresses = "2024-05-01"
 
 	// azureFederatedTokenFileEnv is set by the AKS workload identity webhook to the path of the
 	// projected service-account token.
@@ -395,6 +397,19 @@ type azureNetwork struct {
 	ServiceCIDR       string `json:"serviceCidr,omitempty"`
 	DNSServiceIP      string `json:"dnsServiceIP,omitempty"`
 	LoadBalancerSKU   string `json:"loadBalancerSku,omitempty"`
+	// Read only here: the operator never sends a load balancer profile, so Azure's defaults
+	// (one managed outbound IP) apply.
+	LoadBalancerProfile *azureLoadBalancerProfile `json:"loadBalancerProfile,omitempty"`
+}
+
+// azureLoadBalancerProfile is the part of a cluster's outbound configuration the operator reads.
+type azureLoadBalancerProfile struct {
+	// EffectiveOutboundIPs are the public IP resources the cluster's outbound traffic uses.
+	EffectiveOutboundIPs []azureResourceReference `json:"effectiveOutboundIPs,omitempty"`
+}
+
+type azureResourceReference struct {
+	ID string `json:"id"`
 }
 
 type azureOIDCIssuer struct {
@@ -600,6 +615,32 @@ func (c *azureClient) deleteManagedCluster(ctx context.Context, creds azureCrede
 		return nil
 	}
 	return err
+}
+
+// egressIPs resolves the cluster's effective outbound IP resources to their addresses, sorted and
+// without repeats. A cluster whose outbound traffic is not through its load balancer reports none.
+func (c *azureClient) egressIPs(ctx context.Context, creds azureCredentials, found *azureManagedCluster) ([]string, error) {
+	network := found.Properties.NetworkProfile
+	if network == nil || network.LoadBalancerProfile == nil {
+		return nil, nil
+	}
+	var addresses []string
+	for _, ip := range network.LoadBalancerProfile.EffectiveOutboundIPs {
+		var resource struct {
+			Properties struct {
+				IPAddress string `json:"ipAddress"`
+			} `json:"properties"`
+		}
+		if _, err := c.do(ctx, creds, http.MethodGet, ip.ID, azureAPIPublicIPAddresses, nil, &resource); err != nil {
+			return nil, fmt.Errorf("read outbound IP %s: %w", ip.ID, err)
+		}
+		if resource.Properties.IPAddress == "" {
+			return nil, fmt.Errorf("outbound IP %s has no address yet", ip.ID)
+		}
+		addresses = append(addresses, resource.Properties.IPAddress)
+	}
+	sort.Strings(addresses)
+	return dedupe(addresses), nil
 }
 
 // adminKubeconfig fetches the cluster's admin credential.

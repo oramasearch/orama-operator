@@ -284,7 +284,9 @@ spec:
             description: AksClusterStatus is what Azure reports.
             properties:
               conditions:
-                description: 'Conditions: Ready, and InSync.'
+                description: |-
+                  Conditions: Ready, InSync, and EgressIPsKnown (false when Azure reports no outbound IPs or
+                  they cannot be read).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -348,6 +350,13 @@ spec:
                   CreatedResourceGroup is true when the operator created the resource group, and so may
                   delete it.
                 type: boolean
+              egressIPs:
+                description: |-
+                  EgressIPs are the public addresses the cluster's outbound traffic leaves from: the
+                  effective outbound IPs of its load balancer, resolved to addresses, sorted.
+                items:
+                  type: string
+                type: array
               fqdn:
                 description: FQDN is the API server's host name.
                 type: string

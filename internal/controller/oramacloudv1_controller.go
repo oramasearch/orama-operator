@@ -78,6 +78,8 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"pgadmin", r.reconcilePgAdmin}, // pgAdmin4 web (admin UI for the control-DB)
 		{"cache", r.reconcileCache},
 		{"broker", r.reconcileBroker},
+		// After the broker and control DB: it exposes both to read members in other clusters (#396).
+		{"remote read", r.reconcileRemoteRead},
 		{"analytics", r.reconcileAnalytics},
 		{"search", r.reconcileSearch},
 		{"ingestion", r.reconcileIngestion},
@@ -134,6 +136,10 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	// The next engine snapshot is due, or one is still being cut.
 	soonest(snapshots.wait)
+	// CNPG rotates the certificates a read member's replica uses; re-copy them on a schedule.
+	if remoteReadActive(&oc) {
+		soonest(remoteReadResync)
+	}
 	return ctrl.Result{RequeueAfter: wait}, nil
 }
 
