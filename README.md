@@ -45,8 +45,9 @@ are operated: [`config/clusters/`](config/clusters/README.md) and
 [`docs/infrastructure/operations.md`](docs/infrastructure/operations.md).
 Every `OramaCloudV1` component reconciler is implemented and was validated on AKS; the Cloudflare
 load balancer and the Karpenter capacity slices are implemented but not yet live-tested.
-The `NetworkSandbox` rollout for Lake, workspace and Cloud v1 namespaces is implemented and
-native-tested but has not yet been connectivity-probed on AKS.
+The owner-scoped `NetworkSandbox` rollout for Lake, workspace and Cloud v1 workloads is implemented
+and native-tested but has not yet been connectivity-probed on AKS. Shared namespaces leave
+unrelated pods, including the operator, outside the sandbox.
 Per-reconciler status and the remaining hardening work are in
 [`docs/components.md`](docs/components.md).
 

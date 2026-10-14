@@ -4,8 +4,9 @@ The design for [#437](https://github.com/oramasearch/orama-operator/issues/437) 
 half) and [lake#724](https://github.com/oramasearch/lake/issues/724) (Lake's half). It follows the
 research in [`docs/research/secure-networking/`](../research/secure-networking/README.md).
 
-**Status: stage 1 namespace sandboxes implemented, 2026-10-14.** `NetworkSandbox` now protects
-Lake instances, Lake workspaces and Orama Cloud v1 stacks (#465). Engine destination narrowing
+**Status: stage 1 owner-scoped sandboxes implemented, 2026-10-14.** `NetworkSandbox` now protects
+Lake instances, Lake workspaces and Orama Cloud v1 stacks (#465), selecting only owner pods in
+shared namespaces such as `orama-system`. Workspaces retain namespace-wide scope. Engine destination narrowing
 (#466) and tenant policy RBAC (#467) remain open. The design decisions are recorded in section 9.
 
 ---
@@ -85,7 +86,7 @@ operator (or by the operator itself for Orama's own stacks), and reconciled by t
 
 | Kind | What it says | Provider |
 |---|---|---|
-| `NetworkSandbox` | A namespace is default-deny in and out. Names what the platform must still reach (its operators, the API server, DNS, Lake). One per workspace, per Lake instance and per Orama Cloud v1 stack. | Kubernetes `NetworkPolicy` and `CiliumNetworkPolicy`, generated |
+| `NetworkSandbox` | Owner-selected pods are default-deny in and out; only fully owned workspaces select the whole namespace. Names what the platform must still reach (its operators, the API server, DNS, Lake). One per workspace, per Lake instance and per Orama Cloud v1 stack. | Kubernetes `NetworkPolicy` and `CiliumNetworkPolicy`, generated |
 | `Connection` | **One** source workload may reach **one** destination (a service, an app, a stack component) on named ports. Optionally carries a credential scope (decision D4). | Generated policy on both sides; a credential through the broker |
 | `EgressRule` | A workload may reach an outside destination: CIDR and port, or a DNS name and port. | CIDR: generated policy. DNS name: zetta-tunnel's egress gateway (D3) |
 | `Tunnel` | A person may reach one target from outside the cluster, for a time. | **zetta-tunnel** (`ZettaTunnel`); optionally a customer's own Cloudflare account (`CloudflareTunnel`) |

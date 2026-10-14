@@ -1,5 +1,11 @@
 # Lake control-plane schema
 
+Schema Job pods inherit the owning Lake's `orama.cloud/lake-instance` network-sandbox label,
+without the Lake application's Service labels. An immutable Job missing the required identity
+is foreground-deleted and recreated with the same guarded script; replacement waits for the old
+Job and pods to disappear. This is a metadata upgrade, not a schema version change. See
+[`../infrastructure/network-sandbox.md`](../infrastructure/network-sandbox.md).
+
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
 [`oramasearch/lake` commit 396e55caf21f4aba9a36d7573118d6a51d30597d](https://github.com/oramasearch/lake/blob/396e55caf21f4aba9a36d7573118d6a51d30597d/db/schema.sql)

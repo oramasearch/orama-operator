@@ -880,6 +880,7 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 		lake,
 		namespace,
 		labels,
+		metav1.LabelSelector{},
 		policies,
 	)
 	return errors.Join(apiErr, internetErr, reconcileErr)

@@ -144,6 +144,7 @@ func reconcileNetworkSandboxPolicies(
 			},
 			Spec: *allowance.Spec.DeepCopy(),
 		}
+		policy.Spec.PodSelector = intersectSandboxSelectors(policy.Spec.PodSelector, sandbox.Spec.PodSelector)
 		if err := reconcileSandboxNetworkPolicy(ctx, kube, scheme, sandbox, policy); err != nil {
 			return int32(len(desiredNames) - 1), 0, err
 		}
@@ -164,13 +165,40 @@ func defaultDenyNetworkPolicy(sandbox *oramav1alpha1.NetworkSandbox) *networking
 			Labels:    copyStringMap(sandbox.Spec.PolicyLabels),
 		},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{},
+			PodSelector: *sandbox.Spec.PodSelector.DeepCopy(),
 			PolicyTypes: []networkingv1.PolicyType{
 				networkingv1.PolicyTypeIngress,
 				networkingv1.PolicyTypeEgress,
 			},
 		},
 	}
+}
+
+// intersectSandboxSelectors preserves both sets of requirements, including contradictory ones.
+// In particular, an allowance cannot replace an owner's label with another owner's value.
+// Keeping an empty scope unchanged preserves live workspace policy specs exactly.
+func intersectSandboxSelectors(pods, scope metav1.LabelSelector) metav1.LabelSelector {
+	result := pods.DeepCopy()
+	keys := make([]string, 0, len(scope.MatchLabels))
+	for key := range scope.MatchLabels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := scope.MatchLabels[key]
+		if existing, found := result.MatchLabels[key]; found && existing != value {
+			result.MatchExpressions = append(result.MatchExpressions, metav1.LabelSelectorRequirement{
+				Key: key, Operator: metav1.LabelSelectorOpIn, Values: []string{value},
+			})
+			continue
+		}
+		if result.MatchLabels == nil {
+			result.MatchLabels = map[string]string{}
+		}
+		result.MatchLabels[key] = value
+	}
+	result.MatchExpressions = append(result.MatchExpressions, scope.DeepCopy().MatchExpressions...)
+	return *result
 }
 
 func reconcileSandboxNetworkPolicy(
@@ -239,6 +267,9 @@ func reconcileSandboxCiliumPolicies(
 		if spec == nil {
 			return int32(len(desiredNames) - 1), fmt.Errorf("CiliumNetworkPolicy %q spec must be a JSON object", allowance.Name)
 		}
+		if err := scopeCiliumSandboxPolicy(spec, sandbox.Spec.PodSelector); err != nil {
+			return int32(len(desiredNames) - 1), fmt.Errorf("scope CiliumNetworkPolicy %q: %w", allowance.Name, err)
+		}
 		desired := &unstructured.Unstructured{Object: map[string]interface{}{
 			"apiVersion": "cilium.io/v2",
 			"kind":       "CiliumNetworkPolicy",
@@ -288,6 +319,41 @@ func reconcileSandboxCiliumPolicies(
 		}
 	}
 	return int32(len(desiredNames)), nil
+}
+
+func scopeCiliumSandboxPolicy(spec map[string]interface{}, scope metav1.LabelSelector) error {
+	if _, present := spec["nodeSelector"]; present {
+		return fmt.Errorf("nodeSelector is not allowed in a pod sandbox")
+	}
+	var pods metav1.LabelSelector
+	if raw, present := spec["endpointSelector"]; present {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(encoded, &pods); err != nil {
+			return fmt.Errorf("decode endpointSelector: %w", err)
+		}
+	}
+	// Cilium's k8s label source pins the scope to pod labels, not another identity source.
+	kubernetesScope := metav1.LabelSelector{}
+	if scope.MatchLabels != nil {
+		kubernetesScope.MatchLabels = map[string]string{}
+	}
+	for key, value := range scope.MatchLabels {
+		kubernetesScope.MatchLabels["k8s:"+key] = value
+	}
+	for _, expression := range scope.DeepCopy().MatchExpressions {
+		expression.Key = "k8s:" + expression.Key
+		kubernetesScope.MatchExpressions = append(kubernetesScope.MatchExpressions, expression)
+	}
+	pods = intersectSandboxSelectors(pods, kubernetesScope)
+	selector, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&pods)
+	if err != nil {
+		return err
+	}
+	spec["endpointSelector"] = selector
+	return nil
 }
 
 func copyStringMap(values map[string]string) map[string]string {

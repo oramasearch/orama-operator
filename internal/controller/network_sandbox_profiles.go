@@ -126,6 +126,7 @@ func reconcileOwnedNetworkSandbox(
 	owner client.Object,
 	namespace string,
 	labels map[string]string,
+	podSelector metav1.LabelSelector,
 	policies []oramav1alpha1.NetworkSandboxPolicy,
 ) (*oramav1alpha1.NetworkSandbox, error) {
 	sandbox := &oramav1alpha1.NetworkSandbox{
@@ -142,6 +143,7 @@ func reconcileOwnedNetworkSandbox(
 			)
 		}
 		sandbox.Spec = oramav1alpha1.NetworkSandboxSpec{
+			PodSelector:  *podSelector.DeepCopy(),
 			PolicyLabels: copyStringMap(labels),
 			Policies:     append([]oramav1alpha1.NetworkSandboxPolicy(nil), policies...),
 		}

@@ -6,6 +6,30 @@
 `OramaCloudV1` stack namespace. Its controller always renders `NetworkPolicy/default-deny` for
 both ingress and egress, then renders only the named allowances in the resource.
 
+Every sandbox has a required `spec.podSelector`. Default-deny selects only these owner pods;
+each allowance's selector is intersected with it, never substituted for it. Conflicting label
+requirements select no pod. Cilium endpoint selectors are constrained the same way, using the
+`k8s:` label source; node selectors are refused. Empty `{}` is intentional only for workspace
+namespaces, which are entirely owned by the workspace. A stack in a shared namespace such as
+`orama-system` must not isolate the Orama operator or unrelated pods.
+
+Cloud v1 uses `app.kubernetes.io/instance=<CR name>` and
+`app.kubernetes.io/managed-by=orama-cloud-v1-operator`. Existing application, engine, datastore
+and demo-seed pod templates already carry these labels. The control CNPG Cluster now explicitly
+passes `labelsFor(controldb)` through `spec.inheritedMetadata.labels`, covering database pods and
+bootstrap Jobs. PostgresSchema Jobs now inherit the instance label from their parent resource.
+
+Lake uses a dedicated `orama.cloud/lake-instance=<Lake name>` label on its Deployment pod template,
+owned Zetta pods, control CNPG instances/bootstrap Jobs, library agents and schema Jobs. This label
+is propagated through the Zetta CR and CNPG inherited metadata. Existing immutable workload
+selectors are unchanged. Database and schema pods do not inherit Lake's application Service
+selector, so application requests cannot be sent to them. Workspace workload labels and policy
+specs are unchanged.
+
+An existing immutable schema Job missing its scope labels is replaced with foreground deletion
+before the correctly labelled Job is created. The existing guarded, idempotent schema script is
+retained; no two Postgres migration Jobs overlap. Stable pod templates do not roll repeatedly.
+
 The parent reconciler creates the sandbox and renders its policies synchronously before it creates
 or updates a workload. The `NetworkSandbox` controller then owns ongoing repair, adoption and
 pruning. A deleted sandbox requeues its parent; a deleted rendered policy requeues the sandbox.
@@ -64,7 +88,7 @@ declared ports. This stage does not change those specs.
 
 | Policy | Allowed path and reason |
 |---|---|
-| `allow-dns-egress` | All Lake namespace workloads reach CoreDNS over UDP/TCP 53. |
+| `allow-dns-egress` | Only Lake-owned workloads reach CoreDNS over UDP/TCP 53. |
 | `allow-lake-to-controldb`, `allow-schema-to-controldb` | Lake and its schema migration job reach the owned CNPG cluster on 5432. |
 | `allow-lake-to-zetta`, `allow-zetta-internal` | Lake reaches its owned Zetta API on 4800; Zetta peers use 7777 and 4800 among the selected Zetta pods. |
 | `allow-controldb-internal` | CNPG members use 5432 and 8000 for replication and health. |
@@ -82,8 +106,9 @@ object-store endpoint, but the reconciled CNPG object does not expose a stable d
 
 ## Orama Cloud v1 stack namespace
 
-All selectors include the stack name and component label. A policy for a disabled component
-selects no pod and grants nothing.
+Every target selector includes the stack instance and manager labels. Component allowances add
+their component or database/schema identity. A policy for a disabled component selects no pod
+and grants nothing. Operator-labelled and unlabelled pods in `orama-system` match none of them.
 
 | Policy | Allowed path and reason |
 |---|---|

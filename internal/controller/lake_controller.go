@@ -509,7 +509,7 @@ func (r *LakeReconciler) reconcileLakeZetta(
 	// Postgres, not an operator schema on Zetta.
 	operatorSchema := false
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, zetta, func() error {
-		zetta.Labels = labels
+		zetta.Labels = withLabels(labels, lakeInstancePodLabels(lake))
 		zetta.Spec = oramav1alpha1.OramaZettaClusterSpec{
 			Replicas:                replicas,
 			Image:                   lake.Spec.Zetta.Image,
@@ -614,7 +614,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 		deployment.Spec.Replicas = &replicas
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		deployment.Spec.Strategy = strategy
-		deployment.Spec.Template.ObjectMeta.Labels = labels
+		deployment.Spec.Template.ObjectMeta.Labels = withLabels(labels, lakeInstancePodLabels(lake))
 		deployment.Spec.Template.Spec = corev1.PodSpec{
 			// ndots:2, so the full Service names lake dials resolve on the first query.
 			DNSConfig: lakePodDNSConfig(),
@@ -1300,6 +1300,11 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 			}
 		}
 		cluster.Object["spec"] = spec
+		// CNPG propagates inherited metadata to instances and bootstrap Jobs. Do not copy Lake's
+		// application labels: its Service must not select the database pods.
+		if err := unstructured.SetNestedStringMap(cluster.Object, lakeInstancePodLabels(lake), "spec", "inheritedMetadata", "labels"); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)
 	})
 	if err != nil {
@@ -1484,7 +1489,7 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 		return err
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ps, func() error {
-		ps.Labels = lbls
+		ps.Labels = withLabels(lbls, lakeInstancePodLabels(lake))
 		ps.Spec = oramav1alpha1.PostgresSchemaSpec{
 			ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: lakeControlDB(lake.Name) + "-app", Key: "uri"},
 			SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: cmName, Key: "schema.sql"},

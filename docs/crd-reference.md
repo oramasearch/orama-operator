@@ -265,9 +265,11 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 
 ## `NetworkSandbox` (separate CRD, namespaced) — default-deny with explicit paths
 
-Short name: `netsandbox`. One resource describes the network boundary of its own namespace.
-The controller always renders `NetworkPolicy/default-deny`, selecting every pod for both ingress
-and egress with no rules. `spec.policies` is the complete list of exceptions expressible as
+Short name: `netsandbox`. One resource describes the network boundary of its owner's pods.
+Required `spec.podSelector` identifies those pods; explicit `{}` is appropriate only in a fully
+owned workspace namespace. The controller always renders `NetworkPolicy/default-deny`, selecting
+only those pods for both ingress and egress with no rules. Each allowance selector is intersected
+with the owner selector, including Cilium endpoint selectors. `spec.policies` lists exceptions expressible as
 Kubernetes NetworkPolicy; each item has a unique `name`, a required human `comment` identifying
 the component and reason, and the complete `networking.k8s.io/v1` policy `spec`. The comment is
 copied to the rendered policy as `orama.cloud/network-policy-comment`.

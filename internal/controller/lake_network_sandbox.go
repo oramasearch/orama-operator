@@ -17,6 +17,12 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
+const lakeInstanceLabel = "orama.cloud/lake-instance"
+
+func lakeInstancePodLabels(lake *oramav1alpha1.Lake) map[string]string {
+	return map[string]string{lakeInstanceLabel: lake.Name}
+}
+
 func networkPolicy(
 	name string,
 	pods metav1.LabelSelector,
@@ -90,7 +96,7 @@ func (r *LakeReconciler) reconcileLakeNetworkSandbox(
 		"app.kubernetes.io/name":     "orama-zetta",
 		"app.kubernetes.io/instance": lakeZettaName(lake.Name),
 	}}
-	agentSelector := metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+	agentSelector := metav1.LabelSelector{MatchLabels: lakeInstancePodLabels(lake), MatchExpressions: []metav1.LabelSelectorRequirement{
 		labelExists(libraryAgentLabel),
 	}}
 	schemaSelector := metav1.LabelSelector{MatchLabels: map[string]string{
@@ -101,7 +107,7 @@ func (r *LakeReconciler) reconcileLakeNetworkSandbox(
 	}}
 	allowances := []oramav1alpha1.NetworkSandboxPolicy{
 		sandboxAllowance(
-			"Every Lake namespace workload needs cluster DNS over UDP and TCP for Service discovery.",
+			"Every Lake-owned workload needs cluster DNS over UDP and TCP for Service discovery.",
 			workspaceDNSPolicy(namespace, labels),
 		),
 		sandboxAllowance(
@@ -348,6 +354,7 @@ func (r *LakeReconciler) reconcileLakeNetworkSandbox(
 		lake,
 		namespace,
 		labels,
+		metav1.LabelSelector{MatchLabels: lakeInstancePodLabels(lake)},
 		allowances,
 	)
 	// The manager always provides APIReader. Older unit fixtures omit it and have no synthetic

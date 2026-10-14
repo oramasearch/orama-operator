@@ -473,6 +473,10 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		oc,
 		oc.Namespace,
 		labels,
+		metav1.LabelSelector{MatchLabels: map[string]string{
+			"app.kubernetes.io/instance":   oc.Name,
+			"app.kubernetes.io/managed-by": "orama-cloud-v1-operator",
+		}},
 		allowances,
 	)
 	// The manager always provides APIReader. Older unit fixtures omit it and have no synthetic

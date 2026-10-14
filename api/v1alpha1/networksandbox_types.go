@@ -12,7 +12,7 @@ import (
 )
 
 // NetworkSandboxPolicy is one explicitly justified Kubernetes NetworkPolicy rendered inside the
-// sandbox namespace. The controller adds the namespace-wide default-deny policy separately.
+// sandbox namespace. The controller adds the owner-scoped default-deny policy separately.
 type NetworkSandboxPolicy struct {
 	// Name is the NetworkPolicy name.
 	// +kubebuilder:validation:MinLength=1
@@ -23,7 +23,7 @@ type NetworkSandboxPolicy struct {
 	// +kubebuilder:validation:MinLength=1
 	Comment string `json:"comment"`
 
-	// Spec is the complete NetworkPolicy spec for this allowance.
+	// Spec is the NetworkPolicy spec; its pod selector is intersected with the sandbox selector.
 	Spec networkingv1.NetworkPolicySpec `json:"spec"`
 }
 
@@ -46,6 +46,10 @@ type NetworkSandboxCiliumPolicy struct {
 // NetworkSandboxSpec defines the desired policies for one namespace. Default-deny ingress and
 // egress are mandatory and implicit; every entry here is an exception to that baseline.
 type NetworkSandboxSpec struct {
+	// PodSelector identifies only this owner's pods. Every rendered policy is restricted to this
+	// selector. An explicit empty selector is appropriate only for a fully owned namespace.
+	PodSelector metav1.LabelSelector `json:"podSelector"`
+
 	// PolicyLabels are applied to every rendered policy. Parent reconcilers use their existing
 	// ownership labels so adopting a live namespace changes no policy selectors or labels.
 	// +optional
@@ -93,12 +97,12 @@ type NetworkSandboxStatus struct {
 // +kubebuilder:printcolumn:name="Policies",type=integer,JSONPath=`.status.networkPolicies`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// NetworkSandbox makes its namespace default-deny and declares every allowed network path.
+// NetworkSandbox isolates its owner's pods and declares every allowed network path.
 type NetworkSandbox struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   NetworkSandboxSpec   `json:"spec,omitempty"`
+	Spec   NetworkSandboxSpec   `json:"spec"`
 	Status NetworkSandboxStatus `json:"status,omitempty"`
 }
 

@@ -62,7 +62,7 @@ var operatorZettaSchema = []zettaSchemaStmt{
 // portable mechanism: it waits for the node, applies the schema idempotently, and completes.
 func (r *OramaZettaClusterReconciler) reconcileZettaControlPlane(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, clientSvc string) error {
 	name := z.Name + "-zetta-schema"
-	lbls := zettaLabels(z)
+	lbls := zettaPodLabels(z)
 
 	// Render the apply script from the schema list. Each statement → POST /v1/sql; "ok" or
 	// "already exists" is success; a flap (503 / empty) retries; anything else fails the Job.
@@ -115,8 +115,11 @@ func (r *OramaZettaClusterReconciler) reconcileZettaControlPlane(ctx context.Con
 
 	var current batchv1.Job
 	if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: name}, &current); err == nil {
-		if current.Annotations[zettaSchemaVersionAnnotation] != schemaVersion {
-			return r.Delete(ctx, &current)
+		if current.Annotations[zettaSchemaVersionAnnotation] != schemaVersion || current.Spec.Template.Labels[lakeInstanceLabel] != lbls[lakeInstanceLabel] {
+			if !metav1.IsControlledBy(&current, z) {
+				return fmt.Errorf("schema Job %s is not controlled by Zetta %s", name, z.Name)
+			}
+			return r.Delete(ctx, &current, client.PropagationPolicy(metav1.DeletePropagationForeground))
 		}
 	} else if !apierrors.IsNotFound(err) {
 		return err
