@@ -1,0 +1,222 @@
+# Secure networking: design
+
+The design for [#437](https://github.com/oramasearch/orama-operator/issues/437) (the operator's
+half) and [lake#724](https://github.com/oramasearch/lake/issues/724) (Lake's half). It follows the
+research in [`docs/research/secure-networking/`](../research/secure-networking/README.md).
+
+**Status: proposed, 2026-10-14.** Everything Steve has decided is marked with his words and the
+date. Everything else is a proposal, and the decisions it needs are listed at the end.
+
+---
+
+## 1. What is asked
+
+Steve, 2026-10-13: *"I want to add secure networking to lake with istio in the operator ... (and
+tunnels so that I can connect apps and services) ... let's make sure that our workspaces are locked
+down sandboxes ... and that all network and dns connections are explicit .... app to service
+connections might need credentials (roles) too ... they might also want to connect apps to external
+data connections ... create the appropriate navigation sections ... (we might also need peer
+connections between k8s clusters or zetta clusters or aws vpcs) ... keep every tunnel abstract"*.
+
+Added since:
+
+| Date | Decision (Steve) |
+|---|---|
+| 2026-10-13 | *"this also needs to be permissible licensed for us to resell"* |
+| 2026-10-13 | *"our instinct is to implement our own c++ components"* |
+| 2026-10-13 | Orama Cloud v1's engine outbound traffic is locked down with this system, not a per-stack NetworkPolicy (from the review of #409). |
+| 2026-10-13 | This epic is ready before the Orama Cloud v1 cutover and the Lake release (Friday 23 October 2026, 19:00 PT); work starts once the review of the #397–#449 stack is done. |
+| 2026-10-14 | Cross-cluster connections, including Cloud v1's US readers of the EU writer (#396), go through this system, never ad-hoc public load balancers (from the review of #449). |
+| 2026-10-14 | Everything runs self-contained, on-prem and air-gapped; the only outside services are Clerk, Cloudflare and, later, Resend. |
+| 2026-10-14 | Orama's own tunnel is a new private C++26 project, [`oramasearch/zetta-tunnel`](https://github.com/oramasearch/zetta-tunnel). |
+| 2026-10-14 | It needs Lake UI changes and probably Zetta changes too. |
+
+## 2. Where things stand (checked 2026-10-14)
+
+- **CNI:** Azure CNI overlay with the AKS-managed Cilium dataplane (`cilium-distroless:v1.18.14`) and
+  Cilium network policy, on every cluster. `CiliumNetworkPolicy` and
+  `CiliumClusterwideNetworkPolicy` are installed.
+- **ACNS is off.** Azure's Advanced Container Networking Services (`advancedNetworking.enabled:
+  false` on `orama-production-cluster-01`) is what AKS requires for **FQDN (DNS name) egress
+  filtering** and for Hubble flow logs. Without it, policy is by address and port only.
+- **Lake workspace namespaces are locked down today**, by NetworkPolicies the operator writes
+  (`lake_workspaces.go`, `lake_workspace_datastore_policies.go`, #268): `default-deny` (ingress and
+  egress), `allow-workspace-internal`, `allow-dns-egress`, `allow-lake-ingress` and
+  `allow-lake-egress`, `allow-internet-https` when the workspace's `internetEgress` is on (port 443
+  to `0.0.0.0/0` except private, link-local, node and pod ranges), one ingress policy per datastore
+  operator, one API-server egress policy per operand that needs it, and one access policy per app.
+- **Nothing else is locked down.** On `orama-nonprod-cluster-01`, `orama-production-cluster-02` and
+  `-03` the only NetworkPolicy is AKS's own `konnectivity-agent`. On the managing cluster, only the
+  workspace namespaces and one Lake build namespace have policies. **Every Lake instance namespace
+  (`lake`, `lake-shared`, `lake-dev`, `lake-staging`), every Orama Cloud v1 namespace (`v1-eu`,
+  `v1-dev`, `v1-us`), `orama-system` and the platform namespaces have no NetworkPolicy at all**:
+  every pod in them can reach every pod on its cluster and the internet.
+- **Inside a workspace, everything reaches everything** (`allow-workspace-internal`): an app reaches
+  every service in its workspace with that service's one credential.
+- **Ingress** is ingress-nginx (retired upstream), with no TLS to the origin (#457).
+- **No mesh, no tunnels, no peering.** Every AKS VNet uses `10.224.0.0/12`, so clusters cannot be
+  peered by routing.
+
+## 3. Principles
+
+1. **Abstract kinds, concrete providers** (principle 10): a sandbox, a connection, a tunnel and a
+   peer connection each have one shape; what enforces or carries them is a provider behind it.
+2. **Enforce with what every cluster already runs first.** Cilium is the enforcer. The operator
+   generates its policies; no second eBPF dataplane goes on AKS-managed Cilium's hooks. (Both 2026-10-14
+   reports.)
+3. **Orama's own components where they are the product**: the tunnel (zetta-tunnel), the credential
+   broker and its protocol-aware endpoints, the peer gateway. In C++, permissively licensed, and
+   able to run air-gapped.
+4. **One operator, no differences; two installation paths, one result; never by hand.** Any chart
+   this adds goes in `helmfile.yaml` and every `platform.yaml` together.
+5. **Licences**: every component permissive and recorded where it is added. Hosted services are
+   providers only where their terms allow (Cloudflare Tunnel in a customer's own account, never
+   resold from ours).
+6. **Where data lives**: a workspace's connections, grants, tunnel sessions and network activity are
+   workspace data, in the workspace Zetta. The operator reads only Lake's Postgres control plane
+   (decision 51), so what it must enforce is desired state there, as services and workspaces are
+   today. The exact split is decision D1 below.
+
+## 4. The resource kinds (proposed)
+
+Names to settle (decision D2). Each is namespaced unless said otherwise, written by Lake through the
+operator (or by the operator itself for Orama's own stacks), and reconciled by the operator.
+
+| Kind | What it says | First provider |
+|---|---|---|
+| `NetworkSandbox` | A namespace is default-deny in and out. Names what the platform must still reach (its operators, the API server, DNS, Lake). One per workspace, per Lake instance and per Orama Cloud v1 stack. | Kubernetes `NetworkPolicy` and `CiliumNetworkPolicy`, generated |
+| `Connection` | **One** source workload may reach **one** destination (a service, an app, a stack component) on named ports. Optionally carries a credential scope (decision D4). | Generated policy on both sides; a credential through the broker |
+| `EgressRule` | A workload may reach an outside destination: CIDR and port, or a DNS name and port. | CIDR: generated policy. DNS name: decision D3 |
+| `Tunnel` | A person may reach one target from outside the cluster, for a time. | **zetta-tunnel** (`ZettaTunnel`); optionally a customer's own Cloudflare account (`CloudflareTunnel`) |
+| `PeerConnection` | Another cluster or network may reach named services here, and the reverse, through gateways, never by routing addresses. | Gateways built in C++ (decision D6) |
+
+What the existing objects become: the workspace's NetworkPolicies are generated from its
+`NetworkSandbox`; an app's access policy and today's blanket `allow-workspace-internal` are replaced by
+`Connection`s; `internetEgress` becomes `EgressRule`s.
+
+## 5. What each part uses
+
+### Sandbox and connections (enforcement)
+
+- **Default-deny on every namespace the operator creates**, not only workspaces: every Lake
+  instance namespace and every Orama Cloud v1 namespace gets its `NetworkSandbox`. Each allowance the
+  stack needs today is written down explicitly (the engine's broker, the dashboard's database, the
+  ingress controller, the operators, the API server, DNS).
+- **Orama Cloud v1's engine**: its writer and readers may reach their own broker, DNS, and the public
+  internet **except** private, link-local (including the cloud metadata address `169.254.169.254`),
+  carrier-grade NAT, node and pod ranges, enforced on the resolved address. That is an address rule,
+  so it needs no ACNS. It closes the gap that OramaCore's host-name deny list leaves (review of #409).
+- **Inside a workspace**, `allow-workspace-internal` is replaced by declared `Connection`s.
+- **Tenants cannot write policy.** Kubernetes policies are additive, so an allow written by a tenant
+  would reopen anything. Only the operator writes them; Lake's RBAC and the namespace's RBAC keep it
+  so, and a test proves it.
+
+### DNS-name egress (decision D3)
+
+`EgressRule` by DNS name needs one of:
+- **ACNS** on every AKS cluster (paid, per node; Azure only). Cilium then enforces `toFQDNs` with a
+  DNS rule. It does not help an on-prem or air-gapped install that is not AKS.
+- **Our own egress gateway**: workloads with name rules route that traffic through a gateway that
+  resolves and authorizes by name, and Cilium allows only the gateway. Portable to every install;
+  it is a component we build and run.
+
+### Credentials on connections (decision D4)
+
+A `Connection` with a credential scope gets a credential issued for that one app, scoped to what it
+needs (for example read-only, one schema), and revocable:
+- **Native roles where the datastore has them**: Postgres roles (CloudNativePG), Kafka users and ACLs
+  (Strimzi), Valkey ACL users, ClickHouse users. The operator creates the role and delivers the
+  credential as a projection of a workspace secret (the two-levels-of-secrets rule).
+- **A protocol-aware endpoint only where needed.** Injecting a credential is impossible when TLS is
+  end to end (Postgres, MySQL/TiDB, Kafka, Valkey and ClickHouse each negotiate their own), so a
+  broker endpoint terminates and re-establishes TLS per protocol, which moves the TLS trust boundary.
+  Postgres first.
+- **Zetta** keeps its node-to-node mTLS end to end. Scoped access for apps to a workspace Zetta is
+  Zetta work (section 7).
+
+### Tunnels
+
+- **zetta-tunnel** is the provider Orama owns. Its transport is decision D5.
+- A developer authenticates as themselves; the tunnel reaches **one** target; Lake grants, shows,
+  expires and revokes it, and audits who connected. The tunnel endpoint's path into the workspace is
+  a generated `Connection`.
+- **Cloudflare Tunnel only in a customer's own Cloudflare account**: Cloudflare's terms forbid
+  reselling it from ours (research, 2026-10-14).
+
+### Peer connections
+
+- **Service-addressed gateways** at each end authenticate each other and expose only named services.
+  The clusters' VNets overlap, so nothing routes pod or VPC addresses across.
+- **Cloud v1's US readers of the EU writer** (#396) are the first user, after a new reader can be
+  seeded from an existing one (#458).
+- Built in C++ (decision D6): on Corosio and OpenSSL, as Zetta's node-to-node links are, or on
+  zetta-tunnel's transport.
+
+### A mesh (decision D7)
+
+Transparent workload-to-workload mTLS (Istio ambient's ztunnel, or our own per-node proxy) is not
+needed for any of the above: sandboxes and connections are enforced by Cilium, and every component
+of ours speaks TLS itself. The research advises against leading with our own per-node proxy (it is
+a security boundary that must not fail open). Proposed: no mesh in the first stages; decide after.
+
+### Ingress (decision D8)
+
+ingress-nginx is retired upstream. Its replacement is a Gateway API implementation (Envoy Gateway,
+Apache-2.0, or Istio's gateway if D7 brings Istio). Origin TLS is #457 either way.
+
+### Observability
+
+Pixie (#456) for live tracing; network flows and policy verdicts from Hubble need ACNS on AKS, so the
+portable record is our own: the tunnel, the broker endpoints and the gateways each log who connected
+to what, into the workspace Zetta.
+
+## 6. Lake's part (lake#724)
+
+- **Capabilities first**, each also in the REST API and the MCP server: list and declare a
+  workspace's connections; grant, list and revoke tunnels; declare egress; see a workspace's network
+  rules and recent activity.
+- **Navigation:** a network section per workspace, using the research's proposal (section F, §26) as
+  the starting point: overview, connections, developer access (tunnels), private networks (peers),
+  DNS and egress, policies, activity.
+- **Data:** connection records, grants, tunnel sessions and activity in the workspace Zetta; the
+  desired state the operator enforces in the control plane (decision D1).
+- Lake names a tunnel, never a vendor.
+
+## 7. Zetta's part (to be filed when the design is agreed)
+
+- **Scoped access for apps** to a workspace Zetta, so a `Connection` to Zetta carries a credential
+  limited to what the app needs.
+- **The store** for connections, grants, tunnel sessions and network activity in each workspace.
+- **Zetta-to-Zetta links between clusters**, if peering covers Zetta clusters ("peer connections
+  between k8s clusters or zetta clusters").
+- **Reuse:** Zetta's transport (Corosio, mTLS 1.3, join tokens) as a building block for the peer
+  gateway and possibly zetta-tunnel.
+
+## 8. Order of work
+
+Each stage ends with its tests passing on `orama-nonprod-cluster-01`, then the production clusters,
+through the operator, with nothing by hand.
+
+1. **Sandbox everything the operator creates.** `NetworkSandbox` for every Lake instance, workspace
+   and Orama Cloud v1 namespace; the Cloud v1 engine's outbound lockdown; tenants unable to write
+   policy. Tests: from each workload, allowed and forbidden paths, across workspaces and namespaces,
+   the metadata address, DNS over UDP and TCP, and after restarts.
+2. **Declared connections inside workspaces**, replacing `allow-workspace-internal`, with Lake's
+   capabilities and pages. Credentials on connections, Postgres first.
+3. **Egress by DNS name** (after D3).
+4. **zetta-tunnel**: developer tunnels, with Lake's grants and audit.
+5. **Peer connections**: service-addressed gateways; Cloud v1's US readers once #458 is done.
+6. **Ingress** replaced (after D8); a mesh only if D7 says so.
+
+## 9. Decisions for Steve
+
+| # | Decision | Options |
+|---|---|---|
+| D1 | Where a connection's desired state lives | In Lake's Postgres control plane (the operator reads it, as for services), with the records and activity in the workspace Zetta; or all in the workspace Zetta, which would need an exception to decision 51 |
+| D2 | The kinds' names | As in section 4, or others |
+| D3 | DNS-name egress | ACNS on every AKS cluster (paid, AKS only), or our own egress gateway (portable) |
+| D4 | Credentials on connections | Native datastore roles first, protocol-aware endpoints only where needed; which kinds in the first scope |
+| D5 | zetta-tunnel's transport | WireGuard through the OS kernel (kernel WireGuard is GPL-2.0, used, not shipped), QUIC (MsQuic, MIT), or TLS over Corosio like Zetta's links |
+| D6 | Peer gateways | Built on Corosio and OpenSSL as Zetta is, on zetta-tunnel's transport, or a third party |
+| D7 | A mesh | None in the first stages (proposed), Istio ambient, or our own per-node proxy later |
+| D8 | Ingress after ingress-nginx | Envoy Gateway, Istio's gateway, or our own |
