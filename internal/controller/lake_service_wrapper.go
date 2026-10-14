@@ -275,6 +275,11 @@ func (k wrapperServiceKind) credential(_ context.Context, _ client.Reader, in ca
 	return credential, "", err
 }
 
+// podSelector: the StatefulSet's pods, the same selector its Service uses.
+func (k wrapperServiceKind) podSelector(in catalogService) map[string]string {
+	return k.selector(in)
+}
+
 // claimSelectors: each data claim data-<name>-<i> carries the StatefulSet's selector labels.
 func (k wrapperServiceKind) claimSelectors(in catalogService) []client.MatchingLabels {
 	return []client.MatchingLabels{k.selector(in)}

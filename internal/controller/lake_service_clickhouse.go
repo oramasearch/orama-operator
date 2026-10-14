@@ -193,6 +193,11 @@ func (clickHouseServiceKind) credential(_ context.Context, _ client.Reader, in c
 	return credential, "", err
 }
 
+// podSelector: the installation's server pods; clients never reach the Keeper.
+func (clickHouseServiceKind) podSelector(in catalogService) map[string]string {
+	return map[string]string{clickHouseInstallationLabel: in.name, clickHouseAppLabel: clickHouseAppValue}
+}
+
 // claimSelectors: the installation's claims and the Keeper's. Altinity deletes both with their
 // installation (reclaimPolicy Delete is its default); deletion still waits for them.
 func (clickHouseServiceKind) claimSelectors(in catalogService) []client.MatchingLabels {

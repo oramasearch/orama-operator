@@ -216,8 +216,8 @@ func resolveTunnelTarget(
 	if err != nil {
 		return tunnelTarget{}, err
 	}
-	var services corev1.ServiceList
-	if err := c.List(ctx, &services, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+	services, err := targetServices(ctx, c, namespace, selector, labelSelector)
+	if err != nil {
 		return tunnelTarget{}, err
 	}
 	type candidate struct {
@@ -225,8 +225,8 @@ func resolveTunnelTarget(
 		port    corev1.ServicePort
 	}
 	var candidates []candidate
-	for i := range services.Items {
-		service := &services.Items[i]
+	for i := range services {
+		service := &services[i]
 		if !service.DeletionTimestamp.IsZero() {
 			continue
 		}

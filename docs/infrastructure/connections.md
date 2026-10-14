@@ -38,7 +38,7 @@ Lake IDs are mapped to labels the operator owns:
 | Kind | Selector |
 |---|---|
 | app | the existing `orama.cloud/lake-app-id` workload identity resolved from the Lake-owned `LakeApp` carrying `orama.cloud/app-id=<source_id>` |
-| service | `orama.cloud/service-id=<id>` |
+| service | the labels the service's own operator puts on its serving pods, found from its primary resource (below) |
 | agent | `orama.cloud/agent-id=<id>` |
 | tunnel | `orama.cloud/tunnel-grant-id=<id>`: the grant's zetta-tunnel endpoint or `cloudflared` connector. The operator generates `Connection/connection-tunnel-<grant id>` itself, controlled by the `ZettaTunnel` or `CloudflareTunnel` of the same Lake and grant ([tunnels](tunnels.md)) |
 
@@ -46,6 +46,26 @@ Targets are services or apps. A peer with only a pod selector is namespace-local
 cannot select a workload in another workspace. Explicit `ports` are TCP destination ports. An empty
 list is narrowed to the target's Kubernetes `Service` target ports, including named ports; it never
 opens every pod port. A target with no discoverable Service stays `Pending`.
+
+### How a service target is found
+
+A service's pods and Kubernetes Services do not carry `orama.cloud/service-id`. Upstream operators
+(CloudNativePG, TiDB Operator, Strimzi, ...) label them with their own keys, and copying ours onto
+the pods would roll every database pod. Only the primary resource the operator writes carries the
+id and the kind: the CloudNativePG `Cluster`, the `TidbCluster`, the `OramaZettaCluster`, a wrapper
+kind's StatefulSet. So `resolveServiceTarget` (`internal/controller/service_targets.go`):
+
+1. finds the primary resource labelled `orama.cloud/service-id=<id>` in the workspace namespace;
+2. takes the serving pods' selector from its kind: each catalog kind's `podSelector`, `cnpg.io/cluster`
+   for Postgres, `app.kubernetes.io/component=zetta-node` with the cluster's instance for Zetta. TiDB
+   selects the TiDB servers only, never PD or TiKV;
+3. takes ports from the Services whose `spec.selector` holds every label of that selector, plus any
+   Service labelled with it.
+
+If no primary resource carries the id, pods labelled `orama.cloud/service-id=<id>` are the target.
+Tunnels (`resolveTunnelTarget`), egress rules with a service source, and the credential's kind lookup
+use the same resolution. Found on 2026-10-14 on Lake/prod: before this, every connection to a service
+stayed `Pending` waiting for the target's Service ports.
 
 A row with non-null `credential_scope` also gets a credential of its own: see
 [Credentials on connections](#credentials-on-connections).

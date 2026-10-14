@@ -315,7 +315,11 @@ func lakeWorkloadSelector(
 ) (metav1.LabelSelector, error) {
 	switch kind {
 	case oramav1alpha1.ConnectionSourceService:
-		return metav1.LabelSelector{MatchLabels: map[string]string{serviceIDLabel: id}}, nil
+		target, err := resolveServiceTarget(ctx, reader, lakeRef, namespace, id)
+		if err != nil {
+			return metav1.LabelSelector{}, err
+		}
+		return metav1.LabelSelector{MatchLabels: target.Pods}, nil
 	case oramav1alpha1.ConnectionSourceAgent:
 		return metav1.LabelSelector{MatchLabels: map[string]string{connectionAgentIDLabel: id}}, nil
 	case oramav1alpha1.ConnectionSourceTunnel:
@@ -371,8 +375,8 @@ func (r *ConnectionReconciler) connectionPorts(
 	if err != nil {
 		return nil, err
 	}
-	var services corev1.ServiceList
-	if err := r.List(ctx, &services, client.InNamespace(connection.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+	services, err := targetServices(ctx, r.Client, connection.Namespace, target, selector)
+	if err != nil {
 		return nil, err
 	}
 	type keyedPort struct {
@@ -380,8 +384,8 @@ func (r *ConnectionReconciler) connectionPorts(
 		port networkingv1.NetworkPolicyPort
 	}
 	byKey := map[string]networkingv1.NetworkPolicyPort{}
-	for i := range services.Items {
-		for _, servicePort := range services.Items[i].Spec.Ports {
+	for i := range services {
+		for _, servicePort := range services[i].Spec.Ports {
 			protocol := servicePort.Protocol
 			if protocol == "" {
 				protocol = corev1.ProtocolTCP
