@@ -65,7 +65,9 @@ func (m managedPeerClusterClients) ClientFor(ctx context.Context, clusterRef, na
 // end's identity and, once known, its address. Deleting the PeerLink deletes both Secrets.
 type PeerLinkReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	// APIReader reads the managing cluster's own Namespaces uncached (operator#106). Nil uses Client.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
 	// OperatorNamespace holds the pair's CA Secret. Empty means orama-system.
 	OperatorNamespace string
 	// Clusters is injected for tests; nil reaches managed clusters by their kubeconfig.
@@ -253,7 +255,12 @@ func (r *PeerLinkReconciler) writeEnd(
 		return false, waiting, err
 	}
 	var namespace corev1.Namespace
-	if err := c.Get(ctx, client.ObjectKey{Name: end.Namespace}, &namespace); err != nil {
+	reader := client.Reader(c)
+	if end.ClusterRef == "" && r.APIReader != nil {
+		// The managing cluster's own client is cached; read its Namespaces uncached (operator#106).
+		reader = r.APIReader
+	}
+	if err := reader.Get(ctx, client.ObjectKey{Name: end.Namespace}, &namespace); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, fmt.Sprintf("namespace %s does not exist on the end's cluster yet", end.Namespace), nil
 		}

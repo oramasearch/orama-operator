@@ -367,7 +367,8 @@ func (r *LakeReconciler) activateWorkspaceConnections(
 	workspace LakeNetworkWorkspace,
 ) error {
 	var namespace corev1.Namespace
-	if err := r.Get(ctx, client.ObjectKey{Name: workspace.Namespace}, &namespace); err != nil {
+	// Uncached: the operator never lists or watches Namespaces (operator#106).
+	if err := r.reader().Get(ctx, client.ObjectKey{Name: workspace.Namespace}, &namespace); err != nil {
 		return err
 	}
 	if namespace.Labels[workspaceLabel] != workspace.ID || namespace.Labels[workspaceLakeLabel] != lake.Name {
