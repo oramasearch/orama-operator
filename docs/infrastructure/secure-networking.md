@@ -407,3 +407,17 @@ INSERT INTO schema_migrations (version) VALUES ('0084_network') ON CONFLICT DO N
 - **Removing a row**: `network_connections`, `network_egress_rules` and `network_peers` are removed by
   setting `desired = 'absent'` (the operator deletes what it made, then writes phase `Deleted`). A
   tunnel grant has no `desired` column: it ends by `revoked_at` being set or `expires_at` passing.
+
+### 11.1 Tunnel credentials (added 2026-10-14, from the lake#730 work)
+
+Lake's migration **`0085_network_tunnel_ca`** adds two columns; `0084_network` stays as it is.
+
+```sql
+ALTER TABLE network_tunnel_grants       ADD COLUMN IF NOT EXISTS client_ca_pem text NOT NULL DEFAULT '';  -- Lake: the CA that signs this grant's client certificates
+ALTER TABLE network_tunnel_grant_status ADD COLUMN IF NOT EXISTS relay_ca_pem  text NOT NULL DEFAULT '';  -- operator: the CA of the relay's server certificate
+INSERT INTO schema_migrations (version) VALUES ('0085_network_tunnel_ca') ON CONFLICT DO NOTHING;
+```
+
+- **The client CA is per customer**, from Lake's existing PKI (one CA per customer). Lake writes its public certificate into `client_ca_pem` when it creates the grant. The relay trusts the union of `client_ca_pem` of the live grants, and checks the grant id in the certificate as before.
+- **The developer's credential**: the grant's own user (and only that user) calls a Lake capability with a certificate signing request (PKCS#10, generated on their machine). Lake returns the signed client certificate (SAN `urn:orama:tunnel-grant:<id>`, ending no later than `expires_at`, at most 12 hours), the relay's address (`network_tunnel_grant_status.endpoint`) and the relay's CA (`relay_ca_pem`). The private key never leaves the developer's machine. Administrators can grant and revoke, never fetch someone else's credential.
+- **The operator** writes `endpoint` and `relay_ca_pem` in the grant's status when the relay serves it.
