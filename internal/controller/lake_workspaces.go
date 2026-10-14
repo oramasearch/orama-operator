@@ -835,6 +835,7 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 			sandboxAllowance(allowance.comment, workspaceOperatorIngressPolicy(allowance, namespace, labels)),
 		)
 	}
+	policies = append(policies, workspaceLakeServiceIngressAllowances(lake)...)
 	target, apiErr := r.readWorkspaceAPIServerTarget(ctx)
 	if apiErr == nil {
 		for _, apiClient := range workspaceAPIServerClients {

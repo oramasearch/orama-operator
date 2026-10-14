@@ -23,12 +23,17 @@ Lake uses a dedicated `orama.cloud/lake-instance=<Lake name>` label on its Deplo
 owned Zetta pods, control CNPG instances/bootstrap Jobs, library agents and schema Jobs. This label
 is propagated through the Zetta CR and CNPG inherited metadata. Existing immutable workload
 selectors are unchanged. Database and schema pods do not inherit Lake's application Service
-selector, so application requests cannot be sent to them. Workspace workload labels and policy
-specs are unchanged.
+selector, so application requests cannot be sent to them. Workspace workload labels and all
+pre-existing workspace policy names and specs are unchanged; the additional client-ingress
+policies approved during review are listed below.
 
-An existing immutable schema Job missing its scope labels is replaced with foreground deletion
+An existing immutable PostgresSchema Job missing its scope labels is replaced with foreground deletion
 before the correctly labelled Job is created. The existing guarded, idempotent schema script is
 retained; no two Postgres migration Jobs overlap. Stable pod templates do not roll repeatedly.
+
+Zetta's schema Job keeps its legacy ownership and replacement behavior: only a schema-version
+change replaces it, including an existing unowned stale Job, with the original deletion options.
+New Job templates carry the selection labels; missing labels do not trigger replacement.
 
 The parent reconciler creates the sandbox and renders its policies synchronously before it creates
 or updates a workload. The `NetworkSandbox` controller then owns ongoing repair, adoption and
@@ -58,14 +63,22 @@ its public rule deliberately.
 
 ## Lake workspace namespace
 
-This is a compatibility migration: the generated policy names and specs are byte-for-byte equal to
-the policies produced before `NetworkSandbox`. A regression test compares every name and
-`NetworkPolicySpec` against the former constructors.
+The ownership migration preserves every pre-existing policy name and spec byte-for-byte. A
+regression test still compares every original name and `NetworkPolicySpec` against the former
+constructors. Review additionally authorized six separate Lake-only client-ingress policies to
+pair with the Lake egress rules. Independent tests check their complete selectors, sources and
+ports, reject other Lakes, operator and unlabelled source pods, and check stable reconciliation.
 
 | Policy | Allowed path and reason |
 |---|---|
 | `allow-workspace-internal` | Pods in the same workspace communicate for existing Zetta, service and app behavior. Issue #468 replaces this broad in-workspace rule with declared connections. |
 | `allow-lake-ingress` | The owning Lake and operator reach workspace Zetta and agent HTTP ports 4800 and 8080. |
+| `allow-lake-service-postgres-ingress` | Only the owning Lake in its exact namespace reaches CNPG-labelled Postgres pods on 5432 for Data / Connections and connection checks. |
+| `allow-lake-service-kafka-ingress` | Only the owning Lake reaches Strimzi Kafka client pods on 9092 using its projected service credentials. |
+| `allow-lake-service-clickhouse-ingress` | Only the owning Lake reaches ClickHouse client pods on 8123/9000 for HTTP/native connections. Keeper is not selected. |
+| `allow-lake-service-tidb-ingress` | Only the owning Lake reaches TiDB SQL pods on 4000. PD, TiKV and management ports are not selected. |
+| `allow-lake-service-cassandra-ingress` | Only the owning Lake reaches Cassandra-labelled pods on CQL 9042 for service connections. |
+| `allow-lake-service-valkey-ingress` | Only the owning Lake reaches Valkey-operator cluster pods on 6379 for service connections. |
 | `allow-dns-egress` | Workspace pods reach CoreDNS in `kube-system` over UDP/TCP 53. |
 | `allow-lake-egress` | Workspace pods reach only the owning Lake pods on the configured Lake port. |
 | `allow-cnpg-operator-ingress` | CloudNativePG reaches instance-manager 8000 and Postgres 5432. |
@@ -81,8 +94,12 @@ the policies produced before `NetworkSandbox`. A regression test compares every 
 | `allow-tidb-discovery-apiserver-egress` | TiDB discovery reaches only the API to read its `TidbCluster`. |
 | `allow-internet-https` | Only when the workspace opts in, all workspace pods reach public TCP 443 with the cluster/private exclusions above. |
 
-App-specific access policies remain owned by `LakeApp`; they already select one app and its
-declared ports. This stage does not change those specs.
+App-specific access policies remain owned by `LakeApp` and select only that app's identity labels.
+Their existing ingress-nginx rule and egress rules are unchanged. One additional ingress rule
+admits only the owning Lake pod in its exact namespace on `LakeApp.spec.port`, for backend
+proxying. It applies to synchronized and standalone apps, follows port changes, carries a
+component comment, and is tested against the matching Lake egress rule. It grants no new
+operator ingress or access to other apps.
 
 ## Lake instance namespace
 
@@ -118,10 +135,16 @@ The operator reads build logs via the Kubernetes API, not via Lake pod egress. A
 is **inferred** from the declared LakeApp backend Service and port; the generated public app URL
 is also reachable through Lake's existing public HTTPS allowance.
 
-These new egress rules do not broaden the existing workspace or LakeApp ingress policies.
-Workspace ingress from Lake remains 4800/8080; app-specific ingress remains ingress-nginx-only.
-Direct database/catalog or app-backend connections therefore still require a separate approved
-destination-side ingress change. Preserving those policies is the workspace migration gate.
+The six additional workspace client-ingress policies and LakeApp backend rule provide the
+destination half of those paths. The original workspace 4800/8080 rule remains unchanged,
+including operator access for Zetta and HTTP reconciliation. No direct Orama operator calls to
+catalog database ports or app backends were found: `lake_services.go` and the catalog renderers
+use Kubernetes resources, status and Secrets; `lake_services_pgx.go` and the notification loop
+connect to Lake's control Postgres, not workspace service databases; app readiness uses Kubernetes
+Deployment status. App events/tokens and build events call Lake or the declared Zetta event API.
+Thus no new operator-to-catalog or operator-to-app allowance is added. Datastore operators retain
+their existing operand-management rules unchanged. The client paths inferred above stay limited
+to the owning Lake, vendor/app identities and declared ports.
 
 The backup endpoint path is **inferred** from Lake's CNPG backup contract: the resource supplies an
 object-store endpoint, but the reconciled CNPG object does not expose a stable destination CIDR.

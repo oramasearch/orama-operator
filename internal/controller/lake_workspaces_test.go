@@ -245,7 +245,8 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 	if err := kube.List(ctx, &policies, client.InNamespace(testWorkspaceName)); err != nil {
 		t.Fatal(err)
 	}
-	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients); len(policies.Items) != want {
+	// Six additional Lake-only client policies pair with its egress; all legacy policies remain.
+	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients) + 6; len(policies.Items) != want {
 		t.Fatalf("network policies = %d, want %d", len(policies.Items), want)
 	}
 	for _, policy := range policies.Items {

@@ -96,6 +96,11 @@ cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boo
 
 ## Network sandboxes (`internal/controller/networksandbox_controller.go`)
 
+Zetta schema Jobs carry the owning Lake's sandbox selection label when present. Their existing
+ownership and version-triggered replacement behavior is unchanged; adding selection labels does
+not replace a current Job. `TestZettaControlPlaneReplacesStaleSchemaJob` retains its original fixture
+and assertions, including replacement of an unowned stale Job.
+
 `NetworkSandboxReconciler` turns one namespaced `NetworkSandbox` into a mandatory ingress-and-egress
 `default-deny` NetworkPolicy plus every explicitly named and justified allowance in the resource.
 It adopts existing unowned policies with the declared names, owns the rendered objects, removes
@@ -107,8 +112,15 @@ controller reports stable Ready status with policy counts and does not rewrite u
 The Lake, Lake-workspaces and Orama Cloud v1 reconcilers each own one sandbox in every namespace
 they manage and render it before workloads. Their complete policy inventory, public-address
 exclusions, inferred paths and recovery behavior are in
-[`infrastructure/network-sandbox.md`](infrastructure/network-sandbox.md). Workspace policy names
-and specs are preserved across the ownership migration.
+[`infrastructure/network-sandbox.md`](infrastructure/network-sandbox.md). Every pre-existing
+workspace policy name and spec is preserved across the ownership migration. Six separately named
+Lake-only service-ingress policies pair with Lake's workspace egress on Postgres 5432, Kafka 9092,
+ClickHouse 8123/9000, TiDB 4000, Cassandra 9042 and Valkey 6379. They select vendor pods only and
+admit only the owning Lake's pod labels in its exact namespace, not the Orama operator. The
+`LakeApp` access reconciler adds only the corresponding owning-Lake backend ingress on the app's
+declared port; nginx ingress and app egress stay unchanged. Tests cover both isolated ends, other
+owners/unlabelled pods, port changes and no-op reconciliation. Existing operator Zetta/HTTP and
+datastore-operator management paths remain unchanged.
 
 ## Workload hardening — applied to EVERY component ([#18](https://github.com/oramasearch/orama-operator/issues/18))
 

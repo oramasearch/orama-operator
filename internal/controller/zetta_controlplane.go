@@ -115,11 +115,8 @@ func (r *OramaZettaClusterReconciler) reconcileZettaControlPlane(ctx context.Con
 
 	var current batchv1.Job
 	if err := r.Get(ctx, client.ObjectKey{Namespace: z.Namespace, Name: name}, &current); err == nil {
-		if current.Annotations[zettaSchemaVersionAnnotation] != schemaVersion || current.Spec.Template.Labels[lakeInstanceLabel] != lbls[lakeInstanceLabel] {
-			if !metav1.IsControlledBy(&current, z) {
-				return fmt.Errorf("schema Job %s is not controlled by Zetta %s", name, z.Name)
-			}
-			return r.Delete(ctx, &current, client.PropagationPolicy(metav1.DeletePropagationForeground))
+		if current.Annotations[zettaSchemaVersionAnnotation] != schemaVersion {
+			return r.Delete(ctx, &current)
 		}
 	} else if !apierrors.IsNotFound(err) {
 		return err

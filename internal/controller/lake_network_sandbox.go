@@ -418,20 +418,8 @@ func lakeInternalIngressAllowances(
 // Lake receives these connection endpoints in LAKE_SERVICE_DIR (Data / Connections and
 // service_connection checks). Select vendor pod identities only inside this Lake's workspaces.
 func lakeWorkspaceServiceAllowances(lakePods metav1.LabelSelector, namespaces *metav1.LabelSelector) []oramav1alpha1.NetworkSandboxPolicy {
-	paths := []struct {
-		kind  string
-		pods  metav1.LabelSelector
-		ports []int32
-	}{
-		{"postgres", metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{labelExists("cnpg.io/cluster")}}, []int32{servicePostgresPort}},
-		{"kafka", metav1.LabelSelector{MatchLabels: map[string]string{strimziKindLabel: "Kafka"}, MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(strimziClusterLabel)}}, []int32{kafkaListenerPort}},
-		{"clickhouse", metav1.LabelSelector{MatchLabels: map[string]string{clickHouseAppLabel: clickHouseAppValue}, MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(clickHouseInstallationLabel)}}, []int32{clickHouseHTTPPort, clickHouseNativePort}},
-		{"tidb", tidbComponentPods("tidb"), []int32{tidbPort}},
-		{"cassandra", metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(cassandraClusterLabel)}}, []int32{cassandraPort}},
-		{"valkey", metav1.LabelSelector{MatchLabels: map[string]string{workspaceManagedByLabel: valkeyManagedBy}, MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(valkeyClusterLabel)}}, []int32{valkeyPort}},
-	}
-	policies := make([]oramav1alpha1.NetworkSandboxPolicy, 0, len(paths))
-	for _, path := range paths {
+	policies := make([]oramav1alpha1.NetworkSandboxPolicy, 0, len(workspaceServicePaths))
+	for _, path := range workspaceServicePaths {
 		policies = append(policies, sandboxAllowance(
 			"Lake uses workspace "+path.kind+" connection endpoints from its services Secret for Data / Connections and service_connection checks.",
 			networkPolicy("allow-lake-to-workspace-"+path.kind, lakePods, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, nil,

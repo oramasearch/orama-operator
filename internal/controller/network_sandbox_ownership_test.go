@@ -271,3 +271,40 @@ func TestPostgresSchemaReplacesUnscopedJobOnce(t *testing.T) {
 		t.Fatalf("correctly scoped Job was rewritten: %v, %v", stable, err)
 	}
 }
+
+func TestZettaControlPlaneDoesNotReplaceCurrentJobForSelectionLabels(t *testing.T) {
+	ctx := context.Background()
+	scheme := zettaTestScheme(t)
+	zetta := newZettaTestCluster()
+	zetta.Labels = map[string]string{lakeInstanceLabel: "prod"}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zetta).Build()
+	r := &OramaZettaClusterReconciler{Client: kube, Scheme: scheme}
+	if err := r.reconcileZettaControlPlane(ctx, zetta, "z0-zetta"); err != nil {
+		t.Fatal(err)
+	}
+	key := client.ObjectKey{Namespace: zetta.Namespace, Name: "z0-zetta-schema"}
+	var job batchv1.Job
+	if err := kube.Get(ctx, key, &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Spec.Template.Labels[lakeInstanceLabel] != "prod" || !metav1.IsControlledBy(&job, zetta) {
+		t.Fatal("new schema Job is missing the scope label or legacy owner")
+	}
+	// Model an existing immutable Job from before scope labels, at the current schema version.
+	delete(job.Spec.Template.Labels, lakeInstanceLabel)
+	job.CreationTimestamp = metav1.Now()
+	job.UID = "existing-schema-job"
+	if err := kube.Update(ctx, &job); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileZettaControlPlane(ctx, zetta, "z0-zetta"); err != nil {
+		t.Fatal(err)
+	}
+	var current batchv1.Job
+	if err := kube.Get(ctx, key, &current); err != nil {
+		t.Fatalf("current schema Job was removed for labels: %v", err)
+	}
+	if current.UID != job.UID || !reflect.DeepEqual(current.Spec, job.Spec) || !reflect.DeepEqual(current.OwnerReferences, job.OwnerReferences) {
+		t.Fatal("adding selection labels changed the existing Job's identity, spec or ownership")
+	}
+}

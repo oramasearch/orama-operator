@@ -170,6 +170,8 @@ RFC1918/private ranges, the metadata endpoint `169.254.169.254`, and non-DNS tra
 |---|---|---|---|
 | workspace pod | pod in the same workspace namespace | all | Zetta peers, customer services and local applications must communicate inside their trust boundary |
 | Lake pod in the Lake namespace | workspace pod | TCP 4800, 8080 | Lake calls Zetta and agent HTTP APIs; namespace and pod selectors prevent another workspace from using this rule |
+| owning Lake pod in its exact namespace | vendor-labelled workspace service pods | TCP 5432 (Postgres), 9092 (Kafka), 8123/9000 (ClickHouse), 4000 (TiDB), 9042 (Cassandra), 6379 (Valkey) | six separate client-ingress policies pair with Lake egress for the projected Data / Connections endpoints; no management ports or new Orama operator access |
+| owning Lake pod in its exact namespace | its synchronized app's labelled pod | the app's declared port | app backend proxying; the app's access policy admits only this Lake and exact app port |
 | operator pod in its release namespace | workspace pod | TCP 4800, 8080 | operational reconciliation and verification use the same narrow application ports; the chart supplies the release namespace through `POD_NAMESPACE`, so a tenant cannot gain access by copying the operator pod label |
 | nginx ingress pod in `ingress-nginx` | synchronized app pod | the app's declared port | serves an app host; the per-app policy selects only that app's identity labels and port |
 | workspace pod | CoreDNS pods in `kube-system` | UDP/TCP 53 | service discovery |
@@ -177,6 +179,11 @@ RFC1918/private ranges, the metadata endpoint `169.254.169.254`, and non-DNS tra
 | opted-in workspace pod | public IP addresses | TCP 443 | model-provider HTTPS; private, reserved, node, API-Service and metadata ranges are excluded |
 | datastore operator pod in its own namespace | the operand pods it manages | per kind, below | the CNPG, Altinity, TiDB, K8ssandra and Valkey operators reconcile their pods over the network |
 | CNPG pods, Strimzi entity operator, TiDB discovery | the Kubernetes API Service address and its endpoints | the Service port and each endpoint port | these pods read and write their own custom resources with their own ServiceAccount |
+
+The six Lake service-ingress policies are additions approved during the NetworkSandbox review;
+all former workspace policies keep their names and specs. The inferred client contract, code
+audit and paired-path tests are documented in
+[`../infrastructure/network-sandbox.md`](../infrastructure/network-sandbox.md).
 
 Internet egress is denied by default. `spec.workspaces.overrides[<workspace UUID>].internetEgress`
 adds or removes the TCP 443 policy for that workspace alone. Before enabling it, the operator reads

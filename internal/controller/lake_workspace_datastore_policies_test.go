@@ -70,7 +70,9 @@ func TestWorkspaceAPIServerTarget(t *testing.T) {
 
 // TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs is the live-migration guard for
 // issue #465: moving policy ownership under NetworkSandbox must not change what an existing
-// workspace allows. The expected objects are rendered by the pre-sandbox policy functions.
+// policy allows. The expected objects are rendered by the pre-sandbox policy functions.
+// Review separately authorized six new Lake-only service ingress policies, exhaustively checked
+// by TestWorkspaceServiceIngressPairsWithLakeEgress; no legacy policy comparison is removed.
 func TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs(t *testing.T) {
 	ctx := context.Background()
 	lake := testWorkspaceLake()
@@ -109,8 +111,9 @@ func TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs(t *testing.T)
 	if err := kube.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: networkSandboxName}, &sandbox); err != nil {
 		t.Fatal(err)
 	}
-	if len(sandbox.Spec.Policies) != len(expected)-1 {
-		t.Fatalf("sandbox allowances = %d, want %d", len(sandbox.Spec.Policies), len(expected)-1)
+	wantAllowances := len(expected) - 1 + 6
+	if len(sandbox.Spec.Policies) != wantAllowances {
+		t.Fatalf("sandbox allowances = %d, want %d", len(sandbox.Spec.Policies), wantAllowances)
 	}
 	comments := map[string]string{}
 	for _, allowance := range sandbox.Spec.Policies {
