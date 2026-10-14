@@ -278,3 +278,127 @@ Filed 2026-10-14; the list is kept on the epics: #437 (operator, zetta-tunnel, Z
 - https://github.com/oramasearch/lake/issues/729: A Network section in each workspace
 - https://github.com/oramasearch/lake/issues/730: Developer access: grant, expire, revoke and audit tunnels
 - https://github.com/oramasearch/lake/issues/731: Scoped credentials on an app's connection
+
+## 11. The contract between Lake and the operator
+
+Decision D1 puts the desired state in Lake's Postgres control plane. This is the contract both sides
+build against, in the pattern of `services` and `service_status`: Lake writes the desired rows; the
+operator reads them, reconciles, and writes only the `*_status` rows. Lake's migration
+**`0084_network`** creates the tables and the guard `network_guard`; the operator vendors the schema
+(`internal/controller/assets/lake-schema.sql`) after Lake merges it, and reads nothing until the guard
+exists. Desired writes `NOTIFY lake_network`.
+
+```sql
+-- One declared path: one source workload may reach one target on named ports (Connection).
+CREATE TABLE IF NOT EXISTS network_connections (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id      uuid        NOT NULL,
+    workspace_id     uuid        NOT NULL REFERENCES workspaces(id),
+    source_kind      text        NOT NULL CHECK (source_kind IN ('app', 'service', 'agent', 'tunnel')),
+    source_id        uuid        NOT NULL,
+    target_kind      text        NOT NULL CHECK (target_kind IN ('service', 'app')),
+    target_id        uuid        NOT NULL,
+    ports            integer[]   NOT NULL DEFAULT '{}',   -- empty: the target's own service ports
+    credential_scope jsonb,                               -- NULL: no credential. {"access": "read"|"write", "schema": "<name>"?}
+    desired          text        NOT NULL DEFAULT 'present' CHECK (desired IN ('present', 'absent')),
+    generation       bigint      NOT NULL DEFAULT 1,
+    created_by       uuid,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS network_connection_status (
+    connection_id       uuid        PRIMARY KEY REFERENCES network_connections(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',  -- Pending | Ready | Failed | Deleted
+    message             text        NOT NULL DEFAULT '',
+    credential_secret   text        NOT NULL DEFAULT '',  -- workspace secret name holding the scoped credential, if any
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+-- Outbound from a workload (or the whole workspace) by CIDR or by DNS name (EgressRule).
+CREATE TABLE IF NOT EXISTS network_egress_rules (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id  uuid        NOT NULL,
+    workspace_id uuid        NOT NULL REFERENCES workspaces(id),
+    source_kind  text        CHECK (source_kind IN ('app', 'service', 'agent')),  -- NULL: every workload in the workspace
+    source_id    uuid,
+    cidr         cidr,
+    dns_name     text,
+    ports        integer[]   NOT NULL,
+    desired      text        NOT NULL DEFAULT 'present' CHECK (desired IN ('present', 'absent')),
+    generation   bigint      NOT NULL DEFAULT 1,
+    created_by   uuid,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    CHECK ((cidr IS NULL) <> (dns_name IS NULL)),
+    CHECK ((source_kind IS NULL) = (source_id IS NULL))
+);
+CREATE TABLE IF NOT EXISTS network_egress_rule_status (
+    rule_id             uuid        PRIMARY KEY REFERENCES network_egress_rules(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',
+    message             text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+-- One person may reach one target from outside the cluster until expires_at (Tunnel).
+CREATE TABLE IF NOT EXISTS network_tunnel_grants (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id  uuid        NOT NULL,
+    workspace_id uuid        NOT NULL REFERENCES workspaces(id),
+    user_id      uuid        NOT NULL,
+    target_kind  text        NOT NULL CHECK (target_kind IN ('service', 'app')),
+    target_id    uuid        NOT NULL,
+    port         integer     NOT NULL,
+    expires_at   timestamptz NOT NULL,
+    revoked_at   timestamptz,
+    generation   bigint      NOT NULL DEFAULT 1,
+    created_by   uuid,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS network_tunnel_grant_status (
+    grant_id            uuid        PRIMARY KEY REFERENCES network_tunnel_grants(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',  -- Pending | Ready | Expired | Revoked | Failed
+    message             text        NOT NULL DEFAULT '',
+    endpoint            text        NOT NULL DEFAULT '',  -- what the developer's client connects to
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+-- Named services exchanged with another cluster or network through gateways (PeerConnection).
+CREATE TABLE IF NOT EXISTS network_peers (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id  uuid        NOT NULL,
+    workspace_id uuid        NOT NULL REFERENCES workspaces(id),
+    name         text        NOT NULL,
+    remote       text        NOT NULL,                    -- the remote gateway's address
+    exports      jsonb       NOT NULL DEFAULT '[]',       -- [{"target_kind","target_id","port"}]
+    imports      jsonb       NOT NULL DEFAULT '[]',       -- [{"name","port"}]
+    desired      text        NOT NULL DEFAULT 'present' CHECK (desired IN ('present', 'absent')),
+    generation   bigint      NOT NULL DEFAULT 1,
+    created_by   uuid,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS network_peer_status (
+    peer_id             uuid        PRIMARY KEY REFERENCES network_peers(id) ON DELETE CASCADE,
+    phase               text        NOT NULL DEFAULT '',
+    message             text        NOT NULL DEFAULT '',
+    observed_generation bigint      NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS network_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0084_network') ON CONFLICT DO NOTHING;
+```
+
+- **Ids are Lake's.** `source_id` and `target_id` are an app's, service's or agent's id in Lake's own
+  tables; a tunnel source is the `network_tunnel_grants` row. The operator maps each to the
+  workload's pods by the labels it already sets on them.
+- **Records people see** (who changed what, tunnel sessions, egress decisions, activity) go to the
+  workspace Zetta (zetta#1281), not these tables.
+- **Existing behaviour on rollout**: when the guard first exists, Lake writes a `network_connections`
+  row for every path an app relies on today (each app to each service in its workspace) and a
+  workspace-wide `network_egress_rules` row for port 443 to `0.0.0.0/0` wherever `internetEgress` is
+  on, so nothing that works today breaks.
