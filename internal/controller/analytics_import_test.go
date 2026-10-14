@@ -125,6 +125,23 @@ func TestAnalyticsImportRetainsScaledDownReaders(t *testing.T) {
 	}
 }
 
+// import.suspend pauses the CronJob without removing what the import needs, and clearing it resumes
+// the schedule in place.
+func TestAnalyticsImportSuspend(t *testing.T) {
+	oc := scheduledImportsOC()
+	oc.Spec.Components.AnalyticsProcessor.Import.Suspend = true
+	cl, r := reconcileOCV1(t, oc)
+	if s := getObj(t, cl, "v1-analytics-import", &batchv1.CronJob{}).Spec.Suspend; s == nil || !*s {
+		t.Fatalf("suspended import CronJob spec.suspend = %v, want true", s)
+	}
+	getObj(t, cl, "v1-reader-headless", &corev1.Service{})
+
+	reconcileAgain(t, cl, r, func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.AnalyticsProcessor.Import.Suspend = false })
+	if s := getObj(t, cl, "v1-analytics-import", &batchv1.CronJob{}).Spec.Suspend; s == nil || *s {
+		t.Errorf("unsuspended import CronJob spec.suspend = %v, want false", s)
+	}
+}
+
 // The functional e2e suite runs against live stacks; GET /v1/analytics would erase a reader's
 // pending customer events, which only the analytics processor may pull.
 func TestE2EScriptDoesNotDrainAnalytics(t *testing.T) {

@@ -736,6 +736,9 @@ HTTP failures fail the Job, with a 10-second connect timeout, 240-second request
 The stack's readiness still measures workloads; import failures are visible in Job status/logs.
 A timed-out HTTP request may leave the server finishing an import, so check that run before
 manually triggering another. Importer delivery guarantees remain those of the source processor.
+`import.suspend` copies to the CronJob's `spec.suspend`, so no import runs while everything the
+import needs (the CronJob, the reader headless Service, the processor's sources) is still in place.
+A stack serving test searches before its cutover sets it, and the cutover sets it back to `false`.
 
 The processor is one Deployment with an init-rendered YAML config. Every new opted-in reader stack
 uses `<cr>-reader-headless` as the StatefulSet's governing Service and polls

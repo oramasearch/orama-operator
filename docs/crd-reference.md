@@ -73,7 +73,7 @@ increase in place when the StorageClass allows expansion.
 | `ingestion` | `harvest`, `embeddingsURL` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store + `backup`; `mode: external` requires `credentialsSecretRef` (keys `uri`, `password`) and is never migrated | PlanetScale → CloudNativePG |
 | `analytics` | data-store; external mode requires an HTTP(S) `endpoint` and `credentialsSecretRef` with `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` for the dashboard/processor | ClickHouse (Prod 2 keeps ClickHouse Cloud) |
-| `analyticsProcessor` | `resources`, `import.{enabled,schedule}` | Analytics import server and opt-in CronJob |
+| `analyticsProcessor` | `resources`, `import.{enabled,schedule,includeWriter,suspend}` | Analytics import server and opt-in CronJob |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
 | `search` | data-store | Typesense hosted-search |
@@ -257,6 +257,7 @@ CronJob forbids concurrent runs, keeps one successful and three failed Jobs, and
 | `enabled` | `false` | Own `<cr>-analytics-import`, a CronJob that sends `POST /import` to the processor Service on port 8080. Requires engine, analytics and controlDB enabled. |
 | `schedule` | `*/5 * * * *` | Five-field cron in UTC (`timeZone: Etc/UTC`); validated before scheduling. |
 | `includeWriter` | `false` | Also pull the writer's reader side (primary regions only). The writer serves no search traffic, so it is left out unless set. |
+| `suspend` | `false` | Copied to the CronJob's `spec.suspend`: no new import runs, while the CronJob, the reader headless Service and the processor's sources are still created. Set it on a stack that serves test traffic before its cutover so those searches stay out of analytics; the cutover sets it to `false`. |
 
 A new stack opting in creates a headless governing reader Service `<cr>-reader-headless` alongside
 the normal customer-facing reader Service. The processor polls each reader ordinal on its own port

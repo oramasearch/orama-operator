@@ -486,6 +486,11 @@ type AnalyticsImportSpec struct {
 	// search traffic, so it normally has nothing to import.
 	// +optional
 	IncludeWriter bool `json:"includeWriter,omitempty"`
+	// Suspend stops new import runs while keeping the CronJob, the reader headless Service and the
+	// processor's sources in place. A stack that serves test traffic before its cutover sets it so
+	// those searches stay out of analytics; the cutover sets it back to false.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // AnalyticsImportSource is one OramaCore the analytics processor pulls GET /v1/analytics from.

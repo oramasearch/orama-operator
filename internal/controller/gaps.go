@@ -307,6 +307,7 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsImport(ctx context.Context, o
 		// Preserve API-defaulted fields outside our intent so a steady schedule makes no writes.
 		job.Spec.Schedule = analyticsImportSchedule(oc)
 		job.Spec.TimeZone = strPtr("Etc/UTC")
+		job.Spec.Suspend = boolPtr(oc.Spec.Components.AnalyticsProcessor.Import.Suspend)
 		job.Spec.ConcurrencyPolicy = batchv1.ForbidConcurrent
 		job.Spec.StartingDeadlineSeconds = int64Ptr(60)
 		job.Spec.SuccessfulJobsHistoryLimit, job.Spec.FailedJobsHistoryLimit = int32Ptr(1), int32Ptr(1)
