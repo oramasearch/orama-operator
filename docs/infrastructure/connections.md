@@ -137,7 +137,8 @@ Credential tests: fake-backed controller tests cover issuance, the steady state,
 the same reference, revocation in one reconcile, deletion, removal of the scope, a vanished role, a
 missing schema, the superuser Secret wait, a non-Postgres target, that neither the owner nor the
 superuser credential reaches the issued secret, and the SCRAM verifier against an independent
-implementation. `TestConnectionRolesAgainstPostgres` (opt-in, `CONNECTION_ROLES_TEST_POSTGRES=1`)
+implementation. The Lake secret writer is tested against a fake Lake API: it creates the mount
+once, puts a version per issue with the operator's bearer, and turns a refusal into an error. `TestConnectionRolesAgainstPostgres` (opt-in, `CONNECTION_ROLES_TEST_POSTGRES=1`)
 starts a throwaway PostgreSQL with `initdb` and SCRAM authentication and proves the acceptance on a
 real server: a read role reads and is refused `INSERT`, `UPDATE` and `CREATE`; a write role writes
 and is refused DDL; a schema scope reads its schema, including a table created afterwards, and is
