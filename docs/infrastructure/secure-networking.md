@@ -399,6 +399,11 @@ INSERT INTO schema_migrations (version) VALUES ('0084_network') ON CONFLICT DO N
 - **Records people see** (who changed what, tunnel sessions, egress decisions, activity) go to the
   workspace Zetta (zetta#1281), not these tables.
 - **Existing behaviour on rollout**: when the guard first exists, Lake writes a `network_connections`
-  row for every path an app relies on today (each app to each service in its workspace) and a
-  workspace-wide `network_egress_rules` row for port 443 to `0.0.0.0/0` wherever `internetEgress` is
-  on, so nothing that works today breaks.
+  row for every path an app relies on today (each app to each service in its workspace), so nothing
+  that works today breaks. **Internet egress is the operator's**: `internetEgress` lives only in the
+  `Lake` resource's `spec.workspaces.overrides`, so Lake writes no egress rows for it; the operator
+  keeps today's port-443 rule for those workspaces as an implicit egress rule (corrected 2026-10-14,
+  found by the lake#727 work).
+- **Removing a row**: `network_connections`, `network_egress_rules` and `network_peers` are removed by
+  setting `desired = 'absent'` (the operator deletes what it made, then writes phase `Deleted`). A
+  tunnel grant has no `desired` column: it ends by `revoked_at` being set or `expires_at` passing.
