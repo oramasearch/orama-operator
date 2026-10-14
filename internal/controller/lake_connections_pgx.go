@@ -21,7 +21,7 @@ const listNetworkWorkspacesSQL = `SELECT id::text, namespace
 
 const listNetworkConnectionsSQL = `SELECT c.id::text, c.customer_id::text, c.workspace_id::text,
        w.namespace, c.source_kind, c.source_id::text, c.target_kind, c.target_id::text,
-       c.ports, c.credential_scope IS NOT NULL, c.desired, c.generation,
+       c.ports, COALESCE(c.credential_scope::text, ''), c.desired, c.generation,
        st.connection_id IS NOT NULL, COALESCE(st.phase, ''), COALESCE(st.message, ''),
        COALESCE(st.credential_secret, ''), COALESCE(st.observed_generation, 0)
   FROM network_connections c
@@ -32,11 +32,11 @@ const listNetworkConnectionsSQL = `SELECT c.id::text, c.customer_id::text, c.wor
 
 const upsertNetworkConnectionStatusSQL = `INSERT INTO network_connection_status
     (connection_id, phase, message, credential_secret, observed_generation, updated_at)
-VALUES ($1::uuid, $2, $3, '', $4, now())
+VALUES ($1::uuid, $2, $3, $5, $4, now())
 ON CONFLICT (connection_id) DO UPDATE SET
     phase = EXCLUDED.phase,
     message = EXCLUDED.message,
-    credential_secret = '',
+    credential_secret = EXCLUDED.credential_secret,
     observed_generation = EXCLUDED.observed_generation,
     updated_at = now()`
 
@@ -101,7 +101,7 @@ func (s *pgxServiceStore) ListNetworkConnections(ctx context.Context) (LakeNetwo
 			&row.TargetKind,
 			&row.TargetID,
 			&row.Ports,
-			&row.HasCredentialScope,
+			&row.CredentialScope,
 			&row.Desired,
 			&row.Generation,
 			&hasStatus,
@@ -132,6 +132,7 @@ func (s *pgxServiceStore) UpsertNetworkConnectionStatus(
 		status.Phase,
 		status.Message,
 		status.ObservedGeneration,
+		status.CredentialSecret,
 	)
 	return err
 }
