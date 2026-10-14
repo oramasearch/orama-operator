@@ -4,7 +4,7 @@ The design for [#437](https://github.com/oramasearch/orama-operator/issues/437) 
 half) and [lake#724](https://github.com/oramasearch/lake/issues/724) (Lake's half). It follows the
 research in [`docs/research/secure-networking/`](../research/secure-networking/README.md).
 
-**Status: stage 1 owner-scoped sandboxes and Cloud v1 engine egress lockdown implemented,
+**Status: stage 1 owner-scoped sandboxes, Cloud v1 engine egress lockdown and tenant policy RBAC implemented,
 2026-10-14.** `NetworkSandbox` now protects Lake instances, Lake workspaces and Orama Cloud v1
 stacks (#465), selecting only owner pods in shared namespaces such as `orama-system`. Workspaces
 retain namespace-wide scope. Cloud v1 writer and reader public egress excludes private and cluster
@@ -12,7 +12,8 @@ destinations after resolution (#466). The 2026-10-14 live AKS probe found metada
 NetworkPolicy exclusions; every sandbox now also renders an owner-scoped Cilium `egressDeny` for
 cloud metadata and host-service addresses. The observation, mandatory addresses and rollout
 verification boundary are documented in [Network sandboxes](network-sandbox.md#mandatory-cloud-metadata-deny).
-Tenant policy RBAC (#467) remains open. The design decisions are recorded in section 9.
+Only the operator manager may write network policy or `NetworkSandbox`; tenant, Lake, app, agent
+and build identities are denied (#467). The design decisions are recorded in section 9.
 
 ---
 
@@ -117,8 +118,11 @@ What the existing objects become: the workspace's NetworkPolicies are generated 
   so it needs no ACNS. It closes the gap that OramaCore's host-name deny list leaves (review of #409).
 - **Inside a workspace**, `allow-workspace-internal` is replaced by declared `Connection`s.
 - **Tenants cannot write policy.** Kubernetes policies are additive, so an allow written by a tenant
-  would reopen anything. Only the operator writes them; Lake's RBAC and the namespace's RBAC keep it
-  so, and a test proves it.
+  would reopen anything. Only the operator manager's ClusterRole writes `NetworkPolicy`,
+  `CiliumNetworkPolicy` or the secure-networking kinds. A repository-wide test reads every checked-in
+  Role and ClusterRole, treats wildcard rules as grants, follows bindings, and refuses any other
+  writer. Native RBAC envtest also impersonates the workspace default ServiceAccount, attempts an
+  allow-all policy and proves create, update, patch and delete are denied (#467).
 
 ### DNS-name egress (decision D3)
 

@@ -50,8 +50,10 @@ resolved-address public egress lockdown for Cloud v1 writer and reader pods, is 
 native-tested. The 2026-10-14 AKS probe found that metadata traffic bypassed NetworkPolicy `ipBlock`
 exclusions; an explicit Cilium deny blocked it while public HTTPS worked. Every sandbox now renders
 that mandatory owner-scoped deny for cloud metadata and host-service addresses; generated-policy
-rollout verification remains pending. Shared namespaces leave unrelated pods, including the
-operator, outside the sandbox. Details: [`Network sandboxes`](docs/infrastructure/network-sandbox.md).
+rollout verification remains pending. Only the operator manager can write Kubernetes, Cilium or
+Orama secure-networking policy; tenant, Lake, app, agent and build identities are denied and covered
+by static and native API-server RBAC tests. Shared namespaces leave unrelated pods, including the operator,
+outside the sandbox. Details: [`Network sandboxes`](docs/infrastructure/network-sandbox.md).
 Per-reconciler status and the remaining hardening work are in
 [`docs/components.md`](docs/components.md).
 

@@ -18,7 +18,9 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -40,14 +42,17 @@ import (
 const k0sDeliveryContract = "cc922054ad10fd1991ab1077bb8a2c3bf3eeeae2"
 
 type environmentAdmissionFixture struct {
-	ctx         context.Context
-	admin       client.Client
-	operator    client.Client
-	tenant      client.Client
-	scheme      *runtime.Scheme
-	reconciler  *LakeEnvironmentReconciler
-	environment *oramav1alpha1.LakeEnvironment
-	namespace   string
+	ctx                context.Context
+	admin              client.Client
+	operator           client.Client
+	tenant             client.Client
+	workspace          client.Client
+	clientset          kubernetes.Interface
+	scheme             *runtime.Scheme
+	reconciler         *LakeEnvironmentReconciler
+	environment        *oramav1alpha1.LakeEnvironment
+	namespace          string
+	workspaceNamespace string
 }
 
 func TestLakeEnvironmentSealedDeliveryAdmission(t *testing.T) {
@@ -62,6 +67,7 @@ func TestLakeEnvironmentSealedDeliveryAdmission(t *testing.T) {
 	t.Logf("after Secret: ADMITTED as system:serviceaccount:orama-system:orama-operator; sealed=%q owner=LakeSealedSecret %s/%s UID=%s", copy.Labels[sealedSecretLabel], owner.Namespace, owner.Name, owner.UID)
 	t.Logf("after Pod: ADMITTED; sealed-secret-names=%q envFrom=%s", pod.Annotations[environmentSealedNamesAnnotation], pod.Spec.Containers[0].EnvFrom[0].SecretRef.Name)
 	f.assertTenantDenials(t, copy)
+	f.assertPolicyWriteDenials(t)
 	f.assertSteadyDelivery(t, copy, owner)
 
 	secret.Data["DATABASE_URL"] = []byte("rotated")
@@ -107,6 +113,11 @@ func newEnvironmentAdmissionFixture(t *testing.T) *environmentAdmissionFixture {
 		t.Fatal(err)
 	}
 	f.admin = admissionClient(t, config, f.scheme)
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.clientset = clientset
 	f.installOperatorIdentity(t, config)
 	f.createEnvironment(t)
 	f.initializeAbsentControllers(t)
@@ -123,11 +134,7 @@ func (f *environmentAdmissionFixture) installOperatorIdentity(t *testing.T, conf
 		t.Fatalf("render operator RBAC: %v", err)
 	}
 	f.install(t, string(chart), nil)
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := clientset.CoreV1().ServiceAccounts("orama-system").CreateToken(f.ctx, "orama-operator", &authenticationv1.TokenRequest{}, metav1.CreateOptions{})
+	token, err := f.clientset.CoreV1().ServiceAccounts("orama-system").CreateToken(f.ctx, "orama-operator", &authenticationv1.TokenRequest{}, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +179,13 @@ func (f *environmentAdmissionFixture) initializeAbsentControllers(t *testing.T) 
 		t.Fatal(err)
 	}
 	f.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: f.namespace}})
+	f.workspaceNamespace = "prod-ws-policy-proof"
+	f.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: f.workspaceNamespace}})
+	noToken := false
+	f.create(t, &corev1.ServiceAccount{
+		ObjectMeta:                   metav1.ObjectMeta{Name: "default", Namespace: f.workspaceNamespace},
+		AutomountServiceAccountToken: &noToken,
+	})
 	f.create(t, &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "untrusted"}, Handler: "untrusted"})
 }
 
@@ -199,6 +213,18 @@ func (f *environmentAdmissionFixture) installAdmissionContract(t *testing.T, ser
 		t.Fatal(err)
 	}
 	f.tenant = admissionClient(t, tenant.Config(), f.scheme)
+	workspace, err := server.AddUser(envtest.User{
+		Name: "system:serviceaccount:" + f.workspaceNamespace + ":default",
+		Groups: []string{
+			"system:serviceaccounts",
+			"system:serviceaccounts:" + f.workspaceNamespace,
+			"system:authenticated",
+		},
+	}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.workspace = admissionClient(t, workspace.Config(), f.scheme)
 	t.Logf("installed both exact k0s policies, Deny/Audit bindings and tenant RBAC from %s", k0sDeliveryContract)
 }
 
@@ -397,6 +423,71 @@ func (f *environmentAdmissionFixture) assertTenantDenials(t *testing.T, delivere
 			t.Fatalf("tenant forged=%v must be refused by RBAC: %v", forged, err)
 		}
 		t.Logf("tenant forged=%v REFUSED by RBAC: %v", forged, err)
+	}
+}
+
+func (f *environmentAdmissionFixture) assertPolicyWriteDenials(t *testing.T) {
+	t.Helper()
+	allowAll := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "tenant-allow-all", Namespace: f.workspaceNamespace},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
+			Ingress:     []networkingv1.NetworkPolicyIngressRule{{}},
+			Egress:      []networkingv1.NetworkPolicyEgressRule{{}},
+		},
+	}
+	err := f.workspace.Create(f.ctx, allowAll)
+	if !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "cannot create resource \"networkpolicies\"") {
+		t.Fatalf("workspace service account must be refused when creating allow-all NetworkPolicy: %v", err)
+	}
+	t.Logf("workspace service account allow-all NetworkPolicy REFUSED by RBAC: %v", err)
+
+	identities := []struct {
+		name      string
+		user      string
+		groups    []string
+		namespace string
+	}{
+		{
+			name:      "workspace service account",
+			user:      "system:serviceaccount:" + f.workspaceNamespace + ":default",
+			groups:    []string{"system:serviceaccounts", "system:serviceaccounts:" + f.workspaceNamespace, "system:authenticated"},
+			namespace: f.workspaceNamespace,
+		},
+		{
+			name:      "tenant group",
+			user:      "tenant-proof",
+			groups:    []string{"liquid:tenant:" + f.namespace, "system:authenticated"},
+			namespace: f.namespace,
+		},
+	}
+	resources := []struct {
+		group    string
+		resource string
+	}{
+		{group: "networking.k8s.io", resource: "networkpolicies"},
+		{group: "cilium.io", resource: "ciliumnetworkpolicies"},
+		{group: oramav1alpha1.GroupVersion.Group, resource: "networksandboxes"},
+	}
+	for _, identity := range identities {
+		for _, resource := range resources {
+			for _, verb := range []string{"create", "update", "patch", "delete"} {
+				review, reviewErr := f.clientset.AuthorizationV1().SubjectAccessReviews().Create(f.ctx,
+					&authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
+						User: identity.user, Groups: identity.groups,
+						ResourceAttributes: &authorizationv1.ResourceAttributes{
+							Namespace: identity.namespace, Verb: verb, Group: resource.group, Resource: resource.resource,
+						},
+					}}, metav1.CreateOptions{})
+				if reviewErr != nil {
+					t.Fatalf("review %s %s %s: %v", identity.name, verb, resource.resource, reviewErr)
+				}
+				if review.Status.Allowed {
+					t.Errorf("%s may %s %s/%s in %s", identity.name, verb, resource.group, resource.resource, identity.namespace)
+				}
+			}
+		}
 	}
 }
 
