@@ -55,7 +55,7 @@ upstream-operator kind states its containers' sizes, so none takes the default:
 | Kafka | broker, plus the entity operator's topic and user operators | **1 for a one-broker Kafka**, stated by the operator: 500m for the broker and 250m for each operator. Before 2026-10-13 nothing was stated, a Kafka cost 3, and the entity operator's pod was refused in a full workspace ([#428](https://github.com/oramasearch/orama-operator/issues/428)). |
 | Cassandra | `cassandra` (500m, 2Gi, heap fixed at 1Gi) and the system logger (100m, 128M) | 0.6 |
 | ClickHouse | `clickhouse` (500m, 1Gi) per replica; a Keeper (250m, 512Mi) when replicated | 0.5 per replica |
-| TiDB | discovery (100m), PD (250m), TiKV (500m, 2Gi, block cache capped at 512MB), TiDB (250m) and its slow-log tailer (50m) | 1.15 per instance |
+| TiDB | discovery (100m), PD (250m), TiKV (500m, 4Gi, block cache capped at 512MB), TiDB (250m) and its slow-log tailer (50m) | 1.15 per instance |
 | Valkey | server (250m, 256Mi) and the exporter (50m, 64Mi) | 0.3 per node |
 
 A service that is not ready says why. Every kind's `service_status.message` carries Kubernetes'

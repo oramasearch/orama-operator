@@ -65,8 +65,10 @@ func (k tidbServiceKind) build(in catalogService, _ string) []catalogResource {
 		{path: []string{"spec", "discovery", "limits"}, value: map[string]interface{}{"cpu": "100m", "memory": "128Mi"}},
 		{path: []string{"spec", "pd", "limits"}, value: map[string]interface{}{"cpu": "250m", "memory": "512Mi"}},
 		// TiKV was OOM-killed two seconds after "ready to serve" with a 1Gi limit and its default
-		// block cache (operator#435). It gets 2Gi, and its block cache is capped below.
-		{path: []string{"spec", "tikv", "limits"}, value: map[string]interface{}{"cpu": "500m", "memory": "2Gi"}},
+		// block cache (operator#435). With 2Gi and the block cache capped below, it served an empty
+		// cluster and was OOM-killed within seconds of every start once TiDB began writing its
+		// schema into it, in an otherwise empty workspace. It gets 4Gi.
+		{path: []string{"spec", "tikv", "limits"}, value: map[string]interface{}{"cpu": "500m", "memory": "4Gi"}},
 		{path: []string{"spec", "tidb", "limits"}, value: map[string]interface{}{"cpu": "250m", "memory": "512Mi"}},
 		{path: []string{"spec", "tidb", "requests"}, value: map[string]interface{}{"cpu": "100m", "memory": "256Mi"}},
 		// TiDB's pod has a second container, slowlog, that tails the slow-query log. Without a
