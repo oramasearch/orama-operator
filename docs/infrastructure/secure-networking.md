@@ -240,3 +240,41 @@ directly (*"d7 and d8 are zetta-tunnel too"*).
 
 Filed 2026-10-14; the list is kept on the epics: #437 (operator, zetta-tunnel, Zetta) and
 [lake#724](https://github.com/oramasearch/lake/issues/724) (Lake).
+
+**Operator (stage)**
+
+- https://github.com/oramasearch/orama-operator/issues/465: NetworkSandbox: default-deny for every namespace the operator creates (stage 1)
+- https://github.com/oramasearch/orama-operator/issues/466: Orama Cloud v1 engine: outbound only to its broker, DNS and the public internet (stage 1)
+- https://github.com/oramasearch/orama-operator/issues/467: Tenants cannot write network policy (stage 1)
+- https://github.com/oramasearch/orama-operator/issues/468: Connection: declared connections between workloads, replacing allow-workspace-internal (stage 2)
+- https://github.com/oramasearch/orama-operator/issues/469: Credentials on connections: native datastore roles, Postgres first (stage 2)
+- https://github.com/oramasearch/orama-operator/issues/470: EgressRule: outbound by address and by DNS name (stage 3)
+- https://github.com/oramasearch/orama-operator/issues/471: Tunnel: the kind, with ZettaTunnel and a customer's own CloudflareTunnel as providers (stage 4)
+- https://github.com/oramasearch/orama-operator/issues/472: PeerConnection: named services between clusters through zetta-tunnel gateways (stage 5)
+- https://github.com/oramasearch/orama-operator/issues/473: Ingress through zetta-tunnel, replacing ingress-nginx (stage 6)
+- https://github.com/oramasearch/orama-operator/issues/474: Mesh: zetta-tunnel's node agent on every cluster (stage 6)
+
+**zetta-tunnel**
+
+- https://github.com/oramasearch/zetta-tunnel/issues/2: Transport: mutual TLS 1.3 over Corosio, shared with Zetta
+- https://github.com/oramasearch/zetta-tunnel/issues/3: Developer tunnel: client, relay and in-cluster endpoint
+- https://github.com/oramasearch/zetta-tunnel/issues/4: Egress gateway: outbound by DNS name
+- https://github.com/oramasearch/zetta-tunnel/issues/5: Peer gateway: named services between clusters
+- https://github.com/oramasearch/zetta-tunnel/issues/6: Ingress gateway, replacing ingress-nginx
+- https://github.com/oramasearch/zetta-tunnel/issues/7: Mesh: per-node agent with mutual TLS between workloads, failing closed
+- https://github.com/oramasearch/zetta-tunnel/issues/8: Image and release: private Docker Hub, built on the cluster
+
+**Zetta**
+
+- https://github.com/oramasearch/zetta/issues/1280: Scoped access for apps: a credential per connection to a workspace Zetta
+- https://github.com/oramasearch/zetta/issues/1281: Store the network records of a workspace: connections, grants, tunnel sessions, activity
+- https://github.com/oramasearch/zetta/issues/1282: Zetta-to-Zetta links between clusters through peer connections
+- https://github.com/oramasearch/zetta/issues/1283: Share the Corosio transport with zetta-tunnel
+
+**Lake**
+
+- https://github.com/oramasearch/lake/issues/727: Control plane: connections, egress rules, tunnel grants and peers as desired state
+- https://github.com/oramasearch/lake/issues/728: Capabilities: connections, egress, tunnels, peers and network rules in REST and MCP
+- https://github.com/oramasearch/lake/issues/729: A Network section in each workspace
+- https://github.com/oramasearch/lake/issues/730: Developer access: grant, expire, revoke and audit tunnels
+- https://github.com/oramasearch/lake/issues/731: Scoped credentials on an app's connection
