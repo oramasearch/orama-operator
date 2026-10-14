@@ -153,6 +153,7 @@ func newTunnelFixture(t *testing.T, extra ...client.Object) *tunnelFixture {
 		WithStatusSubresource(
 			&oramav1alpha1.Connection{}, &oramav1alpha1.Tunnel{}, &oramav1alpha1.ZettaTunnel{},
 			&oramav1alpha1.CloudflareTunnel{}, &oramav1alpha1.TunnelProvider{}, &oramav1alpha1.NetworkSandbox{},
+			&oramav1alpha1.PeerConnection{},
 			&appsv1.Deployment{}, &corev1.Service{},
 		).
 		WithObjects(objects...).

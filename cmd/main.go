@@ -129,6 +129,22 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ZettaTunnel")
 		os.Exit(1)
 	}
+	if err = (&controller.PeerConnectionReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Image:  zettaTunnelImage,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PeerConnection")
+		os.Exit(1)
+	}
+	if err = (&controller.PeerLinkReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PeerLink")
+		os.Exit(1)
+	}
 	if err = (&controller.CloudflareTunnelReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

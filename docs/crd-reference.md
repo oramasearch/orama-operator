@@ -382,6 +382,40 @@ target. A finalizer deletes those Cloudflare objects with the customer's token.
 | `status.endpoint` | The hostname `tunnel-<grant id>.<domain>`. |
 | `status.tunnelId` / `.dnsRecordId` / `.accessApplicationId` | The Cloudflare objects made, deleted exactly at teardown. |
 
+## `PeerConnection` (separate CRD, namespaced) — one end of a peer
+
+Short name: `peer`. Named services exchanged with another cluster or network through zetta-tunnel's
+peer gateway (decision D6); no address is routed. Lake's guarded intake creates one per
+`network_peers` row (`peer-<row id>`); Orama's own stacks write their own. Details:
+[`infrastructure/peer-connections.md`](infrastructure/peer-connections.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.peerId` | The identity both ends share (the Lake row id). Immutable. |
+| `spec.lakeRef` / `.customerId` / `.workspaceId` | Set for a Lake peer. |
+| `spec.remote` | The other gateway's `host:port`. Empty: the address the `PeerLink` passed in the credentials Secret. |
+| `spec.exports[]` | `{name?, targetKind: service \| app \| kubernetesService, targetId \| serviceName, port}`. A CEL rule requires `serviceName` for `kubernetesService`, else `targetId`. Empty `name`: the target Service's name. |
+| `spec.imports[]` | `{name, port}`: the other end's export names (lowercase DNS-style, never an address). Each becomes Service `peer-<name>` here. |
+| `spec.credentialsSecretName` | Default `<name>-credentials`; written only by a `PeerLink`. |
+| `spec.pullSecretName` | The gateway's image pull secret; a Lake peer uses the Lake's. |
+| `spec.desired` / `.generation` | `present \| absent` (default `present`) and the row generation (default 1). |
+| `status.phase` / `.message` | `Pending \| Ready \| Failed \| Deleted`; the message lists where each import is reachable. |
+| `status.address` / `.identity` | This gateway's public `host:7446` and certificate identity. |
+| `status.imports[]` / `.exports[]` | Resolved Services and targets. |
+
+## `PeerLink` (separate CRD, cluster-scoped) — credentials for a pair, through the managing cluster
+
+Short name: `peerlink`. Lives on the managing cluster. Mints the pair's CA once, one certificate per
+end (`<end>.<peerId>.peer.orama.internal`, client and server), and writes each end's credentials
+Secret on its cluster with the other end's identity and address. Deleting it deletes both Secrets.
+
+| Field | Meaning |
+|---|---|
+| `spec.peerId` | The pair's peer id. Immutable. |
+| `spec.ends[2]` | `{name, clusterRef?, namespace, peerConnection}`; `clusterRef` empty is this cluster. The two names differ (CEL). |
+| `status.phase` | `Ready` once both Secrets are current and both ends report an address. |
+| `status.ends[]` | `{name, identity, written, address, message}`. |
+
 ## `ClerkApplication` (separate CRD) — Clerk auth per environment
 
 Provisions a **Clerk application per environment** (dev/testing/staging/prod) via the Clerk

@@ -28,6 +28,8 @@ rules:
       - tunnelproviders
       - zettatunnels
       - cloudflaretunnels
+      - peerconnections
+      - peerlinks
       - oramazettaclusters
       - oramacloudv1e2etests
       - zettaclustere2etests
@@ -61,6 +63,8 @@ rules:
       - tunnelproviders/status
       - zettatunnels/status
       - cloudflaretunnels/status
+      - peerconnections/status
+      - peerlinks/status
       - oramazettaclusters/status
       - oramacloudv1e2etests/status
       - zettaclustere2etests/status
@@ -81,6 +85,8 @@ rules:
       - tunnels/finalizers
       - zettatunnels/finalizers
       - cloudflaretunnels/finalizers
+      - peerconnections/finalizers
+      - peerlinks/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
       - cloudflarekvnamespaces/finalizers

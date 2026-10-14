@@ -271,6 +271,8 @@ rules:
   - oramacloudv1sets
   - oramaoperators
   - oramazettaclusters
+  - peerconnections
+  - peerlinks
   - postgresschemas
   - rabbitmqtopologies
   - tunnels
@@ -306,6 +308,8 @@ rules:
   - oramacloudv1sets/finalizers
   - oramaoperators/finalizers
   - oramazettaclusters/finalizers
+  - peerconnections/finalizers
+  - peerlinks/finalizers
   - rabbitmqtopologies/finalizers
   - tunnels/finalizers
   - zettatunnels/finalizers
@@ -338,6 +342,8 @@ rules:
   - oramacloudv1sets/status
   - oramaoperators/status
   - oramazettaclusters/status
+  - peerconnections/status
+  - peerlinks/status
   - postgresschemas/status
   - rabbitmqtopologies/status
   - tunnelproviders/status
