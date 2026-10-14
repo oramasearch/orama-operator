@@ -122,6 +122,12 @@ declared port; nginx ingress and app egress stay unchanged. Tests cover both iso
 owners/unlabelled pods, port changes and no-op reconciliation. Existing operator Zetta/HTTP and
 datastore-operator management paths remain unchanged.
 
+Cloud v1 writer and reader pods retain their replication stream, engine-owned embeddings, cluster
+DNS and public-address paths. The public path permits any TCP port because customer JavaScript
+hooks may call an arbitrary public URL, but both IPv4 and IPv6 blocks exclude private, link-local,
+metadata, carrier-grade NAT, API-server, node-address and pod-CIDR destinations. The API, node and
+pod exclusions are discovered from the cluster and retained across transient discovery failure.
+
 ## Workload hardening — applied to EVERY component ([#18](https://github.com/oramasearch/orama-operator/issues/18))
 
 The engine used to be the only component wired with full probes/resources/grace/PDB; every other

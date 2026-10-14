@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -507,6 +508,15 @@ func publicEgressRule(peers []networkingv1.NetworkPolicyPeer, ports ...int32) ne
 	}
 }
 
+func publicTCPAllPortsEgressRule(peers []networkingv1.NetworkPolicyPeer) networkingv1.NetworkPolicyEgressRule {
+	return networkingv1.NetworkPolicyEgressRule{
+		To: append([]networkingv1.NetworkPolicyPeer(nil), peers...),
+		Ports: []networkingv1.NetworkPolicyPort{{
+			Protocol: protocolPtr(corev1.ProtocolTCP),
+		}},
+	}
+}
+
 func oramaCloudPublicInternetAllowances(
 	publicPeers []networkingv1.NetworkPolicyPeer,
 	engine metav1.LabelSelector,
@@ -521,9 +531,8 @@ func oramaCloudPublicInternetAllowances(
 ) []oramav1alpha1.NetworkSandboxPolicy {
 	return []oramav1alpha1.NetworkSandboxPolicy{
 		sandboxAllowance(
-			// TODO(#466): replace this broad engine allowance with its audited outbound destinations.
-			"OramaCore currently needs public HTTP and HTTPS for model providers and downloads; issue #466 will narrow its outbound destinations.",
-			oramaCloudEgressPolicy("allow-engine-public-internet", engine, publicEgressRule(publicPeers, 80, 443)),
+			"Customer JavaScript hooks in OramaCore may reach public addresses on any TCP port; private, metadata, API, pod and node ranges remain excluded.",
+			oramaCloudEgressPolicy("allow-engine-public-internet", engine, publicTCPAllPortsEgressRule(publicPeers)),
 		),
 		sandboxAllowance(
 			"Dashboard calls Clerk, Stripe, Resend and Slack over public HTTPS.",
