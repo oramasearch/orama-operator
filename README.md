@@ -16,14 +16,14 @@ into running systems:
   control-plane DB, analytics, cache, broker, ingestion, workers), one CR per cluster.
 - The supporting CRDs those own: `PostgresSchema`, `RabbitMQTopology`, `CloudflareDNSRecord`,
   `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `ClerkApplication`,
-  `LakeSealedSecret`, `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and the three e2e
-  test CRDs, including `LakeE2ETest`.
+  `NetworkSandbox`, `LakeSealedSecret`, `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and
+  the three e2e test CRDs, including `LakeE2ETest`.
 - The infrastructure kinds: `KubernetesClusterProvider`, `KubernetesCluster` and `AksCluster`
   create clusters; `ClusterHelmRelease` and `OramaOperator` install a managed cluster's platform
   layer and its own operator; `LakeSet` and `OramaCloudV1Set` run instances on managed clusters
   from one template.
 
-That is 24 resource kinds, all installed by the chart on every cluster. The release notes say what
+That is 25 resource kinds, all installed by the chart on every cluster. The release notes say what
 each one reconciles: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
 [v0.2.0](docs/releases/v0.2.0.md) for the rest.
 
