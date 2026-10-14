@@ -54,6 +54,9 @@ type fakeServiceStore struct {
 	networkUpserts []LakeNetworkConnectionStatus
 	networkMissing bool
 	networkErr     error
+	// egress and egressUpserts are the EgressRule desired/status half (operator#470).
+	egress        LakeNetworkEgressSnapshot
+	egressUpserts []LakeNetworkEgressRuleStatus
 	// stores and storeUpserts are the stores half (lake_stores_test.go). storesMissing makes
 	// ListStores fail as a schema before 0028_stores does; storesErr fails it any other way.
 	stores        []LakeStore
@@ -130,6 +133,42 @@ func (f *fakeServiceStore) ListNetworkConnections(context.Context) (LakeNetworkS
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeServiceStore) ListNetworkEgressRules(context.Context) (LakeNetworkEgressSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkMissing {
+		return LakeNetworkEgressSnapshot{}, errNetworkGuardMissing
+	}
+	if f.networkErr != nil {
+		return LakeNetworkEgressSnapshot{}, f.networkErr
+	}
+	out := LakeNetworkEgressSnapshot{
+		Workspaces: append([]LakeNetworkWorkspace(nil), f.egress.Workspaces...),
+		Rules:      append([]LakeNetworkEgressRule(nil), f.egress.Rules...),
+	}
+	for i := range out.Rules {
+		out.Rules[i].Ports = append([]int32(nil), out.Rules[i].Ports...)
+		if out.Rules[i].Status != nil {
+			status := *out.Rules[i].Status
+			out.Rules[i].Status = &status
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeServiceStore) UpsertNetworkEgressRuleStatus(_ context.Context, status LakeNetworkEgressRuleStatus) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.egressUpserts = append(f.egressUpserts, status)
+	for i := range f.egress.Rules {
+		if f.egress.Rules[i].ID == status.RuleID {
+			copied := status
+			f.egress.Rules[i].Status = &copied
+		}
+	}
+	return nil
 }
 
 func (f *fakeServiceStore) UpsertNetworkConnectionStatus(
