@@ -390,7 +390,7 @@ func (r *zettaTunnelIngressReconciler) image() string {
 
 func (r *zettaTunnelIngressReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("zetta-tunnel-ingress")
-	namespace, err := ensureOperatorNamespace(ctx, r.Client, zettaTunnelIngressNamespace, tunnelNamespaceLabels())
+	namespace, err := ensureOperatorNamespace(ctx, r.APIReader, r.Client, zettaTunnelIngressNamespace, tunnelNamespaceLabels())
 	if err != nil {
 		return ctrl.Result{}, err
 	}

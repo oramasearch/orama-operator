@@ -131,7 +131,7 @@ func (r *zettaTunnelMeshReconciler) reader() client.Reader {
 
 func (r *zettaTunnelMeshReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("zetta-tunnel-mesh")
-	if _, err := ensureOperatorNamespace(ctx, r.Client, zettaTunnelMeshNamespace, map[string]string{
+	if _, err := ensureOperatorNamespace(ctx, r.reader(), r.Client, zettaTunnelMeshNamespace, map[string]string{
 		workspaceManagedByLabel:              zettaTunnelManagedBy,
 		"pod-security.kubernetes.io/enforce": "privileged",
 		"pod-security.kubernetes.io/audit":   "privileged",
