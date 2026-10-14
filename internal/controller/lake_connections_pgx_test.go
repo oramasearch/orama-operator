@@ -88,8 +88,8 @@ func TestConnectionsPgxStoreAgainstPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO network_connections
-        (id, customer_id, workspace_id, source_kind, source_id, target_kind, target_id, ports, generation)
-        VALUES ($1, $2, $3, 'app', $4, 'service', $5, ARRAY[5432, 9187], 3)`,
+        (id, customer_id, workspace_id, source_kind, source_id, target_kind, target_id, ports, credential_scope, generation)
+        VALUES ($1, $2, $3, 'app', $4, 'service', $5, ARRAY[5432, 9187], '{"access": "read", "schema": "analytics"}', 3)`,
 		testConnectionID, testServiceCustomer, testWorkspaceID, testConnectionSourceID, testConnectionTargetID); err != nil {
 		t.Fatal(err)
 	}
@@ -105,10 +105,16 @@ func TestConnectionsPgxStoreAgainstPostgres(t *testing.T) {
 		len(row.Ports) != 2 || row.Generation != 3 || row.Status != nil {
 		t.Fatalf("connection row = %+v", row)
 	}
+	// operator#469: the scope is read as written and parses to the CR's scope.
+	if scope, message := parseConnectionCredentialScope(&row); message != "" || scope == nil ||
+		scope.Access != "read" || scope.Schema != "analytics" {
+		t.Fatalf("credential scope %q parsed to %+v, %q", row.CredentialScope, scope, message)
+	}
 	status := LakeNetworkConnectionStatus{
 		ConnectionID:       testConnectionID,
 		Phase:              "Ready",
 		Message:            "connection policies ready",
+		CredentialSecret:   "lake-secret://70000000-0000-4000-8000-000000000007/connection-" + testConnectionID,
 		ObservedGeneration: 3,
 	}
 	if err := store.UpsertNetworkConnectionStatus(ctx, status); err != nil {
@@ -123,6 +129,7 @@ func TestConnectionsPgxStoreAgainstPostgres(t *testing.T) {
 	}
 	status.Phase = "Deleted"
 	status.Message = "connection policies deleted"
+	status.CredentialSecret = ""
 	status.ObservedGeneration = 4
 	if err := store.UpsertNetworkConnectionStatus(ctx, status); err != nil {
 		t.Fatal(err)

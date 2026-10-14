@@ -170,6 +170,7 @@ ports, reject other Lakes, operator and unlabelled source pods, and check stable
 | `allow-dns-egress` | Workspace pods reach CoreDNS in `kube-system` over UDP/TCP 53. |
 | `allow-lake-egress` | Workspace pods reach only the owning Lake pods on the configured Lake port. |
 | `allow-cnpg-operator-ingress` | CloudNativePG reaches instance-manager 8000 and Postgres 5432. |
+| `allow-operator-to-postgres` | The Orama operator reaches CloudNativePG instances on 5432 to keep the roles of credential-scoped Connections (#469). |
 | `allow-clickhouse-operator-ingress` | Altinity reaches ClickHouse HTTP 8123 for readiness and schema work. |
 | `allow-clickhouse-keeper-operator-ingress` | Altinity reaches Keeper 2181 to create replicated paths. |
 | `allow-tidb-pd-operator-ingress` | TiDB operator reaches PD 2379 for members, health and stores. |

@@ -51,6 +51,12 @@ func (e connectionPendingError) Error() string {
 type ConnectionReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// APIReader reads the Lake's admin Secret uncached for the workspace secret writer.
+	APIReader client.Reader
+	// Roles manages per-connection datastore roles (operator#469); nil uses pgx.
+	Roles PostgresRoleManager
+	// Secrets writes issued credentials into the workspace's secret store; nil calls Lake.
+	Secrets WorkspaceSecretWriter
 }
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=connections,verbs=get;list;watch;create;update;patch;delete
@@ -59,6 +65,8 @@ type ConnectionReconciler struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=networksandboxes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakeapps;lakes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -71,6 +79,9 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, nil
 		}
 		if err := r.removeAllowances(ctx, &connection); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.revokeCredential(ctx, &connection); err != nil {
 			return ctrl.Result{}, err
 		}
 		controllerutil.RemoveFinalizer(&connection, connectionFinalizer)
@@ -86,16 +97,26 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	switch connection.Spec.Desired {
 	case oramav1alpha1.ConnectionDesiredAbsent:
+		// The path closes first, then the role is dropped and its sessions ended, both in this
+		// reconcile, before Deleted is reported.
 		if err := r.removeAllowances(ctx, &connection); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.updateStatus(
+		if err := r.revokeCredential(ctx, &connection); err != nil {
+			return ctrl.Result{}, err
+		}
+		message := "connection policies deleted"
+		if connection.Spec.CredentialScope != nil || connection.Status.CredentialRole != "" {
+			message = "connection policies and credential role deleted"
+		}
+		return ctrl.Result{}, r.updateStatusWith(
 			ctx,
 			&connection,
 			oramav1alpha1.ConnectionPhaseDeleted,
-			"connection policies deleted",
+			message,
 			metav1.ConditionFalse,
 			"Deleted",
+			connectionCredentialState{},
 		)
 	case oramav1alpha1.ConnectionDesiredPresent:
 		return r.reconcilePresent(ctx, &connection)
@@ -152,13 +173,43 @@ func (r *ConnectionReconciler) reconcilePresent(
 	if _, _, err := reconcileNetworkSandboxPolicies(ctx, r.Client, r.Scheme, sandbox); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, r.updateStatus(
+	credential, err := r.reconcileCredential(ctx, connection)
+	if err != nil {
+		var pending connectionPendingError
+		if errors.As(err, &pending) {
+			statusErr := r.updateStatusWith(
+				ctx,
+				connection,
+				oramav1alpha1.ConnectionPhasePending,
+				pending.Error(),
+				metav1.ConditionFalse,
+				"CredentialNotReady",
+				credential,
+			)
+			return ctrl.Result{RequeueAfter: connectionCredentialRequeue}, statusErr
+		}
+		return ctrl.Result{}, r.updateStatusWith(
+			ctx,
+			connection,
+			oramav1alpha1.ConnectionPhaseFailed,
+			err.Error(),
+			metav1.ConditionFalse,
+			"Invalid",
+			credential,
+		)
+	}
+	message := "connection policies ready"
+	if credential.Secret != "" {
+		message = "connection policies and scoped credential ready"
+	}
+	return ctrl.Result{}, r.updateStatusWith(
 		ctx,
 		connection,
 		oramav1alpha1.ConnectionPhaseReady,
-		"connection policies ready",
+		message,
 		metav1.ConditionTrue,
 		"PoliciesReady",
+		credential,
 	)
 }
 
@@ -434,11 +485,27 @@ func (r *ConnectionReconciler) updateStatus(
 	conditionStatus metav1.ConditionStatus,
 	reason string,
 ) error {
+	return r.updateStatusWith(ctx, connection, phase, message, conditionStatus, reason, credentialStateOf(connection))
+}
+
+// updateStatusWith writes the status with the given credential state.
+func (r *ConnectionReconciler) updateStatusWith(
+	ctx context.Context,
+	connection *oramav1alpha1.Connection,
+	phase string,
+	message string,
+	conditionStatus metav1.ConditionStatus,
+	reason string,
+	credential connectionCredentialState,
+) error {
 	desired := oramav1alpha1.ConnectionStatus{
-		Phase:              phase,
-		Message:            message,
-		ObservedGeneration: connection.Spec.Generation,
-		Conditions:         append([]metav1.Condition(nil), connection.Status.Conditions...),
+		Phase:                phase,
+		Message:              message,
+		ObservedGeneration:   connection.Spec.Generation,
+		CredentialSecret:     credential.Secret,
+		CredentialGeneration: credential.Generation,
+		CredentialRole:       credential.Role,
+		Conditions:           append([]metav1.Condition(nil), connection.Status.Conditions...),
 	}
 	apimeta.SetStatusCondition(&desired.Conditions, metav1.Condition{
 		Type:               connectionReadyConditionType,

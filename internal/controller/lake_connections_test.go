@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -164,5 +165,100 @@ func TestLakeConnectionsReadNothingBeforeNetworkGuard(t *testing.T) {
 	}
 	if len(connections.Items) != 0 || len(store.networkUpserts) != 0 {
 		t.Fatalf("pre-guard work = %d Connections, %d status writes", len(connections.Items), len(store.networkUpserts))
+	}
+}
+
+func TestLakeConnectionsCarryTheCredentialScopeAndReturnOnlyTheSecretReference(t *testing.T) {
+	ctx := context.Background()
+	scheme := newLakeScheme(t)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: types.UID("lake-uid")},
+		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake-system"},
+	}
+	kube := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&oramav1alpha1.Connection{}).
+		WithObjects(lake).
+		Build()
+	lakeReconciler := &LakeReconciler{Client: kube, Scheme: scheme}
+	row := func(id, scope string) LakeNetworkConnection {
+		return LakeNetworkConnection{
+			ID:                 id,
+			CustomerID:         testServiceCustomer,
+			WorkspaceID:        testWorkspaceID,
+			WorkspaceNamespace: testWorkspaceName,
+			SourceKind:         oramav1alpha1.ConnectionSourceApp,
+			SourceID:           testConnectionSourceID,
+			TargetKind:         oramav1alpha1.ConnectionTargetService,
+			TargetID:           testConnectionTargetID,
+			CredentialScope:    scope,
+			Desired:            oramav1alpha1.ConnectionDesiredPresent,
+			Generation:         3,
+		}
+	}
+	const (
+		badAccessID = "40000000-0000-4000-8000-0000000000a1"
+		unknownID   = "40000000-0000-4000-8000-0000000000a2"
+	)
+	store := &fakeServiceStore{network: LakeNetworkSnapshot{
+		Workspaces: []LakeNetworkWorkspace{{ID: testWorkspaceID, Namespace: testWorkspaceName}},
+		Connections: []LakeNetworkConnection{
+			row(testConnectionID, `{"access": "read", "schema": "analytics"}`),
+			row(badAccessID, `{"access": "admin"}`),
+			row(unknownID, `{"access": "read", "superuser": true}`),
+		},
+	}}
+	lakeReconciler.reconcileLakeConnections(ctx, lake, store)
+
+	var connection oramav1alpha1.Connection
+	key := client.ObjectKey{Namespace: testWorkspaceName, Name: lakeConnectionName(testConnectionID)}
+	if err := kube.Get(ctx, key, &connection); err != nil {
+		t.Fatal(err)
+	}
+	if connection.Spec.CredentialScope == nil ||
+		*connection.Spec.CredentialScope != (oramav1alpha1.ConnectionCredentialScope{Access: "read", Schema: "analytics"}) {
+		t.Fatalf("scope = %+v", connection.Spec.CredentialScope)
+	}
+	for _, id := range []string{badAccessID, unknownID} {
+		var refused oramav1alpha1.Connection
+		err := kube.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: lakeConnectionName(id)}, &refused)
+		if client.IgnoreNotFound(err) != nil || err == nil {
+			t.Fatalf("an invalid scope %s materialized a Connection: %v", id, err)
+		}
+	}
+	failed := map[string]bool{}
+	for _, upsert := range store.networkUpserts {
+		if upsert.Phase == oramav1alpha1.ConnectionPhaseFailed && strings.Contains(upsert.Message, "credential_scope") {
+			failed[upsert.ConnectionID] = true
+		}
+	}
+	if !failed[badAccessID] || !failed[unknownID] {
+		t.Fatalf("invalid scopes were not refused: %+v", store.networkUpserts)
+	}
+
+	// The Connection controller's observation travels to Postgres as a reference only.
+	reference := lakeSecretReference(testCredentialMountID, testCredentialSecretName)
+	connection.Status = oramav1alpha1.ConnectionStatus{
+		Phase:                oramav1alpha1.ConnectionPhaseReady,
+		Message:              "connection policies and scoped credential ready",
+		ObservedGeneration:   3,
+		CredentialSecret:     reference,
+		CredentialGeneration: 3,
+		CredentialRole:       connectionRoleName(testConnectionID),
+	}
+	if err := kube.Status().Update(ctx, &connection); err != nil {
+		t.Fatal(err)
+	}
+	lakeReconciler.reconcileLakeConnections(ctx, lake, store)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var last LakeNetworkConnectionStatus
+	for _, upsert := range store.networkUpserts {
+		if upsert.ConnectionID == testConnectionID {
+			last = upsert
+		}
+	}
+	if last.Phase != oramav1alpha1.ConnectionPhaseReady || last.CredentialSecret != reference || last.ObservedGeneration != 3 {
+		t.Fatalf("database status = %+v", last)
 	}
 }
