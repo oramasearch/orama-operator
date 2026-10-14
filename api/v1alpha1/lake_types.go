@@ -131,6 +131,14 @@ type LakeSpec struct {
 	// +optional
 	IngressEnabled bool `json:"ingressEnabled,omitempty"`
 
+	// IngressClassName is the ingress controller that serves this Lake's Ingress and its environments' Ingresses: "nginx"
+	// (ingress-nginx, the default until a cluster's cutover) or "zetta-tunnel" (zetta-tunnel's
+	// ingress gateway, docs/infrastructure/ingress.md). Changing it moves the hosts' DNS, because DNS
+	// follows the Ingress's load-balancer address.
+	// +kubebuilder:validation:Enum=nginx;zetta-tunnel
+	// +optional
+	IngressClassName string `json:"ingressClassName,omitempty"`
+
 	// TLS terminates HTTPS at the nginx Ingress. It has no effect unless IngressEnabled and Host
 	// are also set. The referenced kubernetes.io/tls Secret must exist in spec.namespace.
 	// +optional
@@ -218,7 +226,9 @@ type LakeAppsSpec struct {
 	// +optional
 	Wildcard string `json:"wildcard,omitempty"`
 
-	// IngressClass selects the ingress controller for apps. Empty defaults to nginx.
+	// IngressClass selects the ingress controller for apps. Empty defaults to nginx. Apps stay on nginx
+	// through the zetta-tunnel cutover: the gateway does not make nginx's auth subrequest to Lake or
+	// count bytes per Ingress (docs/infrastructure/ingress.md).
 	// +optional
 	IngressClass string `json:"ingressClass,omitempty"`
 

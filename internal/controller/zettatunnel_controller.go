@@ -66,6 +66,10 @@ type ZettaTunnelReconciler struct {
 	Image string
 	// Now is injected for tests; nil means time.Now.
 	Now func() time.Time
+	// APIReader reads the manager's own pod (its pull secrets) without a pod informer.
+	APIReader client.Reader
+	// OperatorNamespace is the manager's namespace.
+	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=zettatunnels,verbs=get;list;watch;create;update;patch;delete
@@ -663,8 +667,8 @@ func (r *ZettaTunnelReconciler) tunnelsInNamespace(ctx context.Context, object c
 	return requests
 }
 
-// SetupWithManager starts two controllers: one per ZettaTunnel (its endpoint) and the cluster's one
-// relay, which every ZettaTunnel feeds.
+// SetupWithManager starts zetta-tunnel's controllers: one per ZettaTunnel (its endpoint), the
+// cluster's one relay, which every ZettaTunnel feeds, and the cluster's ingress gateway.
 func (r *ZettaTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	relayObjects := handler.EnqueueRequestsFromMapFunc(r.tunnelsForRelay)
 	if err := ctrl.NewControllerManagedBy(mgr).
@@ -684,5 +688,11 @@ func (r *ZettaTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 	relay := &zettaTunnelRelayReconciler{Client: r.Client, Scheme: r.Scheme, Image: r.Image, Now: r.Now}
-	return relay.SetupWithManager(mgr)
+	if err := relay.SetupWithManager(mgr); err != nil {
+		return err
+	}
+	ingress := &zettaTunnelIngressReconciler{
+		Client: r.Client, APIReader: r.APIReader, Scheme: r.Scheme, Image: r.Image, OperatorNamespace: r.OperatorNamespace,
+	}
+	return ingress.SetupWithManager(mgr)
 }

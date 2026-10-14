@@ -1556,7 +1556,7 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
 		ing.Labels = lbls
 		ing.Annotations = lakeIngressAnnotations(lake.Spec.TLS.SecretName != "")
-		ing.Spec.IngressClassName = strPtr("nginx")
+		ing.Spec.IngressClassName = strPtr(ingressClassOrDefault(lake.Spec.IngressClassName))
 		ing.Spec.Rules = []networkingv1.IngressRule{{
 			Host: lake.Spec.Host,
 			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{

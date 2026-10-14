@@ -619,7 +619,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaIngress(ctx context.Context,
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: z.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
 		ing.Labels = lbls
-		ing.Spec.IngressClassName = strPtr("nginx")
+		ing.Spec.IngressClassName = strPtr(ingressClassOrDefault(z.Spec.IngressClassName))
 		ing.Spec.Rules = []networkingv1.IngressRule{{
 			Host: z.Spec.Host,
 			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{

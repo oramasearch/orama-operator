@@ -76,6 +76,14 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	IngressEnabled bool `json:"ingressEnabled,omitempty"`
 
+	// IngressClassName is the ingress controller that serves this resource's Ingresses: "nginx"
+	// (ingress-nginx, the default until a cluster's cutover) or "zetta-tunnel" (zetta-tunnel's
+	// ingress gateway, docs/infrastructure/ingress.md). Changing it moves the hosts' DNS, because DNS
+	// follows the Ingress's load-balancer address.
+	// +kubebuilder:validation:Enum=nginx;zetta-tunnel
+	// +optional
+	IngressClassName string `json:"ingressClassName,omitempty"`
+
 	// Host is the domain name the cluster's HTTP API/UI (:4800 — MCP + REST + serving) is exposed at
 	// (e.g. zetta.oramadev.net) when IngressEnabled is true. Requires an ingress controller.
 	// +optional

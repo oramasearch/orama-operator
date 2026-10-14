@@ -122,9 +122,11 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.ZettaTunnelReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Image:  zettaTunnelImage,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Image:             zettaTunnelImage,
+		APIReader:         mgr.GetAPIReader(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ZettaTunnel")
 		os.Exit(1)

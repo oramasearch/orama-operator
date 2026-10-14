@@ -345,13 +345,13 @@ func (r *LakeReconciler) reconcileLakeNetworkSandbox(
 		internetErr = errors.Join(internetErr, preserveErr)
 	}
 	allowances = append(allowances, sandboxAllowance(
-		"ingress-nginx needs Lake's HTTP port for the Lake Ingress backend and LakeApp auth subrequests.",
+		"ingress-nginx and zetta-tunnel's ingress gateway need Lake's HTTP port for the Lake Ingress backend; ingress-nginx also for LakeApp auth subrequests.",
 		networkPolicy(
 			"allow-ingress-nginx",
 			lakeSelector,
 			[]networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			[]networkingv1.NetworkPolicyIngressRule{{
-				From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"})},
+				From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"}), zettaTunnelIngressPeer()},
 				Ports: tcpPorts(int32(lakeContainerPort(lake))),
 			}},
 			nil,

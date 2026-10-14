@@ -313,7 +313,7 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentProfile(ctx context.Cont
 				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
 					"kubernetes.io/metadata.name": "ingress-nginx",
 				}},
-			}},
+			}, zettaTunnelIngressPeer()},
 			Ports: []networkingv1.NetworkPolicyPort{{
 				Protocol: protocolPtr(corev1.ProtocolTCP),
 				Port:     intstrPtr(intstr.FromInt32(environment.Spec.Port)),
@@ -652,7 +652,7 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentIngress(ctx context.Cont
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ingress, func() error {
 		ingress.Labels = environmentLabels(environment)
 		ingress.Annotations = map[string]string{environmentOwnerAnnotation: environmentOwner(environment)}
-		ingress.Spec.IngressClassName = strPtr("nginx")
+		ingress.Spec.IngressClassName = strPtr(ingressClassOrDefault(lake.Spec.IngressClassName))
 		ingress.Spec.Rules = []networkingv1.IngressRule{{
 			Host: host,
 			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
