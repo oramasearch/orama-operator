@@ -10,4 +10,4 @@ spec:
     namespace: orama-system
   imageRepository: oramasearch/orama-operator
   namespace: orama-system
-  version: dev-a3ec2e3
+  version: dev-b562ab1
