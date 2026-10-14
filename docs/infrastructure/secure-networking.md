@@ -4,8 +4,9 @@ The design for [#437](https://github.com/oramasearch/orama-operator/issues/437) 
 half) and [lake#724](https://github.com/oramasearch/lake/issues/724) (Lake's half). It follows the
 research in [`docs/research/secure-networking/`](../research/secure-networking/README.md).
 
-**Status: proposed, 2026-10-14.** Everything Steve has decided is marked with his words and the
-date. Everything else is a proposal, and the decisions it needs are listed at the end.
+**Status: decided, 2026-10-14.** Steve took the proposals for D1–D6 (*"yes do all d1-6"*) and
+decided D7 and D8; the table at the end records each. Work is tracked in the issues listed in
+section 10.
 
 ---
 
@@ -31,6 +32,7 @@ Added since:
 | 2026-10-14 | Orama's own tunnel is a new private C++26 project, [`oramasearch/zetta-tunnel`](https://github.com/oramasearch/zetta-tunnel). |
 | 2026-10-14 | It needs Lake UI changes and probably Zetta changes too. |
 | 2026-10-14 | **The mesh (D7) and the ingress (D8) are zetta-tunnel too**: *"d7 and d8 are zetta-tunnel too"*. |
+| 2026-10-14 | **D1–D6 as proposed** (*"yes do all d1-6"*), recorded in section 9. |
 
 ## 2. Where things stand (checked 2026-10-14)
 
@@ -83,15 +85,15 @@ Added since:
 Names to settle (decision D2). Each is namespaced unless said otherwise, written by Lake through the
 operator (or by the operator itself for Orama's own stacks), and reconciled by the operator.
 
-| Kind | What it says | First provider |
+| Kind | What it says | Provider |
 |---|---|---|
 | `NetworkSandbox` | A namespace is default-deny in and out. Names what the platform must still reach (its operators, the API server, DNS, Lake). One per workspace, per Lake instance and per Orama Cloud v1 stack. | Kubernetes `NetworkPolicy` and `CiliumNetworkPolicy`, generated |
 | `Connection` | **One** source workload may reach **one** destination (a service, an app, a stack component) on named ports. Optionally carries a credential scope (decision D4). | Generated policy on both sides; a credential through the broker |
-| `EgressRule` | A workload may reach an outside destination: CIDR and port, or a DNS name and port. | CIDR: generated policy. DNS name: decision D3 |
+| `EgressRule` | A workload may reach an outside destination: CIDR and port, or a DNS name and port. | CIDR: generated policy. DNS name: zetta-tunnel's egress gateway (D3) |
 | `Tunnel` | A person may reach one target from outside the cluster, for a time. | **zetta-tunnel** (`ZettaTunnel`); optionally a customer's own Cloudflare account (`CloudflareTunnel`) |
 
 zetta-tunnel is also the mesh and the ingress (D7, D8); their kinds are designed with them.
-| `PeerConnection` | Another cluster or network may reach named services here, and the reverse, through gateways, never by routing addresses. | Gateways built in C++ (decision D6) |
+| `PeerConnection` | Another cluster or network may reach named services here, and the reverse, through gateways, never by routing addresses. | zetta-tunnel's peer gateway (D6) |
 
 What the existing objects become: the workspace's NetworkPolicies are generated from its
 `NetworkSandbox`; an app's access policy and today's blanket `allow-workspace-internal` are replaced by
@@ -218,15 +220,23 @@ through the operator, with nothing by hand.
 5. **Peer connections**: service-addressed gateways; Cloud v1's US readers once #458 is done.
 6. **zetta-tunnel as the ingress** (D8), replacing ingress-nginx, and **as the mesh** (D7).
 
-## 9. Decisions for Steve
+## 9. Decisions
 
-| # | Decision | Options |
+All decided 2026-10-14 by Steve: D1–D6 by taking the proposals (*"yes do all d1-6"*), D7 and D8
+directly (*"d7 and d8 are zetta-tunnel too"*).
+
+| # | Decision | Decided |
 |---|---|---|
-| D1 | Where a connection's desired state lives | In Lake's Postgres control plane (the operator reads it, as for services), with the records and activity in the workspace Zetta; or all in the workspace Zetta, which would need an exception to decision 51 |
-| D2 | The kinds' names | As in section 4, or others |
-| D3 | DNS-name egress | ACNS on every AKS cluster (paid, AKS only), or our own egress gateway (portable) |
-| D4 | Credentials on connections | Native datastore roles first, protocol-aware endpoints only where needed; which kinds in the first scope |
-| D5 | zetta-tunnel's transport | WireGuard through the OS kernel (kernel WireGuard is GPL-2.0, used, not shipped), QUIC (MsQuic, MIT), or TLS over Corosio like Zetta's links |
-| D6 | Peer gateways | Built on Corosio and OpenSSL as Zetta is, on zetta-tunnel's transport, or a third party |
-| D7 | A mesh | **Decided 2026-10-14: zetta-tunnel** |
-| D8 | Ingress after ingress-nginx | **Decided 2026-10-14: zetta-tunnel** |
+| D1 | Where a connection's desired state lives | **Lake's Postgres control plane** holds what the operator enforces (connections, egress rules, tunnel grants, peer connections), as for services; the operator reads it there (decision 51). **The workspace Zetta** holds the records people see: grants, tunnel sessions, network activity. |
+| D2 | The kinds' names | **`NetworkSandbox`, `Connection`, `EgressRule`, `Tunnel`, `PeerConnection`**, with providers `ZettaTunnel` (and `CloudflareTunnel` in a customer's own account) |
+| D3 | Egress by DNS name | **Our own egress gateway, in zetta-tunnel**: workloads with name rules reach the outside through it; it resolves and authorizes by name; Cilium allows only the gateway. Portable to every install; no ACNS needed. |
+| D4 | Credentials on connections | **Native datastore roles first** (Postgres roles, Kafka users and ACLs, Valkey ACL users, ClickHouse users), delivered as projections of workspace secrets; a protocol-aware endpoint only where a role cannot express the scope. **Postgres first.** |
+| D5 | zetta-tunnel's transport | **TLS 1.3 over Corosio**, as Zetta's node-to-node links (mutual TLS, OpenSSL, C++26), so the network layer and Zetta share one stack. QUIC (MsQuic, MIT) is a later option behind the same interface; kernel WireGuard is not used. |
+| D6 | Peer gateways | **zetta-tunnel**, on the same transport: service-addressed gateways at each end. |
+| D7 | The mesh | **zetta-tunnel** |
+| D8 | Ingress after ingress-nginx | **zetta-tunnel** |
+
+## 10. Issues
+
+Filed 2026-10-14; the list is kept on the epics: #437 (operator, zetta-tunnel, Zetta) and
+[lake#724](https://github.com/oramasearch/lake/issues/724) (Lake).
