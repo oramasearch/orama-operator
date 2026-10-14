@@ -64,6 +64,28 @@ spec:
                 x-kubernetes-validations:
                 - message: connectionId is immutable
                   rule: self == oldSelf
+              credentialScope:
+                description: |-
+                  CredentialScope, when set, issues a credential for this connection only: a role in the target
+                  service's datastore with these grants, delivered as a workspace secret. It is valid only from
+                  an app to a service. A new Generation rotates the credential.
+                properties:
+                  access:
+                    description: Access is read (query only) or write (read plus insert,
+                      update and delete; never DDL).
+                    enum:
+                    - read
+                    - write
+                    type: string
+                  schema:
+                    description: Schema limits the role to one schema. Empty means
+                      every schema of the service's database.
+                    maxLength: 63
+                    pattern: ^[A-Za-z_][A-Za-z0-9_$]*$
+                    type: string
+                required:
+                - access
+                type: object
               customerId:
                 description: CustomerID is Lake's immutable customer id.
                 format: uuid
@@ -149,6 +171,10 @@ spec:
             - targetKind
             - workspaceId
             type: object
+            x-kubernetes-validations:
+            - message: credentialScope is valid only from an app to a service
+              rule: '!has(self.credentialScope) || (self.sourceKind == ''app'' &&
+                self.targetKind == ''service'')'
           status:
             description: ConnectionStatus is the stable observation returned to network_connection_status.
             properties:
@@ -212,6 +238,21 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              credentialGeneration:
+                description: |-
+                  CredentialGeneration is the Lake generation the current credential was issued for. A spec
+                  Generation above it is a rotation request.
+                format: int64
+                type: integer
+              credentialRole:
+                description: CredentialRole is the datastore role issued for this
+                  connection.
+                type: string
+              credentialSecret:
+                description: |-
+                  CredentialSecret is the workspace secret holding the issued credential, as
+                  lake-secret://<mount id>/<name>. It never holds the credential itself.
+                type: string
               message:
                 description: Message explains the phase without exposing credentials.
                 type: string

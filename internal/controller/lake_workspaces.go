@@ -842,6 +842,12 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 			sandboxAllowance(allowance.comment, workspaceOperatorIngressPolicy(allowance, namespace, labels)),
 		)
 	}
+	if r.OperatorNamespace != "" {
+		policies = append(policies, sandboxAllowance(
+			"The Orama operator signs in to workspace Postgres services to keep the roles of credential-scoped Connections (operator#469).",
+			workspaceOperatorPostgresPolicy(r.OperatorNamespace, namespace, labels),
+		))
+	}
 	policies = append(policies, workspaceLakeServiceIngressAllowances(lake)...)
 	connectionPolicies, connectionErr := r.existingWorkspaceConnectionAllowances(ctx, namespace)
 	policies = append(policies, connectionPolicies...)
@@ -1045,6 +1051,31 @@ func workspaceLakeIngressPolicy(
 					workspaceTCPPort(zettaAPIPort),
 					workspaceTCPPort(agentPort),
 				},
+			}},
+		},
+	}
+}
+
+// workspaceOperatorPostgresName lets the Orama operator reach workspace Postgres instances.
+const workspaceOperatorPostgresName = "allow-operator-to-postgres"
+
+func workspaceOperatorPostgresPolicy(operatorNamespace, namespace string, labels map[string]string) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: workspacePolicyMeta(workspaceOperatorPostgresName, namespace, labels),
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels:      map[string]string{"cnpg.io/podRole": "instance"},
+				MatchExpressions: []metav1.LabelSelectorRequirement{labelExists("cnpg.io/cluster")},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{
+				From: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: namespaceNameSelector(operatorNamespace),
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						"app.kubernetes.io/name": "orama-operator",
+					}},
+				}},
+				Ports: []networkingv1.NetworkPolicyPort{workspaceTCPPort(servicePostgresPort)},
 			}},
 		},
 	}
