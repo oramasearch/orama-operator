@@ -307,10 +307,13 @@ not the `Connection`, owns the resulting `NetworkPolicy` objects. Details:
 | `spec.sourceKind` / `.sourceId` | Source identity: `app \| service \| agent \| tunnel` plus its Lake UUID. Apps resolve through their existing `LakeApp` workload identity; services and agents use operator-owned ID labels. |
 | `spec.targetKind` / `.targetId` | Destination identity: `service \| app` plus its Lake UUID. Selection is restricted to the CR's namespace. |
 | `spec.ports[]` | Destination TCP ports, each 1–65535. Empty resolves to the target's Kubernetes Service target ports, including named ports; it never means all pod ports. |
-| `spec.desired` | `present \| absent`. Absent removes both rendered sides before status becomes `Deleted`. |
-| `spec.generation` | Lake row generation, minimum 1. |
+| `spec.credentialScope` | Optional, app to service only: `{access: read \| write, schema?}`. The operator keeps one role for this connection in the target's datastore (Postgres first) with exactly these grants and writes its credential as a workspace secret ([operator#469](https://github.com/oramasearch/orama-operator/issues/469)). |
+| `spec.desired` | `present \| absent`. Absent removes both rendered sides, and drops any credential role, before status becomes `Deleted`. |
+| `spec.generation` | Lake row generation, minimum 1. A new generation of a credential-scoped connection rotates its credential. |
 | `status.phase` / `.message` | `Pending \| Ready \| Failed \| Deleted` and a stable explanation. |
 | `status.observedGeneration` | Lake generation represented by the status and returned to Postgres. |
+| `status.credentialSecret` | `lake-secret://<mount id>/connection-<id>`: the workspace secret holding the issued credential, returned to Postgres as `credential_secret`. Never the credential. |
+| `status.credentialRole` / `.credentialGeneration` | The datastore role issued for this connection and the generation it was issued for. |
 | `status.conditions[Ready]` | True only after the paired policies have been rendered. Stable reconciliation does not rewrite it. |
 
 ## `Tunnel` (separate CRD, namespaced) — one person, one target, for a time

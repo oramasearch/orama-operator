@@ -98,6 +98,8 @@ func TestWorkspaceNetworkSandboxPreservesLegacyPolicyNamesAndSpecs(t *testing.T)
 	for _, allowance := range workspaceOperatorIngresses {
 		expected = append(expected, workspaceOperatorIngressPolicy(allowance, testWorkspaceName, labels))
 	}
+	// operator#469: the operator signs in to workspace Postgres to keep credential roles.
+	expected = append(expected, workspaceOperatorPostgresPolicy("orama-system", testWorkspaceName, labels))
 	for _, apiClient := range workspaceAPIServerClients {
 		expected = append(expected, workspaceAPIServerEgressPolicy(apiClient, target, testWorkspaceName, labels))
 	}
