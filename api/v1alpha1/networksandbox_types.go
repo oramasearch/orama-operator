@@ -67,6 +67,18 @@ type NetworkSandboxSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	CiliumPolicies []NetworkSandboxCiliumPolicy `json:"ciliumPolicies,omitempty"`
+
+	// Mesh enrols the sandbox's pods in zetta-tunnel's mesh (decision D7). Every declared Connection
+	// between them is then allowed only on the mesh's mutual-TLS port, never the application port,
+	// and the node agent captures their traffic. Cilium stays the enforcer.
+	// +optional
+	Mesh *NetworkSandboxMesh `json:"mesh,omitempty"`
+}
+
+// NetworkSandboxMesh is a sandbox's enrolment in zetta-tunnel's mesh.
+type NetworkSandboxMesh struct {
+	// Enrolled turns enrolment on.
+	Enrolled bool `json:"enrolled"`
 }
 
 // NetworkSandboxStatus is the stable observed summary of rendered policies.

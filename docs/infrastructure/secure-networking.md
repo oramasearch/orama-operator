@@ -26,6 +26,9 @@ cluster. See [Peer connections](peer-connections.md).
 The ingress half of stage 6 is implemented and native-tested (#473): the operator runs zetta-tunnel's
 ingress gateway on every cluster, and a host moves to it by its Ingress class, per cluster. See
 [Ingress](ingress.md).
+The mesh half of stage 6 is implemented and native-tested (#474): the operator runs zetta-tunnel's node
+agent on every node, and a namespace is enrolled through its `NetworkSandbox`; enrolling real
+workspaces waits on zetta-tunnel. See [Mesh](mesh.md).
 
 ---
 
@@ -273,7 +276,7 @@ Filed 2026-10-14; the list is kept on the epics: #437 (operator, zetta-tunnel, Z
 - https://github.com/oramasearch/orama-operator/issues/471: Tunnel: the kind, with ZettaTunnel and a customer's own CloudflareTunnel as providers (stage 4, implemented and native-tested; nonprod acceptance pending)
 - https://github.com/oramasearch/orama-operator/issues/472: PeerConnection: named services between clusters through zetta-tunnel gateways (stage 5, implemented and native-tested; two-cluster rehearsal pending)
 - https://github.com/oramasearch/orama-operator/issues/473: Ingress through zetta-tunnel, replacing ingress-nginx (stage 6, implemented and native-tested; per-cluster cutover pending #457)
-- https://github.com/oramasearch/orama-operator/issues/474: Mesh: zetta-tunnel's node agent on every cluster (stage 6)
+- https://github.com/oramasearch/orama-operator/issues/474: Mesh: zetta-tunnel's node agent on every cluster (stage 6, implemented and native-tested; live fail-closed proof pending)
 
 **zetta-tunnel**
 

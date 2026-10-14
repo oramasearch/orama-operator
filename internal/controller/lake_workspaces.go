@@ -883,7 +883,11 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 			internetErr = errors.Join(internetErr, preserveErr)
 		}
 	}
-	_, reconcileErr := reconcileOwnedNetworkSandbox(
+	var mesh *oramav1alpha1.NetworkSandboxMesh
+	if lake.Spec.Workspaces.Overrides[labels[workspaceLabel]].Mesh {
+		mesh = &oramav1alpha1.NetworkSandboxMesh{Enrolled: true}
+	}
+	_, reconcileErr := reconcileOwnedMeshNetworkSandbox(
 		ctx,
 		r.Client,
 		r.Scheme,
@@ -892,6 +896,7 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 		labels,
 		metav1.LabelSelector{},
 		policies,
+		mesh,
 	)
 	return errors.Join(connectionErr, apiErr, internetErr, reconcileErr)
 }

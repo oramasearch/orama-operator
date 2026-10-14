@@ -668,7 +668,8 @@ func (r *ZettaTunnelReconciler) tunnelsInNamespace(ctx context.Context, object c
 }
 
 // SetupWithManager starts zetta-tunnel's controllers: one per ZettaTunnel (its endpoint), the
-// cluster's one relay, which every ZettaTunnel feeds, and the cluster's ingress gateway.
+// cluster's one relay, which every ZettaTunnel feeds, the cluster's ingress gateway, and the
+// mesh's node agent and projections.
 func (r *ZettaTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	relayObjects := handler.EnqueueRequestsFromMapFunc(r.tunnelsForRelay)
 	if err := ctrl.NewControllerManagedBy(mgr).
@@ -694,5 +695,11 @@ func (r *ZettaTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	ingress := &zettaTunnelIngressReconciler{
 		Client: r.Client, APIReader: r.APIReader, Scheme: r.Scheme, Image: r.Image, OperatorNamespace: r.OperatorNamespace,
 	}
-	return ingress.SetupWithManager(mgr)
+	if err := ingress.SetupWithManager(mgr); err != nil {
+		return err
+	}
+	mesh := &zettaTunnelMeshReconciler{
+		Client: r.Client, APIReader: r.APIReader, Scheme: r.Scheme, Image: r.Image, OperatorNamespace: r.OperatorNamespace, Now: r.Now,
+	}
+	return mesh.SetupWithManager(mgr)
 }

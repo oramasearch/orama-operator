@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -157,6 +158,10 @@ func reconcileNetworkSandboxPolicies(
 			Spec: *allowance.Spec.DeepCopy(),
 		}
 		policy.Spec.PodSelector = intersectSandboxSelectors(policy.Spec.PodSelector, sandbox.Spec.PodSelector)
+		if sandboxMeshEnrolled(sandbox) && isConnectionAllowanceName(allowance.Name) {
+			meshOnlyPorts(&policy.Spec)
+			policy.Annotations[networkSandboxCommentAnnotation] = allowance.Comment + " Enrolled in the mesh: only the mesh's mutual-TLS port " + strconv.Itoa(zettaTunnelMeshInboundPort) + " is allowed."
+		}
 		if err := reconcileSandboxNetworkPolicy(ctx, kube, scheme, sandbox, policy); err != nil {
 			return int32(len(desiredNames) - 1), ciliumCount, err
 		}

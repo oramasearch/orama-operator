@@ -85,6 +85,18 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              mesh:
+                description: |-
+                  Mesh enrols the sandbox's pods in zetta-tunnel's mesh (decision D7). Every declared Connection
+                  between them is then allowed only on the mesh's mutual-TLS port, never the application port,
+                  and the node agent captures their traffic. Cilium stays the enforcer.
+                properties:
+                  enrolled:
+                    description: Enrolled turns enrolment on.
+                    type: boolean
+                required:
+                - enrolled
+                type: object
               podSelector:
                 description: |-
                   PodSelector identifies only this owner's pods. Every rendered policy is restricted to this
