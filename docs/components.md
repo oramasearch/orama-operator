@@ -115,6 +115,13 @@ stable Ready status with policy counts (including the mandatory Cilium deny) and
 unchanged status. AKS-managed Cilium's metadata path requires explicit deny because NetworkPolicy
 `ipBlock` exclusions alone did not block it in the live 2026-10-14 proof.
 
+Only the operator manager's ClusterRole may write `NetworkPolicy`, `CiliumNetworkPolicy` or
+`NetworkSandbox`. The repository RBAC audit reads every Role and ClusterRole source, counts wildcard
+rules, follows bindings and rejects any other policy writer. A native API-server test impersonates a
+workspace default ServiceAccount, proves an allow-all policy is forbidden and checks create, update,
+patch and delete for both workspace and tenant identities. Lake, app, agent and build identities
+receive no policy-writer grant.
+
 The Lake, Lake-workspaces and Orama Cloud v1 reconcilers each own one sandbox in every namespace
 they manage and render it before workloads. Their complete policy inventory, public-address
 exclusions, inferred paths and recovery behavior are in

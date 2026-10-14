@@ -1,8 +1,10 @@
 # Network sandboxes
 
 `NetworkSandbox` is the namespace network boundary implemented for
-[#465](https://github.com/oramasearch/orama-operator/issues/465) and narrowed for Cloud v1 engine
-egress in [#466](https://github.com/oramasearch/orama-operator/issues/466). The operator creates one named
+[#465](https://github.com/oramasearch/orama-operator/issues/465), narrowed for Cloud v1 engine
+egress in [#466](https://github.com/oramasearch/orama-operator/issues/466), and protected from
+tenant-authored allowances in [#467](https://github.com/oramasearch/orama-operator/issues/467).
+The operator creates one named
 `network-sandbox` in every Lake instance namespace, every Lake workspace namespace and every
 `OramaCloudV1` stack namespace. Its controller always renders `NetworkPolicy/default-deny` for
 both ingress and egress and `CiliumNetworkPolicy/deny-cloud-metadata`, then renders the named
@@ -49,6 +51,29 @@ allowance has an empty ingress `from` or egress `to`, which would mean every pee
 allowances use Kubernetes NetworkPolicy; `spec.ciliumPolicies` can declare additional paths that
 NetworkPolicy cannot represent. The mandatory metadata deny is generated independently of that
 field and cannot be removed or overridden by a declaration.
+
+## Policy authorship and tenant RBAC
+
+Only the operator manager may create, update, patch or delete `NetworkPolicy`,
+`CiliumNetworkPolicy` and `NetworkSandbox`. Lake, apps, agents, builds and workspace services do not
+receive those grants. The workspace default ServiceAccount is tokenless and has no RoleBinding;
+app, agent, build, operator-owned wrapper-service and methodology pod templates also disable token
+mounting. The pinned k0s tenant Role grants ordinary workload objects but omits every network-policy
+and secure-networking resource.
+
+`TestOnlyOperatorRBACCanWriteNetworkPolicy` scans every checked-in Role, ClusterRole, RoleBinding and
+ClusterRoleBinding manifest, including the rendered chart source, generated RBAC, the operator-owned
+Karpenter bundle and pinned tenant fixture. Wildcard API groups, resources and verbs count as grants.
+The only accepted writers are the generated manager ClusterRole and its chart equivalent; the chart
+binding must name only the operator ServiceAccount. Bindings to the built-in `cluster-admin`, `admin`
+or `edit` roles are rejected.
+
+The native admission envtest installs the chart RBAC and the exact k0s tenant Role, enables RBAC
+authorization, impersonates a workspace default ServiceAccount and submits an ingress-and-egress
+allow-all `NetworkPolicy`. The API server must return `Forbidden`. Subject access reviews also prove
+that the workspace ServiceAccount and tenant group cannot create, update, patch or delete Kubernetes
+policies, Cilium policies or `NetworkSandbox` resources. This is an authorization proof; the separate
+policy-rendering tests cover dataplane intent.
 
 ## Mandatory cloud metadata deny
 
@@ -254,8 +279,6 @@ suite remains the write, replication, full-text, vector and hybrid-search proof.
 
 ## Deferred work
 
-- [#467](https://github.com/oramasearch/orama-operator/issues/467) prevents tenants from writing
-  policy resources.
 - [#468](https://github.com/oramasearch/orama-operator/issues/468) replaces workspace-wide internal
   reachability with declared `Connection` resources.
 
