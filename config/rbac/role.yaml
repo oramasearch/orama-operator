@@ -275,6 +275,7 @@ rules:
   - cloudflaretunnels
   - clusterhelmreleases
   - connections
+  - egressrules
   - kubernetesclusterproviders
   - kubernetesclusters
   - lakeapps
@@ -317,6 +318,7 @@ rules:
   - cloudflaretunnels/finalizers
   - clusterhelmreleases/finalizers
   - connections/finalizers
+  - egressrules/finalizers
   - kubernetesclusterproviders/finalizers
   - kubernetesclusters/finalizers
   - lakeapps/finalizers
@@ -346,6 +348,7 @@ rules:
   - cloudflaretunnels/status
   - clusterhelmreleases/status
   - connections/status
+  - egressrules/status
   - kubernetesclusterproviders/status
   - kubernetesclusters/status
   - lakeapps/status
