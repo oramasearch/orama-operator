@@ -181,13 +181,15 @@ type ComponentsSpec struct {
 	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
-	ControlDB DataStoreSpec  `json:"controlDB,omitempty"` // Postgres control plane
-	PgAdmin   Toggle         `json:"pgAdmin,omitempty"`   // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
-	Cache     DataStoreSpec  `json:"cache,omitempty"`     // Redis (+ QStash shim)
-	Broker    DataStoreSpec  `json:"broker,omitempty"`    // RabbitMQ
-	Search    DataStoreSpec  `json:"search,omitempty"`    // Typesense hosted-search clusters
-	Disco     Toggle         `json:"disco,omitempty"`     // DISCO semantic cache
-	Workers   WorkersSpec    `json:"workers,omitempty"`   // the ported CF workers (one bundled image)
+	// ControlDB is the Postgres control plane, always in-cluster.
+	// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode == 'in-cluster'",message="controlDB.mode external is not supported: the control DB is always in-cluster"
+	ControlDB DataStoreSpec `json:"controlDB,omitempty"`
+	PgAdmin   Toggle        `json:"pgAdmin,omitempty"` // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
+	Cache     DataStoreSpec `json:"cache,omitempty"`   // Redis (+ QStash shim)
+	Broker    DataStoreSpec `json:"broker,omitempty"`  // RabbitMQ
+	Search    DataStoreSpec `json:"search,omitempty"`  // Typesense hosted-search clusters
+	Disco     Toggle        `json:"disco,omitempty"`   // DISCO semantic cache
+	Workers   WorkersSpec   `json:"workers,omitempty"` // the ported CF workers (one bundled image)
 
 	// Additional v1 components (gap fill — techops-docs issues #5–#7):
 	AnalyticsProcessor Toggle `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse

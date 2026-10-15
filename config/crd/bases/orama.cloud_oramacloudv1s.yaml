@@ -531,9 +531,7 @@ spec:
                     - enabled
                     type: object
                   controlDB:
-                    description: |-
-                      DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
-                      operator/chart), pointed at an external endpoint, or centrally located.
+                    description: ControlDB is the Postgres control plane, always in-cluster.
                     properties:
                       credentialsSecretRef:
                         description: CredentialsSecretRef (ExternalSecret-materialized)
@@ -640,6 +638,10 @@ spec:
                     required:
                     - enabled
                     type: object
+                    x-kubernetes-validations:
+                    - message: 'controlDB.mode external is not supported: the control
+                        DB is always in-cluster'
+                      rule: '!has(self.mode) || self.mode == ''in-cluster'''
                   dashboard:
                     description: ToggleWithHost is a toggle plus an ingress host.
                     properties:
