@@ -327,7 +327,7 @@ func (r *CloudflareTunnelReconciler) putTunnelConfiguration(ctx context.Context,
 	return cfDo(ctx, account.Token, http.MethodPut, fmt.Sprintf("%s/accounts/%s/cfd_tunnel/%s/configurations", r.api(), account.AccountID, id), body, nil)
 }
 
-type cfDNSRecord struct {
+type cfTunnelDNSRecord struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Content string `json:"content"`
@@ -339,7 +339,7 @@ func (r *CloudflareTunnelReconciler) ensureDNSRecord(ctx context.Context, tunnel
 		"comment": "Orama tunnel grant " + tunnel.Spec.GrantID}
 	id := tunnel.Status.DNSRecordID
 	if id == "" {
-		var listed cfEnvelope[[]cfDNSRecord]
+		var listed cfEnvelope[[]cfTunnelDNSRecord]
 		listURL := fmt.Sprintf("%s/zones/%s/dns_records?type=CNAME&name=%s", r.api(), account.ZoneID, url.QueryEscape(hostname))
 		if err := cfDo(ctx, account.Token, http.MethodGet, listURL, nil, &listed); err != nil {
 			return err
@@ -357,7 +357,7 @@ func (r *CloudflareTunnelReconciler) ensureDNSRecord(ctx context.Context, tunnel
 		}
 	}
 	if id == "" {
-		var created cfEnvelope[cfDNSRecord]
+		var created cfEnvelope[cfTunnelDNSRecord]
 		if err := cfDo(ctx, account.Token, http.MethodPost, fmt.Sprintf("%s/zones/%s/dns_records", r.api(), account.ZoneID), body, &created); err != nil {
 			return err
 		}

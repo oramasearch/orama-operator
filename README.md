@@ -105,7 +105,7 @@ Existing AKS installations that use the former release name must follow the sche
 - [`docs/releases/README.md`](docs/releases/README.md): what each release contains.
 - [`DESIGN.md`](DESIGN.md): architecture and the decision log.
 - [`docs/crd-reference.md`](docs/crd-reference.md): the field reference for every CRD.
-- [`docs/components.md`](docs/components.md): what each reconciler creates, and its status.
+- [`docs/components.md`](docs/components.md): what each reconciler creates, its status, and DNS ownership and cleanup.
 - [`docs/infrastructure/README.md`](docs/infrastructure/README.md): management and leaf clusters, the
   design the operator's infrastructure work follows.
 - [`docs/install/k0s.md`](docs/install/k0s.md): install one Lake on connected or air-gapped liquid k0s.

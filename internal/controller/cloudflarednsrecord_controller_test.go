@@ -1,0 +1,753 @@
+/*
+Copyright 2026 OramaSearch.
+Licensed under the Apache License, Version 2.0.
+*/
+
+package controller
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+)
+
+type dnsRequest struct {
+	Method, Path string
+	Body         cfDNSRecord
+}
+
+// dnsFixture records every HTTP call and retains external state across reconciles.
+// Tests using cfAPIBase are deliberately sequential and restore it before closing the server.
+type dnsFixture struct {
+	kube          client.WithWatch
+	t             *testing.T
+	records       []cfDNSRecord
+	requests      []dnsRequest
+	pageSize      int
+	failMethod    string
+	failCode      int
+	emptyCreateID bool
+	recorder      *record.FakeRecorder
+	reconciler    *CloudflareDNSRecordReconciler
+	rec           *oramav1alpha1.CloudflareDNSRecord
+}
+
+func newDNSFixture(t *testing.T) *dnsFixture {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := oramav1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	rec := &oramav1alpha1.CloudflareDNSRecord{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-dns", Namespace: "apps"},
+		Spec:       oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "app.oramadev.net", Content: "lb.example.net", Proxied: true},
+	}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cf", Namespace: "apps"}, Data: map[string][]byte{"token": []byte("test-token"), "zoneID": []byte("test-zone")}}
+	f := &dnsFixture{t: t, rec: rec, recorder: record.NewFakeRecorder(10)}
+	f.kube = fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&oramav1alpha1.CloudflareDNSRecord{}).WithObjects(secret).Build()
+	f.reconciler = &CloudflareDNSRecordReconciler{Scheme: scheme, Recorder: f.recorder, Client: f.kube}
+	server := httptest.NewServer(http.HandlerFunc(f.serveHTTP))
+	t.Cleanup(server.Close)
+	previous := cfAPIBase
+	cfAPIBase = server.URL
+	t.Cleanup(func() { cfAPIBase = previous })
+	return f
+}
+
+func (f *dnsFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	var body cfDNSRecord
+	if r.Body != nil && (r.Method == http.MethodPost || r.Method == http.MethodPut) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			f.t.Errorf("decode request: %v", err)
+		}
+	}
+	f.requests = append(f.requests, dnsRequest{Method: r.Method, Path: r.URL.Path, Body: body})
+	if r.Header.Get("Authorization") != "Bearer test-token" {
+		f.t.Error("missing API authorization")
+	}
+	if r.Method == f.failMethod {
+		http.Error(w, "injected API failure", f.failCode)
+		return
+	}
+	const endpoint = "/zones/test-zone/dns_records"
+	if r.URL.Path == endpoint && r.Method == http.MethodGet {
+		if r.URL.Query().Get("name") != f.rec.Spec.Name || r.URL.Query().Has("type") {
+			f.t.Errorf("list query = %s", r.URL.RawQuery)
+		}
+		page := 1
+		if _, err := fmt.Sscanf(r.URL.Query().Get("page"), "%d", &page); err != nil {
+			f.t.Errorf("invalid page: %v", err)
+		}
+		size := f.pageSize
+		if size == 0 {
+			size = len(f.records) + 1
+		}
+		start, end := (page-1)*size, page*size
+		if start > len(f.records) {
+			start = len(f.records)
+		}
+		if end > len(f.records) {
+			end = len(f.records)
+		}
+		pages := max(1, (len(f.records)+size-1)/size)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"result": f.records[start:end], "result_info": map[string]int{"page": page, "total_pages": pages}})
+		return
+	}
+	if r.URL.Path == endpoint && r.Method == http.MethodPost {
+		var current oramav1alpha1.CloudflareDNSRecord
+		if err := f.reconciler.Get(context.Background(), client.ObjectKeyFromObject(f.rec), &current); err != nil || len(current.Finalizers) != 1 || current.Finalizers[0] != cfDNSFinalizer {
+			f.t.Errorf("POST before durable finalizer: %v %+v", err, current.Finalizers)
+		}
+		if !f.emptyCreateID {
+			body.ID = "new-1"
+			f.records = append(f.records, body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"result": body})
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, endpoint+"/")
+	for i, remote := range f.records {
+		if remote.ID != id {
+			continue
+		}
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"result": remote})
+		case http.MethodPut:
+			body.ID = id
+			f.records[i] = body
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"result": body})
+		case http.MethodDelete:
+			f.records = append(f.records[:i], f.records[i+1:]...)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"result": map[string]string{"id": id}})
+		default:
+			f.t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+		}
+		return
+	}
+	http.Error(w, "not found", http.StatusNotFound)
+}
+
+func (f *dnsFixture) matching(comment string) cfDNSRecord {
+	return cfDNSRecord{ID: "existing-1", Type: "CNAME", Name: f.rec.Spec.Name, Content: f.rec.Spec.Content, Proxied: true, TTL: 1, Comment: comment}
+}
+
+func (f *dnsFixture) create() {
+	f.t.Helper()
+	deleting := !f.rec.DeletionTimestamp.IsZero()
+	f.rec.DeletionTimestamp = nil
+	if err := f.reconciler.Create(context.Background(), f.rec); err != nil {
+		f.t.Fatal(err)
+	}
+	if deleting {
+		if err := f.reconciler.Delete(context.Background(), f.rec); err != nil {
+			f.t.Fatal(err)
+		}
+		if err := f.reconciler.Get(context.Background(), client.ObjectKeyFromObject(f.rec), f.rec); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+}
+
+func (f *dnsFixture) reconcile() (ctrl.Result, error) {
+	f.t.Helper()
+	result, err := f.reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.rec)})
+	var current oramav1alpha1.CloudflareDNSRecord
+	if getErr := f.reconciler.Get(context.Background(), client.ObjectKeyFromObject(f.rec), &current); getErr == nil {
+		f.rec = &current
+	} else if !apierrors.IsNotFound(getErr) {
+		f.t.Fatal(getErr)
+	}
+	return result, err
+}
+
+func (f *dnsFixture) methods(want ...string) {
+	f.t.Helper()
+	got := make([]string, 0, len(f.requests))
+	for _, req := range f.requests {
+		got = append(got, req.Method)
+	}
+	if !reflect.DeepEqual(got, want) && !(len(got) == 0 && len(want) == 0) {
+		f.t.Fatalf("methods = %v, want %v", got, want)
+	}
+}
+
+func (f *dnsFixture) status(want oramav1alpha1.CloudflareDNSRecordStatus) {
+	f.t.Helper()
+	if f.rec.Status != want {
+		f.t.Fatalf("status = %+v, want %+v", f.rec.Status, want)
+	}
+}
+
+func (f *dnsFixture) wantReconcile(retry bool) {
+	f.t.Helper()
+	result, err := f.reconcile()
+	want := ctrl.Result{}
+	if retry {
+		want.RequeueAfter = 5 * time.Minute
+	}
+	if err != nil || result != want {
+		f.t.Fatalf("reconcile = %+v, %v; want %+v, nil", result, err, want)
+	}
+}
+
+func TestCloudflareDNSConflicts(t *testing.T) {
+	for _, kind := range []string{"CNAME", "A", "AAAA"} {
+		for _, identical := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/identical=%t", kind, identical), func(t *testing.T) {
+				f := newDNSFixture(t)
+				foreign := f.matching("")
+				foreign.Type = kind
+				foreign.ID = "prod1"
+				if !identical {
+					foreign.Content = "foreign.example.net"
+				}
+				f.records = []cfDNSRecord{foreign}
+				f.create()
+				f.wantReconcile(true)
+				f.methods("GET")
+				f.status(oramav1alpha1.CloudflareDNSRecordStatus{Message: (&cfDNSConflictError{Record: foreign}).Error()})
+				if f.records[0] != foreign {
+					t.Fatal("foreign record changed")
+				}
+			})
+		}
+	}
+	for _, scenario := range []string{"owned-first", "foreign-first", "later-page", "ambiguous", "lost-comment", "changed-comment"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newDNSFixture(t)
+			marker := cfDNSOwnerMarker(f.rec)
+			owned, foreign := f.matching(marker), f.matching("")
+			foreign.ID = "foreign"
+			f.records = []cfDNSRecord{owned, foreign}
+			switch scenario {
+			case "foreign-first":
+				f.records = []cfDNSRecord{foreign, owned}
+			case "later-page":
+				f.pageSize = 1
+			case "ambiguous":
+				foreign.Comment = marker
+				f.records[1] = foreign
+			case "lost-comment", "changed-comment":
+				f.rec.Status = oramav1alpha1.CloudflareDNSRecordStatus{RecordID: owned.ID, OwnerComment: marker, Ready: true, Message: "reconciled"}
+				owned.Comment = ""
+				if scenario == "changed-comment" {
+					owned.Comment = "someone-else"
+				}
+				f.records = []cfDNSRecord{owned}
+			}
+			before := append([]cfDNSRecord(nil), f.records...)
+			f.create()
+			f.wantReconcile(true)
+			if f.rec.Status.Ready || f.rec.Status.Message == "" {
+				t.Fatalf("status = %+v", f.rec.Status)
+			}
+			if strings.Contains(scenario, "comment") && (f.rec.Status.OwnerComment != marker || f.rec.Status.RecordID != owned.ID) {
+				t.Fatal("lost ownership status")
+			}
+			if scenario == "later-page" {
+				f.methods("GET", "GET")
+			} else {
+				f.methods("GET")
+			}
+			if !reflect.DeepEqual(before, f.records) {
+				t.Fatal("remote records changed")
+			}
+		})
+	}
+}
+
+func TestCloudflareDNSCreateRecoverAndNoStatusFlapping(t *testing.T) {
+	for _, scenario := range []string{"create", "txt", "recover", "status-failure", "unproxied"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newDNSFixture(t)
+			if scenario == "unproxied" {
+				f.rec.Spec.Proxied = false
+			}
+			marker := cfDNSOwnerMarker(f.rec)
+			if scenario == "txt" {
+				txt := f.matching("")
+				txt.Type = "TXT"
+				f.records = []cfDNSRecord{txt}
+			}
+			if scenario == "recover" {
+				f.records = []cfDNSRecord{f.matching(marker)}
+			}
+			f.create()
+			statusWrites := 0
+			f.reconciler.Client = interceptor.NewClient(f.kube, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					data, err := patch.Data(obj)
+					if err != nil {
+						return err
+					}
+					var fields map[string]json.RawMessage
+					if err := json.Unmarshal(data, &fields); err != nil {
+						return err
+					}
+					if len(fields) != 1 || fields["metadata"] == nil {
+						t.Fatalf("finalizer patch must contain metadata only: %s", data)
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				},
+				SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+					statusWrites++
+					if scenario == "status-failure" && statusWrites == 1 {
+						return errors.New("injected status failure")
+					}
+					return c.SubResource(sub).Update(ctx, obj, opts...)
+				},
+			})
+			if scenario == "status-failure" {
+				if _, err := f.reconcile(); err == nil || !strings.Contains(err.Error(), "injected status failure") {
+					t.Fatalf("status update error = %v", err)
+				}
+				f.methods("GET", "POST")
+				f.status(oramav1alpha1.CloudflareDNSRecordStatus{})
+				f.requests = nil
+			}
+			f.wantReconcile(false)
+			id := "new-1"
+			if scenario == "recover" {
+				id = "existing-1"
+			}
+			f.status(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: id, OwnerComment: marker, Ready: true, Message: "reconciled"})
+			if scenario == "recover" || scenario == "status-failure" {
+				f.methods("GET")
+			} else {
+				f.methods("GET", "POST")
+			}
+			if scenario != "recover" {
+				created := f.records[len(f.records)-1]
+				expected := f.matching(marker)
+				expected.Proxied = f.rec.Spec.Proxied
+				expected.ID = "new-1"
+				if created != expected {
+					t.Fatalf("POST = %+v, want %+v", created, expected)
+				}
+			}
+			f.requests = nil
+			writes := statusWrites
+			f.wantReconcile(false)
+			f.methods("GET")
+			if statusWrites != writes {
+				t.Fatal("unchanged status was rewritten")
+			}
+		})
+	}
+}
+
+func TestCloudflareDNSOwnedSettings(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		for _, change := range []string{"none", "content", "type", "proxying", "ttl"} {
+			t.Run(fmt.Sprintf("legacy=%t/%s", legacy, change), func(t *testing.T) {
+				f := newDNSFixture(t)
+				marker := cfDNSOwnerMarker(f.rec)
+				remote := f.matching(marker)
+				f.rec.Status = oramav1alpha1.CloudflareDNSRecordStatus{RecordID: remote.ID, OwnerComment: marker}
+				if legacy {
+					remote.Comment = ""
+					f.rec.Status.OwnerComment = ""
+				}
+				switch change {
+				case "content":
+					remote.Content = "old.example.net"
+				case "type":
+					remote.Type = "A"
+				case "proxying":
+					f.rec.Spec.Proxied = false
+				case "ttl":
+					remote.TTL = 300
+				}
+				f.records = []cfDNSRecord{remote}
+				f.create()
+				f.wantReconcile(false)
+				if change == "none" {
+					f.methods("GET")
+				} else {
+					f.methods("GET", "PUT")
+					if f.requests[1].Path != "/zones/test-zone/dns_records/existing-1" {
+						t.Fatalf("PUT path = %s", f.requests[1].Path)
+					}
+				}
+				want := f.matching(remote.Comment)
+				want.Proxied = f.rec.Spec.Proxied
+				if f.records[0] != want {
+					t.Fatalf("record = %+v, want %+v", f.records[0], want)
+				}
+				f.status(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: remote.ID, OwnerComment: remote.Comment, Ready: true, Message: "reconciled"})
+			})
+		}
+	}
+}
+
+func TestCloudflareDNSMarkerLengthAndType(t *testing.T) {
+	for _, size := range []int{100, 101} {
+		t.Run(fmt.Sprintf("marker-%d", size), func(t *testing.T) {
+			f := newDNSFixture(t)
+			f.rec.Name = strings.Repeat("x", size-len("orama-operator:apps/"))
+			f.create()
+			f.wantReconcile(size > 100)
+			if size == 100 {
+				f.methods("GET", "POST")
+				if len(f.rec.Status.OwnerComment) != 100 {
+					t.Fatal("wrong marker length")
+				}
+			} else {
+				f.methods("GET")
+				if f.rec.Status.Ready || !strings.Contains(f.rec.Status.Message, "101 characters; maximum is 100") {
+					t.Fatalf("status = %+v", f.rec.Status)
+				}
+			}
+		})
+	}
+	for _, tc := range []struct{ content, explicit, want string }{
+		{"192.0.2.1", "", "A"}, {"lb.example.net", "", "CNAME"}, {"2001:db8::1", "", "A"}, {"2001:db8::1", "AAAA", "AAAA"},
+	} {
+		t.Run(tc.content+tc.explicit, func(t *testing.T) {
+			f := newDNSFixture(t)
+			f.rec.Spec.Content = tc.content
+			f.rec.Spec.Type = tc.explicit
+			// A query metacharacter must survive encoding, rather than becoming another filter.
+			f.rec.Spec.Name = "test+name&tag.oramadev.net"
+			f.create()
+			f.wantReconcile(false)
+			f.methods("GET", "POST")
+			if f.requests[1].Body.Type != tc.want {
+				t.Fatalf("type = %s, want %s", f.requests[1].Body.Type, tc.want)
+			}
+		})
+	}
+	t.Run("long-legacy-read", func(t *testing.T) {
+		f := newDNSFixture(t)
+		f.rec.Name = strings.Repeat("x", 100)
+		remote := f.matching("")
+		f.records = []cfDNSRecord{remote}
+		f.rec.Status.RecordID = remote.ID
+		f.create()
+		f.wantReconcile(false)
+		f.methods("GET")
+		f.status(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: remote.ID, Ready: true, Message: "reconciled"})
+	})
+}
+
+func TestCloudflareDNSDeletion(t *testing.T) {
+	for _, scenario := range []string{"owned", "legacy", "long-legacy", "lost-comment", "changed-comment", "marked-absent", "legacy-absent", "delete-404", "no-id", "nil-recorder"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newDNSFixture(t)
+			marker := cfDNSOwnerMarker(f.rec)
+			remote := f.matching(marker)
+			f.rec.Finalizers = []string{cfDNSFinalizer}
+			now := metav1.Now()
+			f.rec.DeletionTimestamp = &now
+			f.rec.Status = oramav1alpha1.CloudflareDNSRecordStatus{RecordID: remote.ID, OwnerComment: marker}
+			switch scenario {
+			case "legacy", "long-legacy", "legacy-absent":
+				f.rec.Status.OwnerComment = ""
+				remote.Comment = ""
+				if scenario == "long-legacy" {
+					f.rec.Name = strings.Repeat("x", 100)
+				}
+			case "lost-comment", "nil-recorder":
+				remote.Comment = ""
+			case "changed-comment":
+				remote.Comment = "someone-else"
+			case "no-id":
+				f.rec.Status = oramav1alpha1.CloudflareDNSRecordStatus{}
+			case "delete-404":
+				f.failMethod = "DELETE"
+				f.failCode = 404
+			}
+			if scenario == "nil-recorder" {
+				f.reconciler.Recorder = nil
+			}
+			if scenario != "marked-absent" && scenario != "legacy-absent" {
+				f.records = []cfDNSRecord{remote}
+			}
+			f.create()
+			f.wantReconcile(false)
+			var current oramav1alpha1.CloudflareDNSRecord
+			if err := f.reconciler.Get(context.Background(), client.ObjectKeyFromObject(f.rec), &current); !apierrors.IsNotFound(err) {
+				t.Fatalf("finalizer not released: %v %+v", err, current.Finalizers)
+			}
+			switch scenario {
+			case "owned", "delete-404":
+				f.methods("GET", "DELETE")
+			case "legacy", "long-legacy", "legacy-absent":
+				f.methods("DELETE")
+			case "no-id":
+				f.methods()
+			default:
+				f.methods("GET")
+			}
+			if scenario == "lost-comment" || scenario == "changed-comment" {
+				select {
+				case event := <-f.recorder.Events:
+					if !strings.Contains(event, "Warning RecordNotOwned") || !strings.Contains(event, remote.ID) || !strings.Contains(event, marker) || !strings.Contains(event, remote.Name) {
+						t.Fatalf("event = %s", event)
+					}
+				default:
+					t.Fatal("missing RecordNotOwned event")
+				}
+				if len(f.records) != 1 || f.records[0] != remote {
+					t.Fatal("unowned record changed")
+				}
+			}
+			if scenario == "owned" || scenario == "legacy" || scenario == "long-legacy" {
+				if len(f.records) != 0 {
+					t.Fatal("owned record survived cleanup")
+				}
+			}
+		})
+	}
+}
+
+func TestCloudflareDNSMissingCredentials(t *testing.T) {
+	for _, scenario := range []string{"missing-secret", "missing-token", "missing-zone", "empty-ref", "other-namespace", "deleting", "deleting-no-id"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newDNSFixture(t)
+			sec := &corev1.Secret{}
+			if err := f.reconciler.Get(context.Background(), client.ObjectKey{Namespace: "apps", Name: "cf"}, sec); err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "missing-token":
+				delete(sec.Data, "token")
+				if err := f.reconciler.Update(context.Background(), sec); err != nil {
+					t.Fatal(err)
+				}
+			case "missing-zone":
+				delete(sec.Data, "zoneID")
+				if err := f.reconciler.Update(context.Background(), sec); err != nil {
+					t.Fatal(err)
+				}
+			case "empty-ref":
+				f.rec.Spec.SecretRef = ""
+			case "other-namespace":
+				if err := f.reconciler.Delete(context.Background(), sec); err != nil {
+					t.Fatal(err)
+				}
+				sec.Namespace = "elsewhere"
+				sec.ResourceVersion = ""
+				if err := f.reconciler.Create(context.Background(), sec); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				f.rec.Spec.SecretRef = "absent"
+			}
+			marker := cfDNSOwnerMarker(f.rec)
+			f.rec.Status = oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "tracked", OwnerComment: marker, Ready: true, Message: "reconciled"}
+			if strings.HasPrefix(scenario, "deleting") {
+				f.rec.Finalizers = []string{cfDNSFinalizer}
+				now := metav1.Now()
+				f.rec.DeletionTimestamp = &now
+				if scenario == "deleting-no-id" {
+					f.rec.Status.RecordID = ""
+				}
+			}
+			f.create()
+			f.wantReconcile(scenario != "deleting-no-id")
+			f.methods()
+			if scenario == "deleting-no-id" {
+				return
+			}
+			f.status(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "tracked", OwnerComment: marker, Message: "waiting for Cloudflare credentials (token and zoneID) in spec.secretRef"})
+			if len(f.rec.Finalizers) != 1 {
+				t.Fatal("missing finalizer while waiting for credentials")
+			}
+		})
+	}
+}
+
+func TestCloudflareDNSAPIFailures(t *testing.T) {
+	for _, method := range []string{"GET", "POST", "PUT"} {
+		for _, code := range []int{403, 429, 500} {
+			t.Run(fmt.Sprintf("%s-%d", method, code), func(t *testing.T) {
+				f := newDNSFixture(t)
+				marker := cfDNSOwnerMarker(f.rec)
+				f.rec.Status = oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "tracked", OwnerComment: marker, Ready: true, Message: "reconciled"}
+				if method == "PUT" {
+					remote := f.matching(marker)
+					remote.Content = "old.example.net"
+					f.records = []cfDNSRecord{remote}
+				}
+				before := append([]cfDNSRecord(nil), f.records...)
+				f.failMethod = method
+				f.failCode = code
+				f.create()
+				_, err := f.reconcile()
+				var apiErr *cfAPIError
+				if !errors.As(err, &apiErr) || apiErr.StatusCode != code {
+					t.Fatalf("error = %v", err)
+				}
+				f.status(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "tracked", OwnerComment: marker, Message: err.Error()})
+				if method == "GET" {
+					f.methods("GET")
+				} else {
+					f.methods("GET", method)
+				}
+				if !reflect.DeepEqual(before, f.records) {
+					t.Fatal("API failure changed records")
+				}
+			})
+		}
+	}
+	for _, method := range []string{"GET", "DELETE"} {
+		for _, code := range []int{403, 429, 500} {
+			t.Run(fmt.Sprintf("deletion-%s-%d", method, code), func(t *testing.T) {
+				f := newDNSFixture(t)
+				remote := f.matching(cfDNSOwnerMarker(f.rec))
+				f.records = []cfDNSRecord{remote}
+				f.rec.Status = oramav1alpha1.CloudflareDNSRecordStatus{RecordID: remote.ID, OwnerComment: remote.Comment}
+				f.rec.Finalizers = []string{cfDNSFinalizer}
+				now := metav1.Now()
+				f.rec.DeletionTimestamp = &now
+				f.failMethod = method
+				f.failCode = code
+				f.create()
+				_, err := f.reconcile()
+				var apiErr *cfAPIError
+				if !errors.As(err, &apiErr) || apiErr.StatusCode != code {
+					t.Fatalf("error = %v", err)
+				}
+				if len(f.rec.Finalizers) != 1 || len(f.records) != 1 || f.records[0] != remote {
+					t.Fatal("failed cleanup released ownership")
+				}
+				if method == "GET" {
+					f.methods("GET")
+				} else {
+					f.methods("GET", "DELETE")
+				}
+			})
+		}
+	}
+	t.Run("empty-create-id", func(t *testing.T) {
+		f := newDNSFixture(t)
+		f.emptyCreateID = true
+		f.create()
+		_, err := f.reconcile()
+		if err == nil || !strings.Contains(err.Error(), "empty record ID") {
+			t.Fatalf("error = %v", err)
+		}
+		f.status(oramav1alpha1.CloudflareDNSRecordStatus{Message: err.Error()})
+		f.methods("GET", "POST")
+	})
+	for _, deleting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("transport/deleting=%t", deleting), func(t *testing.T) {
+			f := newDNSFixture(t)
+			f.rec.Status = oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "tracked", OwnerComment: cfDNSOwnerMarker(f.rec)}
+			if deleting {
+				f.rec.Finalizers = []string{cfDNSFinalizer}
+				now := metav1.Now()
+				f.rec.DeletionTimestamp = &now
+			}
+			// A closed local server is a deterministic connection refusal; never call the real API.
+			closed := httptest.NewServer(http.NotFoundHandler())
+			closed.Close()
+			cfAPIBase = closed.URL
+			f.create()
+			_, err := f.reconcile()
+			if err == nil {
+				t.Fatal("missing transport error")
+			}
+			if len(f.rec.Finalizers) != 1 || f.rec.Status.RecordID != "tracked" || f.rec.Status.OwnerComment == "" || f.rec.Status.Ready {
+				t.Fatalf("lost status/finalizer: %+v", f.rec)
+			}
+			f.methods()
+		})
+	}
+}
+
+// Exercise defaulting and status pruning against a real local API server: the fake
+// client alone cannot detect a metadata update restoring the proxied=true default.
+func TestCloudflareDNSAPIServerPreservesProxyAndOwnership(t *testing.T) {
+	assets := os.Getenv("KUBEBUILDER_ASSETS")
+	if assets == "" {
+		t.Skip("KUBEBUILDER_ASSETS is required for DNS API-server proof")
+	}
+	path, err := filepath.Abs("../../config/crd/bases/orama.cloud_cloudflarednsrecords.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := &envtest.Environment{BinaryAssetsDirectory: assets, CRDDirectoryPaths: []string{path}, ErrorIfCRDPathMissing: true}
+	config, err := environment.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := environment.Stop(); err != nil {
+			t.Errorf("stop DNS envtest: %v", err)
+		}
+	})
+	f := newDNSFixture(t)
+	kube, err := client.New(config, client.Options{Scheme: f.reconciler.Scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := kube.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: f.rec.Namespace}}); err != nil {
+		t.Fatal(err)
+	}
+	var secret corev1.Secret
+	if err := f.kube.Get(ctx, client.ObjectKey{Namespace: f.rec.Namespace, Name: f.rec.Spec.SecretRef}, &secret); err != nil {
+		t.Fatal(err)
+	}
+	secret.ResourceVersion = ""
+	if err := kube.Create(ctx, &secret); err != nil {
+		t.Fatal(err)
+	}
+	f.reconciler.Client = kube
+	f.create()
+	// Raw JSON represents the explicit false present in a user-supplied manifest.
+	if err := kube.Patch(ctx, f.rec, client.RawPatch(types.MergePatchType, []byte(`{"spec":{"proxied":false}}`))); err != nil {
+		t.Fatal(err)
+	}
+	f.wantReconcile(false)
+	marker := cfDNSOwnerMarker(f.rec)
+	f.status(oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "new-1", OwnerComment: marker, Ready: true, Message: "reconciled"})
+	f.methods("GET", "POST")
+	if f.rec.Spec.Proxied || f.records[0].Proxied {
+		t.Fatal("explicit proxied=false was replaced by the CRD default")
+	}
+	f.requests = nil
+	f.wantReconcile(false)
+	f.methods("GET")
+	if err := kube.Delete(ctx, f.rec); err != nil {
+		t.Fatal(err)
+	}
+	f.requests = nil
+	f.wantReconcile(false)
+	f.methods("GET", "DELETE")
+	var current oramav1alpha1.CloudflareDNSRecord
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(f.rec), &current); !apierrors.IsNotFound(err) {
+		t.Fatalf("finalizer not released: %v", err)
+	}
+	if len(f.records) != 0 {
+		t.Fatal("owned record survived deletion")
+	}
+}

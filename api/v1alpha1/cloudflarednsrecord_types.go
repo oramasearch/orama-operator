@@ -29,9 +29,13 @@ type CloudflareDNSRecordSpec struct {
 
 // CloudflareDNSRecordStatus is the observed state — the provisioned Cloudflare record.
 type CloudflareDNSRecordStatus struct {
-	// RecordID is the Cloudflare-assigned DNS record ID (set once created).
+	// RecordID is the Cloudflare ID created by this resource or tracked before comments.
 	// +optional
 	RecordID string `json:"recordID,omitempty"`
+	// OwnerComment is the exact ownership comment written on creation. Empty with a
+	// RecordID identifies a legacy record; reconciliation never adds a comment to it.
+	// +optional
+	OwnerComment string `json:"ownerComment,omitempty"`
 	// Ready is true once the record is reconciled in Cloudflare.
 	// +optional
 	Ready bool `json:"ready,omitempty"`
@@ -47,8 +51,8 @@ type CloudflareDNSRecordStatus struct {
 //+kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
 
 // CloudflareDNSRecord is a Cloudflare DNS record the operator provisions via the CF API,
-// owned by an OramaCloudV1 CR. A finalizer deletes the record from Cloudflare on delete, so
-// tearing down the CR cascades to real external cleanup.
+// optionally owned by a parent CR. It never adopts foreign records. Its finalizer deletes
+// only records still carrying its ownership comment, or pre-comment legacy status IDs.
 type CloudflareDNSRecord struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

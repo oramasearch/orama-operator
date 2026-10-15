@@ -31,8 +31,8 @@ spec:
       openAPIV3Schema:
         description: |-
           CloudflareDNSRecord is a Cloudflare DNS record the operator provisions via the CF API,
-          owned by an OramaCloudV1 CR. A finalizer deletes the record from Cloudflare on delete, so
-          tearing down the CR cascades to real external cleanup.
+          optionally owned by a parent CR. It never adopts foreign records. Its finalizer deletes
+          only records still carrying its ownership comment, or pre-comment legacy status IDs.
         properties:
           apiVersion:
             description: |-
@@ -88,12 +88,17 @@ spec:
             properties:
               message:
                 type: string
+              ownerComment:
+                description: |-
+                  OwnerComment is the exact ownership comment written on creation. Empty with a
+                  RecordID identifies a legacy record; reconciliation never adds a comment to it.
+                type: string
               ready:
                 description: Ready is true once the record is reconciled in Cloudflare.
                 type: boolean
               recordID:
-                description: RecordID is the Cloudflare-assigned DNS record ID (set
-                  once created).
+                description: RecordID is the Cloudflare ID created by this resource
+                  or tracked before comments.
                 type: string
             type: object
         type: object
