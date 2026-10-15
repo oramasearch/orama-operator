@@ -48,6 +48,13 @@ serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrast
 `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
 
+Engine startup budgets are fixed: **20 minutes for the writer** (`failureThreshold: 120`)
+and **40 minutes for readers** (`failureThreshold: 240`), both at a 10s period on
+`GET /health`, numeric port 8080. Startup gates readiness and liveness until it succeeds;
+these budgets add no mandatory delay. There are no per-side startup timeout fields.
+Readiness remains every 10s and liveness every 15s, both with a 3s timeout and failure
+threshold 3. See [engine health probes](components.md#engine-internalcontrollerenginego).
+
 ## `OramaCloudV1E2ETest` (separate CRD)
 
 Runs the **comprehensive functional e2e suite** as a Job against a deployed stack — a test is a
