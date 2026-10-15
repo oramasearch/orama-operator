@@ -671,11 +671,16 @@ instances onto managed clusters from one template, each member in its own namesp
 | `KubernetesClusterProviderReconciler` | `KubernetesClusterProvider` | Nothing; it checks the credentials and holds the provider while a cluster uses it |
 | `AksClusterReconciler` | `AksCluster` (concrete) | In Azure: a resource group and a managed cluster. In the cluster: the owned kubeconfig Secret |
 
-- **Only `azure_resource_manager.go` and `akscluster_controller.go` name Azure.** The abstract
+- **The AKS controller and its `azure_*.go` helpers own Azure API behavior.** The abstract
   controller maps the neutral fields and the provider's settings onto an `AksCluster` with a pure
   function, so the same pair always produces the same concrete resource.
 - **Create, observe and delete only.** A cluster is not changed after it exists; the `InSync`
-  condition reports what differs.
+  condition reports what differs. Node-pool `sysctls` pass from `KubernetesCluster` to
+  `AksCluster`, are validated before any Azure call, and map to typed
+  `linuxOSConfig.sysctls` fields using AKS API `2025-05-01`. Drift compares only explicit
+  settings and reports unknown values when Azure omits them. It does not probe node kernels.
+  See [node sysctls](infrastructure/node-sysctls.md) for the supported names and existing-pool
+  qualification gap.
 - **What goes on a new cluster** is installed by `ClusterHelmRelease` and `OramaOperator`, and
   its instances by `LakeSet` and `OramaCloudV1Set`
   ([`infrastructure/README.md`](infrastructure/README.md)).

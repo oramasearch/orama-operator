@@ -216,3 +216,12 @@ only after every cluster is cut over.
 - **A hostname that production traffic already uses is never pointed at a new cluster** without an
   explicit decision. Instances created so far use names in `oramadev.net`.
 - **Pull requests target `dev`.**
+
+## Configure node-pool sysctls
+
+Put kernel settings in `KubernetesCluster.spec.nodePools[].sysctls` before creating a
+cluster. Follow [node sysctls](node-sysctls.md) for supported names, evidence and rollout gates.
+For an existing cluster, a changed sysctl is reported by `InSync=False`; it is not applied.
+Adding a pool to an existing resource is also drift-only in this controller version.
+A supported update or a recoverable replacement/drain lifecycle needs a separate operator
+design before existing pools can be rolled out. No cluster rollout is qualified by unit tests.
