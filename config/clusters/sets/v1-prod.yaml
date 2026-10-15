@@ -33,20 +33,40 @@ spec:
       manageLoadBalancers: true
     components:
       analytics:
+        # Sizing BLOCKED (2026-10-14): ClickHouse Cloud history data used bytes and
+        # provisioned capacity are unmeasured; authorized usage-console/metric access missing.
+        # Need managed storage-usage metrics (or SELECT sum(bytes_on_disk) FROM system.parts
+        # WHERE active), plus the history-to-migrate decision; headroom remains undecided.
+        # storage.size intentionally omitted; 10Gi is a fallback, not measured production sizing.
         enabled: true
         mode: in-cluster
         placement: local
       analyticsProcessor:
         enabled: true
       broker:
+        # Sizing BLOCKED (2026-10-14): RabbitMQ data used bytes/capacity unmeasured;
+        # approved source-host access missing. Need read-only df -B1 at the data mount
+        # and du -sb of the RabbitMQ data directory; choose headroom after measuring.
+        # storage.size omitted; the 10Gi fallback is not measured production sizing.
         enabled: true
         mode: in-cluster
         placement: local
       cache:
+        # Sizing BLOCKED (2026-10-14): managed Redis dataset/storage used bytes
+        # and provisioned capacity unmeasured; approved Upstash usage-metric access missing.
+        # Need read-only database data-size/storage metrics, not host df; headroom undecided.
+        # storage.size omitted; the 10Gi fallback is not measured production sizing.
         enabled: true
         mode: in-cluster
         placement: local
       controlDB:
+        # Source (2026-10-14 PDT): Prod 1 managed control database,
+        # SELECT pg_database_size(current_database()) AS used_bytes via existing SELECT-only
+        # PlanetScale credential, verified TLS: 12,302,003 bytes (~0.01146 GiB).
+        # Managed provisioned capacity unavailable; no host-filesystem claim.
+        # Choose a 10Gi operational floor (~872x measured use, >50% growth headroom).
+        storage:
+          size: 10Gi
         enabled: true
         mode: in-cluster
         placement: local
@@ -63,6 +83,11 @@ spec:
         reader:
           replicas: 1
         writer:
+          # Sizing BLOCKED (2026-10-14): writer index-data used bytes unmeasured;
+          # reported provisioned 500Gi alone is insufficient and is not a usage measurement.
+          # Approved source-host access missing. Need read-only df -B1 at the writer data
+          # mount and du -sb of its data directory; choose headroom after measuring.
+          # storage.size omitted; the 10Gi fallback must not be used for the production copy.
           gpu: false
       ingestion:
         enabled: true
@@ -73,6 +98,10 @@ spec:
       pgAdmin:
         enabled: true
       search:
+        # Sizing BLOCKED (2026-10-14): Typesense data used bytes/provisioned capacity
+        # unmeasured; approved source usage-metric/host access missing. Need read-only
+        # service storage usage, or df -B1 and du -sb at the actual data mount/directory;
+        # choose headroom afterward. Omitted storage.size is not measured sizing.
         enabled: true
         mode: in-cluster
         placement: local

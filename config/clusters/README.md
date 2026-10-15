@@ -38,6 +38,11 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 The managing cluster, `orama-production-cluster-01`, was created by hand before these kinds
 existed and has no `KubernetesCluster` of its own.
 
+`sets/v1-prod.yaml` records component storage sources next to their settings. Missing usage
+measurements and the analytics history decision are explicit blockers before its first production
+apply; omitted sizes are defaults, not measured sizing. The approved `v1-dev` expansion proof must
+use `sets/v1-nonprod.yaml` and retain every successfully grown size there.
+
 No file here holds a secret. Secrets are named by reference and live on the managing cluster.
 
 To check that the files match the cluster:
