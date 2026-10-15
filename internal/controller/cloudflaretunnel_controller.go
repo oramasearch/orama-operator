@@ -69,7 +69,9 @@ func cloudflaredLabels(grantID string) map[string]string {
 // workspace. It never uses an Orama Cloudflare account.
 type CloudflareTunnelReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	// APIReader lists a target's pods uncached, to resolve a named target port. Nil cannot.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
 	// APIBase is the Cloudflare API base URL; empty means the public API. Tests point it at a fake.
 	APIBase string
 	// Image is the cloudflared image; empty means DefaultCloudflaredImage.
@@ -207,7 +209,7 @@ func (r *CloudflareTunnelReconciler) reconcileLive(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	target, err := resolveTunnelTarget(ctx, r.Client, tunnel.Spec.LakeRef, tunnel.Namespace, tunnel.Spec.TargetKind, tunnel.Spec.TargetID, tunnel.Spec.Port)
+	target, err := resolveTunnelTarget(ctx, r.Client, r.APIReader, tunnel.Spec.LakeRef, tunnel.Namespace, tunnel.Spec.TargetKind, tunnel.Spec.TargetID, tunnel.Spec.Port)
 	if err != nil {
 		if isPending(err) {
 			return ctrl.Result{}, err

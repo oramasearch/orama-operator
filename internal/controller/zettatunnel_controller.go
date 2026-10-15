@@ -206,7 +206,7 @@ func (r *ZettaTunnelReconciler) reconcileLive(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	target, err := resolveTunnelTarget(ctx, r.Client, tunnel.Spec.LakeRef, tunnel.Namespace, tunnel.Spec.TargetKind, tunnel.Spec.TargetID, tunnel.Spec.Port)
+	target, err := resolveTunnelTarget(ctx, r.Client, r.APIReader, tunnel.Spec.LakeRef, tunnel.Namespace, tunnel.Spec.TargetKind, tunnel.Spec.TargetID, tunnel.Spec.Port)
 	if err != nil {
 		if isPending(err) {
 			return ctrl.Result{}, err

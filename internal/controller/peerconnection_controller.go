@@ -90,7 +90,9 @@ func peerGatewaySelector(peer *oramav1alpha1.PeerConnection) map[string]string {
 // reach the exported targets.
 type PeerConnectionReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	// APIReader lists a target's pods uncached, to resolve a named target port. Nil cannot.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
 	// Image is the zetta-tunnel image; empty means DefaultZettaTunnelImage.
 	Image string
 }
@@ -297,9 +299,9 @@ func (r *PeerConnectionReconciler) resolveExports(ctx context.Context, peer *ora
 		var target tunnelTarget
 		var err error
 		if item.TargetKind == oramav1alpha1.PeerTargetKubernetesService {
-			target, err = resolveKubernetesServiceTarget(ctx, r.Client, peer.Namespace, item.ServiceName, item.Port)
+			target, err = resolveKubernetesServiceTarget(ctx, r.Client, r.APIReader, peer.Namespace, item.ServiceName, item.Port)
 		} else {
-			target, err = resolveTunnelTarget(ctx, r.Client, peer.Spec.LakeRef, peer.Namespace, item.TargetKind, item.TargetID, item.Port)
+			target, err = resolveTunnelTarget(ctx, r.Client, r.APIReader, peer.Spec.LakeRef, peer.Namespace, item.TargetKind, item.TargetID, item.Port)
 		}
 		if err != nil {
 			if isPending(err) {
@@ -328,7 +330,7 @@ func (r *PeerConnectionReconciler) resolveExports(ctx context.Context, peer *ora
 }
 
 // resolveKubernetesServiceTarget is a Service in namespace by name; its own selector selects its pods.
-func resolveKubernetesServiceTarget(ctx context.Context, c client.Client, namespace, name string, port int32) (tunnelTarget, error) {
+func resolveKubernetesServiceTarget(ctx context.Context, c client.Client, pods client.Reader, namespace, name string, port int32) (tunnelTarget, error) {
 	var service corev1.Service
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &service); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -350,7 +352,11 @@ func resolveKubernetesServiceTarget(ctx context.Context, c client.Client, namesp
 				podPort = servicePort.TargetPort.IntVal
 			}
 		case intstr.String:
-			return tunnelTarget{}, fmt.Errorf("Service %s port %d sends to the named port %q; a numbered target port is needed", name, port, servicePort.TargetPort.StrVal)
+			resolved, err := namedTargetPort(ctx, pods, namespace, &service, servicePort.TargetPort.StrVal)
+			if err != nil {
+				return tunnelTarget{}, err
+			}
+			podPort = resolved
 		}
 		return tunnelTarget{
 			Service: name, Host: fmt.Sprintf("%s.%s.svc.cluster.local", name, namespace), Port: port, PodPort: podPort,
