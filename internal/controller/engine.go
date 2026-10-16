@@ -374,6 +374,13 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		dep.Spec.Replicas = int32Ptr(replicas)
 		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 		c := oramacoreContainer(oc)
+		// A reader is Ready only once it has caught up with the stream head it saw at startup
+		// (oramacore#340). A reader whose replication history has expired exits with
+		// REPLICATION_HISTORY_EXPIRED and never goes Ready; liveness and startup stay on /health so
+		// it is not killed for that. The termination message carries the code into the pod status,
+		// where readerRefusalCause reads it.
+		c.ReadinessProbe.HTTPGet.Path = "/health/ready"
+		c.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError
 		if rd.Resources != nil {
 			c.Resources = *rd.Resources
 		} else {
