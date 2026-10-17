@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,9 +25,18 @@ import (
 // analyticsProcessorConfigYAML renders the config the `server` binary reads (config.rs). It
 // connects to ClickHouse + Postgres at startup, so these are the real in-cluster endpoints.
 // Secret values are __PLACEHOLDER__s the render init container substitutes — never in the CM —
-// inside single-quoted scalars, so renderEscFunc keeps every character of a value.
+// inside single-quoted scalars, so renderEscFunc keeps every character of a value. oramacores lists
+// the readers only (analyticsSources), each with the analytics key.
 func analyticsProcessorConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	n := oc.Name
+	var sources strings.Builder
+	for _, src := range analyticsSources(oc) {
+		fmt.Fprintf(&sources, `  - name: %s
+    api_url: %s
+    api_key: '%s'
+    enabled: true
+`, src.name, src.url, keyPlaceholder(analyticsKeyEnvName))
+	}
 	return fmt.Sprintf(`clickhouse:
   url: http://%s-analytics:8123
   user: default
@@ -37,32 +47,37 @@ func analyticsProcessorConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
   aggregated_search_table: oramacore_analytics_search_aggregated
 create_tables: true
 oramacores:
-  - name: oramacore_1
-    api_url: http://%s-writer:8080/v1/analytics
-    api_key: '__MASTER_API_KEY__'
-    enabled: true
-postgres:
+%spostgres:
   url: 'postgres://%s:__PG_PASSWORD__@%s-controldb-rw:5432/%s'
   schema: analytics
   runs_table: runs
   delta: 60m
-`, n, n, controlDBName, n, controlDBName)
+`, n, sources.String(), controlDBName, n, controlDBName)
 }
 
-// reconcileAnalyticsProcessor deploys analytics-processor (#5): the worker that pulls
+// analyticsSource is one oramacores entry: a reader's GET /v1/analytics.
+type analyticsSource struct{ name, url string }
+
+// analyticsSources is the readers analytics-processor imports from. Only readers record search
+// events (reader_side.analytics); the writer has none. It is the reader Service (port 80, through
+// Envoy when it runs), so one import drains only the reader it lands on; one entry per reader
+// through <cr>-reader-headless replaces it with the combined import (#388).
+func analyticsSources(oc *oramav1alpha1.OramaCloudV1) []analyticsSource {
+	return []analyticsSource{{name: "oramacore-reader", url: "http://" + oc.Name + "-reader/v1/analytics"}}
+}
+
+// reconcileAnalyticsProcessor deploys analytics-processor (#5): the worker that pulls the readers'
 // /v1/analytics into ClickHouse. Its `server` binary reads a YAML config FILE (CONFIG_PATH) and
 // connects to ClickHouse + Postgres at startup — so the operator renders that file via an init
-// container (ClickHouse password from the component Secret; the master key from
-// spec.masterAPIKeySecretRef, until its own analytics key replaces it (#419/#421); the
-// CNPG-generated Postgres password from the <cr>-controldb-app Secret) and mounts it. (The image is
-// also patched at build to bind 0.0.0.0:8080 instead of its hardcoded 127.0.0.1:8888.)
+// container and mounts it. The init container takes each value by secretKeyRef: the analytics key
+// from <cr>-analytics-api-key (#386), the ClickHouse password from the component Secret and the
+// CNPG-generated Postgres password from <cr>-controldb-app. Neither container loads the component
+// Secret whole, so a MASTER_API_KEY an older operator seeded there never reaches the pod: the
+// processor holds no master key. (The image is also patched at build to bind 0.0.0.0:8080 instead
+// of its hardcoded 127.0.0.1:8888.)
 func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.AnalyticsProcessor.Enabled {
 		return r.teardownByComponent(ctx, oc, "analytics-processor")
-	}
-	masterKey, ok := masterAPIKeySecret(oc)
-	if !ok {
-		return nil
 	}
 	img := componentImage(oc, "analytics-processor", "analytics-processor")
 	cmName := oc.Name + "-analytics-processor-config"
@@ -73,15 +88,21 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 	}); err != nil {
 		return err
 	}
+	componentSecret := componentSecretName(oc, "analytics-processor")
+	// The shared, non-secret ConfigMap only.
+	envFrom := []corev1.EnvFromSource{sharedConfigEnvFrom(oc)}
 	render := corev1.Container{
 		Name:  "render-config",
 		Image: img,
 		Command: []string{"sh", "-c", renderEscFunc + "sed" +
-			renderSubstitutions([]string{"CLICKHOUSE_PASSWORD", masterAPIKeyEnvName, "PG_PASSWORD"}) +
+			renderSubstitutions([]string{"CLICKHOUSE_PASSWORD", analyticsKeyEnvName, "PG_PASSWORD"}) +
 			" /tmpl/config.yaml > /etc/analytics-processor/config.yaml"},
-		EnvFrom: envFromFor(oc, "analytics-processor"),
-		Env: []corev1.EnvVar{masterAPIKeyEnv(oc), {Name: "PG_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: oc.Name + "-controldb-app"}, Key: "password"}}}},
+		EnvFrom: envFrom,
+		Env: []corev1.EnvVar{
+			analyticsKeyEnv(oc),
+			secretKeyEnv("CLICKHOUSE_PASSWORD", componentSecret, "CLICKHOUSE_PASSWORD"),
+			pgPasswordEnv(oc, "PG_PASSWORD"),
+		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "config-tmpl", MountPath: "/tmpl"},
 			{Name: "rendered-config", MountPath: "/etc/analytics-processor"},
@@ -92,10 +113,12 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 		image:          img,
 		port:           8080,
 		env:            []corev1.EnvVar{{Name: "CONFIG_PATH", Value: "/etc/analytics-processor/config.yaml"}},
+		envFrom:        envFrom,
 		resources:      resourcesOr(oc.Spec.Components.AnalyticsProcessor.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 		initContainers: []corev1.Container{render},
-		// The render init reads the master key (#307).
-		credentialSecrets: []string{masterKey},
+		// Every Secret the render init reads, so a changed analytics key, ClickHouse or Postgres
+		// password rolls the processor.
+		credentialSecrets: []string{analyticsKeySecretName(oc), componentSecret, controlDBAppSecret(oc)},
 		volumes: []corev1.Volume{
 			{Name: "config-tmpl", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{Name: cmName}}}},

@@ -436,7 +436,7 @@ func TestMasterAPIKeyConsumersUseTheReference(t *testing.T) {
 			h := newEngineHarness(t, oc, engineSecret(), stale.DeepCopy(), secretOf("shared-master", map[string]string{"token": "Pr0d-1:key/&#'\"\\"}))
 			h.mustRun()
 			tmpls := h.templates()
-			consumers := map[string]string{"writer": "render-config", "analytics-processor": "render-config",
+			consumers := map[string]string{"writer": "render-config",
 				"index-builder": "index-builder", "workers": "workers", "dashboard": "dashboard"}
 			if mode == "combined" {
 				consumers["reader"] = "render-config"
@@ -470,49 +470,6 @@ func TestMasterAPIKeyConsumersUseTheReference(t *testing.T) {
 				t.Errorf("Ready = %+v, want the master key accepted", got)
 			}
 		})
-	}
-}
-
-// analytics-processor's render-config keeps every byte of a punctuated master key.
-func TestAnalyticsProcessorRendersMasterKeyVerbatim(t *testing.T) {
-	values := map[string]string{"MASTER_API_KEY": `m&a#s\ter'"$(touch pwned)`, "CLICKHOUSE_PASSWORD": `c'h&#\`, "PG_PASSWORD": "pg-pass"}
-	h := newEngineHarness(t, stackOC(nil), engineSecret())
-	h.mustRun()
-	cm := &corev1.ConfigMap{}
-	h.get("v1-analytics-processor-config", cm)
-	dir := t.TempDir()
-	for _, d := range []string{"tmpl", "out"} {
-		if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(dir, "tmpl", "config.yaml"), []byte(cm.Data["config.yaml"]), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	init := containerIn(t, h.templates()["analytics-processor"].Spec, "render-config")
-	script := strings.NewReplacer("/tmpl/", dir+"/tmpl/", "/etc/analytics-processor/", dir+"/out/").Replace(init.Command[2])
-	cmd := exec.Command("sh", "-c", script)
-	cmd.Dir = dir
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-	for k, v := range values {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	if b, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("render-config: %v: %s", err, b)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
-		t.Fatal("render-config executed a value")
-	}
-	b, _ := os.ReadFile(filepath.Join(dir, "out", "config.yaml"))
-	doc := parseYAML(t, string(b))
-	if got := doc["oramacores"].([]any)[0].(map[string]any)["api_key"]; got != values["MASTER_API_KEY"] {
-		t.Errorf("api_key = %q, want the master key verbatim", got)
-	}
-	if got := doc["clickhouse"].(map[string]any)["password"]; got != values["CLICKHOUSE_PASSWORD"] {
-		t.Errorf("clickhouse.password = %q", got)
-	}
-	if got := doc["postgres"].(map[string]any)["url"].(string); !strings.Contains(got, ":pg-pass@v1-controldb-rw:5432/") {
-		t.Errorf("postgres.url = %q", got)
 	}
 }
 
@@ -695,7 +652,7 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			})
 			h := newEngineHarness(t, oc, engineSecret(), secretOf("unrelated", map[string]string{"X": "1"}))
 			h.mustRun()
-			masterReaders := []string{"analytics-processor", "dashboard", "index-builder", "workers", "writer"}
+			masterReaders := []string{"dashboard", "index-builder", "workers", "writer"}
 			if mode == "combined" {
 				masterReaders = append(masterReaders, "reader")
 			}
@@ -738,7 +695,7 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			steady("an unchanged reconcile")
 			h.setSecret("unrelated", "X", "2")
 			steady("an unrelated Secret change")
-			for _, name := range []string{"v1-cache-auth", "v1-broker-admin", testMasterSecret} {
+			for _, name := range []string{"v1-cache-auth", "v1-broker-admin", "v1-analytics-api-key", testMasterSecret} {
 				sec := h.secret(name)
 				sec.Labels = map[string]string{"touched": "yes"}
 				data := map[string][]byte{}
@@ -762,6 +719,13 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			rolled("a broker password change", []string{"broker", "harvest-master", "reader", "writer"})
 			h.setSecret(testMasterSecret, "MASTER_API_KEY", "rotated-master-0123")
 			rolled("a master key change", masterReaders)
+			// Only the reader-only config reads the analytics key; the writer never does.
+			analyticsReaders := []string{"analytics-processor"}
+			if mode == "side-only" {
+				analyticsReaders = append(analyticsReaders, "reader")
+			}
+			h.setSecret("v1-analytics-api-key", "ANALYTICS_API_KEY", "rotatedanalytics0123")
+			rolled("an analytics key change", analyticsReaders)
 			steady("a second unchanged reconcile")
 
 			// Pointing the reference at another Secret rolls the master key readers onto it.
@@ -824,6 +788,7 @@ func TestRequestsForSecretCredentials(t *testing.T) {
 	check("orama-system", "other", "orama-system/c")
 	check("orama-system", "a-broker-admin", "orama-system/a")
 	check("orama-system", "c-cache-auth", "orama-system/c")
+	check("orama-system", "a-analytics-api-key", "orama-system/a")
 	check("orama-system", "unrelated")
 	check("elsewhere", "shared", "elsewhere/a")
 
@@ -899,5 +864,195 @@ func TestE2ERunnerUsesTargetMasterKeyRef(t *testing.T) {
 	_ = cl.Get(context.Background(), client.ObjectKeyFromObject(job), again)
 	if !reflect.DeepEqual(again.Spec, job.Spec) {
 		t.Error("the existing Job was rewritten for a new reference")
+	}
+}
+
+// <cr>-analytics-api-key is generated once on every stack: Opaque, one 48-character hex
+// ANALYTICS_API_KEY, labelled credentials and controlled by the CR, so the owned-Secret watch
+// enqueues the CR on a change. Reconciling again and disabling and re-enabling analytics-processor
+// and ClickHouse keep it, and its consumers keep reading the same value.
+func TestGeneratedAnalyticsKey(t *testing.T) {
+	h := newEngineHarness(t, stackOC(func(o *oramav1alpha1.OramaCloudV1) {
+		withSideImages(o)
+		o.Spec.Components.Analytics = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
+	}), engineSecret())
+	h.mustRun()
+	key := h.secret("v1-analytics-api-key")
+	if key.Namespace != "orama-system" || key.Type != corev1.SecretTypeOpaque || len(key.Data) != 1 || !hex48.Match(key.Data["ANALYTICS_API_KEY"]) {
+		t.Fatalf("v1-analytics-api-key: namespace %q, type %q, %d keys, ANALYTICS_API_KEY length %d",
+			key.Namespace, key.Type, len(key.Data), len(key.Data["ANALYTICS_API_KEY"]))
+	}
+	if key.Labels[componentLabel] != credentialsComponent || !metav1.IsControlledBy(key, h.stored()) {
+		t.Errorf("component %q, controlled by the CR %v", key.Labels[componentLabel], metav1.IsControlledBy(key, h.stored()))
+	}
+	for _, other := range []string{"v1-broker-admin", "v1-cache-auth"} {
+		if string(h.secret(other).Data["password"]) == string(key.Data["ANALYTICS_API_KEY"]) {
+			t.Errorf("the analytics key equals %s's password", other)
+		}
+	}
+	before := h.templates()
+
+	h.mustRun()
+	if got := h.secret("v1-analytics-api-key"); got.ResourceVersion != key.ResourceVersion {
+		t.Error("a second reconcile changed v1-analytics-api-key")
+	}
+	if !reflect.DeepEqual(h.templates(), before) {
+		t.Error("a second reconcile changed a pod template")
+	}
+
+	h.updateCR(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.AnalyticsProcessor.Enabled, o.Spec.Components.Analytics.Enabled = false, false
+	})
+	h.mustRun()
+	if _, ok := h.templates()["analytics-processor"]; ok {
+		t.Fatal("disabling analytics-processor kept its Deployment")
+	}
+	h.updateCR(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.AnalyticsProcessor.Enabled, o.Spec.Components.Analytics.Enabled = true, true
+	})
+	h.mustRun()
+	if !reflect.DeepEqual(h.secret("v1-analytics-api-key").Data, key.Data) {
+		t.Error("disable and re-enable changed the analytics key")
+	}
+	after := h.templates()
+	for _, comp := range []string{"analytics-processor", "reader"} {
+		if after[comp].Annotations[credentialsHashKey] != before[comp].Annotations[credentialsHashKey] {
+			t.Errorf("the re-enabled stack's %s does not read the key it had", comp)
+		}
+	}
+}
+
+// An existing analytics key with a value of its own is used as it is.
+func TestExistingAnalyticsKeyIsKept(t *testing.T) {
+	existing := secretOf("v1-analytics-api-key", map[string]string{"ANALYTICS_API_KEY": "Custom-analytics_key.01~"})
+	h := newEngineHarness(t, stackOC(withSideImages), engineSecret(), existing.DeepCopy())
+	h.mustRun()
+	got := h.secret("v1-analytics-api-key")
+	if !reflect.DeepEqual(got.Data, existing.Data) {
+		t.Fatal("the existing analytics key was changed")
+	}
+	tmpls := h.templates()
+	if want := secretDataHash(h.secret("v1-broker-admin"), got); tmpls["reader"].Annotations[credentialsHashKey] != want {
+		t.Error("the readers do not carry the existing key's hash")
+	}
+	if want := secretDataHash(got, h.secret("v1-analytics-processor-secret")); tmpls["analytics-processor"].Annotations[credentialsHashKey] != want {
+		t.Error("analytics-processor does not carry the existing key's hash")
+	}
+}
+
+// An analytics key Secret without a usable ANALYTICS_API_KEY fails the reconcile, naming the
+// Secret and key, is left as it was, and no reader or processor starts with another key.
+func TestBrokenAnalyticsKeyFailsWithoutFallback(t *testing.T) {
+	for name, c := range map[string]struct {
+		data map[string]string
+		want string
+	}{
+		"missing key": {map[string]string{"other": "x"}, "credential Secret orama-system/v1-analytics-api-key has no key ANALYTICS_API_KEY"},
+		"empty value": {map[string]string{"ANALYTICS_API_KEY": ""}, "credential Secret orama-system/v1-analytics-api-key key ANALYTICS_API_KEY is empty"},
+		"line break":  {map[string]string{"ANALYTICS_API_KEY": "line\nbreak"}, "key ANALYTICS_API_KEY holds characters outside"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := secretOf("v1-analytics-api-key", c.data)
+			h := newEngineHarness(t, stackOC(withSideImages), engineSecret(), bad.DeepCopy())
+			if err := h.run(); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Reconcile = %v, want an error naming %q", err, c.want)
+			}
+			if ready := h.readyCondition(); ready == nil || ready.Status != metav1.ConditionFalse || !strings.Contains(ready.Message, c.want) {
+				t.Fatalf("Ready = %+v, want False naming %q", ready, c.want)
+			}
+			if got := h.secret("v1-analytics-api-key"); !reflect.DeepEqual(got.Data, bad.Data) {
+				t.Error("the broken Secret was rewritten")
+			}
+			for comp := range h.templates() {
+				t.Errorf("%s was created with an unusable analytics key", comp)
+			}
+		})
+	}
+}
+
+// Two writers creating <cr>-analytics-api-key at once: the operator loses the race, and the readers
+// and processor read the winner.
+func TestAnalyticsKeyCreateRace(t *testing.T) {
+	s := ocv1TestScheme(t)
+	oc := stackOC(withSideImages)
+	winner := secretOf("v1-analytics-api-key", map[string]string{"ANALYTICS_API_KEY": strings.Repeat("cd", 24)})
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(oc, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": testMasterKey})).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if sec, ok := obj.(*corev1.Secret); ok && sec.Name == winner.Name {
+					if err := c.Create(ctx, winner.DeepCopy()); err != nil {
+						return err
+					}
+					return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "secrets"}, sec.Name)
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &OramaCloudV1Reconciler{Client: cl, Scheme: s}
+	ctx := context.Background()
+	if err := r.reconcileBootstrap(ctx, oc); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if err := r.reconcileEngine(ctx, oc); err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	if err := r.reconcileAnalyticsProcessor(ctx, oc); err != nil {
+		t.Fatalf("analytics-processor: %v", err)
+	}
+	got := &corev1.Secret{}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(winner), got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Data, winner.Data) {
+		t.Fatal("the operator overwrote the Secret that won the race")
+	}
+	broker, component := &corev1.Secret{}, &corev1.Secret{}
+	for name, sec := range map[string]*corev1.Secret{"v1-broker-admin": broker, "v1-analytics-processor-secret": component} {
+		if err := cl.Get(ctx, types.NamespacedName{Namespace: "orama-system", Name: name}, sec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sts, dep := &appsv1.StatefulSet{}, &appsv1.Deployment{}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: "orama-system", Name: "v1-reader"}, sts); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: "orama-system", Name: "v1-analytics-processor"}, dep); err != nil {
+		t.Fatal(err)
+	}
+	if sts.Spec.Template.Annotations[credentialsHashKey] != secretDataHash(broker, got) {
+		t.Error("the readers' hash is not the winning Secret's")
+	}
+	if dep.Spec.Template.Annotations[credentialsHashKey] != secretDataHash(got, component) {
+		t.Error("the processor's hash is not the winning Secret's")
+	}
+}
+
+// A read or create error on the analytics key fails bootstrap with that error and creates no
+// consumer.
+func TestAnalyticsKeyReadAndCreateErrors(t *testing.T) {
+	boom := errors.New("boom")
+	for name, funcs := range map[string]interceptor.Funcs{
+		"read": {Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Secret); ok && key.Name == "v1-analytics-api-key" {
+				return boom
+			}
+			return c.Get(ctx, key, obj, opts...)
+		}},
+		"create": {Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if obj.GetName() == "v1-analytics-api-key" {
+				return boom
+			}
+			return c.Create(ctx, obj, opts...)
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := ocv1TestScheme(t)
+			oc := stackOC(withSideImages)
+			cl := fake.NewClientBuilder().WithScheme(s).WithObjects(oc).WithInterceptorFuncs(funcs).Build()
+			r := &OramaCloudV1Reconciler{Client: cl, Scheme: s}
+			if err := r.reconcileBootstrap(context.Background(), oc); !errors.Is(err, boom) || !strings.Contains(err.Error(), "v1-analytics-api-key") {
+				t.Fatalf("bootstrap = %v, want the %s error naming the Secret", err, name)
+			}
+		})
 	}
 }

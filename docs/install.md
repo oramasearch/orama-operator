@@ -266,8 +266,8 @@ Image selection is independent of the manager chart values:
 Component Secrets are named `v1-<component>-secret` (for example, `v1-engine-secret`). The
 operator seeds missing keys with development values while preserving existing values. Supply
 real values for enabled integrations; the operator rolls the consumers of a Secret it watches when
-a value changes. The broker and Redis passwords are generated (`v1-broker-admin`, `v1-cache-auth`),
-and the engine master key is never generated: name a supplied Secret in
+a value changes. The broker and Redis passwords and the readers' analytics key are generated
+(`v1-broker-admin`, `v1-cache-auth`, `v1-analytics-api-key`), and the engine master key is never generated: name a supplied Secret in
 `spec.masterAPIKeySecretRef`, or the writer and readers stay at zero replicas. The external
 Cloudflare and SaaS prerequisites are detailed in [provisioning-runbook.md](provisioning-runbook.md);
 the field reference is [crd-reference.md](crd-reference.md). These credentials do not grant

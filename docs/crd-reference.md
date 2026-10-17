@@ -106,8 +106,7 @@ spec:
 ```
 
 Consumers: the writer's render-config (`writer_side.master_api_key`; the reader-only config has
-none, the combined config gives it to the readers too), analytics-processor's render-config (until
-its own analytics key, #419/#421), index-builder, workers, the dashboard and the
+none, the combined config gives it to the readers too), index-builder, workers, the dashboard and the
 `OramaCloudV1E2ETest` runner. Each receives an explicit `secretKeyRef`, which wins over a
 `MASTER_API_KEY` an older `<cr>-<component>-secret` still holds. The value must equal the target
 control database's `oramacore_clusters.master_api_key`, which the dashboard uses for administrative
@@ -130,8 +129,8 @@ never the value:
 
 The CR is checked again every 20 seconds and on every event of the referenced Secret, and the
 configured replica counts return once the key is valid, with no spec edit. With the engine
-disabled only the name is required, and only when analytics-processor, ingestion, workers or the
-dashboard is enabled; those consumers are not created or changed without it.
+disabled only the name is required, and only when ingestion, workers or the dashboard is enabled
+(analytics-processor holds the generated analytics key instead, #386); those consumers are not created or changed without it.
 
 **A changed key rolls its consumers.** Each consumer's pod template carries
 `orama.cloud/credentials-hash` over the Secrets it reads, so a changed value, or a reference to

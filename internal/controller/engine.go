@@ -175,12 +175,16 @@ func (r *OramaCloudV1Reconciler) holdEngine(ctx context.Context, oc *oramav1alph
 }
 
 // engineCredentialSecrets is the credential Secrets a side's render-config reads: <cr>-broker-admin,
-// and the master API key Secret where the side's template holds master_api_key.
+// the master API key Secret where the side's template holds master_api_key, and
+// <cr>-analytics-api-key where it holds reader_side.analytics (the reader-only config).
 func engineCredentialSecrets(oc *oramav1alpha1.OramaCloudV1, side engineSide) []string {
 	names := []string{brokerAdminSecretName(oc)}
 	if side.readsMasterAPIKey() {
 		name, _ := masterAPIKeyRef(oc)
 		names = append(names, name)
+	}
+	if side.readsAnalyticsKey() {
+		names = append(names, analyticsKeySecretName(oc))
 	}
 	return names
 }
@@ -208,6 +212,12 @@ type engineSide struct {
 // writer's and the combined config do (writer_side.master_api_key), the reader-only config does not.
 func (s engineSide) readsMasterAPIKey() bool {
 	return strings.Contains(s.template, keyPlaceholder(masterAPIKeyEnvName))
+}
+
+// readsAnalyticsKey reports whether the side's template holds the analytics key placeholder: only
+// the reader-only config does (reader_side.analytics.api_key).
+func (s engineSide) readsAnalyticsKey() bool {
+	return strings.Contains(s.template, keyPlaceholder(analyticsKeyEnvName))
 }
 
 // engineSideFor resolves the "writer" or "reader" side. With side-only images each side renders its
@@ -281,10 +291,36 @@ func oramacoreWriterConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	return engineCommonYAML() + writerSideYAML(oc) + aiServerYAML(oc)
 }
 
-// oramacoreReaderConfigYAML is the reader-only image's config: no writer_side.
+// oramacoreReaderConfigYAML is the reader-only image's config: no writer_side, and the analytics
+// block appended inside reader_side. The combined config has no analytics block.
 func oramacoreReaderConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
-	return engineCommonYAML() + readerSideYAML(oc) + aiServerYAML(oc)
+	return engineCommonYAML() + readerSideYAML(oc) + readerAnalyticsYAML + aiServerYAML(oc)
 }
+
+// readerAnalyticsYAML is reader_side.analytics, as Prod 1 sets it on its readers (#386). With it a
+// reader logs search events under its data_dir and serves them once on GET /v1/analytics, which
+// erases what it returns; analytics-processor polls that endpoint. api_key is the
+// __ANALYTICS_API_KEY__ placeholder render-config fills from <cr>-analytics-api-key, and
+// metadata_from_headers is Prod 1's list, required by OramaCore (no default). A request without these
+// headers is still served.
+const readerAnalyticsYAML = `  analytics:
+    api_key: '__ANALYTICS_API_KEY__'
+    metadata_from_headers:
+      - header: user-agent
+        metadata_key: ua
+      - header: CF-Connecting-IP
+        metadata_key: ip
+      - header: CF-IPCountry
+        metadata_key: country
+      - header: continent
+        metadata_key: continent
+      - header: colo
+        metadata_key: colo
+      - header: latitude
+        metadata_key: latitude
+      - header: longitude
+        metadata_key: longitude
+`
 
 // engineCommonYAML is the http and log sections every OramaCore config carries.
 func engineCommonYAML() string {
@@ -452,14 +488,18 @@ func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 // CONFIG_PATH, so the credentials stay out of the ConfigMap while the reviewable config lives in one.
 // Explicit env entries, which take precedence over envFrom, carry MASTER_API_KEY from
 // spec.masterAPIKeySecretRef where the side reads it, the broker credentials from
-// <cr>-broker-admin, and a provider's key from its apiKeySecretRef; the other provider keys come
-// from the engine Secret (envFrom). See renderConfigScript and llmKeySecretEnv.
+// <cr>-broker-admin, ANALYTICS_API_KEY from <cr>-analytics-api-key on the reader-only config, and a
+// provider's key from its apiKeySecretRef; the other provider keys come from the engine Secret
+// (envFrom). See renderConfigScript and llmKeySecretEnv.
 func renderConfigInit(oc *oramav1alpha1.OramaCloudV1, side engineSide) corev1.Container {
 	var env []corev1.EnvVar
 	if side.readsMasterAPIKey() {
 		env = append(env, masterAPIKeyEnv(oc))
 	}
 	env = append(env, brokerCredentialEnv(oc)...)
+	if side.readsAnalyticsKey() {
+		env = append(env, analyticsKeyEnv(oc))
+	}
 	return corev1.Container{
 		Name:    "render-config",
 		Image:   "busybox:1.37",
