@@ -49,7 +49,7 @@ func stackOC(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCloudV1 
 		c.Cache = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
 		c.Ingestion = oramav1alpha1.IngestionSpec{Enabled: true, Harvest: true}
 		c.Workers = oramav1alpha1.WorkersSpec{Enabled: true}
-		c.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
+		c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true}}
 		c.AnalyticsProcessor = oramav1alpha1.Toggle{Enabled: true}
 		if mut != nil {
 			mut(o)

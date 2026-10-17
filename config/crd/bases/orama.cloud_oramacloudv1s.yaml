@@ -641,11 +641,256 @@ spec:
                     - enabled
                     type: object
                   dashboard:
-                    description: ToggleWithHost is a toggle plus an ingress host.
+                    description: |-
+                      DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and
+                      ConfigMaps in the instance's namespace (operator#311). Precedence, lowest to highest: the
+                      operator's envFrom (<cr>-config, <cr>-dashboard-secret, <cr>-jwt), envFrom, the operator's
+                      explicit env, env. DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER
+                      and MASTER_API_KEY belong to the operator: supplying one through either field fails the reconcile.
                     properties:
+                      crons:
+                        description: |-
+                          Crons runs the dashboard's scheduled calls (Prod 1's Vercel crons) as CronJobs, and optionally
+                          the e2e canary (operator#17). Off unless enabled; requires the dashboard enabled.
+                        properties:
+                          e2eCanary:
+                            description: |-
+                              E2ECanary runs Prod 1's e2e canary (every five minutes) and its collection prune (daily at
+                              04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. Removing it deletes the
+                              CronJob and its state volume.
+                            properties:
+                              image:
+                                description: |-
+                                  Image runs monitor-test (oramacore-test-e2e) and provides /bin/sh, curl and jq for the prune.
+                                  It must be pinned to a digest (name@sha256:<64 hex>). Without a pinned image the CronJob is
+                                  not created and status.conditions[E2ECanary] says why.
+                                pattern: ^[^@\s]+@sha256:[a-f0-9]{64}$
+                                type: string
+                              secretRef:
+                                description: |-
+                                  SecretRef names a Secret in the instance's namespace with the non-empty keys collectionID,
+                                  indexID and apiKey: the canary collection, its index, and the project's private API key.
+                                  Delivered through the set's secrets list.
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              suspend:
+                                default: true
+                                description: Suspend is copied to the CronJob's spec.suspend.
+                                type: boolean
+                            required:
+                            - secretRef
+                            type: object
+                            x-kubernetes-validations:
+                            - message: dashboard.crons.e2eCanary.secretRef needs a
+                                name
+                              rule: has(self.secretRef.name) && size(self.secretRef.name)
+                                > 0
+                          enabled:
+                            description: Enabled creates the three CronJobs. Disabling
+                              deletes them.
+                            type: boolean
+                          suspend:
+                            default: true
+                            description: |-
+                              Suspend is copied to the three CronJobs' spec.suspend. It stops new runs and does not cancel
+                              a run already in progress.
+                            type: boolean
+                        type: object
+                        x-kubernetes-validations:
+                        - message: dashboard.crons.e2eCanary requires dashboard.crons
+                            enabled
+                          rule: '!has(self.e2eCanary) || (has(self.enabled) && self.enabled)'
                       enabled:
                         default: true
                         type: boolean
+                      env:
+                        description: |-
+                          Env adds variables after the operator's explicit env (e.g. STRIPE_SECRET_KEY from a
+                          secretKeyRef). An entry with the same name as an operator variable replaces it; for a name
+                          listed twice the last entry wins. A non-optional secretKeyRef or configMapKeyRef whose object
+                          or key is missing fails the reconcile; a change to the selected key rolls the dashboard.
+                        items:
+                          description: EnvVar represents an environment variable present
+                            in a Container.
+                          properties:
+                            name:
+                              description: Name of the environment variable. Must
+                                be a C_IDENTIFIER.
+                              type: string
+                            value:
+                              description: |-
+                                Variable references $(VAR_NAME) are expanded
+                                using the previously defined environment variables in the container and
+                                any service environment variables. If a variable cannot be resolved,
+                                the reference in the input string will be unchanged. Double $$ are reduced
+                                to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e.
+                                "$$(VAR_NAME)" will produce the string literal "$(VAR_NAME)".
+                                Escaped references will never be expanded, regardless of whether the variable
+                                exists or not.
+                                Defaults to "".
+                              type: string
+                            valueFrom:
+                              description: Source for the environment variable's value.
+                                Cannot be used if value is not empty.
+                              properties:
+                                configMapKeyRef:
+                                  description: Selects a key of a ConfigMap.
+                                  properties:
+                                    key:
+                                      description: The key to select.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                fieldRef:
+                                  description: |-
+                                    Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,
+                                    spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.
+                                  properties:
+                                    apiVersion:
+                                      description: Version of the schema the FieldPath
+                                        is written in terms of, defaults to "v1".
+                                      type: string
+                                    fieldPath:
+                                      description: Path of the field to select in
+                                        the specified API version.
+                                      type: string
+                                  required:
+                                  - fieldPath
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                resourceFieldRef:
+                                  description: |-
+                                    Selects a resource of the container: only resources limits and requests
+                                    (limits.cpu, limits.memory, limits.ephemeral-storage, requests.cpu, requests.memory and requests.ephemeral-storage) are currently supported.
+                                  properties:
+                                    containerName:
+                                      description: 'Container name: required for volumes,
+                                        optional for env vars'
+                                      type: string
+                                    divisor:
+                                      anyOf:
+                                      - type: integer
+                                      - type: string
+                                      description: Specifies the output format of
+                                        the exposed resources, defaults to "1"
+                                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                      x-kubernetes-int-or-string: true
+                                    resource:
+                                      description: 'Required: resource to select'
+                                      type: string
+                                  required:
+                                  - resource
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                secretKeyRef:
+                                  description: Selects a key of a secret in the pod's
+                                    namespace
+                                  properties:
+                                    key:
+                                      description: The key of the secret to select
+                                        from.  Must be a valid secret key.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the Secret or its
+                                        key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                              type: object
+                          required:
+                          - name
+                          type: object
+                        type: array
+                      envFrom:
+                        description: |-
+                          EnvFrom adds Secrets and ConfigMaps (in the instance's namespace) after the operator's own
+                          envFrom sources, so a key here overrides the shared ConfigMap and the seeded dashboard Secret,
+                          and a later entry overrides an earlier one. It never overrides the operator's explicit env.
+                          Each entry sets exactly one of secretRef and configMapRef. A missing object fails the
+                          reconcile unless the reference is optional. A change to a referenced object rolls the
+                          dashboard (pod-template annotation orama.cloud/dashboard-env-hash).
+                        items:
+                          description: EnvFromSource represents the source of a set
+                            of ConfigMaps
+                          properties:
+                            configMapRef:
+                              description: The ConfigMap to select from
+                              properties:
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap must
+                                    be defined
+                                  type: boolean
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            prefix:
+                              description: An optional identifier to prepend to each
+                                key in the ConfigMap. Must be a C_IDENTIFIER.
+                              type: string
+                            secretRef:
+                              description: The Secret to select from
+                              properties:
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the Secret must be
+                                    defined
+                                  type: boolean
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
+                        type: array
                       extraHosts:
                         description: |-
                           ExtraHosts are further names the component's Ingress answers, each routed to the same backend
@@ -718,6 +963,10 @@ spec:
                     required:
                     - enabled
                     type: object
+                    x-kubernetes-validations:
+                    - message: dashboard.crons requires the dashboard enabled
+                      rule: '!has(self.crons) || !has(self.crons.enabled) || !self.crons.enabled
+                        || (has(self.enabled) && self.enabled)'
                   disco:
                     description: Toggle is a simple on/off component.
                     properties:

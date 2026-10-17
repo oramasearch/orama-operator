@@ -56,6 +56,19 @@ The DNS records the operator makes for a member's dashboard, writer and reader h
 the zone of the Secret's `zoneID`, so every host a member publishes must be in that one zone
 ([public hosts](../../docs/crd-reference.md#public-writer-and-reader-hosts-enginewriterhost-enginereaderhost)).
 
+A set's `spec.secrets` list copies each named Secret from there into every member's namespace (for
+example the dashboard's environment Secret, which the set's template references in
+`components.dashboard.envFrom`); see
+[the dashboard's environment](../../docs/components.md#the-dashboards-environment). The e2e canary's
+Secret (`components.dashboard.crons.e2eCanary.secretRef`) arrives the same way. Creating or
+changing a source Secret is a write on the managing cluster and needs Steve's consent.
+
+The dashboard crons and the e2e canary are created suspended. Their `suspend` fields change only in
+a set file, committed and applied to the managing cluster; production unsuspends them in the cutover
+step that stops Prod 1's crons (see
+[the dashboard's scheduled jobs](../../docs/components.md#the-dashboards-scheduled-jobs)). Never
+edit, patch or create the CronJobs themselves.
+
 To check that the files match the cluster:
 
 ```sh

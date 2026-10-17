@@ -154,7 +154,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
 | `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,hpa,resources}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
-| `dashboard` | `host`, `extraHosts` | app.orama.com (Next.js) |
+| `dashboard` | `host`, `extraHosts`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host`, `extraHosts` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store | PlanetScale → CloudNativePG |
@@ -365,6 +365,142 @@ writer_side:
         audiences: ["https://writer.a.example", "https://writer.b.example"]
         refresh_interval: 1h
 ```
+
+### `spec.components.dashboard`
+
+The dashboard's toggle and hosts (`enabled`, `host`, `extraHosts`, `resources`, as for `docs`), plus
+the rest of its environment from Secrets and ConfigMaps in the instance's namespace
+([operator#311](https://github.com/oramasearch/orama-operator/issues/311)).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `envFrom` | `[]EnvFromSource` | Secrets (`secretRef`) and ConfigMaps (`configMapRef`), each with an optional `prefix` and `optional`. Appended after the operator's own sources (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`), so a key here overrides the shared ConfigMap and the seeded dashboard Secret, and a later entry overrides an earlier one. |
+| `env` | `[]EnvVar` | Variables as in a container: a `value`, or `valueFrom` with `secretKeyRef`, `configMapKeyRef`, `fieldRef` or `resourceFieldRef`. Appended after the operator's explicit env; an entry with the same name as an operator variable replaces it, and for a name listed twice the last entry wins, so each name appears once. |
+
+```yaml
+spec:
+  components:
+    dashboard:
+      enabled: true
+      envFrom:
+        - secretRef:
+            name: dashboard-extra
+      env:
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: stripe-test
+              key: api-key
+```
+
+**Precedence**, lowest to highest: the operator's envFrom, `envFrom`, the operator's explicit env
+(`MASTER_API_KEY` from `spec.masterAPIKeySecretRef`, `POSTGRES_PASSWORD`, `DATABASE_URL`), `env`.
+
+**Refused variables.** `DATABASE_URL`, `POSTGRES_PASSWORD`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`,
+`JWT_ISSUER` and `MASTER_API_KEY` belong to the operator (the control DB, the generated `<cr>-jwt`, the
+operator's JWT issuer, and `spec.masterAPIKeySecretRef`). Naming one in `env`, or carrying one as a key of an `envFrom` source after
+its `prefix` (`prefix: JWT_` with key `PRIVATE_KEY` is `JWT_PRIVATE_KEY`), fails the reconcile, even
+when a later entry would shadow it and even when the source is `optional`.
+
+**References.** Each `envFrom` entry sets exactly one of `secretRef` and `configMapRef`, with a name;
+each key selector in `env` sets a name and a key. References are local to the instance's namespace.
+A missing object, or a missing key behind a `secretKeyRef`/`configMapKeyRef`, fails the reconcile
+unless the reference is `optional: true`; `optional` covers only a missing object or key, never a read
+error or a refused variable. An empty value is a present value. Optional references stay in the
+container as written, so Kubernetes applies its usual semantics. ConfigMap `binaryData` never reaches
+the environment and is neither read nor hashed.
+
+Every failure sets `Ready=False` (`ReconcileError`) with a message such as `dashboard:
+dashboard.envFrom[0] (Secret extra) sets MASTER_API_KEY, which the operator owns (it comes from
+spec.masterAPIKeySecretRef); remove it` or `dashboard:
+dashboard.envFrom[0]: Secret orama-system/extra does not exist`, naming the field index, the object and
+the variable, never a value. The check runs before the dashboard Deployment is written, so the
+running dashboard keeps its last valid template. Fixing the spec or (re)creating the object recovers
+on the next reconcile, which the watch below triggers. A disabled dashboard is torn down without
+reading or checking either field.
+
+**Rolling on change.** The pod template carries `orama.cloud/dashboard-env-hash`: the SHA-256 (64
+lowercase hex characters) of the data of every `envFrom` source and of the selected key behind every
+`env` key selector, with each object's kind, name, order, prefix and selected key, and whether an
+optional object or key is present. The controller watches the referenced Secrets and ConfigMaps,
+owned or not, so a changed value, a created or deleted optional source, or an added or removed
+selected key rolls the dashboard. Metadata changes and unselected keys of a selector-only object do
+not. The annotation holds a hash only; values are written nowhere else. With no Secret or ConfigMap
+reference the annotation is absent, so a dashboard with neither field set keeps the template it had
+before these fields existed.
+
+How the environment Secret reaches each cluster is in
+[components.md](components.md#the-dashboards-environment).
+
+#### `spec.components.dashboard.crons`
+
+Prod 1's scheduled jobs as CronJobs in the stack
+([operator#17](https://github.com/oramasearch/orama-operator/issues/17)): the dashboard's three
+Vercel crons and, optionally, the e2e canary from Prod 1's AWS crons host. Omitted, it creates
+nothing. `dashboard_crons.go`; behaviour and the Prod 1 inventory are in
+[components.md](components.md#the-dashboards-scheduled-jobs).
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | `bool` | `false` | Creates the three dashboard CronJobs; `false` deletes them, and the canary with them. |
+| `suspend` | `*bool` | `true` | Copied to the three CronJobs' `spec.suspend`. Stops new runs; a run in progress finishes. |
+| `e2eCanary.image` | `string` | none | The canary image, pinned to a digest (`name@sha256:<64 hex>`; the CRD refuses anything else). It runs `monitor-test` and provides `/bin/sh`, `curl` and `jq` for the prune. Unset, the canary CronJob is not created and `status.conditions[E2ECanary]` says so. |
+| `e2eCanary.secretRef.name` | `string` | required | A Secret in the instance's namespace with non-empty keys `collectionID`, `indexID` and `apiKey` (the canary project's private API key), delivered through the set's `secrets` list. |
+| `e2eCanary.suspend` | `*bool` | `true` | Copied to `<cr>-e2e-canary`'s `spec.suspend`, independently of `suspend`. |
+
+The schedules are Prod 1's and fixed, in UTC:
+
+| CronJob | Calls | Schedule |
+|---|---|---|
+| `<cr>-dashboard-cron-crawler` | `GET http://<cr>-dashboard:3000/api/private/v1/run-crawler-cron` | `*/1 * * * *` |
+| `<cr>-dashboard-cron-index-gc` | `GET http://<cr>-dashboard:3000/api/private/v1/run-index-gc-cron` | `0 * * * *` |
+| `<cr>-dashboard-cron-consumption-sync` | `GET http://<cr>-dashboard:3000/api/billing/queue-consumption-sync` | `0 */6 * * *` |
+| `<cr>-e2e-canary` | `monitor-test`, then the collection prune once a day after 04:30 | `*/5 * * * *` |
+
+```yaml
+spec:
+  components:
+    dashboard:
+      enabled: true
+      envFrom:
+        - secretRef:
+            name: v1-prod-dashboard-env   # holds CRON_SECRET
+      crons:
+        enabled: true
+        suspend: true
+        e2eCanary:
+          image: oramasearch/oramacore-test-e2e@sha256:<digest>
+          secretRef:
+            name: v1-prod-e2e-canary
+          suspend: true
+```
+
+**Admission.** `crons.enabled: true` needs `dashboard.enabled: true` (`dashboard.crons requires the
+dashboard enabled`), and `e2eCanary` needs `crons.enabled: true`. To turn a running dashboard off,
+commit `dashboard.enabled: false`, `crons.enabled: false` and no `e2eCanary` together. The reconcile
+repeats the first rule for objects that bypassed admission: it deletes the crons and the dashboard,
+then reports the error.
+
+**`CRON_SECRET`.** Each dashboard CronJob reads `CRON_SECRET` through a `secretKeyRef` to the Secret
+key the dashboard itself reads it from, so the two cannot drift. When `dashboard.env` names
+`CRON_SECRET` (its last entry wins), that entry must be a `secretKeyRef` and the CronJobs use the same
+Secret and key. Otherwise the last `envFrom` source holding `CRON_SECRET` after its `prefix` wins, and it
+must be a Secret: with `prefix: CRON_`, key `SECRET` is selected. A literal, a ConfigMap or a `fieldRef`
+winning is an error, even if an earlier Secret also holds the key. The selected Secret must exist and
+the key must be non-empty, even when the dashboard's reference is `optional`.
+
+**Errors.** A missing source, Secret or key, a canary Secret without its three keys, or a same-name
+CronJob or claim this CR does not control fails the `dashboard` step with `Ready=False`
+(`ReconcileError`) and a message naming the field and the object, never a value. Nothing is written
+until every input checks out; a foreign object is left unchanged. Run outcomes appear in Job status and
+logs only.
+
+### `status.conditions[E2ECanary]`
+
+Present while the dashboard, `crons` and `crons.e2eCanary` are all set. `False` (`ImageNotPinned`) when
+`e2eCanary.image` is unset or not pinned to a digest, so `<cr>-e2e-canary` is not created. `True` with
+reason `Suspended` or `Scheduled` once the CronJob exists. It is derived from the spec, does not
+change the stack's `phase`, and is written only when it changes.
 
 ## `status`
 

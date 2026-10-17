@@ -103,7 +103,7 @@ func TestDashboardDbMigrateGatedOnSchemaOwnership(t *testing.T) {
 
 	// in-cluster controlDB → the operator's PostgresSchema owns the schema → NO dashboard db-migrate.
 	inCluster := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true}}
 		o.Spec.MasterAPIKeySecretRef = &oramav1alpha1.MasterAPIKeySecretRef{Name: testMasterSecret}
 		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
 	})
@@ -113,7 +113,7 @@ func TestDashboardDbMigrateGatedOnSchemaOwnership(t *testing.T) {
 
 	// external controlDB → no operator-managed PostgresSchema → dashboard runs its own migrate.
 	external := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true}}
 		o.Spec.MasterAPIKeySecretRef = &oramav1alpha1.MasterAPIKeySecretRef{Name: testMasterSecret}
 		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external", Endpoint: "pg.example.com:5432"}
 	})
