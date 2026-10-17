@@ -21,6 +21,7 @@ Provisioned automatically when `spec.provisionOperatorSchema` is `true` (the def
 | `orama_control` | `topology` | the cross-cluster Zetta node topology ([operator#105](https://github.com/oramasearch/orama-operator/issues/105)) — one row per wan-accessible node (`operator, cluster, node, address, reachability, node_type, status, updated_at`). Each operator WRITES its slice's wan endpoints; Zetta CRDT-syncs the table; each operator READS it back to derive cross-cluster peering. See [Cross-cluster topology through Zetta](#cross-cluster-topology-through-zetta). |
 | `orama_control` | `deployments` | append-only desired deployment and observed status events ([operator#124](https://github.com/oramasearch/orama-operator/issues/124)). A desired event becomes a Lake-owned `LakeEnvironment`; status events carry phase, URL and message only on transition. See [Lake deployment environments](lake/environments.md). |
 | `orama_control` | `deployment_records` | immutable records for liquid's public create/list/rollback/status contract, including result, rollback origin and sealed-secret references. Kept separate so existing append-only `deployments` tables need no unsupported column migration. See the [deployment control plane](control-plane/README.md). |
+| `orama_control` | `environment_env`, `domains` | lake's platform requests ([operator#557](https://github.com/oramasearch/orama-operator/issues/557)): an environment's plain values and its custom domains, appended by lake with `lake = LAKE_PUBLIC_HOST` (columns from lake's `include/lake/control/zetta_control.hpp`). lake's platform sync reads both on every pass with `deployments`, so they are created empty; the operator does not reconcile them yet. See [Lake deployment environments](lake/environments.md#every-lakes-control-plane-is-its-own-zetta). |
 | `orama_data` | `documents` | the application-data landing zone (`id, collection, body, updated_at`) — where v1's served data migrates to. |
 
 The definitive list is `operatorZettaSchema` in
@@ -273,5 +274,7 @@ but **leaves the databases intact**.
   `spec.requireAuth` / `spec.mcpTokenAuth` fields are **deprecated no-ops** (there is no unauthenticated
   or `--mcp-token` mode anymore).
 - **One deployment store per Lake namespace** — the public deployment control plane refuses an ambiguous
-  namespace containing more than one operator-schema Zetta cluster. Other operator state-sync paths still
+  namespace containing more than one operator-schema Zetta cluster. The Lake's own Zetta
+  (`lake-<name>-zetta`) is that store on every Lake; service and workspace Zettas set
+  `provisionOperatorSchema: false` ([operator#557](https://github.com/oramasearch/orama-operator/issues/557)). Other operator state-sync paths still
   run per enabled cluster.

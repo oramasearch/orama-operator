@@ -4,6 +4,43 @@ How a deployment written to the operator's Zetta control plane becomes an isolat
 environment, how status returns to the caller, and how teardown is made safe. Field definitions are in
 the [`LakeEnvironment` CRD reference](../crd-reference.md#lakeenvironment-separate-crd-namespaced--one-desired-deployment).
 
+## Every Lake's control plane is its own Zetta
+
+Deployments are on for every Lake ([operator#557](https://github.com/oramasearch/orama-operator/issues/557),
+under [#539](https://github.com/oramasearch/orama-operator/issues/539)), with nothing set per Lake:
+
+- **The Lake's Zetta carries the operator schema.** `lake-<name>-zetta` is created with
+  `spec.provisionOperatorSchema: true`, so its namespace holds exactly one operator-schema Zetta: the
+  one the deployment REST/MCP contract selects and the deploy sync below polls. Service and workspace
+  Zettas stay `false`, so they are never counted.
+- **lake is connected to it.** The lake pod gets `LAKE_OPERATOR_ZETTA_URL` (the same in-cluster URL as
+  `LAKE_DATA_PLANE_URL`) and `LAKE_OPERATOR_ZETTA_TOKEN` (the same Secret reference as
+  `LAKE_DATA_PLANE_TOKEN`, `lake-<name>-zetta-zetta-admin` key `token`). Both are reserved: `spec.env`
+  cannot set them. The token is the one lake already holds for this cluster, so lake gains no access.
+- **lake has a name for its rows.** lake reads and writes `orama_control` rows with
+  `lake = LAKE_PUBLIC_HOST` and refuses to start the client without it. `spec.env` keeps a
+  `LAKE_PUBLIC_HOST` it states; otherwise the operator gives `spec.host`. A Lake with neither gets no
+  operator Zetta variables, and its `FeaturesReady` condition is `False` with reason `NoPublicHost`; a
+  Lake with `spec.zetta.enabled: false` gets reason `ZettaDisabled`.
+- **lake's tables exist.** lake's platform sync reads `deployments`, `environment_env` and `domains`
+  on every pass and stays degraded if any read fails, so the operator schema creates `environment_env`
+  and `domains` (empty, with lake's columns) beside `deployments`.
+
+With that, lake's `server_info` answers `deployments: true` and `/healthz` reports `platform: ready`.
+
+**Option not taken:** a second, small control Zetta per Lake. It would add a StatefulSet, a volume and
+a new credential to every Lake for state that fits on the Zetta lake already uses, and lake's contract
+only asks for "the operator Zetta service URL".
+
+**Known gap (the row contract):** lake's mirror and the operator write different rows into
+`orama_control.deployments`. The operator names a Lake by its resource name (`lake = prod`) and writes the
+columns in the table below; lake selects `lake = LAKE_PUBLIC_HOST` and the columns `operator, change,
+requested_by, requested_at, namespace, ordering_token`, which no operator row carries, and Zetta refuses a
+`SELECT` naming a column no row has. So the first deployment written through the operator's contract makes
+lake's sync fail (`platform: degraded`, pages served from the last mirror, platform writes refused), and the
+operator does not yet reconcile `environment_env` or `domains`. Aligning the row contract is
+[operator#560](https://github.com/oramasearch/orama-operator/issues/560).
+
 ## Control-plane model
 
 Liquid-bridge decision 22 makes Zetta, not Lake's HTTP API, the deployment intake path. An

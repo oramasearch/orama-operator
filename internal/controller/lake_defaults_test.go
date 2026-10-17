@@ -320,7 +320,9 @@ func envNamesOf(env []corev1.EnvVar) []string {
 
 // wantLakeOperatorEnv is the operator's own env on a Lake that states no feature field, in order:
 // the same on every Lake, plus the control Postgres's variables when it has one.
-func wantLakeOperatorEnv(postgres bool) []string {
+// wantLakeOperatorEnv is the operator's variables in order. deployments is whether the Lake has a
+// public host, which gives it the operator Zetta pair (operator#557).
+func wantLakeOperatorEnv(postgres, deployments bool) []string {
 	names := []string{
 		"LAKE_ADMIN_TOKEN", "LAKE_STORE_ROOT", "LAKE_SEALING_PUBLIC_KEY", "LAKE_SEALING_KID",
 		"LAKE_APPS_WILDCARD", "LAKE_APPS_RUNTIME_IMAGE", "LAKE_METHODOLOGY_RUNTIME_IMAGE", "LAKE_MCP_RUNNER_IMAGE",
@@ -329,6 +331,9 @@ func wantLakeOperatorEnv(postgres bool) []string {
 		names = append(names, "LAKE_INSTANCE_KEK", "LAKE_CONTROL_DB_URI", "LAKE_CONTROL_DB_PASSWORD")
 	}
 	names = append(names, "LAKE_DATA_PLANE_URL", "LAKE_DATA_PLANE_TOKEN")
+	if deployments {
+		names = append(names, "LAKE_OPERATOR_ZETTA_URL", "LAKE_OPERATOR_ZETTA_TOKEN")
+	}
 	if postgres {
 		names = append(names, "LAKE_SERVICE_DIR")
 	}

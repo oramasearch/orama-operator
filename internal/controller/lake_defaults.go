@@ -173,11 +173,22 @@ func lakeFeaturesCondition(lake *oramav1alpha1.Lake) metav1.Condition {
 		Message:            "every Lake feature is reconciled",
 		ObservedGeneration: lake.Generation,
 	}
-	if !lakePostgresEnabled(lake) {
+	switch {
+	case !lakePostgresEnabled(lake):
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = "PostgresDisabled"
 		condition.Message = "spec.postgres.enabled is false, so these features cannot run: " +
 			strings.Join(lakeFeaturesNeedingPostgres, ", ")
+	case !lakeZettaEnabled(lake):
+		// Deployments read and write orama_control on the Lake's own Zetta (operator#557).
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "ZettaDisabled"
+		condition.Message = "spec.zetta.enabled is false, so deployments cannot run: they use the Lake's Zetta as their control plane"
+	case !lakeHasPublicHost(lake):
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "NoPublicHost"
+		condition.Message = "the Lake has neither spec.host nor LAKE_PUBLIC_HOST in spec.env, so deployments cannot run: " +
+			"lake names itself on every deployment row with that host"
 	}
 	return condition
 }
