@@ -121,7 +121,7 @@ decides whether the Lake is exposed outside the cluster, not which features it r
 | Methodologies (`LAKE_METHODOLOGY_RUNTIME_IMAGE`) | `spec.methodologies.runtimeImage` | `oramasearch/methodology-runtime:ac58062` |
 | User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:f8feb14` |
 | MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a` |
-| `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:6baa70d` |
+| `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:591e662` |
 | `agent-project` | `spec.agents.library[key]` | `oramasearch/agent-project:16e17d0` |
 | `agent-autosuggest` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest:3d9acf7` |
 | `agent-creator` | `spec.agents.library[key]` | `oramasearch/agent-creator:6b1cc36-f8feb14` |

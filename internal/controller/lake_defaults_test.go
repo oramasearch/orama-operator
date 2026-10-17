@@ -25,7 +25,7 @@ import (
 // The images Lake/prod ran on 2026-10-17 (operator#539). The test repeats them on purpose: moving
 // a default is a deliberate change to both lake_defaults.go and this table.
 var wantLakeDefaultLibrary = map[string]string{
-	"agent-ask-orama":          "oramasearch/agent-ask-orama:6baa70d",
+	"agent-ask-orama":          "oramasearch/agent-ask-orama:591e662",
 	"agent-project":            "oramasearch/agent-project:16e17d0",
 	"agent-autosuggest":        "oramasearch/agent-autosuggest:3d9acf7",
 	"agent-creator":            "oramasearch/agent-creator:6b1cc36-f8feb14",
