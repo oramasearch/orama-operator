@@ -87,7 +87,7 @@ func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *ora
 	return comps
 }
 
-// Status text for the reader's replication refusals (oramacore#342), keyed by the code the reader's
+// Status text for the reader's replication refusals (oramacore#341), keyed by the code the reader's
 // exit message starts with.
 const (
 	readerHistoryExpiredCause = "replication history expired; the reader cannot be built from the stream (needs a reader seed, #458)"
@@ -97,7 +97,10 @@ const (
 // readerRefusalCause explains why the stack's readers refuse to serve, from the termination message
 // of each reader pod's oramacore container: the current termination, or the last one while the
 // container waits to restart. It returns "" when no reader refused. Only the stable causes enter
-// status, never pod names, restart counts or raw messages, so a crash-looping reader does not flap it.
+// status, never pod names, restart counts or raw messages. A crash-looping reader still changes the
+// detail on each restart: while its container is Running between crashes there is no termination to
+// read, so the detail flips between the ready count ("0/1") and the count with the cause
+// ("0/1; <cause>") until the reader stops crashing.
 //
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 func (r *OramaCloudV1Reconciler) readerRefusalCause(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) string {

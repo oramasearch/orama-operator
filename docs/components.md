@@ -222,7 +222,7 @@ Driven by `spec.region.role`:
   A reader starts empty and replays the writer's `oramacore-operations` stream from offset 0. The
   stream keeps 5 GB, so once more than that has been written, a new reader can no longer build a
   complete index from it. The reader then refuses to serve rather than serve a partial index
-  ([oramacore#342](https://github.com/oramasearch/oramacore/issues/342)): it exits non-zero with a
+  ([oramacore#341](https://github.com/oramasearch/oramacore/pull/341)): it exits non-zero with a
   message starting with one of two codes, and it never goes Ready. The reader container sets
   `terminationMessagePolicy: FallbackToLogsOnError` so that message reaches the pod's
   `lastState.terminated.message`, and while the `reader` component is not Ready the operator
@@ -275,7 +275,7 @@ Driven by `spec.region.role`:
   (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path), except the **reader's
   readiness**, which hits `GET /health/ready`: it reports ready only once the reader has caught up
   with the stream head it observed at startup
-  ([oramacore#340](https://github.com/oramasearch/oramacore/issues/340)). The reader's liveness and
+  ([oramacore#340](https://github.com/oramasearch/oramacore/pull/340)). The reader's liveness and
   startup stay on `/health`, so a refusing reader is not restarted by liveness; it is simply never
   Ready. The Core image must serve `/health/ready`, or every reader stays not-Ready. The **startup
   probe** (`failureThreshold: 30 × 10s` ≈ 5 min) gates the others so a slow index-load boot
