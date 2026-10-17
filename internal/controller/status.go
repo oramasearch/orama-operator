@@ -89,7 +89,10 @@ func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *ora
 // the first schema that is not, with its phase and message, so a missing, stale, pending or failed
 // schema is visible in the stack's status.
 func (r *OramaCloudV1Reconciler) controlDBSchemaReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) oramav1alpha1.ComponentStatus {
-	schemas := controlDBSchemas(oc)
+	schemas, err := controlDBSchemas(oc)
+	if err != nil {
+		return oramav1alpha1.ComponentStatus{Name: "controldb-schema", Detail: err.Error()}
+	}
 	for i, s := range schemas {
 		name := oc.Name + s.suffix
 		var ps oramav1alpha1.PostgresSchema

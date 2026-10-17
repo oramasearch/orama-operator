@@ -161,7 +161,7 @@ func TestControlDBMigrationsApplyInOrder(t *testing.T) {
 	want := oramav1alpha1.PostgresSchemaSpec{
 		ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: oc.Name + "-controldb-app", Key: "uri"},
 		SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: oc.Name + "-controldb-migrations", Key: "schema-0008.sql"},
-		Version:             schemaVersion(controlDBSchema0008SQL()),
+		Version:             schemaVersion(mustSQL(controlDBSchema0008SQL())),
 		GuardTable:          "team_migrations",
 		Image:               "postgres:16-alpine",
 	}
@@ -182,7 +182,7 @@ func TestControlDBMigrationsApplyInOrder(t *testing.T) {
 		t.Fatal("reference-data PostgresSchema not created once 0008 applied")
 	}
 	if !ref.Spec.ApplyEveryVersion || ref.Spec.SchemaConfigMapRef.Key != "reference-data.sql" ||
-		ref.Spec.Version != schemaVersion(controlDBReferenceSQL(dashboardReferenceRowsSQL, oc.Spec.Components.ControlDB.StripePrices)) ||
+		ref.Spec.Version != schemaVersion(mustSQL(controlDBReferenceSQL(dashboardReferenceRowsSQL, oc.Spec.Components.ControlDB.StripePrices))) ||
 		!metav1.IsControlledBy(ref, oc) {
 		t.Fatalf("reference-data spec = %+v", ref.Spec)
 	}
@@ -194,8 +194,8 @@ func TestControlDBMigrationsApplyInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(cm.Data) != 3 || cm.Data["schema.sql"] != dashboardSchemaSQL ||
-		cm.Data["schema-0008.sql"] != controlDBSchema0008SQL() ||
-		cm.Data["reference-data.sql"] != controlDBReferenceSQL(dashboardReferenceRowsSQL, oc.Spec.Components.ControlDB.StripePrices) {
+		cm.Data["schema-0008.sql"] != mustSQL(controlDBSchema0008SQL()) ||
+		cm.Data["reference-data.sql"] != mustSQL(controlDBReferenceSQL(dashboardReferenceRowsSQL, oc.Spec.Components.ControlDB.StripePrices)) {
 		t.Fatalf("ConfigMap keys = %v, want schema.sql, schema-0008.sql and reference-data.sql", slices.Sorted(maps.Keys(cm.Data)))
 	}
 
@@ -224,7 +224,7 @@ func TestControlDBMigrationsApplyInOrder(t *testing.T) {
 }
 
 func TestControlDBSchema0008SeedsBeforeTeamForeignKey(t *testing.T) {
-	sql := controlDBSchema0008SQL()
+	sql := mustSQL(controlDBSchema0008SQL())
 	head, rest, ok := strings.Cut(sql, seedBeginMarker)
 	if !ok {
 		t.Fatal("0008 schema has no operator seed block")
@@ -240,16 +240,44 @@ func TestControlDBSchema0008SeedsBeforeTeamForeignKey(t *testing.T) {
 		!strings.Contains(head, `CREATE TABLE IF NOT EXISTS "subscription_plans"`) || !strings.Contains(tail, "teams_subscription_plan_id_subscription_plans_id_fk") {
 		t.Fatal("the seed must follow 0008's tables and precede its teams columns and foreign key")
 	}
-	if seed != controlDBReferenceSQL(dashboardReferenceRowsSQL, oramav1alpha1.ControlDBStripePrices{}) {
+	if seed != mustSQL(controlDBReferenceSQL(dashboardReferenceRowsSQL, oramav1alpha1.ControlDBStripePrices{})) {
 		t.Fatal("0008's seed must be the reference rows without Stripe prices, the same on every stack")
 	}
 }
 
+// mustSQL returns rendered control-DB SQL; the embedded assets always carry their anchors, and
+// TestControlDBSchemasFailWithoutAnchors covers the error path.
+func mustSQL(sql string, err error) string {
+	if err != nil {
+		panic(err)
+	}
+	return sql
+}
+
+// TestControlDBSchemasFailWithoutAnchors: a re-vendored file that loses its anchor fails the
+// reconcile instead of dropping the reference rows or splicing them in the wrong place.
+func TestControlDBSchemasFailWithoutAnchors(t *testing.T) {
+	oc := &oramav1alpha1.OramaCloudV1{}
+	for name, swap := range map[string]*string{
+		"0008 seed point":       &dashboardSchema0008SQL,
+		"reference rows marker": &dashboardReferenceDataSQL,
+	} {
+		t.Run(name, func(t *testing.T) {
+			saved := *swap
+			t.Cleanup(func() { *swap = saved })
+			*swap = "-- no anchor\n"
+			if _, err := controlDBSchemas(oc); err == nil {
+				t.Fatal("controlDBSchemas succeeded without the anchor")
+			}
+		})
+	}
+}
+
 func TestControlDBReferenceSQLQuotesStripePrices(t *testing.T) {
-	sql := controlDBReferenceSQL("", oramav1alpha1.ControlDBStripePrices{
+	sql := mustSQL(controlDBReferenceSQL("", oramav1alpha1.ControlDBStripePrices{
 		Plans:  []oramav1alpha1.StripePlanPrice{{ID: "0d735744-e58e-4438-b618-97523e407cdc", Yearly: "price_y'early"}},
 		Addons: []oramav1alpha1.StripeAddonPrice{{ID: "11111111-1111-4111-8111-111111111111", PriceID: "price_addon"}},
-	})
+	}))
 	for _, want := range []string{
 		"INSERT INTO stack_stripe_plan_prices VALUES ('0d735744-e58e-4438-b618-97523e407cdc', NULL, 'price_y''early');",
 		"INSERT INTO stack_stripe_addon_prices VALUES ('11111111-1111-4111-8111-111111111111', 'price_addon');",

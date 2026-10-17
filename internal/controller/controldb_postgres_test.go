@@ -190,6 +190,18 @@ func (p *controlDBProof) sql(query string) string {
 	return runSchemaCommand(p.t, "psql", p.uri, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", query)
 }
 
+// sqlScript runs several statements from a file and returns every result. psql before 15 prints
+// only the last result of a multi-statement -c, so a script whose answer is not its last statement
+// goes through -f.
+func (p *controlDBProof) sqlScript(script string) string {
+	p.t.Helper()
+	path := filepath.Join(p.t.TempDir(), "script.sql")
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		p.t.Fatal(err)
+	}
+	return runSchemaCommand(p.t, "psql", p.uri, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-f", path)
+}
+
 // trySQLFile applies a file as the migration Job would, in one transaction, returning its error.
 func (p *controlDBProof) trySQLFile(sql string) (string, error) {
 	p.t.Helper()
@@ -321,7 +333,11 @@ func (p *controlDBProof) applySchema(suffix, want string) {
 // current, as the controllers would.
 func (p *controlDBProof) converge() {
 	p.t.Helper()
-	for _, s := range controlDBSchemas(p.stack) {
+	schemas, err := controlDBSchemas(p.stack)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	for _, s := range schemas {
 		p.reconcileStack()
 		if ps := p.reconcileSchema(s.suffix); !postgresSchemaCurrent(ps) {
 			p.applySchema(s.suffix, "Applied")
@@ -403,7 +419,7 @@ func (p *controlDBProof) verifyReferenceRows() {
 // rolled back so the fixture stays as it was.
 func (p *controlDBProof) verifyTeamCreation() {
 	p.t.Helper()
-	got := p.sql(`BEGIN;
+	got := p.sqlScript(`BEGIN;
 INSERT INTO users (id, first_name, email, firebase_id)
 VALUES ('66666666-6666-4666-8666-666666666666', 'Schema fixture', 'schema-fixture@example.invalid', 'schema-fixture-378');
 INSERT INTO teams (name, created_by) VALUES ('Schema fixture', '66666666-6666-4666-8666-666666666666') RETURNING subscription_plan_id;

@@ -67,8 +67,9 @@ const (
 )
 
 // controlDBReferenceSQL renders the reference-row seed for one stack: temporary tables holding the
-// stack's Stripe prices, then dashboard-reference-data.sql with rows spliced in.
-func controlDBReferenceSQL(rows string, prices oramav1alpha1.ControlDBStripePrices) string {
+// stack's Stripe prices, then dashboard-reference-data.sql with rows spliced in. It fails when the
+// embedded file lacks referenceRowsMarker.
+func controlDBReferenceSQL(rows string, prices oramav1alpha1.ControlDBStripePrices) (string, error) {
 	nullable := func(v string) string {
 		if v == "" {
 			return "NULL"
@@ -85,18 +86,27 @@ func controlDBReferenceSQL(rows string, prices oramav1alpha1.ControlDBStripePric
 	for _, a := range prices.Addons {
 		fmt.Fprintf(&b, "INSERT INTO stack_stripe_addon_prices VALUES (%s, %s);\n", deploymentSQLQuote(a.ID), deploymentSQLQuote(a.PriceID))
 	}
-	before, after, _ := strings.Cut(dashboardReferenceDataSQL, referenceRowsMarker)
-	return b.String() + before + "\n" + rows + "\n" + after
+	before, after, found := strings.Cut(dashboardReferenceDataSQL, referenceRowsMarker)
+	if !found {
+		return "", fmt.Errorf("dashboard-reference-data.sql has no %q marker", strings.TrimSpace(referenceRowsMarker))
+	}
+	return b.String() + before + "\n" + rows + "\n" + after, nil
 }
 
 // controlDBSchema0008SQL is 0008 with the reference rows seeded at schema0008SeedPoint, without any
 // Stripe prices, so it is the same on every stack. The vendored statements are unchanged; the
-// operator's block sits between seedBeginMarker and seedEndMarker.
-func controlDBSchema0008SQL() string {
-	head, tail, _ := strings.Cut(dashboardSchema0008SQL, schema0008SeedPoint)
-	return head + seedBeginMarker +
-		controlDBReferenceSQL(dashboardReferenceRowsSQL, oramav1alpha1.ControlDBStripePrices{}) +
-		seedEndMarker + schema0008SeedPoint + tail
+// operator's block sits between seedBeginMarker and seedEndMarker. It fails when the vendored 0008
+// no longer contains schema0008SeedPoint, so a re-vendored file cannot silently lose the seed.
+func controlDBSchema0008SQL() (string, error) {
+	head, tail, found := strings.Cut(dashboardSchema0008SQL, schema0008SeedPoint)
+	if !found {
+		return "", fmt.Errorf("dashboard-schema-0008.sql has no seed point %q", schema0008SeedPoint)
+	}
+	seed, err := controlDBReferenceSQL(dashboardReferenceRowsSQL, oramav1alpha1.ControlDBStripePrices{})
+	if err != nil {
+		return "", err
+	}
+	return head + seedBeginMarker + seed + seedEndMarker + schema0008SeedPoint + tail, nil
 }
 
 // cnpgClusterGVK is the CloudNativePG Cluster CRD. We provision it as an unstructured
@@ -196,20 +206,28 @@ type controlDBSchema struct {
 
 // controlDBSchemas lists the control DB's schemas in apply order. Each is created only after every
 // one before it reports its current version Applied, because each builds on the tables of the last.
-func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) []controlDBSchema {
+func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error) {
+	schema0008, err := controlDBSchema0008SQL()
+	if err != nil {
+		return nil, err
+	}
+	reference, err := controlDBReferenceSQL(dashboardReferenceRowsSQL, oc.Spec.Components.ControlDB.StripePrices)
+	if err != nil {
+		return nil, err
+	}
 	return []controlDBSchema{
 		// crawler_configs is created by migration 0000; with --single-transaction it exists iff the
 		// whole file applied.
 		{suffix: "-controldb-schema", key: "schema.sql", sql: dashboardSchemaSQL, guard: "crawler_configs"},
 		// team_migrations is created by 0008, in the same transaction as the rest of 0008 and the
 		// reference rows seeded inside it.
-		{suffix: "-controldb-schema-0008", key: "schema-0008.sql", sql: controlDBSchema0008SQL(), guard: "team_migrations"},
+		{suffix: "-controldb-schema-0008", key: "schema-0008.sql", sql: schema0008, guard: "team_migrations"},
 		// The same upsert with this stack's Stripe prices, applied again whenever the committed rows
 		// or the prices change. Its guard is ignored (everyVersion); it names the table the upsert
 		// needs, and is set so the API default never differs from what the operator writes.
 		{suffix: "-controldb-reference-data", key: "reference-data.sql", guard: "subscription_plans", everyVersion: true,
-			sql: controlDBReferenceSQL(dashboardReferenceRowsSQL, oc.Spec.Components.ControlDB.StripePrices)},
-	}
+			sql: reference},
+	}, nil
 }
 
 // reconcileControlDBMigrations applies the vendored dashboard schema (operator#34) as owned,
@@ -230,7 +248,11 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBMigrations(ctx context.Contex
 
 	cmName := oc.Name + "-controldb-migrations"
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: oc.Namespace}}
-	for _, s := range controlDBSchemas(oc) {
+	schemas, err := controlDBSchemas(oc)
+	if err != nil {
+		return err
+	}
+	for _, s := range schemas {
 		// A schema's SQL reaches the ConfigMap only when the schema is released, just before its
 		// PostgresSchema, so no Job of a later schema can read content ahead of its turn.
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
