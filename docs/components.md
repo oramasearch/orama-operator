@@ -16,7 +16,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
-| **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
+| **dashboard** | `internal/controller/app.go`, `dashboard_env.go` | `Deployment` + Service + `Ingress`; user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
 | **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica); + an owned **`PostgresSchema`** applying the dashboard's Drizzle schema | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
@@ -477,7 +477,11 @@ host is set)**.
   **Selenium** grid Deployment.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
-- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`.
+- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`. Its environment is the
+  operator's (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`, `MASTER_API_KEY` from
+  `spec.masterAPIKeySecretRef`, `POSTGRES_PASSWORD`, `DATABASE_URL`)
+  plus what `dashboard.envFrom` and `dashboard.env` take from Secrets and ConfigMaps
+  ([below](#the-dashboards-environment)).
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.
@@ -486,8 +490,108 @@ the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd the
 > bundle are **placeholders** (`oramasearch/<name>:latest`) pending published/built
 > images — override via `spec.images.overrides`. HARVEST's Podman-per-job worker model
 > needs porting to k8s Jobs (the master + Mongo + Selenium are here; the job spawner
-> is a follow-up). Dashboard/index-builder need their env + secret wiring
-> (control-plane DB URL, API keys) via the component secret.
+> is a follow-up). index-builder needs its env + secret wiring (control-plane DB URL, API keys)
+> via the component secret.
+
+### The dashboard's environment
+
+Prod 1's dashboard runs with Vercel variables the operator does not own: Stripe, S3, Slack, Resend,
+the cron and private-API secrets and others. `spec.components.dashboard.envFrom` and `.env`
+([operator#311](https://github.com/oramasearch/orama-operator/issues/311)) take them from Secrets and
+ConfigMaps in the instance's namespace. The full field reference is in
+[crd-reference.md](crd-reference.md#speccomponentsdashboard); in short (`dashboard_env.go`):
+
+- **Precedence**, lowest to highest: the operator's envFrom, `dashboard.envFrom` (a later source wins),
+  the operator's explicit env, `dashboard.env` (one entry per name, the last wins).
+- **Refused**: `DATABASE_URL`, `POSTGRES_PASSWORD`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, `JWT_ISSUER` and
+  `MASTER_API_KEY` (the control DB, `<cr>-jwt`, the JWT issuer and `spec.masterAPIKeySecretRef` own
+  them), in `env` or as any key of an `envFrom` source after its prefix. The reconcile fails
+  with `Ready=False`, naming the field, the object and the variable, never the value.
+- **Missing references** fail the reconcile the same way unless `optional: true`. The check runs before
+  the Deployment is written, so the running dashboard keeps its last valid template.
+- **Rolling**: the controller watches every referenced Secret and ConfigMap, owned or not, and the pod
+  template carries `orama.cloud/dashboard-env-hash` over the referenced data, so a changed key rolls
+  the dashboard with no restart by hand. Without a Secret or ConfigMap reference there is no
+  `dashboard-env-hash` annotation and the template is unchanged; the master key's
+  `orama.cloud/credentials-hash` ([#307](https://github.com/oramasearch/orama-operator/issues/307)) is
+  there either way.
+
+**How the Secret reaches the clusters.** Nothing is created by hand in a member namespace.
+
+- The dashboard's environment Secret (`v1-prod-dashboard-env` for `v1-prod`) exists **once, on the
+  managing cluster** (`orama-production-cluster-01`, namespace `orama-system`, beside the set's other
+  sources).
+- Each member receives it through the `OramaCloudV1Set`'s `spec.secrets` list, which copies each named
+  Secret into every member's namespace before the instance, and again on every reconcile of the set.
+  The set's template references it in `components.dashboard.envFrom`. A `spec.secrets` entry has
+  `name`, `namespace` and an optional `as` (its name on the member); it is not a `secretRef`. A
+  member's own `spec.clusters[].secrets` entry replaces a set entry with the same destination name.
+  Recommendation and per-key detail: orama-bridge
+  [`docs/projects/orama-cloud-v1/secrets.md`](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/secrets.md).
+- The set does not watch its source Secrets. A change on the managing cluster reaches the members at
+  the set's next reconcile (every 15 seconds while settling, five minutes when steady); the member's
+  dashboard watch then sees the copied Secret and rolls the dashboard. ConfigMaps work as local
+  references, but the set's `secrets` list copies only Secrets.
+- These are **Orama's own platform secrets** (Stripe, Resend, Slack and the rest). They never go into
+  a customer's store or a workspace secret store.
+- Creating or changing that Secret on the managing cluster is a write there, so it is **asked of Steve
+  first**, each time, the test Secret for a proof included. A `kubectl create secret` in `v1-dev`,
+  `v1-eu` or `v1-us` is forbidden by the cluster rules.
+- Only third-party keys and values that must equal Prod 1's are copied this way. A key that only has
+  to agree inside the stack is generated by the operator, not copied; stack-local URLs and IDs go in
+  the set's `dashboard.env`. Never list the generated Secrets (`<cr>-jwt`, the database, broker and
+  cache credentials) in the set's `secrets`.
+
+For `v1-nonprod` the delivery looks like this (merged into the existing set file, keeping its other
+entries, once Steve has approved the source Secret; `spec.template` is the instance spec itself):
+
+```yaml
+spec:
+  secrets:
+    # Keep the existing registry and Cloudflare entries too.
+    - name: v1-nonprod-dashboard-env
+      namespace: orama-system
+  template:
+    components:
+      dashboard:
+        envFrom:
+          - secretRef:
+              name: v1-nonprod-dashboard-env
+```
+
+The copy is then Secret `v1-dev/v1-nonprod-dashboard-env` on `orama-nonprod-cluster-01`. The
+`v1-prod` entry and reference land with
+[operator#445](https://github.com/oramasearch/orama-operator/issues/445).
+
+**Environment inventory.** What the dashboard (`cloud-migration`) reads beyond the operator's own
+variables. This records what the code reads; it does not approve copying every value or keeping every
+outside service. Per-key sources, and whether each must equal Prod 1, are in the bridge's
+`secrets.md`; production assignments are #445's work.
+
+`PRIVATE_API_KEY`, `AIRBYTE_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY`,
+`AIRBYTE_CLIENT_ID`, `AIRBYTE_CLIENT_SECRET`, `AIRBYTE_ORGANIZATION_ID`, `AIRBYTE_ALLOWED_ORIGINS`,
+`S3_BUCKET`, `S3_BUCKET_REGION`, `S3_BUCKET_PREFIX`, `AWS_ACCESS_KEY_VALUE`,
+`AWS_SECRET_ACCESS_KEY_VALUE`, `REDIS_CACHE_URL`, `REDIS_CACHE_TOKEN`, `RESEND_API_KEY`, `SLACK_TOKEN`,
+`SLACK_CHANNEL_NEW_USERS`, `SLACK_CHANNEL_STRIPE`, `DATA_SOURCE_REQUEST_URL`, `NEXT_PUBLIC_APP_URL`,
+`ORAMACORE_PLACEMENT_CLUSTER_ID`.
+
+- The `AIRBYTE_*` keys go away with Airbyte (bridge decisions of 2026-10-16, 12a) and are not copied.
+- `CRON_SECRET` reaches the dashboard through `dashboard.envFrom`, and the in-cluster CronJobs
+  ([operator#17](https://github.com/oramasearch/orama-operator/issues/17)) read it from the same
+  Secret. Only the dashboard and those CronJobs share it, so it is generated, not copied from Prod 1.
+  The generated Secret's name, its generator and the CronJobs' reference are settled with #17.
+- No Firebase keys: sign-in moves to Clerk before the cutover and Prod 2 needs no Firebase server
+  keys (bridge decisions of 2026-10-16, 1 and 2). Clerk's keys are added with orama-bridge#180.
+- `NEXT_PUBLIC_APP_URL` is inlined by `next build`, so a runtime value is not a reliable override;
+  the image's URL is checked separately. `SLACK_SIGNUP_APP_URL`, `INTERNAL_APP_URL` and
+  `CRON_FORWARD_ORIGIN` are optional settings the dashboard also reads.
+- **Prerequisites recorded, not solved here.** Analytics use the in-cluster ClickHouse, with no copied
+  `CLICKHOUSE_*` key. The dashboard's `runClickhouse` (`src/lib/clickhouse/index.ts`) posts JSON
+  `{sql, queryVariables}` with Basic auth to a URL, while the operator gives it a bare service name in
+  `CLICKHOUSE_HOST` and a placeholder `CLICKHOUSE_PASSWORD`; nothing here makes that connection work.
+  Likewise `REDIS_CACHE_URL`/`REDIS_CACHE_TOKEN` feed `@upstash/redis` over HTTP (`src/lib/redis/redis.ts`),
+  not the in-cluster Redis TCP service; the bridge decisions plan an in-stack `serverless-redis-http`
+  shim (12a). Rendering these variables does not prove either integration works.
 
 ## DISCO (`disco.go`)
 

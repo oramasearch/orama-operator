@@ -227,7 +227,7 @@ type ComponentsSpec struct {
 	// +optional
 	IngressClassName string `json:"ingressClassName,omitempty"`
 
-	Dashboard ToggleWithHost `json:"dashboard,omitempty"` // app.orama.com (Next.js)
+	Dashboard DashboardSpec  `json:"dashboard,omitempty"` // app.orama.com (Next.js)
 	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
@@ -378,6 +378,29 @@ type ToggleWithHost struct {
 	// sensible per-component default (workload hardening, #18).
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and
+// ConfigMaps in the instance's namespace (operator#311). Precedence, lowest to highest: the
+// operator's envFrom (<cr>-config, <cr>-dashboard-secret, <cr>-jwt), envFrom, the operator's
+// explicit env, env. DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER
+// and MASTER_API_KEY belong to the operator: supplying one through either field fails the reconcile.
+type DashboardSpec struct {
+	ToggleWithHost `json:",inline"`
+	// EnvFrom adds Secrets and ConfigMaps (in the instance's namespace) after the operator's own
+	// envFrom sources, so a key here overrides the shared ConfigMap and the seeded dashboard Secret,
+	// and a later entry overrides an earlier one. It never overrides the operator's explicit env.
+	// Each entry sets exactly one of secretRef and configMapRef. A missing object fails the
+	// reconcile unless the reference is optional. A change to a referenced object rolls the
+	// dashboard (pod-template annotation orama.cloud/dashboard-env-hash).
+	// +optional
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
+	// Env adds variables after the operator's explicit env (e.g. STRIPE_SECRET_KEY from a
+	// secretKeyRef). An entry with the same name as an operator variable replaces it; for a name
+	// listed twice the last entry wins. A non-optional secretKeyRef or configMapKeyRef whose object
+	// or key is missing fails the reconcile; a change to the selected key rolls the dashboard.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
 }
 
 // PeerSpec identifies another region for cross-cluster wiring (no mesh).

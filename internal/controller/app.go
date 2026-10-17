@@ -99,6 +99,11 @@ type appDef struct {
 	// read by secretKeyRef (broker admin, cache auth, master API key). Their data hash is on the pod
 	// template, so a changed credential rolls the app (#307).
 	credentialSecrets []string
+	// extraEnvFrom is appended after the operator's envFrom sources (envFromFor), so its keys win
+	// over them; envHash, when set, is the pod-template annotation dashboardEnvHashAnnotation that
+	// rolls the pods when a referenced Secret/ConfigMap changes. The dashboard's user env (#311).
+	extraEnvFrom []corev1.EnvFromSource
+	envHash      string
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
@@ -133,6 +138,13 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		}
 		annotations = map[string]string{credentialsHashKey: hash}
 	}
+	// No env-hash annotation without a hash, so an app with no referenced env keeps its template.
+	if def.envHash != "" {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[dashboardEnvHashAnnotation] = def.envHash
+	}
 
 	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
@@ -155,7 +167,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 				Args:            def.args,
 				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
 				Env:             def.env,
-				EnvFrom:         envFromFor(oc, def.component),
+				EnvFrom:         append(envFromFor(oc, def.component), def.extraEnvFrom...),
 				VolumeMounts:    def.volumeMounts,
 				Resources:       *res,
 				// Startup gates liveness/readiness so a slow boot isn't killed; readiness gates
@@ -264,6 +276,19 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if !ok {
 		return nil
 	}
+	// The user's env (dashboard_env.go) is validated, read and hashed before the Deployment is
+	// touched, so a refused variable or a missing reference leaves the last valid template running.
+	if err := validateDashboardEnv(oc); err != nil {
+		return err
+	}
+	sources, err := r.dashboardEnvSources(ctx, oc)
+	if err != nil {
+		return err
+	}
+	envHash, err := r.dashboardEnvHash(ctx, oc, sources)
+	if err != nil {
+		return err
+	}
 	img := componentImage(oc, "dashboard", "dashboard")
 	// Schema ownership: when the operator manages the control DB in-cluster it also owns the schema —
 	// reconcileControlDBMigrations applies the SAME Drizzle schema via an owned PostgresSchema Job
@@ -291,10 +316,12 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		image:       img,
 		port:        3000,
 		ingressHost: d.Host,
-		// The master key (#307), and the real control-DB password from the CNPG secret (#32) +
-		// DATABASE_URL for Drizzle (#34).
-		env:               []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
+		// The master key (#307), the real control-DB password from the CNPG secret (#32) +
+		// DATABASE_URL for Drizzle (#34), then the user's dashboard.env (#311).
+		env:               overrideEnv([]corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}, d.Env),
 		credentialSecrets: []string{masterKey},
+		extraEnvFrom:      d.EnvFrom,
+		envHash:           envHash,
 		initContainers:    initContainers,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
