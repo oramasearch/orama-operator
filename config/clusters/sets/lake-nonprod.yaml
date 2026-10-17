@@ -17,8 +17,21 @@ spec:
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
         value: lake-dev.oramadev.net
+      - name: LAKE_OPENAI_API_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
+      - name: LAKE_BILLING
+        value: "on"
+      - name: LAKE_STRIPE_SECRET_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
+      - name: LAKE_STRIPE_WEBHOOK_SECRET
+        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-dev.oramadev.net
       image: oramasearch/lake:dev-51fe838b
+    secrets:
+    - name: lake-prod-openai
+      namespace: lake
+    - name: lake-prod-stripe
+      namespace: lake
   - clusterRef: orama-nonprod-cluster-01
     name: staging
     spec:
