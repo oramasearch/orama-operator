@@ -73,8 +73,8 @@ spec:
               agents:
                 description: |-
                   Agents runs lake's agents (lake#228): the specialized agents of the Agent Library, one
-                  Deployment each, and the launches of user-created agents on agent-runtime (lake#231). Off
-                  until runtimeImage or library is set.
+                  Deployment each, and the launches of user-created agents on agent-runtime (lake#231). Every
+                  Lake runs them, on the operator's default images unless the spec overrides one.
                 properties:
                   jobDeadlineSeconds:
                     description: JobDeadlineSeconds bounds one job launch.
@@ -83,8 +83,9 @@ spec:
                     type: integer
                   library:
                     description: |-
-                      Library lists the specialized agents this Lake runs, each from its own private image. lake
-                      learns their addresses through LAKE_AGENT_ENDPOINTS.
+                      Library overrides the images of the specialized agents. Every Lake runs all nine agents of the
+                      Agent Library on the operator's default images; an entry here replaces the image of its key
+                      and cannot remove an agent. lake learns their addresses through LAKE_AGENT_ENDPOINTS.
                     items:
                       description: LakeLibraryAgent is one specialized agent of lake's
                         Agent Library.
@@ -123,7 +124,7 @@ spec:
                   runtimeImage:
                     description: |-
                       RuntimeImage is oramasearch/agent-runtime:<tag>, the one image every user-created Python
-                      agent runs on. Empty: launches are reported Failed and nothing runs.
+                      agent runs on. Empty uses the operator's default (internal/controller/lake_defaults.go).
                     type: string
                 type: object
               apexHost:
@@ -138,12 +139,6 @@ spec:
                 description: Apps configures apps-table synchronization, LakeApp runtime
                   delivery and public addressing.
                 properties:
-                  enabled:
-                    default: false
-                    description: |-
-                      Enabled synchronizes lake's apps table into LakeApp resources. Requires Postgres.
-                      Disabling stops synchronization without deleting existing apps.
-                    type: boolean
                   ingressClass:
                     description: |-
                       IngressClass selects the ingress controller for apps. Empty defaults to nginx. Apps stay on nginx
@@ -151,12 +146,16 @@ spec:
                       count bytes per Ingress (docs/infrastructure/ingress.md).
                     type: string
                   runtimeImage:
-                    description: RuntimeImage is the private app-runtime image used
-                      by runtime-mode apps.
+                    description: |-
+                      RuntimeImage is the private app-runtime image used by runtime-mode apps. Empty uses the
+                      operator's default (internal/controller/lake_defaults.go).
                     type: string
                   wildcard:
-                    description: Wildcard is the DNS suffix for apps. An app without
-                      spec.host uses <app>.<wildcard>.
+                    description: |-
+                      Wildcard is the DNS suffix for apps. An app without spec.host uses <app>.<wildcard>. Empty
+                      uses the Lake's spec.host, so an app is <app>.<lake host> (myapp.lake-dev.oramadev.net).
+                      lake receives it as LAKE_APPS_WILDCARD, and with DNSSecretRef the operator keeps the
+                      *.<wildcard> DNS record.
                     type: string
                 type: object
               args:
@@ -173,9 +172,9 @@ spec:
                 properties:
                   builderImage:
                     description: |-
-                      BuilderImage is the private oramasearch/lake-builder image run for every build. It must be
-                      set when Enabled is true. The operator copies the Lake's pullSecretName into each build
-                      namespace and uses that local copy to pull it.
+                      BuilderImage is the private oramasearch/lake-builder image run for every build. Empty uses
+                      the operator's default (internal/controller/lake_defaults.go). The operator copies the Lake's
+                      pullSecretName into each build namespace and uses that local copy to pull it.
                     type: string
                   cacheEnabled:
                     default: true
@@ -201,12 +200,6 @@ spec:
                         minimum: 1
                         type: integer
                     type: object
-                  enabled:
-                    default: false
-                    description: |-
-                      Enabled turns on the builds-table poll. Turning it off starts no new Jobs and leaves Jobs
-                      already created to finish.
-                    type: boolean
                   resources:
                     description: |-
                       Resources configures each builder container. Values are merged over the operator's bounded
@@ -463,7 +456,7 @@ spec:
                     description: |-
                       RuntimeImage is the private oramasearch/methodology-runtime image. Lake builds each
                       methodology's image FROM it (LAKE_METHODOLOGY_RUNTIME_IMAGE), and the stage and collect
-                      pods run it unchanged. Empty turns methodology runs off: a run then fails with that reason.
+                      pods run it unchanged. Empty uses the operator's default (internal/controller/lake_defaults.go).
                     type: string
                   storageClassName:
                     description: |-
@@ -742,8 +735,8 @@ spec:
                 description: |-
                   Services lets lake run managed services for its customers: one OramaZettaCluster or
                   CloudNativePG Cluster per row of the services table in lake's control Postgres, with the
-                  operator's observations written back to service_status. Requires the control-plane Postgres
-                  (spec.postgres.enabled). See docs/lake/services.md.
+                  operator's observations written back to service_status. Needs the control-plane Postgres
+                  (spec.postgres.enabled); without it condition FeaturesReady is False. See docs/lake/services.md.
                 properties:
                   duckdbImage:
                     description: |-
@@ -752,15 +745,6 @@ spec:
                       --lake-duckdb-image flag, which the chart sets from lakeServices.duckdbImage. Changing it
                       rolls every duckdb service's pod. See docs/lake/lake-duckdb.md.
                     type: string
-                  enabled:
-                    default: false
-                    description: |-
-                      Enabled turns on managed services: the operator reads the services table from lake's
-                      control Postgres, creates <lake>-<slug> in the Lake's namespace for each present service,
-                      deletes absent ones, writes service_status, and mounts Secret lake-<lake>-services in lake at
-                      /var/run/lake/services (LAKE_SERVICE_DIR). Turning it off stops reconciliation and removes
-                      the mount; it deletes no service.
-                    type: boolean
                   maxServices:
                     description: |-
                       MaxServices caps the live services of this Lake. A new service beyond the cap is not created
@@ -785,8 +769,10 @@ spec:
                     type: string
                   zettaEnv:
                     description: |-
-                      ZettaEnv is copied to every managed Zetta service's OramaZettaCluster spec.env. Operator-managed
-                      Zetta environment names remain reserved and are reported by each child cluster when ignored.
+                      ZettaEnv is copied to every managed Zetta service's and workspace Zetta's OramaZettaCluster
+                      spec.env, followed by the operator's default Zetta env for every name it does not set
+                      (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864, MALLOC_ARENA_MAX=2). Operator-managed Zetta
+                      environment names remain reserved and are reported by each child cluster when ignored.
                     items:
                       description: EnvVar represents an environment variable present
                         in a Container.
@@ -907,8 +893,8 @@ spec:
                     type: array
                   zettaImage:
                     description: |-
-                      ZettaImage is the image for Zetta services. Empty falls back to spec.workspaces.image, and
-                      then to the OramaZettaCluster default.
+                      ZettaImage is the image for Zetta services and workspace Zettas. Empty falls back to
+                      spec.workspaces.image, and then to the operator's default (internal/controller/lake_defaults.go).
                     type: string
                 type: object
               snapshots:
@@ -933,12 +919,6 @@ spec:
                       Driver is the CSI driver of a class the operator creates. It must be the driver of the
                       volumes it snapshots.
                     type: string
-                  enabled:
-                    default: false
-                    description: |-
-                      Enabled reconciles lake's volume_snapshot_policies table. Disabling stops new snapshots and
-                      pruning; it never deletes a snapshot.
-                    type: boolean
                 type: object
               store:
                 description: |-
@@ -1176,22 +1156,18 @@ spec:
                 description: |-
                   Workspaces configures synchronization of lake's workspaces table into isolated Kubernetes
                   namespaces. Each running row gets a Zetta cluster, a restricted namespace profile and local
-                  credentials. Requires the control-plane Postgres. See docs/lake/workspaces.md.
+                  credentials. Needs the control-plane Postgres; without it condition FeaturesReady is False.
+                  See docs/lake/workspaces.md.
                 properties:
                   defaultPlan:
                     description: |-
                       DefaultPlan selects the quota plan for a workspace without an override. Empty selects the
                       built-in "default" plan.
                     type: string
-                  enabled:
-                    default: false
-                    description: |-
-                      Enabled synchronizes lake's workspaces table. Disabling stops reconciliation without deleting
-                      existing workspace namespaces.
-                    type: boolean
                   image:
-                    description: Image is the Zetta image used by every workspace.
-                      Empty uses the OramaZettaCluster default.
+                    description: |-
+                      Image is the Zetta image used by every workspace when spec.services.zettaImage is empty. Empty
+                      uses the operator's default (internal/controller/lake_defaults.go).
                     type: string
                   maxWorkspaces:
                     description: |-
@@ -1355,8 +1331,10 @@ spec:
                     type: boolean
                   env:
                     description: |-
-                      Env is copied to the owned OramaZettaCluster spec.env. Operator-managed Zetta environment names
-                      remain reserved and are reported by the child cluster when ignored.
+                      Env is copied to the owned OramaZettaCluster spec.env, followed by the operator's default Zetta
+                      env for every name it does not set (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864,
+                      MALLOC_ARENA_MAX=2). Operator-managed Zetta environment names remain reserved and are reported
+                      by the child cluster when ignored.
                     items:
                       description: EnvVar represents an environment variable present
                         in a Container.
@@ -1476,8 +1454,8 @@ spec:
                       type: object
                     type: array
                   image:
-                    description: Image is the Zetta image. Empty uses the OramaZettaCluster
-                      default.
+                    description: Image is the Zetta image. Empty uses the operator's
+                      default (internal/controller/lake_defaults.go).
                     type: string
                   reachability:
                     description: |-
@@ -1519,7 +1497,7 @@ spec:
                 type: boolean
               conditions:
                 description: |-
-                  Conditions includes StoreReady, BackupReady, and ZettaReady, including invalid
+                  Conditions includes StoreReady, BackupReady, ZettaReady, and FeaturesReady, including invalid
                   configuration details.
                 items:
                   description: Condition contains details for one aspect of the current

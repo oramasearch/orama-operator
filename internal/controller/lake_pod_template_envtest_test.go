@@ -70,11 +70,10 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 		Spec: oramav1alpha1.LakeSpec{
 			Image: "oramasearch/lake:test",
 			Apps: oramav1alpha1.LakeAppsSpec{
-				Enabled:      true,
 				Wildcard:     "apps.example.com",
 				RuntimeImage: "oramasearch/app-runtime:0.1.0",
 			},
-			Builds: oramav1alpha1.LakeBuildsSpec{Enabled: true},
+			Builds: oramav1alpha1.LakeBuildsSpec{},
 			Store: oramav1alpha1.LakeStoreSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			},
@@ -252,7 +251,6 @@ func lakeSpecChangeRollsOnce(t *testing.T, kubeClient client.Client, name string
 		Spec: oramav1alpha1.LakeSpec{
 			Image: "oramasearch/lake:test",
 			Apps: oramav1alpha1.LakeAppsSpec{
-				Enabled:      true,
 				Wildcard:     "apps.example.com",
 				RuntimeImage: "oramasearch/app-runtime:first",
 			},

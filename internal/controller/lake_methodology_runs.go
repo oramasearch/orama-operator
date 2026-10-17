@@ -180,10 +180,6 @@ func methodologyWorkClaim(slug string) string        { return slug + "-work" }
 func methodologyCredentialSecret(slug string) string { return slug + "-credential" }
 func methodologyPullSecret(slug string) string       { return slug + "-pull" }
 
-func methodologyRunsEnabled(lake *oramav1alpha1.Lake) bool {
-	return lake.Spec.Methodologies.RuntimeImage != ""
-}
-
 // lakePublicHost is the host lake's registry is reached at from outside the cluster, which is
 // where kubelet pulls a built image from: LAKE_PUBLIC_HOST in spec.env (what lake's build_json
 // uses), else spec.host.
@@ -837,9 +833,6 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 		return status, false, nil
 	case run.Mode != methodologyModeValidate && run.Mode != methodologyModeTrain:
 		status.Phase, status.Message = MethodologyPhaseFailed, "mode must be validate or train"
-		return status, false, nil
-	case !methodologyRunsEnabled(lake):
-		status.Phase, status.Message = MethodologyPhaseFailed, "methodology runs are not enabled on this Lake (spec.methodologies.runtimeImage)"
 		return status, false, nil
 	case run.RuntimeImage == "":
 		status.Phase, status.Message = MethodologyPhaseFailed, "the run names no runtime image"
