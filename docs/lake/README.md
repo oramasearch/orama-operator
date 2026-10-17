@@ -119,17 +119,17 @@ decides whether the Lake is exposed outside the cluster, not which features it r
 | Runtime-mode apps (`LAKE_APPS_RUNTIME_IMAGE`) | `spec.apps.runtimeImage` | `oramasearch/app-runtime:976e6a8` |
 | Image builds | `spec.builds.builderImage` | `oramasearch/lake-builder:31a48d9` |
 | Methodologies (`LAKE_METHODOLOGY_RUNTIME_IMAGE`) | `spec.methodologies.runtimeImage` | `oramasearch/methodology-runtime:ac58062` |
-| User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:f8feb14` |
+| User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:v0.1.0` |
 | MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a` |
-| `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:591e662` |
-| `agent-project` | `spec.agents.library[key]` | `oramasearch/agent-project:16e17d0` |
-| `agent-autosuggest` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest:3d9acf7` |
-| `agent-creator` | `spec.agents.library[key]` | `oramasearch/agent-creator:6b1cc36-f8feb14` |
-| `agent-eval-generator` | `spec.agents.library[key]` | `oramasearch/agent-eval-generator:e2a683c` |
-| `agent-project-corpus` | `spec.agents.library[key]` | `oramasearch/agent-project-corpus:4537bcb` |
-| `agent-autosuggest-corpus` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest-corpus:a882954` |
-| `agent-application` | `spec.agents.library[key]` | `oramasearch/agent-application:3a38da8` |
-| `agent-experiments` | `spec.agents.library[key]` | `oramasearch/agent-experiments:62a4d64` |
+| `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:v0.1.0` |
+| `agent-project` | `spec.agents.library[key]` | `oramasearch/agent-project:v0.1.0` |
+| `agent-autosuggest` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest:v0.1.0` |
+| `agent-creator` | `spec.agents.library[key]` | `oramasearch/agent-creator:v0.1.0` |
+| `agent-eval-generator` | `spec.agents.library[key]` | `oramasearch/agent-eval-generator:v0.1.0` |
+| `agent-project-corpus` | `spec.agents.library[key]` | `oramasearch/agent-project-corpus:v0.1.0` |
+| `agent-autosuggest-corpus` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest-corpus:v0.1.0` |
+| `agent-application` | `spec.agents.library[key]` | `oramasearch/agent-application:v0.1.0` |
+| `agent-experiments` | `spec.agents.library[key]` | `oramasearch/agent-experiments:v0.1.0` |
 
 Every Zetta a Lake owns also gets `ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864` and
 `MALLOC_ARENA_MAX=2` unless its env (`spec.zetta.env`, `spec.services.zettaEnv`) names the

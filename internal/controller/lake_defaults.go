@@ -32,7 +32,7 @@ const (
 	// and collect pods (spec.methodologies.runtimeImage).
 	lakeDefaultMethodologyRuntimeImage = "oramasearch/methodology-runtime:ac58062"
 	// lakeDefaultAgentRuntimeImage runs every user-created agent (spec.agents.runtimeImage).
-	lakeDefaultAgentRuntimeImage = "oramasearch/agent-runtime:f8feb14"
+	lakeDefaultAgentRuntimeImage = "oramasearch/agent-runtime:v0.1.0"
 	// lakeDefaultMCPRunnerImage is LAKE_MCP_RUNNER_IMAGE, the image lake runs MCP servers on.
 	// spec.env may still set the variable, which wins.
 	lakeDefaultMCPRunnerImage = "oramasearch/lake-mcp-runner:d98451a"
@@ -44,15 +44,15 @@ const lakeMCPRunnerImageEnv = "LAKE_MCP_RUNNER_IMAGE"
 // lakeDefaultLibrary is the Agent Library every Lake runs: all nine specialized agents. A
 // spec.agents.library entry replaces the image of its key; it cannot remove an agent.
 var lakeDefaultLibrary = []oramav1alpha1.LakeLibraryAgent{
-	{Key: "agent-ask-orama", Image: "oramasearch/agent-ask-orama:591e662"},
-	{Key: "agent-project", Image: "oramasearch/agent-project:16e17d0"},
-	{Key: "agent-autosuggest", Image: "oramasearch/agent-autosuggest:3d9acf7"},
-	{Key: "agent-creator", Image: "oramasearch/agent-creator:6b1cc36-f8feb14"},
-	{Key: "agent-eval-generator", Image: "oramasearch/agent-eval-generator:e2a683c"},
-	{Key: "agent-project-corpus", Image: "oramasearch/agent-project-corpus:4537bcb"},
-	{Key: "agent-autosuggest-corpus", Image: "oramasearch/agent-autosuggest-corpus:a882954"},
-	{Key: "agent-application", Image: "oramasearch/agent-application:3a38da8"},
-	{Key: "agent-experiments", Image: "oramasearch/agent-experiments:62a4d64"},
+	{Key: "agent-ask-orama", Image: "oramasearch/agent-ask-orama:v0.1.0"},
+	{Key: "agent-project", Image: "oramasearch/agent-project:v0.1.0"},
+	{Key: "agent-autosuggest", Image: "oramasearch/agent-autosuggest:v0.1.0"},
+	{Key: "agent-creator", Image: "oramasearch/agent-creator:v0.1.0"},
+	{Key: "agent-eval-generator", Image: "oramasearch/agent-eval-generator:v0.1.0"},
+	{Key: "agent-project-corpus", Image: "oramasearch/agent-project-corpus:v0.1.0"},
+	{Key: "agent-autosuggest-corpus", Image: "oramasearch/agent-autosuggest-corpus:v0.1.0"},
+	{Key: "agent-application", Image: "oramasearch/agent-application:v0.1.0"},
+	{Key: "agent-experiments", Image: "oramasearch/agent-experiments:v0.1.0"},
 }
 
 // lakeDefaultZettaEnv is added to every Zetta a Lake owns (its data plane, its workspaces and its

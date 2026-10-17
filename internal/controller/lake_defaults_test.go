@@ -25,15 +25,15 @@ import (
 // The images Lake/prod ran on 2026-10-17 (operator#539). The test repeats them on purpose: moving
 // a default is a deliberate change to both lake_defaults.go and this table.
 var wantLakeDefaultLibrary = map[string]string{
-	"agent-ask-orama":          "oramasearch/agent-ask-orama:591e662",
-	"agent-project":            "oramasearch/agent-project:16e17d0",
-	"agent-autosuggest":        "oramasearch/agent-autosuggest:3d9acf7",
-	"agent-creator":            "oramasearch/agent-creator:6b1cc36-f8feb14",
-	"agent-eval-generator":     "oramasearch/agent-eval-generator:e2a683c",
-	"agent-project-corpus":     "oramasearch/agent-project-corpus:4537bcb",
-	"agent-autosuggest-corpus": "oramasearch/agent-autosuggest-corpus:a882954",
-	"agent-application":        "oramasearch/agent-application:3a38da8",
-	"agent-experiments":        "oramasearch/agent-experiments:62a4d64",
+	"agent-ask-orama":          "oramasearch/agent-ask-orama:v0.1.0",
+	"agent-project":            "oramasearch/agent-project:v0.1.0",
+	"agent-autosuggest":        "oramasearch/agent-autosuggest:v0.1.0",
+	"agent-creator":            "oramasearch/agent-creator:v0.1.0",
+	"agent-eval-generator":     "oramasearch/agent-eval-generator:v0.1.0",
+	"agent-project-corpus":     "oramasearch/agent-project-corpus:v0.1.0",
+	"agent-autosuggest-corpus": "oramasearch/agent-autosuggest-corpus:v0.1.0",
+	"agent-application":        "oramasearch/agent-application:v0.1.0",
+	"agent-experiments":        "oramasearch/agent-experiments:v0.1.0",
 }
 
 // bareLake states only what differs per environment: no feature field at all.
@@ -106,7 +106,7 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 		t.Fatalf("library = %v", library)
 	}
 	for _, image := range [][2]string{
-		{lakeAgentRuntimeImage(lake), "oramasearch/agent-runtime:f8feb14"},
+		{lakeAgentRuntimeImage(lake), "oramasearch/agent-runtime:v0.1.0"},
 		{lakeBuilderImage(lake), "oramasearch/lake-builder:31a48d9"},
 		{serviceZettaImage(lake), "oramasearch/zetta:main-4015ef76"},
 		{lakeDataPlaneZettaImage(lake), "oramasearch/zetta:main-4015ef76"},
