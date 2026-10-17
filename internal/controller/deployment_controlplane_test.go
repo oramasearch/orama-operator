@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -35,88 +34,20 @@ import (
 
 const liquidOpenAPISHA256 = "96dee72f3085489ef586a8c3108fa4922d14e61a9f869c9e851580236d2e7b2e"
 
+// contractSQLDouble is the fake Zetta behind the deployment contract, with its write counts.
 type contractSQLDouble struct {
-	server        *httptest.Server
-	mutex         sync.Mutex
-	records       []map[string]string
-	desiredWrites [][]string
-	auditWrites   [][]string
-	authFailures  int
+	*fakeZetta
 }
 
 func newContractSQLDouble(t *testing.T) *contractSQLDouble {
 	t.Helper()
-	double := &contractSQLDouble{}
-	double.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Authorization") != "Bearer zetta-token" {
-			double.mutex.Lock()
-			double.authFailures++
-			double.mutex.Unlock()
-			writer.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		statement := request.URL.Query().Get("statement")
-		double.mutex.Lock()
-		defer double.mutex.Unlock()
-		writer.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.HasPrefix(statement, "SELECT ") && strings.Contains(statement, "FROM deployment_records"):
-			_ = json.NewEncoder(writer).Encode(map[string]any{
-				"ok":    true,
-				"value": map[string]any{"rows": double.records},
-			})
-		case strings.HasPrefix(statement, "INSERT INTO deployment_records "):
-			values, err := parseSQLInsertValues(statement)
-			if err != nil || len(values) != 10 {
-				writer.WriteHeader(http.StatusBadRequest)
-				_ = json.NewEncoder(writer).Encode(map[string]any{"ok": false})
-				return
-			}
-			double.records = append(double.records, map[string]string{
-				"deployment_id":    values[0],
-				"lake":             values[1],
-				"repository":       values[2],
-				"environment":      values[3],
-				"change_id":        values[4],
-				"image":            values[5],
-				"result_id":        values[6],
-				"rollback_of":      values[7],
-				"secret_refs_json": values[8],
-				"created_at":       values[9],
-			})
-			_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "value": map[string]any{}})
-		case strings.HasPrefix(statement, "INSERT INTO deployments "):
-			values, err := parseSQLInsertValues(statement)
-			if err != nil {
-				writer.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			double.desiredWrites = append(double.desiredWrites, values)
-			_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "value": map[string]any{}})
-		case strings.HasPrefix(statement, "INSERT INTO reconcile_events "):
-			values, err := parseSQLInsertValues(statement)
-			if err != nil {
-				writer.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			double.auditWrites = append(double.auditWrites, values)
-			_ = json.NewEncoder(writer).Encode(map[string]any{"ok": true, "value": map[string]any{}})
-		default:
-			writer.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(writer).Encode(map[string]any{"ok": false, "error": map[string]string{"message": "unexpected SQL"}})
-		}
-	}))
-	return double
+	return &contractSQLDouble{fakeZetta: newFakeZetta(t, "zetta-token")}
 }
 
-func (double *contractSQLDouble) close() {
-	double.server.Close()
-}
+func (double *contractSQLDouble) close() {}
 
 func (double *contractSQLDouble) counts() (int, int, int) {
-	double.mutex.Lock()
-	defer double.mutex.Unlock()
-	return len(double.records), len(double.desiredWrites), len(double.auditWrites)
+	return len(double.rows("orama_control", "deployment_records")), double.insertCount("deployments"), double.insertCount("reconcile_events")
 }
 
 func parseSQLInsertValues(statement string) ([]string, error) {
@@ -217,7 +148,7 @@ func deploymentControlPlaneScheme(t *testing.T) *runtime.Scheme {
 func deploymentControlPlaneObjects(includeSecret bool) []client.Object {
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: "lake-uid"},
-		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake", Image: "oramasearch/lake:test"},
+		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake", Image: "oramasearch/lake:test", Host: testLakeHost},
 	}
 	zetta := &oramav1alpha1.OramaZettaCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "control", Namespace: "lake", UID: "zetta-uid"},
@@ -311,7 +242,7 @@ func TestDeploymentControlPlaneRESTAndMCP(t *testing.T) {
 	double := newContractSQLDouble(t)
 	defer double.close()
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	server := &DeploymentControlPlane{Client: kubeClient, ZettaURL: double.server.URL, Now: func() time.Time {
+	server := &DeploymentControlPlane{Client: kubeClient, ZettaURL: double.url(), Now: func() time.Time {
 		current := now
 		now = now.Add(time.Second)
 		return current
@@ -519,7 +450,7 @@ func TestDeploymentControlPlaneEnvtestFourOperations(t *testing.T) {
 	}
 	double := newContractSQLDouble(t)
 	defer double.close()
-	server := &DeploymentControlPlane{Client: kubeClient, APIReader: kubeClient, ZettaURL: double.server.URL}
+	server := &DeploymentControlPlane{Client: kubeClient, APIReader: kubeClient, ZettaURL: double.url()}
 	handler := server.Handler()
 	change := "blake3:" + strings.Repeat("3", 64)
 	image := "registry.example.test/app@sha256:" + strings.Repeat("b", 64)

@@ -17,14 +17,23 @@ type CloudflareDNSRecordSpec struct {
 	SecretRef string `json:"secretRef"`
 	// Name is the record FQDN (e.g. app.orama.com).
 	Name string `json:"name"`
-	// Type is A or CNAME; empty = inferred from Content (IP → A, hostname → CNAME).
+	// Type is A, CNAME or TXT; empty = inferred from Content (IP → A, hostname → CNAME).
 	// +optional
 	Type string `json:"type,omitempty"`
-	// Content is the record target (an IP for A, a hostname for CNAME).
+	// Content is the record target (an IP for A, a hostname for CNAME, the text for TXT).
 	Content string `json:"content"`
-	// Proxied routes the record through Cloudflare's proxy (orange-cloud).
+	// Proxied routes the record through Cloudflare's proxy (orange-cloud). Always written, so a
+	// controller's false is kept rather than replaced by the default (a Clerk record must not be
+	// proxied); a resource that leaves it out gets true.
 	// +kubebuilder:default=true
-	Proxied bool `json:"proxied,omitempty"`
+	// +optional
+	Proxied bool `json:"proxied"`
+	// DeletionPolicy decides what deleting this resource does to the Cloudflare record. Delete (the
+	// default) removes it. Retain leaves it: for a record another resource may also keep, such as a
+	// Clerk production instance's records, which every Lake sharing that instance writes.
+	// +kubebuilder:validation:Enum=Delete;Retain
+	// +optional
+	DeletionPolicy string `json:"deletionPolicy,omitempty"`
 }
 
 // CloudflareDNSRecordStatus is the observed state — the provisioned Cloudflare record.

@@ -143,7 +143,6 @@ func TestLakeEnvIncludesManagedAppsRuntimeImage(t *testing.T) {
 	lake := &oramav1alpha1.Lake{
 		Spec: oramav1alpha1.LakeSpec{
 			Apps: oramav1alpha1.LakeAppsSpec{
-				Enabled:      true,
 				RuntimeImage: "oramasearch/app-runtime:0.1.0",
 			},
 			Env: []corev1.EnvVar{{
@@ -439,12 +438,19 @@ func TestLakeReconcileUsesExistingStorePVC(t *testing.T) {
 	}
 	volumes := deployment.Spec.Template.Spec.Volumes
 	mounts := deployment.Spec.Template.Spec.Containers[0].VolumeMounts
-	if len(volumes) != 1 || volumes[0].PersistentVolumeClaim == nil ||
-		volumes[0].PersistentVolumeClaim.ClaimName != "lake-data" {
+	// The store, then every Lake's services and agent-bus Secrets (operator#539).
+	if len(volumes) != 3 || volumes[0].PersistentVolumeClaim == nil ||
+		volumes[0].PersistentVolumeClaim.ClaimName != "lake-data" ||
+		volumes[1].Name != lakeServicesVolume || volumes[2].Name != lakeAgentBusVolume {
 		t.Errorf("store volume = %+v", volumes)
 	}
-	if len(mounts) != 1 || mounts[0].Name != lakeStoreVolume || mounts[0].MountPath != lakeStorePath {
+	if len(mounts) != 3 || mounts[0].Name != lakeStoreVolume || mounts[0].MountPath != lakeStorePath {
 		t.Errorf("store mount = %+v", mounts)
+	}
+	for _, volume := range volumes[1:] {
+		if volume.PersistentVolumeClaim != nil {
+			t.Errorf("a second claim is mounted: %+v", volume)
+		}
 	}
 }
 
@@ -471,14 +477,13 @@ func TestLakeReconcileAppendsCustomEnvWithOperatorPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := deployment.Spec.Template.Spec.Containers[0].Env
-	if len(env) != 11 {
+	want := append(wantLakeOperatorEnv(true, true), "LAKE_LOG_MODE", "LAKE_PUBLIC_HOST")
+	if !reflect.DeepEqual(envNamesOf(env), want) {
 		t.Fatalf("env = %+v", env)
 	}
-	if env[0].Name != "LAKE_ADMIN_TOKEN" || env[1].Name != "LAKE_STORE_ROOT" ||
-		env[1].Value != lakeStorePath || env[2].Name != "LAKE_SEALING_PUBLIC_KEY" ||
-		env[2].Value == "" || env[3].Name != "LAKE_SEALING_KID" || env[3].Value == "" ||
-		env[9].Name != "LAKE_LOG_MODE" || env[9].Value != "air-gapped" ||
-		env[10].Name != "LAKE_PUBLIC_HOST" {
+	last := len(env) - 1
+	if env[1].Value != lakeStorePath || env[2].Value == "" || env[3].Value == "" ||
+		env[last-1].Value != "air-gapped" || env[last].Value != "lake.example.com" {
 		t.Errorf("env order or values = %+v", env)
 	}
 	for i, variable := range env {
@@ -545,8 +550,9 @@ func TestLakeReconcileIsIdempotent(t *testing.T) {
 	reconcileLake(t, c, s, "hello")
 	reconcileLake(t, c, s, "hello") // second pass must not error or duplicate
 
+	// lake and the nine library agents every Lake runs (operator#539), once each.
 	var ds appsv1.DeploymentList
-	if err := c.List(context.Background(), &ds, client.InNamespace("lake-dev")); err != nil || len(ds.Items) != 1 {
+	if err := c.List(context.Background(), &ds, client.InNamespace("lake-dev")); err != nil || len(ds.Items) != 1+len(wantLakeDefaultLibrary) {
 		t.Fatalf("deployments after two reconciles = %d (err %v)", len(ds.Items), err)
 	}
 }
@@ -723,8 +729,8 @@ func TestLakeReconcileZettaDataPlane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if result.RequeueAfter != lakeStatusRequeue {
-		t.Errorf("requeueAfter = %s, want %s", result.RequeueAfter, lakeStatusRequeue)
+	if result.RequeueAfter != lakeControlRowsRequeue {
+		t.Errorf("requeueAfter = %s, want %s", result.RequeueAfter, lakeControlRowsRequeue)
 	}
 
 	zetta := &oramav1alpha1.OramaZettaCluster{}
@@ -736,8 +742,11 @@ func TestLakeReconcileZettaDataPlane(t *testing.T) {
 		zetta.Spec.Storage.Size != "40Gi" || zetta.Spec.Storage.StorageClassName != "fast" ||
 		zetta.Spec.Reachability != oramav1alpha1.ReachabilityWANAccessible ||
 		zetta.Spec.PullSecretName != "oramasearch-dockerhub" ||
-		len(zetta.Spec.Env) != 1 || zetta.Spec.Env[0].Name != "MALLOC_ARENA_MAX" || zetta.Spec.Env[0].Value != "2" ||
-		zetta.Spec.ProvisionOperatorSchema == nil || *zetta.Spec.ProvisionOperatorSchema {
+		// The spec's variable first, then the default it does not name (operator#539).
+		len(zetta.Spec.Env) != 2 || zetta.Spec.Env[0].Name != "MALLOC_ARENA_MAX" || zetta.Spec.Env[0].Value != "2" ||
+		zetta.Spec.Env[1].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || zetta.Spec.Env[1].Value != "67108864" ||
+		// The Lake's Zetta is its deployment control plane (operator#557).
+		zetta.Spec.ProvisionOperatorSchema == nil || !*zetta.Spec.ProvisionOperatorSchema {
 		t.Errorf("Zetta spec = %+v", zetta.Spec)
 	}
 	if refs := zetta.OwnerReferences; len(refs) != 1 || refs[0].Name != "hello" || refs[0].Kind != "Lake" {
@@ -916,15 +925,13 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := d.Spec.Template.Spec.Containers[0].Env
-	if len(env) != 9 || env[0].Name != "LAKE_ADMIN_TOKEN" || env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" ||
-		env[1].Name != "LAKE_STORE_ROOT" || env[1].Value != lakeStorePath ||
-		env[2].Name != "LAKE_SEALING_PUBLIC_KEY" || env[2].Value == "" ||
-		env[3].Name != "LAKE_SEALING_KID" || env[3].Value == "" ||
-		env[4].Name != "LAKE_INSTANCE_KEK" || env[4].ValueFrom.SecretKeyRef.Name != "lake-hello-instance-kek" ||
-		env[4].ValueFrom.SecretKeyRef.Key != "key" || env[5].Name != "LAKE_CONTROL_DB_URI" ||
-		env[5].ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" || env[5].ValueFrom.SecretKeyRef.Key != "uri" ||
-		env[5].ValueFrom.SecretKeyRef.Optional == nil || !*env[5].ValueFrom.SecretKeyRef.Optional ||
-		env[7].Name != "LAKE_DATA_PLANE_URL" || env[8].Name != "LAKE_DATA_PLANE_TOKEN" {
+	kek, uri := envValue(t, env, "LAKE_INSTANCE_KEK"), envValue(t, env, "LAKE_CONTROL_DB_URI")
+	if !reflect.DeepEqual(envNamesOf(env), wantLakeOperatorEnv(true, false)) ||
+		env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" || env[1].Value != lakeStorePath ||
+		env[2].Value == "" || env[3].Value == "" ||
+		kek.ValueFrom.SecretKeyRef.Name != "lake-hello-instance-kek" || kek.ValueFrom.SecretKeyRef.Key != "key" ||
+		uri.ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" || uri.ValueFrom.SecretKeyRef.Key != "uri" ||
+		uri.ValueFrom.SecretKeyRef.Optional == nil || !*uri.ValueFrom.SecretKeyRef.Optional {
 		t.Errorf("env = %+v", env)
 	}
 	var admin corev1.Secret
@@ -993,10 +1000,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
 		t.Fatal(err)
 	}
-	if e := d.Spec.Template.Spec.Containers[0].Env; len(e) != 6 || e[0].Name != "LAKE_ADMIN_TOKEN" ||
-		e[1].Name != "LAKE_STORE_ROOT" || e[2].Name != "LAKE_SEALING_PUBLIC_KEY" ||
-		e[3].Name != "LAKE_SEALING_KID" || e[4].Name != "LAKE_DATA_PLANE_URL" ||
-		e[5].Name != "LAKE_DATA_PLANE_TOKEN" {
+	if e := d.Spec.Template.Spec.Containers[0].Env; !reflect.DeepEqual(envNamesOf(e), wantLakeOperatorEnv(false, false)) {
 		t.Errorf("operator env when postgres is disabled = %+v", e)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-instance-kek"}, &instanceKek); err == nil {
@@ -1038,8 +1042,8 @@ func TestLakeReconcileControlDBBackups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if res.RequeueAfter != lakeStatusRequeue {
-		t.Errorf("requeueAfter = %s, want %s", res.RequeueAfter, lakeStatusRequeue)
+	if res.RequeueAfter != lakeControlRowsRequeue {
+		t.Errorf("requeueAfter = %s, want %s", res.RequeueAfter, lakeControlRowsRequeue)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
 		t.Fatal(err)

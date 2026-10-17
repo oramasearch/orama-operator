@@ -83,7 +83,7 @@ type LakeVolumeSnapshotsReconciler struct {
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotcontents,verbs=get;list;watch;patch
 
 func lakeSnapshotsEnabled(lake *oramav1alpha1.Lake) bool {
-	return lake.Spec.Snapshots.Enabled && lakePostgresEnabled(lake) && lake.DeletionTimestamp.IsZero()
+	return lakePostgresEnabled(lake) && lake.DeletionTimestamp.IsZero()
 }
 
 func lakeSnapshotClassName(lake *oramav1alpha1.Lake) string {

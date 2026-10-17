@@ -126,7 +126,7 @@ func (r *LakeWorkspacesReconciler) apiReader() client.Reader {
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 
 func lakeWorkspacesEnabled(lake *oramav1alpha1.Lake) bool {
-	return lake.Spec.Workspaces.Enabled && lakePostgresEnabled(lake) && lake.DeletionTimestamp.IsZero()
+	return lakePostgresEnabled(lake) && lake.DeletionTimestamp.IsZero()
 }
 
 func (r *LakeWorkspacesReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
@@ -1324,7 +1324,7 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 		// with the claims the storage reconcile grows (operator#259).
 		cluster.Spec.Storage = workspaceZettaStorage(lake, row, cluster.Spec.Storage, creating)
 		cluster.Spec.Resources = serviceZettaResources(lake)
-		cluster.Spec.Env = append([]corev1.EnvVar(nil), lake.Spec.Services.ZettaEnv...)
+		cluster.Spec.Env = serviceZettaEnv(lake)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.Host = ""
 		cluster.Spec.DNSSecretRef = nil
