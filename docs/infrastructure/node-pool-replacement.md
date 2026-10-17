@@ -1,7 +1,7 @@
 # Applying node-pool sysctls to an existing AKS cluster (design, not implemented)
 
 Status: **design awaiting Steve's approval**. Nothing here is implemented. Tracked in
-[operator#ISSUE](https://github.com/oramasearch/orama-operator/issues/ISSUE), from
+[operator#579](https://github.com/oramasearch/orama-operator/issues/579), from
 [#454](https://github.com/oramasearch/orama-operator/issues/454). It changes the `AksCluster`
 controller's "create, observe and delete only" principle, which is why it needs approval first.
 

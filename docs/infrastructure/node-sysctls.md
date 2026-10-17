@@ -89,7 +89,7 @@ refuses such an update with `CustomKubeletConfigOrCustomLinuxOSConfigCanNotBeCha
 guide says node image upgrades reapply the configuration and scale-out preserves it.
 
 An existing cluster therefore gets the setting only through a pool created with it. How the
-operator does that is designed, and awaiting Steve's approval, in
+operator does that is designed in [#579](https://github.com/oramasearch/orama-operator/issues/579), awaiting Steve's approval, in
 [node-pool replacement](node-pool-replacement.md): replacing and draining the shared pools
 cannot finish because the writer and data stores have `maxUnavailable: 0` budgets, so the
 recommendation is to add a reader pool with the setting and place the readers on it. Until that
