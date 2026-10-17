@@ -39,6 +39,11 @@ The managing cluster, `orama-production-cluster-01`, was created by hand before 
 existed and has no `KubernetesCluster` of its own.
 
 No file here holds a secret. Secrets are named by reference and live on the managing cluster.
+A set's `secrets` list copies them into each member's namespace before the instance is applied;
+the copy keeps its name, or takes the one `as` gives. A v1 member's engine master key arrives this
+way and is named by `template.masterAPIKeySecretRef` (or a member's `spec`); the operator never
+generates it, and without it the member's writer and readers stay at zero replicas. Changing a
+copied Secret's source, or its data on the managing cluster, rolls the member's consumers of it.
 
 To check that the files match the cluster:
 

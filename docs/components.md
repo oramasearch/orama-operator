@@ -66,9 +66,12 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
   Keycloak non-secret config. Reconciled every pass.
 - **Per-component secrets** `<cr>-<component>-secret` — each holds **only the dummy
   credentials that component needs** (`componentSecretData`). e.g. `search-secret` =
-  `TYPESENSE_API_KEY`; `cache-secret` = empty (Redis is passwordless, #32); `engine-secret`
-  = master key + the LLM keys (`GROQ_`, `OPENAI_`, `ANTHROPIC_`, `GOOGLE_API_KEY`) + `HF_TOKEN`; `dashboard-secret` = ClickHouse/JWT/Stripe (its **Postgres
-  password comes from the CNPG `<cr>-controldb-app` secret**, not here — #32). **No shared blob** —
+  `TYPESENSE_API_KEY`; `cache-secret` and `broker-secret` = empty (their passwords are generated,
+  see [Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo));
+  `engine-secret` = the LLM keys (`GROQ_`, `OPENAI_`, `ANTHROPIC_`, `GOOGLE_API_KEY`) + `HF_TOKEN`;
+  `dashboard-secret` = ClickHouse/JWT/Stripe (its **Postgres
+  password comes from the CNPG `<cr>-controldb-app` secret**, not here — #32). No component Secret
+  holds `MASTER_API_KEY`: every consumer reads `spec.masterAPIKeySecretRef`. **No shared blob** —
   a pod never sees a credential it doesn't use. **Create-if-absent** — the operator
   never overwrites an existing secret, so real / rotated values are
   preserved. Components with no secret needs (selenium, mongo) get none.
@@ -98,6 +101,59 @@ cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boo
 > **Follow-ups:** edit the remaining dummy secret values in place for production
 > (they're plain in-cluster K8s Secrets; the operator won't overwrite them). (The JWT
 > keypair is already real + generated.)
+
+## Credentials — broker and Redis passwords and the master key (`credentials.go`)
+
+[#307](https://github.com/oramasearch/orama-operator/issues/307). Every client reads a stack-wide
+credential from one Secret by `secretKeyRef`, so a value in that Secret is the value every component
+connects with, and no value is in a ConfigMap, pod spec, annotation, status or log.
+
+| Secret | Keys | Created by | Read by |
+|---|---|---|---|
+| `<cr>-broker-admin` | `username` (`orama`), `password` | the bootstrap step, where the broker runs locally | broker `rabbitmq.conf` and boot definitions, writer and reader transport config, harvest-master `AMQP_HOST`, `RabbitMQTopology` (`adminSecretRef`) |
+| `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL` |
+| `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`; the reader-only config has none), analytics-processor render-config, index-builder, workers, dashboard, the e2e runner |
+
+- **Generated once.** Where the store runs in this cluster (enabled, not `mode: external`, not
+  `placement: central` on a read region) the operator creates the Secret with a random 48-character
+  hex password, owner-referenced to the CR and labelled component `credentials`, which no teardown
+  removes: disabling the broker or cache keeps its password for the retained volume. An existing
+  Secret, generated or supplied, is never changed, adopted or filled in. A member whose store runs
+  elsewhere receives the Secret through its set's `secrets` list.
+- **Checked.** A broker or cache Secret missing a key, or holding an empty value or a character
+  outside `A-Z a-z 0-9 - . _ ~` (the clients take it inside URLs and config files), fails the
+  reconcile with `Ready=False` naming the Secret and key, and is left as it is.
+- **Wiring.** Clients get `BROKER_USERNAME`, `BROKER_PASSWORD` and `REDIS_PASSWORD` as `secretKeyRef`
+  entries placed before the URLs that reference them (`amqp://$(BROKER_USERNAME):$(BROKER_PASSWORD)@<cr>-broker:5672`,
+  `redis://:$(REDIS_PASSWORD)@<cr>-cache:6379`), and Redis runs
+  `redis-server --appendonly yes --requirepass $(REDIS_PASSWORD)`. Config files hold
+  `__BROKER_USERNAME__`, `__BROKER_PASSWORD__` and `__MASTER_API_KEY__` placeholders that a
+  `render-config` init container fills into an `emptyDir`.
+- **Broker password on a retained volume.** RabbitMQ applies `default_user`/`default_pass` only to
+  an empty data directory, so the broker also imports `/etc/rabbitmq/credentials.json` on every
+  boot (`definitions.import_backend = local_filesystem`): the admin user, the `/` vhost and its
+  permissions. Importing an existing user sets its password, so a changed `<cr>-broker-admin`
+  takes effect when the broker rolls, without a reset or a volume deletion. Streams and per-service
+  users stay with `RabbitMQTopology`.
+- **The master key is required.** While the engine is enabled and the reference, its Secret or its
+  key is missing, or the value is empty, starts with `dev-` or holds a line break, the writer and
+  readers are not created, or are scaled to zero with their volumes kept, and `Ready=False` with
+  phase `Degraded` names the cause (`MasterAPIKeyRefMissing`, `MasterAPIKeySecretMissing`,
+  `MasterAPIKeyKeyMissing`, `MasterAPIKeyEmpty`, `MasterAPIKeyPlaceholder`, `MasterAPIKeyInvalid`)
+  by namespace, Secret and key. The CR is checked again every 20 seconds and on every event of that
+  Secret, and the configured replicas return once it is valid. The other consumers need only the
+  reference's name to build their pods; without one they are not created or changed, and Ready
+  reports `MasterAPIKeyRefMissing`. The value must equal the target control database's
+  `oramacore_clusters.master_api_key`, which the dashboard reads; the operator does not write that
+  row.
+- **Automatic rolls.** Each workload that reads one of these Secrets carries
+  `orama.cloud/credentials-hash`, the data hash of exactly the Secrets it reads (`secretDataHash`,
+  shared with the LLM key hash). The controller maps every Secret event, owned or copied, to each CR
+  in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
+  `<cr>-broker-admin` the broker, writer, readers and harvest-master; `<cr>-cache-auth` the cache,
+  harvest-master and index-builder; the master key the writer (and readers on the combined image),
+  analytics-processor, index-builder, workers and dashboard. Metadata changes roll nothing. An
+  existing e2e Job is immutable and keeps the reference it was created with.
 
 ## Network sandboxes (`internal/controller/networksandbox_controller.go`)
 
@@ -262,23 +318,28 @@ Driven by `spec.region.role`:
   provider, and `ai_server.embeddings.automatic_embeddings_selector` the optional selector. Without
   `spec.llm` they are Prod 1's four providers with no selector
   ([crd-reference.md](crd-reference.md#specllm)).
-  Every config is a **template** — `master_api_key` is a `'__MASTER_API_KEY__'` and each provider's
+  Every config is a **template** — `master_api_key` is a `'__MASTER_API_KEY__'`, the broker `user`
+  and `password` are `'__BROKER_USERNAME__'` and `'__BROKER_PASSWORD__'`, and each provider's
   key a `'__<PROVIDER>_API_KEY__'` placeholder (single-quoted scalars), so **no credential lives in
   the ConfigMap**. A `render-config` **init container** substitutes the real values into the pod's
   template and writes it to a shared `emptyDir`, and OramaCore reads it via
   `CONFIG_PATH=/etc/oramacore/config.yaml`
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
-  `ORAMACORE_` provider splits on `_`). Values come from `<cr>-engine-secret` (via `envFrom`), and a
-  provider with `apiKeySecretRef` from that Secret through an explicit `secretKeyRef` env entry.
+  `ORAMACORE_` provider splits on `_`). Explicit `secretKeyRef` env entries carry `MASTER_API_KEY`
+  from `spec.masterAPIKeySecretRef` (only where the side's template holds it), the broker
+  credentials from `<cr>-broker-admin`, and a provider's key from its `apiKeySecretRef`; the other
+  provider keys come from `<cr>-engine-secret` (via `envFrom`).
   The script reads each value from its environment variable and escapes it for `sed` and the
   single-quoted scalar, so no value is evaluated, logged or written into the script.
   Each pod template carries `orama.cloud/config-hash`, the SHA-256 of its own unrendered template
   (with side-only images a change to one side's config rolls only that side, a change to a shared
   section such as the LLM settings rolls both; the combined config rolls both), and
   `orama.cloud/llm-secret-hash`, the SHA-256 of the data of `<cr>-engine-secret` and every
-  `apiKeySecretRef` Secret, identical on both sides. The controller watches Secrets and maps a
-  change to every CR whose enabled engine reads it, so a rotated key rolls the writer and readers
-  with no restart by hand. The LLM settings and keys are checked before any engine object is
+  `apiKeySecretRef` Secret, identical on both sides, and `orama.cloud/credentials-hash`, the side's
+  broker admin and master key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
+  The controller watches Secrets and maps a change to every CR that reads it, so a rotated key rolls
+  the writer and readers with no restart by hand. Without a usable master key the writer and
+  readers are held at zero replicas. The LLM settings and keys are checked before any engine object is
   written: invalid input leaves the running engine untouched with `Ready=False`. All children set
   an owner reference to the CR, so deleting the CR cascade-deletes them.
 - **Hooks deny list** ([#306](https://github.com/oramasearch/orama-operator/issues/306)) —
@@ -341,7 +402,7 @@ transition** (deep-compared first), so a steady stack generates no control-plane
 the CR GC'd everything. The
 `render-config` init container renders the config, and **OramaCore 1.2.28 parses it and
 boots** (`Configuration loaded successfully` → `Starting web server on
-http://0.0.0.0:8080`); the ConfigMap shows only `master_api_key: "__MASTER_API_KEY__"`
+http://0.0.0.0:8080`); the ConfigMap shows only `master_api_key: '__MASTER_API_KEY__'`
 while the rendered file in the pod holds the real value.
 
 > **Follow-ups:** the `embeddings` ai-server image is built by the bridge's
@@ -382,8 +443,8 @@ and reference the primary's endpoint). Images are overridable via
 
 | Store | Component | Image | Ports |
 |---|---|---|---|
-| Redis | `cache` | `redis:7-alpine` | 6379 |
-| RabbitMQ | `broker` | `rabbitmq:3.13-management` | 5672, 15672 |
+| Redis (`--requirepass` from `<cr>-cache-auth`) | `cache` | `redis:7-alpine` | 6379 |
+| RabbitMQ (admin from `<cr>-broker-admin`) | `broker` | `rabbitmq:3.13-management` | 5672, 15672, 5552 |
 | ClickHouse | `analytics` | `clickhouse/clickhouse-server:24.8` | 8123, 9000 |
 | Typesense | `search` | `typesense/typesense:0.25.2` | 8108 |
 
@@ -402,7 +463,8 @@ and a `maxUnavailable: 0` PDB) — see [Workload hardening](#workload-hardening-
 > **Follow-ups:** these are single-node for light/medium. **Heavy/production** should
 > swap in the dedicated operators (Altinity ClickHouse, RabbitMQ cluster-operator) and
 > a clustered Typesense; wire credentials via the component secret (the Typesense API key
-> is a dev placeholder today). Binary-side right-sizing derived from the memory limits (Redis
+> is a dev placeholder today; the broker and Redis passwords are generated, see
+> [Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)). Binary-side right-sizing derived from the memory limits (Redis
 > `maxmemory`, etc.) is [#42](https://github.com/oramasearch/orama-operator/issues/42).
 
 ## App compute — ingestion / workers / dashboard / docs (`app.go`, `ingestion.go`)

@@ -333,6 +333,10 @@ func TestLLMCustomKeySecretWiring(t *testing.T) {
 		{Name: "ANTHROPIC_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: "llm-keys"}, Key: "ANTHROPIC_API_KEY"}}},
 	}
+	// The credentials come first: the master key (both sides run the combined config) and the
+	// broker admin user and password.
+	want = append([]corev1.EnvVar{secretKeyEnv("MASTER_API_KEY", testMasterSecret, "MASTER_API_KEY"),
+		secretKeyEnv("BROKER_USERNAME", "v1-broker-admin", "username"), secretKeyEnv("BROKER_PASSWORD", "v1-broker-admin", "password")}, want...)
 	cm := h.engineConfig()
 	for side, spec := range h.podTemplates() {
 		init := renderInit(t, spec.Spec)
@@ -483,7 +487,7 @@ func TestRequestsForEngineLLMSecret(t *testing.T) {
 	s := ocv1TestScheme(t)
 	h := newEngineHarness(t, objs...)
 	r := &OramaCloudV1Reconciler{Client: h.cl, Scheme: s}
-	eh := handler.EnqueueRequestsFromMapFunc(r.requestsForEngineLLMSecret)
+	eh := handler.EnqueueRequestsFromMapFunc(r.requestsForSecret)
 
 	cases := []struct {
 		ns, name string
@@ -525,7 +529,7 @@ func TestRequestsForEngineLLMSecret(t *testing.T) {
 			}
 		}
 		// The map function itself returns each CR once, even when it reads the Secret twice.
-		reqs := r.requestsForEngineLLMSecret(context.Background(), sec)
+		reqs := r.requestsForSecret(context.Background(), sec)
 		if len(reqs) != len(tc.want) {
 			t.Errorf("%s/%s mapped to %v, want %d requests", tc.ns, tc.name, reqs, len(tc.want))
 		}
@@ -680,7 +684,7 @@ func TestLLMCustomSecretDeletedThenRecreated(t *testing.T) {
 	if err := h.cl.Create(context.Background(), recreated); err != nil {
 		t.Fatal(err)
 	}
-	if reqs := h.r.requestsForEngineLLMSecret(context.Background(), recreated); len(reqs) != 1 || reqs[0].Name != "v1" {
+	if reqs := h.r.requestsForSecret(context.Background(), recreated); len(reqs) != 1 || reqs[0].Name != "v1" {
 		t.Fatalf("recreating the Secret mapped to %v, want v1", reqs)
 	}
 	if err := h.run(); err != nil {

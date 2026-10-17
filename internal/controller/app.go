@@ -95,6 +95,10 @@ type appDef struct {
 	// gracePeriodSeconds is terminationGracePeriodSeconds. 0 → the stateless-app default (30s).
 	// Stateful/slow-draining apps set a larger value. Workload hardening (#18).
 	gracePeriodSeconds int64
+	// credentialSecrets are the credential Secrets the app's containers, init containers included,
+	// read by secretKeyRef (broker admin, cache auth, master API key). Their data hash is on the pod
+	// template, so a changed credential rolls the app (#307).
+	credentialSecrets []string
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
@@ -121,6 +125,14 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 	// Harden the operator's init/render/wait containers to the same baseline as the main container.
 	initContainers := def.initContainers
 	hardenAll(initContainers)
+	var annotations map[string]string
+	if len(def.credentialSecrets) > 0 {
+		hash, err := r.credentialsHash(ctx, oc, def.credentialSecrets...)
+		if err != nil {
+			return err
+		}
+		annotations = map[string]string{credentialsHashKey: hash}
+	}
 
 	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
@@ -162,7 +174,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			podSpec.TopologySpreadConstraints = spreadConstraints(lbls)
 		}
 		dep.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: annotations},
 			Spec:       podSpec,
 		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
@@ -227,13 +239,19 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 	if !w.Enabled {
 		return r.teardownByComponent(ctx, oc, "workers")
 	}
+	masterKey, ok := masterAPIKeySecret(oc)
+	if !ok {
+		return nil
+	}
 	img := w.Image
 	if img == "" {
 		img = componentImage(oc, "workers", "orama-workers") // one bundled image for all CF workers
 	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "workers", image: img, port: 8080, replicas: w.Replicas,
-		resources: resourcesOr(w.Resources, resourceReqs("128Mi", "50m", "512Mi")),
+		env:               []corev1.EnvVar{masterAPIKeyEnv(oc)},
+		credentialSecrets: []string{masterKey},
+		resources:         resourcesOr(w.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }
 
@@ -241,6 +259,10 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	d := oc.Spec.Components.Dashboard
 	if !d.Enabled {
 		return r.teardownByComponent(ctx, oc, "dashboard")
+	}
+	masterKey, ok := masterAPIKeySecret(oc)
+	if !ok {
+		return nil
 	}
 	img := componentImage(oc, "dashboard", "dashboard")
 	// Schema ownership: when the operator manages the control DB in-cluster it also owns the schema —
@@ -269,9 +291,11 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		image:       img,
 		port:        3000,
 		ingressHost: d.Host,
-		// Real control-DB password from the CNPG secret (#32) + DATABASE_URL for Drizzle (#34).
-		env:            []corev1.EnvVar{pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
-		initContainers: initContainers,
+		// The master key (#307), and the real control-DB password from the CNPG secret (#32) +
+		// DATABASE_URL for Drizzle (#34).
+		env:               []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
+		credentialSecrets: []string{masterKey},
+		initContainers:    initContainers,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
 	})

@@ -21,6 +21,7 @@ pointing at the primary); the full sample list is in
 | `llm.providers[]` | list | Prod 1's four ([below](#specllm)) | **Multiple** LLM providers (`name`: `groq \| openai \| anthropic \| google \| vllm`, `models[]`, `apiKeySecretRef: {name, key}`, `gpu`) — end users pick per query. The first model is the provider's default model. |
 | `llm.default` | string | `groq` | Provider used when a request doesn't name one; must be one of the providers. |
 | `llm.automaticEmbeddingsSelector` | `{provider, model}` | unset | Provider and model that choose the properties to embed for collections with automatic embeddings. Unset renders no selector. |
+| `masterAPIKeySecretRef` | `{name, key}` | unset | The Secret, in the CR's namespace, holding the engine master API key under `key` (default `MASTER_API_KEY`). Required while the engine or another master key consumer is enabled; there is no default Secret and no generated key ([below](#specmasterapikeysecretref)). |
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
@@ -85,6 +86,57 @@ implemented), is unsupported, or has no first model; the selector's model is emp
 Messages name the field or Secret and key, never a value. Fixing the spec or (re)creating the
 Secret recovers on the next reconcile, which the Secret watch triggers.
 
+## `spec.masterAPIKeySecretRef`
+
+The one source of `MASTER_API_KEY`
+([#307](https://github.com/oramasearch/orama-operator/issues/307)). `name` is required and
+nonempty; `key` defaults to `MASTER_API_KEY`, so `key: token` reads `Data["token"]` while every
+consumer still receives the variable `MASTER_API_KEY`. The Secret is supplied, normally through the
+set's `secrets` list, and the operator only reads it:
+
+```yaml
+spec:
+  secrets:
+    - { name: v1-dev-master, namespace: orama-system, as: v1-master-api-key }
+  template:
+    masterAPIKeySecretRef:
+      name: v1-master-api-key
+      key: MASTER_API_KEY
+```
+
+Consumers: the writer's render-config (`writer_side.master_api_key`; the reader-only config has
+none, the combined config gives it to the readers too), analytics-processor's render-config (until
+its own analytics key, #419/#421), index-builder, workers, the dashboard and the
+`OramaCloudV1E2ETest` runner. Each receives an explicit `secretKeyRef`, which wins over a
+`MASTER_API_KEY` an older `<cr>-<component>-secret` still holds. The value must equal the target
+control database's `oramacore_clusters.master_api_key`, which the dashboard uses for administrative
+calls; the operator does not write that row.
+
+**The engine needs a real key.** While `components.engine.enabled` is true the operator checks the
+reference on every reconcile, before it writes a writer or reader template. On a failure the writer
+and readers are not created, or a running stack's are scaled to zero with their volumes and
+credentials kept, the phase is `Degraded`, and `Ready=False` names the namespace, Secret and key,
+never the value:
+
+| Failure | `Ready` reason |
+|---|---|
+| reference unset, or its name empty | `MasterAPIKeyRefMissing` (`spec.masterAPIKeySecretRef.name is required`) |
+| the Secret does not exist | `MasterAPIKeySecretMissing` |
+| the key does not exist | `MasterAPIKeyKeyMissing` |
+| the value is empty | `MasterAPIKeyEmpty` |
+| the value starts with `dev-` | `MasterAPIKeyPlaceholder` |
+| the value holds a line break | `MasterAPIKeyInvalid` |
+
+The CR is checked again every 20 seconds and on every event of the referenced Secret, and the
+configured replica counts return once the key is valid, with no spec edit. With the engine
+disabled only the name is required, and only when analytics-processor, ingestion, workers or the
+dashboard is enabled; those consumers are not created or changed without it.
+
+**A changed key rolls its consumers.** Each consumer's pod template carries
+`orama.cloud/credentials-hash` over the Secrets it reads, so a changed value, or a reference to
+another Secret, rolls exactly them ([components.md](components.md#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
+It does not change the control database row.
+
 ## `spec.components`
 
 Every component has `enabled`. Data stores also have `mode: in-cluster|external`,
@@ -140,7 +192,7 @@ Sample: [`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).
 
 | Field | Purpose |
 |---|---|
-| `spec.targetRef` | Name of the `OramaCloudV1` to test (same namespace); the Job points at `<targetRef>-writer` / `-reader`. |
+| `spec.targetRef` | Name of the `OramaCloudV1` to test (same namespace); the Job points at `<targetRef>-writer` / `-reader`, and its runner takes `MASTER_API_KEY` from the target's `spec.masterAPIKeySecretRef` when the Job is created. Until the target exists and sets that reference the test stays `Pending` and is checked again every 20 seconds. An existing Job is immutable and keeps the reference it was created with. |
 | `spec.image` | **Runner base image** (default `alpine:3.20`). Must provide `sh` + a package manager — the Job installs curl+jq into it, then runs the embedded suite. Override only with another curl/jq-capable base. |
 | `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
 | `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ocv1e2e`. |

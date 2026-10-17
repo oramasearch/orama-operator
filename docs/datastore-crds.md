@@ -69,10 +69,14 @@ in-cluster (removing it — which runs the finalizer — where it doesn't). It d
 - **stream** `oramacore-operations` — the writer→reader replication stream, declared as
   `x-queue-type=stream`.
 
-Admin creds come from `<cr>-broker-admin` (keys `username`/`password`), whose values share a single
-source of truth (`brokerAdminUser` / `brokerAdminPassword`) with the mounted `rabbitmq.conf` so the two
-can never drift. All broker secrets are **create-if-absent** so generated/rotated material survives
-reconciles.
+Admin creds come from `<cr>-broker-admin` (keys `username`/`password`), generated once with a random
+password where the broker runs locally ([#307](https://github.com/oramasearch/orama-operator/issues/307)).
+The same Secret is rendered into the broker's `rabbitmq.conf` and its boot definitions
+(`credentials.json`, the admin user, `/` and its permissions), which RabbitMQ imports on every start,
+so a changed password reaches a broker whose data volume holds the old one when the broker rolls. The
+broker, writer, readers and harvest-master carry the Secret's data hash and roll on a change. All
+broker Secrets are **create-if-absent**, so generated or supplied material survives reconciles; see
+[components.md](components.md#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo).
 
 ### Two deliberate constraints (and their follow-ups)
 

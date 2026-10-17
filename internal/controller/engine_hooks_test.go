@@ -301,7 +301,7 @@ func TestHooksCoveredByConfigHash(t *testing.T) {
 					t.Errorf("%s config hash = %q, want SHA-256 of %s %q", side, hash, s.configKey, want)
 				}
 
-				same := engineConfigAnnotations(engineSideFor(oc, side), "")[configHashKey]
+				same := engineConfigAnnotations(engineSideFor(oc, side), "", "")[configHashKey]
 				if same != hash {
 					t.Errorf("%s: an identical template hashed to %q, want %q", side, same, hash)
 				}
@@ -310,7 +310,7 @@ func TestHooksCoveredByConfigHash(t *testing.T) {
 				if changed.template == s.template {
 					t.Fatalf("%s: test edit did not change the hooks text", side)
 				}
-				if got := engineConfigAnnotations(changed, "")[configHashKey]; got == hash {
+				if got := engineConfigAnnotations(changed, "", "")[configHashKey]; got == hash {
 					t.Errorf("%s: a hooks-only change kept config hash %q", side, got)
 				}
 			}

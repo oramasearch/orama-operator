@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -36,8 +37,8 @@ import (
 
 // combinedConfigFixture is config.yaml for a CR named v1 with a CPU writer and no spec.llm, captured
 // from the renderer before it was split into sections, with the LLM section rendered from the default
-// providers (#304), the master key single-quoted for safe substitution, and Prod 1's hooks block on
-// both sides (#306). The combined config must stay byte-for-byte this.
+// providers (#304), the master key single-quoted for safe substitution, Prod 1's hooks block on
+// both sides (#306), and the broker credentials as placeholders (#307). The combined config must stay byte-for-byte this.
 const combinedConfigFixture = `http:
   host: 0.0.0.0
   port: 8080
@@ -49,8 +50,8 @@ writer_side:
     type: rabbitmq
     host: v1-broker
     port: 5552
-    user: orama
-    password: dev-rabbitmq-password
+    user: '__BROKER_USERNAME__'
+    password: '__BROKER_PASSWORD__'
     v_host: /
     stream_name: oramacore-operations
     client_provided_name: oramacore-writer
@@ -68,8 +69,8 @@ reader_side:
     type: rabbitmq
     host: v1-broker
     port: 5552
-    user: orama
-    password: dev-rabbitmq-password
+    user: '__BROKER_USERNAME__'
+    password: '__BROKER_PASSWORD__'
     v_host: /
     stream_name: oramacore-operations
     client_provided_name: oramacore-reader
@@ -115,6 +116,8 @@ ai_server:
 // with the default providers.
 const combinedRenderCommand = `esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e 's/[\\&#]/\\&/g'; }; sed` +
 	` -e "s#__MASTER_API_KEY__#$(esc "${MASTER_API_KEY}")#g"` +
+	` -e "s#__BROKER_USERNAME__#$(esc "${BROKER_USERNAME}")#g"` +
+	` -e "s#__BROKER_PASSWORD__#$(esc "${BROKER_PASSWORD}")#g"` +
 	` -e "s#__OPENAI_API_KEY__#$(esc "${OPENAI_API_KEY}")#g"` +
 	` -e "s#__GOOGLE_API_KEY__#$(esc "${GOOGLE_API_KEY}")#g"` +
 	` -e "s#__GROQ_API_KEY__#$(esc "${GROQ_API_KEY}")#g"` +
@@ -124,7 +127,6 @@ const combinedRenderCommand = `esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e '
 const (
 	testWriterImage = "oramasearch/oramacore-writer@sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	testReaderImage = "oramasearch/oramacore-reader@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-	configHashKey   = "orama.cloud/config-hash"
 )
 
 // engineHarness is a fake cluster for the engine, counting deletes and status writes.
@@ -136,10 +138,21 @@ type engineHarness struct {
 	statusWrites int
 }
 
+// testMasterSecret is the master API key Secret engineOC references; newEngineHarness adds it unless
+// the test supplies its own.
+const testMasterSecret = "v1-master"
+
+// testMasterKey is testMasterSecret's MASTER_API_KEY, different from the stale value engineKeys
+// leaves in the engine Secret.
+const testMasterKey = "shared-master-0099"
+
 func newEngineHarness(t *testing.T, objs ...client.Object) *engineHarness {
 	t.Helper()
 	s := ocv1TestScheme(t)
 	h := &engineHarness{t: t}
+	if !slices.ContainsFunc(objs, func(o client.Object) bool { _, ok := o.(*corev1.Secret); return ok && o.GetName() == testMasterSecret }) {
+		objs = append(objs, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": testMasterKey}))
+	}
 	h.cl = fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&oramav1alpha1.OramaCloudV1{}).
 		WithObjects(objs...).
@@ -155,6 +168,14 @@ func newEngineHarness(t *testing.T, objs ...client.Object) *engineHarness {
 		}).Build()
 	h.r = &OramaCloudV1Reconciler{Client: h.cl, Scheme: s}
 	return h
+}
+
+// harnessObjects is how many items of list newEngineHarness creates itself: testMasterSecret.
+func harnessObjects(list client.ObjectList) int {
+	if _, ok := list.(*corev1.SecretList); ok {
+		return 1
+	}
+	return 0
 }
 
 func (h *engineHarness) reconcile(oc *oramav1alpha1.OramaCloudV1) {
@@ -201,10 +222,11 @@ func (h *engineHarness) engineConfig() *corev1.ConfigMap {
 	return cm
 }
 
-// engineOC is a primary CR named v1 with the engine enabled.
+// engineOC is a primary CR named v1 with the engine enabled and its master key in testMasterSecret.
 func engineOC(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCloudV1 {
 	return newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Components.Engine.Enabled = true
+		o.Spec.MasterAPIKeySecretRef = &oramav1alpha1.MasterAPIKeySecretRef{Name: testMasterSecret}
 		if mut != nil {
 			mut(o)
 		}
@@ -450,7 +472,7 @@ func TestEngineImagesBothOrNeither(t *testing.T) {
 				if err := h.cl.List(context.Background(), list); err != nil {
 					t.Fatal(err)
 				}
-				if n := meta.LenList(list); n != 0 {
+				if n := meta.LenList(list) - harnessObjects(list); n != 0 {
 					t.Errorf("%T has %d items after a refused reconcile, want 0", list, n)
 				}
 			}
@@ -503,7 +525,7 @@ func TestReconcileRefusesOneSideImageBeforeAnyChange(t *testing.T) {
 		if err := h.cl.List(context.Background(), list); err != nil {
 			t.Fatal(err)
 		}
-		if n := meta.LenList(list); n != 0 {
+		if n := meta.LenList(list) - harnessObjects(list); n != 0 {
 			t.Errorf("%T has %d items after a refused reconcile, want 0", list, n)
 		}
 	}
@@ -566,7 +588,7 @@ func TestEngineSidesConditionPersisted(t *testing.T) {
 		if mut != nil {
 			mut(oc)
 		}
-		h.r.applyReadiness(context.Background(), oc)
+		h.r.applyReadiness(context.Background(), oc, nil)
 		return read()
 	}
 	check := func(oc *oramav1alpha1.OramaCloudV1, status metav1.ConditionStatus, reason string) *metav1.Condition {
@@ -638,7 +660,7 @@ func TestEngineSidesConditionPersisted(t *testing.T) {
 func TestEngineConfigHashIsPerSide(t *testing.T) {
 	oc := engineOC(withSideImages)
 	writer, reader := engineSideFor(oc, "writer"), engineSideFor(oc, "reader")
-	hash := func(s engineSide) string { return engineConfigAnnotations(s, "")[configHashKey] }
+	hash := func(s engineSide) string { return engineConfigAnnotations(s, "", "")[configHashKey] }
 
 	// Edit one side's template the way a side-only setting would; only that side's hash moves.
 	before := map[string]string{"writer": hash(writer), "reader": hash(reader)}
@@ -781,7 +803,8 @@ func TestEngineReadRegionRunsReaderOnly(t *testing.T) {
 func TestRenderConfigInitRendersSelectedTemplate(t *testing.T) {
 	const master, groq = "synthetic-master-0123abcd", "gsk_synthetic_4567efgh"
 	keys := map[string]string{"__MASTER_API_KEY__": master, "__GROQ_API_KEY__": groq,
-		"__OPENAI_API_KEY__": "sk-synthetic", "__GOOGLE_API_KEY__": "AIza-synthetic", "__ANTHROPIC_API_KEY__": "sk-ant-synthetic"}
+		"__OPENAI_API_KEY__": "sk-synthetic", "__GOOGLE_API_KEY__": "AIza-synthetic", "__ANTHROPIC_API_KEY__": "sk-ant-synthetic",
+		"__BROKER_USERNAME__": "orama", "__BROKER_PASSWORD__": "synthetic-broker-89ab"}
 	for _, oc := range []*oramav1alpha1.OramaCloudV1{engineOC(nil), engineOC(withSideImages)} {
 		h := newEngineHarness(t)
 		h.reconcile(oc)
