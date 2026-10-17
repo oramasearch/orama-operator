@@ -59,7 +59,6 @@ func startWorkspaceEnvtest(t *testing.T) (client.Client, *runtime.Scheme, *orama
 	}
 	lake := testWorkspaceLake()
 	lake.Spec.PullSecretName = ""
-	lake.Spec.Services.Enabled = true
 	if err := kube.Create(ctx, lake); err != nil {
 		t.Fatal(err)
 	}

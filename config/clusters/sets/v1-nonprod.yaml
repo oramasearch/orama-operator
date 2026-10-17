@@ -17,6 +17,8 @@ spec:
     namespace: orama-system
   - name: cloudflare-api-token
     namespace: orama-system
+  - name: v1-nonprod-llm-keys
+    namespace: orama-system
   template:
     cloudflare:
       apiTokenSecretRef:
@@ -81,12 +83,33 @@ spec:
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
       tag: v1-sandbox
+    # Prod 1's providers, models and selector, as in v1-prod. Keys come from v1-nonprod-llm-keys.
     llm:
+      automaticEmbeddingsSelector:
+        model: gpt-5.2
+        provider: openai
       default: groq
       providers:
-      - models:
-        - llama-3.3-70b-versatile
+      - apiKeySecretRef:
+          name: v1-nonprod-llm-keys
+        models:
+        - gpt-5.2
+        name: openai
+      - apiKeySecretRef:
+          name: v1-nonprod-llm-keys
+        models:
+        - gemini-2.0-flash-001
+        name: google
+      - apiKeySecretRef:
+          name: v1-nonprod-llm-keys
+        models:
+        - openai/gpt-oss-120b
         name: groq
+      - apiKeySecretRef:
+          name: v1-nonprod-llm-keys
+        models:
+        - claude-sonnet-4-5
+        name: anthropic
     profile: light
     region:
       role: primary
