@@ -901,6 +901,8 @@ UNION ALL SELECT 'application_authorization_code_workspaces_guard=' || count(*) 
 UNION ALL SELECT 'repository_records_guard=' || count(*) FROM repository_records_guard
 UNION ALL SELECT 'workspace_store_guard=' || count(*) FROM workspace_store_guard
 UNION ALL SELECT 'network_guard=' || count(*) FROM network_guard
+UNION ALL SELECT 'identity_links_guard=' || count(*) FROM identity_links_guard
+UNION ALL SELECT 'clerk_webhooks_guard=' || count(*) FROM clerk_webhooks_guard
 `
 
 // postgresMissingMigrationsQuery returns, space-separated, every migration the vendored lake schema
