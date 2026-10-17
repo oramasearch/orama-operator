@@ -32,18 +32,18 @@ Namespaced `LakeApp` resources run customer apps from a pinned Lake repository r
 digest-pinned image. Synchronized apps share their restricted workspace namespace with
 collision-free resource names; standalone CRs retain a private namespace. Apps have
 private-by-default ingress, scoped data bindings, and live rollout events. The CR contract and resource lifecycle are in
-[`apps.md`](apps.md). With `spec.apps.enabled`, a dedicated controller follows lake's `apps`
+[`apps.md`](apps.md). On every Lake, a dedicated controller follows lake's `apps`
 table using the Services DSN, `lake_apps` notifications and a 60-second fallback list. It registers
 generated source, Zetta, event and registry-pull token hashes, merges the pull token with the Lake's
 existing Docker config for each app pod, returns current rollout status, handles stopped/deleted rows
 and orphans, and owns one proxied apps wildcard DNS record. Builds remain separate in #195.
 
-With `spec.builds.enabled`, lake writes a queued image-build row and the operator runs one isolated
+On every Lake, lake writes a queued image-build row and the operator runs one isolated
 rootless BuildKit Job for it in a per-space namespace. Source, push, and event credentials are
 single-build scoped; the Job pushes through Lake's in-cluster registry, reuses a per-space registry
 cache, and reports its digest, size, progress, and failures. See [`builds.md`](builds.md).
 
-With `spec.workspaces.enabled`, the operator follows lake's `workspaces` table and creates one
+On every Lake, the operator follows lake's `workspaces` table and creates one
 restricted namespace and Zetta data plane per workspace. An owned `NetworkSandbox` renders
 default-deny network policy, restricted
 Pod Security Admission, tokenless service accounts, plan quotas and local credentials make the
@@ -55,14 +55,14 @@ volumes grow in place from lake's `workspaces.storage_gi` and never shrink; the 
 the observed size on the workspace row ([workspaces.md](workspaces.md#workspace-volume-size-operator259),
 operator#259).
 
-With `spec.snapshots.enabled`, the operator follows lake's `volume_snapshot_policies` and takes
+On every Lake, the operator follows lake's `volume_snapshot_policies` and takes
 scheduled CSI snapshots of lake's store volume and of every workspace Zetta's volumes through a
 `VolumeSnapshotClass` with `deletionPolicy: Retain`, keeps the newest `keep` of each, honors
 one-off requests and reports each target's newest snapshot in `volume_snapshot_status`.
 Snapshots outlive their workspace, and restoring one is a documented runbook, not automated
 ([volume-snapshots.md](volume-snapshots.md), operator#260).
 
-With `spec.services.enabled`, lake runs managed services for its customers — Zetta, Postgres,
+On every Lake, lake runs managed services for its customers — Zetta, Postgres,
 the catalog of Kafka, ClickHouse, TiDB, Cassandra and Valkey (preview), and SQLite, DuckDB and
 Polars: it writes the
 `services` table in its control Postgres, and the operator creates one Lake-owned
@@ -77,6 +77,55 @@ connection in the same Secret. Services and apps mount them (lake#666): a volume
 pods the operator builds (apps and the sqlite, duckdb and polars services), a bucket as
 `STORE_<NAME>_*` variables, and the operator reports each volume's used space —
 [stores.md](stores.md).
+
+## Every Lake runs every feature
+
+Steve, 2026-10-17: *"all features should be enabled on all environments"* ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)).
+A `Lake` has **no feature switch**: apps, builds, methodology runs and deployments, the whole
+Agent Library and user-created agents, managed services and stores, workspaces, connections,
+egress rules, tunnels, peers and volume snapshots are reconciled on every Lake, dev to prod. The
+`enabled` fields of `spec.apps`, `spec.builds`, `spec.services`, `spec.workspaces` and
+`spec.snapshots` were removed; the CRD prunes the values Lakes had stored.
+
+Every image a feature runs has an operator default, so a `LakeSet` member states only what differs
+per environment: host, args, env and secrets. A spec image still overrides its default, and moving
+a default is a change to one file, rolled through the pipeline dev, testing, staging, prod.
+
+The one prerequisite is the control Postgres (`spec.postgres.enabled`, default `true`). Without it
+the features cannot run, and the Lake's `FeaturesReady` condition is `False` with reason
+`PostgresDisabled`, naming them; a feature is never skipped silently. `ingressEnabled` stays: it
+decides whether the Lake is exposed outside the cluster, not which features it runs.
+
+### Default images
+
+`internal/controller/lake_defaults.go`, pinned to what the managing cluster's `Lake/prod` ran on
+2026-10-17:
+
+| What | Spec field that overrides it | Default |
+|---|---|---|
+| Zetta: the Lake's data plane | `spec.zetta.image` | `oramasearch/zetta:main-4015ef76` |
+| Zetta: every workspace and managed Zetta service | `spec.services.zettaImage`, then `spec.workspaces.image` | `oramasearch/zetta:main-4015ef76` |
+| Runtime-mode apps (`LAKE_APPS_RUNTIME_IMAGE`) | `spec.apps.runtimeImage` | `oramasearch/app-runtime:976e6a8` |
+| Image builds | `spec.builds.builderImage` | `oramasearch/lake-builder:31a48d9` |
+| Methodologies (`LAKE_METHODOLOGY_RUNTIME_IMAGE`) | `spec.methodologies.runtimeImage` | `oramasearch/methodology-runtime:ac58062` |
+| User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:f8feb14` |
+| MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a` |
+| `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:6baa70d` |
+| `agent-project` | `spec.agents.library[key]` | `oramasearch/agent-project:16e17d0` |
+| `agent-autosuggest` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest:3d9acf7` |
+| `agent-creator` | `spec.agents.library[key]` | `oramasearch/agent-creator:6b1cc36-f8feb14` |
+| `agent-eval-generator` | `spec.agents.library[key]` | `oramasearch/agent-eval-generator:e2a683c` |
+| `agent-project-corpus` | `spec.agents.library[key]` | `oramasearch/agent-project-corpus:4537bcb` |
+| `agent-autosuggest-corpus` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest-corpus:a882954` |
+| `agent-application` | `spec.agents.library[key]` | `oramasearch/agent-application:3a38da8` |
+| `agent-experiments` | `spec.agents.library[key]` | `oramasearch/agent-experiments:62a4d64` |
+
+Every Zetta a Lake owns also gets `ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864` and
+`MALLOC_ARENA_MAX=2` unless its env (`spec.zetta.env`, `spec.services.zettaEnv`) names the
+variable. The agent model defaults to `gpt-5.5` (`spec.agents.model`). An app without its own host
+is `<app>.<spec.apps.wildcard>`, and an empty wildcard uses the Lake's `spec.host`
+(`myapp.lake-dev.oramadev.net`); HTTPS on those two-level names needs a certificate per zone
+([#515](https://github.com/oramasearch/orama-operator/issues/515)).
 
 ## What a Lake reconciles into
 
@@ -110,8 +159,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    `spec.port` (default 4900), readiness `GET /readyz`, liveness `GET /healthz`,
    `spec.replicas`, resource defaults or `spec.resources`, `imagePullSecrets` from
    `spec.pullSecretName`, and operator env including `LAKE_STORE_ROOT=/var/lib/lake/store`,
-   `LAKE_APPS_WILDCARD` and `LAKE_APPS_RUNTIME_IMAGE` when apps are enabled, and `LAKE_INTERNAL_URL` when builds or agents need
-   lake's in-cluster address, plus `spec.env` entries whose names do not conflict with
+   `LAKE_APPS_WILDCARD`, `LAKE_APPS_RUNTIME_IMAGE`, `LAKE_METHODOLOGY_RUNTIME_IMAGE`,
+   `LAKE_MCP_RUNNER_IMAGE` and the agents' variables (including `LAKE_INTERNAL_URL`, lake's
+   in-cluster address) on every Lake, plus `spec.env` entries whose names do not conflict with
    operator-owned variables. Pods run as
    uid/gid 10001 with the restricted container baseline. A spec change rolls the Deployment once;
    how the pods are replaced depends on the store's access modes, see [Rollouts](#rollouts). Replicated Deployments get a
@@ -165,7 +215,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     restore, upgrade, and failover evidence. A separate cluster-scoped `LakeRestoreRehearsal`
     controller runs Postgres procedures and updates the row; see
     [data services](data-services/README.md).
-15. **Managed services** (opt-in: `spec.services.enabled`) — once the schema has applied, the operator polls the `services`
+15. **Managed services** — once the schema has applied, the operator polls the `services`
     table in the control Postgres (pgx, Secret `lake-<name>-controldb-app` key `uri`) every
     `spec.deploySync.interval`. Each present service becomes `<name>-<slug>`: an `OramaZettaCluster`,
     a CloudNativePG `Cluster`, or, for the catalog kinds (liquid-bridge decision 47), a Strimzi
@@ -181,7 +231,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     `service_status` is upserted on change. An absent service is deleted with its
     data (irreversibly); `spec.services.maxServices` caps how many exist. The poll never fails the
     Lake. See [`services.md`](services.md).
-16. **Workspace namespaces** (opt-in: `spec.workspaces.enabled`) — `workspaces` rows become
+16. **Workspace namespaces** — `workspaces` rows become
     restricted `<environment>-ws-<id>` namespaces with quota, explicit network flows, localized
     pull credentials and one workspace Zetta. The workspace reconciler is that Zetta's only spec
     writer, uses the services image fallback, creates it at lake's `storage_gi` and grows its
@@ -189,13 +239,13 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     `service_status`, Ready only once the services poll has delivered its connection. Services, stores, user agents and synchronized apps with that required
     `workspace_id` also run there. Status writes are generation guarded; stopped rows
     retain data and deleted rows remove the namespace. See [`workspaces.md`](workspaces.md).
-17. **In-cluster builds** (opt-in: `spec.builds.enabled`) — queued rows in the Lake control
+17. **In-cluster builds** — queued rows in the Lake control
     Postgres become one `oramasearch/lake-builder` Job each in a deterministic per-space namespace,
     with scoped credentials, the Lake pull Secret mounted read-only for private base images,
     network isolation, resource/deadline/retention bounds, per-Lake and
     per-space concurrency, registry cache, progress events, and terminal digest/size status. See
     [`builds.md`](builds.md).
-18. **Volume snapshots** (opt-in: `spec.snapshots.enabled`) — `volume_snapshot_policies` rows become
+18. **Volume snapshots** — `volume_snapshot_policies` rows become
     `VolumeSnapshot`s of the store claim and each workspace Zetta's claims through a `Retain`
     `VolumeSnapshotClass` the operator creates when absent: on the cron schedule, at first sight and
     on `requested_at`, pruned beyond `keep`, contents labelled with their target, and the newest
@@ -204,7 +254,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     workspace engine, managed service, app, build and agent launch: the CPU, memory, GPUs, GPU class
     and VRAM its scheduled pods were given, which lake prices (lake#643). Written only on change;
     a finished build or job keeps its values. See [`workload-resources.md`](workload-resources.md).
-20. **Methodology runs** (with builds and `spec.methodologies.runtimeImage`) — each
+20. **Methodology runs** — each
     `methodology_runs` row waits for its image build, then runs a stage, a sandbox and a collect pod
     in `lake-<name>-methodology-runs`: the sandbox carries no credential, no token and no network
     unless granted. A workspace runs at most `spec.methodologies.maxConcurrentRunsPerWorkspace`

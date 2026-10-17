@@ -364,7 +364,7 @@ func serviceTestLake() *oramav1alpha1.Lake {
 			Namespace:      testServiceNamespace,
 			Image:          "oramasearch/lake:test",
 			PullSecretName: "oramasearch-dockerhub",
-			Services:       oramav1alpha1.LakeServicesSpec{Enabled: true, ZettaImage: "oramasearch/zetta:service"},
+			Services:       oramav1alpha1.LakeServicesSpec{ZettaImage: "oramasearch/zetta:service"},
 		},
 	}
 }
@@ -560,8 +560,9 @@ func TestServicesZettaCreateAndReadyGating(t *testing.T) {
 	}
 	if cluster.Spec.Replicas != 2 || cluster.Spec.Storage.Size != "20Gi" || cluster.Spec.Image != "oramasearch/zetta:service" ||
 		cluster.Spec.IngressEnabled || cluster.Spec.ProvisionOperatorSchema == nil || *cluster.Spec.ProvisionOperatorSchema ||
-		cluster.Spec.PullSecretName != "oramasearch-dockerhub" || len(cluster.Spec.Env) != 1 ||
-		cluster.Spec.Env[0].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || cluster.Spec.Env[0].Value != "134217728" {
+		cluster.Spec.PullSecretName != "oramasearch-dockerhub" || len(cluster.Spec.Env) != 2 ||
+		cluster.Spec.Env[0].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || cluster.Spec.Env[0].Value != "134217728" ||
+		cluster.Spec.Env[1].Name != "MALLOC_ARENA_MAX" || cluster.Spec.Env[1].Value != "2" {
 		t.Fatalf("unexpected zetta service spec: %+v", cluster.Spec)
 	}
 	endpoint := "http://prod-svc-111111111111-zetta.lake.svc.cluster.local:4800"
@@ -974,8 +975,8 @@ func TestServicesQuotaRefusesOnlyNewServices(t *testing.T) {
 
 func TestServicesQuotaIsIndependentFromMaxWorkspaces(t *testing.T) {
 	lake := serviceTestLake()
-	lake.Spec.Services = oramav1alpha1.LakeServicesSpec{Enabled: true}
-	lake.Spec.Workspaces = oramav1alpha1.LakeWorkspacesSpec{Enabled: true, Image: "oramasearch/zetta:workspace", MaxWorkspaces: 1}
+	lake.Spec.Services = oramav1alpha1.LakeServicesSpec{}
+	lake.Spec.Workspaces = oramav1alpha1.LakeWorkspacesSpec{Image: "oramasearch/zetta:workspace", MaxWorkspaces: 1}
 	store := &fakeServiceStore{services: []LakeService{
 		testService(testZettaServiceID, testZettaSlug, serviceKindZetta, `{}`, false),
 		testService(testPostgresID, testPostgresSlug, serviceKindPostgres, `{}`, false),
@@ -1040,18 +1041,19 @@ func TestLakeServicesDeploymentMountAndEnv(t *testing.T) {
 		want   bool
 	}{
 		{"services", func(*oramav1alpha1.Lake) {}, true},
-		{"workspaces only", func(l *oramav1alpha1.Lake) {
-			l.Spec.Services = oramav1alpha1.LakeServicesSpec{}
-			l.Spec.Workspaces.Enabled = true
-		}, false},
-		{"disabled", func(l *oramav1alpha1.Lake) { l.Spec.Services = oramav1alpha1.LakeServicesSpec{} }, false},
+		// Every Lake runs services (operator#539): a Lake that states nothing about them too.
+		{"no services fields", func(l *oramav1alpha1.Lake) { l.Spec.Services = oramav1alpha1.LakeServicesSpec{} }, true},
+		// Only the missing control Postgres stops them.
+		{"no control Postgres", func(l *oramav1alpha1.Lake) { l.Spec.Postgres.Enabled = boolPtr(false) }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newLakeScheme(t)
 			lake := serviceTestLake()
 			tc.mutate(lake)
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}).Build()
-			applyLakeSchemaForWorkloadTest(t, c, s, lake)
+			if lakePostgresEnabled(lake) {
+				applyLakeSchemaForWorkloadTest(t, c, s, lake)
+			}
 			store := &fakeServiceStore{}
 			r := &LakeReconciler{Client: c, Scheme: s, ServiceStores: store.opener()}
 			result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "prod"}})
@@ -1096,7 +1098,7 @@ func TestLakeServicesDeploymentMountAndEnv(t *testing.T) {
 					t.Fatal("store opened before the control DB app Secret exists")
 				}
 			} else if _, found := env["LAKE_SERVICE_DIR"]; found || mounted || volume {
-				t.Fatal("disabled services still wired into lake")
+				t.Fatal("services wired into a lake without its control Postgres")
 			}
 			// The data plane no longer provisions the operator schema for workspace intake.
 			var dataPlane oramav1alpha1.OramaZettaCluster

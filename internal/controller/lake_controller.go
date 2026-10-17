@@ -371,6 +371,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if apimeta.SetStatusCondition(&desiredConditions, zettaCondition) {
 		conditionsChanged = true
 	}
+	if apimeta.SetStatusCondition(&desiredConditions, lakeFeaturesCondition(&lake)) {
+		conditionsChanged = true
+	}
 	if lake.Status.ReadyReplicas != deploy.Status.ReadyReplicas || lake.Status.Phase != phase ||
 		lake.Status.PostgresReady != pgReady || lake.Status.PostgresInstances != pgDetail ||
 		lake.Status.ZettaReady != zettaReady ||
@@ -512,10 +515,10 @@ func (r *LakeReconciler) reconcileLakeZetta(
 		zetta.Labels = withLabels(labels, lakeInstancePodLabels(lake))
 		zetta.Spec = oramav1alpha1.OramaZettaClusterSpec{
 			Replicas:                replicas,
-			Image:                   lake.Spec.Zetta.Image,
+			Image:                   lakeDataPlaneZettaImage(lake),
 			PullSecretName:          lake.Spec.PullSecretName,
 			Storage:                 lake.Spec.Zetta.Storage,
-			Env:                     append([]corev1.EnvVar(nil), lake.Spec.Zetta.Env...),
+			Env:                     lakeDataPlaneZettaEnv(lake),
 			Reachability:            lake.Spec.Zetta.Reachability,
 			ProvisionOperatorSchema: &operatorSchema,
 		}
@@ -677,7 +680,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 				}},
 			})
 		}
-		if len(lake.Spec.Agents.Library) > 0 {
+		if len(lakeAgentLibrary(lake)) > 0 {
 			// The library agents' bus credentials (lake docs/api/agent-bus.md), one file each.
 			mode := int32(0o440)
 			spec := &deployment.Spec.Template.Spec
@@ -1108,16 +1111,17 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 	if explicitAppsWildcard != nil {
 		env = append(env, *explicitAppsWildcard.DeepCopy())
 		reserved["LAKE_APPS_WILDCARD"] = struct{}{}
-	} else if lake.Spec.Apps.Enabled {
-		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_WILDCARD", Value: lake.Spec.Apps.Wildcard})
+	} else {
+		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_WILDCARD", Value: lakeAppsWildcard(lake)})
 		reserved["LAKE_APPS_WILDCARD"] = struct{}{}
 	}
-	if lake.Spec.Apps.Enabled {
-		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_RUNTIME_IMAGE", Value: lake.Spec.Apps.RuntimeImage})
-	}
+	env = append(env, corev1.EnvVar{Name: "LAKE_APPS_RUNTIME_IMAGE", Value: lakeAppsRuntimeImage(lake)})
 	// The base of every methodology's image build and the stage and collect pods' image (lake#655).
-	if methodologyRunsEnabled(lake) {
-		env = append(env, corev1.EnvVar{Name: "LAKE_METHODOLOGY_RUNTIME_IMAGE", Value: lake.Spec.Methodologies.RuntimeImage})
+	env = append(env, corev1.EnvVar{Name: "LAKE_METHODOLOGY_RUNTIME_IMAGE", Value: lakeMethodologyRuntimeImage(lake)})
+	// The image lake runs MCP servers on: the default, unless spec.env names the variable, which
+	// then stays where spec.env puts it.
+	if runner, fromSpec := lakeMCPRunnerEnv(lake); !fromSpec {
+		env = append(env, runner)
 	}
 	if lakePostgresEnabled(lake) {
 		env = append(env, corev1.EnvVar{
@@ -1171,12 +1175,6 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		// Service endpoints are in service_status; this directory holds each Ready service's
 		// connection as <slug>.json.
 		env = append(env, corev1.EnvVar{Name: lakeServiceDirEnv, Value: lakeServicesMountPath})
-	}
-	if lake.Spec.Builds.Enabled && !agentsEnabled(lake) {
-		env = append(env, corev1.EnvVar{
-			Name:  "LAKE_INTERNAL_URL",
-			Value: lakeInternalURL(lake, lakeNamespace(lake)),
-		})
 	}
 	// Its agents (lake_agents.go): where the library agents are, lake's own in-cluster address,
 	// the model, and the token lake presents to agent services.

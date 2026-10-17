@@ -260,14 +260,17 @@ about the **operator**, not a copy of prod docs.
 control-plane Postgres with lake's schema applied through `PostgresSchema`, an owned `OramaZettaCluster` data plane, opt-in scheduled R2/S3
 backup through CNPG Barman, cluster-scoped `LakeRestoreRehearsal` restore/upgrade/failover proof,
 opt-in Ingress + Cloudflare DNS, and Lake-owned `LakeEnvironment` CRs materialized from the
-operator's Zetta deployment table. Opt-in `spec.apps.enabled` synchronizes the control Postgres
+operator's Zetta deployment table. **Every Lake runs every feature, with no per-Lake switch, and
+the operator supplies a default for every image** (operator#539; `internal/controller/lake_defaults.go`,
+`docs/lake/README.md#every-lake-runs-every-feature`): never add an `enabled` field to a Lake
+feature, and never let an empty image turn a feature off. It synchronizes the control Postgres
 `apps` table into Lake-owned `LakeApp` resources, registers generated token hashes, returns status,
 and maintains the apps wildcard DNS record; see `docs/lake/apps.md`.
-Opt-in `spec.workspaces.enabled` synchronizes control-Postgres workspace rows into restricted,
+It synchronizes control-Postgres workspace rows into restricted,
 default-deny namespaces with local Zetta credentials. Required `workspace_id` values place managed
 services, stores, user agents and synchronized apps in the same boundary; see
 `docs/lake/workspaces.md`.
-It also runs opt-in, isolated image-build Jobs from Lake's `builds` table; see `docs/lake/builds.md`.
+It also runs isolated image-build Jobs from Lake's `builds` table; see `docs/lake/builds.md`.
 `LakeSealedSecret` delivers cluster-bound ciphertext into
 owned Kubernetes Secrets; see `docs/lake/sealed-secrets.md`.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
