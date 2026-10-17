@@ -391,7 +391,7 @@ As of 2026-10-12. The resources themselves are in
 | Cluster | Region | Purpose | Role | Runs |
 |---|---|---|---|---|
 | `orama-production-cluster-01` | `eastus` | Development, despite its name | **The managing cluster**: holds every `KubernetesCluster`, `ClusterHelmRelease`, `OramaOperator` and set. Created by hand before these kinds existed, so it has no `KubernetesCluster` of its own | Also still runs workloads: `Lake/prod` (`lake.oramadev.net`) and the v1 sandbox (`app.oramadev.net`) |
-| `orama-nonprod-cluster-01` | `westus2` | `nonprod` | Managed | Lake `dev` and `staging`; Orama Cloud v1 `v1-dev` |
+| `orama-nonprod-cluster-01` | `westus2` | `nonprod` | Managed | Lake `dev`, `testing` and `staging`; Orama Cloud v1 `v1-dev` |
 | `orama-production-cluster-02` | `swedencentral` | `production` | Managed | Lake `shared`; Orama Cloud v1 `v1-eu` |
 | `orama-production-cluster-03` | `eastus` | `production` | Managed | Lake `shared-us`; Orama Cloud v1 `v1-us` |
 
