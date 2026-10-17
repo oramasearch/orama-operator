@@ -71,6 +71,12 @@ type LakeReconciler struct {
 	// workloadResources throttles the workload resources pass per Lake (lake#643), and the app
 	// transfer pass with it (lake#661).
 	workloadResources workloadResourcesClock
+	// ClerkAPIBase is Clerk's Backend API; empty is https://api.clerk.com/v1. SvixAPIBase replaces
+	// the Svix API address a Clerk instance's webhook portal names. Tests point both at fakes.
+	ClerkAPIBase string
+	SvixAPIBase  string
+	// clerkClock throttles the Clerk configuration pass per Lake (lake_clerk.go).
+	clerkClock lakeClerkClock
 	// VolumeStats reads the kubelet's volume stats for a store's used space (lake#666). Nil reads
 	// them through Clientset's node proxy; with neither, used space is not reported.
 	VolumeStats VolumeStatsReader
@@ -265,6 +271,12 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
+	// The Clerk instance (spec.clerk, lake_clerk.go): before the Deployment, which reads its keys.
+	clerk, err := r.reconcileLakeClerk(ctx, &lake, ns, labels)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile Clerk: %w", err)
+	}
+
 	// Service.
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
@@ -298,7 +310,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	deploy := &appsv1.Deployment{}
 	if schemaReady {
 		deploy, err = r.reconcileLakeDeployment(
-			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing,
+			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing, clerk,
 		)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment: %w", err)
@@ -372,6 +384,14 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		conditionsChanged = true
 	}
 	if apimeta.SetStatusCondition(&desiredConditions, lakeFeaturesCondition(&lake)) {
+		conditionsChanged = true
+	}
+	// ClerkReady exists only on a Lake with spec.clerk.
+	if clerk.Condition != nil {
+		if apimeta.SetStatusCondition(&desiredConditions, *clerk.Condition) {
+			conditionsChanged = true
+		}
+	} else if apimeta.RemoveStatusCondition(&desiredConditions, lakeClerkConditionType) {
 		conditionsChanged = true
 	}
 	if lake.Status.ReadyReplicas != deploy.Status.ReadyReplicas || lake.Status.Phase != phase ||
@@ -596,6 +616,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 	replicas int32,
 	port int32,
 	sealing lakeSealingMaterial,
+	clerk lakeClerkState,
 ) (*appsv1.Deployment, error) {
 	terminationGracePeriodSeconds := int64(lakeTerminationGracePeriodSeconds)
 	strategy, affinity := lakeRollout(replicas, storeAccessModes, lake.Spec.Rollout.OverlapOnSharedStore, labels)
@@ -636,7 +657,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 				Image:           image,
 				Args:            lake.Spec.Args,
 				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
-				Env:             lakeEnv(lake, sealing),
+				Env:             append(lakeEnv(lake, sealing), lakeClerkEnv(lake, clerk)...),
 				Resources:       *resources,
 				SecurityContext: containerSecurityContext,
 				Lifecycle:       lakeDrainPreStop(),
@@ -1182,6 +1203,12 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 	env = append(env, lakeRegionEnv(lake)...)
 	for _, name := range lakeRegionEnvNames {
 		reserved[name] = struct{}{}
+	}
+	// With spec.clerk the operator gives the Clerk variables (lakeClerkEnv); spec.env cannot.
+	if lake.Spec.Clerk != nil {
+		for _, name := range lakeClerkEnvNames {
+			reserved[name] = struct{}{}
+		}
 	}
 	for _, custom := range lake.Spec.Env {
 		if _, found := reserved[custom.Name]; found {

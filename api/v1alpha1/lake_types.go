@@ -184,6 +184,15 @@ type LakeSpec struct {
 	// +optional
 	ApexHost string `json:"apexHost,omitempty"`
 
+	// Clerk signs people in through a Clerk instance (operator#541, docs/lake/clerk.md). With the
+	// instance's secret key the operator keeps the instance configured for lake through Clerk's
+	// Backend API (the `lake` JWT template, the Lake's allowed origins, the webhook endpoint at
+	// https://<host>/identity/clerk-webhook), writes a production instance's DNS records with
+	// DNSSecretRef, and gives the Lake LAKE_CLERK_PUBLISHABLE_KEY and LAKE_CLERK_WEBHOOK_SECRET.
+	// Without it nothing about Clerk is managed, and spec.env keeps whatever it says.
+	// +optional
+	Clerk *LakeClerkSpec `json:"clerk,omitempty"`
+
 	// DeploySync configures how frequently this operator materializes desired deployment rows from
 	// its Zetta orama_control database into LakeEnvironment resources.
 	// +optional
@@ -209,6 +218,16 @@ type LakeSpec struct {
 	// snapshot.storage.k8s.io CRDs. See docs/lake/volume-snapshots.md.
 	// +optional
 	Snapshots LakeSnapshotsSpec `json:"snapshots,omitempty"`
+}
+
+// LakeClerkSpec is the Clerk instance a Lake signs people in through.
+type LakeClerkSpec struct {
+	// SecretKeySecretRef names a Secret in spec.namespace holding the instance's Backend API secret
+	// key (sk_test_... or sk_live_...) under key secretKey. The key decides which application and
+	// instance this is; Lakes holding the same key share the instance. The Secret may also hold
+	// publishableKey, which then replaces the one derived from the instance's Frontend API host.
+	// A LakeSet copies it to every member with spec.secrets.
+	SecretKeySecretRef corev1.LocalObjectReference `json:"secretKeySecretRef"`
 }
 
 // LakeRegionSpec is the region a Lake runs in.
