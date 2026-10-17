@@ -98,7 +98,7 @@ func TestDashboardNeverMigratesControlDB(t *testing.T) {
 					oc := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 						o.Name = "v1-dev"
 						o.Spec.Components.Dashboard.Enabled = true
-						o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: enabled, Mode: mode}
+						o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: enabled, Mode: mode}}
 					})
 					scheme := ocv1TestScheme(t)
 					cl := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -157,7 +157,7 @@ func TestControlDBRejectsExternalWithoutTouchingResources(t *testing.T) {
 				t.Run(fmt.Sprintf("enabled=%t/credentials=%t/seeded=%t", enabled, credentials, seeded), func(t *testing.T) {
 					ctx := context.Background()
 					oc := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
-						o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: enabled, Mode: "external"}
+						o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: enabled, Mode: "external"}}
 						if credentials {
 							o.Spec.Components.ControlDB.Endpoint = "postgres.example.test:5432"
 							o.Spec.Components.ControlDB.CredentialsSecretRef = &corev1.LocalObjectReference{Name: "external-creds"}
@@ -222,7 +222,7 @@ func TestControlDBSupportedModes(t *testing.T) {
 		t.Run("mode="+mode, func(t *testing.T) {
 			ctx := context.Background()
 			oc := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
-				o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: mode}
+				o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: mode}}
 			})
 			scheme := ocv1TestScheme(t)
 			cl := fake.NewClientBuilder().WithScheme(scheme).Build()
