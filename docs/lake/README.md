@@ -655,6 +655,11 @@ yet. One `LakeSet` manages them all, and the operator supplies everything lake's
 | `spec.regions` | `LAKE_REGIONS` (JSON `[{name, label, host, latitude, longitude}]`) | the LakeSet: one entry per member with a region label, written into each such member; stating it in a set is refused |
 | `spec.apexHost` | `LAKE_APEX_HOST` | stated on one member; a second is refused. Adds the Ingress rule and DNS record above |
 
+**Where it is set.** `config/clusters/sets/lake-nonprod.yaml` labels `dev`, `testing` and `staging`
+(all three in `westus2`), with the nonprod picker at `lake-nonprod.oramadev.net` on `dev`; this is
+how the feature is proven before production ([#520](https://github.com/oramasearch/orama-operator/issues/520)).
+`lake-prod` moves to `eu.lake.live`, `us.lake.live` and the `lake.live` picker in #513.
+
 The four env names are reserved: the same names in `spec.env` are ignored. A Lake with none of these
 fields (nonprod, a dedicated instance) gets none of the variables and shows no picker.
 

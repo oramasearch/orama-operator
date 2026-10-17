@@ -18,6 +18,9 @@ spec:
       - name: LAKE_PUBLIC_HOST
         value: lake-dev.oramadev.net
       host: lake-dev.oramadev.net
+      apexHost: lake-nonprod.oramadev.net
+      region:
+        label: Dev
   - clusterRef: orama-nonprod-cluster-01
     name: staging
     spec:
@@ -32,6 +35,8 @@ spec:
       - name: LAKE_PUBLIC_HOST
         value: lake-staging.oramadev.net
       host: lake-staging.oramadev.net
+      region:
+        label: Staging
   - clusterRef: orama-nonprod-cluster-01
     name: testing
     spec:
@@ -46,6 +51,8 @@ spec:
       - name: LAKE_PUBLIC_HOST
         value: lake-testing.oramadev.net
       host: lake-testing.oramadev.net
+      region:
+        label: Testing
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
