@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sort"
-	"strings"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -24,9 +23,9 @@ import (
 const lakeAppsDNSPurpose = "apps-wildcard"
 
 func (r *LakeAppsReconciler) reconcileLakeAppsDNS(ctx context.Context, lake *oramav1alpha1.Lake) error {
-	wildcard := strings.TrimPrefix(lake.Spec.Apps.Wildcard, "*.")
+	wildcard := lakeAppsWildcard(lake)
 	name := ""
-	if lake.Spec.Apps.Enabled && wildcard != "" && lake.Spec.DNSSecretRef != nil && lake.Spec.DNSSecretRef.Name != "" {
+	if wildcard != "" && lake.Spec.DNSSecretRef != nil && lake.Spec.DNSSecretRef.Name != "" {
 		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(lake.Name+"\n"+wildcard)))[:24]
 		name = "lake-apps-" + hash
 	}

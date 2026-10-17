@@ -36,7 +36,6 @@ func buildTestLake() *oramav1alpha1.Lake {
 			Image:          "oramasearch/lake:test",
 			PullSecretName: "oramasearch-dockerhub",
 			Builds: oramav1alpha1.LakeBuildsSpec{
-				Enabled:      true,
 				BuilderImage: "oramasearch/lake-builder:issue-195",
 			},
 		},
