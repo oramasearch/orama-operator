@@ -144,7 +144,8 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 `placement: local|central`, `replicate`, and `endpoint`/`credentialsSecretRef`.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
-Every host (`dashboard.host`, `docs.host`, `engine.writer.host`, `engine.reader.host`) gets origin TLS: the stack owns cert-manager `Issuer`
+Every host (`dashboard.host`, `docs.host`, `engine.writer.host`, `engine.reader.host`, and each one's
+`extraHosts`, [below](#extra-hosts-extrahosts)) gets origin TLS: the stack owns cert-manager `Issuer`
 `<cr>-letsencrypt` (Let's Encrypt, DNS-01 with `cloudflare.apiTokenSecretRef` key `token`), and each
 host's certificate lives in Secret `<host>-tls` beside the Ingress. There is no per-host TLS field and
 no way to turn it off; without the token the reconcile fails rather than serving HTTP
@@ -152,9 +153,9 @@ no way to turn it off; without the token the reconcile fails rather than serving
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations}`, `writer.jwt`, `writer.host`, `reader.{replicas,hpa,resources}`, `reader.host`, `envoy` | OramaCore writer + readers + Envoy |
-| `dashboard` | `host` | app.orama.com (Next.js) |
-| `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,hpa,resources}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
+| `dashboard` | `host`, `extraHosts` | app.orama.com (Next.js) |
+| `docs` | `host`, `extraHosts` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store | PlanetScale → CloudNativePG |
 | `analytics` | data-store | ClickHouse |
@@ -166,6 +167,48 @@ no way to turn it off; without the token the reconcile fails rather than serving
 
 `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
+
+### Extra hosts (`extraHosts`)
+
+`dashboard`, `docs`, `oramasearchApp`, `engine.writer` and `engine.reader` each take `extraHosts`
+beside `host` ([#313](https://github.com/oramasearch/orama-operator/issues/313)): further names the
+component's Ingress answers, each routed to the same backend as `host`. At the cutover
+`app.orama.com` is repointed to Prod 2 in Cloudflare while `app.orama.ing` keeps working, and an
+Ingress that answers only one name returns ingress-nginx's 404 for the other:
+
+```yaml
+spec:
+  components:
+    dashboard:
+      enabled: true
+      host: app.orama.ing
+      extraHosts:
+        - app.orama.com
+```
+
+For CR `v1-eu`, Ingress `v1-eu-dashboard` gets two Prefix `/` rules, `app.orama.ing` then
+`app.orama.com`, each to Service `v1-eu-dashboard` port 3000, and origin TLS for both (one TLS entry
+and Secret `<host>-tls` each). The rules are rebuilt from `host` then `extraHosts` in order on every
+reconcile, so removing an extra removes its rule and its certificate request. The writer's extras go
+to `<cr>-writer`:8080 and the readers' to `<cr>-reader`:80.
+
+- **No DNS.** Only `host` gets a `CloudflareDNSRecord`; an extra host never does, under any
+  setting, and adding or removing one changes no record. Pointing an extra name at the cluster is a
+  reviewed Cloudflare change (the cutover runbook). Its certificate still needs DNS-01, so the name
+  must be in a zone the stack's Cloudflare token can edit.
+- **Same lifecycle as `host`.** Extras are served only while the component is: a disabled
+  component, a disabled engine or a read region's writer gets no Ingress. They do not widen
+  `writer.jwt.audiences`; a caller using a writer alias still needs a token with an accepted audience.
+- **`oramasearchApp`** shares the type, so it accepts the field and its names take part in the
+  checks below, but the component stays unwired: no Ingress is created for it.
+- **Checks.** Each entry is 1 to 253 characters (`listType: set`). Before writing any child
+  resource the reconcile refuses, with phase `Degraded` and `Ready=False` reason
+  `InvalidIngressHosts`: `extraHosts` without `host`; an empty or over-long entry; and any name,
+  compared case-insensitively, that appears twice across the `host` and `extraHosts` of all five
+  components, enabled or not. The message names both fields, for example
+  `spec.components.dashboard.extraHosts[0] and spec.components.docs.host are both "app.orama.com"`.
+  Only the status is written; existing children keep their last valid state until the spec is
+  fixed.
 
 ### Public writer and reader hosts (`engine.writer.host`, `engine.reader.host`)
 
@@ -214,7 +257,8 @@ Cloudflare record with its ownership comment and never touches one it did not cr
 | The Secret's `zoneID` changes | Nothing from the parent: moving a record between zones is the `CloudflareDNSRecord` controller's concern. |
 
 A child at the record's name that the CR does not control is left untouched and reported as a
-conflict. Deleting the CR removes its Ingresses and records through garbage collection.
+conflict. Deleting the CR removes its Ingresses and records through garbage collection. An
+endpoint's [`extraHosts`](#extra-hosts-extrahosts) get no record.
 
 With the worked example below (CR `v1-dev`, writer Ingress address `192.0.2.10`, reader `192.0.2.11`),
 the writer's Ingress routes `writer-dev.oramadev.net/` to `v1-dev-writer:8080`, the reader's

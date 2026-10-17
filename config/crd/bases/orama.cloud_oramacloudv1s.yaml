@@ -646,6 +646,18 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      extraHosts:
+                        description: |-
+                          ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+                          as host and covered by the origin certificate. The operator creates no DNS record for them: a
+                          name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+                          host; no name may repeat across the hosts and extra hosts of every component.
+                        items:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
                       host:
                         type: string
                       resources:
@@ -776,6 +788,18 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      extraHosts:
+                        description: |-
+                          ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+                          as host and covered by the origin certificate. The operator creates no DNS record for them: a
+                          name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+                          host; no name may repeat across the hosts and extra hosts of every component.
+                        items:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
                       host:
                         type: string
                       resources:
@@ -849,6 +873,18 @@ spec:
                         type: boolean
                       reader:
                         properties:
+                          extraHosts:
+                            description: |-
+                              ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+                              as host and covered by the origin certificate. The operator creates no DNS record for them: a
+                              name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+                              host; no name may repeat across the hosts and extra hosts of every component.
+                            items:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            type: array
+                            x-kubernetes-list-type: set
                           host:
                             description: |-
                               Host publishes the readers on this public DNS name (for example reader.orama.ing), without a
@@ -933,6 +969,18 @@ spec:
                         type: object
                       writer:
                         properties:
+                          extraHosts:
+                            description: |-
+                              ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+                              as host and covered by the origin certificate. The operator creates no DNS record for them: a
+                              name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+                              host; no name may repeat across the hosts and extra hosts of every component.
+                            items:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            type: array
+                            x-kubernetes-list-type: set
                           gpu:
                             default: true
                             description: |-
@@ -1163,6 +1211,18 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      extraHosts:
+                        description: |-
+                          ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+                          as host and covered by the origin certificate. The operator creates no DNS record for them: a
+                          name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+                          host; no name may repeat across the hosts and extra hosts of every component.
+                        items:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
                       host:
                         type: string
                       resources:

@@ -29,7 +29,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **disco** | `internal/controller/disco.go` | `Deployment` (DISCO + embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
 | **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — pulls `/v1/analytics` → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
-| **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
+| **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy); unwired, so its `host` and `extraHosts` are API-only (checked for duplicates, never served) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
 | **cloudflare** | `internal/controller/cloudflare.go`, `cloudflarednsrecord_controller.go` | owned DNS child CRs; create marked records, reconcile only owned or legacy-ID records, and check ownership before cleanup | 🟡 **implemented**; HTTP/fake-client and local API-server tests pass; Lake and `oramadev.net` live proof pending approval |
 | **cloudflare-lb** | `internal/controller/cloudflareloadbalancer_controller.go` | global **Load Balancer** + **Origin Pool(s)** + **Health Monitor** via the CF Load Balancing API, from an owned `CloudflareLoadBalancer` CRD (finalizer teardown) | 🟡 **implemented** ([#73](https://github.com/oramasearch/orama-operator/issues/73); not live-tested — needs LB enabled on the account; live-node origins are [#74](https://github.com/oramasearch/orama-operator/issues/74)) |
@@ -342,7 +342,8 @@ Driven by `spec.region.role`:
   fails publication with a conflict. `writerPublicHost` and `readerPublicHost` decide whether an
   endpoint is published, for the Ingress, its sandbox rule and its DNS record alike. With
   `writer.jwt` set, `https://<writer.host>` must be an exact audience or the reconcile fails before
-  any engine object changes. `/metrics` stays reachable on these hosts until the deny companions of
+  any engine object changes. Each Ingress also answers its endpoint's `extraHosts` (below), which get
+  no DNS record and do not widen the audiences. `/metrics` stays reachable on these hosts until the deny companions of
   [#314](https://github.com/oramasearch/orama-operator/issues/314) land.
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
@@ -566,11 +567,31 @@ host is set)**.
   **Selenium** grid Deployment.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
-- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`. It reads
+- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host` and
+  `dashboard.extraHosts`. It reads
   `JWT_ISSUER` from the shared ConfigMap through `envFrom`, which a running process does not
   re-read, so its pod template carries `orama.cloud/jwt-issuer-hash`, the SHA-256 of
   `jwtIssuer(oc)`: a change to the effective issuer rolls it. Audience and JWKS URL changes do not.
   The upgrade that adds the annotation rolls the dashboard once.
+
+### Ingress hosts (`upsertIngress`, [#313](https://github.com/oramasearch/orama-operator/issues/313))
+
+`upsertIngress(ctx, oc, name, component, host, extraHosts, port)` builds every Cloud v1 component
+Ingress: the dashboard and docs through `reconcileApp` (`appDef.ingressHost` and
+`ingressExtraHosts`), the writer and reader through `reconcileEngineIngresses`. It renders one rule
+for `host`, then one per extra host in stored order, each with the same Prefix `/` path to the same
+Service and port, on `spec.components.ingressClassName`, then calls `applyIngressTLS` (below) so
+every rule host gets a certificate. The rule list is built fresh and replaced on each reconcile, so
+a removed extra loses its rule and TLS entry, and an unchanged CR writes nothing.
+
+Extra hosts are aliases only: DNS (`reconcilePublicDNS`) reads `host` alone, so an extra never gets a
+`CloudflareDNSRecord`. `validateIngressHosts` runs first in `Reconcile`, before the network sandbox
+and every component step: an extra host without `host`, an empty or over-253-character extra, or a
+name repeated (case-insensitively) across the `host` and `extraHosts` of dashboard, docs,
+oramasearchApp, engine.writer and engine.reader, in that order and enabled or not, sets `Degraded`
+with `Ready=False` reason `InvalidIngressHosts` naming both fields, writes nothing else and does not
+requeue. `oramasearchApp` takes part in the check but its reconciler stays unwired, so its hosts
+never reach an Ingress. Field reference: [`crd-reference.md`](crd-reference.md#extra-hosts-extrahosts).
 
 ### Origin TLS (`ingress_tls.go`, [#457](https://github.com/oramasearch/orama-operator/issues/457))
 
@@ -639,7 +660,8 @@ component is published (dashboard enabled with a host; engine enabled with `read
 plus a primary region for `writer.host`). Each record's `spec.name` is the host, `spec.content` the
 first address of its own Ingress (`componentIngressTarget`: hostname before IP; empty while the
 Ingress is absent, deleting or unaddressed), `spec.secretRef` the token Secret, `spec.type` empty.
-Every host must be in the zone of the Secret's `zoneID`.
+Every host must be in the zone of the Secret's `zoneID`. A component's `extraHosts` never get a
+record ([#313](https://github.com/oramasearch/orama-operator/issues/313)).
 
 The lifecycle runs before the Cloudflare early return, so disabling Cloudflare or DNS removes the
 records too:

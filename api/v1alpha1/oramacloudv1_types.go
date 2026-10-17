@@ -296,6 +296,15 @@ type WriterSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	Host string `json:"host,omitempty"`
+	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
+	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// host; no name may repeat across the hosts and extra hosts of every component.
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +optional
+	ExtraHosts []string `json:"extraHosts,omitempty"`
 }
 
 // WriterJWTSpec is the writer's dashboard JWKS provider. The writer accepts a token whose issuer is
@@ -331,6 +340,15 @@ type ReaderSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	Host string `json:"host,omitempty"`
+	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
+	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// host; no name may repeat across the hosts and extra hosts of every component.
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +optional
+	ExtraHosts []string `json:"extraHosts,omitempty"`
 }
 
 type HPASpec struct {
@@ -419,6 +437,15 @@ type ToggleWithHost struct {
 	Enabled bool `json:"enabled"`
 	// +optional
 	Host string `json:"host,omitempty"`
+	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
+	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// host; no name may repeat across the hosts and extra hosts of every component.
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +optional
+	ExtraHosts []string `json:"extraHosts,omitempty"`
 	// Resources overrides the component's pod resources. When unset the operator applies a
 	// sensible per-component default (workload hardening, #18).
 	// +optional
