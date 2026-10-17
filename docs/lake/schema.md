@@ -8,11 +8,12 @@ Job and pods to disappear. This is a metadata upgrade, not a schema version chan
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit 6fdf829db9f87552cd8040814732ce68af2cc52d](https://github.com/oramasearch/lake/blob/6fdf829db9f87552cd8040814732ce68af2cc52d/db/schema.sql)
-(lake `dev` through `0085_network_tunnel_ca`: `0084_network` (lake#727) adds the secure-networking
-desired-state tables, their operator-owned status twins and `network_guard`; `0085_network_tunnel_ca`
-(lake#730) adds the tunnel client and relay CA columns). Its SHA-256 is
-`f86b8ecd58348ab29dc62e62e94fe806b0dafdcaf5e1ba9159709e539df0d5cb`. Re-pin to lake `main` at its next release.
+[`oramasearch/lake` commit b18b0051be472bbed14686d475f03770c07c8b50](https://github.com/oramasearch/lake/blob/b18b0051be472bbed14686d475f03770c07c8b50/db/schema.sql)
+(lake `dev` through `0087_clerk_webhooks`: `0086_identity_links` (lake#762) makes a managed key's
+seed destroyable and adds `identity_link_challenges`, `identity_links` and `identity_links_guard`;
+`0087_clerk_webhooks` (lake#765) adds `users.disabled_at`, `clerk_webhook_deliveries` and
+`clerk_webhooks_guard`. Before them, `0084_network` (lake#727) and `0085_network_tunnel_ca` (lake#730)).
+Its SHA-256 is `e607fd025f340e9e0727fda1d2f824600de800f4ec336ad8b040aa3627f5f405`. Re-pin to lake `main` at its next release.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
