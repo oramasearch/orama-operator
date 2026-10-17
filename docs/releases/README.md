@@ -3,6 +3,9 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.3.0](v0.3.0.md) — 2026-10-17. Secure networking (network sandboxes, declared connections,
+  egress, tunnels, peers, the zetta-tunnel ingress gateway and mesh) and regions (one Lake per
+  region with a region picker at an apex host). The nonprod set gains `testing`. 33 resource kinds.
 - [v0.2.0](v0.2.0.md) — 2026-10-14. The operator manages clusters: AKS clusters, their platform
   layer and their own operator, and Lake and Orama Cloud v1 instances on them from sets, with one
   identical operator on every cluster. Every Lake service kind starts in a workspace. 24 resource

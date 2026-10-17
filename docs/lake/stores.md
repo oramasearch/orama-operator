@@ -26,7 +26,7 @@ only guards a row written some other way.
 ## The pass
 
 Stores need nothing of their own to turn on: they ride the services poll
-(`spec.services.enabled`, [the poll](services.md#the-poll)), on the same pgx connection, and the
+([the poll](services.md#the-poll)), which every Lake runs, on the same pgx connection, and the
 same `NOTIFY lake_services` wakes the Lake (lake notifies that channel on every store insert and
 withdrawal, so `LakeServicesListener` is unchanged). In `syncLakeServices`, after the services
 (`internal/controller/lake_stores.go`):

@@ -10,7 +10,7 @@ excludes the service named by `workspaces.zetta_service_id`, except to deliver i
 
 ## Control-Postgres contract
 
-With `Lake.spec.workspaces.enabled`, a dedicated controller reads lake's `workspaces` table through
+On every Lake (there is no switch, [operator#539](https://github.com/oramasearch/orama-operator/issues/539)), a dedicated controller reads lake's `workspaces` table through
 the CloudNativePG application Secret `lake-<lake>-controldb-app` (`uri`). Lake sends `NOTIFY
 lake_workspaces` after every change, and the operator performs a complete list every 60 seconds so a
 missed notification, reconnect or manager restart cannot strand desired state.

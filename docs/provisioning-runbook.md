@@ -147,7 +147,7 @@ for a prod-grade deployment.
 - **In-cluster endpoints** (no external service): `ORAMACORE_WRITER_URL`/`READER_URL`,
   `DISCO_URL`, `EMBEDDINGS_URL` (→ ai-server `:50051`), `HARVEST_MASTER_ENDPOINT` (→ the
   harvest-master service), `DECRYPTER_BASE_URL` (→ the `openai-decrypter` worker),
-  `REDIS_URL` (→ cache), `AIRBYTE_URL` (→ the in-cluster Airbyte Helm release).
+  `REDIS_URL` (→ cache).
 
 ---
 
@@ -160,7 +160,7 @@ Per component: its external deps and the tier. `[CF]` operator-provisions on Clo
 |---|---|
 | **engine** (OramaCore) | `[EXT]` OpenAI, Groq, Anthropic, HuggingFace · `[GEN]` MASTER_API_KEY, JWT-pub |
 | **workers** (RAG bundle) | `[EXT]` OpenAI, Groq, Anthropic, Sentry(opt) · `[GEN]` MASTER_API_KEY, ClickHouse, DISCO_SECRET, QStash→broker |
-| **dashboard** | `[EXT]` Firebase, Stripe, Resend, Slack · `[GEN]` Postgres/ClickHouse/Redis, JWT, Airbyte(in-cluster) |
+| **dashboard** | `[EXT]` Firebase, Stripe, Resend, Slack · `[GEN]` Postgres/ClickHouse/Redis, JWT |
 | **oramasearch-app** | `[EXT]` Firebase · `[GEN]` DB/JWT |
 | **index-builder** | `[CF]` KV namespaces, CF token/account · `[EXT]` Apify, Ably · `[GEN]` Typesense, MASTER_API_KEY, embeddings-bearer, decrypter, HARVEST_MASTER_ENDPOINT+SIGN, DISCO_SECRET_KEY, Redis |
 | **harvest** (master+worker) | `[EXT]` AWS S3, Ably · `[GEN]` HARVEST_SIGN, Mongo(in-cluster), RabbitMQ |

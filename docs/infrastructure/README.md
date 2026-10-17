@@ -391,7 +391,7 @@ As of 2026-10-12. The resources themselves are in
 | Cluster | Region | Purpose | Role | Runs |
 |---|---|---|---|---|
 | `orama-production-cluster-01` | `eastus` | Development, despite its name | **The managing cluster**: holds every `KubernetesCluster`, `ClusterHelmRelease`, `OramaOperator` and set. Created by hand before these kinds existed, so it has no `KubernetesCluster` of its own | Also still runs workloads: `Lake/prod` (`lake.oramadev.net`) and the v1 sandbox (`app.oramadev.net`) |
-| `orama-nonprod-cluster-01` | `westus2` | `nonprod` | Managed | Lake `dev` and `staging`; Orama Cloud v1 `v1-dev` |
+| `orama-nonprod-cluster-01` | `westus2` | `nonprod` | Managed | Lake `dev`, `testing` and `staging`; Orama Cloud v1 `v1-dev` |
 | `orama-production-cluster-02` | `swedencentral` | `production` | Managed | Lake `shared`; Orama Cloud v1 `v1-eu` |
 | `orama-production-cluster-03` | `eastus` | `production` | Managed | Lake `shared-us`; Orama Cloud v1 `v1-us` |
 
@@ -462,6 +462,7 @@ The rules, each as Steve stated it:
 | *"nonprod might combine multiple environments... each environment needs to land in its own namespace"*; *"we could have multiple prod instances in a set, eg. general prod for all shared accounts, and separate lakes for dedicated instances"* | A set holds any number of members, on one cluster or several. Each gets its own namespace, `lake-<name>` (`v1-<name>`), overridable per member. Two members on one cluster that would share a name or a namespace are refused. |
 | *"I like the overridable spec from the cluster too"* | A member's `spec` is merged over the template: a field wins, an object is merged field by field, and a list replaces the template's list whole. |
 | *"the region is already defined by which cluster it is assigned to"* | An `OramaCloudV1`'s `region.name` is its `KubernetesCluster`'s region. It is never written, and a `spec` that states a different one is refused. Only the role (`primary` or `read`) is stated. |
+| *"a single lakeset can manage all regional deployments"* (2026-10-17, decision 64) | A Lake member that states `region.label` gets its cluster's region as `region.name`, and every labelled member gets the same `regions` list (label, host and location of each), which lake's region picker shows. At most one member sets `apexHost`, the picker's host. A picker lists the regions of one environment only, so a cloud region named by two labelled members refuses the set, as do a labelled member with no `host`, a region with no known location, a hand-stated `regions` and a second `apexHost`. See [`lake/README.md#regions`](../lake/README.md#regions). |
 | *"make secrets overridable too"* | A member's `secrets` are added to the set's. One whose name on the member's cluster (`as`, default `name`) matches a set secret replaces it for that member. |
 
 What a set does for each member, in order:
