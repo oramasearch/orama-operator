@@ -24,7 +24,10 @@ under [#539](https://github.com/oramasearch/orama-operator/issues/539)), with no
   Lake with `spec.zetta.enabled: false` gets reason `ZettaDisabled`.
 - **lake's tables exist.** lake's platform sync reads `deployments`, `environment_env` and `domains`
   on every pass and stays degraded if any read fails, so the operator schema creates `environment_env`
-  and `domains` (empty, with lake's columns) beside `deployments`.
+  and `domains` beside `deployments`.
+- **The rows are lake's shape** (operator#560, below): every row the operator writes is keyed by the
+  Lake's public host and carries every column lake selects, so lake's reads succeed and show the
+  operator's status.
 
 With that, lake's `server_info` answers `deployments: true` and `/healthz` reports `platform: ready`.
 
@@ -32,54 +35,117 @@ With that, lake's `server_info` answers `deployments: true` and `/healthz` repor
 a new credential to every Lake for state that fits on the Zetta lake already uses, and lake's contract
 only asks for "the operator Zetta service URL".
 
-**Known gap (the row contract):** lake's mirror and the operator write different rows into
-`orama_control.deployments`. The operator names a Lake by its resource name (`lake = prod`) and writes the
-columns in the table below; lake selects `lake = LAKE_PUBLIC_HOST` and the columns `operator, change,
-requested_by, requested_at, namespace, ordering_token`, which no operator row carries, and Zetta refuses a
-`SELECT` naming a column no row has. So the first deployment written through the operator's contract makes
-lake's sync fail (`platform: degraded`, pages served from the last mirror, platform writes refused), and the
-operator does not yet reconcile `environment_env` or `domains`. Aligning the row contract is
-[operator#560](https://github.com/oramasearch/orama-operator/issues/560).
+## The row contract: lake's format, the operator conforms
+
+[operator#560](https://github.com/oramasearch/orama-operator/issues/560), decided by Steve on 2026-10-17:
+lake's format is the contract and the operator conforms. lake's side is
+`include/lake/control/zetta_control.hpp` (the columns), `src/control/platform.cpp` (`PlatformService::sync`,
+the reads and the row order) and `docs/api/platform.md` in `oramasearch/lake`. The operator's copy of
+the columns is `lakeDeploymentColumns`, `lakeEnvironmentEnvColumns` and `lakeDomainColumns` in
+`internal/controller/zetta_deployments.go`; `zetta_lake_contract_test.go` runs lake's own SQL strings
+against the rows the operator writes.
+
+**How a row names its Lake.** Every row's `lake` column is the Lake's `LAKE_PUBLIC_HOST`: the literal
+value in `spec.env` when it states one, otherwise `spec.host` (the same value the operator gives the lake
+pod). lake reads `WHERE lake = <that host>`, and so does the operator. A Lake whose `LAKE_PUBLIC_HOST`
+comes from a Secret or ConfigMap has no host the operator can know, so it gets no deployments (the
+deployment contract answers `unavailable` and says so). `LakeEnvironment` resources keep being named by
+the Lake's **resource** name (`spec.lakeRef`, `lakeEnvironmentResourceName(lake.Name, repository,
+environment)`), so a host change renames no environment.
+
+**Why every row carries every column.** Zetta stores rows as schemaless JSON and refuses a `SELECT`
+that names a column no row of the table has ([zetta#1218](https://github.com/oramasearch/zetta/issues/1218)).
+So the operator writes every column on every row, desired and status alike, and the `CREATE TABLE` list
+only documents them: on a Zetta where the table exists the statement answers "already exists".
+
+### `orama_control.deployments`
+
+| Column | Desired row (the deployment contract) | Status row (the operator) |
+|---|---|---|
+| `operator` | This operator's ID (`ORAMA_OPERATOR_ID`, else the `kube-system` Namespace UID) | Same |
+| `lake` | The Lake's public host | Same |
+| `repository`, `environment`, `kind`, `change`, `image` | The deployment | Copied from the desired row |
+| `deployment_id` | The action ID (`deployment-<hash>`) | Same |
+| `requested_by` | `lake-admin-token/<lake>`: the contract authenticates the Lake's admin token, not a person | Copied |
+| `requested_at` | When it was requested | Copied |
+| `phase` | `Pending` | `Progressing`, `Ready`, `Degraded` or `TornDown` |
+| `namespace` | Empty | The workload Namespace `lake-<lake>-env-<hash>` (lake's log page queries Loki by it) |
+| `url`, `message` | Empty | The environment's URL and `Ready` condition message |
+| `updated_at` | Lake's format: UTC, exactly six fractional digits | Now, and at least one microsecond after the newest row of the deployment |
+| `ordering_token` | A new UUID | A new UUID |
+| `record_type` | `desired` | `status` |
+| `replicas`, `port`, `env_json`, `secret_refs_json`, `host` | The workload (the contract gives `1`, `8080`, `[]`, the secret references, empty) | Copied |
+| `withdrawn`, `change_closed` | Lifecycle signals, `false` from the contract | Copied |
+
+lake shows the newest row per `deployment_id` by `(updated_at, ordering_token, row)` and refuses its whole
+sync on a row without `deployment_id`, `repository`, `environment` or `updated_at` ("incomplete platform
+row", which degrades `healthz.platform`). That is why a status row repeats the desired row and is timed
+after it: lake then shows the status. The operator reduces the same rows in the same order: the newest
+`desired` row per deployment is what it materializes, and the newest `status` row is what it compares
+before appending another, so a steady environment writes nothing.
+
+### `orama_control.environment_env`
+
+lake appends `lake, repository, environment, key, value, deleted, set_by, updated_at, ordering_token`
+(`set_environment_env`, `unset_environment_env`). The operator only reads it: the newest row per
+`(repository, environment, key)`, tombstones (`deleted = true`) dropped, becomes the environment's
+variables. They are added to the `LakeEnvironment`'s `spec.env` after the deployment row's own `env_json`
+and win for the same name, so a set or an unset rolls the workload. A key containing `=` is skipped.
+
+### `orama_control.domains`
+
+lake appends a request `lake, repository, environment, host, tls, status = 'pending', message = '',
+deleted, requested_by, updated_at, ordering_token` (`create_domain`, `delete_domain`). The operator reads
+the newest row per `(repository, environment, host)`:
+
+- **Applied.** A live request becomes an entry of the `LakeEnvironment`'s `spec.domains` (`host`, `tls`
+  `acme` or `provided`) when the host is a lowercase DNS name, is not the Lake's own host, and is not a
+  domain of another environment of the same Lake (the first in `(repository, environment, host)` order
+  keeps it). The environment serves it from its Ingress (one rule per host) and, when the Lake has
+  `spec.dnsSecretRef`, keeps one proxied `CloudflareDNSRecord` for it, owned by the environment and
+  labelled with it.
+- **Removed.** A tombstone takes it out of `spec.domains`; the environment deletes its Ingress rule and
+  its DNS record. Deleting the environment deletes them all.
+- **Answered.** The operator appends a row with lake's columns and its own `status` and `message`
+  whenever they differ from the newest row: `failed` with the reason when refused; `pending` with
+  "waiting for a deployment of environment ..." while the environment has no deployment, and with what
+  it waits for (the ingress address, the DNS record) while it is applied; `active` once the DNS record
+  is Ready; `deleted` once a tombstone is applied. Without a `dnsSecretRef` the domain stays `pending`,
+  naming the address to point the host at. The `LakeEnvironment` reports the same per domain in
+  `status.domains`.
+
+lake and the operator both append rows for one domain and the newest wins, so the operator times an
+answer **one microsecond after the row it answers**, not by its own clock: an answer timed by a clock
+ahead of lake's would sort after lake's next request and hide it.
+
+TLS: the environment's Ingress has no TLS section, as for its own host; HTTPS is served by Cloudflare's
+proxy in front of it. `tls` is carried in `spec.domains` for when the Ingress terminates TLS itself.
 
 ## Control-plane model
 
 Liquid-bridge decision 22 makes Zetta, not Lake's HTTP API, the deployment intake path. An
 `OramaZettaCluster` with `spec.provisionOperatorSchema` enabled creates the append-only
-`orama_control.deployments` table. A client writes one event with `record_type=desired`; the operator
-reads it over Zetta's authenticated `/v1/sql` capability and creates or updates a `LakeEnvironment`.
+`orama_control` tables. The deployment contract writes one `desired` row; the operator reads lake's
+three tables over Zetta's authenticated `/v1/sql` capability and creates or updates a `LakeEnvironment`.
 The pull/status implementation is `internal/controller/zetta_deployments.go`; it runs from the existing
 `OramaZettaCluster` reconcile loop after operator-schema provisioning.
 
-The operator processes a row only when both of these are true:
+The operator reads a Lake's rows only when both of these are true:
 
-- a cluster-scoped `Lake` named by the row's `lake` field exists locally; and
+- the cluster-scoped `Lake` exists locally and has a public host, which its rows are keyed by; and
 - that Lake's `spec.namespace` is the same namespace as the `OramaZettaCluster` being polled.
 
 This locality rule prevents a Zetta peer in another namespace from creating a second copy. The
 Lake/repository/environment identity deterministically names the `LakeEnvironment`, so polling the same
-desired event again does not create or update anything. A later deployment for that identity updates the
+desired row again does not create or update anything. A later deployment for that identity updates the
 same resource; older resources from the deployment-ID naming scheme are deleted through their verified
 finalizers. A legacy-named CR retains deployment-ID Namespace derivation during teardown, so its
 finalizer can delete only the Namespace it originally owned. The materializer refuses to overwrite or
 delete a stable-name collision that is not controlled by the referenced Lake.
 
-Zetta is append-only on the deployed engine. The table is therefore an event stream:
+The Zetta admin bearer is read from `<zetta-name>-zetta-admin`; unauthenticated fallback is not permitted.
 
-| Column | Desired event | Status event |
-|---|---|---|
-| `deployment_id` | Stable identity; required | Same identity |
-| `record_type` | `desired` | `status` |
-| `lake`, `repository`, `environment`, `kind`, `change_id` | Environment identity | Same Lake; other identity fields empty |
-| `image`, `replicas`, `port`, `env_json`, `secret_refs_json`, `host` | Desired workload | Empty |
-| `withdrawn`, `change_closed` | Lifecycle signals | Empty |
-| `phase`, `url`, `message` | Empty | Observed transition |
-| `updated_at` | RFC 3339 ordering value | RFC 3339 ordering value |
-
-The operator reduces desired and status streams independently, latest-wins by `updated_at`. This means
-an observed status event never erases the last desired configuration. The Zetta admin bearer is read
-from `<zetta-name>-zetta-admin`; unauthenticated fallback is not permitted.
-
-Each Zetta controller polls once per local Lake with a `WHERE lake = ...` query, at the shortest
+Each Zetta controller polls once per local Lake (three `SELECT ... WHERE lake = <host>`), at the shortest
 `spec.deploySync.interval` among Lakes in its namespace, defaulting to `15s`. Kubernetes workload status
 changes also reconcile the `LakeEnvironment`; the next poll returns the transition to Zetta. A failure
 to reach Zetta is retried on the next poll and does not destabilize the Zetta StatefulSet.
@@ -121,6 +187,9 @@ Ingress is enabled only when the referenced Lake has `spec.ingressEnabled: true`
 
 - A named environment uses its exact `spec.host`. Once its Ingress has an address, the operator creates
   one `CloudflareDNSRecord` in the Lake namespace using the Lake's `dnsSecretRef`.
+- Each `spec.domains` entry (lake's custom domains, above) is another rule of the same Ingress and, with a
+  `dnsSecretRef`, another `CloudflareDNSRecord`, for named and preview environments alike. Its state is in
+  `status.domains`.
 - A preview derives `<first-12-DNS-safe-change>.<previewWildcard>`. The Lake owns one
   `*.<previewWildcard>` Cloudflare record against the shared nginx load balancer. Preview environments
   create no individual DNS records.
@@ -197,11 +266,11 @@ Workload and profile objects are watched for drift, Lake changes fan out to thei
 steady Ready environment periodically rechecks its Namespace labels. These paths repair drift without
 writing status when the observed state is unchanged.
 
-On each Zetta poll, the operator compares the CR's phase, URL and message with the latest status event.
-Only a real transition appends another event. This comparison is durable across operator restarts and
+On each Zetta poll, the operator compares the CR's phase, namespace, URL and message with the latest
+status row. Only a real transition appends another row. This comparison is durable across operator restarts and
 keeps a steady environment at zero Zetta writes.
 
-A desired event with `withdrawn=true`, or a preview event with `change_closed=true`, first appends one
+A desired row with `withdrawn=true`, or a preview row with `change_closed=true`, first appends one
 `TornDown` transition and then deletes the `LakeEnvironment`. Its finalizer deletes the named DNS record,
 workload Namespace and everything inside it. It refuses to delete a Namespace whose ownership
 annotation does not match.
@@ -218,13 +287,18 @@ kubectl get secret -n lake-<lake>-env-<environment-hash>
 kubectl get cloudflarednsrecord -n <lake-namespace>
 ```
 
-To inspect the event stream directly:
+To read the rows as lake does (lake's own statement; the host is the Lake's public host):
 
 ```sh
-curl -sG -H "Authorization: Bearer $TOKEN" https://<zetta-host>/v1/sql \
+curl -sG -H "Authorization: Bearer $TOKEN" http://lake-<lake>-zetta-zetta.<lake-namespace>.svc.cluster.local:4800/v1/sql \
   --data-urlencode 'database=orama_control' \
-  --data-urlencode 'statement=SELECT * FROM deployments'
+  --data-urlencode "statement=SELECT operator, lake, repository, environment, kind, change, image, deployment_id, requested_by, requested_at, phase, namespace, url, message, updated_at, ordering_token FROM deployments WHERE lake = '<public-host>'"
 ```
+
+The same with `environment_env` (`lake, repository, environment, key, value, deleted, set_by, updated_at,
+ordering_token`) and `domains` (`lake, repository, environment, host, tls, status, message, deleted,
+requested_by, updated_at, ordering_token`). lake's `/healthz` reports `platform: ready` while all three
+succeed.
 
 The real repository-to-preview proof needs liquid's deploy writer, Lake's change page, and the k0s
 runtime. Cross-image chunk sharing is implemented and measured by k0s #14, not by this operator.

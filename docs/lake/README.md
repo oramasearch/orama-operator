@@ -221,7 +221,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    and an owned `<lake>-apex-dns` record, for the region picker in front of a deployment's
    regions ([regions](#regions)); removing it removes both.
 13. **Deployment environments** — desired rows in the operator's Zetta
-   `orama_control.deployments` table become Lake-owned `LakeEnvironment` CRs in this namespace.
+   `orama_control.deployments` table, with lake's environment values and custom domains, become
+   Lake-owned `LakeEnvironment` CRs in this namespace; every row is in lake's shape, keyed by the
+   Lake's public host ([the row contract](environments.md#the-row-contract-lakes-format-the-operator-conforms)).
    Each CR owns its profiled workload Namespace through a verified finalizer. Referenced
    `LakeSealedSecret` resources must be current and Ready; their produced Secrets are copied into the
    isolated Namespace before the workload starts. See

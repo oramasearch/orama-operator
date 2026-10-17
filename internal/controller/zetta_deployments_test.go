@@ -7,18 +7,15 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"net/url"
-	"regexp"
+	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,160 +27,132 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-type deploymentSQLDouble struct {
-	server       *httptest.Server
-	mu           sync.Mutex
-	rows         []map[string]string
-	statusWrites []map[string]string
-	authFailures int
-}
+const testLakeHost = "lake-dev.oramadev.net"
 
-var statusInsertPattern = regexp.MustCompile(`VALUES \('([^']*)', 'status', '([^']*)', '([^']*)', '([^']*)', '([^']*)', '([^']*)'\)$`)
-
-func newDeploymentSQLDouble(t *testing.T, rows []map[string]string) *deploymentSQLDouble {
+// insertTestRow appends a row with exactly the given text columns, as a writer would.
+func insertTestRow(t *testing.T, zetta *fakeZetta, table string, row map[string]string) {
 	t.Helper()
-	double := &deploymentSQLDouble{rows: rows}
-	double.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Authorization") != "Bearer test-token" {
-			double.authFailures++
-			writer.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		statement := request.URL.Query().Get("statement")
-		double.mu.Lock()
-		defer double.mu.Unlock()
-		writer.Header().Set("Content-Type", "application/json")
-		if strings.HasPrefix(statement, "SELECT ") {
-			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-				"ok": true,
-				"value": map[string]interface{}{
-					"rows": double.rows,
-				},
-			})
-			return
-		}
-		matches := statusInsertPattern.FindStringSubmatch(statement)
-		if len(matches) != 7 {
-			writer.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-				"ok": false,
-				"error": map[string]string{
-					"message": "unexpected statement",
-				},
-			})
-			return
-		}
-		row := map[string]string{
-			"deployment_id": sqlTestUnquote(matches[1]),
-			"record_type":   deploymentRecordTypeStatus,
-			"lake":          sqlTestUnquote(matches[2]),
-			"phase":         sqlTestUnquote(matches[3]),
-			"url":           sqlTestUnquote(matches[4]),
-			"message":       sqlTestUnquote(matches[5]),
-			"updated_at":    sqlTestUnquote(matches[6]),
-		}
-		double.rows = append(double.rows, row)
-		double.statusWrites = append(double.statusWrites, row)
-		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-			"ok":    true,
-			"value": map[string]interface{}{},
-		})
-	}))
-	return double
-}
-
-func sqlTestUnquote(value string) string {
-	return strings.ReplaceAll(value, "''", "'")
-}
-
-func (double *deploymentSQLDouble) close() {
-	double.server.Close()
-}
-
-func (double *deploymentSQLDouble) addDesired(row map[string]string) {
-	double.mu.Lock()
-	defer double.mu.Unlock()
-	double.rows = append(double.rows, row)
-}
-
-func (double *deploymentSQLDouble) writeCount() int {
-	double.mu.Lock()
-	defer double.mu.Unlock()
-	return len(double.statusWrites)
-}
-
-func syncDeploymentRows(t *testing.T, reconciler *OramaZettaClusterReconciler, zetta *oramav1alpha1.OramaZettaCluster, double *deploymentSQLDouble) {
-	t.Helper()
-	rows, err := zettaSQLQuery(context.Background(), double.server.URL, "test-token", "orama_control", deploymentSelectSQL("prod"))
-	if err != nil {
-		t.Fatalf("query deployment rows: %v", err)
+	columns := make([]string, 0, len(row))
+	for column := range row {
+		columns = append(columns, column)
 	}
-	reconciler.materializeZettaDeploymentRows(context.Background(), zetta, double.server.URL, "test-token", rows)
+	sort.Strings(columns)
+	values := make([]string, len(columns))
+	for i, column := range columns {
+		values[i] = deploymentSQLQuote(row[column])
+	}
+	zetta.mustExec(t, "INSERT INTO "+table+" ("+strings.Join(columns, ", ")+") VALUES ("+strings.Join(values, ", ")+")")
+}
+
+// desiredTestRow is a desired deployment row in lake's shape, with the operator's columns.
+func desiredTestRow(overrides map[string]string) map[string]string {
+	row := map[string]string{
+		"operator":         "test-operator",
+		"lake":             testLakeHost,
+		"repository":       "repo-1",
+		"environment":      "production",
+		"kind":             oramav1alpha1.LakeEnvironmentKindNamed,
+		"change":           "blake3:" + strings.Repeat("1", 64),
+		"image":            testEnvironmentImage,
+		"deployment_id":    "deploy-1",
+		"requested_by":     "lake-admin-token/prod",
+		"requested_at":     "2026-09-05T10:00:00.000000Z",
+		"phase":            deploymentPhaseRequested,
+		"namespace":        "",
+		"url":              "",
+		"message":          "",
+		"updated_at":       "2026-09-05T10:00:00.000000Z",
+		"ordering_token":   "00000000-0000-4000-8000-000000000001",
+		"record_type":      deploymentRecordTypeDesired,
+		"replicas":         "1",
+		"port":             "8080",
+		"env_json":         "[]",
+		"secret_refs_json": "[]",
+		"host":             "",
+		"withdrawn":        "false",
+		"change_closed":    "false",
+	}
+	for column, value := range overrides {
+		row[column] = value
+	}
+	return row
+}
+
+// statusRows are the status rows the operator appended, oldest first, as text.
+func statusRows(zetta *fakeZetta) []map[string]string {
+	out := make([]map[string]string, 0)
+	for _, row := range zetta.rows("orama_control", "deployments") {
+		if row["record_type"] != deploymentRecordTypeStatus {
+			continue
+		}
+		text := make(map[string]string, len(row))
+		for column, value := range row {
+			text[column] = coerceSQLString(value)
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
+func syncDeploymentRows(t *testing.T, reconciler *OramaZettaClusterReconciler, lake *oramav1alpha1.Lake, zetta *fakeZetta) {
+	t.Helper()
+	host := lakeRowHost(lake)
+	rows, err := readZettaPlatformRows(context.Background(), zetta.url(), "test-token", host)
+	if err != nil {
+		t.Fatalf("read platform rows: %v", err)
+	}
+	reconciler.materializeZettaPlatformRows(context.Background(), lake, host, zetta.url(), "test-token", rows)
+}
+
+func testDeploymentLake(spec oramav1alpha1.LakeSpec) *oramav1alpha1.Lake {
+	spec.Namespace = "lake"
+	spec.Image = "oramasearch/lake:test"
+	spec.Host = testLakeHost
+	return &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: "lake-uid"}, Spec: spec}
 }
 
 func TestZettaDeploymentMaterializationLifecycle(t *testing.T) {
 	ctx := context.Background()
 	scheme := newLakeEnvironmentScheme(t)
-	lake := &oramav1alpha1.Lake{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: "lake-uid"},
-		Spec: oramav1alpha1.LakeSpec{
-			Namespace:       "lake",
-			Image:           "oramasearch/lake:test",
-			IngressEnabled:  true,
-			PreviewWildcard: "preview.example.com",
-		},
-	}
-	zetta := &oramav1alpha1.OramaZettaCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "control", Namespace: "lake"},
-	}
+	lake := testDeploymentLake(oramav1alpha1.LakeSpec{IngressEnabled: true, PreviewWildcard: "preview.example.com"})
 	kubeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(lake).
 		WithStatusSubresource(&oramav1alpha1.LakeEnvironment{}, &appsv1.Deployment{}, &networkingv1.Ingress{}).
 		Build()
 	reconciler := &OramaZettaClusterReconciler{Client: kubeClient, Scheme: scheme}
-	desired := map[string]string{
-		"deployment_id":    "deploy-1",
-		"record_type":      deploymentRecordTypeDesired,
-		"lake":             "prod",
-		"repository":       "repo-1",
-		"environment":      "checkout-preview",
-		"kind":             oramav1alpha1.LakeEnvironmentKindPreview,
-		"change_id":        "7ac4c59b92e46235a6f2",
-		"image":            testEnvironmentImage,
-		"replicas":         "1",
-		"port":             "8080",
-		"env_json":         `[{"name":"APP_ENV","value":"preview"}]`,
-		"secret_refs_json": `[]`,
-		"withdrawn":        "false",
-		"change_closed":    "false",
-		"updated_at":       "2026-09-05T10:00:00Z",
-	}
-	double := newDeploymentSQLDouble(t, []map[string]string{desired})
-	defer double.close()
+	desired := desiredTestRow(map[string]string{
+		"environment": "checkout-preview",
+		"kind":        oramav1alpha1.LakeEnvironmentKindPreview,
+		"change":      "7ac4c59b92e46235a6f2",
+		"env_json":    `[{"name":"APP_ENV","value":"preview"}]`,
+	})
+	zetta := newFakeZetta(t, "test-token")
+	insertTestRow(t, zetta, "deployments", desired)
 
-	syncDeploymentRows(t, reconciler, zetta, double)
+	syncDeploymentRows(t, reconciler, lake, zetta)
 	event, err := parseDeploymentRow(desired)
 	if err != nil {
 		t.Fatal(err)
 	}
-	environmentKey := types.NamespacedName{Namespace: "lake", Name: deploymentEnvironmentName(event)}
+	environmentKey := types.NamespacedName{Namespace: "lake", Name: deploymentEnvironmentName(lake.Name, event)}
 	var environment oramav1alpha1.LakeEnvironment
 	if err := kubeClient.Get(ctx, environmentKey, &environment); err != nil {
 		t.Fatalf("LakeEnvironment: %v", err)
 	}
 	if environment.Spec.Image != testEnvironmentImage || environment.Spec.Env[0].Value != "preview" ||
+		environment.Spec.LakeRef != "prod" ||
 		environment.Annotations[deploymentIDAnnotation] != "deploy-1" || len(environment.OwnerReferences) != 1 ||
 		environment.OwnerReferences[0].Name != "prod" {
 		t.Errorf("LakeEnvironment = %+v", environment)
 	}
 	resourceVersion := environment.ResourceVersion
-	syncDeploymentRows(t, reconciler, zetta, double)
+	syncDeploymentRows(t, reconciler, lake, zetta)
 	if err := kubeClient.Get(ctx, environmentKey, &environment); err != nil {
 		t.Fatal(err)
 	}
-	if environment.ResourceVersion != resourceVersion || double.writeCount() != 0 {
-		t.Errorf("identical desired row changed state: rv %s -> %s, status writes %d", resourceVersion, environment.ResourceVersion, double.writeCount())
+	if environment.ResourceVersion != resourceVersion || len(statusRows(zetta)) != 0 {
+		t.Errorf("identical desired row changed state: rv %s -> %s, status writes %d", resourceVersion, environment.ResourceVersion, len(statusRows(zetta)))
 	}
 
 	environmentReconciler := &LakeEnvironmentReconciler{Client: kubeClient, Scheme: scheme}
@@ -191,13 +160,16 @@ func TestZettaDeploymentMaterializationLifecycle(t *testing.T) {
 	if _, err := environmentReconciler.Reconcile(ctx, ctrlRequest(request)); err != nil {
 		t.Fatalf("environment reconcile: %v", err)
 	}
-	syncDeploymentRows(t, reconciler, zetta, double)
-	if double.writeCount() != 1 || double.statusWrites[0]["phase"] != oramav1alpha1.LakeEnvironmentPhaseProgressing {
-		t.Fatalf("progressing callbacks = %+v", double.statusWrites)
+	syncDeploymentRows(t, reconciler, lake, zetta)
+	written := statusRows(zetta)
+	if len(written) != 1 || written[0]["phase"] != oramav1alpha1.LakeEnvironmentPhaseProgressing ||
+		written[0]["namespace"] != lakeEnvironmentNamespace(&environment) || written[0]["lake"] != testLakeHost ||
+		written[0]["repository"] != "repo-1" || written[0]["change"] != "7ac4c59b92e46235a6f2" {
+		t.Fatalf("progressing callbacks = %+v", written)
 	}
-	syncDeploymentRows(t, reconciler, zetta, double)
-	if double.writeCount() != 1 {
-		t.Fatalf("steady Progressing callback count = %d", double.writeCount())
+	syncDeploymentRows(t, reconciler, lake, zetta)
+	if len(statusRows(zetta)) != 1 {
+		t.Fatalf("steady Progressing callback count = %d", len(statusRows(zetta)))
 	}
 
 	if err := kubeClient.Get(ctx, environmentKey, &environment); err != nil {
@@ -218,26 +190,28 @@ func TestZettaDeploymentMaterializationLifecycle(t *testing.T) {
 	if _, err := environmentReconciler.Reconcile(ctx, ctrlRequest(request)); err != nil {
 		t.Fatalf("ready environment reconcile: %v", err)
 	}
-	syncDeploymentRows(t, reconciler, zetta, double)
-	if double.writeCount() != 2 || double.statusWrites[1]["phase"] != oramav1alpha1.LakeEnvironmentPhaseReady ||
-		double.statusWrites[1]["url"] != "https://7ac4c59b92e4.preview.example.com" {
-		t.Fatalf("ready callbacks = %+v", double.statusWrites)
+	syncDeploymentRows(t, reconciler, lake, zetta)
+	written = statusRows(zetta)
+	if len(written) != 2 || written[1]["phase"] != oramav1alpha1.LakeEnvironmentPhaseReady ||
+		written[1]["url"] != "https://7ac4c59b92e4.preview.example.com" {
+		t.Fatalf("ready callbacks = %+v", written)
 	}
-	syncDeploymentRows(t, reconciler, zetta, double)
-	if double.writeCount() != 2 {
-		t.Fatalf("steady Ready callback count = %d", double.writeCount())
+	syncDeploymentRows(t, reconciler, lake, zetta)
+	if len(statusRows(zetta)) != 2 {
+		t.Fatalf("steady Ready callback count = %d", len(statusRows(zetta)))
 	}
 
-	withdrawn := make(map[string]string, len(desired))
+	withdrawn := desiredTestRow(nil)
 	for key, value := range desired {
 		withdrawn[key] = value
 	}
 	withdrawn["withdrawn"] = "true"
-	withdrawn["updated_at"] = "2026-09-05T10:01:00Z"
-	double.addDesired(withdrawn)
-	syncDeploymentRows(t, reconciler, zetta, double)
-	if double.writeCount() != 3 || double.statusWrites[2]["phase"] != oramav1alpha1.LakeEnvironmentPhaseTornDown {
-		t.Fatalf("teardown callbacks = %+v", double.statusWrites)
+	withdrawn["updated_at"] = "2026-09-05T10:01:00.000000Z"
+	insertTestRow(t, zetta, "deployments", withdrawn)
+	syncDeploymentRows(t, reconciler, lake, zetta)
+	written = statusRows(zetta)
+	if len(written) != 3 || written[2]["phase"] != oramav1alpha1.LakeEnvironmentPhaseTornDown {
+		t.Fatalf("teardown callbacks = %+v", written)
 	}
 	if err := kubeClient.Get(ctx, environmentKey, &environment); err != nil {
 		t.Fatalf("LakeEnvironment should remain until its finalizer runs: %v", err)
@@ -254,44 +228,57 @@ func TestZettaDeploymentMaterializationLifecycle(t *testing.T) {
 	if err := kubeClient.Get(ctx, environmentKey, &environment); !apierrors.IsNotFound(err) {
 		t.Errorf("LakeEnvironment still exists after finalization: %v", err)
 	}
-	if double.authFailures != 0 {
-		t.Errorf("Zetta requests missing bearer: %d", double.authFailures)
+	if zetta.authFailures != 0 {
+		t.Errorf("Zetta requests missing bearer: %d", zetta.authFailures)
+	}
+}
+
+// Rows keyed by another Lake's host, or by the Lake's resource name (the operator's key before
+// operator#560), are not this Lake's.
+func TestZettaDeploymentReadsOnlyTheLakesPublicHost(t *testing.T) {
+	scheme := newLakeEnvironmentScheme(t)
+	lake := testDeploymentLake(oramav1alpha1.LakeSpec{})
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake).Build()
+	reconciler := &OramaZettaClusterReconciler{Client: kubeClient, Scheme: scheme}
+	zetta := newFakeZetta(t, "test-token")
+	insertTestRow(t, zetta, "deployments", desiredTestRow(map[string]string{"lake": "prod", "deployment_id": "by-name"}))
+	insertTestRow(t, zetta, "deployments", desiredTestRow(map[string]string{"lake": "other.example.com", "deployment_id": "other"}))
+	syncDeploymentRows(t, reconciler, lake, zetta)
+	var environments oramav1alpha1.LakeEnvironmentList
+	if err := kubeClient.List(context.Background(), &environments); err != nil {
+		t.Fatal(err)
+	}
+	if len(environments.Items) != 0 {
+		t.Fatalf("materialized another Lake's rows: %+v", environments.Items)
+	}
+
+	fromSecret := lake.DeepCopy()
+	fromSecret.Spec.Env = []corev1.EnvVar{{Name: "LAKE_PUBLIC_HOST", ValueFrom: &corev1.EnvVarSource{}}}
+	if got := lakeRowHost(fromSecret); got != "" {
+		t.Errorf("a LAKE_PUBLIC_HOST from a source gave row host %q", got)
+	}
+	literal := lake.DeepCopy()
+	literal.Spec.Env = []corev1.EnvVar{{Name: "LAKE_PUBLIC_HOST", Value: "lake.oramadev.net"}}
+	if got := lakeRowHost(literal); got != "lake.oramadev.net" {
+		t.Errorf("row host = %q, want spec.env's literal", got)
 	}
 }
 
 func TestZettaDeploymentUpdateRepointsStableEnvironment(t *testing.T) {
 	ctx := context.Background()
 	scheme := newLakeEnvironmentScheme(t)
-	lake := &oramav1alpha1.Lake{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: "lake-uid"},
-		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake", Image: "oramasearch/lake:test"},
-	}
-	zetta := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: "control", Namespace: "lake"}}
+	lake := testDeploymentLake(oramav1alpha1.LakeSpec{})
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake).Build()
 	reconciler := &OramaZettaClusterReconciler{Client: kubeClient, Scheme: scheme}
-	first := map[string]string{
-		"deployment_id":    "deploy-1",
-		"record_type":      deploymentRecordTypeDesired,
-		"lake":             "prod",
-		"repository":       "repo-1",
-		"environment":      "production",
-		"kind":             oramav1alpha1.LakeEnvironmentKindNamed,
-		"change_id":        "blake3:" + strings.Repeat("1", 64),
-		"image":            testEnvironmentImage,
-		"replicas":         "1",
-		"port":             "8080",
-		"env_json":         `[]`,
-		"secret_refs_json": `[]`,
-		"updated_at":       "2026-09-06T10:00:00Z",
-	}
-	double := newDeploymentSQLDouble(t, []map[string]string{first})
-	defer double.close()
-	syncDeploymentRows(t, reconciler, zetta, double)
+	first := desiredTestRow(nil)
+	zetta := newFakeZetta(t, "test-token")
+	insertTestRow(t, zetta, "deployments", first)
+	syncDeploymentRows(t, reconciler, lake, zetta)
 	event, err := parseDeploymentRow(first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := deploymentEnvironmentName(event)
+	name := deploymentEnvironmentName(lake.Name, event)
 	key := types.NamespacedName{Namespace: "lake", Name: name}
 	var environment oramav1alpha1.LakeEnvironment
 	if err := kubeClient.Get(ctx, key, &environment); err != nil {
@@ -299,21 +286,19 @@ func TestZettaDeploymentUpdateRepointsStableEnvironment(t *testing.T) {
 	}
 	firstNamespace := lakeEnvironmentNamespace(&environment)
 
-	second := make(map[string]string, len(first))
-	for column, value := range first {
-		second[column] = value
-	}
-	second["deployment_id"] = "deploy-2"
-	second["change_id"] = "blake3:" + strings.Repeat("2", 64)
-	second["image"] = "registry.example.com/app@sha256:" + strings.Repeat("b", 64)
-	second["updated_at"] = "2026-09-06T10:01:00Z"
-	double.addDesired(second)
-	syncDeploymentRows(t, reconciler, zetta, double)
+	second := desiredTestRow(map[string]string{
+		"deployment_id": "deploy-2",
+		"change":        "blake3:" + strings.Repeat("2", 64),
+		"image":         "registry.example.com/app@sha256:" + strings.Repeat("b", 64),
+		"updated_at":    "2026-09-06T10:01:00.000000Z",
+	})
+	insertTestRow(t, zetta, "deployments", second)
+	syncDeploymentRows(t, reconciler, lake, zetta)
 	if err := kubeClient.Get(ctx, key, &environment); err != nil {
 		t.Fatal(err)
 	}
 	if environment.Annotations[deploymentIDAnnotation] != "deploy-2" ||
-		environment.Spec.Change != second["change_id"] ||
+		environment.Spec.Change != second["change"] ||
 		environment.Spec.Image != second["image"] {
 		t.Errorf("updated environment = %+v", environment)
 	}
@@ -332,38 +317,24 @@ func TestZettaDeploymentUpdateRepointsStableEnvironment(t *testing.T) {
 func TestZettaDeploymentRefusesForeignStableEnvironment(t *testing.T) {
 	ctx := context.Background()
 	scheme := newLakeEnvironmentScheme(t)
-	lake := &oramav1alpha1.Lake{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: "lake-uid"},
-		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake", Image: "oramasearch/lake:test"},
-	}
-	desired := &zettaDeploymentEvent{
-		DeploymentID: "deploy-foreign",
-		RecordType:   deploymentRecordTypeDesired,
-		Lake:         "prod",
-		Repository:   "repo-1",
-		Environment:  "production",
-		Kind:         oramav1alpha1.LakeEnvironmentKindNamed,
-		Change:       "blake3:" + strings.Repeat("1", 64),
-		Image:        testEnvironmentImage,
-		Replicas:     1,
-		Port:         8080,
-		UpdatedAt:    "2026-09-06T10:00:00Z",
+	lake := testDeploymentLake(oramav1alpha1.LakeSpec{})
+	desired, err := parseDeploymentRow(desiredTestRow(map[string]string{"deployment_id": "deploy-foreign"}))
+	if err != nil {
+		t.Fatal(err)
 	}
 	foreign := &oramav1alpha1.LakeEnvironment{ObjectMeta: metav1.ObjectMeta{
-		Name:      deploymentEnvironmentName(desired),
+		Name:      deploymentEnvironmentName(lake.Name, desired),
 		Namespace: "lake",
 	}}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake, foreign).Build()
 	reconciler := &OramaZettaClusterReconciler{Client: kubeClient, Scheme: scheme}
-	double := newDeploymentSQLDouble(t, nil)
-	defer double.close()
-	zetta := &oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: "control", Namespace: "lake"}}
-	err := reconciler.reconcileZettaDeployment(ctx, zetta, double.server.URL, "test-token", desired.DeploymentID, &zettaDeploymentState{Desired: desired})
+	zetta := newFakeZetta(t, "test-token")
+	err = reconciler.reconcileZettaDeployment(ctx, lake, zetta.url(), "test-token", "test-operator", &zettaDeploymentState{Desired: desired, Latest: desired}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "not owned by Lake") {
 		t.Fatalf("foreign collision error = %v", err)
 	}
-	if double.writeCount() != 0 {
-		t.Errorf("foreign collision wrote %d status rows", double.writeCount())
+	if len(statusRows(zetta)) != 0 {
+		t.Errorf("foreign collision wrote %d status rows", len(statusRows(zetta)))
 	}
 }
 
@@ -493,12 +464,12 @@ func TestZettaControlPlaneReplacesStaleSchemaJob(t *testing.T) {
 }
 
 func TestDeploymentSelectUsesQueryParameters(t *testing.T) {
-	requestURL := "http://example.test/v1/sql?statement=" + url.QueryEscape(deploymentSelectSQL("prod"))
+	requestURL := "http://example.test/v1/sql?statement=" + url.QueryEscape(deploymentSelectSQL("it's.example.com"))
 	parsed, err := url.Parse(requestURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Query().Get("statement") != deploymentSelectSQL("prod") {
+	if parsed.Query().Get("statement") != deploymentSelectSQL("it's.example.com") {
 		t.Fatal("deployment SELECT did not survive URL encoding")
 	}
 }
