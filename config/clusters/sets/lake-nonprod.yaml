@@ -32,6 +32,20 @@ spec:
       - name: LAKE_PUBLIC_HOST
         value: lake-staging.oramadev.net
       host: lake-staging.oramadev.net
+  - clusterRef: orama-nonprod-cluster-01
+    name: testing
+    spec:
+      args:
+      - "--listen"
+      - 0.0.0.0:4900
+      - "--node"
+      - testing
+      env:
+      - name: LAKE_LOG_MODE
+        value: air-gapped
+      - name: LAKE_PUBLIC_HOST
+        value: lake-testing.oramadev.net
+      host: lake-testing.oramadev.net
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
