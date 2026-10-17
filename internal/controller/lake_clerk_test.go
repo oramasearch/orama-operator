@@ -60,11 +60,12 @@ func (f *fakeClerk) reset() {
 }
 
 // writes are the requests that change something in Clerk or Svix. POST svix_url only opens a
-// portal session.
+// portal session, and exchanging its one-time token only signs in to it.
 func writes(requests []string) []string {
 	var out []string
 	for _, request := range requests {
-		if strings.HasPrefix(request, "GET ") || request == "POST /v1/webhooks/svix_url" {
+		if strings.HasPrefix(request, "GET ") || request == "POST /v1/webhooks/svix_url" ||
+			request == "POST /svix/api/v1/auth/one-time-token/" {
 			continue
 		}
 		out = append(out, request)
@@ -80,6 +81,14 @@ func (f *fakeClerk) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
+	if r.Method == http.MethodPost && r.URL.Path == "/svix/api/v1/auth/one-time-token/" {
+		if body["oneTimeToken"] != "ott_svix" {
+			http.Error(w, "bad one-time token", http.StatusUnauthorized)
+			return
+		}
+		reply(map[string]any{"token": "appsk_portal.us"})
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/svix/") {
 		if r.Header.Get("Authorization") != "Bearer appsk_portal.us" {
 			http.Error(w, "bad portal token", http.StatusUnauthorized)
@@ -153,7 +162,8 @@ func (f *fakeClerk) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.svixApp = true
-		key, _ := json.Marshal(map[string]string{"appId": "app_svix", "token": "appsk_portal.us"})
+		// Clerk's real link: a one-time token and the region, exchanged at Svix for the portal token.
+		key, _ := json.Marshal(map[string]string{"appId": "app_svix", "oneTimeToken": "ott_svix", "region": "us"})
 		reply(map[string]any{"svix_url": "https://app.svix.com/login#key=" + base64.StdEncoding.EncodeToString(key)})
 	default:
 		f.t.Errorf("unexpected Clerk request %s %s", r.Method, r.URL.Path)
@@ -490,6 +500,11 @@ func TestClerkKeysAndSvixAddressesAreDerivedAsClerkAndSvixDo(t *testing.T) {
 	parsed, err := parseSvixPortalURL("https://app.svix.com/login#key=" + base64.RawURLEncoding.EncodeToString(key))
 	if err != nil || parsed.AppID != "app_1" || parsed.Token != "appsk_t" {
 		t.Errorf("parsed = %+v, %v", parsed, err)
+	}
+	clerkKey, _ := json.Marshal(map[string]string{"appId": "app_2", "oneTimeToken": "ott_2", "region": "eu"})
+	parsed, err = parseSvixPortalURL("https://app.svix.com/login?primaryColor=%23000#key=" + base64.StdEncoding.EncodeToString(clerkKey))
+	if err != nil || parsed.AppID != "app_2" || parsed.OneTimeToken != "ott_2" || svixAPIBase(parsed) != "https://api.eu.svix.com" {
+		t.Errorf("Clerk's link: parsed = %+v, %v, base %s", parsed, err, svixAPIBase(parsed))
 	}
 	if _, err := parseSvixPortalURL("https://app.svix.com/login"); err == nil {
 		t.Error("a link without a key was accepted")

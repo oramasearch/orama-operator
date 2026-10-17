@@ -537,10 +537,17 @@ func clerkEnsureAllowedOrigins(ctx context.Context, api, secretKey string, curre
 // GET/POST /api/v1/app/{app_id}/endpoint, PATCH /api/v1/app/{app_id}/endpoint/{endpoint_id},
 // GET /api/v1/app/{app_id}/endpoint/{endpoint_id}/secret.
 
+// svixPortalKey is the App Portal key in the fragment of Clerk's svix_url. Clerk's link carries a
+// one-time token and the application's region ({appId, oneTimeToken, region}), which is exchanged
+// at Svix's POST /api/v1/auth/one-time-token/ for the token the Endpoint API takes; using it
+// invalidates it, so every pass asks Clerk for a fresh link. A key that already holds a token
+// (Svix's own App Portal links) is used as it is.
 type svixPortalKey struct {
-	AppID     string `json:"appId"`
-	Token     string `json:"token"`
-	ServerURL string `json:"serverUrl"`
+	AppID        string `json:"appId"`
+	Token        string `json:"token"`
+	OneTimeToken string `json:"oneTimeToken"`
+	Region       string `json:"region"`
+	ServerURL    string `json:"serverUrl"`
 }
 
 type svixEndpoint struct {
@@ -592,7 +599,7 @@ func parseSvixPortalURL(link string) (svixPortalKey, error) {
 	if err := json.Unmarshal(data, &key); err != nil {
 		return svixPortalKey{}, fmt.Errorf("the webhook portal key is not JSON: %w", err)
 	}
-	if key.AppID == "" || key.Token == "" {
+	if key.AppID == "" || (key.Token == "" && key.OneTimeToken == "") {
 		return svixPortalKey{}, errors.New("the webhook portal key has no application or token")
 	}
 	return key, nil
@@ -603,6 +610,12 @@ func parseSvixPortalURL(link string) (svixPortalKey, error) {
 func svixAPIBase(key svixPortalKey) string {
 	if key.ServerURL != "" {
 		return strings.TrimSuffix(key.ServerURL, "/")
+	}
+	switch key.Region {
+	case "eu", "in", "ca", "au":
+		return "https://api." + key.Region + ".svix.com"
+	case "us":
+		return "https://api.svix.com"
 	}
 	parts := strings.Split(key.Token, ".")
 	switch parts[len(parts)-1] {
@@ -634,6 +647,20 @@ func clerkEnsureWebhook(ctx context.Context, api, secretKey, svixOverride, hookU
 	base := svixAPIBase(key)
 	if svixOverride != "" {
 		base = strings.TrimSuffix(svixOverride, "/")
+	}
+	if key.Token == "" {
+		// Clerk's link: exchange its one-time token, unauthenticated, for the portal token.
+		var exchanged struct {
+			Token string `json:"token"`
+		}
+		if err := cfDo(ctx, "", http.MethodPost, base+"/api/v1/auth/one-time-token/",
+			map[string]string{"oneTimeToken": key.OneTimeToken}, &exchanged); err != nil {
+			return "", "", fmt.Errorf("exchanging the webhook portal's one-time token: %w", err)
+		}
+		if exchanged.Token == "" {
+			return "", "", errors.New("the webhook portal's one-time token exchange returned no token")
+		}
+		key.Token = exchanged.Token
 	}
 	endpoints := base + "/api/v1/app/" + url.PathEscape(key.AppID) + "/endpoint"
 
