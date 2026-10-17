@@ -8,11 +8,11 @@ Job and pods to disappear. This is a metadata upgrade, not a schema version chan
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit 6fdf829db9f87552cd8040814732ce68af2cc52d](https://github.com/oramasearch/lake/blob/6fdf829db9f87552cd8040814732ce68af2cc52d/db/schema.sql)
-(lake `dev` through `0085_network_tunnel_ca`: `0084_network` (lake#727) adds the secure-networking
-desired-state tables, their operator-owned status twins and `network_guard`; `0085_network_tunnel_ca`
-(lake#730) adds the tunnel client and relay CA columns). Its SHA-256 is
-`f86b8ecd58348ab29dc62e62e94fe806b0dafdcaf5e1ba9159709e539df0d5cb`. Re-pin to lake `main` at its next release.
+[`oramasearch/lake` commit de037d1fb68d153c5a331a6f5d789fdad7e85c73](https://github.com/oramasearch/lake/blob/de037d1fb68d153c5a331a6f5d789fdad7e85c73/db/schema.sql)
+(lake `dev` after v0.2.0, through `0088_repository_liquid_ids` (lake#805): `repositories.liquid_id`,
+its index and `repository_liquid_ids_guard`, so a deployment row naming liquid's repository id is
+matched. Before it, `0086_identity_links` (lake#762) and `0087_clerk_webhooks` (lake#765)).
+Its SHA-256 is `dbb4c7ae2465a396fd7cb16a91ac62e09ff6a7ed02e03bdbc275885995d86ac9`. Re-pin to lake `main` at its next release.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.

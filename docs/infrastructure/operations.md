@@ -102,7 +102,9 @@ Every cluster runs the same operator version (rule 11 in [`CLAUDE.md`](../../CLA
    the tag, `dev-<sha>`. It publishes the chart for the same tag, without which a managed cluster cannot
    install that version.
 2. Set that version on every `OramaOperator`, in `config/clusters/<cluster>/operator.yaml`, and apply.
-   Each managed cluster's operator is upgraded, CRDs first.
+   Each managed cluster's operator is upgraded with its CRDs widened first and applied exactly once
+   the new version runs alone (both paths do this the same way:
+   [`../operations/crd-rollout.md`](../operations/crd-rollout.md#removing-or-changing-a-field-crds-in-two-steps-around-the-roll)).
    The management cluster (step 1) and the leaves (this step) must end on the same version: they
    are two installation paths for the same operator.
 3. Confirm every cluster is on it:

@@ -63,6 +63,33 @@ spec:
                   deployed.
                 minLength: 1
                 type: string
+              domains:
+                description: |-
+                  Domains are the custom domains lake requested for this environment (its
+                  orama_control.domains rows). Each is served by the environment's Ingress and, when the Lake
+                  has a dnsSecretRef, gets a Cloudflare DNS record owned by this environment.
+                items:
+                  description: LakeEnvironmentDomain is one custom domain of an environment.
+                  properties:
+                    host:
+                      description: Host is the exact public hostname.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    tls:
+                      description: 'TLS is how the certificate is provided, as lake
+                        records it: acme or provided.'
+                      enum:
+                      - acme
+                      - provided
+                      type: string
+                  required:
+                  - host
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - host
+                x-kubernetes-list-type: map
               env:
                 description: Env contains literal environment variables for the workload.
                 items:
@@ -204,6 +231,27 @@ spec:
                 description: DeploymentID is the stable deployment-row identifier
                   materialized into this resource.
                 type: string
+              domains:
+                description: Domains reports each custom domain in spec.domains.
+                items:
+                  description: LakeEnvironmentDomainStatus is the observed state of
+                    one custom domain.
+                  properties:
+                    host:
+                      description: Host is the domain's hostname.
+                      type: string
+                    message:
+                      description: Message says why a domain is pending or failed.
+                      type: string
+                    status:
+                      description: 'Status is pending, active, or failed: the words
+                        lake shows for a domain.'
+                      type: string
+                  required:
+                  - host
+                  - status
+                  type: object
+                type: array
               phase:
                 description: Phase is Progressing, Ready, Degraded, or TornDown.
                 type: string
