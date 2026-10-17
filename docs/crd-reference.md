@@ -163,11 +163,28 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `search` | data-store | Typesense hosted-search |
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
+| `analyticsProcessor` | `resources`, `import.{enabled,suspend}` | analytics-processor (readers' search events → ClickHouse) + its scheduled import |
 
 `engine.reader.replicas` is the fixed number of readers (0 or unset → 3), each with its own data
 volume ([components.md](components.md)); `engine.reader.hpa` is accepted but ignored: no autoscaler is
 created. `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
+
+### `analyticsProcessor.import`
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Owns the CronJob `<cr>-analytics-import`, which sends `POST /import` to the processor every five minutes (UTC). Requires `engine`, `analytics` (the in-cluster ClickHouse) and `controlDB` enabled and `engine.reader.replicas` of zero (→ 3) or more. |
+| `suspend` | `false` | Copied to the CronJob's `spec.suspend`. The CronJob, the readers' headless Service and the processor's sources stay in place; no new Job starts. A Job already running finishes, and the readers keep the events logged meanwhile: the first import after resuming takes them. |
+
+The schedule is fixed; there is no per-stack schedule. The processor's sources are the same whether
+the import is enabled, disabled or suspended: each reader ordinal once, through
+`<cr>-reader-headless` ([components.md](components.md#analytics-import)). A missing prerequisite or
+a negative reader count removes the CronJob (suspended or not) and fails the reconcile with
+`Ready=False` (`ReconcileError`) naming it; this check runs before every other step, so an earlier
+component's failure cannot leave an old schedule running. `import.enabled: false` removes the
+CronJob; `analyticsProcessor.enabled: false` removes the CronJob and the processor's Deployment,
+Service, ConfigMap and retention Job, and reports no import error.
 
 ### Extra hosts (`extraHosts`)
 
@@ -527,7 +544,9 @@ is a curl+jq script that self-bootstraps a clean-slate collection+index and asse
 OramaCore function in variations** — liveness, auth (keys + negatives), collection/index lifecycle +
 document CRUD/upsert/delete, the write→searchable replication canary, fulltext (typo tolerance/exact/
 threshold/boost/pagination), vector + hybrid, filters (number/date/bool/string/geo + and/or/not),
-facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, analytics, and answer/RAG. It is the
+facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, and answer/RAG. It never calls the
+analytics export, which erases the readers' search events: only the analytics processor pulls them
+([#315](https://github.com/oramasearch/orama-operator/issues/315)). It is the
 forcing function (see the production-migration principle in `CLAUDE.md`) — never softened to pass.
 Coverage is tracked by [operator#44](https://github.com/oramasearch/orama-operator/issues/44).
 Sample: [`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).

@@ -146,20 +146,6 @@ func TestReaderRenderFillsAnalyticsKey(t *testing.T) {
 	}
 }
 
-// analytics-processor imports from the readers only, every entry with the analytics key.
-func TestAnalyticsProcessorConfigListsReadersOnly(t *testing.T) {
-	cfg := analyticsProcessorConfigYAML(newOCV1(nil))
-	got := parseYAML(t, cfg)["oramacores"]
-	want := []any{map[string]any{"name": "oramacore-reader", "api_url": "http://v1-reader/v1/analytics",
-		"api_key": "__ANALYTICS_API_KEY__", "enabled": true}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("oramacores = %v, want %v", got, want)
-	}
-	if strings.Contains(cfg, "-writer") || strings.Contains(cfg, "__MASTER_API_KEY__") {
-		t.Errorf("the processor config names the writer or the master key:\n%s", cfg)
-	}
-}
-
 // The processor's render-config writes the analytics key into every api_key and keeps every byte
 // of the ClickHouse and Postgres passwords; the master key in its environment reaches no output.
 func TestAnalyticsProcessorRendersAnalyticsKey(t *testing.T) {

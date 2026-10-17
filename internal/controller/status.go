@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -25,8 +26,9 @@ const componentLabel = "app.kubernetes.io/component"
 
 // componentReadiness returns a per-component readiness list for the operator-owned workloads —
 // one entry per DEPLOYABLE component (Deployment / StatefulSet, keyed by its component label) plus
-// the CNPG control DB. Middle granularity: component-level, not per-pod. Sorted by name so the
-// list is stable and never triggers a status write just from map/list ordering.
+// the CNPG control DB and the analytics retention Job. Middle granularity: component-level, not
+// per-pod. Sorted by name so the list is stable and never triggers a status write just from
+// map/list ordering.
 func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) []oramav1alpha1.ComponentStatus {
 	owned := client.MatchingLabels{
 		"app.kubernetes.io/managed-by": "orama-cloud-v1-operator",
@@ -73,6 +75,21 @@ func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *ora
 			ready, detail = ri >= 1, fmt.Sprintf("%d/%d", ri, inst)
 		}
 		comps = append(comps, oramav1alpha1.ComponentStatus{Name: "controldb", Ready: ready, Detail: detail})
+	}
+
+	// The analytics retention Job (reconcileAnalyticsRetention): ready once it has set the TTLs.
+	if analyticsRetentionWanted(oc) {
+		job := &batchv1.Job{}
+		ready, detail := false, "pending"
+		if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: analyticsRetentionName(oc)}, job); err == nil {
+			switch {
+			case job.Status.Succeeded > 0:
+				ready, detail = true, "applied"
+			case jobFailed(job):
+				detail = "failed, retrying"
+			}
+		}
+		comps = append(comps, oramav1alpha1.ComponentStatus{Name: "analytics-retention", Ready: ready, Detail: detail})
 	}
 
 	sort.Slice(comps, func(i, j int) bool { return comps[i].Name < comps[j].Name })

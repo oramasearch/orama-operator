@@ -586,10 +586,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 	name := oc.Name + "-reader"
 	lbls := labelsFor(oc, "reader")
 	rd := oc.Spec.Components.Engine.Reader
-	replicas := rd.Replicas
-	if replicas == 0 {
-		replicas = 3
-	}
+	replicas := readerReplicas(oc)
 	useEnvoy := oc.Spec.Components.Engine.Envoy
 	side := engineSideFor(oc, "reader")
 	if !useEnvoy {
@@ -660,6 +657,15 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 	}
 	// Readers can lose one at a time during disruptions (keeps the rest serving).
 	return r.upsertPDB(ctx, oc, name, "reader", 1)
+}
+
+// readerReplicas is the reader StatefulSet's replica count: reader.replicas, 3 when omitted or zero.
+// The analytics processor's sources are built from the same number (analyticsSources).
+func readerReplicas(oc *oramav1alpha1.OramaCloudV1) int32 {
+	if n := oc.Spec.Components.Engine.Reader.Replicas; n != 0 {
+		return n
+	}
+	return 3
 }
 
 func readerHeadlessServiceName(oc *oramav1alpha1.OramaCloudV1) string {

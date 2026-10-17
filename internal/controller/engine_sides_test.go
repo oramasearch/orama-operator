@@ -136,6 +136,8 @@ type engineHarness struct {
 	r            *OramaCloudV1Reconciler
 	deletes      int
 	statusWrites int
+	// updates counts Update calls by object name.
+	updates map[string]int
 }
 
 // testMasterSecret is the master API key Secret engineOC references; newEngineHarness adds it unless
@@ -149,7 +151,7 @@ const testMasterKey = "shared-master-0099"
 func newEngineHarness(t *testing.T, objs ...client.Object) *engineHarness {
 	t.Helper()
 	s := ocv1TestScheme(t)
-	h := &engineHarness{t: t}
+	h := &engineHarness{t: t, updates: map[string]int{}}
 	if !slices.ContainsFunc(objs, func(o client.Object) bool { _, ok := o.(*corev1.Secret); return ok && o.GetName() == testMasterSecret }) {
 		objs = append(objs, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": testMasterKey}))
 	}
@@ -160,6 +162,10 @@ func newEngineHarness(t *testing.T, objs ...client.Object) *engineHarness {
 			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 				h.deletes++
 				return c.Delete(ctx, obj, opts...)
+			},
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				h.updates[obj.GetName()]++
+				return c.Update(ctx, obj, opts...)
 			},
 			SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 				h.statusWrites++

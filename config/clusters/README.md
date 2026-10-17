@@ -69,6 +69,13 @@ step that stops Prod 1's crons (see
 [the dashboard's scheduled jobs](../../docs/components.md#the-dashboards-scheduled-jobs)). Never
 edit, patch or create the CronJobs themselves.
 
+A v1 member imports its readers' search events into ClickHouse only with
+`components.analyticsProcessor.import.enabled: true`, which needs `engine`, `analytics` and
+`controlDB` enabled. `import.suspend: true` keeps the schedule in place but starts no import, so
+turning it on is a one-line change to the set file, applied from that file; the readers keep the
+events logged meanwhile, and the first import takes them
+([`docs/components.md`](../../docs/components.md#analytics-import)).
+
 To check that the files match the cluster:
 
 ```sh

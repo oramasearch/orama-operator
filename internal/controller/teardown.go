@@ -27,7 +27,7 @@ import (
 // so a disabled component's children would otherwise linger (often CrashLoopBackOff). Idempotent —
 // missing resources are ignored, so enable→disable→enable round-trips cleanly. StatefulSet PVCs are
 // intentionally left behind (data preserved); only the workloads + their Services / ConfigMaps /
-// Secrets / PDBs / Ingresses / Jobs are removed.
+// Secrets / PDBs / Ingresses / Jobs / CronJobs are removed.
 func (r *OramaCloudV1Reconciler) teardownByComponent(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, components ...string) error {
 	for _, comp := range components {
 		sel := client.MatchingLabels{
@@ -40,7 +40,7 @@ func (r *OramaCloudV1Reconciler) teardownByComponent(ctx context.Context, oc *or
 		for _, list := range []client.ObjectList{
 			&appsv1.DeploymentList{}, &appsv1.StatefulSetList{}, &corev1.ServiceList{},
 			&corev1.ConfigMapList{}, &corev1.SecretList{}, &policyv1.PodDisruptionBudgetList{},
-			&networkingv1.IngressList{}, &batchv1.JobList{},
+			&networkingv1.IngressList{}, &batchv1.JobList{}, &batchv1.CronJobList{},
 		} {
 			if err := r.List(ctx, list, ns, sel); err != nil {
 				return fmt.Errorf("teardown %s: list: %w", comp, err)

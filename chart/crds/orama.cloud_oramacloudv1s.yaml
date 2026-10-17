@@ -252,6 +252,20 @@ spec:
                       enabled:
                         default: true
                         type: boolean
+                      import:
+                        description: Import schedules the processor's POST /import,
+                          which pulls every reader once.
+                        properties:
+                          enabled:
+                            description: Enabled creates the CronJob. It requires
+                              the engine, analytics and controlDB components.
+                            type: boolean
+                          suspend:
+                            description: |-
+                              Suspend keeps the CronJob, the processor and its sources in place but starts no new Job. It is
+                              copied to the CronJob's spec.suspend.
+                            type: boolean
+                        type: object
                       resources:
                         description: |-
                           Resources overrides the component's pod resources. When unset the operator applies a
