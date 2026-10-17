@@ -99,6 +99,10 @@ func TestALakeSetRefusesARegionListThatCannotBeRight(t *testing.T) {
 		"a region with no host": {members: []oramav1alpha1.SetMember{
 			{ClusterRef: "orama-production-cluster-02", Name: "shared", Spec: rawJSON(`{"region":{"label":"Europe"}}`)},
 		}, want: `member shared has the region label "Europe" but no spec.host`},
+		"one region twice (separate environments)": {members: []oramav1alpha1.SetMember{
+			{ClusterRef: "orama-production-cluster-02", Name: "dev", Spec: rawJSON(`{"host":"lake-dev.example","region":{"label":"Dev"}}`)},
+			{ClusterRef: "orama-production-cluster-02", Name: "staging", Spec: rawJSON(`{"host":"lake-staging.example","region":{"label":"Staging"}}`)},
+		}, want: "members dev and staging both have a region label and both run in swedencentral"},
 		"the list stated by hand": {members: []oramav1alpha1.SetMember{
 			{ClusterRef: "orama-production-cluster-02", Name: "shared", Spec: rawJSON(`{"host":"eu.lake.live","regions":[]}`)},
 		}, want: "member shared states spec.regions, which the set computes"},

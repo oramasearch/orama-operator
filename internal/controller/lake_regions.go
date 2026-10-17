@@ -75,11 +75,13 @@ var cloudRegionLocations = map[string][2]string{
 // prepareLakeRegions is a LakeSet's region list: one entry per member that states a region label,
 // each with its cluster's region, its host and the region's location. A member whose cluster does
 // not exist yet is left out until it does. It refuses the set when the list cannot be right: a
-// labelled member with no host, a region with no known location, a list stated by hand, or two
-// apex hosts.
+// labelled member with no host, a region with no known location, a list stated by hand, two
+// apex hosts, or one region named twice: a picker chooses between the regions of one environment,
+// never between environments in one region (decision 64; Steve, 2026-10-17, #532).
 func prepareLakeRegions(template map[string]any, members []resolvedMember) (any, error) {
 	var regions []oramav1alpha1.LakeRegion
 	var apexes []string
+	byRegion := map[string]string{}
 	for _, resolved := range members {
 		spec, err := memberSpec(template, resolved)
 		if err != nil {
@@ -100,6 +102,10 @@ func prepareLakeRegions(template map[string]any, members []resolvedMember) (any,
 		if host == "" {
 			return nil, &setError{"RegionWithoutHost", fmt.Sprintf("member %s has the region label %q but no spec.host, so the region picker has nowhere to send people", resolved.member.Name, label)}
 		}
+		if other, taken := byRegion[resolved.cluster.Spec.Region]; taken {
+			return nil, &setError{"RegionRepeated", fmt.Sprintf("members %s and %s both have a region label and both run in %s: a region picker chooses between the regions of one environment, so each region appears once; remove the region from the members that are separate environments", other, resolved.member.Name, resolved.cluster.Spec.Region)}
+		}
+		byRegion[resolved.cluster.Spec.Region] = resolved.member.Name
 		location, known := cloudRegionLocations[resolved.cluster.Spec.Region]
 		if !known {
 			return nil, &setError{"UnknownRegion", fmt.Sprintf("member %s runs on %s, in region %q, whose location the operator does not know: add it to cloudRegionLocations", resolved.member.Name, resolved.cluster.Name, resolved.cluster.Spec.Region)}
