@@ -242,7 +242,8 @@ echo "postgres-schema: done"`
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
-				RestartPolicy: corev1.RestartPolicyNever,
+				RestartPolicy:    corev1.RestartPolicyNever,
+				ImagePullSecrets: ps.Spec.ImagePullSecrets,
 				Containers: []corev1.Container{{
 					Name:            "migrate",
 					Image:           image, // ships psql

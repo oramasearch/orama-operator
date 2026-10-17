@@ -6,6 +6,7 @@ Licensed under the Apache License, Version 2.0.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -44,6 +45,11 @@ type PostgresSchemaSpec struct {
 	// +kubebuilder:default="postgres:16-alpine"
 	// +optional
 	Image string `json:"image,omitempty"`
+
+	// ImagePullSecrets are attached to the migration Job's pod, so Image can come from a private
+	// registry. OramaCloudV1 passes its spec.images.pullSecretName.
+	// +optional
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
 // PostgresSecretKeyRef references a single key within a Secret in the CR's namespace.

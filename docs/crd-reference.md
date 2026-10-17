@@ -17,7 +17,7 @@ pointing at the primary); the full sample list is in
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `jwtIssuer` | string | — | The issuer of the stack's write tokens: the shared ConfigMap's `JWT_ISSUER`, which the dashboard signs with, and the only issuer the writer accepts ([below](#speccomponentsenginewriterjwt)). At most 128 characters. No CRD default, because a production issuer is chosen on purpose: `engine.writer.jwt` refuses an empty one. With `engine.writer.jwt` unset an empty value gives `JWT_ISSUER: orama-cloud`. A change rolls the dashboard and, with `engine.writer.jwt` set, the writer. |
-| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile while the engine is enabled) run the writer-only and reader-only OramaCore builds with their own `writer.yaml` and `reader.yaml`, and win over `overrides.oramacore`; unset, both pods run the combined image, so every reader also runs a writer ([components.md](components.md#engine-internalcontrollerenginego)). |
+| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile while the engine is enabled) run the writer-only and reader-only OramaCore builds with their own `writer.yaml` and `reader.yaml`, and win over `overrides.oramacore`; unset, both pods run the combined image, so every reader also runs a writer ([components.md](components.md#engine-internalcontrollerenginego)). `overrides.postgres-client` is the psql image of the control DB's `PostgresSchema` Job and its cluster-row Job, default `postgres:16-alpine` ([components.md](components.md#controldb-internalcontrollercontroldbgo)); the other helper images get keys in [#569](https://github.com/oramasearch/orama-operator/issues/569). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | Prod 1's four ([below](#specllm)) | **Multiple** LLM providers (`name`: `groq \| openai \| anthropic \| google \| vllm`, `models[]`, `apiKeySecretRef: {name, key}`, `gpu`) — end users pick per query. The first model is the provider's default model. |
 | `llm.default` | string | `groq` | Provider used when a request doesn't name one; must be one of the providers. |
@@ -111,7 +111,8 @@ its own analytics key, #419/#421), index-builder, workers, the dashboard and the
 `OramaCloudV1E2ETest` runner. Each receives an explicit `secretKeyRef`, which wins over a
 `MASTER_API_KEY` an older `<cr>-<component>-secret` still holds. The value must equal the target
 control database's `oramacore_clusters.master_api_key`, which the dashboard uses for administrative
-calls; the operator does not write that row.
+calls. On a control DB with no row the operator inserts the `c1` row with this key once, and never
+changes it ([`ClusterRowReady`](#statusconditionsclusterrowready)).
 
 **The engine needs a real key.** While `components.engine.enabled` is true the operator checks the
 reference on every reconcile, before it writes a writer or reader template. On a failure the writer
@@ -317,6 +318,18 @@ disabled. `True` (`SideImages`) when `spec.images.overrides` sets both `oramacor
 also runs a writer. A single side override is reported by `Ready=False` (`ReconcileError`) and
 leaves this condition as it was. It does not change the stack's `phase`, and is written only when
 it changes.
+
+### `status.conditions[ClusterRowReady]`
+
+Present while the stack inserts its own `oramacore_clusters` row: an enabled in-cluster control DB,
+outside a read region, with the engine enabled. `True` (`RowPresent`) once the Job
+`<cr>-controldb-cluster-row` succeeded, meaning the control DB has a row: the Job inserted the `c1`
+row into an empty table, or found a row and left it unchanged (its log says which). `False` with
+`WaitingForSchema` (the control DB schema is not applied yet), `WaitingForMasterAPIKey` (the master
+key is missing or a placeholder; the row is written once, so it waits), `Inserting` (the Job is
+running) or `JobFailed` (the message gives the time the operator replaces the Job). It does not
+change the stack's `phase`; while it is not `True` the CR keeps its 20-second readiness requeue. See
+[components.md](components.md#controldb-internalcontrollercontroldbgo).
 
 ## `OramaCloudV1E2ETest` (separate CRD)
 
@@ -582,7 +595,8 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.schemaConfigMapRef` | `{ name, key }` — ConfigMap + key holding the schema SQL (applied all-or-nothing in one transaction). |
 | `spec.version` | Schema version recorded in `.status.appliedVersion` once applied. A change automatically replaces the prior Job with foreground deletion, waiting for its pods before starting the guarded apply. Lake hashes SQL plus guard; the dashboard hashes SQL. |
 | `spec.guardTable` | A `public` table that must exist for the Job to skip the apply. Default `crawler_configs`. When the schema file records migrations (`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`), the Job also requires every one of them in the database's `schema_migrations`, and otherwise applies the whole idempotent file ([#271](https://github.com/oramasearch/orama-operator/issues/271)). With no `schema_migrations` table, or a file that records none, the guard alone decides. |
-| `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
+| `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. `OramaCloudV1` sets `spec.images.overrides.postgres-client` here when present. |
+| `spec.imagePullSecrets[]` | Pull Secrets for the migration Job's pod, so `spec.image` can be private. `OramaCloudV1` sets its `spec.images.pullSecretName`. Changing either field does not re-run an applied schema. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `ReplacingMigrationJob` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
 
