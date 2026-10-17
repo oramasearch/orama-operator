@@ -33,38 +33,32 @@ spec:
       manageLoadBalancers: true
     components:
       analytics:
-        # Sizing BLOCKED (2026-10-14): ClickHouse Cloud history data used bytes and
-        # provisioned capacity are unmeasured; authorized usage-console/metric access missing.
-        # Need managed storage-usage metrics (or SELECT sum(bytes_on_disk) FROM system.parts
-        # WHERE active), plus the history-to-migrate decision; headroom remains undecided.
-        # storage.size intentionally omitted; 10Gi is a fallback, not measured production sizing.
+        # 30 days kept, starting fresh (bridge decisions 2026-10-16 #4). ClickHouse Cloud's
+        # oramacore_analytics_search_raw is 468.30 GiB for 16,979,167 rows, ~29.6 KB a row
+        # (techops-docs clickhouse.md, 2026-07-07); 8,318,162 searches in 90 days (orama-bridge#138,
+        # 2026-10-08) give ~82 GiB per 30 days. Doubled for headroom and rounded up.
+        storage:
+          size: 200Gi
         enabled: true
         mode: in-cluster
         placement: local
       analyticsProcessor:
         enabled: true
       broker:
-        # Sizing BLOCKED (2026-10-14): RabbitMQ data used bytes/capacity unmeasured;
-        # approved source-host access missing. Need read-only df -B1 at the data mount
-        # and du -sb of the RabbitMQ data directory; choose headroom after measuring.
-        # storage.size omitted; the 10Gi fallback is not measured production sizing.
+        # The oramacore-operations stream is capped at 5 GB on Prod 1 (techops-docs aws.md) and by the
+        # operator (datastore.go brokerOperationsStreamMaxBytes); four times the cap.
+        storage:
+          size: 20Gi
         enabled: true
         mode: in-cluster
         placement: local
       cache:
-        # Sizing BLOCKED (2026-10-14): managed Redis dataset/storage used bytes
-        # and provisioned capacity unmeasured; approved Upstash usage-metric access missing.
-        # Need read-only database data-size/storage metrics, not host df; headroom undecided.
-        # storage.size omitted; the 10Gi fallback is not measured production sizing.
+        # 10Gi default. Prod 1's Redis (Upstash) usage is not measured yet; raise this once it is.
         enabled: true
         mode: in-cluster
         placement: local
       controlDB:
-        # Source (2026-10-14 PDT): Prod 1 managed control database,
-        # SELECT pg_database_size(current_database()) AS used_bytes via existing SELECT-only
-        # PlanetScale credential, verified TLS: 12,302,003 bytes (~0.01146 GiB).
-        # Managed provisioned capacity unavailable; no host-filesystem claim.
-        # Choose a 10Gi operational floor (~872x measured use, >50% growth headroom).
+        # PlanetScale holds 531 MB on a 10 GB disk (techops-docs planetscale.md, 2026-07-07).
         storage:
           size: 10Gi
         enabled: true
@@ -83,11 +77,11 @@ spec:
         reader:
           replicas: 1
         writer:
-          # Sizing BLOCKED (2026-10-14): writer index-data used bytes unmeasured;
-          # reported provisioned 500Gi alone is insufficient and is not a usage measurement.
-          # Approved source-host access missing. Need read-only df -B1 at the writer data
-          # mount and du -sb of its data directory; choose headroom after measuring.
-          # storage.size omitted; the 10Gi fallback must not be used for the production copy.
+          # Prod 1's writer root volume is 500 GiB (oramacore-aws terraform/live/prod/main.tf
+          # root_volume_size = 500) with 343 GiB free on 2026-10-12 (techops-docs
+          # incident-2026-10-12-reader-stalls.md, "Host storage"): about 157 GiB used, OS included.
+          storage:
+            size: 512Gi
           gpu: false
       ingestion:
         enabled: true
@@ -98,10 +92,7 @@ spec:
       pgAdmin:
         enabled: true
       search:
-        # Sizing BLOCKED (2026-10-14): Typesense data used bytes/provisioned capacity
-        # unmeasured; approved source usage-metric/host access missing. Need read-only
-        # service storage usage, or df -B1 and du -sb at the actual data mount/directory;
-        # choose headroom afterward. Omitted storage.size is not measured sizing.
+        # 10Gi default. Prod 1's Typesense usage is not measured yet; raise this once it is.
         enabled: true
         mode: in-cluster
         placement: local

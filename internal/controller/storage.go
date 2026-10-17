@@ -54,23 +54,28 @@ func controlDBStorage(storage *oramav1alpha1.VolumeSpec) map[string]interface{} 
 	return result
 }
 
+// storageResult collects one line per component and resource. A non-empty problem
+// (ShrinkNotSupported, StorageClassChangeNotSupported, StorageUpdateFailed, ClaimsPending)
+// prefixes its line and makes StorageApplied False.
 type storageResult struct {
 	messages []string
-	reasons  map[string]bool
+	failed   bool
 }
 
-func (s *storageResult) add(component, reason, message string) {
-	if reason != "" {
-		s.reasons[reason] = true
-		message = reason + ": " + message
+func (s *storageResult) add(component, problem, message string) {
+	if problem != "" {
+		s.failed = true
+		message = problem + ": " + message
 	}
 	s.messages = append(s.messages, component+": "+message)
 }
 
-// reconcileStorage applies storage independently of workload readiness. The return value keeps
-// the readiness backstop running even when workloads are Ready, including for late/retained PVCs.
+// reconcileStorage applies storage independently of workload readiness. It reports through its
+// own StorageApplied condition rather than Ready, so a refused shrink or a resize in progress never
+// marks a serving stack not Ready. The return value keeps the readiness backstop running even when
+// workloads are Ready, including for late/retained PVCs.
 func (r *OramaCloudV1Reconciler) reconcileStorage(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) bool {
-	result := &storageResult{reasons: map[string]bool{}}
+	result := &storageResult{}
 	managed := false
 	if oc.Spec.Components.Engine.Enabled && oc.Spec.Region.Role == "primary" {
 		managed = true
@@ -96,14 +101,8 @@ func (r *OramaCloudV1Reconciler) reconcileStorage(ctx context.Context, oc *orama
 	}
 	sort.Strings(result.messages)
 	cond := metav1.Condition{Type: "StorageApplied", Status: metav1.ConditionTrue, Reason: "Applied"}
-	if len(result.reasons) > 0 {
-		cond.Status = metav1.ConditionFalse
-		cond.Reason = "MultipleStorageIssues"
-		if len(result.reasons) == 1 {
-			for reason := range result.reasons {
-				cond.Reason = reason
-			}
-		}
+	if result.failed {
+		cond.Status, cond.Reason = metav1.ConditionFalse, "NotApplied"
 	}
 	cond.Message = strings.Join(result.messages, "; ")
 	if cond.Message == "" {

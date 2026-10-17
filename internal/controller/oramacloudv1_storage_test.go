@@ -116,15 +116,25 @@ func storageGet[T client.Object](t *testing.T, r *OramaCloudV1Reconciler, obj T,
 	return obj
 }
 
-func storageCondition(t *testing.T, r *OramaCloudV1Reconciler, oc *oramav1alpha1.OramaCloudV1, reason string) *metav1.Condition {
+// storageCondition asserts StorageApplied at the current generation. want is "Applied", or the
+// problems the message must name, joined by "+" (for example "ShrinkNotSupported+ClaimsPending").
+func storageCondition(t *testing.T, r *OramaCloudV1Reconciler, oc *oramav1alpha1.OramaCloudV1, want string) *metav1.Condition {
 	t.Helper()
 	live := storageGet(t, r, &oramav1alpha1.OramaCloudV1{}, oc.Namespace, oc.Name)
 	c := meta.FindStatusCondition(live.Status.Conditions, "StorageApplied")
-	if c == nil || c.Reason != reason || c.ObservedGeneration != oc.Generation {
-		t.Fatalf("storage condition = %+v, want %s at generation %d", c, reason, oc.Generation)
+	reason, status := "NotApplied", metav1.ConditionFalse
+	if want == "Applied" {
+		reason, status = "Applied", metav1.ConditionTrue
 	}
-	if (reason == "Applied") != (c.Status == metav1.ConditionTrue) {
-		t.Fatalf("unexpected status: %+v", c)
+	if c == nil || c.Reason != reason || c.Status != status || c.ObservedGeneration != oc.Generation {
+		t.Fatalf("storage condition = %+v, want %s at generation %d", c, want, oc.Generation)
+	}
+	if want != "Applied" {
+		for _, problem := range strings.Split(want, "+") {
+			if !strings.Contains(c.Message, problem+": ") {
+				t.Fatalf("storage condition message %q does not name %s", c.Message, problem)
+			}
+		}
 	}
 	return c
 }
@@ -309,7 +319,7 @@ func TestOCV1StorageUnsupportedChangesAndRecovery(t *testing.T) {
 	for _, tc := range []struct{ name, size, class, reason string }{
 		{"shrink", "5Gi", "", "ShrinkNotSupported"},
 		{"class blocks growth", "30Gi", "premium", "StorageClassChangeNotSupported"},
-		{"combined", "5Gi", "premium", "MultipleStorageIssues"},
+		{"combined", "5Gi", "premium", "ShrinkNotSupported+StorageClassChangeNotSupported"},
 		{"removed storage", "", "", "ShrinkNotSupported"},
 		{"equivalent rounded capacity", "20480Mi", "", "Applied"},
 	} {
@@ -438,7 +448,7 @@ func TestOCV1StorageCNPGPreservationAndFailure(t *testing.T) {
 	claim := storageClaim(t, r, oc, "v1-controldb-1", "10Gi", "managed-csi")
 	for _, tc := range []struct{ size, class, reason string }{
 		{"20Gi", "", "StorageUpdateFailed"}, {"20Gi", "", "Applied"},
-		{"5Gi", "premium", "MultipleStorageIssues"}, {"30Gi", "premium", "StorageClassChangeNotSupported"},
+		{"5Gi", "premium", "ShrinkNotSupported+StorageClassChangeNotSupported"}, {"30Gi", "premium", "StorageClassChangeNotSupported"},
 		{"20480Mi", "", "Applied"},
 	} {
 		oc.Spec.Components.ControlDB.Storage = storageSpec(tc.size, tc.class)
@@ -523,15 +533,10 @@ func TestOCV1StorageMultipleIssuesAndSkippedComponents(t *testing.T) {
 	}
 	storageClaim(t, r, oc, "data-v1-cache-0", "20Gi", "managed-csi")
 	r.reconcileStorage(ctx, oc)
-	c := storageCondition(t, r, oc, "MultipleStorageIssues")
-	for _, want := range []string{"ShrinkNotSupported", "StorageClassChangeNotSupported", "ClaimsPending"} {
-		if !strings.Contains(c.Message, want) {
-			t.Fatal(c.Message)
-		}
-	}
+	c := storageCondition(t, r, oc, "ShrinkNotSupported+StorageClassChangeNotSupported+ClaimsPending")
 	before := c.Message
 	r.reconcileStorage(ctx, oc)
-	if storageCondition(t, r, oc, "MultipleStorageIssues").Message != before {
+	if storageCondition(t, r, oc, "ShrinkNotSupported+StorageClassChangeNotSupported+ClaimsPending").Message != before {
 		t.Fatal("message order changed")
 	}
 	if len(writes.patches) != 0 {
