@@ -78,6 +78,14 @@ pods the operator builds (apps and the sqlite, duckdb and polars services), a bu
 `STORE_<NAME>_*` variables, and the operator reports each volume's used space —
 [stores.md](stores.md).
 
+## Clerk sign-in
+
+With `spec.clerk` (a Clerk instance's secret key), the operator keeps that instance configured for
+lake through Clerk's Backend API, writes a production instance's DNS records, and gives the Lake
+`LAKE_CLERK_PUBLISHABLE_KEY` and `LAKE_CLERK_WEBHOOK_SECRET`. Two Clerk applications serve the four
+environments. See [`clerk.md`](clerk.md) (operator#541), which also lists the one-time dashboard
+steps and the Secrets to create.
+
 ## Every Lake runs every feature
 
 Steve, 2026-10-17: *"all features should be enabled on all environments"* ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)).

@@ -271,6 +271,9 @@ default-deny namespaces with local Zetta credentials. Required `workspace_id` va
 services, stores, user agents and synchronized apps in the same boundary; see
 `docs/lake/workspaces.md`.
 It also runs isolated image-build Jobs from Lake's `builds` table; see `docs/lake/builds.md`.
+With `spec.clerk` (one Clerk instance's secret key) it keeps that instance configured for lake through
+Clerk's Backend API and gives the Lake its keys; Clerk's Platform API is a private beta it does not use.
+See `docs/lake/clerk.md`.
 `LakeSealedSecret` delivers cluster-bound ciphertext into
 owned Kubernetes Secrets; see `docs/lake/sealed-secrets.md`.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
