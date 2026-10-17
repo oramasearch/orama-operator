@@ -1181,6 +1181,10 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 	// Its agents (lake_agents.go): where the library agents are, lake's own in-cluster address,
 	// the model, and the token lake presents to agent services.
 	env = append(env, lakeAgentEnv(lake, lakeNamespace(lake))...)
+	env = append(env, lakeRegionEnv(lake)...)
+	for _, name := range lakeRegionEnvNames {
+		reserved[name] = struct{}{}
+	}
 	for _, custom := range lake.Spec.Env {
 		if _, found := reserved[custom.Name]; found {
 			continue
@@ -1542,6 +1546,11 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	dnsRecord := func() *oramav1alpha1.CloudflareDNSRecord {
 		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: dnsName, Namespace: ns}}
 	}
+	// The apex host's record (decision 64): the region picker's host, beside the Lake's own.
+	apexRecord := func() *oramav1alpha1.CloudflareDNSRecord {
+		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: svcName + "-apex-dns", Namespace: ns}}
+	}
+	apex := lakeApexHost(lake)
 	if !lake.Spec.IngressEnabled || lake.Spec.Host == "" {
 		if err := deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}); err != nil {
 			return err
@@ -1549,7 +1558,14 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		if err := deleteIfExists(ctx, r.Client, dnsRecord()); err != nil {
 			return err
 		}
+		if err := deleteIfExists(ctx, r.Client, apexRecord()); err != nil {
+			return err
+		}
 		return r.deleteLakePreviewDNSRecords(ctx, lake, ns, "")
+	}
+	hosts := []string{lake.Spec.Host}
+	if apex != "" {
+		hosts = append(hosts, apex)
 	}
 	prefix := networkingv1.PathTypePrefix
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}
@@ -1557,20 +1573,23 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		ing.Labels = lbls
 		ing.Annotations = lakeIngressAnnotations(lake.Spec.TLS.SecretName != "")
 		ing.Spec.IngressClassName = strPtr(ingressClassOrDefault(lake.Spec.IngressClassName))
-		ing.Spec.Rules = []networkingv1.IngressRule{{
-			Host: lake.Spec.Host,
-			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
-				Paths: []networkingv1.HTTPIngressPath{{
-					Path: "/", PathType: &prefix,
-					Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-						Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeServicePort}}},
+		ing.Spec.Rules = nil
+		for _, host := range hosts {
+			ing.Spec.Rules = append(ing.Spec.Rules, networkingv1.IngressRule{
+				Host: host,
+				IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
+					Paths: []networkingv1.HTTPIngressPath{{
+						Path: "/", PathType: &prefix,
+						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
+							Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeServicePort}}},
+					}},
 				}},
-			}},
-		}}
+			})
+		}
 		ing.Spec.TLS = nil
 		if lake.Spec.TLS.SecretName != "" {
 			ing.Spec.TLS = []networkingv1.IngressTLS{{
-				Hosts:      []string{lake.Spec.Host},
+				Hosts:      hosts,
 				SecretName: lake.Spec.TLS.SecretName,
 			}}
 		}
@@ -1582,7 +1601,15 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		if err := deleteIfExists(ctx, r.Client, dnsRecord()); err != nil {
 			return err
 		}
+		if err := deleteIfExists(ctx, r.Client, apexRecord()); err != nil {
+			return err
+		}
 		return r.deleteLakePreviewDNSRecords(ctx, lake, ns, "")
+	}
+	if apex == "" {
+		if err := deleteIfExists(ctx, r.Client, apexRecord()); err != nil {
+			return err
+		}
 	}
 	previewDNSName := ""
 	if lake.Spec.PreviewWildcard == "" {
@@ -1604,6 +1631,16 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		return controllerutil.SetControllerReference(lake, rec, r.Scheme)
 	}); err != nil {
 		return err
+	}
+	if apex != "" {
+		apexRec := apexRecord()
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, apexRec, func() error {
+			apexRec.Labels = lbls
+			apexRec.Spec.SecretRef, apexRec.Spec.Name, apexRec.Spec.Content, apexRec.Spec.Proxied = lake.Spec.DNSSecretRef.Name, apex, target, true
+			return controllerutil.SetControllerReference(lake, apexRec, r.Scheme)
+		}); err != nil {
+			return err
+		}
 	}
 	if lake.Spec.PreviewWildcard == "" {
 		return nil
