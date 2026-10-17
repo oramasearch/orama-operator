@@ -115,7 +115,7 @@ func newSnapshotHarness(t *testing.T) *snapshotHarness {
 	}
 	lake := testWorkspaceLake()
 	lake.Spec.PullSecretName = ""
-	lake.Spec.Snapshots = oramav1alpha1.LakeSnapshotsSpec{Enabled: true, ClassName: "lake-retain", Driver: "disk.csi.azure.com"}
+	lake.Spec.Snapshots = oramav1alpha1.LakeSnapshotsSpec{ClassName: "lake-retain", Driver: "disk.csi.azure.com"}
 	if err := kube.Create(ctx, lake); err != nil {
 		t.Fatal(err)
 	}

@@ -17,9 +17,8 @@ import (
 )
 
 // Gap-fill components surfaced by the techops-docs gap analysis (operator issues #5–#7).
-// Airbyte (#4) is a platform dependency installed via its Helm chart (helmfile), and the
-// QStash-equivalent queue (#8) is config wiring (workers → the in-cluster RabbitMQ) — neither
-// is a reconciled component here.
+// The QStash-equivalent queue (#8) is config wiring (workers → the in-cluster RabbitMQ), not a
+// reconciled component here.
 
 // analyticsProcessorConfigYAML renders the config the `server` binary reads (config.rs). It
 // connects to ClickHouse + Postgres at startup, so these are the real in-cluster endpoints.

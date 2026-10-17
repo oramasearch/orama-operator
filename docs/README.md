@@ -50,7 +50,8 @@ Deep docs for the operator. Kept in lockstep with the source (see the repo
 - [`connecting.md`](connecting.md) — **connect to a deployed `OramaZettaCluster`** across every surface: REST/SQL (`/v1/*`), MCP (`POST /mcp`, for Claude/agents), the self-describing `mcp.md` / `llms.txt` pages, and the web portal (`/`); addressing (port-forward / Ingress `spec.host`), and MCP/admin-token auth.
 - [`operations/crd-rollout.md`](operations/crd-rollout.md) — **CRDs and rollout**: the three
   hand-maintained artifacts per kind, why one missing CRD crash-loops the whole manager, the
-  checks that hold the invariant, and why fail-fast is deliberate.
+  checks that hold the invariant, why fail-fast is deliberate, and how a removed field is applied
+  in two steps around a roll (widened before, exact after) so the old operator never reads it pruned.
 - [`operations/rename-cutover.md`](operations/rename-cutover.md) — **one-time AKS rename cutover**: install the `orama-operator` Helm release, preserve CRDs and the production leader-election Lease, move control-plane callers, and retire the former release.
 - [`karpenter-cloud-iam-prerequisite.md`](karpenter-cloud-iam-prerequisite.md) — **operator-owned Karpenter install** ([#75](https://github.com/oramasearch/orama-operator/issues/75)): the cloud IAM identity the operator can't mint (controller IRSA role / node instance profile / Azure role assignment), how it's cloud-gated (EKS self-install, no-op on AKS-NAP / bare-metal), the input validation that keeps the cluster name and role ARN from injecting manifests ([#79](https://github.com/oramasearch/orama-operator/issues/79)), and the `.status` conditions.
 
