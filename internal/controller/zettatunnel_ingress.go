@@ -162,6 +162,25 @@ func validIngressHost(host string) bool {
 	return host != "" && !strings.Contains(host, "*") && peerServiceNamePattern.MatchString(host) && strings.Contains(host, ".")
 }
 
+// sourceDeniedHosts is every host (lower case) of an operator Ingress that carries nginx's
+// denylist-source-range, such as Cloud v1's /metrics deny companions (#314). The gateway cannot
+// refuse a source, so it serves none of these hosts on any Ingress: the host's other routes would
+// otherwise forward the denied path too (a Prefix / reaches /metrics). An Ingress being deleted
+// still counts, so a companion on its way out never opens its host here before its main Ingress goes.
+func sourceDeniedHosts(ingresses []networkingv1.Ingress) map[string]bool {
+	denied := map[string]bool{}
+	for i := range ingresses {
+		ingress := &ingresses[i]
+		if !operatorIngress(ingress) || ingress.Annotations[annotationNginxDenylistSourceRange] == "" {
+			continue
+		}
+		for _, rule := range ingress.Spec.Rules {
+			denied[strings.ToLower(rule.Host)] = true
+		}
+	}
+	return denied
+}
+
 // projectIngresses builds the gateway's projection from every Ingress the operator wrote, whatever
 // its class: the gateway serves every host it can, so a cutover moves only DNS. A host it cannot
 // serve with its own certificate, and an Ingress needing a feature it lacks, is skipped and reported.
@@ -178,6 +197,7 @@ func projectIngresses(ctx context.Context, c client.Client) (zettaIngressProject
 		}
 		return a.Name < b.Name
 	})
+	denied := sourceDeniedHosts(ingresses.Items)
 	hosts := map[string]*zettaIngressHost{}
 	hostOwner := map[string]string{}
 	paths := map[string]bool{}
@@ -214,6 +234,11 @@ func projectIngresses(ctx context.Context, c client.Client) (zettaIngressProject
 			host := strings.ToLower(rule.Host)
 			if !validIngressHost(host) {
 				skip(host, "the gateway serves only exact host names")
+				served = false
+				continue
+			}
+			if denied[host] {
+				skip(host, "an Ingress for this host refuses sources with nginx's denylist-source-range, which the gateway does not implement")
 				served = false
 				continue
 			}

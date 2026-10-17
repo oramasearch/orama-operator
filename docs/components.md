@@ -329,7 +329,9 @@ Driven by `spec.region.role`:
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
 - **Readers** (primary + read tiers) — a `Deployment` (`reader.replicas`) with the
   `oramacore` container (the combined or the reader-only image) **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
-  127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set.
+  127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set. Envoy answers
+  `/metrics` with 404 itself, by a route before its catch-all, so OramaCore's Prometheus endpoint is
+  never served through the reader Service ([#314](https://github.com/oramasearch/orama-operator/issues/314)).
   Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
 - **Public hosts** (`cloudv1_networking.go`, [#385](https://github.com/oramasearch/orama-operator/issues/385))
   — `reconcileEngineIngresses` runs at the end of the enabled path and before the teardown on the
@@ -343,8 +345,27 @@ Driven by `spec.region.role`:
   endpoint is published, for the Ingress, its sandbox rule and its DNS record alike. With
   `writer.jwt` set, `https://<writer.host>` must be an exact audience or the reconcile fails before
   any engine object changes. Each Ingress also answers its endpoint's `extraHosts` (below), which get
-  no DNS record and do not widen the audiences. `/metrics` stays reachable on these hosts until the deny companions of
-  [#314](https://github.com/oramasearch/orama-operator/issues/314) land.
+  no DNS record and do not widen the audiences.
+- **`/metrics` closed on the public hosts** (`engine_metrics.go`,
+  [#314](https://github.com/oramasearch/orama-operator/issues/314)) — OramaCore serves Prometheus
+  metrics on `:8080/metrics` (`http.with_prometheus: true`). Every public engine Ingress has a
+  companion, `<cr>-writer-metrics` or `<cr>-reader-metrics`, that `metricsBlockIngressSpec` narrows
+  from the same spec (`ingressSpec`): the same class, hosts (extra hosts included), TLS Secrets,
+  Service and port, but one `Exact` `/metrics` path per rule, and the single annotation
+  `nginx.ingress.kubernetes.io/denylist-source-range: "0.0.0.0/0,::/0"`. ingress-nginx prefers the
+  `Exact` location to the main Ingress's `Prefix /` and answers it 403 for every client; a snippet
+  annotation would be refused by ingress-nginx's defaults. The companion carries no cert-manager
+  annotation, so it requests no certificate of its own and serves the main Ingress's Secret. It is
+  written before its main Ingress and deleted after it, with the same labels, controller and
+  conflict refusal, so a published host never serves `/` without its `/metrics` refused; the
+  disabled-engine teardown removes it by its writer or reader label. The readers keep Envoy's 404
+  as well, so they stay closed if a companion is missing. zetta-tunnel's ingress gateway cannot
+  refuse a source, so it serves no host that a companion covers
+  ([ingress](infrastructure/ingress.md#what-it-serves)): Cloud v1's engine hosts stay on ingress-nginx
+  (decision 5b of the 2026-10-16 decisions page), and a stack set to `ingressClassName:
+  zetta-tunnel` gets no gateway address for them. Inside the cluster `/metrics` stays on each pod's
+  `:8080` (`<cr>-writer:8080`, a reader pod's IP on 8080; the reader Service's port 80 is the public
+  path). How Prometheus scrapes it is [#15](https://github.com/oramasearch/orama-operator/issues/15).
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
   **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
@@ -403,7 +424,10 @@ Driven by `spec.region.role`:
   single-quoted scalar, so no value is evaluated, logged or written into the script.
   Each pod template carries `orama.cloud/config-hash`, the SHA-256 of its own unrendered template
   (with side-only images a change to one side's config rolls only that side, a change to a shared
-  section such as the LLM settings rolls both; the combined config rolls both), and
+  section such as the LLM settings rolls both; the combined config rolls both). Readers with Envoy
+  hash their template and `envoy.yaml` together (`sha256Hex`), since Envoy reads its bootstrap only
+  at start: a bootstrap change rolls them, and leaves the writer and readers without Envoy, whose
+  hash stays their template's alone, as they were. The pod template also carries
   `orama.cloud/llm-secret-hash`, the SHA-256 of the data of `<cr>-engine-secret` and every
   `apiKeySecretRef` Secret, identical on both sides, and `orama.cloud/credentials-hash`, the side's
   broker admin and master key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
@@ -576,12 +600,14 @@ host is set)**.
 
 ### Ingress hosts (`upsertIngress`, [#313](https://github.com/oramasearch/orama-operator/issues/313))
 
-`upsertIngress(ctx, oc, name, component, host, extraHosts, port)` builds every Cloud v1 component
-Ingress: the dashboard and docs through `reconcileApp` (`appDef.ingressHost` and
-`ingressExtraHosts`), the writer and reader through `reconcileEngineIngresses`. It renders one rule
-for `host`, then one per extra host in stored order, each with the same Prefix `/` path to the same
-Service and port, on `spec.components.ingressClassName`, then calls `applyIngressTLS` (below) so
-every rule host gets a certificate. The rule list is built fresh and replaced on each reconcile, so
+`ingressSpec(oc, name, host, extraHosts, port)` builds the spec of every Cloud v1 component
+Ingress and `upsertIngress(ctx, oc, name, component, spec)` writes it: the dashboard and docs through
+`reconcileApp` (`appDef.ingressHost` and `ingressExtraHosts`), the writer and reader through
+`reconcileEngineIngresses`, which also narrows the same spec into the `/metrics` deny companions. It
+renders one rule for `host`, then one per extra host in stored order, each with the same Prefix `/`
+path to the same Service and port, on `spec.components.ingressClassName`, with TLS from
+`originTLS`; `upsertIngress` then calls `applyIngressTLS` (below) so every rule host gets a
+certificate. The rule list is built fresh and replaced on each reconcile, so
 a removed extra loses its rule and TLS entry, and an unchanged CR writes nothing.
 
 Extra hosts are aliases only: DNS (`reconcilePublicDNS`) reads `host` alone, so an extra never gets a
@@ -616,7 +642,9 @@ renews (decision 5 of the 2026-10-16 decisions page in orama-bridge):
   any existing Ingress as it is. An empty rule list, an empty host or an empty issuer is an error.
 - **One Secret per host.** The Secret name depends only on the host, so another Ingress serving the
   same host (the `/metrics` deny companions, [#314](https://github.com/oramasearch/orama-operator/issues/314))
-  names the same Secret. Removing a host drops its TLS entry; the other hosts keep their Secrets.
+  names the same Secret. The companions copy their main Ingress's TLS entries (`originTLS`) without
+  `applyIngressTLS`'s annotations, so cert-manager issues one certificate per host, for the main
+  Ingress only. Removing a host drops its TLS entry; the other hosts keep their Secrets.
 - **Known gap:** decision 5 gives each stack its own ingress-nginx. The operator does not render one
   yet, so a stack's Ingresses still use `spec.components.ingressClassName` (default the platform's
   `nginx`). TLS renders on whichever class the Ingress has.

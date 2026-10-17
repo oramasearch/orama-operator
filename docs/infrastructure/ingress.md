@@ -54,6 +54,7 @@ It refuses, and reports, rather than serve something differently:
 | A host with no TLS Secret, or a Secret with no certificate yet | The gateway serves HTTPS only, with the host's own certificate. Certificates come from cert-manager ([#457](https://github.com/oramasearch/orama-operator/issues/457)); until it fills an Ingress's TLS Secret, that host is not served here. |
 | Lake app Ingresses | An app's authentication is nginx's `auth-url` subrequest to Lake, and app transfer is metered from nginx's per-Ingress byte counters (`lake_app_transfer.go`). The gateway does neither. Apps stay on ingress-nginx (`spec.apps.ingressClass` stays `nginx`) until zetta-tunnel can, so ingress-nginx cannot be removed before then. |
 | `auth-url`, `auth-signin`, rewrites, snippets, a non-HTTP backend protocol | Not implemented by the gateway; serving without them would change behaviour. |
+| Every host of an Ingress with `denylist-source-range`, on every Ingress that serves it | The gateway cannot refuse a source. Orama Cloud v1's `/metrics` deny companions ([#314](https://github.com/oramasearch/orama-operator/issues/314)) cover its public writer and reader hosts, and the main Ingress's Prefix `/` would forward `/metrics` too, so those hosts stay on ingress-nginx. |
 | Wildcard hosts, a host already served with another certificate, a path already routed, a missing backend Service or port | The projection would be invalid or ambiguous. |
 
 ## How a host moves: the Ingress class

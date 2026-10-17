@@ -109,19 +109,12 @@ func applyIngressTLS(ing *networkingv1.Ingress, issuerName string) error {
 	if len(ing.Spec.Rules) == 0 {
 		return fmt.Errorf("ingress %s: origin TLS needs at least one rule", ing.Name)
 	}
-	var tls []networkingv1.IngressTLS
-	seen := map[string]bool{}
 	for i, rule := range ing.Spec.Rules {
 		if rule.Host == "" {
 			return fmt.Errorf("ingress %s: rule %d has no host, so no certificate can cover it", ing.Name, i)
 		}
-		if seen[rule.Host] {
-			continue
-		}
-		seen[rule.Host] = true
-		tls = append(tls, networkingv1.IngressTLS{Hosts: []string{rule.Host}, SecretName: ingressTLSSecretName(rule.Host)})
 	}
-	ing.Spec.TLS = tls
+	ing.Spec.TLS = originTLS(ing.Spec.Rules)
 
 	if ing.Annotations == nil {
 		ing.Annotations = map[string]string{}
@@ -132,6 +125,22 @@ func applyIngressTLS(ing *networkingv1.Ingress, issuerName string) error {
 	ing.Annotations[annotationCertManagerIssuer] = issuerName
 	ing.Annotations[annotationNginxSSLRedirect] = "true"
 	return nil
+}
+
+// originTLS is the spec.tls applyIngressTLS writes for rules: one entry per distinct host, in rule
+// order, each naming ingressTLSSecretName(host). ingressSpec uses it too, so a built spec carries the
+// TLS its Ingress is written with.
+func originTLS(rules []networkingv1.IngressRule) []networkingv1.IngressTLS {
+	var tls []networkingv1.IngressTLS
+	seen := map[string]bool{}
+	for _, rule := range rules {
+		if rule.Host == "" || seen[rule.Host] {
+			continue
+		}
+		seen[rule.Host] = true
+		tls = append(tls, networkingv1.IngressTLS{Hosts: []string{rule.Host}, SecretName: ingressTLSSecretName(rule.Host)})
+	}
+	return tls
 }
 
 // ingressTLSSecretName is the Secret holding host's certificate: `<host>-tls`, with `*` spelled

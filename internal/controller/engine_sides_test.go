@@ -660,7 +660,7 @@ func TestEngineSidesConditionPersisted(t *testing.T) {
 func TestEngineConfigHashIsPerSide(t *testing.T) {
 	oc := engineOC(withSideImages)
 	writer, reader := engineSideFor(oc, "writer"), engineSideFor(oc, "reader")
-	hash := func(s engineSide) string { return engineConfigAnnotations(s, "", "")[configHashKey] }
+	hash := func(s engineSide) string { return engineConfigAnnotations(s, "", "", "")[configHashKey] }
 
 	// Edit one side's template the way a side-only setting would; only that side's hash moves.
 	before := map[string]string{"writer": hash(writer), "reader": hash(reader)}
@@ -741,8 +741,13 @@ func TestEngineModeTransitionsInPlace(t *testing.T) {
 			if got := renderSource(t, p.spec.Spec); got != p.key {
 				t.Errorf("%s: %s renders %q, want %q", mode, p.side, got, p.key)
 			}
-			if got, want := p.spec.Annotations[configHashKey], templateSHA256(cm.Data[p.key]); got != want {
-				t.Errorf("%s: %s config hash = %q, want SHA-256 of %s", mode, p.side, got, p.key)
+			// The Envoy readers' hash also covers the bootstrap (#314); the writer's is its template's.
+			want := templateSHA256(cm.Data[p.key])
+			if p.side == "reader" {
+				want = sha256Hex([]byte(cm.Data[p.key]), []byte(cm.Data["envoy.yaml"]))
+			}
+			if got := p.spec.Annotations[configHashKey]; got != want {
+				t.Errorf("%s: %s config hash = %q, want the hash of %s", mode, p.side, got, p.key)
 			}
 		}
 		if container(h.reader().Spec.Template.Spec, "envoy") == nil {

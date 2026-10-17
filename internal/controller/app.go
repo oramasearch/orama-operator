@@ -211,51 +211,61 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		return err
 	}
 	if def.ingressHost != "" {
-		return r.upsertIngress(ctx, oc, name, def.component, def.ingressHost, def.ingressExtraHosts, def.port)
+		return r.upsertIngress(ctx, oc, name, def.component, ingressSpec(oc, name, def.ingressHost, def.ingressExtraHosts, def.port))
 	}
 	return nil
 }
 
-// upsertIngress renders a component's Ingress on the stack's ingress class: one rule for host, then
-// one per extra host in order, each with the same path and backend, and origin TLS from the stack's
-// Issuer for every one of them. The rules are replaced whole, so a removed extra host loses its
-// route and certificate. It fails, leaving any existing Ingress as it is, while the stack has no
-// Cloudflare token for the Issuer.
-func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, host string, extraHosts []string, port int32) error {
+// ingressSpec is the spec of a component's Ingress named name: the stack's ingress class, one rule
+// for host and then one per extra host in order, each with a Prefix / path to the Service name on
+// port, and origin TLS for every host (originTLS). upsertIngress writes it; the engine's /metrics
+// deny companions narrow the same spec (metricsBlockIngressSpec), so the two cannot drift apart.
+func ingressSpec(oc *oramav1alpha1.OramaCloudV1, name, host string, extraHosts []string, port int32) networkingv1.IngressSpec {
+	pathType := networkingv1.PathTypePrefix
+	rules := make([]networkingv1.IngressRule, 0, 1+len(extraHosts))
+	for _, h := range append([]string{host}, extraHosts...) {
+		rules = append(rules, networkingv1.IngressRule{
+			Host: h,
+			IngressRuleValue: networkingv1.IngressRuleValue{
+				HTTP: &networkingv1.HTTPIngressRuleValue{
+					Paths: []networkingv1.HTTPIngressPath{{
+						Path:     "/",
+						PathType: &pathType,
+						Backend: networkingv1.IngressBackend{
+							Service: &networkingv1.IngressServiceBackend{
+								Name: name,
+								Port: networkingv1.ServiceBackendPort{Number: port},
+							},
+						},
+					}},
+				},
+			},
+		})
+	}
+	return networkingv1.IngressSpec{
+		// Bind to the helmfile-installed ingress-nginx controller. Without an ingressClassName the
+		// controller ignores the Ingress (no ADDRESS assigned → nothing routes). Configurable via
+		// spec.components.ingressClassName (default "nginx").
+		IngressClassName: strPtr(ingressClassName(oc)),
+		Rules:            rules,
+		TLS:              originTLS(rules),
+	}
+}
+
+// upsertIngress writes a component's Ingress from spec (ingressSpec). The rules are replaced whole,
+// so a removed extra host loses its route and certificate, and applyIngressTLS requests origin TLS
+// from the stack's Issuer for every host. It fails, leaving any existing Ingress as it is, while the
+// stack has no Cloudflare token for the Issuer.
+func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component string, spec networkingv1.IngressSpec) error {
 	issuer, err := stackIngressIssuer(oc)
 	if err != nil {
 		return err
 	}
-	lbls := labelsFor(oc, component)
-	pathType := networkingv1.PathTypePrefix
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
-		ing.Labels = lbls
-		// Bind to the helmfile-installed ingress-nginx controller. Without an ingressClassName the
-		// controller ignores the Ingress (no ADDRESS assigned → nothing routes). Configurable via
-		// spec.components.ingressClassName (default "nginx").
-		ing.Spec.IngressClassName = strPtr(ingressClassName(oc))
-		rules := make([]networkingv1.IngressRule, 0, 1+len(extraHosts))
-		for _, h := range append([]string{host}, extraHosts...) {
-			rules = append(rules, networkingv1.IngressRule{
-				Host: h,
-				IngressRuleValue: networkingv1.IngressRuleValue{
-					HTTP: &networkingv1.HTTPIngressRuleValue{
-						Paths: []networkingv1.HTTPIngressPath{{
-							Path:     "/",
-							PathType: &pathType,
-							Backend: networkingv1.IngressBackend{
-								Service: &networkingv1.IngressServiceBackend{
-									Name: name,
-									Port: networkingv1.ServiceBackendPort{Number: port},
-								},
-							},
-						}},
-					},
-				},
-			})
-		}
-		ing.Spec.Rules = rules
+		ing.Labels = labelsFor(oc, component)
+		ing.Spec.IngressClassName = spec.IngressClassName
+		ing.Spec.Rules = spec.Rules
 		// Origin TLS from the stack's Issuer, after the rules: every host gets a certificate (#457).
 		if err := applyIngressTLS(ing, issuer); err != nil {
 			return err

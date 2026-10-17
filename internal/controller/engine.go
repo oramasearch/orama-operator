@@ -41,7 +41,11 @@ const (
 )
 
 // envoyConfig is the static Envoy bootstrap that matches prod: listen :80, proxy to
-// the local OramaCore on 127.0.0.1:8080 (see techops-docs Envoy topology).
+// the local OramaCore on 127.0.0.1:8080 (see techops-docs Envoy topology). Envoy answers
+// /metrics with 404 itself, so OramaCore's Prometheus endpoint is never served through the
+// reader Service or the public reader host (#314); inside the cluster it stays on the pod's
+// :8080. Envoy takes the first route that matches, so that route comes before the catch-all.
+// Envoy reads this only at start: reconcileReaders hashes it into the reader pod template.
 const envoyConfig = `admin:
   address: { socket_address: { address: 127.0.0.1, port_value: 9901 } }
 static_resources:
@@ -59,6 +63,8 @@ static_resources:
             - name: local
               domains: ["*"]
               routes:
+              - match: { path: "/metrics" }
+                direct_response: { status: 404 }
               - match: { prefix: "/" }
                 route: { cluster: oramacore, timeout: 60s }
           http_filters:
@@ -129,7 +135,7 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 			return fmt.Errorf("writer: %w", err)
 		}
 	}
-	if err := r.reconcileReaders(ctx, oc, llmSecretHash, credentialsHashes["reader"]); err != nil {
+	if err := r.reconcileReaders(ctx, oc, llmSecretHash, credentialsHashes["reader"], envoyConfig); err != nil {
 		return fmt.Errorf("readers: %w", err)
 	}
 	return r.reconcileEngineIngresses(ctx, oc)
@@ -501,7 +507,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		// The GPU belongs to the shared embeddings Deployment (#14), not the writer — OramaCore
 		// is CPU; the embedding model is the GPU consumer (see reconcileEmbeddings).
 		sts.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side, llmSecretHash, credentialsHash)},
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side, "", llmSecretHash, credentialsHash)},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets:              imagePullSecrets(oc),
 				NodeSelector:                  w.NodeSelector,
@@ -529,7 +535,9 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 
 // reconcileReaders owns the reader Deployment, Service and PDB. llmSecretHash and credentialsHash
 // (engineLLMSecretHash, credentialsHash) are resolved before any engine object is written.
-func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, llmSecretHash, credentialsHash string) error {
+// envoyBootstrap is the Envoy bootstrap the engine ConfigMap carries (envoyConfig); with Envoy
+// enabled it is part of the readers' config hash, so a new bootstrap rolls them.
+func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, llmSecretHash, credentialsHash, envoyBootstrap string) error {
 	name := oc.Name + "-reader"
 	lbls := labelsFor(oc, "reader")
 	rd := oc.Spec.Components.Engine.Reader
@@ -539,6 +547,9 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 	}
 	useEnvoy := oc.Spec.Components.Engine.Envoy
 	side := engineSideFor(oc, "reader")
+	if !useEnvoy {
+		envoyBootstrap = ""
+	}
 
 	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
@@ -572,7 +583,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			podSpec.TopologySpreadConstraints = spreadConstraints(lbls)
 		}
 		dep.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side, llmSecretHash, credentialsHash)},
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side, envoyBootstrap, llmSecretHash, credentialsHash)},
 			Spec:       podSpec,
 		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
@@ -636,15 +647,22 @@ func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1, side string) corev1.Cont
 // config only at pod start, so a change to what it renders must roll the pod:
 //   - orama.cloud/config-hash is the SHA-256 of the side's unrendered template (placeholders, not
 //     keys). With side-only images a change to one side's template rolls only that side; the
-//     combined config is hashed the same way, and rolls both.
+//     combined config is hashed the same way, and rolls both. envoyBootstrap is the Envoy sidecar's
+//     bootstrap, or "" for a pod without Envoy (the writer, readers with Envoy disabled), whose hash
+//     stays the template's alone. Readers with Envoy hash the template and the bootstrap together
+//     (sha256Hex), so an Envoy-only change rolls them and not the writer.
 //   - orama.cloud/llm-secret-hash is engineLLMSecretHash, identical on both sides, so a rotated key
 //     in the engine Secret or an apiKeySecretRef Secret rolls the writer and readers.
 //   - orama.cloud/credentials-hash is the side's credentialsHash: <cr>-broker-admin, and the master
 //     API key Secret where the side reads it (engineCredentialSecrets).
-func engineConfigAnnotations(s engineSide, llmSecretHash, credentialsHash string) map[string]string {
+func engineConfigAnnotations(s engineSide, envoyBootstrap, llmSecretHash, credentialsHash string) map[string]string {
 	sum := sha256.Sum256([]byte(s.template))
+	hash := hex.EncodeToString(sum[:])
+	if envoyBootstrap != "" {
+		hash = sha256Hex([]byte(s.template), []byte(envoyBootstrap))
+	}
 	return map[string]string{
-		configHashKey:      hex.EncodeToString(sum[:]),
+		configHashKey:      hash,
 		llmSecretHashKey:   llmSecretHash,
 		credentialsHashKey: credentialsHash,
 	}
