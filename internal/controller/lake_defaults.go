@@ -44,7 +44,7 @@ const lakeMCPRunnerImageEnv = "LAKE_MCP_RUNNER_IMAGE"
 // lakeDefaultLibrary is the Agent Library every Lake runs: all nine specialized agents. A
 // spec.agents.library entry replaces the image of its key; it cannot remove an agent.
 var lakeDefaultLibrary = []oramav1alpha1.LakeLibraryAgent{
-	{Key: "agent-ask-orama", Image: "oramasearch/agent-ask-orama:6baa70d"},
+	{Key: "agent-ask-orama", Image: "oramasearch/agent-ask-orama:591e662"},
 	{Key: "agent-project", Image: "oramasearch/agent-project:16e17d0"},
 	{Key: "agent-autosuggest", Image: "oramasearch/agent-autosuggest:3d9acf7"},
 	{Key: "agent-creator", Image: "oramasearch/agent-creator:6b1cc36-f8feb14"},
