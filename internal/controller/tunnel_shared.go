@@ -29,7 +29,7 @@ const (
 	// DefaultZettaTunnelImage is the zetta-tunnel image every role runs unless the manager's
 	// --zetta-tunnel-image flag says otherwise. The repository is private: pods use their owner's
 	// pull secret.
-	DefaultZettaTunnelImage = "oramasearch/zetta-tunnel:dev-00be276"
+	DefaultZettaTunnelImage = "oramasearch/zetta-tunnel:main-9cd11b4"
 
 	zettaTunnelNamespace     = "zetta-tunnel"
 	zettaTunnelPKISecret     = "zetta-tunnel-pki"
@@ -192,12 +192,39 @@ type tunnelTarget struct {
 
 func (t tunnelTarget) Address() string { return fmt.Sprintf("%s:%d", t.Host, t.Port) }
 
+// namedTargetPort resolves a Service's named target port the way Kubernetes does: from the
+// container port of that name on the pods the Service selects. pods must be an uncached reader
+// (the operator holds no pod informer); with none the name cannot be resolved.
+func namedTargetPort(ctx context.Context, pods client.Reader, namespace string, service *corev1.Service, name string) (int32, error) {
+	if pods == nil {
+		return 0, fmt.Errorf("Service %s sends to the named port %q, which cannot be resolved here", service.Name, name)
+	}
+	var list corev1.PodList
+	if err := pods.List(ctx, &list, client.InNamespace(namespace), client.MatchingLabels(service.Spec.Selector)); err != nil {
+		return 0, err
+	}
+	for _, pod := range list.Items {
+		for _, container := range pod.Spec.Containers {
+			for _, port := range container.Ports {
+				if port.Name == name && (port.Protocol == "" || port.Protocol == corev1.ProtocolTCP) && port.ContainerPort > 0 {
+					return port.ContainerPort, nil
+				}
+			}
+		}
+	}
+	if len(list.Items) == 0 {
+		return 0, connectionPendingError{message: fmt.Sprintf("waiting for a pod of Service %s, to resolve its port %q", service.Name, name)}
+	}
+	return 0, fmt.Errorf("no pod of Service %s has a TCP container port named %q", service.Name, name)
+}
+
 // resolveTunnelTarget maps a Lake service or app id and a Service port to one Kubernetes Service in
 // namespace, using the same workload identity labels as Connection. A Postgres service has several
 // Services on its port; the read-write one is chosen.
 func resolveTunnelTarget(
 	ctx context.Context,
 	c client.Client,
+	pods client.Reader,
 	lakeRef string,
 	namespace string,
 	kind string,
@@ -262,8 +289,11 @@ func resolveTunnelTarget(
 			podPort = chosen.port.TargetPort.IntVal
 		}
 	case intstr.String:
-		return tunnelTarget{}, fmt.Errorf("Service %s port %d sends to the named port %q; a tunnel needs a numbered target port",
-			chosen.service.Name, port, chosen.port.TargetPort.StrVal)
+		resolved, err := namedTargetPort(ctx, pods, namespace, chosen.service, chosen.port.TargetPort.StrVal)
+		if err != nil {
+			return tunnelTarget{}, err
+		}
+		podPort = resolved
 	}
 	return tunnelTarget{
 		Service:  chosen.service.Name,

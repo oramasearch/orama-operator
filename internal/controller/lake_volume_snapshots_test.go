@@ -19,14 +19,13 @@ import (
 
 func TestLakeVolumeSnapshotsListenerUsesDedicatedChannel(t *testing.T) {
 	lake := testWorkspaceLake()
-	lake.Spec.Snapshots.Enabled = true
 	listener := NewLakeVolumeSnapshotsListener(fake.NewClientBuilder().WithScheme(newLakeScheme(t)).Build())
 	if listener.channel != "lake_volume_snapshots" || listener.enabled == nil || !listener.enabled(lake) {
 		t.Fatal("volume snapshot listener is not scoped to snapshot-enabled Lakes")
 	}
-	lake.Spec.Snapshots.Enabled = false
+	lake.Spec.Postgres.Enabled = boolPtr(false)
 	if listener.enabled(lake) {
-		t.Fatal("volume snapshot listener stays enabled after snapshots are disabled")
+		t.Fatal("volume snapshot listener stays enabled without the control Postgres")
 	}
 }
 
