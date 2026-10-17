@@ -501,11 +501,15 @@ func TestRequestsForEngineLLMSecret(t *testing.T) {
 	for _, tc := range cases {
 		sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tc.ns, Name: tc.name}}
 		for kind, fire := range map[string]func(workqueue.RateLimitingInterface){
-			"create": func(q workqueue.RateLimitingInterface) { eh.Create(context.Background(), event.CreateEvent{Object: sec}, q) },
+			"create": func(q workqueue.RateLimitingInterface) {
+				eh.Create(context.Background(), event.CreateEvent{Object: sec}, q)
+			},
 			"update": func(q workqueue.RateLimitingInterface) {
 				eh.Update(context.Background(), event.UpdateEvent{ObjectOld: sec, ObjectNew: sec}, q)
 			},
-			"delete": func(q workqueue.RateLimitingInterface) { eh.Delete(context.Background(), event.DeleteEvent{Object: sec}, q) },
+			"delete": func(q workqueue.RateLimitingInterface) {
+				eh.Delete(context.Background(), event.DeleteEvent{Object: sec}, q)
+			},
 		} {
 			q := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 			fire(q)
