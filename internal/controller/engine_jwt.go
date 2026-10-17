@@ -49,6 +49,27 @@ func writerJWKSURL(oc *oramav1alpha1.OramaCloudV1) string {
 	return fmt.Sprintf("http://%s-dashboard:3000%s", oc.Name, dashboardJWKSPath)
 }
 
+// writerJWKSFromDashboard reports whether the writer renders a JWT provider whose JWKS host is this
+// stack's dashboard Service (<cr>-dashboard, optionally qualified with the namespace, .svc and the
+// cluster domain). The network sandbox opens writer to dashboard TCP 3000 only then; an external
+// JWKS goes out through allow-engine-public-internet instead.
+func writerJWKSFromDashboard(oc *oramav1alpha1.OramaCloudV1) bool {
+	if oc.Spec.Components.Engine.Writer.JWT == nil {
+		return false
+	}
+	u, err := url.Parse(writerJWKSURL(oc))
+	if err != nil {
+		return false
+	}
+	service := oc.Name + "-dashboard"
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	switch host {
+	case service, service + "." + oc.Namespace, service + "." + oc.Namespace + ".svc":
+		return true
+	}
+	return strings.HasPrefix(host, service+"."+oc.Namespace+".svc.")
+}
+
 // validateWriterJWT refuses a writer JWT configuration that would reject every write: no issuer, no
 // audience or an empty one, a field over its length limit, or no usable JWKS URL. It checks the
 // configured strings only; it neither reads the control database nor fetches the JWKS.

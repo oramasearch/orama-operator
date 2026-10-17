@@ -260,6 +260,7 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-cache-ingress`, `allow-analytics-ingress`, `allow-search-ingress` | Each store admits only its listed client component selectors on 6379, 8123 or 8108. |
 | `allow-writer-ingress`, `allow-reader-ingress` | OramaCore admits only the dashboard, workers, analytics processor and named hosted-search clients on its service ports. |
 | `allow-dashboard-internal-ingress`, `allow-disco-ingress`, `allow-openai-decrypter-ingress`, `allow-harvest-master-ingress` | Index builder reaches each orchestration API on its declared port. |
+| `allow-writer-jwks-egress`, `allow-dashboard-jwks-ingress` | Only while `engine.writer.jwt` is set and its JWKS URL's host is this stack's dashboard Service (`<cr>-dashboard`, alone or qualified with the namespace, `.svc` and the cluster domain): the writer reaches dashboard 3000 for `/api/.well-known/jwks.json`. Readers get neither rule. An external JWKS URL renders neither and goes out through `allow-engine-public-internet`. |
 | `allow-harvest-mongo-ingress`, `allow-selenium-ingress`, `allow-keycloak-ingress` | HARVEST reaches its Mongo and browser; dashboard reaches Keycloak. |
 | `allow-cnpg-operator-ingress`, `allow-cnpg-apiserver-egress` | CloudNativePG manages control DB through 8000/5432 and its selected pods/jobs reach the API. |
 | `allow-operator-to-broker-management` | The Orama operator's `RabbitMQTopology` reconciler reaches management port 15672. |

@@ -388,8 +388,12 @@ Driven by `spec.region.role`:
   whose `audiences` are `engine.writer.jwt.audiences` in order without duplicates, and whose
   `jwks_url` defaults to the dashboard Service in the same namespace,
   `http://<cr>-dashboard:3000/api/.well-known/jwks.json` (the dashboard serves it from
-  `JWT_PUBLIC_KEY`). Every string is a quoted, escaped YAML scalar. The combined and writer-only
-  configs carry it, the reader-only config does not, and the block is in the hashed template, so a
+  `JWT_PUBLIC_KEY`). While that host is the stack's dashboard Service, the network sandbox adds
+  `allow-writer-jwks-egress` and `allow-dashboard-jwks-ingress`, writer to dashboard TCP 3000 and
+  nothing else (`writerJWKSFromDashboard`); an external `jwksURL` gets neither and is reached
+  through `allow-engine-public-internet`. Every string is a quoted, escaped YAML scalar. The
+  combined and writer-only configs carry it, the reader-only config does not, and the block is in
+  the hashed template, so a
   change rolls the writer only (both pods in combined mode). `validateWriterJWT` runs in
   `reconcileEngine` before any engine object is written and refuses an empty issuer, no audience,
   an empty or over-long field, and an unusable JWKS URL
