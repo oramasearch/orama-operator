@@ -54,6 +54,97 @@ make check-crds CONTEXT=orama-production-cluster-01     # report, exit 1 if any 
 Run it **after** the upgrade as well as before. The chart can gain a CRD in the same change that
 gains the controller, and only the post-check sees that.
 
+## Removing or changing a field: CRDs in two steps around the roll
+
+The API server prunes every field a CRD's schema does not declare, on write **and when it reads a
+stored object**. So a CRD that drops a field changes what the *running* operator sees the moment it
+is applied. Applying `chart/crds` before the new operator starts, as both install paths did, made
+every removal visible to the old operator first.
+
+That happened on 2026-10-17 ([#543](https://github.com/oramasearch/orama-operator/issues/543)):
+rolling #542, which removed the Lake feature switches (`spec.apps.enabled`,
+`spec.services.enabled`, ...), the old operator (`dev-cb98230`) read `Lake/prod` with the switches
+pruned, took that as "apps and services off", and for about 30 seconds rendered a Deployment
+without `LAKE_APPS_WILDCARD`, `LAKE_APPS_RUNTIME_IMAGE`, `LAKE_SERVICE_DIR` or the services
+volume. The pod restarted twice. Nothing was deleted only because the old controllers treated
+"disabled" as "stop reconciling", not "delete".
+
+Applying the CRDs **after** the roll instead would break the opposite case: a new operator needs a
+field it reads to be in the CRD before it starts, or the API server prunes it from what the
+operator reads and writes.
+
+**So both install paths apply the CRDs twice:**
+
+| Step | What is applied | Why it is safe |
+|---|---|---|
+| 1. Before the new operator starts | The chart's CRDs **widened** by everything the cluster's copies still declare: each property only the old schema has (at any depth), each enum value only it allows; a field only the new schema requires becomes optional; a version only the cluster has stays served, never as storage | It only adds. The old operator still reads every field it read; the new one already finds every field it reads |
+| 2. The new operator rolls | `helm upgrade` | Old and new both see a schema that holds what they read |
+| 3. Only the new operator runs | The chart's CRDs **exactly** | The dropped fields are pruned now, and nothing running reads them |
+
+The widening is [`internal/crdrollout`](../../internal/crdrollout/crdrollout.go) (`Union`), one
+implementation for both paths:
+
+- **Managing cluster** (`build-operator.sh`, outside this repository in
+  `codex-work/build/scripts/`): `kubectl get crd -o json`, then
+  [`go run ./hack/crdunion`](../../hack/crdunion/main.go) writes the widened CRDs, which are
+  applied; then `helm upgrade` and `kubectl rollout status`; then `kubectl apply --server-side -f
+  chart/crds/`. If the rollout fails the script stops with the widened CRDs in place, which is a
+  state both versions run on.
+
+  ```sh
+  kubectl --context $KCTX get crd -o json > crds-before.json
+  go run ./hack/crdunion -cluster crds-before.json -chart chart/crds -out crds-widened
+  kubectl --context $KCTX apply --server-side --force-conflicts -f crds-widened/
+  helm --kube-context $KCTX upgrade orama-operator chart/ -n orama-system -f values.yaml --set operator.image.tag=<tag>
+  kubectl --context $KCTX -n orama-system rollout status deploy/orama-operator --timeout=300s
+  kubectl --context $KCTX apply --server-side --force-conflicts -f chart/crds/
+  ```
+
+- **Leaf** (`OramaOperator`, `internal/controller/leaf_operator_installer.go`): before the
+  install or upgrade it applies each chart CRD as `crdrollout.Union` of the chart's and the
+  leaf's copy. On every later pass, once the operator Deployment runs only the requested version
+  (every pod of the current template, all ready, the image tag equal to `spec.version`), it applies
+  exactly each chart CRD whose leaf copy is still wider. A leaf already equal to the chart is not
+  written. Third-party charts installed by `ClusterHelmRelease` keep their CRDs applied exactly
+  before the upgrade: their projects version their APIs themselves.
+
+Both steps use the same field manager (`kubectl` on the managing cluster, `orama-operator-management`
+on a leaf), so the exact apply removes what the widened one added.
+
+`TestRemovingACRDFieldIsInvisibleToTheOperatorStillRunning` (envtest, a real API server) proves
+it: a stored object keeps the dropped field under the widened CRD, a new field is accepted at once,
+and only the exact apply prunes the old one.
+
+### What this does not make safe
+
+Widening keeps a field **visible**; it cannot make two operators agree on what it **means**.
+
+- **A type change** (`string` to `object`) cannot be widened: the new type wins and stored values
+  of the old type fail. Never change a field's type; add a field with a new name, stop reading the
+  old one, and remove it in a later change.
+- **A change of meaning** under the same name (a default that flips, a value whose effect changes)
+  is read both ways during the roll. Use a new name.
+- **A field a committed resource still sets.** After step 3, `kubectl apply` of a file under
+  `config/clusters/` that sets a removed field silently loses it, or fails under strict validation.
+  Remove the field from every committed resource in the same pull request.
+- **A controller that deletes on disable.** If a removed field turned something off, its controller
+  must not have deleted on "off" in the release before; the widening keeps that release reading
+  the field, but a by-hand `kubectl apply -f chart/crds/` would not.
+
+### The check: `TestNoCRDFieldThePreviousReleaseReadsDisappearsUnnoticed`
+
+[`cmd/crd_field_removal_test.go`](../../cmd/crd_field_removal_test.go) compares `chart/crds` with the
+CRDs of the newest release tag behind `HEAD` (`git describe --tags --match 'v[0-9]*'`). Every
+field the release declares that the chart no longer does, every field whose type changed, every
+removed version and every removed CRD fails the test until it is named in
+`acknowledgedCRDChanges`, with why it is safe by the rules above. A type change should never be
+acknowledged. When a release is tagged, the entries no longer differ from it and the test asks
+for them to be removed, so the list holds only what is in flight.
+
+The test compares with the last release, not with what a cluster runs: the development clusters
+run `dev-<sha>` between releases. The roll order above is what protects a `dev` to `dev` roll;
+the test makes every removal deliberate and reviewed.
+
 ## Fail-fast is deliberate
 
 A missing CRD could be non-fatal: start the other controllers, mark that one degraded, keep
