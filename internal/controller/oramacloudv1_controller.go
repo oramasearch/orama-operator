@@ -42,6 +42,7 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is the control loop. It reconciles each enabled component in turn,
 // driven by .spec.region.role. Components still TODO: control-plane Postgres (CNPG),
@@ -76,7 +77,8 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		name string
 		fn   func(context.Context, *oramav1alpha1.OramaCloudV1) error
 	}{
-		{"bootstrap", r.reconcileBootstrap}, // shared config + generated credentials first
+		{"bootstrap", r.reconcileBootstrap},    // shared config + generated credentials first
+		{"originTLS", r.reconcileOriginIssuer}, // the Issuer every Ingress below requests from (#457)
 		{"engine", r.reconcileEngine},
 		{"controlDB", r.reconcileControlDB},
 		{"pgadmin", r.reconcilePgAdmin}, // pgAdmin4 web (admin UI for the control-DB)

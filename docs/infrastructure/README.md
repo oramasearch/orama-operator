@@ -109,7 +109,7 @@ The starting point is what `helmfile.yaml` installs today:
 |---|---|
 | CloudNativePG | Postgres for control planes |
 | ingress-nginx | External access, with the settings AKS needs |
-| cert-manager | Certificates for the Cassandra operator's webhooks |
+| cert-manager | Certificates for the Cassandra operator's webhooks, and origin TLS for Cloud v1 Ingresses: each stack's operator-rendered `Issuer` (Let's Encrypt, DNS-01 through the stack's copied `cloudflare-api-token`) is a stack resource, not a platform one, so both installation paths stay the same |
 | Strimzi, Altinity ClickHouse, TiDB, K8ssandra, Valkey operators | Lake's managed service kinds |
 | orama-operator | The leaf's own operator |
 

@@ -211,11 +211,18 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 	return nil
 }
 
+// upsertIngress renders a component's Ingress for host on the stack's ingress class, with origin
+// TLS from the stack's Issuer. It fails, leaving any existing Ingress as it is, while the stack
+// has no Cloudflare token for the Issuer.
 func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, host string, port int32) error {
+	issuer, err := stackIngressIssuer(oc)
+	if err != nil {
+		return err
+	}
 	lbls := labelsFor(oc, component)
 	pathType := networkingv1.PathTypePrefix
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
 		ing.Labels = lbls
 		// Bind to the helmfile-installed ingress-nginx controller. Without an ingressClassName the
 		// controller ignores the Ingress (no ADDRESS assigned → nothing routes). Configurable via
@@ -238,6 +245,10 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 				},
 			},
 		}}
+		// Origin TLS from the stack's Issuer, after the rules: every host gets a certificate (#457).
+		if err := applyIngressTLS(ing, issuer); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(oc, ing, r.Scheme)
 	})
 	return err

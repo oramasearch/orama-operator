@@ -45,6 +45,12 @@ way and is named by `template.masterAPIKeySecretRef` (or a member's `spec`); the
 generates it, and without it the member's writer and readers stay at zero replicas. Changing a
 copied Secret's source, or its data on the managing cluster, rolls the member's consumers of it.
 
+An `OramaCloudV1Set` copies `cloudflare-api-token` to each member's namespace the same way;
+besides DNS, it is the DNS-01 credential of every stack's Let's Encrypt `Issuer`,
+so a v1 member with a host fails to reconcile without it
+([origin TLS](../../docs/components.md#origin-tls-ingress_tlsgo-457)). Every host in a v1 set must
+be a name in a Cloudflare zone that token can edit, or its certificate is never issued.
+
 To check that the files match the cluster:
 
 ```sh

@@ -23,7 +23,7 @@ pointing at the primary); the full sample list is in
 | `llm.default` | string | `groq` | Provider used when a request doesn't name one; must be one of the providers. |
 | `llm.automaticEmbeddingsSelector` | `{provider, model}` | unset | Provider and model that choose the properties to embed for collections with automatic embeddings. Unset renders no selector. |
 | `masterAPIKeySecretRef` | `{name, key}` | unset | The Secret, in the CR's namespace, holding the engine master API key under `key` (default `MASTER_API_KEY`). Required while the engine or another master key consumer is enabled; there is no default Secret and no generated key ([below](#specmasterapikeysecretref)). |
-| `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
+| `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane; `token` is also the DNS-01 credential of the stack's Let's Encrypt `Issuer`, so a stack with any host needs it); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
 
@@ -144,6 +144,11 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 `placement: local|central`, `replicate`, and `endpoint`/`credentialsSecretRef`.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
+Every host (`dashboard.host`, `docs.host`) gets origin TLS: the stack owns cert-manager `Issuer`
+`<cr>-letsencrypt` (Let's Encrypt, DNS-01 with `cloudflare.apiTokenSecretRef` key `token`), and each
+host's certificate lives in Secret `<host>-tls` beside the Ingress. There is no per-host TLS field and
+no way to turn it off; without the token the reconcile fails rather than serving HTTP
+([`components.md`](components.md#origin-tls-ingress_tlsgo-457)).
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
