@@ -50,7 +50,7 @@ type LakeAppsReconciler struct {
 }
 
 func lakeAppsEnabled(lake *oramav1alpha1.Lake) bool {
-	return lake.Spec.Apps.Enabled && lakePostgresEnabled(lake) && lake.DeletionTimestamp.IsZero()
+	return lakePostgresEnabled(lake) && lake.DeletionTimestamp.IsZero()
 }
 
 func (r *LakeAppsReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
@@ -355,7 +355,7 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 	if err := lakeAppRowSource(row, &spec); err != nil {
 		return spec, err
 	}
-	wildcard := strings.TrimPrefix(lake.Spec.Apps.Wildcard, "*.")
+	wildcard := lakeAppsWildcard(lake)
 	if spec.Host == "" && wildcard != "" {
 		spec.Host = row.Name + "." + wildcard
 	}

@@ -1659,13 +1659,10 @@ spec:
                       properties:
                         apiKeySecretRef:
                           description: |-
-                            APIKeySecretRef takes this provider's key from a Secret in the CR's namespace instead of
-                            <cr>-engine-secret. The operator reads it and never creates or changes it.
+                            APIKeySecretRef takes this provider's key from <PROVIDER>_API_KEY (for example GOOGLE_API_KEY)
+                            in a Secret in the CR's namespace instead of <cr>-engine-secret. The operator reads it and
+                            never creates or changes it.
                           properties:
-                            key:
-                              description: Key in the Secret. Empty means <PROVIDER>_API_KEY,
-                                for example GOOGLE_API_KEY.
-                              type: string
                             name:
                               description: Name of the Secret.
                               minLength: 1
