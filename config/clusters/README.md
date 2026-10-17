@@ -38,9 +38,8 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 The managing cluster, `orama-production-cluster-01`, was created by hand before these kinds
 existed and has no `KubernetesCluster` of its own.
 
-`sets/v1-prod.yaml` records each component storage size with its source next to the setting; a
-component without one gets the default, which is not measured sizing. The approved `v1-dev`
-expansion proof must use `sets/v1-nonprod.yaml` and retain every successfully grown size there.
+`sets/v1-prod.yaml` states the source of each component storage size next to the setting. The
+operator only grows volumes, so a size raised in a set file stays raised there.
 
 No file here holds a secret. Secrets are named by reference and live on the managing cluster.
 A set's `secrets` list copies them into each member's namespace before the instance is applied;

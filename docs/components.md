@@ -11,8 +11,7 @@ the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-brid
 tooling and pushed to **private Docker Hub**; set `spec.images.tag` + `spec.images.pullSecretName`
 ([install §4](install.md#4-override-the-dummy-secrets--images-for-real-use)). Remaining `OramaCloudV1`
 work is **hardening**: full config/secrets, HPA, Cloudflare LB, the workers-bundle in-cluster
-wiring. Component storage growth has fake-client/API coverage; its live `v1-dev` proof remains
-pending approval ([details](#component-storage)). The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows below.
+wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows below.
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
@@ -148,9 +147,10 @@ storage unchanged. The operator never resizes CNPG-owned PVCs itself.
 `StorageApplied` is one merged condition with the current `ObservedGeneration`. It preserves
 `Ready`, phase, component readiness and other conditions. `True / Applied` means desired
 configuration was accepted, including the no-local-storage case; it does not mean physical
-expansion completed. Failures use `ShrinkNotSupported`, `StorageClassChangeNotSupported`,
-`StorageUpdateFailed`, or `ClaimsPending`; multiple reasons use `MultipleStorageIssues` with
-stable sorted resource messages. One success cannot erase another resource's failure. Accepted
+expansion completed. Otherwise it is `False / NotApplied`, and the message lists, in stable sorted
+order, each resource with its problem: `ShrinkNotSupported`, `StorageClassChangeNotSupported`,
+`StorageUpdateFailed` or `ClaimsPending`. It is a condition of its own, not part of `Ready`, so a
+refused shrink or a resize in progress never marks a serving stack not Ready. One success cannot erase another resource's failure. Accepted
 settings and successful retries recover the condition; unchanged results cause no status write.
 Removing storage settings after growth resolves to the component's default, so recovery requires
 restoring the current grown request rather than relying on the old default.
@@ -161,13 +161,7 @@ performs its own expansion after accepting the Cluster size. The StorageClass mu
 and its CSI driver must support the disk/filesystem operation. See
 [Kubernetes expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)
 and [CNPG expansion](https://cloudnative-pg.io/docs/1.27/storage/#volume-expansion).
-Fake-client and API-server tests verify requests, immutability, retries, admission and status;
-they cannot establish filesystem growth. Writer, readers, one store, and CNPG still require approved
-`v1-dev` proof through committed `config/clusters/sets/v1-nonprod.yaml` changes, with read-only
-inspection of capacities, filesystems and unchanged StatefulSet identities/templates. Retain every
-successfully grown size in that file. Operator rollout and each set apply need Steve's consent.
-Every size in `v1-prod.yaml` names its source; the file's Blocked list is what still stands
-before the first production apply.
+A grown size stays in the set file that set it: a smaller value afterwards is a refused shrink.
 
 ## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 

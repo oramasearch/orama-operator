@@ -40,6 +40,10 @@
 #                                                        dashboard, through components.dashboard.envFrom (#311).
 #                                                        It never holds DATABASE_URL, POSTGRES_PASSWORD, JWT_*,
 #                                                        or MASTER_API_KEY: the operator owns them and refuses them.
+# Copied, v1-us member only:
+#   v1-us-master-api-key    MASTER_API_KEY               masterAPIKeySecretRef -> v1-us's engine and its consumers.
+#                                                        Holds the key v1-us runs today; creating it on the
+#                                                        managing cluster needs Steve's consent.
 #   Not copied: AIRBYTE_WEBHOOK_SECRET and every AIRBYTE_* (Airbyte removed, bridge decisions 2026-10-16
 #   #12a); Firebase keys (sign-in is Clerk before the cutover, decisions #1, #2).
 #   Sign-in comes from the Clerk keys in v1-prod-dashboard-env (#311, decisions 2026-10-16 #1, #2).
@@ -64,7 +68,9 @@
 #                                  <- v1-eu-config ConfigMap (config.go reconcileBootstrap)
 #   index-builder service URLs and Cloudflare KV namespace IDs <- ingestion.go indexBuilderEnv, owned KV CRs
 #
-# Blocked: required values this file cannot carry yet. Each needs its prerequisite first; none is
+# Blocked (#569 helper image overrides, #570 generated credentials, #571 per-key third-party Secrets,
+# #572 derived dashboard values, #573 the stack's own ingress-nginx, #574 HPES, #575 no tunnel ingress,
+# #562 the Redis HTTP shim): required values this file cannot carry yet. Each needs its prerequisite first; none is
 # worked around here, and no internal password is copied to bypass a missing generator.
 #   Images: no image is pinned yet. Every image comes from our private registry (oramasearch/*),
 #     pinned by digest, so the stack can run air-gapped; nothing is pulled from a public registry.
@@ -75,7 +81,7 @@
 #     - analytics-processor: the build with the 0.0.0.0:8080 listener patch (#421).
 #     - docs, index-builder, harvest-master, harvest, workers, index-shared-worker, large-index-worker,
 #       openai-decrypter, telemetry-worker: production builds, published privately.
-#     - HPES: the component and its image (decisions 2026-10-16 #3, 2026-10-17 #5).
+#     - HPES: the component and its image (decisions 2026-10-16 #3, 2026-10-17 #5; #574).
 #     - Upstream images, to mirror into private oramasearch/* repositories and then pin by their private
 #       digest. Upstream index digests read 2026-10-17:
 #         analytics        clickhouse/clickhouse-server:24.8       sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b
@@ -84,8 +90,10 @@
 #         search           typesense/typesense:0.25.2              sha256:1ddbb28a52b0b8be31237ec718df1c9bc895c5626b26c10fa3f340f684e81488
 #         harvest-mongo    mongo:7                                 sha256:c53852c00c23ca9f23fc39690350ffa9a80e3642fe8f96879726d8da0abe80a7
 #         dashboard-crons  curlimages/curl:8.10.1                  sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
+#         analytics-import curlimages/curl:8.10.1 (the analytics import CronJob, #421)
+#                                                                  sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
 #         embeddings       oramasearch/oramacore-ai-server:v1.1.108 (public) sha256:fd6926935520463c5fc3c2d3893a7f1967155a5a38e49056b17ecbf8a016c3a8
-#       These also need an override key, which the operator does not read yet:
+#       These also need an override key, which the operator does not read yet (#569):
 #         busybox:1.37 (engine wait-for-broker and render-config, store render-config)
 #                                                                  sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 #         envoyproxy/envoy:v1.31.2 (reader sidecar)                sha256:c56804e9fc8d5184c45862ad851173a925ff383151cb94156f86bed047da29bc
@@ -93,7 +101,6 @@
 #         postgres:16-alpine (PostgresSchema Job, `c1` row Job #447) sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
 #         ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie (CNPG 1.30.0's default; the Cluster names no image)
 #                                                                  sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
-#         the analytics import CronJob's image (#388, not written yet)
 #   Credentials the operator does not generate yet, all of which only have to agree inside the stack:
 #     the one ClickHouse password (analytics, analytics processor, dashboard, workers), TYPESENSE_API_KEY
 #     (search and index-builder), HARVEST_SIGN (index-builder, harvest-master, harvest workers),
@@ -168,7 +175,7 @@ spec:
             # Prod 1's writer root volume is 500 GiB (snapshot of vol-0b8dcc408f8ea762f, orama-bridge
             # production-changes.md; oramacore-aws terraform/live/prod/main.tf root_volume_size = 500)
             # with 343 GiB free on 2026-10-12 (techops-docs incident-2026-10-12-reader-stalls.md, "Host
-            # storage"): about 157 GiB used, OS included. #505 grows the claim later.
+            # storage"): about 157 GiB used, OS included. A larger size here grows the claim (#505).
             storage: { size: 512Gi, storageClassName: managed-csi-premium }
             # jwksURL unset: the writer reads the dashboard's keys in-cluster. Prod 2 has one cluster
             # row, the operator's `c1`, whose writer_url the dashboard mints the audience from
@@ -180,7 +187,7 @@ spec:
             host: reader.orama.ing
             replicas: 2
             # Each reader's disk is 512Gi, #382's default: about twice the largest Prod 1 reader's use
-            # (US, ~272 GiB of 931 GiB, OS included; bridge decisions 2026-10-17 #3). #505 grows the claims later.
+            # (US, ~272 GiB of 931 GiB, OS included; bridge decisions 2026-10-17 #3). A larger size grows them (#505).
             storage: { size: 512Gi, storageClassName: managed-csi-premium }
         dashboard:
           enabled: true
@@ -216,6 +223,10 @@ spec:
         cache:
           enabled: true
           mode: in-cluster
+          # Unmeasured: the 10Gi default. No Prod 1 source records how much data Upstash Redis holds
+          # (techops-docs has only its billing, evidence/upstash-billing-2026-07-08.md). The class is
+          # set now because it cannot change later; the size can grow once Prod 1 is measured.
+          storage: { size: 10Gi, storageClassName: managed-csi-premium }
         broker:
           enabled: true
           mode: in-cluster
@@ -225,6 +236,9 @@ spec:
         search:
           enabled: true
           mode: in-cluster
+          # Unmeasured: the 10Gi default. No Prod 1 source records the Typesense data size. The class
+          # is set now because it cannot change later; the size can grow once Prod 1 is measured.
+          storage: { size: 10Gi, storageClassName: managed-csi-premium }
         ingestion:
           enabled: true
           harvest: true
@@ -245,7 +259,14 @@ spec:
   - clusterRef: orama-production-cluster-03
     name: v1-us
     namespace: v1-us
+    # v1-us's own current engine master key. Since #411 a stack without masterAPIKeySecretRef holds
+    # its writer and readers at zero replicas, so the member names a copy of the key it runs today.
+    secrets:
+    - name: v1-us-master-api-key
+      namespace: orama-system
     spec:
+      masterAPIKeySecretRef:
+        name: v1-us-master-api-key
       cloudflare:
         manageLoadBalancers: true
       components:

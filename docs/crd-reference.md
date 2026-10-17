@@ -569,11 +569,7 @@ requested. Other claims/components continue reconciling.
 | Status / reason | Meaning |
 |---|---|
 | `True / Applied` | Every applicable existing PVC request and CNPG storage configuration accepts the desired size/class, or there is no locally managed storage. It does not prove disk or filesystem expansion has completed. |
-| `False / ShrinkNotSupported` | Desired size is below an existing claim request or CNPG configured size. |
-| `False / StorageClassChangeNotSupported` | An explicit class differs from an existing resource's class, including a classless existing CNPG Cluster. |
-| `False / StorageUpdateFailed` | A storage read or write failed; the message identifies the resource and API error. |
-| `False / ClaimsPending` | A locally required claim has not appeared yet; the operator does not create it by hand. |
-| `False / MultipleStorageIssues` | Several reasons apply; the message includes each resource and reason in stable sorted order. |
+| `False / NotApplied` | At least one resource has a problem. The message lists each resource in stable sorted order with one of: `ShrinkNotSupported` (desired size below an existing claim request or CNPG configured size), `StorageClassChangeNotSupported` (an explicit class differs from an existing resource's class, including a classless existing CNPG Cluster), `StorageUpdateFailed` (a storage read or write failed; the API error is included) or `ClaimsPending` (a required claim has not appeared yet; the operator does not create it). |
 
 The condition observes the current generation and recovers after accepted settings or successful
 retries. A rejected setting may coexist with `Ready=True`. The operator polls every 20 seconds
