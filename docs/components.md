@@ -258,7 +258,6 @@ Driven by `spec.region.role`:
   budget. A container that never becomes healthy exhausts its budget and is restarted.
   Readiness checks every 10s and liveness every 15s, both with a 3s timeout and failure
   threshold 3. Reconciliation updates existing workload templates to these startup budgets.
-  Live validation of a reader loading a real index for more than five minutes remains pending.
 - **Disruption budgets** — the **writer** gets a PDB with `maxUnavailable: 0` (it's a
   singleton — voluntary disruptions like node drains/autoscaler are blocked so it
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**

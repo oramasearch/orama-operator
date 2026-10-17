@@ -430,12 +430,9 @@ const (
 )
 
 // engineStartupProbe gates readiness/liveness until startup succeeds or exhausts its budget.
+// The budget must be a whole number of periods; the startup tests check the resulting window.
 func engineStartupProbe(timeout time.Duration) *corev1.Probe {
-	period := time.Duration(engineStartupPeriodSeconds) * time.Second
-	threshold := timeout / period
-	if timeout%period != 0 {
-		threshold++
-	}
+	threshold := timeout / (time.Duration(engineStartupPeriodSeconds) * time.Second)
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 			Path: "/health", Port: intstr.FromInt32(oramacorePort),

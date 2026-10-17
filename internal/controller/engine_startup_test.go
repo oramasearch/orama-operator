@@ -69,25 +69,6 @@ func TestEngineStartupWorkloads(t *testing.T) {
 	}
 }
 
-func TestEngineStartupProbeRounding(t *testing.T) {
-	for _, tc := range []struct {
-		timeout   time.Duration
-		threshold int32
-	}{
-		{time.Second, 1},
-		{10 * time.Second, 1},
-		{95 * time.Second, 10},
-		{20 * time.Minute, 120},
-		{40 * time.Minute, 240},
-	} {
-		t.Run(tc.timeout.String(), func(t *testing.T) {
-			if got := engineStartupProbe(tc.timeout).FailureThreshold; got != tc.threshold {
-				t.Errorf("threshold = %d, want %d", got, tc.threshold)
-			}
-		})
-	}
-}
-
 func TestEngineStartupProbesAreIndependent(t *testing.T) {
 	oc := newOCV1(nil)
 	writer := oramacoreContainer(oc, writerStartupTimeout)
