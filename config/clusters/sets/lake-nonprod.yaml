@@ -18,6 +18,7 @@ spec:
       - name: LAKE_PUBLIC_HOST
         value: lake-dev.oramadev.net
       host: lake-dev.oramadev.net
+      image: oramasearch/lake:dev-51fe838b
   - clusterRef: orama-nonprod-cluster-01
     name: staging
     spec:
