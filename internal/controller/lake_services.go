@@ -206,10 +206,10 @@ type serviceResult struct {
 	credential    []byte
 }
 
-// lakeServicesEnabled: managed services have their own switch. Workspaces use a separate table,
-// listener and reconciler.
+// lakeServicesEnabled: every Lake runs managed services (operator#539); they need the control
+// Postgres. Workspaces use a separate table, listener and reconciler.
 func lakeServicesEnabled(lake *oramav1alpha1.Lake) bool {
-	return lake.Spec.Services.Enabled && lakePostgresEnabled(lake)
+	return lakePostgresEnabled(lake)
 }
 
 // lakeServicesSecret holds one <slug>.json connection per Ready service.
@@ -233,13 +233,6 @@ func servicePostgresHost(lake, slug, namespace string) string {
 
 func servicePostgresEndpoint(lake, slug, namespace string) string {
 	return fmt.Sprintf("%s:%d", servicePostgresHost(lake, slug, namespace), servicePostgresPort)
-}
-
-func serviceZettaImage(lake *oramav1alpha1.Lake) string {
-	if lake.Spec.Services.ZettaImage != "" {
-		return lake.Spec.Services.ZettaImage
-	}
-	return lake.Spec.Workspaces.Image
 }
 
 // serviceImage is the image of a kind the Orama operator runs itself, "" for the others: the
@@ -489,7 +482,7 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 			changing = true
 		}
 		// Methodology runs (lake_methodology_runs.go, lake#655) wait on builds, so they ride the
-		// builds switch. A schema without the table skips them.
+		// builds pass. A schema without the table skips them.
 		runs, err := store.ListMethodologyRuns(passCtx)
 		if errors.Is(err, errMethodologyRunsTableMissing) {
 			log.Info("methodology runs skipped: " + err.Error())
@@ -519,7 +512,7 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 			log.Info("workload resources deferred", "err", err.Error())
 		}
 		// App traffic through the ingress (lake_app_transfer.go, lake#661).
-		if lake.Spec.Apps.Enabled {
+		if lakeAppsEnabled(lake) {
 			err := r.reconcileAppTransfer(passCtx, lake, store, time.Now())
 			if errors.Is(err, errAppTransferTableMissing) {
 				log.Info("app transfer skipped: " + err.Error())
@@ -884,7 +877,7 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 		cluster.Spec.Image = serviceZettaImage(lake)
 		cluster.Spec.PullSecretName = lake.Spec.PullSecretName
 		cluster.Spec.Resources = serviceZettaResources(lake)
-		cluster.Spec.Env = append([]corev1.EnvVar(nil), lake.Spec.Services.ZettaEnv...)
+		cluster.Spec.Env = serviceZettaEnv(lake)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.ProvisionOperatorSchema = &operatorSchema
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)

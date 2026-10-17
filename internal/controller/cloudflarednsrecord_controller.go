@@ -60,7 +60,8 @@ func (r *CloudflareDNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.
 	// Deletion: run the finalizer (delete the record from Cloudflare), then release.
 	if !rec.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&rec, cfDNSFinalizer) {
-			if token != "" && zoneID != "" && rec.Status.RecordID != "" {
+			// Retain leaves the record in Cloudflare (a record another resource also keeps).
+			if rec.Spec.DeletionPolicy != "Retain" && token != "" && zoneID != "" && rec.Status.RecordID != "" {
 				if err := cfDeleteDNSRecord(ctx, r.api(), token, zoneID, rec.Status.RecordID); err != nil {
 					return ctrl.Result{}, err
 				}

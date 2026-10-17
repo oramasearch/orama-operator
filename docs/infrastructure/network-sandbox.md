@@ -250,10 +250,10 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 |---|---|
 | `allow-dns-egress` | Stack workloads reach CoreDNS over UDP/TCP 53. |
 | `allow-engine-egress`, `allow-broker-ingress`, `allow-embeddings-ingress` | Writer/readers reach their RabbitMQ replication stream on 5552 and the engine-owned embeddings gRPC service on 50051, which preserves writes, replication and vector searches; broker also accepts workers/HARVEST AMQP 5672; embeddings also accepts DISCO. |
-| `allow-dashboard-egress` | Dashboard reaches control DB 5432, cache 6379, ClickHouse 8123, Typesense 8108, writer 8080, readers 80/8080, Keycloak 8080 and Airbyte 8001. |
+| `allow-dashboard-egress` | Dashboard reaches control DB 5432, cache 6379, ClickHouse 8123, Typesense 8108, writer 8080, readers 80/8080 and Keycloak 8080. |
 | `allow-workers-egress` | Bundled workers reach broker 5672, cache 6379 and OramaCore writer/readers. |
 | `allow-analytics-processor-egress` | Analytics processor reaches ClickHouse 8123, writer 8080 and control DB 5432. |
-| `allow-index-builder-egress` | Index builder reaches dashboard 3000, cache 6379, control DB 5432, DISCO 8080/50051, Typesense 8108, decrypter 8080, HARVEST 8080 and Airbyte 8001. |
+| `allow-index-builder-egress` | Index builder reaches dashboard 3000, cache 6379, control DB 5432, DISCO 8080/50051, Typesense 8108, decrypter 8080 and HARVEST 8080. |
 | `allow-harvest-egress` | HARVEST reaches Mongo 27017, broker 5672, cache 6379 and Selenium 4444. |
 | `allow-disco-egress`, `allow-pgadmin-egress`, `allow-search-workers-egress` | DISCO reaches embeddings; pgAdmin reaches control DB; hosted-search workers reach Typesense, writer/readers and ClickHouse. |
 | `allow-controldb-ingress`, `allow-postgres-schema-egress`, `allow-controldb-internal` | Selected clients and the schema job reach control DB 5432; CNPG members use 5432/8000 internally. |
@@ -270,11 +270,11 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-controldb-primary-replication` | A read-region CNPG cluster reaches its configured primary on public TCP 5432. |
 | `allow-control-clients-external-postgres` | In external control-DB mode, dashboard, index builder, analytics processor and pgAdmin reach public TCP 5432. |
 
-The Airbyte namespace/port, workers' public APIs, embeddings and hosted-search model/provider
-downloads, dashboard vendor list, public primary-Postgres route, and external control-DB address
-are **inferred** from component contracts, configuration fields and the Secret-held Postgres URI.
-They are documented as such because the reconciled workload code does not contain a complete stable
-destination list. Every inferred public rule still excludes private and cluster ranges.
+Workers' public APIs, embeddings and hosted-search model/provider downloads, dashboard vendor
+list, public primary-Postgres route, and external control-DB address are **inferred** from component
+contracts, configuration fields and the Secret-held Postgres URI. They are documented as such
+because the reconciled workload code does not contain a complete stable destination list. Every
+inferred public rule still excludes private and cluster ranges.
 
 Native tests enumerate every writer egress policy, prove that unrelated stack services such as
 control Postgres are not selected, retain RabbitMQ and the engine-owned embeddings path, check

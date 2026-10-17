@@ -1,17 +1,18 @@
 # Lake in-cluster builds
 
-Lake records an image build in its control Postgres and never talks to Kubernetes. With
-`Lake.spec.builds.enabled`, the operator turns each queued `builds` row into one short-lived,
+Lake records an image build in its control Postgres and never talks to Kubernetes. On every
+Lake, the operator turns each queued `builds` row into one short-lived,
 lake-owned Kubernetes Job running the private `oramasearch/lake-builder` image. There is no
-shared BuildKit daemon and no developer-facing build path.
+shared BuildKit daemon and no developer-facing build path. Every Lake runs it; there is no switch ([operator#539](https://github.com/oramasearch/orama-operator/issues/539), [the Lake README](README.md#every-lake-runs-every-feature)).
 
 ## Lake configuration
+
+Every field is optional; the values below override the defaults.
 
 ```yaml
 spec:
   pullSecretName: oramasearch-dockerhub
   builds:
-    enabled: true
     builderImage: oramasearch/lake-builder:<immutable-tag>
     cacheEnabled: true
     concurrency:
@@ -28,7 +29,7 @@ spec:
         ephemeral-storage: 20Gi
 ```
 
-`builderImage` is required when builds are enabled. The operator copies the Lake's image pull Secret
+An empty `builderImage` uses the operator's default (`internal/controller/lake_defaults.go`). The operator copies the Lake's image pull Secret
 into each build namespace as the Lake-owned Secret `builder-pull`; the builder Job references that
 local copy because Kubernetes image pull Secrets cannot cross namespaces. The same Secret is mounted
 read-only at `/etc/lake-builder/pull/.dockerconfigjson` and identified by `BASE_REGISTRY_AUTH`, so
@@ -41,7 +42,7 @@ and two for one registry space. Both configured limits must be positive. Registr
 import/export defaults on and can be disabled explicitly.
 
 The operator injects `LAKE_INTERNAL_URL=http://lake-<name>.<namespace>.svc.cluster.local:80` into the lake
-container when builds are enabled. Lake derives each build's registry authority from that URL; no
+container on every Lake. Lake derives each build's registry authority from that URL; no
 separate registry endpoint setting is required.
 
 Turning builds off stops the table poll. It does not kill a Job already created and does not remove
