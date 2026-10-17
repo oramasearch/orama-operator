@@ -113,9 +113,6 @@ func (r *LakeReconciler) reconcileAgentSchedule(ctx context.Context, lake *orama
 	case schedule.Cron == "":
 		status.Phase, status.Message = AgentPhaseFailed, "the schedule has no cron expression"
 		return status, false, nil
-	case lake.Spec.Agents.RuntimeImage == "":
-		status.Phase, status.Message = AgentPhaseFailed, "agents are not enabled on this Lake (spec.agents.runtimeImage)"
-		return status, false, nil
 	case schedule.WorkspaceID == "" || len(validation.IsDNS1123Label(schedule.WorkspaceNamespace)) != 0:
 		status.Phase, status.Message = AgentPhaseFailed, "workspace_id and its reconciled namespace are required"
 		return status, false, nil

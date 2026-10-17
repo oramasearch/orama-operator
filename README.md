@@ -25,12 +25,10 @@ into running systems:
   layer and its own operator; `LakeSet` and `OramaCloudV1Set` run instances on managed clusters
   from one template.
 
-That is 32 resource kinds, all installed by the chart on every cluster. The release notes cover the
-first 25: [v0.1.0](docs/releases/v0.1.0.md) for the first 17 and
-[v0.2.0](docs/releases/v0.2.0.md) for the next eight. `Connection` is documented in
-[`Declared workspace connections`](docs/infrastructure/connections.md) the four tunnel kinds in
-[`Developer tunnels`](docs/infrastructure/tunnels.md) and the two peer kinds in
-[`Peer connections`](docs/infrastructure/peer-connections.md), for the next release.
+That is 33 resource kinds, all installed by the chart on every cluster. The release notes cover
+them all: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
+[v0.2.0](docs/releases/v0.2.0.md) for the next seven, and
+[v0.3.0](docs/releases/v0.3.0.md) for the nine secure-networking kinds.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -38,8 +36,9 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.2.0** (2026-10-14);
-[`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md) says what is new since v0.1.0, the first.
+The current release is **v0.3.0** (2026-10-17);
+[`docs/releases/v0.3.0.md`](docs/releases/v0.3.0.md) says what is new since v0.2.0: secure
+networking and regions.
 
 The operator runs on four AKS clusters. The management cluster, `orama-production-cluster-01`, is
 the development environment whatever its name says; it runs `Lake/prod`, live at

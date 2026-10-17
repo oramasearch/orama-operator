@@ -140,9 +140,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.PeerConnectionReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Image:  zettaTunnelImage,
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Image:     zettaTunnelImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PeerConnection")
 		os.Exit(1)
@@ -157,9 +158,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.CloudflareTunnelReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Image:  cloudflaredImage,
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Image:     cloudflaredImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareTunnel")
 		os.Exit(1)

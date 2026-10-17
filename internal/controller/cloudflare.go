@@ -24,7 +24,7 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-var cfAPIBase = "https://api.cloudflare.com/client/v4"
+const cfAPIBase = "https://api.cloudflare.com/client/v4"
 
 // cfLBBillingOnce ensures the Load-Balancing "enable the paid feature" guidance is logged only once
 // per operator process (not on every reconcile).

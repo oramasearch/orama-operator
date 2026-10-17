@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,7 +40,6 @@ type dnsRequest struct {
 }
 
 // dnsFixture records every HTTP call and retains external state across reconciles.
-// Tests using cfAPIBase are deliberately sequential and restore it before closing the server.
 type dnsFixture struct {
 	kube          client.WithWatch
 	t             *testing.T
@@ -70,12 +70,9 @@ func newDNSFixture(t *testing.T) *dnsFixture {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cf", Namespace: "apps"}, Data: map[string][]byte{"token": []byte("test-token"), "zoneID": []byte("test-zone")}}
 	f := &dnsFixture{t: t, rec: rec, recorder: record.NewFakeRecorder(10)}
 	f.kube = fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&oramav1alpha1.CloudflareDNSRecord{}).WithObjects(secret).Build()
-	f.reconciler = &CloudflareDNSRecordReconciler{Scheme: scheme, Recorder: f.recorder, Client: f.kube}
 	server := httptest.NewServer(http.HandlerFunc(f.serveHTTP))
 	t.Cleanup(server.Close)
-	previous := cfAPIBase
-	cfAPIBase = server.URL
-	t.Cleanup(func() { cfAPIBase = previous })
+	f.reconciler = &CloudflareDNSRecordReconciler{Scheme: scheme, Recorder: f.recorder, Client: f.kube, APIBase: server.URL}
 	return f
 }
 
@@ -217,10 +214,15 @@ func (f *dnsFixture) wantReconcile(retry bool) {
 }
 
 func TestCloudflareDNSConflicts(t *testing.T) {
-	for _, kind := range []string{"CNAME", "A", "AAAA"} {
+	// A TXT resource next to a foreign TXT record is refused too: before, it POSTed a duplicate that
+	// Cloudflare rejected, on every pass.
+	for _, kind := range []string{"CNAME", "A", "AAAA", "TXT"} {
 		for _, identical := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/identical=%t", kind, identical), func(t *testing.T) {
 				f := newDNSFixture(t)
+				if kind == "TXT" {
+					f.rec.Spec.Type = "TXT"
+				}
 				foreign := f.matching("")
 				foreign.Type = kind
 				foreign.ID = "prod1"
@@ -457,7 +459,7 @@ func TestCloudflareDNSMarkerLengthAndType(t *testing.T) {
 }
 
 func TestCloudflareDNSDeletion(t *testing.T) {
-	for _, scenario := range []string{"owned", "legacy", "long-legacy", "lost-comment", "changed-comment", "marked-absent", "legacy-absent", "delete-404", "no-id", "nil-recorder"} {
+	for _, scenario := range []string{"owned", "legacy", "long-legacy", "lost-comment", "changed-comment", "marked-absent", "legacy-absent", "delete-404", "no-id", "nil-recorder", "retain", "retain-legacy"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newDNSFixture(t)
 			marker := cfDNSOwnerMarker(f.rec)
@@ -479,6 +481,14 @@ func TestCloudflareDNSDeletion(t *testing.T) {
 				remote.Comment = "someone-else"
 			case "no-id":
 				f.rec.Status = oramav1alpha1.CloudflareDNSRecordStatus{}
+			case "retain", "retain-legacy":
+				// Retain makes no Cloudflare call at all, so it needs no credentials either.
+				f.rec.Spec.DeletionPolicy = "Retain"
+				f.rec.Spec.SecretRef = "absent"
+				if scenario == "retain-legacy" {
+					f.rec.Status.OwnerComment = ""
+					remote.Comment = ""
+				}
 			case "delete-404":
 				f.failMethod = "DELETE"
 				f.failCode = 404
@@ -500,7 +510,7 @@ func TestCloudflareDNSDeletion(t *testing.T) {
 				f.methods("GET", "DELETE")
 			case "legacy", "long-legacy", "legacy-absent":
 				f.methods("DELETE")
-			case "no-id":
+			case "no-id", "retain", "retain-legacy":
 				f.methods()
 			default:
 				f.methods("GET")
@@ -522,6 +532,9 @@ func TestCloudflareDNSDeletion(t *testing.T) {
 				if len(f.records) != 0 {
 					t.Fatal("owned record survived cleanup")
 				}
+			}
+			if strings.HasPrefix(scenario, "retain") && (len(f.records) != 1 || f.records[0] != remote) {
+				t.Fatal("a Retain record was changed")
 			}
 		})
 	}
@@ -669,7 +682,7 @@ func TestCloudflareDNSAPIFailures(t *testing.T) {
 			// A closed local server is a deterministic connection refusal; never call the real API.
 			closed := httptest.NewServer(http.NotFoundHandler())
 			closed.Close()
-			cfAPIBase = closed.URL
+			f.reconciler.APIBase = closed.URL
 			f.create()
 			_, err := f.reconcile()
 			if err == nil {
@@ -722,6 +735,17 @@ func TestCloudflareDNSAPIServerPreservesProxyAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.reconciler.Client = kube
+	// A shared record is never deleted by one of the resources sharing it: the API server refuses
+	// sharedOwner without deletionPolicy Retain.
+	shared := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: f.rec.Namespace},
+		Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "clerk.oramadev.net", Content: "x.example.net", SharedOwner: "clerk/ins_1"}}
+	if err := kube.Create(ctx, shared); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "sharedOwner requires deletionPolicy Retain") {
+		t.Fatalf("sharedOwner without Retain: %v", err)
+	}
+	shared.Spec.DeletionPolicy = "Retain"
+	if err := kube.Create(ctx, shared); err != nil {
+		t.Fatalf("sharedOwner with Retain: %v", err)
+	}
 	f.create()
 	// Raw JSON represents the explicit false present in a user-supplied manifest.
 	if err := kube.Patch(ctx, f.rec, client.RawPatch(types.MergePatchType, []byte(`{"spec":{"proxied":false}}`))); err != nil {
@@ -749,5 +773,277 @@ func TestCloudflareDNSAPIServerPreservesProxyAndOwnership(t *testing.T) {
 	}
 	if len(f.records) != 0 {
 		t.Fatal("owned record survived deletion")
+	}
+}
+
+// fakeCloudflareDNS is the DNS records API of one zone: list by name (and type, when given),
+// create, read, update and delete by ID. Unlike dnsFixture it serves many names, so a rename can
+// be followed from one record to the next.
+type fakeCloudflareDNS struct {
+	mu      sync.Mutex
+	next    int
+	records map[string]cfDNSRecord // by ID
+}
+
+func (f *fakeCloudflareDNS) names() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, record := range f.records {
+		out = append(out, record.Name)
+	}
+	return out
+}
+
+func (f *fakeCloudflareDNS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	const prefix = "/zones/zone-1/dns_records"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		http.NotFound(w, r)
+		return
+	}
+	id := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	reply := func(result any) { _ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": result}) }
+	var body cfDNSRecord
+	if r.Method == http.MethodPost || r.Method == http.MethodPut {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	switch {
+	case r.Method == http.MethodGet && id == "":
+		found := []cfDNSRecord{}
+		query := r.URL.Query()
+		for _, record := range f.records {
+			if record.Name == query.Get("name") && (!query.Has("type") || record.Type == query.Get("type")) {
+				found = append(found, record)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": found, "result_info": map[string]int{"page": 1, "total_pages": 1}})
+	case r.Method == http.MethodPost && id == "":
+		f.next++
+		body.ID = fmt.Sprintf("record-%d", f.next)
+		f.records[body.ID] = body
+		reply(body)
+	case r.Method == http.MethodGet && f.records[id].ID != "":
+		reply(f.records[id])
+	case r.Method == http.MethodPut && f.records[id].ID != "":
+		body.ID = id
+		f.records[id] = body
+		reply(body)
+	case r.Method == http.MethodDelete && f.records[id].ID != "":
+		delete(f.records, id)
+		reply(map[string]any{"id": id})
+	default:
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":81044,"message":"Record does not exist."}]}`))
+	}
+}
+
+// Renaming a record replaces it in Cloudflare: the old name is deleted, never left live (#529,
+// found by moving a nonprod Lake's host in #520). The old record is deleted only while it is
+// still this resource's: a rename never deletes a record the operator did not create.
+func TestRenamingADNSRecordDeletesTheOldOne(t *testing.T) {
+	cloudflare := &fakeCloudflareDNS{records: map[string]cfDNSRecord{}}
+	server := httptest.NewServer(cloudflare)
+	defer server.Close()
+
+	ctx := context.Background()
+	rec := &oramav1alpha1.CloudflareDNSRecord{
+		ObjectMeta: metav1.ObjectMeta{Name: "lake-testing-dns", Namespace: "lake-testing"},
+		Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cloudflare-api-token", Name: "lake-testing.oramadev.net",
+			Content: "20.120.187.234", Proxied: true},
+	}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cloudflare-api-token", Namespace: "lake-testing"},
+		Data: map[string][]byte{"token": []byte("t"), "zoneID": []byte("zone-1")}}
+	c := fake.NewClientBuilder().WithScheme(newLakeScheme(t)).WithObjects(rec, secret).WithStatusSubresource(rec).Build()
+	recorder := record.NewFakeRecorder(10)
+	r := &CloudflareDNSRecordReconciler{Client: c, Scheme: c.Scheme(), APIBase: server.URL, Recorder: recorder}
+	key := types.NamespacedName{Namespace: "lake-testing", Name: "lake-testing-dns"}
+	reconcile := func() {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Get(ctx, key, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rename := func(name string) {
+		t.Helper()
+		rec.Spec.Name = name
+		if err := c.Update(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+		reconcile()
+	}
+
+	reconcile()
+	if got := cloudflare.names(); len(got) != 1 || got[0] != "lake-testing.oramadev.net" || rec.Status.RecordID != "record-1" {
+		t.Fatalf("created: records %v, status %+v", got, rec.Status)
+	}
+	if rec.Status.OwnerComment != "orama-operator:lake-testing/lake-testing-dns" {
+		t.Fatalf("owner comment = %q", rec.Status.OwnerComment)
+	}
+
+	rename("lake-testing2.oramadev.net")
+	if got := cloudflare.names(); len(got) != 1 || got[0] != "lake-testing2.oramadev.net" {
+		t.Fatalf("after the rename Cloudflare has %v, want only the new name", got)
+	}
+	if rec.Status.RecordID != "record-2" || !rec.Status.Ready {
+		t.Fatalf("status after the rename: %+v", rec.Status)
+	}
+
+	// Someone takes the record over in Cloudflare (its comment no longer names this resource):
+	// a rename creates the new record and leaves the taken-over one alone.
+	cloudflare.mu.Lock()
+	taken := cloudflare.records["record-2"]
+	taken.Comment = "managed by hand"
+	cloudflare.records["record-2"] = taken
+	cloudflare.mu.Unlock()
+	rename("lake-testing3.oramadev.net")
+	if got := cloudflare.names(); len(got) != 2 {
+		t.Fatalf("a rename deleted a record this resource no longer owns: Cloudflare has %v", got)
+	}
+	if rec.Status.RecordID != "record-3" || !rec.Status.Ready {
+		t.Fatalf("status after the second rename: %+v", rec.Status)
+	}
+	if event := <-recorder.Events; !strings.Contains(event, "Warning RecordNotOwned") || !strings.Contains(event, "record-2") {
+		t.Fatalf("event = %q, want RecordNotOwned for record-2", event)
+	}
+
+	// A record someone already removed counts as deleted, so the resource can still be released.
+	cloudflare.mu.Lock()
+	delete(cloudflare.records, "record-3")
+	cloudflare.mu.Unlock()
+	if err := c.Delete(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatalf("deleting a resource whose record is already gone: %v", err)
+	}
+	if err := c.Get(ctx, key, rec); err == nil {
+		t.Fatal("the resource was not released")
+	}
+}
+
+// A rename of a resource tracked before ownership comments (a legacy record: status.recordID and no
+// status.ownerComment) creates the new record with this resource's comment and deletes the old one
+// by ID, as before. A Retain resource never deletes the old record: it only stops tracking it.
+func TestRenamingALegacyOrRetainedDNSRecord(t *testing.T) {
+	for _, scenario := range []string{"legacy", "retain"} {
+		t.Run(scenario, func(t *testing.T) {
+			old := cfDNSRecord{ID: "legacy-1", Type: "A", Name: "lake-old.oramadev.net", Content: "20.120.187.234", Proxied: true, TTL: 1}
+			cloudflare := &fakeCloudflareDNS{records: map[string]cfDNSRecord{old.ID: old}}
+			server := httptest.NewServer(cloudflare)
+			defer server.Close()
+			ctx := context.Background()
+			rec := &oramav1alpha1.CloudflareDNSRecord{
+				ObjectMeta: metav1.ObjectMeta{Name: "lake-dns", Namespace: "lake-dev", Finalizers: []string{cfDNSFinalizer}},
+				Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "lake-new.oramadev.net",
+					Content: "20.120.187.234", Proxied: true},
+				Status: oramav1alpha1.CloudflareDNSRecordStatus{RecordID: old.ID, Ready: true, Message: "reconciled"},
+			}
+			if scenario == "retain" {
+				rec.Spec.DeletionPolicy = "Retain"
+				old.Comment = "orama-operator:lake-dev/lake-dns"
+				cloudflare.records[old.ID] = old
+				rec.Status.OwnerComment = old.Comment
+			}
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cf", Namespace: "lake-dev"},
+				Data: map[string][]byte{"token": []byte("t"), "zoneID": []byte("zone-1")}}
+			c := fake.NewClientBuilder().WithScheme(newLakeScheme(t)).WithObjects(rec, secret).WithStatusSubresource(rec).Build()
+			r := &CloudflareDNSRecordReconciler{Client: c, Scheme: c.Scheme(), APIBase: server.URL}
+			key := client.ObjectKeyFromObject(rec)
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(ctx, key, rec); err != nil {
+				t.Fatal(err)
+			}
+			want := oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "record-1", OwnerComment: "orama-operator:lake-dev/lake-dns", Ready: true, Message: "reconciled"}
+			if rec.Status != want {
+				t.Fatalf("status = %+v, want %+v", rec.Status, want)
+			}
+			cloudflare.mu.Lock()
+			defer cloudflare.mu.Unlock()
+			created := cloudflare.records["record-1"]
+			if created.Name != "lake-new.oramadev.net" || created.Comment != want.OwnerComment {
+				t.Fatalf("new record = %+v", created)
+			}
+			_, kept := cloudflare.records[old.ID]
+			if kept != (scenario == "retain") {
+				t.Fatalf("old record kept = %t, records %v", kept, cloudflare.records)
+			}
+		})
+	}
+}
+
+// Resources with the same spec.sharedOwner keep one record: the first creates it with the comment
+// orama-operator:<sharedOwner>, every other recognises that comment and writes nothing. A record
+// made by hand at the name is still refused, and deleting a resource leaves the record (Retain).
+func TestSharedOwnerDNSRecord(t *testing.T) {
+	for _, scenario := range []string{"shared", "hand-made"} {
+		t.Run(scenario, func(t *testing.T) {
+			cloudflare := &fakeCloudflareDNS{records: map[string]cfDNSRecord{}}
+			if scenario == "hand-made" {
+				cloudflare.records["hand-1"] = cfDNSRecord{ID: "hand-1", Type: "CNAME", Name: "clerk.lake.live", Content: "frontend-api.clerk.services", TTL: 1}
+			}
+			server := httptest.NewServer(cloudflare)
+			defer server.Close()
+			ctx := context.Background()
+			resource := func(ns string) *oramav1alpha1.CloudflareDNSRecord {
+				return &oramav1alpha1.CloudflareDNSRecord{
+					ObjectMeta: metav1.ObjectMeta{Name: "lake-" + ns + "-clerk-1", Namespace: ns},
+					Spec: oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: "cf", Name: "clerk.lake.live", Type: "CNAME",
+						Content: "frontend-api.clerk.services", DeletionPolicy: "Retain", SharedOwner: "clerk/ins_1"},
+				}
+			}
+			first, second := resource("eu"), resource("us")
+			objects := []client.Object{first, second}
+			for _, ns := range []string{"eu", "us"} {
+				objects = append(objects, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cf", Namespace: ns},
+					Data: map[string][]byte{"token": []byte("t"), "zoneID": []byte("zone-1")}})
+			}
+			c := fake.NewClientBuilder().WithScheme(newLakeScheme(t)).WithObjects(objects...).WithStatusSubresource(first).Build()
+			r := &CloudflareDNSRecordReconciler{Client: c, Scheme: c.Scheme(), APIBase: server.URL}
+			for _, rec := range []*oramav1alpha1.CloudflareDNSRecord{first, second, first} {
+				if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(rec)}); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(rec), rec); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cloudflare.mu.Lock()
+			records := len(cloudflare.records)
+			cloudflare.mu.Unlock()
+			if records != 1 {
+				t.Fatalf("Cloudflare records = %d, want 1", records)
+			}
+			for _, rec := range []*oramav1alpha1.CloudflareDNSRecord{first, second} {
+				if scenario == "hand-made" {
+					if rec.Status.Ready || rec.Status.RecordID != "" || !strings.Contains(rec.Status.Message, "not owned") {
+						t.Fatalf("%s took over a hand-made record: %+v", rec.Namespace, rec.Status)
+					}
+					continue
+				}
+				want := oramav1alpha1.CloudflareDNSRecordStatus{RecordID: "record-1", OwnerComment: "orama-operator:clerk/ins_1", Ready: true, Message: "reconciled"}
+				if rec.Status != want {
+					t.Fatalf("%s status = %+v, want %+v", rec.Namespace, rec.Status, want)
+				}
+			}
+			if scenario == "hand-made" {
+				return
+			}
+			if err := c.Delete(ctx, first); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(first)}); err != nil {
+				t.Fatal(err)
+			}
+			if got := cloudflare.names(); len(got) != 1 {
+				t.Fatalf("deleting one sharing resource changed Cloudflare: %v", got)
+			}
+		})
 	}
 }

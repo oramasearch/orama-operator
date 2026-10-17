@@ -32,11 +32,21 @@ const cfDNSFinalizer = "orama.cloud/cloudflare-dns-cleanup"
 const cfDNSRetryAfter = 5 * time.Minute
 
 // CloudflareDNSRecordReconciler creates marked records and reconciles only owned records.
-// Pre-upgrade status IDs retain their legacy ownership without adding a comment.
+// Pre-upgrade status IDs retain their legacy ownership without adding a comment. It never takes
+// over a record it did not create, and deletes only records that still carry its comment.
 type CloudflareDNSRecordReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// APIBase is the Cloudflare API base URL; empty means the public API. Tests point it at a fake.
+	APIBase string
+}
+
+func (r *CloudflareDNSRecordReconciler) api() string {
+	if r.APIBase != "" {
+		return r.APIBase
+	}
+	return cfAPIBase
 }
 
 //+kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
@@ -58,7 +68,8 @@ func (r *CloudflareDNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, err
 		}
 	}
-	if !rec.DeletionTimestamp.IsZero() && (!controllerutil.ContainsFinalizer(&rec, cfDNSFinalizer) || rec.Status.RecordID == "") {
+	// Retain leaves the record in Cloudflare (a record other resources also keep): no API call.
+	if !rec.DeletionTimestamp.IsZero() && (!controllerutil.ContainsFinalizer(&rec, cfDNSFinalizer) || rec.Status.RecordID == "" || rec.Spec.DeletionPolicy == "Retain") {
 		return ctrl.Result{}, r.releaseDNSFinalizer(ctx, &rec)
 	}
 	previous := rec.Status
@@ -71,12 +82,12 @@ func (r *CloudflareDNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{RequeueAfter: cfDNSRetryAfter}, r.updateDNSStatus(ctx, &rec, previous)
 	}
 	if !rec.DeletionTimestamp.IsZero() {
-		deleted, err := cfDeleteOwnedDNSRecord(ctx, token, zoneID, rec.Status.RecordID, rec.Status.OwnerComment)
+		deleted, err := cfDeleteOwnedDNSRecord(ctx, r.api(), token, zoneID, rec.Status.RecordID, rec.Status.OwnerComment)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if !deleted && r.Recorder != nil {
-			r.Recorder.Eventf(&rec, corev1.EventTypeWarning, "RecordNotOwned", "Cloudflare record %s (%s) no longer carries expected comment %q; left intact", rec.Spec.Name, rec.Status.RecordID, rec.Status.OwnerComment)
+		if !deleted {
+			r.recordNotOwned(&rec, rec.Spec.Name, rec.Status.RecordID)
 		}
 		return ctrl.Result{}, r.releaseDNSFinalizer(ctx, &rec)
 	}
@@ -86,7 +97,7 @@ func (r *CloudflareDNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.
 		legacyID = rec.Status.RecordID
 		marker = cfDNSOwnerMarker(&rec)
 	}
-	dns, err := cfUpsertDNSRecord(ctx, token, zoneID, &rec.Spec, legacyID, marker)
+	dns, err := cfUpsertDNSRecord(ctx, r.api(), token, zoneID, &rec.Spec, legacyID, marker)
 	if err != nil {
 		rec.Status.Ready, rec.Status.Message = false, err.Error()
 		if statusErr := r.updateDNSStatus(ctx, &rec, previous); statusErr != nil {
@@ -98,6 +109,24 @@ func (r *CloudflareDNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{RequeueAfter: cfDNSRetryAfter}, nil
 		}
 		return ctrl.Result{}, err
+	}
+	// A changed name (or type) is a different record in Cloudflare (#529). The one this resource
+	// tracked before is deleted before the new ID is recorded, through the same ownership check as
+	// the finalizer: a marked record only while its comment still matches, a legacy record by ID.
+	// One that lost its comment is left, reported and no longer tracked. Retain never deletes it.
+	// If the delete fails, the old ID stays in status and the next pass retries it.
+	if old := rec.Status.RecordID; old != "" && old != dns.ID && rec.Spec.DeletionPolicy != "Retain" {
+		deleted, err := cfDeleteOwnedDNSRecord(ctx, r.api(), token, zoneID, old, rec.Status.OwnerComment)
+		if err != nil {
+			rec.Status.Ready, rec.Status.Message = false, "deleting the previous record "+old+": "+err.Error()
+			if statusErr := r.updateDNSStatus(ctx, &rec, previous); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, err
+		}
+		if !deleted {
+			r.recordNotOwned(&rec, "previous record", old)
+		}
 	}
 	rec.Status.RecordID, rec.Status.Ready, rec.Status.Message = dns.ID, true, "reconciled"
 	if legacyID == "" || dns.ID != legacyID {
@@ -111,6 +140,14 @@ func (r *CloudflareDNSRecordReconciler) updateDNSStatus(ctx context.Context, rec
 		return nil
 	}
 	return r.Status().Update(ctx, rec)
+}
+
+// recordNotOwned reports a tracked record the operator leaves in Cloudflare because its comment
+// no longer matches.
+func (r *CloudflareDNSRecordReconciler) recordNotOwned(rec *oramav1alpha1.CloudflareDNSRecord, name, id string) {
+	if r.Recorder != nil {
+		r.Recorder.Eventf(rec, corev1.EventTypeWarning, "RecordNotOwned", "Cloudflare record %s (%s) no longer carries expected comment %q; left intact", name, id, rec.Status.OwnerComment)
+	}
 }
 
 func (r *CloudflareDNSRecordReconciler) releaseDNSFinalizer(ctx context.Context, rec *oramav1alpha1.CloudflareDNSRecord) error {
@@ -163,14 +200,38 @@ type cfDNSRetryError struct{ message string }
 
 func (e *cfDNSRetryError) Error() string { return e.message }
 
+// cfDNSOwnerMarker is the comment a new record is created with: the resource's namespace/name,
+// or spec.sharedOwner when several resources keep one record.
 func cfDNSOwnerMarker(rec *oramav1alpha1.CloudflareDNSRecord) string {
+	if rec.Spec.SharedOwner != "" {
+		return "orama-operator:" + rec.Spec.SharedOwner
+	}
 	return "orama-operator:" + rec.Namespace + "/" + rec.Name
 }
 
+// cfDNSConflicts reports whether a foreign record at the same name blocks every write: an
+// address record always, and a TXT record when this resource is a TXT record too.
+func cfDNSConflicts(foreignType, desiredType string) bool {
+	switch foreignType {
+	case "A", "AAAA", "CNAME":
+		return true
+	case "TXT":
+		return desiredType == "TXT"
+	}
+	return false
+}
+
 // cfUpsertDNSRecord reads every name match before writing. Only a successful create or
-// a confirmed owned record is returned; foreign address records block every mutation.
-func cfUpsertDNSRecord(ctx context.Context, token, zoneID string, spec *oramav1alpha1.CloudflareDNSRecordSpec, legacyID, marker string) (cfDNSRecord, error) {
-	endpoint := fmt.Sprintf("%s/zones/%s/dns_records", cfAPIBase, zoneID)
+// a confirmed owned record is returned; a conflicting foreign record blocks every mutation.
+func cfUpsertDNSRecord(ctx context.Context, api, token, zoneID string, spec *oramav1alpha1.CloudflareDNSRecordSpec, legacyID, marker string) (cfDNSRecord, error) {
+	endpoint := fmt.Sprintf("%s/zones/%s/dns_records", api, zoneID)
+	desired := cfDNSRecord{Type: spec.Type, Name: spec.Name, Content: spec.Content, Proxied: spec.Proxied, TTL: 1, Comment: marker}
+	if desired.Type == "" {
+		desired.Type = "A"
+		if net.ParseIP(spec.Content) == nil {
+			desired.Type = "CNAME"
+		}
+	}
 	var records []cfDNSRecord
 	for page := 1; ; page++ {
 		query := url.Values{"name": {spec.Name}, "page": {strconv.Itoa(page)}}
@@ -193,19 +254,12 @@ func cfUpsertDNSRecord(ctx context.Context, token, zoneID string, spec *oramav1a
 	for _, rec := range records {
 		if rec.Comment == marker && marker != "" || legacyID != "" && rec.ID == legacyID {
 			owned = append(owned, rec)
-		} else if rec.Type == "A" || rec.Type == "AAAA" || rec.Type == "CNAME" {
+		} else if cfDNSConflicts(rec.Type, desired.Type) {
 			return cfDNSRecord{}, &cfDNSConflictError{Record: rec}
 		}
 	}
 	if len(owned) > 1 {
 		return cfDNSRecord{}, &cfDNSRetryError{message: fmt.Sprintf("ambiguous Cloudflare DNS ownership: %d records at %s match this resource", len(owned), spec.Name)}
-	}
-	desired := cfDNSRecord{Type: spec.Type, Name: spec.Name, Content: spec.Content, Proxied: spec.Proxied, TTL: 1, Comment: marker}
-	if desired.Type == "" {
-		desired.Type = "A"
-		if net.ParseIP(spec.Content) == nil {
-			desired.Type = "CNAME"
-		}
 	}
 	if len(owned) == 1 {
 		current := owned[0]
@@ -241,8 +295,9 @@ func cfUpsertDNSRecord(ctx context.Context, token, zoneID string, spec *oramav1a
 
 // cfDeleteOwnedDNSRecord returns false only when ownership was lost and the record is
 // left intact. Legacy IDs intentionally retain their pre-comment cleanup behavior.
-func cfDeleteOwnedDNSRecord(ctx context.Context, token, zoneID, recordID, ownerComment string) (bool, error) {
-	endpoint := fmt.Sprintf("%s/zones/%s/dns_records/%s", cfAPIBase, zoneID, recordID)
+// A record already gone counts as deleted.
+func cfDeleteOwnedDNSRecord(ctx context.Context, api, token, zoneID, recordID, ownerComment string) (bool, error) {
+	endpoint := fmt.Sprintf("%s/zones/%s/dns_records/%s", api, zoneID, recordID)
 	if ownerComment != "" {
 		var response struct {
 			Result cfDNSRecord `json:"result"`

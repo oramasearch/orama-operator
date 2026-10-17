@@ -112,10 +112,6 @@ func (s LakeAgentLaunchStatus) equal(other LakeAgentLaunchStatus) bool {
 		s.CredentialSHA256 == other.CredentialSHA256 && s.ObservedGeneration == other.ObservedGeneration
 }
 
-func agentsEnabled(lake *oramav1alpha1.Lake) bool {
-	return lake.Spec.Agents.RuntimeImage != "" || len(lake.Spec.Agents.Library) > 0
-}
-
 func agentModel(lake *oramav1alpha1.Lake) string {
 	if lake.Spec.Agents.Model != "" {
 		return lake.Spec.Agents.Model
@@ -159,8 +155,8 @@ func agentServiceURL(name, namespace string) string {
 
 // libraryAgentEndpoints is LAKE_AGENT_ENDPOINTS: key=url for every library agent, sorted.
 func libraryAgentEndpoints(lake *oramav1alpha1.Lake, namespace string) string {
-	pairs := make([]string, 0, len(lake.Spec.Agents.Library))
-	for _, agent := range lake.Spec.Agents.Library {
+	pairs := make([]string, 0, len(lakeAgentLibrary(lake)))
+	for _, agent := range lakeAgentLibrary(lake) {
 		pairs = append(pairs, agent.Key+"="+agentServiceURL(libraryAgentName(lake.Name, agent.Key), namespace))
 	}
 	sort.Strings(pairs)
@@ -169,9 +165,6 @@ func libraryAgentEndpoints(lake *oramav1alpha1.Lake, namespace string) string {
 
 // lakeAgentEnv is what the lake container learns about its agents.
 func lakeAgentEnv(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar {
-	if !agentsEnabled(lake) {
-		return nil
-	}
 	env := []corev1.EnvVar{
 		{Name: "LAKE_AGENT_ENDPOINTS", Value: libraryAgentEndpoints(lake, namespace)},
 		{Name: "LAKE_INTERNAL_URL", Value: lakeInternalURL(lake, namespace)},
@@ -181,7 +174,7 @@ func lakeAgentEnv(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar {
 			Key:                  agentServiceTokenKey,
 		}}},
 	}
-	if len(lake.Spec.Agents.Library) > 0 {
+	if len(lakeAgentLibrary(lake)) > 0 {
 		env = append(env, corev1.EnvVar{Name: lakeAgentBusDirEnv, Value: lakeAgentBusMountPath})
 	}
 	return env
@@ -197,9 +190,6 @@ func randomHex(bytes int) (string, error) {
 
 // reconcileLakeAgentServiceToken mints the token lake presents to agent services, once.
 func (r *LakeReconciler) reconcileLakeAgentServiceToken(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) error {
-	if !agentsEnabled(lake) {
-		return nil
-	}
 	name := lakeAgentServiceTokenSecret(lake.Name)
 	existing := &corev1.Secret{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, existing); err == nil {
@@ -225,16 +215,16 @@ func (r *LakeReconciler) reconcileLakeAgentServiceToken(ctx context.Context, lak
 }
 
 // reconcileLakeAgentBusTokens keeps one random bus credential per library agent: an agent added to
-// spec.agents.library gets one, an agent removed loses its own, and an existing one never changes.
+// the library gets one, an agent dropped from it loses its own, and an existing one never changes.
 func (r *LakeReconciler) reconcileLakeAgentBusTokens(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) error {
-	if len(lake.Spec.Agents.Library) == 0 {
+	if len(lakeAgentLibrary(lake)) == 0 {
 		return nil
 	}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeAgentBusSecret(lake.Name), Namespace: namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		secret.Labels = labels
 		wanted := map[string]bool{}
-		for _, agent := range lake.Spec.Agents.Library {
+		for _, agent := range lakeAgentLibrary(lake) {
 			wanted[agent.Key] = true
 		}
 		data := map[string][]byte{}
@@ -387,10 +377,11 @@ func (r *LakeReconciler) reconcileAgentService(ctx context.Context, lake *oramav
 	return deployment.Status.AvailableReplicas, nil
 }
 
-// reconcileLakeLibraryAgents runs spec.agents.library and removes library agents no longer listed.
+// reconcileLakeLibraryAgents runs every library agent (lakeAgentLibrary: the defaults, with
+// spec.agents.library's images) and removes library agents whose key the operator no longer runs.
 func (r *LakeReconciler) reconcileLakeLibraryAgents(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) error {
 	wanted := map[string]bool{}
-	for _, agent := range lake.Spec.Agents.Library {
+	for _, agent := range lakeAgentLibrary(lake) {
 		name := libraryAgentName(lake.Name, agent.Key)
 		wanted[name] = true
 		selector := map[string]string{"app.kubernetes.io/name": agent.Key, "app.kubernetes.io/instance": name}
@@ -524,7 +515,7 @@ func agentRunEnv(lake *oramav1alpha1.Lake, credentialSecret, customerID, workspa
 
 // agentJobPod is the pod of one unattended run: never restarted, a Job's to retry (never).
 func agentJobPod(lake *oramav1alpha1.Lake, env []corev1.EnvVar) corev1.PodSpec {
-	pod := agentPodSpec(lake, lake.Spec.Agents.RuntimeImage, env, false)
+	pod := agentPodSpec(lake, lakeAgentRuntimeImage(lake), env, false)
 	pod.RestartPolicy = corev1.RestartPolicyNever
 	return pod
 }
@@ -569,9 +560,6 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 	case launch.Mode != agentLaunchModeJob && launch.Mode != agentLaunchModeService:
 		status.Phase, status.Message = AgentPhaseFailed, "mode must be job or service"
 		return status, false, nil
-	case lake.Spec.Agents.RuntimeImage == "":
-		status.Phase, status.Message = AgentPhaseFailed, "agents are not enabled on this Lake (spec.agents.runtimeImage)"
-		return status, false, nil
 	case launch.WorkspaceID == "" || len(validation.IsDNS1123Label(launch.WorkspaceNamespace)) != 0:
 		status.Phase, status.Message = AgentPhaseFailed, "workspace_id and its reconciled namespace are required"
 		return status, false, nil
@@ -603,7 +591,7 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 	if launch.Mode == agentLaunchModeService {
 		selector := map[string]string{"app.kubernetes.io/name": "agent-runtime", "app.kubernetes.io/instance": name}
 		available, err := r.reconcileAgentService(ctx, lake, namespace, name, launchLabels, selector,
-			agentPodSpec(lake, lake.Spec.Agents.RuntimeImage, launch.env(lake), true))
+			agentPodSpec(lake, lakeAgentRuntimeImage(lake), launch.env(lake), true))
 		if err != nil {
 			return status, true, err
 		}
