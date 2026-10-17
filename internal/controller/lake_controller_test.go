@@ -477,7 +477,7 @@ func TestLakeReconcileAppendsCustomEnvWithOperatorPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := deployment.Spec.Template.Spec.Containers[0].Env
-	want := append(wantLakeOperatorEnv(true), "LAKE_LOG_MODE", "LAKE_PUBLIC_HOST")
+	want := append(wantLakeOperatorEnv(true, true), "LAKE_LOG_MODE", "LAKE_PUBLIC_HOST")
 	if !reflect.DeepEqual(envNamesOf(env), want) {
 		t.Fatalf("env = %+v", env)
 	}
@@ -745,7 +745,8 @@ func TestLakeReconcileZettaDataPlane(t *testing.T) {
 		// The spec's variable first, then the default it does not name (operator#539).
 		len(zetta.Spec.Env) != 2 || zetta.Spec.Env[0].Name != "MALLOC_ARENA_MAX" || zetta.Spec.Env[0].Value != "2" ||
 		zetta.Spec.Env[1].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || zetta.Spec.Env[1].Value != "67108864" ||
-		zetta.Spec.ProvisionOperatorSchema == nil || *zetta.Spec.ProvisionOperatorSchema {
+		// The Lake's Zetta is its deployment control plane (operator#557).
+		zetta.Spec.ProvisionOperatorSchema == nil || !*zetta.Spec.ProvisionOperatorSchema {
 		t.Errorf("Zetta spec = %+v", zetta.Spec)
 	}
 	if refs := zetta.OwnerReferences; len(refs) != 1 || refs[0].Name != "hello" || refs[0].Kind != "Lake" {
@@ -925,7 +926,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	}
 	env := d.Spec.Template.Spec.Containers[0].Env
 	kek, uri := envValue(t, env, "LAKE_INSTANCE_KEK"), envValue(t, env, "LAKE_CONTROL_DB_URI")
-	if !reflect.DeepEqual(envNamesOf(env), wantLakeOperatorEnv(true)) ||
+	if !reflect.DeepEqual(envNamesOf(env), wantLakeOperatorEnv(true, false)) ||
 		env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" || env[1].Value != lakeStorePath ||
 		env[2].Value == "" || env[3].Value == "" ||
 		kek.ValueFrom.SecretKeyRef.Name != "lake-hello-instance-kek" || kek.ValueFrom.SecretKeyRef.Key != "key" ||
@@ -999,7 +1000,7 @@ func TestLakeReconcileControlDB(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &d); err != nil {
 		t.Fatal(err)
 	}
-	if e := d.Spec.Template.Spec.Containers[0].Env; !reflect.DeepEqual(envNamesOf(e), wantLakeOperatorEnv(false)) {
+	if e := d.Spec.Template.Spec.Containers[0].Env; !reflect.DeepEqual(envNamesOf(e), wantLakeOperatorEnv(false, false)) {
 		t.Errorf("operator env when postgres is disabled = %+v", e)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-instance-kek"}, &instanceKek); err == nil {

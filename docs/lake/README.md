@@ -101,7 +101,10 @@ a default is a change to one file, rolled through the pipeline dev, testing, sta
 
 The one prerequisite is the control Postgres (`spec.postgres.enabled`, default `true`). Without it
 the features cannot run, and the Lake's `FeaturesReady` condition is `False` with reason
-`PostgresDisabled`, naming them; a feature is never skipped silently. `ingressEnabled` stays: it
+`PostgresDisabled`, naming them; a feature is never skipped silently. Deployments also need the
+Lake's Zetta (`spec.zetta.enabled`, default `true`; otherwise reason `ZettaDisabled`) and a public
+host (`spec.host` or `LAKE_PUBLIC_HOST` in `spec.env`; otherwise reason `NoPublicHost`), see
+[environments](environments.md#every-lakes-control-plane-is-its-own-zetta). `ingressEnabled` stays: it
 decides whether the Lake is exposed outside the cluster, not which features it runs.
 
 ### Default images
@@ -169,8 +172,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    `spec.pullSecretName`, and operator env including `LAKE_STORE_ROOT=/var/lib/lake/store`,
    `LAKE_APPS_WILDCARD`, `LAKE_APPS_RUNTIME_IMAGE`, `LAKE_METHODOLOGY_RUNTIME_IMAGE`,
    `LAKE_MCP_RUNNER_IMAGE` and the agents' variables (including `LAKE_INTERNAL_URL`, lake's
-   in-cluster address) on every Lake, plus `spec.env` entries whose names do not conflict with
-   operator-owned variables. Pods run as
+   in-cluster address) on every Lake, `LAKE_OPERATOR_ZETTA_URL` and `LAKE_OPERATOR_ZETTA_TOKEN` (item 8),
+   `LAKE_PUBLIC_HOST` from `spec.host` when `spec.env` does not state it, plus `spec.env` entries whose
+   names do not conflict with operator-owned variables. Pods run as
    uid/gid 10001 with the restricted container baseline. A spec change rolls the Deployment once;
    how the pods are replaced depends on the store's access modes, see [Rollouts](#rollouts). Replicated Deployments get a
    `maxUnavailable: 1` PodDisruptionBudget and the default soft hostname spread, or
@@ -178,9 +182,13 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 7. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
 8. **Zetta data plane** — owned `OramaZettaCluster` `lake-<name>-zetta` in the Lake namespace,
    configured from `spec.zetta` (enabled, image, replicas, per-node storage, env, and reachability).
-   It inherits `spec.pullSecretName` and has operator-schema provisioning disabled because it is
-   Lake's data store, not the operator's control store. Its client Service and seeded admin-token
-   Secret reach the lake pod as `LAKE_DATA_PLANE_URL` and `LAKE_DATA_PLANE_TOKEN`. Deleting the
+   It inherits `spec.pullSecretName` and has operator-schema provisioning **on**: it is also the
+   Lake's deployment control plane, the one operator-schema Zetta in the Lake namespace
+   ([operator#557](https://github.com/oramasearch/orama-operator/issues/557),
+   [environments](environments.md#every-lakes-control-plane-is-its-own-zetta)). Its client Service and
+   seeded admin-token Secret reach the lake pod as `LAKE_DATA_PLANE_URL` and `LAKE_DATA_PLANE_TOKEN`,
+   and again as `LAKE_OPERATOR_ZETTA_URL` and `LAKE_OPERATOR_ZETTA_TOKEN`, which turn lake's
+   Deployments on. Deleting the
    Lake starts deletion of this child and waits for its finalizers before releasing the Lake
    finalizer; disabling `spec.zetta` tears the child down with its per-node volumes.
 9. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`

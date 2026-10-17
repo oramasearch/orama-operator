@@ -51,6 +51,13 @@ var operatorZettaSchema = []zettaSchemaStmt{
 	// The public deployment contract preserves response/history fields separately from the desired and
 	// status event stream. A separate table upgrades existing clusters without ALTER TABLE support.
 	{"orama_control", "CREATE TABLE deployment_records (deployment_id TEXT, lake TEXT, repository TEXT, environment TEXT, change_id TEXT, image TEXT, result_id TEXT, rollback_of TEXT, secret_refs_json TEXT, created_at TEXT)"},
+	// lake's platform requests (operator#557, lake docs/control-plane/platform.md): lake appends an
+	// environment's plain values and its custom domains here, keyed by lake = LAKE_PUBLIC_HOST, and
+	// its platform sync reads both tables with deployments on every pass. A table that does not
+	// exist fails that read, which leaves lake's platform degraded, so the tables are created empty
+	// with the columns of lake's include/lake/control/zetta_control.hpp.
+	{"orama_control", "CREATE TABLE environment_env (lake TEXT, repository TEXT, environment TEXT, key TEXT, value TEXT, deleted TEXT, set_by TEXT, updated_at TEXT, ordering_token TEXT)"},
+	{"orama_control", "CREATE TABLE domains (lake TEXT, repository TEXT, environment TEXT, host TEXT, tls TEXT, status TEXT, message TEXT, deleted TEXT, requested_by TEXT, updated_at TEXT, ordering_token TEXT)"},
 	// Data plane — the application-data landing zone (destined to replace v1's Typesense/ClickHouse/PG).
 	{"", "CREATE DATABASE orama_data"},
 	{"orama_data", "CREATE TABLE documents (id TEXT, collection TEXT, body TEXT, updated_at TEXT)"},
