@@ -272,7 +272,8 @@ it). With `spec.host` set it also fronts the host with an **nginx Ingress** and 
 is given — an **owned `CloudflareDNSRecord`** (a proxied A/CNAME record → the ingress LoadBalancer),
 reusing the same Cloudflare child-controller path as the dashboard DNS. A `CloudflareDNSRecord` whose
 name (or type) changes deletes the record it made before (`status.recordID`) once the new one exists,
-so a host change never leaves the old name live (#529); a record already gone counts as deleted. The Ingress proxies the **whole
+so a host change never leaves the old name live (#529), but only while that record is still its own
+(see the `CloudflareDNSRecord` section); a record already gone counts as deleted. The Ingress proxies the **whole
 host** to the Zetta node's own HTTP server on `:4800`: the bare root (`/`) is the node's **web dashboard**
 ([zetta#647](https://github.com/oramasearch/zetta/issues/647)) and every other path is MCP/REST/serving.
 (An earlier operator version parked a static `zetta` placeholder at `/` while the node HTTP server was
@@ -366,6 +367,53 @@ End-to-end sample (a 3-replica target + its test): [`../config/samples/zetta-req
 | `spec.levels` | Which test levels to run (`ZETTA_E2E_LEVELS`, default `2,3`). |
 | `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
 | `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ozce2e`; `kubectl logs job/<name>-e2e`. |
+
+## `CloudflareDNSRecord` (separate CRD)
+
+Creates new DNS records and reconciles only records it owns. Foreign A, AAAA or
+CNAME records at the desired name are conflicts, including records with identical
+settings. The controller lists every result page before any mutation; TXT/MX records
+are ignored. Conflicts and ambiguous ownership set `ready: false` and retry in five
+minutes without changing ownership status or external records.
+
+| Field | Meaning |
+|---|---|
+| `spec.secretRef` | Same-namespace Secret with `token` and `zoneID`. Missing either reports waiting and retries in five minutes without an API call. |
+| `spec.name` | Record FQDN. |
+| `spec.type` | Explicit record type wins. Empty infers A for an IP (including the existing IPv6 inference), CNAME otherwise. |
+| `spec.content` | Record target. |
+| `spec.proxied` | Proxy setting, default `true`; explicit `false` is preserved. TTL is automatic (`1`). |
+| `status.recordID` | Created or recovered record ID, or a pre-upgrade legacy ID. |
+| `status.ownerComment` | Optional exact comment `orama-operator:<namespace>/<name>`, saved on creation or marker recovery. Empty with a populated ID means legacy compatibility. |
+| `status.ready` | True after a successful create or confirmed owned reconciliation. |
+| `status.message` | `reconciled` on success; otherwise the waiting/API diagnostic, conflicting record's name, type, content and ID, or ownership ambiguity. |
+
+Creation rejects comments over 100 characters (namespace/name over 85) with a
+five-minute retry and no mutation; it never truncates or hashes them. This limit
+never blocks legacy reads or deletion. Exact markers recover a record after a
+failed status update, without a second create. Owned records matching type, content,
+proxying and TTL receive only GETs; changed settings receive one PUT preserving the
+current comment. Legacy IDs never gain a comment. A previously marked record whose
+comment changes remains marked in status and cannot become legacy.
+
+The cleanup finalizer fetches marked records by ID and deletes only if their stored
+comment still matches. Otherwise it releases the finalizer, leaves the record and emits
+Warning `RecordNotOwned`. Legacy IDs retain deletion by ID. A 404 on GET or DELETE
+means cleanup succeeded; other failures retain the finalizer and return the error.
+A changed `spec.name` (or type) is a new record at the new name: once it is created, the
+previous `status.recordID` goes through the same owned delete (marked records only while
+their comment still matches, legacy IDs by ID), so a rename never leaves the old name live
+([#529](https://github.com/oramasearch/orama-operator/issues/529)) and never deletes a record
+the operator did not create. A failed delete keeps the old ID in status and retries.
+No ID means no Cloudflare calls. Missing credentials with an ID retain the finalizer
+and retry in five minutes. Install this CRD update through the approved rollout
+mechanism before the controller, so Kubernetes preserves `ownerComment`.
+
+The `app.orama.com` cutover repoint is a reviewed Cloudflare change in the bridge
+[cutover runbook](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md),
+listed in [production changes](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/production-changes.md).
+The operator cannot adopt that existing record.
+
 ## `CloudflareLoadBalancer` (separate CRD) — the global geo-LB
 
 Owns a Cloudflare **global Load Balancer** ([operator#73](https://github.com/oramasearch/orama-operator/issues/73)):

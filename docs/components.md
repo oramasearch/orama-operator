@@ -31,7 +31,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — pulls `/v1/analytics` → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
-| **cloudflare** | `internal/controller/cloudflare.go` | CF DNS record via the CF API (safe no-op until configured) | 🟡 **implemented** (not live-tested) |
+| **cloudflare** | `internal/controller/cloudflare.go`, `cloudflarednsrecord_controller.go` | owned DNS child CRs; create marked records, reconcile only owned or legacy-ID records, and check ownership before cleanup | 🟡 **implemented**; HTTP/fake-client and local API-server tests pass; Lake and `oramadev.net` live proof pending approval |
 | **cloudflare-lb** | `internal/controller/cloudflareloadbalancer_controller.go` | global **Load Balancer** + **Origin Pool(s)** + **Health Monitor** via the CF Load Balancing API, from an owned `CloudflareLoadBalancer` CRD (finalizer teardown) | 🟡 **implemented** ([#73](https://github.com/oramasearch/orama-operator/issues/73); not live-tested — needs LB enabled on the account; live-node origins are [#74](https://github.com/oramasearch/orama-operator/issues/74)) |
 | **idp** (keycloak) | `internal/controller/idp.go` | Keycloak `Deployment` + Service (when `idp.provider=keycloak`) | ✅ **done** (validated on AKS) |
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
@@ -56,6 +56,46 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **lake Postgres rehearsals** | `internal/controller/lakerestorerehearsal_controller.go` | from one cluster-scoped `LakeRestoreRehearsal`: isolated CNPG backup recovery and data verification for restore; scratch image update then verification for upgrade; CNPG primary switchover then application-Secret connection verification for failover; terminal cleanup and Lake evidence update | ✅ **implemented** — see [`lake/data-services/postgres.md`](lake/data-services/postgres.md) |
 | **lake sealed-secret delivery** | `internal/controller/lakesealedsecret_controller.go` | from one namespaced `LakeSealedSecret`: an owned, cluster-bound Kubernetes Secret labelled `lake.orama.cloud/sealed: "true"`; literal ciphertext opens locally, while lake and dynamic references call lake's mint capability with projected service-account attestation | 🟡 **implemented**; literal delivery and LakeEnvironment consumption with local delivery owners are complete and tested against both k0s admission policies, while lake/dynamic delivery awaits lake's `mint_sealed_secret` leaf |
 | **deployment control plane** | `internal/controller/deployment_controlplane.go` | authenticated liquid REST `/v1` and MCP server; appends immutable Zetta history, desired events and audit entries, validates sealed-secret references, and reads reconciled `LakeEnvironment` status | ✅ **implemented** ([#142](https://github.com/oramasearch/orama-operator/issues/142)); REST/MCP, drift, Zetta-double and envtest coverage — see [`control-plane/README.md`](control-plane/README.md) |
+
+## Cloudflare DNS ownership
+
+`CloudflareDNSRecord` creates new records with comment
+`orama-operator:<namespace>/<name>` and saves the ID and exact comment in status.
+The comment must fit Cloudflare's 100-character limit: namespace/name has at most
+85 characters. Longer markers prevent creation, without blocking legacy reads or cleanup.
+Records use the same-namespace Secret's `token` and `zoneID`, the requested proxy setting
+and automatic TTL (`1`). Empty type retains the existing IP → A, hostname → CNAME inference.
+
+Before writing, the controller reads every page of records at the desired name.
+Any foreign A, AAAA or CNAME blocks all writes, even alongside an owned record;
+TXT/MX records do not block creation. Matching markers recover ownership after a
+failed Kubernetes status write. Multiple owned candidates are an error. Conflicts,
+invalid marker lengths and missing credentials set `ready: false` and retry after
+five minutes, preserving ownership fields. Missing credentials never trigger API calls.
+
+Pre-upgrade `status.recordID` without `status.ownerComment` retains legacy ownership
+by ID. Matching records receive only reads; changes to type, content, proxying or TTL
+receive one update preserving the existing comment. Legacy records never gain an
+ownership comment. Marked records never fall back to legacy ownership if their
+comment is removed or changed. Steady reconciliation does not rewrite DNS or status.
+
+Deletion fetches a marked record by ID and deletes it only while its comment matches
+`status.ownerComment`. Lost ownership leaves the record intact, releases the finalizer
+and emits Warning `RecordNotOwned`. Legacy records retain deletion by ID. A 404 means
+cleanup succeeded; other API failures retain the finalizer. Missing credentials with
+an ID to clean up retain the finalizer and retry after five minutes. A resource without
+an ID releases its finalizer without Cloudflare calls. Lake, Zetta and Cloud v1 parents
+continue to create the same child CRs.
+
+The operator never takes over Prod 1's live `app.orama.com`. Its cutover repoint remains
+a reviewed Cloudflare change in the bridge
+[cutover runbook](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md),
+listed in [production changes](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/production-changes.md).
+Install the updated DNS CRD through the approved rollout mechanism before running the
+new controller, so `ownerComment` persists. Lake's unchanged-ID/comment/`modified_on`
+proof and the `oramadev.net` conflict, owned cleanup and lost-comment tests remain
+pending Steve's explicit approval for each rollout and test-resource change; rehearse
+on `v1-dev` first. The HTTP/fake-client and local API-server tests do not claim a live rollout.
 
 ## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 
