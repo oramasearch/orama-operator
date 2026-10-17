@@ -26,15 +26,7 @@ import (
 // The key is crdrollout.Change.Key(): "<crd> <version> <field path> <what>". Clear the list when a
 // release is tagged, in the pull request that merges main back into dev; an entry that no longer
 // differs from the last release fails the test.
-var acknowledgedCRDChanges = map[string]string{
-	// operator#539/#542: every Lake runs every feature, so the per-feature switches went. No
-	// controller read them after #542, and config/clusters stopped setting them in the same change.
-	"lakes.orama.cloud v1alpha1 spec.apps.enabled removed":       "operator#542, every Lake syncs apps",
-	"lakes.orama.cloud v1alpha1 spec.services.enabled removed":   "operator#542, every Lake runs services",
-	"lakes.orama.cloud v1alpha1 spec.builds.enabled removed":     "operator#542, every Lake runs builds",
-	"lakes.orama.cloud v1alpha1 spec.workspaces.enabled removed": "operator#542, every Lake runs workspaces",
-	"lakes.orama.cloud v1alpha1 spec.snapshots.enabled removed":  "operator#542, every Lake takes volume snapshots",
-}
+var acknowledgedCRDChanges = map[string]string{}
 
 // lastRelease is the newest release tag behind HEAD, or "" outside a git checkout. A tag on HEAD
 // itself is skipped: at a release's own tag the changes it carries are measured against the release
