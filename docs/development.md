@@ -72,6 +72,14 @@ Set `LAKE_SCHEMA_TEST_POSTGRES=1` and `PGUSER` to your local role; the suite cre
 on `127.0.0.1:5432` and drops only those it created. With this opt-in, missing envtest assets are
 a failure. See [the schema proof and vendoring commands](lake/schema.md#verification).
 
+The Cloud v1 control DB's schema proof (`TestControlDBSchemasAgainstPostgres`, operator#378) needs
+`psql` on `PATH` and `CONTROLDB_SCHEMA_TEST_POSTGRES_URI`, an admin URI to a disposable PostgreSQL 16
+server (for example `postgres://postgres@127.0.0.1:55432/postgres`). It creates and drops one database
+per case and runs the rendered migration Jobs' scripts through the real reconcilers: an empty
+database, 0000 to 0007 with an existing team, missing reference rows that roll back and then recover,
+a partial 0008 without its guard, and per-stack Stripe prices. It uses synthetic reference rows only
+while `assets/dashboard-reference-rows.sql` holds none.
+
 The Lake managed-services store runs its pgx SQL against the vendored schema with
 `LAKE_SERVICES_TEST_POSTGRES=1` (connection `LAKE_SERVICES_TEST_POSTGRES_URI`, default
 `postgres://127.0.0.1:5432/postgres`). It works in a scratch schema inside one transaction that is

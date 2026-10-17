@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -73,10 +74,50 @@ func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *ora
 			ready, detail = ri >= 1, fmt.Sprintf("%d/%d", ri, inst)
 		}
 		comps = append(comps, oramav1alpha1.ComponentStatus{Name: "controldb", Ready: ready, Detail: detail})
+		// A streaming replica receives the primary's schema and runs no migration of its own.
+		if !(oc.Spec.Region.Role == "read" && oc.Spec.Components.ControlDB.Replicate) {
+			comps = append(comps, r.controlDBSchemaReadiness(ctx, oc))
+		}
 	}
 
 	sort.Slice(comps, func(i, j int) bool { return comps[i].Name < comps[j].Name })
 	return comps
+}
+
+// controlDBSchemaReadiness is the `controldb-schema` component: ready only when every control-DB
+// PostgresSchema (controlDBSchemas) reports its current version Applied. Otherwise the detail names
+// the first schema that is not, with its phase and message, so a missing, stale, pending or failed
+// schema is visible in the stack's status.
+func (r *OramaCloudV1Reconciler) controlDBSchemaReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) oramav1alpha1.ComponentStatus {
+	schemas := controlDBSchemas(oc)
+	for i, s := range schemas {
+		name := oc.Name + s.suffix
+		var ps oramav1alpha1.PostgresSchema
+		state := ""
+		if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, &ps); err != nil {
+			state = "not readable: " + err.Error()
+			if apierrors.IsNotFound(err) {
+				state = "not created yet"
+			}
+		} else if !postgresSchemaCurrent(&ps) {
+			state = fmt.Sprintf("%s (applied %q, want %q)", ps.Status.Phase, ps.Status.AppliedVersion, ps.Spec.Version)
+			if ps.Status.Phase == "" {
+				state = "Pending"
+			}
+			if ps.Status.Message != "" {
+				state += ": " + ps.Status.Message
+			}
+			if retried := ps.Annotations[schemaJobRetriedAnnotation]; retried != "" {
+				state += "; " + retried
+			}
+		}
+		if state != "" {
+			return oramav1alpha1.ComponentStatus{Name: "controldb-schema",
+				Detail: fmt.Sprintf("%d/%d applied; %s %s", i, len(schemas), name, state)}
+		}
+	}
+	return oramav1alpha1.ComponentStatus{Name: "controldb-schema", Ready: true,
+		Detail: fmt.Sprintf("%d/%d applied", len(schemas), len(schemas))}
 }
 
 func componentName(labels map[string]string, fallback string) string {

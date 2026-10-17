@@ -33,6 +33,12 @@ The control DB is always in-cluster: `controlDB.mode` supports only `in-cluster`
 `enabled: false`; the reconcile also refuses resources stored before this rule.
 `controlDB.endpoint` and `controlDB.credentialsSecretRef` do not select a different
 control database. Other data stores, including the broker, still support external mode.
+`controlDB.stripePrices` holds this stack's Stripe price IDs for the dashboard reference rows the
+operator seeds ([`components.md`](components.md#the-control-dbs-schema)): `plans[]` is
+`{ id, monthly, yearly }` (sets `subscription_plans.stripe_price_id_monthly`/`_yearly`; a plan not
+listed has both NULL) and `addons[]` is `{ id, priceID }` (sets `stripe_addon_prices.stripe_price_id`;
+an add-on price row is seeded only when listed). `id` is the reference row's UUID; an ID that is not
+a reference row fails the seed. Empty seeds every plan without Stripe prices and no add-on price.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
 
@@ -42,7 +48,7 @@ serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrast
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
-| `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled) | Always in-cluster CloudNativePG |
+| `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `stripePrices` | Always in-cluster CloudNativePG |
 | `analytics` | data-store | ClickHouse |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
@@ -256,8 +262,10 @@ apply-in-one-transaction) and reflects `phase` + `appliedVersion` (read back fro
 desired version never misreports). It carries **no finalizer** — deleting the CR never drops the
 schema/data, it only stops managing the migration.
 
-`OramaCloudV1` creates + owns a `<cr>-controldb-schema` instance (`reconcileControlDBMigrations`)
-applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
+`OramaCloudV1` creates + owns three instances, in order (`reconcileControlDBMigrations`):
+`<cr>-controldb-schema` (dashboard migrations 0000 to 0007), `<cr>-controldb-schema-0008` (0008 with
+the reference rows) and `<cr>-controldb-reference-data` (the reference rows with the stack's Stripe
+prices, `applyEveryVersion`); see [`components.md`](components.md#the-control-dbs-schema). See
 [`datastore-crds.md`](datastore-crds.md) for the full design. Sample:
 [`../config/samples/postgresschema.yaml`](../config/samples/postgresschema.yaml).
 
@@ -267,6 +275,7 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.schemaConfigMapRef` | `{ name, key }` — ConfigMap + key holding the schema SQL (applied all-or-nothing in one transaction). |
 | `spec.version` | Schema version recorded in `.status.appliedVersion` once applied. A change automatically replaces the prior Job with foreground deletion, waiting for its pods before starting the guarded apply. Lake hashes SQL plus guard; the dashboard hashes SQL. |
 | `spec.guardTable` | A `public` table that must exist for the Job to skip the apply. Default `crawler_configs`. When the schema file records migrations (`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`), the Job also requires every one of them in the database's `schema_migrations`, and otherwise applies the whole idempotent file ([#271](https://github.com/oramasearch/orama-operator/issues/271)). With no `schema_migrations` table, or a file that records none, the guard alone decides. |
+| `spec.applyEveryVersion` | Default `false`. When `true` the Job has no guard: each new `spec.version` applies the file once, for SQL that is safe to apply again (the control DB's reference-row upsert). `guardTable` is then ignored. |
 | `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `ReplacingMigrationJob` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
