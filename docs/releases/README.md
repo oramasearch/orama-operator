@@ -3,6 +3,10 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.4.0](v0.4.0.md) — 2026-10-17. Every Lake runs every feature, with the operator defaulting
+  every image (the library agents and agent-runtime at their `v0.1.0` releases); a Lake's Clerk
+  instance kept configured from its secret key; a Lake's own Zetta as its deployment control plane
+  in lake's row format; CRDs applied widened before a roll and exactly after. 33 resource kinds.
 - [v0.3.0](v0.3.0.md) — 2026-10-17. Secure networking (network sandboxes, declared connections,
   egress, tunnels, peers, the zetta-tunnel ingress gateway and mesh) and regions (one Lake per
   region with a region picker at an apex host). The nonprod set gains `testing`. 33 resource kinds.
