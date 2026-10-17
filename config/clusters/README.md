@@ -43,7 +43,9 @@ An `OramaCloudV1Set` copies `cloudflare-api-token` to each member's namespace th
 `secrets` list; besides DNS, it is the DNS-01 credential of every stack's Let's Encrypt `Issuer`,
 so a v1 member with a host fails to reconcile without it
 ([origin TLS](../../docs/components.md#origin-tls-ingress_tlsgo-457)). Every host in a v1 set must
-be a name in a Cloudflare zone that token can edit, or its certificate is never issued.
+be a name in a Cloudflare zone that token can edit, or its certificate is never issued. So each
+member names its own `oramadev.net` dashboard and docs hosts (`app-dev`/`docs-dev`, `app-eu`/`docs-eu`,
+`app-us`/`docs-us`); no enabled component in a v1 set has a `.local` host.
 
 To check that the files match the cluster:
 
