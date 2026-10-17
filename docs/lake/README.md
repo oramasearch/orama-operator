@@ -655,6 +655,12 @@ yet. One `LakeSet` manages them all, and the operator supplies everything lake's
 | `spec.regions` | `LAKE_REGIONS` (JSON `[{name, label, host, latitude, longitude}]`) | the LakeSet: one entry per member with a region label, written into each such member; stating it in a set is refused |
 | `spec.apexHost` | `LAKE_APEX_HOST` | stated on one member; a second is refused. Adds the Ingress rule and DNS record above |
 
+**One environment per picker** (Steve, 2026-10-17: *"pickers only work within a single
+environment, not across multiple environments"*). The regions a picker offers are the regions of
+one environment: production's `eu.lake.live` and `us.lake.live`. Nonprod is one region and has no
+picker. A set whose labelled members name the same cloud region twice is refused (#532), because
+two members in one region are two environments, not two regions.
+
 The four env names are reserved: the same names in `spec.env` are ignored. A Lake with none of these
 fields (nonprod, a dedicated instance) gets none of the variables and shows no picker.
 
