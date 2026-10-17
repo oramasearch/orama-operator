@@ -120,7 +120,7 @@ func newTunnelFixture(t *testing.T, extra ...client.Object) *tunnelFixture {
 		Spec: oramav1alpha1.LakeSpec{
 			Namespace:      "lake-system",
 			PullSecretName: "registry",
-			Workspaces:     oramav1alpha1.LakeWorkspacesSpec{Enabled: true},
+			Workspaces:     oramav1alpha1.LakeWorkspacesSpec{},
 		},
 	}
 	workspace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testTunnelNS, Labels: map[string]string{

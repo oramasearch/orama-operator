@@ -260,14 +260,20 @@ about the **operator**, not a copy of prod docs.
 control-plane Postgres with lake's schema applied through `PostgresSchema`, an owned `OramaZettaCluster` data plane, opt-in scheduled R2/S3
 backup through CNPG Barman, cluster-scoped `LakeRestoreRehearsal` restore/upgrade/failover proof,
 opt-in Ingress + Cloudflare DNS, and Lake-owned `LakeEnvironment` CRs materialized from the
-operator's Zetta deployment table. Opt-in `spec.apps.enabled` synchronizes the control Postgres
+operator's Zetta deployment table. **Every Lake runs every feature, with no per-Lake switch, and
+the operator supplies a default for every image** (operator#539; `internal/controller/lake_defaults.go`,
+`docs/lake/README.md#every-lake-runs-every-feature`): never add an `enabled` field to a Lake
+feature, and never let an empty image turn a feature off. It synchronizes the control Postgres
 `apps` table into Lake-owned `LakeApp` resources, registers generated token hashes, returns status,
 and maintains the apps wildcard DNS record; see `docs/lake/apps.md`.
-Opt-in `spec.workspaces.enabled` synchronizes control-Postgres workspace rows into restricted,
+It synchronizes control-Postgres workspace rows into restricted,
 default-deny namespaces with local Zetta credentials. Required `workspace_id` values place managed
 services, stores, user agents and synchronized apps in the same boundary; see
 `docs/lake/workspaces.md`.
-It also runs opt-in, isolated image-build Jobs from Lake's `builds` table; see `docs/lake/builds.md`.
+It also runs isolated image-build Jobs from Lake's `builds` table; see `docs/lake/builds.md`.
+With `spec.clerk` (one Clerk instance's secret key) it keeps that instance configured for lake through
+Clerk's Backend API and gives the Lake its keys; Clerk's Platform API is a private beta it does not use.
+See `docs/lake/clerk.md`.
 `LakeSealedSecret` delivers cluster-bound ciphertext into
 owned Kubernetes Secrets; see `docs/lake/sealed-secrets.md`.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current
@@ -381,9 +387,10 @@ A release promotes `dev` to `main` and tags the result. The pages and their conv
 6. **Tag the merge commit on `main`** `vX.Y.Z` and publish the GitHub release from the page
    (`gh release create vX.Y.Z --repo oramasearch/orama-operator --verify-tag --title "Release vX.Y.Z" --notes-file <page without its first heading, relative links made absolute at the tag>`).
 7. **Build the image from the tag and roll it.** `make check-crds CONTEXT=<context>` first, then
-   build `oramasearch/orama-operator:main-<sha>` on the cluster BuildKit, apply `chart/crds/`, and
-   upgrade the release with the stored
-   values as a file (liquid-bridge's `liquid-dev` skill has the commands). Confirm the pod runs the
+   build `oramasearch/orama-operator:main-<sha>` on the cluster BuildKit, apply the CRDs widened
+   (`hack/crdunion`), upgrade the release with the stored values as a file, wait for the rollout,
+   then apply `chart/crds/` exactly
+   (`docs/operations/crd-rollout.md`, operator#543) (liquid-bridge's `liquid-dev` skill has the commands). Confirm the pod runs the
    new digest and that every `Lake` and `OramaZettaCluster` is still `Ready`.
    Publish the chart for the same tag, so a management cluster can install this version on a
    leaf: `go run ./hack/pushchart -version <image tag>` (and again for `vX.Y.Z` after step 8). It
@@ -410,3 +417,8 @@ the cluster runs that image.
 - Before any `helm upgrade`, run `make check-crds CONTEXT=<kube-context>`. Helm applies
   `chart/crds` on install only, so an upgrade never adds a new CRD; see
   [`docs/operations/crd-rollout.md`](docs/operations/crd-rollout.md).
+- **CRDs go on in two steps around a roll** (operator#543): widened by what the cluster still has
+  before the new operator starts, exactly once it alone runs. Never `kubectl apply -f chart/crds/`
+  before a roll: a removed field is pruned under the old operator. Never change a field's type or
+  meaning; add a new field. A removal is named in `cmd/crd_field_removal_test.go`. See
+  [`docs/operations/crd-rollout.md`](docs/operations/crd-rollout.md#removing-or-changing-a-field-crds-in-two-steps-around-the-roll).

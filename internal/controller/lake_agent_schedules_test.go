@@ -218,7 +218,7 @@ func TestARemovedScheduleLosesItsCronJobAndCredential(t *testing.T) {
 	}
 }
 
-func TestAScheduleWithoutAgentsEnabledOrAValidSlugFails(t *testing.T) {
+func TestAScheduleWithoutAValidSlugFailsAndOneWithoutAnImageRunsOnTheDefault(t *testing.T) {
 	bad := testSchedule(testScheduleID, "not-a-slug", "0 9 * * 1", "")
 	store := &fakeServiceStore{schedules: []LakeAgentSchedule{bad}}
 	h := newServiceHarness(t, agentsTestLake(), store)
@@ -226,11 +226,11 @@ func TestAScheduleWithoutAgentsEnabledOrAValidSlugFails(t *testing.T) {
 	if status := store.scheduleStatus(t, testScheduleID); status.Phase != AgentPhaseFailed {
 		t.Fatalf("status %+v", status)
 	}
+	// A Lake that states no agent image schedules on the default (operator#539).
 	store = &fakeServiceStore{schedules: []LakeAgentSchedule{testSchedule(testScheduleID, testScheduleSlug, "0 9 * * 1", "")}}
 	h = newServiceHarness(t, serviceTestLake(), store)
 	h.poll()
-	if status := store.scheduleStatus(t, testScheduleID); status.Phase != AgentPhaseFailed ||
-		!strings.Contains(status.Message, "runtimeImage") {
+	if status := store.scheduleStatus(t, testScheduleID); status.Phase == AgentPhaseFailed {
 		t.Fatalf("status %+v", status)
 	}
 }
