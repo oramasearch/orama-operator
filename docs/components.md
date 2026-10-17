@@ -16,7 +16,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
-| **dashboard** | `internal/controller/app.go`, `dashboard_env.go` | `Deployment` + Service + `Ingress`; user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
+| **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress`; user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
 | **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica); + an owned **`PostgresSchema`** applying the dashboard's Drizzle schema | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
@@ -578,8 +578,9 @@ outside service. Per-key sources, and whether each must equal Prod 1, are in the
 - The `AIRBYTE_*` keys go away with Airbyte (bridge decisions of 2026-10-16, 12a) and are not copied.
 - `CRON_SECRET` reaches the dashboard through `dashboard.envFrom`, and the in-cluster CronJobs
   ([operator#17](https://github.com/oramasearch/orama-operator/issues/17)) read it from the same
-  Secret. Only the dashboard and those CronJobs share it, so it is generated, not copied from Prod 1.
-  The generated Secret's name, its generator and the CronJobs' reference are settled with #17.
+  Secret key, resolved from the dashboard's own `envFrom` and `env`, so there is no second reference
+  to keep in step. Only the dashboard and those CronJobs share it, so its value is new for Prod 2, not
+  copied from Prod 1, and it lives in the environment Secret the set delivers.
 - No Firebase keys: sign-in moves to Clerk before the cutover and Prod 2 needs no Firebase server
   keys (bridge decisions of 2026-10-16, 1 and 2). Clerk's keys are added with orama-bridge#180.
 - `NEXT_PUBLIC_APP_URL` is inlined by `next build`, so a runtime value is not a reliable override;
@@ -592,6 +593,82 @@ outside service. Per-key sources, and whether each must equal Prod 1, are in the
   Likewise `REDIS_CACHE_URL`/`REDIS_CACHE_TOKEN` feed `@upstash/redis` over HTTP (`src/lib/redis/redis.ts`),
   not the in-cluster Redis TCP service; the bridge decisions plan an in-stack `serverless-redis-http`
   shim (12a). Rendering these variables does not prove either integration works.
+
+### The dashboard's scheduled jobs
+
+`spec.components.dashboard.crons` ([operator#17](https://github.com/oramasearch/orama-operator/issues/17),
+`dashboard_crons.go`) runs Prod 1's scheduled jobs as CronJobs owned by the `OramaCloudV1`. Without
+the dashboard's three, the crawler that drives ingestion, the index GC and the Stripe usage sync never
+run on Prod 2. Running them on both stacks at once would crawl and bill twice, so every one is created
+suspended. Field reference: [crd-reference.md](crd-reference.md#speccomponentsdashboardcrons).
+
+- **Dashboard crons.** `<cr>-dashboard-cron-crawler` (`*/1 * * * *`), `-index-gc` (`0 * * * *`) and
+  `-consumption-sync` (`0 */6 * * *`), Prod 1's schedules from the dashboard's `vercel.json`, fixed.
+  Each Job runs `curlimages/curl:8.10.1` (or `spec.images.overrides["dashboard-crons"]`, used as
+  written) and sends `GET http://<cr>-dashboard:3000<path>` with `Authorization: Bearer $CRON_SECRET`.
+  The in-cluster Service means a run cannot reach Prod 1 while DNS moves. The header reaches curl on
+  stdin, so the value is in no argument, and only the HTTP status is logged, never the body. Any status
+  outside 200–299 fails the Job, a redirect included (it is never followed), as do connection errors
+  and the 300-second timeout. `consumption-sync` only queues per-team usage syncs: its 2xx proves the
+  call, not every queued payment update.
+- **E2E canary.** `<cr>-e2e-canary` (`*/5 * * * *`) runs `monitor-test` from the digest-pinned
+  `e2eCanary.image`: it signs in through `http://<cr>-dashboard:3000/api/user/jwt` with the canary
+  project's private API key, inserts a probe document, checks it through the readers the dashboard
+  returns and the in-cluster `<cr>-reader`, and deletes the oldest tracked probe. In the same pod, once
+  a day (the first run at or after 04:30 UTC, or after a missed day), the prune deletes leaked
+  `monitor <hex>` probes once the collection holds more than 200 documents, keeping the titles the
+  canary tracks; with no tracked titles it refuses to prune. The script is
+  `internal/controller/assets/e2e-canary.sh`, a port of Prod 1's `collection_prune-crons.sh`. Canary
+  and prune share the canary's state file, `test-state.json`, on the owned claim
+  `<cr>-e2e-canary-state` (1 GiB, `ReadWriteOnce`). They run as one CronJob so that a prune can never
+  delete a probe the canary has written but not yet recorded. The prune stays until the canary's leak is
+  fixed in `oramacore-test-e2e` (bridge decision 11), then goes.
+- **Metrics and alerts.** The canary and prune write Prometheus textfile metrics
+  (`oramacore_monitor_*`, `oramacore_collection_prune_*`, the names Prod 1's alerts use) to
+  `metrics/` on the state claim. Nothing scrapes them yet: collecting them and the alert rules are
+  in-cluster observability's work ([#15](https://github.com/oramasearch/orama-operator/issues/15)).
+  A failed run also fails its Job, which `kube_job_status_failed` reports.
+- **Run policy, all four.** `timeZone: Etc/UTC`, `concurrencyPolicy: Forbid` (per CronJob; the
+  dashboard's three routes can run at once), `startingDeadlineSeconds: 60` so a long suspension leaves
+  no backlog, one successful and three failed Jobs kept, `backoffLimit: 0` (no retry of calls with paid
+  side effects), `ttlSecondsAfterFinished: 3600`, and `activeDeadlineSeconds` 330 for the dashboard
+  crons and 900 for the canary (Prod 1's prune allowed 600 seconds). Pods use the stack's pull
+  secret, no service account token, the hardening baseline plus `runAsNonRoot` (uid 100, curl's
+  `curl_user`, for the dashboard crons; 65532 for the canary, whose image runs as root) and a read-only
+  root filesystem.
+- **Ownership.** Each CronJob and the claim carry `labelsFor(cr, "dashboard-crons" | "e2e-canary")` and
+  the CR as controller. A same-name object the CR does not control is a reconcile error and is left
+  unchanged. Disabling the crons or the dashboard, or removing `e2eCanary`, deletes only objects the
+  CR controls, before the environment is checked, so missing credentials never keep disabled crons
+  alive. Deleting a CronJob removes its Jobs.
+
+**Cutover.** `suspend` changes only through a committed change to the set file
+`config/clusters/sets/v1-prod.yaml` (member `v1-eu`; `v1-us` never runs the crons), applied to the
+managing cluster `orama-production-cluster-01`, in the same cutover step that turns Prod 1's Vercel
+crons off. Never by editing, patching or creating the CronJobs. Prod 1's schedules are stopped and
+verified first, then Prod 2 is unsuspended; a short gap is acceptable. The canary unsuspends the same
+way (`e2eCanary.suspend`) after Prod 1's crons host timers are stopped (cutover runbook step 2), since
+those call `app.orama.com/api/user/jwt` and would write to Prod 2. Rollback commits `suspend: true`
+first and waits for active Jobs to finish. The runbook is orama-bridge
+[`docs/projects/orama-cloud-v1/cutover-runbook.md`](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md)
+(preconditions P6 and P7, branch `cutover/v1-eu-crons`).
+
+**Prod 1's AWS crons host.** Every job known to run on `prod-oramacore-crons-us-east-2`
+(`i-0bc49126a30b3a699`, `t3.medium`, us-east-2; oramacore-aws `terraform/live/prod/main.tf:620-630`),
+from read-only sources: oramacore-aws `addcf3c` (2026-10-13), orama-deploy `655f1a2` (2026-06-09), the
+techops-docs fleet evidence of 2026-07-07 and bridge decision 11 (2026-10-16). The host itself has not
+been read; the live listing (`systemctl list-timers --all`, `systemctl list-units --all --type=service`,
+each user's `crontab -l`, `/etc/crontab`, `/etc/cron.d`, `/etc/cron.*`) is still to be taken over SSM.
+
+| Job | Schedule on Prod 1 | Source | What it does | Prod 2 |
+|---|---|---|---|---|
+| `oramacore.test-e2e.timer` → `.service` (user `test-e2e`, binary `monitor-e2e` from the `monitor-test` release asset) | `OnBootSec=1min`, `OnUnitActiveSec=5min`, `Persistent=false` | orama-deploy `oramacore-test-e2e/production/`, `oramacore-test-e2e.production.json` | The canary above, against collection `790cea05`, with the CF worker, the AWS load balancer and the three regional readers as extra readers; state in `test-state.json`, metrics through node_exporter | Moved: `<cr>-e2e-canary`, `*/5 * * * *` (decision 11) |
+| `collection-prune.timer` → `.service` (root) | `OnCalendar=*-*-* 04:30:00 UTC`, `Persistent=true`, `OnBootSec=10min`, `TimeoutSec=600` | oramacore-aws `terraform/scripts/oramacore-custom-metrics/collection_prune-crons.sh` | The prune above | Moved into `<cr>-e2e-canary`'s daily run until the canary's leak is fixed, then dropped (decision 11) |
+| `collection-doc-count.timer` → `.service` | `OnBootSec=3min`, `OnUnitActiveSec=30min` | `collection_doc_count-crons.sh` | Exports the canary collection's document count, which warns at 400 of the 500-document cap | Dropped: the prune keeps the collection under the cap (decision 11) |
+| `analytics-processor.check-env.timer` | `OnUnitActiveSec=4min` | orama-deploy `analytics.production.json`, `analytics/prod/systemd/` | Analytics processor environment check | Not in this change: analytics processing maps to the combined import ([#421](https://github.com/oramasearch/orama-operator/pull/421) with #419, #422, #448). Decision 11 names only the canary's three timers, so Steve's confirmation for these rows is pending |
+| `analytics-processor.importer.timer` | `OnUnitActiveSec=5min` | as above | Analytics import | As above |
+| `analytics-processor.aggregator.timer` | `OnUnitActiveSec=5min` | as above | Analytics aggregation | As above |
+| CloudWatch agent, SSM agent (from `user_data`), Grafana Alloy and node_exporter | daemons, not schedules | oramacore-aws `terraform/modules/orama-crons/main.tf`, the scripts' headers | Host metrics and shipping, remote shell | Dropped with the host: Prod 2's monitoring is in-cluster ([#15](https://github.com/oramasearch/orama-operator/issues/15)) |
 
 ## DISCO (`disco.go`)
 

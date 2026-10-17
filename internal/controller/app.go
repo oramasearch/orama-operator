@@ -269,8 +269,20 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 
 func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	d := oc.Spec.Components.Dashboard
+	// Cron cleanup comes first, so a missing or invalid environment never keeps disabled crons running.
+	if !d.Enabled || !d.Crons.Enabled {
+		if err := r.teardownDashboardCrons(ctx, oc); err != nil {
+			return err
+		}
+	}
 	if !d.Enabled {
-		return r.teardownByComponent(ctx, oc, "dashboard")
+		if err := r.teardownByComponent(ctx, oc, "dashboard"); err != nil {
+			return err
+		}
+		if d.Crons.Enabled { // admission refuses this; an object that bypassed it is reported
+			return errCronsNeedDashboard
+		}
+		return nil
 	}
 	masterKey, ok := masterAPIKeySecret(oc)
 	if !ok {
@@ -311,7 +323,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 			Env:     []corev1.EnvVar{pgURIEnv(oc, "DATABASE_URL")},
 		}}
 	}
-	return r.reconcileApp(ctx, oc, appDef{
+	if err := r.reconcileApp(ctx, oc, appDef{
 		component:   "dashboard",
 		image:       img,
 		port:        3000,
@@ -325,7 +337,14 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		initContainers:    initContainers,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
-	})
+	}); err != nil {
+		return err
+	}
+	// The crons call the dashboard Service written above (dashboard_crons.go).
+	if !d.Crons.Enabled {
+		return nil
+	}
+	return r.reconcileDashboardCrons(ctx, oc, sources)
 }
 
 // reconcileDocs provisions docs.orama.com (Next.js + Fumadocs) as a Deployment + Service
