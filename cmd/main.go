@@ -393,8 +393,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.LakeE2ETestReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Clientset: clientset,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeE2ETest")
 		os.Exit(1)
