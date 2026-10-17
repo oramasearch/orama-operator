@@ -210,12 +210,13 @@ caught the two capability exceptions above before merge (drop-ALL had crash-loop
 
 Driven by `spec.region.role`:
 
-- **Writer** (primary only) — a `StatefulSet` (1 replica) running `oramasearch/oramacore`,
+- **Writer** (primary only) — a `StatefulSet` (1 replica) running `oramasearch/oramacore` (or the
+  writer-only image, see **Side-only images** below),
   a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
 - **Readers** (primary + read tiers) — a `Deployment` (`reader.replicas`) with the
-  `oramacore` container **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
+  `oramacore` container (the combined or the reader-only image) **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
   127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set.
   Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
@@ -234,15 +235,38 @@ Driven by `spec.region.role`:
   > **in-process** per pod ("Building Python service" → "src.embeddings.models: Models loaded"), so
   > each writer/reader still carries a model copy independent of this shared ai-server. Whether to
   > offload those to the shared ai-server (or drop the redundant one) is tracked in #39.
-- **Config** — a `ConfigMap` with `envoy.yaml` + a **full, valid** `config.yaml`
-  (`http` / `writer_side` / `reader_side` / `ai_server` / `log`, matching
-  `oramacore/config-docker.yaml`; `execution_providers: CUDA|CPU` from `writer.gpu`).
-  The `config.yaml` is a **template** — `master_api_key` is a `__MASTER_API_KEY__`
-  placeholder, so **no credential lives in the ConfigMap**. A `render-config` **init
-  container** substitutes the real value from `<cr>-engine-secret` (via `envFrom`) into
-  a shared `emptyDir`, and OramaCore reads it via `CONFIG_PATH=/etc/oramacore/config.yaml`
+- **Side-only images** ([#308](https://github.com/oramasearch/orama-operator/issues/308)) — the
+  published `oramasearch/oramacore` image starts both OramaCore sides in every pod: without the
+  overrides below, **every reader also runs a writer** that accepts writes sent to the reader's host
+  and publishes them to the stream, and the writer builds a second, reader-side index on its own
+  disk. Prod 1 runs side-only v1.2.39 builds instead. Set `spec.images.overrides.oramacore-writer`
+  **and** `.oramacore-reader` (by digest) to run them: the writer pod runs the writer image and
+  renders `writer.yaml`, and the reader pods run the reader image and render `reader.yaml`. Both or
+  neither: one without the other (an empty value counts as unset) fails the reconcile with
+  `Ready=False` (`ReconcileError`) before any resource changes; a disabled engine skips the check,
+  so it can still be torn down. With both set they win over `overrides.oramacore`; with neither,
+  both pods keep the combined image (`overrides.oramacore`, else `<registry>/oramacore:latest`) and
+  `config.yaml`, unchanged. `status.conditions[EngineSidesSeparated]` reports which mode runs.
+- **Config** — a `ConfigMap` `<cr>-engine-config` with `envoy.yaml` + **full, valid** OramaCore
+  configs, matching `oramacore/config-docker.yaml` (`execution_providers: CUDA|CPU` from
+  `writer.gpu`). Without side-only images it holds the combined `config.yaml` (`http` / `log` /
+  `writer_side` / `reader_side` / `ai_server`), which both pods render. With them it holds
+  `writer.yaml` (`http` / `log` / `writer_side` / `ai_server`), rendered by the writer, and
+  `reader.yaml` (`http` / `log` / `reader_side` / `ai_server`), rendered by the readers; switching
+  modes replaces the data, so the other mode's keys disappear. All three are assembled from the
+  same section builders in `engine.go` (`engineCommonYAML`, `writerSideYAML`, `readerSideYAML`,
+  `aiServerYAML`), so the sections and stream names are identical in every mode (writer
+  `oramacore-writer`/`write`, readers `oramacore-reader`/`reader`).
+  Every config is a **template** — `master_api_key` is a `__MASTER_API_KEY__` and the Groq key a
+  `__GROQ_API_KEY__` placeholder, so **no credential lives in the ConfigMap**. A `render-config`
+  **init container** substitutes the real values from `<cr>-engine-secret` (via `envFrom`) into
+  the pod's template and writes it to a shared `emptyDir`, and OramaCore reads it via
+  `CONFIG_PATH=/etc/oramacore/config.yaml`
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
-  `ORAMACORE_` provider splits on `_`). All children set an owner reference to the CR, so
+  `ORAMACORE_` provider splits on `_`). With side-only images each pod template carries
+  `orama.cloud/config-hash`, the SHA-256 of its own unrendered template, so a change to one side's
+  config rolls only that side (a change to a shared section rolls both); the combined config is
+  not hashed. All children set an owner reference to the CR, so
   deleting the CR cascade-deletes them.
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
   BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
