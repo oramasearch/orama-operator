@@ -82,7 +82,9 @@ Each step is a reviewed pull request that changes committed files, applied the u
 done by hand ([operations](operations.md)).
 
 1. **Certificates first.** cert-manager ([#457](https://github.com/oramasearch/orama-operator/issues/457))
-   issues every public host's certificate into its Ingress's TLS Secret. Read
+   issues every public host's certificate into its Ingress's TLS Secret. Cloud v1 Ingresses request
+   theirs from the stack's `Issuer`, one Secret per host ([components](../components.md#origin-tls-ingress_tlsgo-457));
+   Lake and Zetta Ingresses do not request one yet. Read
    `kubectl -n zetta-tunnel-ingress get configmap zetta-tunnel-ingress-report -o yaml`: the host is in
    `served`, not in `skipped`.
 2. **Check the gateway serves it** before DNS moves, with the cluster's gateway address:

@@ -111,7 +111,7 @@ All are pinned and cluster-scoped:
 
 | Release | Chart | Version | Namespace | Runs |
 |---|---|---|---|---|
-| `cert-manager` | `jetstack/cert-manager` | v1.21.2 | `cert-manager` | K8ssandra's webhook certificates |
+| `cert-manager` | `jetstack/cert-manager` | v1.21.2 | `cert-manager` | K8ssandra's webhook certificates; origin TLS for each Cloud v1 stack's Ingresses, from the namespaced Let's Encrypt `Issuer` the operator renders per stack (#457). Nothing else is installed for it. |
 | `strimzi` | `strimzi/strimzi-kafka-operator` | 1.2.0 | `strimzi-system` | Kafka (`STRIMZI_POD_SECURITY_PROVIDER_CLASS=restricted`, so its pods are admitted to a workspace namespace) |
 | `clickhouse-operator` | `altinity/altinity-clickhouse-operator` | 0.27.4 | `clickhouse-system` | ClickHouse (`watch.namespaces.include: [".*"]`: empty means its own namespace only) |
 | `tidb-operator` | `pingcap/tidb-operator` | v1.6.6 | `tidb-admin` | TiDB (CRDs from the release's `crd.yaml`, applied server-side by a presync hook) |

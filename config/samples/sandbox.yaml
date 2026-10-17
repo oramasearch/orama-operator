@@ -41,8 +41,10 @@ spec:
       writer: { gpu: false }           # no GPU node on the sandbox -> CPU embeddings
       reader: { replicas: 1 }
       envoy: true
-    dashboard: { enabled: true, host: app.sandbox.local }
-    docs:      { enabled: true, host: docs.sandbox.local }
+    # No hosts, so no Ingresses: every Ingress gets a Let's Encrypt certificate (DNS-01), so a host
+    # must be in a Cloudflare zone and needs cloudflare.apiTokenSecretRef (origin TLS, #457).
+    dashboard: { enabled: true }
+    docs:      { enabled: true }
     disco:     { enabled: true }
     workers:   { enabled: true, replicas: 1 }
     ingestion: { enabled: true, harvest: true }

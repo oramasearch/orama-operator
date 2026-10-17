@@ -20,7 +20,7 @@ pointing at the primary); the full sample list is in
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
 | `llm.default` | enum | `groq` | Provider used when a request doesn't name one. |
-| `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
+| `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane; `token` is also the DNS-01 credential of the stack's Let's Encrypt `Issuer`, so a stack with any host needs it); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
 
@@ -30,6 +30,11 @@ Every component has `enabled`. Data stores also have `mode: in-cluster|external`
 `placement: local|central`, `replicate`, and `endpoint`/`credentialsSecretRef`.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
+Every host (`dashboard.host`, `docs.host`) gets origin TLS: the stack owns cert-manager `Issuer`
+`<cr>-letsencrypt` (Let's Encrypt, DNS-01 with `cloudflare.apiTokenSecretRef` key `token`), and each
+host's certificate lives in Secret `<host>-tls` beside the Ingress. There is no per-host TLS field and
+no way to turn it off; without the token the reconcile fails rather than serving HTTP
+([`components.md`](components.md#origin-tls-ingress_tlsgo-457)).
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|

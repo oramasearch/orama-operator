@@ -39,6 +39,11 @@ The managing cluster, `orama-production-cluster-01`, was created by hand before 
 existed and has no `KubernetesCluster` of its own.
 
 No file here holds a secret. Secrets are named by reference and live on the managing cluster.
+An `OramaCloudV1Set` copies `cloudflare-api-token` to each member's namespace through its
+`secrets` list; besides DNS, it is the DNS-01 credential of every stack's Let's Encrypt `Issuer`,
+so a v1 member with a host fails to reconcile without it
+([origin TLS](../../docs/components.md#origin-tls-ingress_tlsgo-457)). Every host in a v1 set must
+be a name in a Cloudflare zone that token can edit, or its certificate is never issued.
 
 To check that the files match the cluster:
 
