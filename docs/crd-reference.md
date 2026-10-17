@@ -78,7 +78,9 @@ convergence ([orama-bridge#130](https://github.com/oramasearch/orama-bridge/issu
 serving), and the **StatefulSet** (each node a per-node PVC at `/data`; `node-0` bootstraps, peers join
 it). With `spec.host` set it also fronts the host with an **nginx Ingress** and — when `spec.dnsSecretRef`
 is given — an **owned `CloudflareDNSRecord`** (a proxied A/CNAME record → the ingress LoadBalancer),
-reusing the same Cloudflare child-controller path as the dashboard DNS. The Ingress proxies the **whole
+reusing the same Cloudflare child-controller path as the dashboard DNS. A `CloudflareDNSRecord` whose
+name (or type) changes deletes the record it made before (`status.recordID`) once the new one exists,
+so a host change never leaves the old name live (#529); a record already gone counts as deleted. The Ingress proxies the **whole
 host** to the Zetta node's own HTTP server on `:4800`: the bare root (`/`) is the node's **web dashboard**
 ([zetta#647](https://github.com/oramasearch/zetta/issues/647)) and every other path is MCP/REST/serving.
 (An earlier operator version parked a static `zetta` placeholder at `/` while the node HTTP server was

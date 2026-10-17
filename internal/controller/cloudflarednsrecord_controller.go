@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -31,6 +32,15 @@ const cfDNSFinalizer = "orama.cloud/cloudflare-dns-cleanup"
 type CloudflareDNSRecordReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// APIBase is the Cloudflare API base URL; empty means the public API. Tests point it at a fake.
+	APIBase string
+}
+
+func (r *CloudflareDNSRecordReconciler) api() string {
+	if r.APIBase != "" {
+		return r.APIBase
+	}
+	return cfAPIBase
 }
 
 //+kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
@@ -51,7 +61,7 @@ func (r *CloudflareDNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.
 	if !rec.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&rec, cfDNSFinalizer) {
 			if token != "" && zoneID != "" && rec.Status.RecordID != "" {
-				if err := cfDeleteDNSRecord(ctx, token, zoneID, rec.Status.RecordID); err != nil {
+				if err := cfDeleteDNSRecord(ctx, r.api(), token, zoneID, rec.Status.RecordID); err != nil {
 					return ctrl.Result{}, err
 				}
 			}
@@ -76,11 +86,21 @@ func (r *CloudflareDNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, nil
 	}
 
-	id, err := cfUpsertDNSRecordID(ctx, token, zoneID, &rec.Spec)
+	id, err := cfUpsertDNSRecordID(ctx, r.api(), token, zoneID, &rec.Spec)
 	if err != nil {
 		rec.Status.Ready, rec.Status.Message = false, err.Error()
 		_ = r.Status().Update(ctx, &rec)
 		return ctrl.Result{}, err
+	}
+	// A changed name (or type) is a different record in Cloudflare. The one this resource made
+	// before is deleted before the new ID is recorded, so a rename never leaves the old name live
+	// (#529). If the delete fails, the old ID stays in status and the next pass retries it.
+	if previous := rec.Status.RecordID; previous != "" && previous != id {
+		if err := cfDeleteDNSRecord(ctx, r.api(), token, zoneID, previous); err != nil {
+			rec.Status.Ready, rec.Status.Message = false, "deleting the previous record "+previous+": "+err.Error()
+			_ = r.Status().Update(ctx, &rec)
+			return ctrl.Result{}, err
+		}
 	}
 	if rec.Status.RecordID != id || !rec.Status.Ready {
 		rec.Status.RecordID, rec.Status.Ready, rec.Status.Message = id, true, "reconciled"
@@ -113,7 +133,7 @@ func (r *CloudflareDNSRecordReconciler) SetupWithManager(mgr ctrl.Manager) error
 
 // cfUpsertDNSRecordID creates or updates a proxied DNS record and returns its Cloudflare ID.
 // (Reuses cfDo + cfAPIBase from cloudflare.go.)
-func cfUpsertDNSRecordID(ctx context.Context, token, zoneID string, spec *oramav1alpha1.CloudflareDNSRecordSpec) (string, error) {
+func cfUpsertDNSRecordID(ctx context.Context, api, token, zoneID string, spec *oramav1alpha1.CloudflareDNSRecordSpec) (string, error) {
 	recType := spec.Type
 	if recType == "" {
 		recType = "A"
@@ -121,7 +141,7 @@ func cfUpsertDNSRecordID(ctx context.Context, token, zoneID string, spec *oramav
 			recType = "CNAME"
 		}
 	}
-	listURL := fmt.Sprintf("%s/zones/%s/dns_records?type=%s&name=%s", cfAPIBase, zoneID, recType, spec.Name)
+	listURL := fmt.Sprintf("%s/zones/%s/dns_records?type=%s&name=%s", api, zoneID, recType, spec.Name)
 	var listResp struct {
 		Result []struct {
 			ID string `json:"id"`
@@ -137,20 +157,26 @@ func cfUpsertDNSRecordID(ctx context.Context, token, zoneID string, spec *oramav
 		} `json:"result"`
 	}
 	if len(listResp.Result) > 0 {
-		url := fmt.Sprintf("%s/zones/%s/dns_records/%s", cfAPIBase, zoneID, listResp.Result[0].ID)
+		url := fmt.Sprintf("%s/zones/%s/dns_records/%s", api, zoneID, listResp.Result[0].ID)
 		if err := cfDo(ctx, token, http.MethodPut, url, body, &resp); err != nil {
 			return "", err
 		}
 		return listResp.Result[0].ID, nil
 	}
-	url := fmt.Sprintf("%s/zones/%s/dns_records", cfAPIBase, zoneID)
+	url := fmt.Sprintf("%s/zones/%s/dns_records", api, zoneID)
 	if err := cfDo(ctx, token, http.MethodPost, url, body, &resp); err != nil {
 		return "", err
 	}
 	return resp.Result.ID, nil
 }
 
-func cfDeleteDNSRecord(ctx context.Context, token, zoneID, recordID string) error {
-	url := fmt.Sprintf("%s/zones/%s/dns_records/%s", cfAPIBase, zoneID, recordID)
-	return cfDo(ctx, token, http.MethodDelete, url, nil, nil)
+// cfDeleteDNSRecord deletes a record by ID. A record that is already gone counts as deleted.
+func cfDeleteDNSRecord(ctx context.Context, api, token, zoneID, recordID string) error {
+	url := fmt.Sprintf("%s/zones/%s/dns_records/%s", api, zoneID, recordID)
+	err := cfDo(ctx, token, http.MethodDelete, url, nil, nil)
+	var apiErr *cfAPIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return err
 }
