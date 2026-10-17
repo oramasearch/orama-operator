@@ -220,18 +220,22 @@ func (r *OramaZettaClusterReconciler) gatherOperatorState(ctx context.Context, n
 // namespaces caches to sync"). A single uncached GET needs only `namespaces get`, no list/watch.
 func (r *OramaZettaClusterReconciler) operatorID(ctx context.Context) string {
 	r.operatorIDOnce.Do(func() {
-		if v := os.Getenv("ORAMA_OPERATOR_ID"); v != "" {
-			r.operatorIDValue = v
-			return
-		}
-		var ns corev1.Namespace
-		if err := r.reader().Get(ctx, client.ObjectKey{Name: "kube-system"}, &ns); err == nil && ns.UID != "" {
-			r.operatorIDValue = string(ns.UID)
-			return
-		}
-		r.operatorIDValue = "unknown"
+		r.operatorIDValue = clusterOperatorID(ctx, r.reader())
 	})
 	return r.operatorIDValue
+}
+
+// clusterOperatorID is this operator's identity on orama_control rows: ORAMA_OPERATOR_ID, else the
+// kube-system Namespace UID (stable for the cluster's life), else "unknown".
+func clusterOperatorID(ctx context.Context, reader client.Reader) string {
+	if v := os.Getenv("ORAMA_OPERATOR_ID"); v != "" {
+		return v
+	}
+	var ns corev1.Namespace
+	if err := reader.Get(ctx, client.ObjectKey{Name: "kube-system"}, &ns); err == nil && ns.UID != "" {
+		return string(ns.UID)
+	}
+	return "unknown"
 }
 
 // insertComponentSQL builds an append for one component row, namespaced by operator.

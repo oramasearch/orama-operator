@@ -44,18 +44,24 @@ var operatorZettaSchema = []zettaSchemaStmt{
 	// IF NOT EXISTS (zetta#735): a departed node is expressed with a `status='gone'` marker row, never a
 	// DELETE. See zetta_topology.go + docs/zetta-datastore.md.
 	{"orama_control", "CREATE TABLE topology (operator TEXT, cluster TEXT, node TEXT, address TEXT, reachability TEXT, node_type TEXT, status TEXT, updated_at TEXT)"},
-	// Desired deployments and their observed transitions (operator#124). Zetta is append-only, so
-	// liquid writes record_type='desired' events and the operator appends record_type='status' events.
-	// Readers reduce each stream latest-wins by deployment_id + updated_at.
-	{"orama_control", "CREATE TABLE deployments (deployment_id TEXT, record_type TEXT, lake TEXT, repository TEXT, environment TEXT, kind TEXT, change_id TEXT, image TEXT, replicas TEXT, port TEXT, env_json TEXT, secret_refs_json TEXT, host TEXT, withdrawn TEXT, change_closed TEXT, phase TEXT, url TEXT, message TEXT, updated_at TEXT)"},
+	// Desired deployments and their observed transitions (operator#124), in lake's row shape
+	// (operator#560): lake's columns from include/lake/control/zetta_control.hpp, keyed by
+	// lake = LAKE_PUBLIC_HOST, then the operator's workload columns. Zetta is append-only, so the
+	// deployment contract writes record_type='desired' rows and the operator appends
+	// record_type='status' rows. Zetta stores rows as schemaless JSON and has no ALTER TABLE, so
+	// this list only documents the columns: on a Zetta where the table exists the statement
+	// answers "already exists" and changes nothing, and every row the operator writes carries
+	// every column itself. change_id is the column before operator#560 and is no longer written.
+	{"orama_control", "CREATE TABLE deployments (operator TEXT, lake TEXT, repository TEXT, environment TEXT, kind TEXT, change TEXT, image TEXT, deployment_id TEXT, requested_by TEXT, requested_at TEXT, phase TEXT, namespace TEXT, url TEXT, message TEXT, updated_at TEXT, ordering_token TEXT, record_type TEXT, replicas TEXT, port TEXT, env_json TEXT, secret_refs_json TEXT, host TEXT, withdrawn TEXT, change_closed TEXT, change_id TEXT)"},
 	// The public deployment contract preserves response/history fields separately from the desired and
 	// status event stream. A separate table upgrades existing clusters without ALTER TABLE support.
 	{"orama_control", "CREATE TABLE deployment_records (deployment_id TEXT, lake TEXT, repository TEXT, environment TEXT, change_id TEXT, image TEXT, result_id TEXT, rollback_of TEXT, secret_refs_json TEXT, created_at TEXT)"},
 	// lake's platform requests (operator#557, lake docs/control-plane/platform.md): lake appends an
 	// environment's plain values and its custom domains here, keyed by lake = LAKE_PUBLIC_HOST, and
 	// its platform sync reads both tables with deployments on every pass. A table that does not
-	// exist fails that read, which leaves lake's platform degraded, so the tables are created empty
-	// with the columns of lake's include/lake/control/zetta_control.hpp.
+	// exist fails that read, which leaves lake's platform degraded, so the tables are created with
+	// the columns of lake's include/lake/control/zetta_control.hpp. The operator applies both to the
+	// environment's LakeEnvironment and appends each domain's status (operator#560).
 	{"orama_control", "CREATE TABLE environment_env (lake TEXT, repository TEXT, environment TEXT, key TEXT, value TEXT, deleted TEXT, set_by TEXT, updated_at TEXT, ordering_token TEXT)"},
 	{"orama_control", "CREATE TABLE domains (lake TEXT, repository TEXT, environment TEXT, host TEXT, tls TEXT, status TEXT, message TEXT, deleted TEXT, requested_by TEXT, updated_at TEXT, ordering_token TEXT)"},
 	// Data plane — the application-data landing zone (destined to replace v1's Typesense/ClickHouse/PG).

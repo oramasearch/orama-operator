@@ -658,12 +658,14 @@ verification. Sample:
 | `spec.change` | Immutable liquid change identifier. The DNS-safe short form prefixes a preview hostname. |
 | `spec.image` | Required immutable OCI digest reference (`...@sha256:<64 hex>`). Rollback is another deployment event naming an older change and image. |
 | `spec.replicas` / `.port` | Deployment replicas (default `1`) and required container port exposed by Service port 80. |
-| `spec.env[]` | Literal `{name,value}` workload environment variables. |
+| `spec.env[]` | Literal `{name,value}` workload environment variables: the deployment row's own, then lake's `orama_control.environment_env` values, which win for the same name. |
 | `spec.secretRefs[]` | Names or `secret://<name>` references for `LakeSealedSecret` resources in the Lake namespace. Every reference must belong to the same Lake and have delivered its current generation. The produced Secrets are copied into the isolated workload namespace and imported with `envFrom`; unresolved references report `Degraded` and remove the workload. |
 | `spec.host` | Exact hostname for a named environment. Preview hosts are derived from the Lake's `previewWildcard`. |
+| `spec.domains[]` | Custom domains `{host, tls}` (`tls` `acme` or `provided`), from lake's `orama_control.domains` requests. Each is a rule of the environment's Ingress and, with the Lake's `dnsSecretRef`, a proxied `CloudflareDNSRecord` owned by the environment; removing it removes both. Keyed by `host`. See [the row contract](lake/environments.md#orama_controldomains). |
 | `status.phase` | `Progressing \| Ready \| Degraded \| TornDown`, written only on a real transition. |
 | `status.url` / `.readyReplicas` | Public URL when ingress is configured, and observed Deployment readiness. |
 | `status.deploymentId` | Stable deployment-event identity copied from the `orama.cloud/deployment-id` annotation. |
+| `status.domains[]` | Per custom domain: `host`, `status` (`pending \| active \| failed`) and `message`. `active` once its DNS record is Ready; the operator copies it into lake's `domains` rows. |
 | `status.conditions[]` | Standard `Ready` condition with transition reason and message. |
 
 ## `LakeRestoreRehearsal` (separate CRD, cluster-scoped)
