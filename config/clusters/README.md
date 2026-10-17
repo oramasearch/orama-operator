@@ -40,6 +40,12 @@ existed and has no `KubernetesCluster` of its own.
 
 No file here holds a secret. Secrets are named by reference and live on the managing cluster.
 
+An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
+reference rows the operator seeds into its control database
+([`docs/components.md`](../../docs/components.md#the-control-dbs-schema)). `v1-nonprod` leaves it
+empty: no test-mode prices exist yet, so its plans carry no Stripe prices and it has no add-on
+prices. `v1-prod` needs its live-mode IDs before billing works on it.
+
 To check that the files match the cluster:
 
 ```sh
