@@ -434,7 +434,7 @@ func TestAProductionInstanceAdoptsItsWebhookAndWritesClerksDNS(t *testing.T) {
 		t.Fatalf("DNS records = %d, want 3", len(records))
 	}
 	for _, rec := range records {
-		if rec.Spec.Proxied || rec.Spec.DeletionPolicy != "Retain" || rec.Spec.Type != "CNAME" ||
+		if rec.Spec.Proxied || rec.Spec.DeletionPolicy != "Retain" || rec.Spec.SharedOwner != "clerk/ins_1" || rec.Spec.Type != "CNAME" ||
 			rec.Spec.SecretRef != "cloudflare-lake-live" || len(rec.OwnerReferences) != 1 {
 			t.Errorf("record %s = %+v owners %v", rec.Name, rec.Spec, rec.OwnerReferences)
 		}
