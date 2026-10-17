@@ -38,8 +38,8 @@ columns in the table below; lake selects `lake = LAKE_PUBLIC_HOST` and the colum
 requested_by, requested_at, namespace, ordering_token`, which no operator row carries, and Zetta refuses a
 `SELECT` naming a column no row has. So the first deployment written through the operator's contract makes
 lake's sync fail (`platform: degraded`, pages served from the last mirror, platform writes refused), and the
-operator does not yet reconcile `environment_env` or `domains`. Aligning the row contract is tracked
-separately.
+operator does not yet reconcile `environment_env` or `domains`. Aligning the row contract is
+[operator#560](https://github.com/oramasearch/orama-operator/issues/560).
 
 ## Control-plane model
 
