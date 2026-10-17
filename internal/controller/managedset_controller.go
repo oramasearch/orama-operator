@@ -55,8 +55,11 @@ type setKind struct {
 	crd             string // the instance kind's CRD, which must exist on a member's cluster
 	namespaced      bool   // whether the instance is a namespaced resource
 	namespacePrefix string
-	// finish sets what a member's spec takes from where it runs, after the merge.
-	finish func(spec map[string]any, namespace string, cluster *oramav1alpha1.KubernetesCluster) error
+	// prepare computes, once per pass, what every member's spec takes from the whole set (a Lake's
+	// region list). A *setError refuses the set: nothing is applied. Nil for a kind that needs none.
+	prepare func(template map[string]any, members []resolvedMember) (any, error)
+	// finish sets what a member's spec takes from where it runs and from prepare, after the merge.
+	finish func(spec map[string]any, namespace string, cluster *oramav1alpha1.KubernetesCluster, shared any) error
 	// observe reads an instance as its cluster reports it.
 	observe func(obj *unstructured.Unstructured) (ready bool, version, message string)
 }
@@ -65,13 +68,14 @@ var lakeSetKind = setKind{
 	setKindName: "LakeSet",
 	instance:    oramav1alpha1.GroupVersion.WithKind("Lake"),
 	crd:         "lakes.orama.cloud", namespacePrefix: "lake-",
-	finish: func(spec map[string]any, namespace string, _ *oramav1alpha1.KubernetesCluster) error {
+	prepare: prepareLakeRegions,
+	finish: func(spec map[string]any, namespace string, cluster *oramav1alpha1.KubernetesCluster, shared any) error {
 		// A Lake names its own namespace, and every member has its own.
 		if set, ok := spec["namespace"].(string); ok && set != "" && set != namespace {
 			return fmt.Errorf("spec.namespace is %q, but a member's namespace is set by the member (%q): remove it from the template and the member's spec, or set the member's namespace field", set, namespace)
 		}
 		spec["namespace"] = namespace
-		return nil
+		return finishLakeRegion(spec, cluster, shared)
 	},
 	observe: func(obj *unstructured.Unstructured) (bool, string, string) {
 		version, _, _ := unstructured.NestedString(obj.Object, "spec", "image")
@@ -93,7 +97,7 @@ var oramaCloudV1SetKind = setKind{
 	setKindName: "OramaCloudV1Set",
 	instance:    oramav1alpha1.GroupVersion.WithKind("OramaCloudV1"),
 	crd:         "oramacloudv1s.orama.cloud", namespaced: true, namespacePrefix: "v1-",
-	finish: func(spec map[string]any, _ string, cluster *oramav1alpha1.KubernetesCluster) error {
+	finish: func(spec map[string]any, _ string, cluster *oramav1alpha1.KubernetesCluster, _ any) error {
 		// The region is the cluster's. It is never stated, and cannot be stated differently.
 		region, _ := spec["region"].(map[string]any)
 		if region == nil {
@@ -447,10 +451,11 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 
 	template, err := jsonObject(spec.Template.Raw, "spec.template")
 	var members []resolvedMember
-	if err == nil {
-		members, status.Purpose, err = r.resolve(ctx, spec)
-	} else {
+	var shared any
+	if err != nil {
 		err = &setError{"InvalidTemplate", err.Error()}
+	} else if members, status.Purpose, err = r.resolve(ctx, spec); err == nil && r.kind.prepare != nil {
+		shared, err = r.kind.prepare(template, members)
 	}
 	var refused *setError
 	if errors.As(err, &refused) {
@@ -486,7 +491,7 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 				entry.Version = previous.Version
 			}
 		}
-		isReady, err := r.applyMember(ctx, set, template, resolved, &entry)
+		isReady, err := r.applyMember(ctx, set, template, shared, resolved, &entry)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -523,7 +528,7 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 
 // applyMember brings one member to its settings and fills in its status. It returns whether the
 // member is Ready, and an error only for something that failed (a wait is not an error).
-func (r *managedSetReconciler) applyMember(ctx context.Context, set managedSet, template map[string]any, resolved resolvedMember, entry *oramav1alpha1.SetMemberStatus) (bool, error) {
+func (r *managedSetReconciler) applyMember(ctx context.Context, set managedSet, template map[string]any, shared any, resolved resolvedMember, entry *oramav1alpha1.SetMemberStatus) (bool, error) {
 	fail := func(err error) (bool, error) {
 		entry.Phase, entry.Message = clusterPhaseDegraded, err.Error()
 		return false, fmt.Errorf("member %s on %s: %w", resolved.member.Name, resolved.member.ClusterRef, err)
@@ -539,17 +544,11 @@ func (r *managedSetReconciler) applyMember(ctx context.Context, set managedSet, 
 	if waiting != "" || resolved.cluster == nil {
 		return wait(firstNonEmpty(waiting, "KubernetesCluster "+resolved.member.ClusterRef+" does not exist"))
 	}
-	var override map[string]any
-	if resolved.member.Spec != nil {
-		if override, err = jsonObject(resolved.member.Spec.Raw, "the member's spec"); err != nil {
-			return fail(err)
-		}
+	merged, err := memberSpec(template, resolved)
+	if err != nil {
+		return fail(err)
 	}
-	// A copy through JSON, so nothing shared with the template is written.
-	merged := mergeSpec(template, override)
-	raw, _ := json.Marshal(merged)
-	_ = json.Unmarshal(raw, &merged)
-	if err := r.kind.finish(merged, resolved.namespace, resolved.cluster); err != nil {
+	if err := r.kind.finish(merged, resolved.namespace, resolved.cluster, shared); err != nil {
 		return fail(err)
 	}
 	req := r.request(set, resolved)
@@ -572,6 +571,22 @@ func (r *managedSetReconciler) applyMember(ctx context.Context, set managedSet, 
 	}
 	entry.Phase, entry.Message = setPhaseProgressing, message
 	return false, nil
+}
+
+// memberSpec is a member's spec: its own settings merged over the template, as a copy through
+// JSON so nothing shared with the template is written.
+func memberSpec(template map[string]any, resolved resolvedMember) (map[string]any, error) {
+	var override map[string]any
+	if resolved.member.Spec != nil {
+		var err error
+		if override, err = jsonObject(resolved.member.Spec.Raw, "the member's spec"); err != nil {
+			return nil, err
+		}
+	}
+	merged := mergeSpec(template, override)
+	raw, _ := json.Marshal(merged)
+	_ = json.Unmarshal(raw, &merged)
+	return merged, nil
 }
 
 // release handles members that were in the set's status and are no longer in its spec. Under

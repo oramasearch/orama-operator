@@ -18,9 +18,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -48,10 +50,15 @@ type DeploymentControlPlane struct {
 	ZettaURL    string
 	Now         func() time.Time
 	Log         logr.Logger
+
+	operatorIDOnce  sync.Once
+	operatorIDValue string
 }
 
 type deploymentTarget struct {
-	Lake       oramav1alpha1.Lake
+	Lake oramav1alpha1.Lake
+	// Host is the Lake's public host: the `lake` value of every orama_control row lake reads.
+	Host       string
 	Zetta      oramav1alpha1.OramaZettaCluster
 	BaseURL    string
 	ZettaToken string
@@ -306,6 +313,11 @@ func (s *DeploymentControlPlane) authenticate(ctx context.Context, authorization
 	if authenticated == nil {
 		return nil, &capabilityError{Status: http.StatusUnauthorized, Code: "unauthorized", Message: "environment token was rejected", Path: "/authorization"}
 	}
+	host := lakeRowHost(authenticated)
+	if host == "" {
+		message := fmt.Sprintf("Lake %q has no public host: lake names its deployment rows by LAKE_PUBLIC_HOST, so set spec.host or a literal LAKE_PUBLIC_HOST in spec.env", authenticated.Name)
+		return nil, &capabilityError{Status: http.StatusServiceUnavailable, Code: "unavailable", Message: message}
+	}
 	namespace := lakeWorkloadNamespace(authenticated)
 	var zettas oramav1alpha1.OramaZettaClusterList
 	if err := s.reader().List(ctx, &zettas, client.InNamespace(namespace)); err != nil {
@@ -333,6 +345,7 @@ func (s *DeploymentControlPlane) authenticate(ctx context.Context, authorization
 	}
 	return &deploymentTarget{
 		Lake:       *authenticated,
+		Host:       host,
 		Zetta:      zetta,
 		BaseURL:    s.zettaBaseURL(&zetta),
 		ZettaToken: string(zettaSecret.Data["token"]),
@@ -674,37 +687,52 @@ func (s *DeploymentControlPlane) validateSecretReferences(
 }
 
 func (s *DeploymentControlPlane) appendDeployment(ctx context.Context, target *deploymentTarget, record *deploymentRecord) error {
-	if err := zettaSQL(ctx, target.BaseURL, target.ZettaToken, "orama_control", insertDesiredDeploymentSQL(target.Lake.Name, record)); err != nil {
+	desired := desiredDeploymentRow(s.operatorID(ctx), target, record)
+	if err := zettaSQL(ctx, target.BaseURL, target.ZettaToken, "orama_control", insertDeploymentRowSQL(desired)); err != nil {
 		return err
 	}
-	return zettaSQL(ctx, target.BaseURL, target.ZettaToken, "orama_control", insertDeploymentRecordSQL(target.Lake.Name, record))
+	return zettaSQL(ctx, target.BaseURL, target.ZettaToken, "orama_control", insertDeploymentRecordSQL(target.Host, record))
 }
 
-func insertDesiredDeploymentSQL(lake string, record *deploymentRecord) string {
-	secretJSON, _ := json.Marshal(record.Secrets)
+// deploymentRequester is the requested_by of a row written through this contract. The contract
+// authenticates the Lake's admin token, not a person, so the requester is that token's Lake.
+func deploymentRequester(lake *oramav1alpha1.Lake) string {
+	return "lake-admin-token/" + lake.Name
+}
+
+// desiredDeploymentRow is the desired row of a deployment in lake's shape (operator#560): keyed by
+// the Lake's public host, with lake's columns and the operator's workload columns.
+func desiredDeploymentRow(operator string, target *deploymentTarget, record *deploymentRecord) *zettaDeploymentEvent {
 	kind := oramav1alpha1.LakeEnvironmentKindNamed
 	if record.Environment == record.Change {
 		kind = oramav1alpha1.LakeEnvironmentKindPreview
 	}
-	return fmt.Sprintf(
-		"INSERT INTO deployments (deployment_id, record_type, lake, repository, environment, kind, change_id, image, replicas, port, env_json, secret_refs_json, host, withdrawn, change_closed, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-		deploymentSQLQuote(record.ID),
-		deploymentSQLQuote(deploymentRecordTypeDesired),
-		deploymentSQLQuote(lake),
-		deploymentSQLQuote(record.Repository),
-		deploymentSQLQuote(record.Environment),
-		deploymentSQLQuote(kind),
-		deploymentSQLQuote(record.Change),
-		deploymentSQLQuote(record.Image),
-		deploymentSQLQuote("1"),
-		deploymentSQLQuote(fmt.Sprintf("%d", deploymentControlPlaneDefaultPort)),
-		deploymentSQLQuote("[]"),
-		deploymentSQLQuote(string(secretJSON)),
-		deploymentSQLQuote(""),
-		deploymentSQLQuote("false"),
-		deploymentSQLQuote("false"),
-		deploymentSQLQuote(record.CreatedAt),
-	)
+	return &zettaDeploymentEvent{
+		DeploymentID:  record.ID,
+		RecordType:    deploymentRecordTypeDesired,
+		Operator:      operator,
+		Lake:          target.Host,
+		Repository:    record.Repository,
+		Environment:   record.Environment,
+		Kind:          kind,
+		Change:        record.Change,
+		Image:         record.Image,
+		RequestedBy:   deploymentRequester(&target.Lake),
+		RequestedAt:   record.CreatedAt,
+		Replicas:      1,
+		Port:          deploymentControlPlaneDefaultPort,
+		SecretRefs:    append([]string(nil), record.Secrets...),
+		Phase:         deploymentPhaseRequested,
+		UpdatedAt:     record.CreatedAt,
+		OrderingToken: uuid.NewString(),
+	}
+}
+
+func (s *DeploymentControlPlane) operatorID(ctx context.Context) string {
+	s.operatorIDOnce.Do(func() {
+		s.operatorIDValue = clusterOperatorID(ctx, s.reader())
+	})
+	return s.operatorIDValue
 }
 
 func insertDeploymentRecordSQL(lake string, record *deploymentRecord) string {
@@ -727,7 +755,7 @@ func insertDeploymentRecordSQL(lake string, record *deploymentRecord) string {
 
 func (s *DeploymentControlPlane) readDeploymentRecords(ctx context.Context, target *deploymentTarget) ([]deploymentRecord, error) {
 	statement := "SELECT deployment_id, lake, repository, environment, change_id, image, result_id, rollback_of, secret_refs_json, created_at FROM " +
-		deploymentRecordTable + " WHERE lake = " + deploymentSQLQuote(target.Lake.Name)
+		deploymentRecordTable + " WHERE lake = " + deploymentSQLQuote(target.Host)
 	rows, err := zettaSQLQuery(ctx, target.BaseURL, target.ZettaToken, "orama_control", statement)
 	if err != nil {
 		return nil, err
@@ -791,7 +819,7 @@ func (s *DeploymentControlPlane) writeAudit(
 }
 
 func formatDeploymentTime(value time.Time) string {
-	return value.UTC().Format("2006-01-02T15:04:05.000000000Z")
+	return zettaRowTime(value)
 }
 
 func invalidInput(message string, path string) *capabilityError {

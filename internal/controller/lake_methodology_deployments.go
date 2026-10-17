@@ -331,9 +331,6 @@ func (r *LakeReconciler) reconcileMethodologyDeployment(ctx context.Context, lak
 	case !methodologyDeploymentSlugPattern.MatchString(deployment.Slug):
 		status.Phase, status.Message = DeploymentPhaseFailed, "slug must match "+methodologyDeploymentSlugPattern.String()
 		return status, false, nil
-	case !methodologyRunsEnabled(lake):
-		status.Phase, status.Message = DeploymentPhaseFailed, "workspace methodologies are not enabled on this Lake (spec.methodologies.runtimeImage)"
-		return status, false, nil
 	case deployment.RuntimeImage == "":
 		status.Phase, status.Message = DeploymentPhaseFailed, "the deployment names no runtime image"
 		return status, false, nil

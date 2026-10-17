@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 
@@ -70,8 +71,13 @@ func (f *fakeServiceStore) launchStatus(t *testing.T) LakeAgentLaunchStatus {
 func TestLakeTellsLakeWhereItsAgentsAre(t *testing.T) {
 	lake := agentsTestLake()
 	env := lakeAgentEnv(lake, "lake")
-	if got := envValue(t, env, "LAKE_AGENT_ENDPOINTS").Value; got !=
-		"agent-ask-orama=http://prod-agent-ask-orama.lake.svc.cluster.local:8080,agent-project=http://prod-agent-project.lake.svc.cluster.local:8080" {
+	// Every library agent, in key order: the two the spec names and the defaults (operator#539).
+	want := make([]string, 0, len(wantLakeDefaultLibrary))
+	for key := range wantLakeDefaultLibrary {
+		want = append(want, key+"=http://prod-"+key+".lake.svc.cluster.local:8080")
+	}
+	sort.Strings(want)
+	if got := envValue(t, env, "LAKE_AGENT_ENDPOINTS").Value; got != strings.Join(want, ",") {
 		t.Fatalf("LAKE_AGENT_ENDPOINTS = %q", got)
 	}
 	if got := envValue(t, env, "LAKE_INTERNAL_URL").Value; got != "http://lake-prod.lake.svc.cluster.local:80" {
@@ -83,8 +89,8 @@ func TestLakeTellsLakeWhereItsAgentsAre(t *testing.T) {
 	if got := envValue(t, env, "LAKE_AGENT_BUS_DIR").Value; got != "/var/run/lake/agent-bus" {
 		t.Fatalf("LAKE_AGENT_BUS_DIR = %q", got)
 	}
-	if got := lakeAgentEnv(serviceTestLake(), "lake"); got != nil {
-		t.Fatalf("a Lake without agents gets no agent env, got %v", got)
+	if got := envValue(t, lakeAgentEnv(serviceTestLake(), "lake"), "LAKE_AGENT_ENDPOINTS").Value; len(strings.Split(got, ",")) != len(wantLakeDefaultLibrary) {
+		t.Fatalf("a Lake that states no agents runs the whole default library, got %q", got)
 	}
 	full := lakeEnv(lake, lakeSealingMaterial{})
 	envValue(t, full, "LAKE_AGENT_ENDPOINTS")
@@ -161,12 +167,28 @@ func TestLibraryAgentsRunAsDeploymentsAndLeaveWhenUnlisted(t *testing.T) {
 		t.Fatalf("Project Agent service: %v", err)
 	}
 
+	// Every Lake runs every library agent (operator#539): an agent dropped from the spec goes
+	// back to its default image instead of stopping.
 	h.lake.Spec.Agents.Library = h.lake.Spec.Agents.Library[:1]
 	if err := h.reconciler.reconcileLakeLibraryAgents(ctx, h.lake, testServiceNamespace, labels); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testServiceNamespace, Name: "prod-agent-ask-orama"}, &ask); !apierrors.IsNotFound(err) {
-		t.Fatalf("an unlisted library agent is removed, got %v", err)
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testServiceNamespace, Name: "prod-agent-ask-orama"}, &ask); err != nil ||
+		ask.Spec.Template.Spec.Containers[0].Image != wantLakeDefaultLibrary["agent-ask-orama"] {
+		t.Fatalf("an agent without a spec image runs its default, got %v", err)
+	}
+	// A library agent the operator no longer runs (a key dropped from the library) is removed.
+	retired := ask.DeepCopy()
+	retired.Name, retired.ResourceVersion, retired.UID = "prod-agent-retired", "", ""
+	retired.Labels[libraryAgentLabel] = "agent-retired"
+	if err := h.client.Create(ctx, retired); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reconciler.reconcileLakeLibraryAgents(ctx, h.lake, testServiceNamespace, labels); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.client.Get(ctx, client.ObjectKeyFromObject(retired), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("a retired library agent is removed, got %v", err)
 	}
 }
 
@@ -292,14 +314,20 @@ func TestAServiceLaunchIsReadyWhenItsDeploymentIs(t *testing.T) {
 	}
 }
 
-func TestLaunchesFailWithoutARuntimeImage(t *testing.T) {
+func TestLaunchesRunOnTheDefaultRuntimeImageWithoutASpecImage(t *testing.T) {
 	lake := agentsTestLake()
 	lake.Spec.Agents.RuntimeImage = ""
 	store := &fakeServiceStore{launches: []LakeAgentLaunch{testLaunch(agentLaunchModeJob)}}
 	h := newServiceHarness(t, lake, store)
 	h.poll()
-	status := store.launchStatus(t)
-	if status.Phase != AgentPhaseFailed || !strings.Contains(status.Message, "spec.agents.runtimeImage") {
+	if status := store.launchStatus(t); status.Phase == AgentPhaseFailed {
 		t.Fatalf("status %+v", status)
+	}
+	var job batchv1.Job
+	if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: testLaunchName}, &job); err != nil {
+		t.Fatalf("launch job: %v", err)
+	}
+	if got := job.Spec.Template.Spec.Containers[0].Image; got != lakeDefaultAgentRuntimeImage {
+		t.Fatalf("launch runs %q, want the default %q", got, lakeDefaultAgentRuntimeImage)
 	}
 }

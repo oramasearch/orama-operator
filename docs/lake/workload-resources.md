@@ -95,8 +95,8 @@ otherwise); else 0.
 
 ## When it runs
 
-On the Lake's control-rows poll (`reconcileLakeServices`, so with `spec.services.enabled` or
-`spec.builds.enabled` and the schema applied), over the same control-Postgres connection, at most
+On the Lake's control-rows poll (`reconcileLakeServices`, which every Lake with its control
+Postgres runs once the schema has applied), over the same control-Postgres connection, at most
 once every 30 seconds per Lake. Each pass reads the existing rows and the objects lake has, lists
 the pods of every workspace namespace and the Lake's build pods, and writes a row **only when its
 numbers changed**: a steady cluster writes nothing, and `observed_at` is the time of the last change.

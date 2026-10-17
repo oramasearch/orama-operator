@@ -71,6 +71,12 @@ type LakeReconciler struct {
 	// workloadResources throttles the workload resources pass per Lake (lake#643), and the app
 	// transfer pass with it (lake#661).
 	workloadResources workloadResourcesClock
+	// ClerkAPIBase is Clerk's Backend API; empty is https://api.clerk.com/v1. SvixAPIBase replaces
+	// the Svix API address a Clerk instance's webhook portal names. Tests point both at fakes.
+	ClerkAPIBase string
+	SvixAPIBase  string
+	// clerkClock throttles the Clerk configuration pass per Lake (lake_clerk.go).
+	clerkClock lakeClerkClock
 	// VolumeStats reads the kubelet's volume stats for a store's used space (lake#666). Nil reads
 	// them through Clientset's node proxy; with neither, used space is not reported.
 	VolumeStats VolumeStatsReader
@@ -265,6 +271,12 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
+	// The Clerk instance (spec.clerk, lake_clerk.go): before the Deployment, which reads its keys.
+	clerk, err := r.reconcileLakeClerk(ctx, &lake, ns, labels)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile Clerk: %w", err)
+	}
+
 	// Service.
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
@@ -298,7 +310,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	deploy := &appsv1.Deployment{}
 	if schemaReady {
 		deploy, err = r.reconcileLakeDeployment(
-			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing,
+			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing, clerk,
 		)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment: %w", err)
@@ -369,6 +381,17 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		conditionsChanged = true
 	}
 	if apimeta.SetStatusCondition(&desiredConditions, zettaCondition) {
+		conditionsChanged = true
+	}
+	if apimeta.SetStatusCondition(&desiredConditions, lakeFeaturesCondition(&lake)) {
+		conditionsChanged = true
+	}
+	// ClerkReady exists only on a Lake with spec.clerk.
+	if clerk.Condition != nil {
+		if apimeta.SetStatusCondition(&desiredConditions, *clerk.Condition) {
+			conditionsChanged = true
+		}
+	} else if apimeta.RemoveStatusCondition(&desiredConditions, lakeClerkConditionType) {
 		conditionsChanged = true
 	}
 	if lake.Status.ReadyReplicas != deploy.Status.ReadyReplicas || lake.Status.Phase != phase ||
@@ -505,17 +528,21 @@ func (r *LakeReconciler) reconcileLakeZetta(
 	if lake.Spec.Zetta.Replicas != nil {
 		replicas = *lake.Spec.Zetta.Replicas
 	}
-	// The data plane is a plain data plane: managed services are requested through lake's control
-	// Postgres, not an operator schema on Zetta.
-	operatorSchema := false
+	// The Lake's Zetta is also its deployment control plane (operator#557): it carries the
+	// operator schema, so the namespace has exactly the one operator-schema Zetta that the
+	// deployment REST/MCP contract and the deploy sync look for, and lake reads and appends
+	// orama_control through LAKE_OPERATOR_ZETTA_URL with the admin token it already holds for this
+	// cluster. Managed services are still requested through lake's control Postgres, and service
+	// and workspace Zettas stay plain.
+	operatorSchema := true
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, zetta, func() error {
 		zetta.Labels = withLabels(labels, lakeInstancePodLabels(lake))
 		zetta.Spec = oramav1alpha1.OramaZettaClusterSpec{
 			Replicas:                replicas,
-			Image:                   lake.Spec.Zetta.Image,
+			Image:                   lakeDataPlaneZettaImage(lake),
 			PullSecretName:          lake.Spec.PullSecretName,
 			Storage:                 lake.Spec.Zetta.Storage,
-			Env:                     append([]corev1.EnvVar(nil), lake.Spec.Zetta.Env...),
+			Env:                     lakeDataPlaneZettaEnv(lake),
 			Reachability:            lake.Spec.Zetta.Reachability,
 			ProvisionOperatorSchema: &operatorSchema,
 		}
@@ -593,6 +620,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 	replicas int32,
 	port int32,
 	sealing lakeSealingMaterial,
+	clerk lakeClerkState,
 ) (*appsv1.Deployment, error) {
 	terminationGracePeriodSeconds := int64(lakeTerminationGracePeriodSeconds)
 	strategy, affinity := lakeRollout(replicas, storeAccessModes, lake.Spec.Rollout.OverlapOnSharedStore, labels)
@@ -633,7 +661,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 				Image:           image,
 				Args:            lake.Spec.Args,
 				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
-				Env:             lakeEnv(lake, sealing),
+				Env:             append(lakeEnv(lake, sealing), lakeClerkEnv(lake, clerk)...),
 				Resources:       *resources,
 				SecurityContext: containerSecurityContext,
 				Lifecycle:       lakeDrainPreStop(),
@@ -677,7 +705,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 				}},
 			})
 		}
-		if len(lake.Spec.Agents.Library) > 0 {
+		if len(lakeAgentLibrary(lake)) > 0 {
 			// The library agents' bus credentials (lake docs/api/agent-bus.md), one file each.
 			mode := int32(0o440)
 			spec := &deployment.Spec.Template.Spec
@@ -1085,6 +1113,8 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		"LAKE_DATA_PLANE_TOKEN":          {},
 		"LAKE_DATA_PLANE_URL":            {},
 		"LAKE_INSTANCE_KEK":              {},
+		"LAKE_OPERATOR_ZETTA_TOKEN":      {},
+		"LAKE_OPERATOR_ZETTA_URL":        {},
 		"LAKE_SEALING_KID":               {},
 		"LAKE_SEALING_PUBLIC_KEY":        {},
 		"LAKE_SERVICE_DIR":               {},
@@ -1108,16 +1138,17 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 	if explicitAppsWildcard != nil {
 		env = append(env, *explicitAppsWildcard.DeepCopy())
 		reserved["LAKE_APPS_WILDCARD"] = struct{}{}
-	} else if lake.Spec.Apps.Enabled {
-		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_WILDCARD", Value: lake.Spec.Apps.Wildcard})
+	} else {
+		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_WILDCARD", Value: lakeAppsWildcard(lake)})
 		reserved["LAKE_APPS_WILDCARD"] = struct{}{}
 	}
-	if lake.Spec.Apps.Enabled {
-		env = append(env, corev1.EnvVar{Name: "LAKE_APPS_RUNTIME_IMAGE", Value: lake.Spec.Apps.RuntimeImage})
-	}
+	env = append(env, corev1.EnvVar{Name: "LAKE_APPS_RUNTIME_IMAGE", Value: lakeAppsRuntimeImage(lake)})
 	// The base of every methodology's image build and the stage and collect pods' image (lake#655).
-	if methodologyRunsEnabled(lake) {
-		env = append(env, corev1.EnvVar{Name: "LAKE_METHODOLOGY_RUNTIME_IMAGE", Value: lake.Spec.Methodologies.RuntimeImage})
+	env = append(env, corev1.EnvVar{Name: "LAKE_METHODOLOGY_RUNTIME_IMAGE", Value: lakeMethodologyRuntimeImage(lake)})
+	// The image lake runs MCP servers on: the default, unless spec.env names the variable, which
+	// then stays where spec.env puts it.
+	if runner, fromSpec := lakeMCPRunnerEnv(lake); !fromSpec {
+		env = append(env, runner)
 	}
 	if lakePostgresEnabled(lake) {
 		env = append(env, corev1.EnvVar{
@@ -1142,45 +1173,67 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 			corev1.EnvVar{Name: "LAKE_CONTROL_DB_PASSWORD", ValueFrom: ref("password")},
 		)
 	}
+	// LAKE_PUBLIC_HOST names this Lake on every orama_control row lake reads and writes, and lake
+	// refuses to start the operator Zetta client without it. spec.env keeps a value it states;
+	// otherwise the operator gives spec.host.
+	if !lakeSpecEnvSetsPublicHost(lake) {
+		reserved["LAKE_PUBLIC_HOST"] = struct{}{}
+		if lake.Spec.Host != "" {
+			env = append(env, corev1.EnvVar{Name: "LAKE_PUBLIC_HOST", Value: lake.Spec.Host})
+		}
+	}
 	if lakeZettaEnabled(lake) {
+		zettaURL := fmt.Sprintf(
+			"http://%s.%s.svc.cluster.local:%d",
+			lakeZettaClientService(lake.Name),
+			lakeNamespace(lake),
+			zettaAPIPort,
+		)
+		zettaToken := func() *corev1.EnvVarSource {
+			return &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: lakeZettaAdminSecret(lake.Name),
+					},
+					Key: "token",
+				},
+			}
+		}
 		env = append(
 			env,
-			corev1.EnvVar{
-				Name: "LAKE_DATA_PLANE_URL",
-				Value: fmt.Sprintf(
-					"http://%s.%s.svc.cluster.local:%d",
-					lakeZettaClientService(lake.Name),
-					lakeNamespace(lake),
-					zettaAPIPort,
-				),
-			},
-			corev1.EnvVar{
-				Name: "LAKE_DATA_PLANE_TOKEN",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: lakeZettaAdminSecret(lake.Name),
-						},
-						Key: "token",
-					},
-				},
-			},
+			corev1.EnvVar{Name: "LAKE_DATA_PLANE_URL", Value: zettaURL},
+			corev1.EnvVar{Name: "LAKE_DATA_PLANE_TOKEN", ValueFrom: zettaToken()},
 		)
+		// Deployments (operator#557): the same Zetta carries orama_control, and the token is the
+		// one lake already holds for it, so this grants lake nothing new. Given only when the Lake
+		// has a public host, because lake exits at startup with the pair and no LAKE_PUBLIC_HOST;
+		// FeaturesReady says so when it has none.
+		if lakeHasPublicHost(lake) {
+			env = append(
+				env,
+				corev1.EnvVar{Name: "LAKE_OPERATOR_ZETTA_URL", Value: zettaURL},
+				corev1.EnvVar{Name: "LAKE_OPERATOR_ZETTA_TOKEN", ValueFrom: zettaToken()},
+			)
+		}
 	}
 	if lakeServicesEnabled(lake) {
 		// Service endpoints are in service_status; this directory holds each Ready service's
 		// connection as <slug>.json.
 		env = append(env, corev1.EnvVar{Name: lakeServiceDirEnv, Value: lakeServicesMountPath})
 	}
-	if lake.Spec.Builds.Enabled && !agentsEnabled(lake) {
-		env = append(env, corev1.EnvVar{
-			Name:  "LAKE_INTERNAL_URL",
-			Value: lakeInternalURL(lake, lakeNamespace(lake)),
-		})
-	}
 	// Its agents (lake_agents.go): where the library agents are, lake's own in-cluster address,
 	// the model, and the token lake presents to agent services.
 	env = append(env, lakeAgentEnv(lake, lakeNamespace(lake))...)
+	env = append(env, lakeRegionEnv(lake)...)
+	for _, name := range lakeRegionEnvNames {
+		reserved[name] = struct{}{}
+	}
+	// With spec.clerk the operator gives the Clerk variables (lakeClerkEnv); spec.env cannot.
+	if lake.Spec.Clerk != nil {
+		for _, name := range lakeClerkEnvNames {
+			reserved[name] = struct{}{}
+		}
+	}
 	for _, custom := range lake.Spec.Env {
 		if _, found := reserved[custom.Name]; found {
 			continue
@@ -1188,6 +1241,22 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		env = append(env, custom)
 	}
 	return env
+}
+
+// lakeSpecEnvSetsPublicHost is whether spec.env gives LAKE_PUBLIC_HOST a value or a source. An
+// empty entry counts as unset, so spec.host replaces it.
+func lakeSpecEnvSetsPublicHost(lake *oramav1alpha1.Lake) bool {
+	for _, variable := range lake.Spec.Env {
+		if variable.Name == "LAKE_PUBLIC_HOST" && (variable.Value != "" || variable.ValueFrom != nil) {
+			return true
+		}
+	}
+	return false
+}
+
+// lakeHasPublicHost is whether lake starts with a LAKE_PUBLIC_HOST, from spec.env or spec.host.
+func lakeHasPublicHost(lake *oramav1alpha1.Lake) bool {
+	return lakeSpecEnvSetsPublicHost(lake) || lake.Spec.Host != ""
 }
 
 // reconcileLakeInstanceKek mints the non-exported 32-byte root wrapping key once. Disabling the
@@ -1542,6 +1611,11 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	dnsRecord := func() *oramav1alpha1.CloudflareDNSRecord {
 		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: dnsName, Namespace: ns}}
 	}
+	// The apex host's record (decision 64): the region picker's host, beside the Lake's own.
+	apexRecord := func() *oramav1alpha1.CloudflareDNSRecord {
+		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: svcName + "-apex-dns", Namespace: ns}}
+	}
+	apex := lakeApexHost(lake)
 	if !lake.Spec.IngressEnabled || lake.Spec.Host == "" {
 		if err := deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}); err != nil {
 			return err
@@ -1549,7 +1623,14 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		if err := deleteIfExists(ctx, r.Client, dnsRecord()); err != nil {
 			return err
 		}
+		if err := deleteIfExists(ctx, r.Client, apexRecord()); err != nil {
+			return err
+		}
 		return r.deleteLakePreviewDNSRecords(ctx, lake, ns, "")
+	}
+	hosts := []string{lake.Spec.Host}
+	if apex != "" {
+		hosts = append(hosts, apex)
 	}
 	prefix := networkingv1.PathTypePrefix
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}
@@ -1557,20 +1638,23 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		ing.Labels = lbls
 		ing.Annotations = lakeIngressAnnotations(lake.Spec.TLS.SecretName != "")
 		ing.Spec.IngressClassName = strPtr(ingressClassOrDefault(lake.Spec.IngressClassName))
-		ing.Spec.Rules = []networkingv1.IngressRule{{
-			Host: lake.Spec.Host,
-			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
-				Paths: []networkingv1.HTTPIngressPath{{
-					Path: "/", PathType: &prefix,
-					Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-						Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeServicePort}}},
+		ing.Spec.Rules = nil
+		for _, host := range hosts {
+			ing.Spec.Rules = append(ing.Spec.Rules, networkingv1.IngressRule{
+				Host: host,
+				IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
+					Paths: []networkingv1.HTTPIngressPath{{
+						Path: "/", PathType: &prefix,
+						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
+							Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeServicePort}}},
+					}},
 				}},
-			}},
-		}}
+			})
+		}
 		ing.Spec.TLS = nil
 		if lake.Spec.TLS.SecretName != "" {
 			ing.Spec.TLS = []networkingv1.IngressTLS{{
-				Hosts:      []string{lake.Spec.Host},
+				Hosts:      hosts,
 				SecretName: lake.Spec.TLS.SecretName,
 			}}
 		}
@@ -1582,7 +1666,15 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		if err := deleteIfExists(ctx, r.Client, dnsRecord()); err != nil {
 			return err
 		}
+		if err := deleteIfExists(ctx, r.Client, apexRecord()); err != nil {
+			return err
+		}
 		return r.deleteLakePreviewDNSRecords(ctx, lake, ns, "")
+	}
+	if apex == "" {
+		if err := deleteIfExists(ctx, r.Client, apexRecord()); err != nil {
+			return err
+		}
 	}
 	previewDNSName := ""
 	if lake.Spec.PreviewWildcard == "" {
@@ -1604,6 +1696,16 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		return controllerutil.SetControllerReference(lake, rec, r.Scheme)
 	}); err != nil {
 		return err
+	}
+	if apex != "" {
+		apexRec := apexRecord()
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, apexRec, func() error {
+			apexRec.Labels = lbls
+			apexRec.Spec.SecretRef, apexRec.Spec.Name, apexRec.Spec.Content, apexRec.Spec.Proxied = lake.Spec.DNSSecretRef.Name, apex, target, true
+			return controllerutil.SetControllerReference(lake, apexRec, r.Scheme)
+		}); err != nil {
+			return err
+		}
 	}
 	if lake.Spec.PreviewWildcard == "" {
 		return nil

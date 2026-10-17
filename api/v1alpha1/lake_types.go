@@ -79,8 +79,8 @@ type LakeSpec struct {
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// Agents runs lake's agents (lake#228): the specialized agents of the Agent Library, one
-	// Deployment each, and the launches of user-created agents on agent-runtime (lake#231). Off
-	// until runtimeImage or library is set.
+	// Deployment each, and the launches of user-created agents on agent-runtime (lake#231). Every
+	// Lake runs them, on the operator's default images unless the spec overrides one.
 	// +optional
 	Agents LakeAgentsSpec `json:"agents,omitempty"`
 
@@ -164,6 +164,35 @@ type LakeSpec struct {
 	// +optional
 	PreviewWildcard string `json:"previewWildcard,omitempty"`
 
+	// Region is where this Lake runs, for people choosing between a deployment's regions
+	// (decision 64). A LakeSet fills Name from the member's KubernetesCluster; Label is stated.
+	// The Lake receives them as LAKE_REGION and LAKE_REGION_LABEL.
+	// +optional
+	Region *LakeRegionSpec `json:"region,omitempty"`
+
+	// Regions are every region of the deployment this Lake belongs to, its own included, as its
+	// region picker offers them (LAKE_REGIONS, JSON). A LakeSet computes the list from its members
+	// and writes it into each one; a set does not state it.
+	// +optional
+	Regions []LakeRegion `json:"regions,omitempty"`
+
+	// ApexHost is a second host this Lake answers, where it serves the region picker (lake.live in
+	// front of eu.lake.live and us.lake.live). The Ingress gets a rule for it and, with
+	// DNSSecretRef, an owned proxied DNS record; removing the field removes both. The Lake receives
+	// it as LAKE_APEX_HOST. It has no effect without IngressEnabled and Host. At most one member of
+	// a LakeSet sets it.
+	// +optional
+	ApexHost string `json:"apexHost,omitempty"`
+
+	// Clerk signs people in through a Clerk instance (operator#541, docs/lake/clerk.md). With the
+	// instance's secret key the operator keeps the instance configured for lake through Clerk's
+	// Backend API (the `lake` JWT template, the Lake's allowed origins, the webhook endpoint at
+	// https://<host>/identity/clerk-webhook), writes a production instance's DNS records with
+	// DNSSecretRef, and gives the Lake LAKE_CLERK_PUBLISHABLE_KEY and LAKE_CLERK_WEBHOOK_SECRET.
+	// Without it nothing about Clerk is managed, and spec.env keeps whatever it says.
+	// +optional
+	Clerk *LakeClerkSpec `json:"clerk,omitempty"`
+
 	// DeploySync configures how frequently this operator materializes desired deployment rows from
 	// its Zetta orama_control database into LakeEnvironment resources.
 	// +optional
@@ -171,14 +200,15 @@ type LakeSpec struct {
 
 	// Services lets lake run managed services for its customers: one OramaZettaCluster or
 	// CloudNativePG Cluster per row of the services table in lake's control Postgres, with the
-	// operator's observations written back to service_status. Requires the control-plane Postgres
-	// (spec.postgres.enabled). See docs/lake/services.md.
+	// operator's observations written back to service_status. Needs the control-plane Postgres
+	// (spec.postgres.enabled); without it condition FeaturesReady is False. See docs/lake/services.md.
 	// +optional
 	Services LakeServicesSpec `json:"services,omitempty"`
 
 	// Workspaces configures synchronization of lake's workspaces table into isolated Kubernetes
 	// namespaces. Each running row gets a Zetta cluster, a restricted namespace profile and local
-	// credentials. Requires the control-plane Postgres. See docs/lake/workspaces.md.
+	// credentials. Needs the control-plane Postgres; without it condition FeaturesReady is False.
+	// See docs/lake/workspaces.md.
 	// +optional
 	Workspaces LakeWorkspacesSpec `json:"workspaces,omitempty"`
 
@@ -190,14 +220,50 @@ type LakeSpec struct {
 	Snapshots LakeSnapshotsSpec `json:"snapshots,omitempty"`
 }
 
-// LakeSnapshotsSpec configures the scheduled CSI snapshots of lake's volumes.
-type LakeSnapshotsSpec struct {
-	// Enabled reconciles lake's volume_snapshot_policies table. Disabling stops new snapshots and
-	// pruning; it never deletes a snapshot.
-	// +kubebuilder:default=false
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+// LakeClerkSpec is the Clerk instance a Lake signs people in through.
+type LakeClerkSpec struct {
+	// SecretKeySecretRef names a Secret in spec.namespace holding the instance's Backend API secret
+	// key (sk_test_... or sk_live_...) under key secretKey. The key decides which application and
+	// instance this is; Lakes holding the same key share the instance. The Secret may also hold
+	// publishableKey, which then replaces the one derived from the instance's Frontend API host.
+	// A LakeSet copies it to every member with spec.secrets.
+	SecretKeySecretRef corev1.LocalObjectReference `json:"secretKeySecretRef"`
+}
 
+// LakeRegionSpec is the region a Lake runs in.
+type LakeRegionSpec struct {
+	// Name is the cloud region (swedencentral). In a LakeSet it comes from the member's cluster
+	// and cannot be stated differently.
+	// +optional
+	Name string `json:"name,omitempty"`
+	// Label is the region's name for people ("Europe").
+	// +optional
+	Label string `json:"label,omitempty"`
+}
+
+// LakeRegion is one region of a deployment, as a region picker offers it.
+type LakeRegion struct {
+	// Name is the cloud region.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Label is the region's name for people.
+	// +kubebuilder:validation:MinLength=1
+	Label string `json:"label"`
+	// Host is the region's Lake host (eu.lake.live).
+	// +kubebuilder:validation:MinLength=1
+	Host string `json:"host"`
+	// Latitude and Longitude locate the region's datacenter in decimal degrees, so a picker can
+	// preselect the region closest to a visitor.
+	// +kubebuilder:validation:MinLength=1
+	Latitude string `json:"latitude"`
+	// +kubebuilder:validation:MinLength=1
+	Longitude string `json:"longitude"`
+}
+
+// LakeSnapshotsSpec configures the scheduled CSI snapshots of lake's volumes. Every Lake
+// reconciles lake's volume_snapshot_policies table; there is no switch (operator#539). Turning a
+// policy off is lake's, per target. The operator never deletes a snapshot to stop one.
+type LakeSnapshotsSpec struct {
 	// ClassName is the VolumeSnapshotClass every snapshot names. The operator creates it when it
 	// is absent, for Driver with deletionPolicy Retain, so deleting a snapshot, a workspace or its
 	// namespace never deletes the snapshot's contents. An existing class is used as it is, and is
@@ -214,15 +280,13 @@ type LakeSnapshotsSpec struct {
 	Driver string `json:"driver,omitempty"`
 }
 
-// LakeAppsSpec configures the shared settings used by LakeApp resources.
+// LakeAppsSpec configures the shared settings used by LakeApp resources. Every Lake synchronizes
+// lake's apps table into LakeApp resources; there is no switch (operator#539).
 type LakeAppsSpec struct {
-	// Enabled synchronizes lake's apps table into LakeApp resources. Requires Postgres.
-	// Disabling stops synchronization without deleting existing apps.
-	// +kubebuilder:default=false
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
-	// Wildcard is the DNS suffix for apps. An app without spec.host uses <app>.<wildcard>.
+	// Wildcard is the DNS suffix for apps. An app without spec.host uses <app>.<wildcard>. Empty
+	// uses the Lake's spec.host, so an app is <app>.<lake host> (myapp.lake-dev.oramadev.net).
+	// lake receives it as LAKE_APPS_WILDCARD, and with DNSSecretRef the operator keeps the
+	// *.<wildcard> DNS record.
 	// +optional
 	Wildcard string `json:"wildcard,omitempty"`
 
@@ -232,22 +296,18 @@ type LakeAppsSpec struct {
 	// +optional
 	IngressClass string `json:"ingressClass,omitempty"`
 
-	// RuntimeImage is the private app-runtime image used by runtime-mode apps.
+	// RuntimeImage is the private app-runtime image used by runtime-mode apps. Empty uses the
+	// operator's default (internal/controller/lake_defaults.go).
 	// +optional
 	RuntimeImage string `json:"runtimeImage,omitempty"`
 }
 
-// LakeBuildsSpec configures lake's in-cluster image builds.
+// LakeBuildsSpec configures lake's in-cluster image builds. Every Lake polls lake's builds table;
+// there is no switch (operator#539).
 type LakeBuildsSpec struct {
-	// Enabled turns on the builds-table poll. Turning it off starts no new Jobs and leaves Jobs
-	// already created to finish.
-	// +kubebuilder:default=false
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
-	// BuilderImage is the private oramasearch/lake-builder image run for every build. It must be
-	// set when Enabled is true. The operator copies the Lake's pullSecretName into each build
-	// namespace and uses that local copy to pull it.
+	// BuilderImage is the private oramasearch/lake-builder image run for every build. Empty uses
+	// the operator's default (internal/controller/lake_defaults.go). The operator copies the Lake's
+	// pullSecretName into each build namespace and uses that local copy to pull it.
 	// +optional
 	BuilderImage string `json:"builderImage,omitempty"`
 
@@ -270,7 +330,7 @@ type LakeBuildsSpec struct {
 type LakeMethodologiesSpec struct {
 	// RuntimeImage is the private oramasearch/methodology-runtime image. Lake builds each
 	// methodology's image FROM it (LAKE_METHODOLOGY_RUNTIME_IMAGE), and the stage and collect
-	// pods run it unchanged. Empty turns methodology runs off: a run then fails with that reason.
+	// pods run it unchanged. Empty uses the operator's default (internal/controller/lake_defaults.go).
 	// +optional
 	RuntimeImage string `json:"runtimeImage,omitempty"`
 
@@ -309,17 +369,12 @@ type LakeBuildConcurrencySpec struct {
 	PerSpace int32 `json:"perSpace,omitempty"`
 }
 
-// LakeServicesSpec configures a Lake's managed services (liquid-bridge decision 46).
+// LakeServicesSpec configures a Lake's managed services (liquid-bridge decision 46). Every Lake
+// runs them, with no switch (operator#539): the operator reads the services table from lake's
+// control Postgres, creates <lake>-<slug> in the Lake's namespace for each present service, deletes
+// absent ones, writes service_status, and mounts Secret lake-<lake>-services in lake at
+// /var/run/lake/services (LAKE_SERVICE_DIR).
 type LakeServicesSpec struct {
-	// Enabled turns on managed services: the operator reads the services table from lake's
-	// control Postgres, creates <lake>-<slug> in the Lake's namespace for each present service,
-	// deletes absent ones, writes service_status, and mounts Secret lake-<lake>-services in lake at
-	// /var/run/lake/services (LAKE_SERVICE_DIR). Turning it off stops reconciliation and removes
-	// the mount; it deletes no service.
-	// +kubebuilder:default=false
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
 	// MaxServices caps the live services of this Lake. A new service beyond the cap is not created
 	// and is reported Failed with the message "service quota reached (<n>)"; it starts once there
 	// is room. Lowering the cap never removes or refuses an existing service. 0 means unlimited.
@@ -327,13 +382,15 @@ type LakeServicesSpec struct {
 	// +optional
 	MaxServices int32 `json:"maxServices,omitempty"`
 
-	// ZettaImage is the image for Zetta services. Empty falls back to spec.workspaces.image, and
-	// then to the OramaZettaCluster default.
+	// ZettaImage is the image for Zetta services and workspace Zettas. Empty falls back to
+	// spec.workspaces.image, and then to the operator's default (internal/controller/lake_defaults.go).
 	// +optional
 	ZettaImage string `json:"zettaImage,omitempty"`
 
-	// ZettaEnv is copied to every managed Zetta service's OramaZettaCluster spec.env. Operator-managed
-	// Zetta environment names remain reserved and are reported by each child cluster when ignored.
+	// ZettaEnv is copied to every managed Zetta service's and workspace Zetta's OramaZettaCluster
+	// spec.env, followed by the operator's default Zetta env for every name it does not set
+	// (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864, MALLOC_ARENA_MAX=2). Operator-managed Zetta
+	// environment names remain reserved and are reported by each child cluster when ignored.
 	// +optional
 	ZettaEnv []corev1.EnvVar `json:"zettaEnv,omitempty"`
 
@@ -359,15 +416,11 @@ type LakeServicesSpec struct {
 	PolarsImage string `json:"polarsImage,omitempty"`
 }
 
-// LakeWorkspacesSpec configures isolated workspaces reconciled from lake's control Postgres.
+// LakeWorkspacesSpec configures isolated workspaces reconciled from lake's control Postgres. Every
+// Lake synchronizes lake's workspaces table; there is no switch (operator#539).
 type LakeWorkspacesSpec struct {
-	// Enabled synchronizes lake's workspaces table. Disabling stops reconciliation without deleting
-	// existing workspace namespaces.
-	// +kubebuilder:default=false
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
-	// Image is the Zetta image used by every workspace. Empty uses the OramaZettaCluster default.
+	// Image is the Zetta image used by every workspace when spec.services.zettaImage is empty. Empty
+	// uses the operator's default (internal/controller/lake_defaults.go).
 	// +optional
 	Image string `json:"image,omitempty"`
 
@@ -500,11 +553,12 @@ type LakeStoreSpec struct {
 // LakeAgentsSpec configures lake's agents (docs/lake/agents.md).
 type LakeAgentsSpec struct {
 	// RuntimeImage is oramasearch/agent-runtime:<tag>, the one image every user-created Python
-	// agent runs on. Empty: launches are reported Failed and nothing runs.
+	// agent runs on. Empty uses the operator's default (internal/controller/lake_defaults.go).
 	// +optional
 	RuntimeImage string `json:"runtimeImage,omitempty"`
-	// Library lists the specialized agents this Lake runs, each from its own private image. lake
-	// learns their addresses through LAKE_AGENT_ENDPOINTS.
+	// Library overrides the images of the specialized agents. Every Lake runs all nine agents of the
+	// Agent Library on the operator's default images; an entry here replaces the image of its key
+	// and cannot remove an agent. lake learns their addresses through LAKE_AGENT_ENDPOINTS.
 	// +optional
 	Library []LakeLibraryAgent `json:"library,omitempty"`
 	// OpenAISecretName names a Secret in spec.namespace holding OPENAI_API_KEY, the general Orama
@@ -576,7 +630,7 @@ type LakeZettaSpec struct {
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// Image is the Zetta image. Empty uses the OramaZettaCluster default.
+	// Image is the Zetta image. Empty uses the operator's default (internal/controller/lake_defaults.go).
 	// +optional
 	Image string `json:"image,omitempty"`
 
@@ -590,8 +644,10 @@ type LakeZettaSpec struct {
 	// +optional
 	Storage OramaZettaStorage `json:"storage,omitempty"`
 
-	// Env is copied to the owned OramaZettaCluster spec.env. Operator-managed Zetta environment names
-	// remain reserved and are reported by the child cluster when ignored.
+	// Env is copied to the owned OramaZettaCluster spec.env, followed by the operator's default Zetta
+	// env for every name it does not set (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864,
+	// MALLOC_ARENA_MAX=2). Operator-managed Zetta environment names remain reserved and are reported
+	// by the child cluster when ignored.
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
@@ -687,7 +743,7 @@ type LakeStatus struct {
 	// Sealing publishes the cluster-bound recipient used by authoring tools and lake.
 	// +optional
 	Sealing *LakeSealingStatus `json:"sealing,omitempty"`
-	// Conditions includes StoreReady, BackupReady, and ZettaReady, including invalid
+	// Conditions includes StoreReady, BackupReady, ZettaReady, and FeaturesReady, including invalid
 	// configuration details.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
