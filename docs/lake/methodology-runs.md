@@ -26,7 +26,7 @@ the data in and the result out only through Orama's own runtime code. Lake's con
 | `methodology_run_status` | the operator (phase `Queued` from lake migration `0082_methodology_run_queue`) | `phase`, `message`, `exit_code`, `credential_sha256`, `observed_generation`, `started_at`, `finished_at` |
 | `workload_resources` | the operator | kind `methodology_run`, the sandbox pod's resources (see [workload-resources.md](workload-resources.md)) |
 
-The rows ride the control-rows poll with builds (`spec.builds.enabled`), on the same connection,
+The rows ride the control-rows poll with builds, which every Lake runs, on the same connection,
 woken by `lake_services`. A schema older than `0078` skips them.
 
 ## Three pods, one volume
@@ -160,7 +160,7 @@ times their CPU, memory, GPUs and GPU memory, as for any long-running workload.
 
 | Field | Meaning |
 |---|---|
-| `spec.methodologies.runtimeImage` | the private `oramasearch/methodology-runtime` image; injected into lake as `LAKE_METHODOLOGY_RUNTIME_IMAGE`. Empty: every run fails with that reason |
+| `spec.methodologies.runtimeImage` | the private `oramasearch/methodology-runtime` image; injected into lake as `LAKE_METHODOLOGY_RUNTIME_IMAGE`. Empty uses the operator's default (`internal/controller/lake_defaults.go`) |
 | `spec.methodologies.workVolumeSize` | each run's work volume and each served model's model volume, default `10Gi` |
 | `spec.methodologies.storageClassName` | its storage class, default the cluster's; it should bind on first use (`WaitForFirstConsumer`) for GPU placement |
 | `spec.methodologies.maxConcurrentRunsPerWorkspace` | how many of one workspace's runs may be staging, running or collecting at once, default `2`, at least 1; the rest wait `Queued` |

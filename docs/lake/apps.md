@@ -1,26 +1,25 @@
 # Lake apps
 
 `LakeApp` is the Kubernetes desired-state record for one app belonging to a cluster-scoped
-`Lake`. The resource lives in the Lake namespace. With `spec.apps.enabled`, the operator reads
+`Lake`. The resource lives in the Lake namespace. On every Lake ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)), the operator reads
 lake's desired `apps` rows from control Postgres, reconciles Lake-owned `LakeApp` resources,
 registers token hashes and writes observed status back. Lake owns the schema and API in lake#293.
 
 ## Desired-state contract
 
-Enable it on the Lake:
+Every Lake runs it; there is no switch. Every field is optional:
 
 ```yaml
 spec:
   apps:
-    enabled: true
-    wildcard: apps.oramadev.net
+    wildcard: apps.oramadev.net    # empty: the Lake's spec.host
     ingressClass: nginx
-    runtimeImage: oramasearch/app-runtime:<immutable-tag>
+    runtimeImage: oramasearch/app-runtime:<immutable-tag>   # empty: the operator's default
   dnsSecretRef:
     name: cloudflare-api-token
 ```
 
-Postgres must be enabled and the Lake schema applied. The independent `lake-apps-sync` controller
+Postgres must be enabled (otherwise the Lake's `FeaturesReady` condition says apps cannot run) and the Lake schema applied. The independent `lake-apps-sync` controller
 uses the Services DSN Secret, `lake-<lake>-controldb-app` key `uri`, one pgx connection per pass,
 and the same 30-second pass bound. A leader-only listener uses `LISTEN lake_apps`; lake sends the
 app ID as the notification payload. Each notification wakes a full list, so a payload cannot select
@@ -215,14 +214,15 @@ spec:
 
 The Lake-level settings are:
 
-- `spec.apps.enabled`: opt-in synchronization from the Lake control Postgres;
 - `spec.apps.runtimeImage`: the private `oramasearch/app-runtime` image used in runtime mode;
-- when apps are enabled, the operator passes that value to lake as `LAKE_APPS_RUNTIME_IMAGE`, so
+  empty uses the operator's default (`internal/controller/lake_defaults.go`);
+- the operator passes that image to lake as `LAKE_APPS_RUNTIME_IMAGE`, so
   lake's generated build Dockerfile uses the configured private base image rather than an implicit
   Docker Hub library image;
-- `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`; when apps are
-  enabled, the operator also injects it into lake as `LAKE_APPS_WILDCARD` so lake can validate and
-  create app hosts;
+- `spec.apps.wildcard`: the DNS suffix used when the app does not set `spec.host`; empty uses the
+  Lake's own `spec.host`, so an app is `<app>.<lake host>` (`myapp.lake-dev.oramadev.net`). The
+  operator injects it into lake as `LAKE_APPS_WILDCARD` so lake can validate and create app hosts.
+  HTTPS on these two-level names needs a certificate per zone ([#515](https://github.com/oramasearch/orama-operator/issues/515));
 - `spec.apps.ingressClass`: the app Ingress class, defaulting to `nginx`.
 
 An image-mode app sets `spec.image` to an immutable `name@sha256:<64 hex>` reference. Its optional
@@ -318,15 +318,15 @@ service filenames to the ID and obtain `EVENTS_URL` and `EVENTS_TOKEN` from thei
 
 ## Ingress and authentication
 
-An empty app host derives `<app>.<Lake spec.apps.wildcard>`. That address uses the one shared
+An empty app host derives `<app>.<Lake spec.apps.wildcard>`, and an empty wildcard is the Lake's `spec.host`. That address uses the one shared
 wildcard record maintained by the apps sync. A standalone custom host gets its own proxied record after nginx
 reports a load-balancer target. The ingress class is `spec.apps.ingressClass`, default `nginx`.
 
-With apps enabled, a wildcard and `dnsSecretRef`, the sync maintains one Lake-owned proxied
+With a wildcard (or a Lake host) and `dnsSecretRef`, the sync maintains one Lake-owned proxied
 `CloudflareDNSRecord` in the Lake namespace. It uses the Lake ingress address when its class
 matches, otherwise an owned app ingress of the configured class, selected deterministically.
 No record is created until a target is reported. Suffix changes retire old owned records, and
-disabling apps or removing the suffix/credentials removes the wildcard. Foreign records are
+removing the suffix and host, or the credentials, removes the wildcard. Foreign records are
 never changed or deleted. This path is independent of `previewWildcard` and supports apps even
 when the Lake itself has no public ingress.
 

@@ -44,6 +44,8 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
+
+	"github.com/oramasearch/orama-operator/internal/crdrollout"
 )
 
 const (
@@ -149,6 +151,9 @@ type leafOperatorState struct {
 	// MissingCRDs are the prerequisites this operator version declares that the cluster lacks.
 	// When any is missing the operator was not installed: it would not start.
 	MissingCRDs []string
+	// oldPods counts pods of the Deployment's earlier template still running. The CRDs are applied
+	// exactly only when it is zero (operator#543).
+	oldPods int32
 }
 
 // leafOperatorInstaller installs, upgrades, observes and removes the operator on a cluster
@@ -491,28 +496,95 @@ func applyCRDDocuments(ctx context.Context, c client.Client, source string, data
 	return nil
 }
 
+// chartCRDs reads the CRDs in a chart's crds/ directory.
+func chartCRDs(chrt *chart.Chart) ([]map[string]any, error) {
+	var out []map[string]any
+	for _, file := range chrt.CRDObjects() {
+		crds, err := crdrollout.Parse("the chart's CRD file "+file.Name, file.File.Data)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, crds...)
+	}
+	return out, nil
+}
+
+// clusterCRD reads a CRD from the cluster; nil when the cluster does not have it.
+func clusterCRD(ctx context.Context, c client.Client, name string) (map[string]any, error) {
+	crd := &unstructured.Unstructured{}
+	crd.SetAPIVersion("apiextensions.k8s.io/v1")
+	crd.SetKind("CustomResourceDefinition")
+	if err := c.Get(ctx, client.ObjectKey{Name: name}, crd); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("the cluster's CRD %s cannot be read: %w", name, err)
+	}
+	return crd.Object, nil
+}
+
+func applyCRD(ctx context.Context, c client.Client, crd map[string]any) error {
+	obj := &unstructured.Unstructured{Object: crd}
+	if err := c.Patch(ctx, obj, client.Apply, client.FieldOwner(leafFieldOwner), client.ForceOwnership); err != nil {
+		return fmt.Errorf("the cluster refused CRD %s: %w", obj.GetName(), err)
+	}
+	return nil
+}
+
 // applyCRDs server-side applies the chart's CRDs. Helm applies a chart's crds/ only on the first
 // install and never on an upgrade, and a new operator version needs its new CRDs before it
 // starts.
-func applyCRDs(ctx context.Context, c client.Client, chrt *chart.Chart) error {
-	for _, file := range chrt.CRDObjects() {
-		for _, doc := range bytes.Split(file.File.Data, []byte("\n---")) {
-			if len(bytes.TrimSpace(doc)) == 0 {
-				continue
+//
+// With widen, each CRD is applied widened by every field the cluster's copy still declares
+// (crdrollout.Union), so applying it only ever adds: the operator still running loses nothing,
+// and the one about to start finds every field it reads. pruneCRDs applies the chart's CRDs
+// exactly once the new operator has replaced the old one (docs/operations/crd-rollout.md,
+// operator#543).
+func applyCRDs(ctx context.Context, c client.Client, chrt *chart.Chart, widen bool) error {
+	crds, err := chartCRDs(chrt)
+	if err != nil {
+		return err
+	}
+	for _, crd := range crds {
+		if widen {
+			current, err := clusterCRD(ctx, c, crdrollout.Name(crd))
+			if err != nil {
+				return err
 			}
-			obj := &unstructured.Unstructured{}
-			if err := yaml.Unmarshal(doc, &obj.Object); err != nil {
-				return fmt.Errorf("the chart's CRD file %s is not valid YAML: %w", file.Name, err)
-			}
-			if obj.GetKind() == "" {
-				continue
-			}
-			if err := c.Patch(ctx, obj, client.Apply, client.FieldOwner(leafFieldOwner), client.ForceOwnership); err != nil {
-				return fmt.Errorf("the cluster refused CRD %s: %w", obj.GetName(), err)
-			}
+			crd = crdrollout.Union(crd, current)
+		}
+		if err := applyCRD(ctx, c, crd); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// pruneCRDs applies, exactly, each chart CRD whose copy on the cluster still declares something
+// the chart's does not: the fields applyCRDs kept for the old operator. It is called only once the
+// new operator has fully replaced the old one, and returns the CRDs it applied. A CRD already equal
+// to the chart's is not written.
+func pruneCRDs(ctx context.Context, c client.Client, chrt *chart.Chart) ([]string, error) {
+	crds, err := chartCRDs(chrt)
+	if err != nil {
+		return nil, err
+	}
+	var pruned []string
+	for _, crd := range crds {
+		name := crdrollout.Name(crd)
+		current, err := clusterCRD(ctx, c, name)
+		if err != nil {
+			return pruned, err
+		}
+		if !crdrollout.Wider(crd, current) {
+			continue
+		}
+		if err := applyCRD(ctx, c, crd); err != nil {
+			return pruned, err
+		}
+		pruned = append(pruned, name)
+	}
+	return pruned, nil
 }
 
 // applyNamespaceAndPullSecret creates the namespace and writes the pull secret into it.
@@ -602,8 +674,11 @@ func (h *helmLeafInstaller) ensureRelease(ctx context.Context, getter *kubeconfi
 			}
 		}
 		// Helm applies a chart's crds/ only on the first install and never on an upgrade, and a
-		// new version needs its new CRDs before it starts. They are applied here every time.
-		if err := applyCRDs(ctx, c, chrt); err != nil {
+		// new version needs its new CRDs before it starts. They are applied here every time. The
+		// operator's own are widened by what the cluster's copies still declare, so the operator
+		// still running reads what it read before until the new one replaces it; Ensure prunes
+		// them after (operator#543).
+		if err := applyCRDs(ctx, c, chrt, operatorChart); err != nil {
 			return state, err
 		}
 		if missing {
@@ -770,7 +845,23 @@ func (h *helmLeafInstaller) Ensure(ctx context.Context, kubeconfig []byte, req l
 	if err != nil || len(rel.MissingCRDs) > 0 {
 		return state, err
 	}
-	return observeLeafOperator(ctx, c, req.Namespace, state)
+	if state, err = observeLeafOperator(ctx, c, req.Namespace, state); err != nil || !state.rolledOut(req.Version) {
+		return state, err
+	}
+	// The requested version has replaced every pod of the old one, so nothing still running reads
+	// the fields the widened CRDs kept: apply the chart's CRDs exactly.
+	chrt, err := h.fetchChart(req.Chart)
+	if err != nil {
+		return state, err
+	}
+	_, err = pruneCRDs(ctx, c, chrt)
+	return state, err
+}
+
+// rolledOut reports whether the operator's Deployment runs only the version asked for: every pod is
+// of the current template, ready, and the template's image is that version.
+func (s leafOperatorState) rolledOut(version string) bool {
+	return s.oldPods == 0 && s.Replicas > 0 && s.ReadyReplicas >= s.Replicas && strings.HasSuffix(s.Image, ":"+version)
 }
 
 // observeLeafOperator reads the operator's Deployment on the leaf and, when its pods are not
@@ -795,6 +886,12 @@ func observeLeafOperator(ctx context.Context, c client.Client, namespace string,
 	// Ready means ready on the pod template now asked for, not on the one being replaced.
 	if deployment.Status.ObservedGeneration >= deployment.Generation && deployment.Status.UpdatedReplicas >= state.Replicas {
 		state.ReadyReplicas = min(deployment.Status.ReadyReplicas, deployment.Status.UpdatedReplicas)
+	}
+	// Pods of an earlier template still running, or not yet counted because the Deployment
+	// controller has not seen the new template.
+	state.oldPods = deployment.Status.Replicas - deployment.Status.UpdatedReplicas
+	if deployment.Status.ObservedGeneration < deployment.Generation {
+		state.oldPods = max(state.oldPods, 1)
 	}
 	if state.ReadyReplicas >= state.Replicas {
 		return state, nil
