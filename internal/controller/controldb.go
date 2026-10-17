@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
+	"fmt"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -55,14 +56,14 @@ func pgURIEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
 		LocalObjectReference: corev1.LocalObjectReference{Name: controlDBAppSecret(oc)}, Key: "uri"}}}
 }
 
-// reconcileControlDB provisions the control-plane Postgres (PlanetScale in prod) as a
+// reconcileControlDB provisions the always in-cluster control-plane Postgres as a
 // CloudNativePG Cluster. On the primary it bootstraps a fresh cluster; on a read tier
 // with replicate=true it stands up a replica cluster streaming from the primary peer.
 // Requires the CloudNativePG operator to be installed (see helmfile).
 func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	db := oc.Spec.Components.ControlDB
 	if db.Mode == "external" {
-		return nil // external DB — the operator manages nothing to tear down
+		return fmt.Errorf("controlDB mode=external is not supported: the control DB is always in-cluster")
 	}
 	if !db.Enabled {
 		return r.teardownControlDB(ctx, oc) // disable ≠ leave running (#23)

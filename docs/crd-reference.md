@@ -28,6 +28,11 @@ pointing at the primary); the full sample list is in
 
 Every component has `enabled`. Data stores also have `mode: in-cluster|external`,
 `placement: local|central`, `replicate`, and `endpoint`/`credentialsSecretRef`.
+The control DB is always in-cluster: `controlDB.mode` supports only `in-cluster`
+(the existing default when omitted). Admission refuses `external` even when
+`enabled: false`; the reconcile also refuses resources stored before this rule.
+`controlDB.endpoint` and `controlDB.credentialsSecretRef` do not select a different
+control database. Other data stores, including the broker, still support external mode.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
 
@@ -37,7 +42,7 @@ serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrast
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
-| `controlDB` | data-store | PlanetScale → CloudNativePG |
+| `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled) | Always in-cluster CloudNativePG |
 | `analytics` | data-store | ClickHouse |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |

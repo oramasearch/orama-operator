@@ -40,19 +40,19 @@ oramacores:
     api_key: __MASTER_API_KEY__
     enabled: true
 postgres:
-  url: postgres://%s:__PG_PASSWORD__@%s-controldb-rw:5432/%s
+  url: __PG_URI__
   schema: analytics
   runs_table: runs
   delta: 60m
-`, n, n, controlDBName, n, controlDBName)
+`, n, n)
 }
 
 // reconcileAnalyticsProcessor deploys analytics-processor (#5): the worker that pulls
 // /v1/analytics into ClickHouse. Its `server` binary reads a YAML config FILE (CONFIG_PATH) and
 // connects to ClickHouse + Postgres at startup — so the operator renders that file via an init
 // container (ClickHouse password + master key from the component Secret; the CNPG-generated
-// Postgres password from the <cr>-controldb-app Secret) and mounts it. (The image is also
-// patched at build to bind 0.0.0.0:8080 instead of its hardcoded 127.0.0.1:8888.)
+// Postgres URI from pgURIEnv) and mounts it. Values are escaped for sed replacement.
+// The image is also patched at build to bind 0.0.0.0:8080 instead of its hardcoded 127.0.0.1:8888.
 func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.AnalyticsProcessor.Enabled {
 		return r.teardownByComponent(ctx, oc, "analytics-processor")
@@ -70,10 +70,9 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 		Name:  "render-config",
 		Image: img,
 		Command: []string{"sh", "-c",
-			`sed -e "s#__CLICKHOUSE_PASSWORD__#${CLICKHOUSE_PASSWORD}#g" -e "s#__MASTER_API_KEY__#${MASTER_API_KEY}#g" -e "s#__PG_PASSWORD__#${PG_PASSWORD}#g" /tmpl/config.yaml > /etc/analytics-processor/config.yaml`},
+			`esc() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }; sed -e "s#__CLICKHOUSE_PASSWORD__#$(esc "${CLICKHOUSE_PASSWORD}")#g" -e "s#__MASTER_API_KEY__#$(esc "${MASTER_API_KEY}")#g" -e "s#__PG_URI__#$(esc "${PG_URI}")#g" /tmpl/config.yaml > /etc/analytics-processor/config.yaml`},
 		EnvFrom: envFromFor(oc, "analytics-processor"),
-		Env: []corev1.EnvVar{{Name: "PG_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: oc.Name + "-controldb-app"}, Key: "password"}}}},
+		Env:     []corev1.EnvVar{pgURIEnv(oc, "PG_URI")},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "config-tmpl", MountPath: "/tmpl"},
 			{Name: "rendered-config", MountPath: "/etc/analytics-processor"},

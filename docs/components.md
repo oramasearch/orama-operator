@@ -16,10 +16,10 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
-| **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
+| **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; never runs `db-migrate`. The control DB is always in-cluster (`mode: external` is refused); the operator's `PostgresSchema` owns its schema, avoiding a second Drizzle migration (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
-| **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica); + an owned **`PostgresSchema`** applying the dashboard's Drizzle schema | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
+| **controlDB** | `internal/controller/controldb.go` | Always in-cluster CloudNativePG `Cluster` (primary bootstrap; read-tier replica); `mode: external` is refused. An owned **`PostgresSchema`** applies the dashboard's Drizzle schema | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
 | **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data) | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
 | **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
@@ -283,7 +283,7 @@ while the rendered file in the pod holds the real value.
 
 ## controlDB (`internal/controller/controldb.go`)
 
-The control-plane Postgres (PlanetScale in prod) as a **CloudNativePG `Cluster`**,
+The control-plane Postgres is always an in-cluster **CloudNativePG `Cluster`**,
 provisioned as an **unstructured** object so the operator stays decoupled from CNPG's
 Go types/version. Requires the CNPG operator (installed via the helmfile).
 
@@ -291,8 +291,21 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   2 / heavy 3), `10Gi` storage, `bootstrap.initdb` creating the `oramacore` database.
 - **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** streaming
   from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
-- `mode: external` skips creation (the app uses the external endpoint). Owner ref on
-  the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs).
+- `mode: in-cluster` is the only supported mode and the default. Admission refuses
+  `external`, even when disabled or supplied an endpoint and credentials. The reconcile
+  also refuses pre-existing external-mode CRs before any control-DB client operation,
+  preserving their Cluster, schema, migration resources, Secrets and storage. The stack
+  reports `Degraded` with `Ready=False`, reason `ReconcileError`. Managed-set templates
+  are raw JSON: their merged members are refused by member-cluster admission and the
+  set reports those members as `Degraded`.
+- The dashboard never runs `db-migrate`; the operator's `PostgresSchema` owns the schema.
+  Dashboard and index-builder `DATABASE_URL` and analytics-processor render `PG_URI`
+  use `pgURIEnv` to read the CNPG-generated `<cr>-controldb-app` Secret's `uri` key.
+  Dashboard `POSTGRES_PASSWORD` uses `pgPasswordEnv` for its `password` key.
+  The analytics template contains only placeholders; its init container escapes every
+  value for sed replacement, preserving `&`, `\` and `#` in credentials and URIs.
+- The `Cluster` owner reference means deleting the CR cascade-deletes it (CNPG then
+  removes the pods/PVCs). Disabling a supported in-cluster control DB still tears it down.
 
 **Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
