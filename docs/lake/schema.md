@@ -8,12 +8,11 @@ Job and pods to disappear. This is a metadata upgrade, not a schema version chan
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit b18b0051be472bbed14686d475f03770c07c8b50](https://github.com/oramasearch/lake/blob/b18b0051be472bbed14686d475f03770c07c8b50/db/schema.sql)
-(lake `dev` through `0087_clerk_webhooks`: `0086_identity_links` (lake#762) makes a managed key's
-seed destroyable and adds `identity_link_challenges`, `identity_links` and `identity_links_guard`;
-`0087_clerk_webhooks` (lake#765) adds `users.disabled_at`, `clerk_webhook_deliveries` and
-`clerk_webhooks_guard`. Before them, `0084_network` (lake#727) and `0085_network_tunnel_ca` (lake#730)).
-Its SHA-256 is `e607fd025f340e9e0727fda1d2f824600de800f4ec336ad8b040aa3627f5f405`. Re-pin to lake `main` at its next release.
+[`oramasearch/lake` commit de037d1fb68d153c5a331a6f5d789fdad7e85c73](https://github.com/oramasearch/lake/blob/de037d1fb68d153c5a331a6f5d789fdad7e85c73/db/schema.sql)
+(lake `dev` after v0.2.0, through `0088_repository_liquid_ids` (lake#805): `repositories.liquid_id`,
+its index and `repository_liquid_ids_guard`, so a deployment row naming liquid's repository id is
+matched. Before it, `0086_identity_links` (lake#762) and `0087_clerk_webhooks` (lake#765)).
+Its SHA-256 is `dbb4c7ae2465a396fd7cb16a91ac62e09ff6a7ed02e03bdbc275885995d86ac9`. Re-pin to lake `main` at its next release.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.

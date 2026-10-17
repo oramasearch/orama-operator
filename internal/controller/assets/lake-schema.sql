@@ -4502,3 +4502,20 @@ CREATE TABLE IF NOT EXISTS clerk_webhook_deliveries (
 
 CREATE TABLE IF NOT EXISTS clerk_webhooks_guard (applied_at timestamptz NOT NULL DEFAULT now());
 INSERT INTO schema_migrations (version) VALUES ('0087_clerk_webhooks') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0088_repository_liquid_ids (lake#805): the id liquid gave each repository (`repository::id()`,
+-- 32 lowercase hex digits). A checkout cloned from a lake repository shares it, and
+-- `liquid deploy` sends it as the deployment row's `repository`, so the platform sync finds the
+-- lake repository a row names through it. Null until lake reads it: the sync fills it in when a
+-- row names an id it does not know, and every push records it again (a repository created empty
+-- takes the identity of the first push). Not unique: a repository pushed from another's clone
+-- shares that repository's id, and the sync reports such a row instead of guessing.
+-- See docs/api/platform.md#which-repository-a-row-names.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS liquid_id text;
+CREATE INDEX IF NOT EXISTS repositories_liquid_id_idx ON repositories (liquid_id)
+    WHERE liquid_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS repository_liquid_ids_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0088_repository_liquid_ids') ON CONFLICT DO NOTHING;
