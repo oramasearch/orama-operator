@@ -223,7 +223,8 @@ only after every cluster is cut over.
 
 Put kernel settings in `KubernetesCluster.spec.nodePools[].sysctls` before creating a
 cluster. Follow [node sysctls](node-sysctls.md) for supported names, evidence and rollout gates.
-For an existing cluster, a changed sysctl is reported by `InSync=False`; it is not applied.
+For an existing cluster, a changed sysctl is reported by `InSync=False`; it is not applied,
+because AKS sets it only when a pool is created ([node-pool replacement](node-pool-replacement.md)).
 Adding a pool to an existing resource is also drift-only in this controller version.
 A supported update or a recoverable replacement/drain lifecycle needs a separate operator
 design before existing pools can be rolled out. No cluster rollout is qualified by unit tests.

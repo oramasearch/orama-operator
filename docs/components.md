@@ -679,8 +679,9 @@ instances onto managed clusters from one template, each member in its own namesp
   `AksCluster`, are validated before any Azure call, and map to typed
   `linuxOSConfig.sysctls` fields using AKS API `2025-05-01`. Drift compares only explicit
   settings and reports unknown values when Azure omits them. It does not probe node kernels.
-  See [node sysctls](infrastructure/node-sysctls.md) for the supported names and existing-pool
-  qualification gap.
+  AKS cannot change an existing pool's `linuxOSConfig`; how an existing cluster gets the setting
+  is designed, not implemented, in [node-pool replacement](infrastructure/node-pool-replacement.md).
+  See [node sysctls](infrastructure/node-sysctls.md) for the supported names.
 - **What goes on a new cluster** is installed by `ClusterHelmRelease` and `OramaOperator`, and
   its instances by `LakeSet` and `OramaCloudV1Set`
   ([`infrastructure/README.md`](infrastructure/README.md)).

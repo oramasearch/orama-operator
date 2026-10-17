@@ -69,18 +69,40 @@ The controller creates, observes and deletes clusters; it does not update existi
 add pools to existing clusters, drain nodes or replace pools. Editing these settings on an
 existing resource therefore reports drift without applying them.
 
-Update semantics were reviewed against Microsoft's
-[Agent Pools Create Or Update API 2025-05-01](https://learn.microsoft.com/en-us/rest/api/aks/agent-pools/create-or-update?view=rest-aks-2025-05-01)
-and [custom node configuration guide](https://learn.microsoft.com/en-us/azure/aks/custom-node-configuration).
-The API includes `linuxOSConfig` in the request model but does not document whether changing
-it on an existing pool is accepted or how running nodes are updated. The guide documents
-cluster creation and adding new pools; that alone does not prove in-place update support.
-Existing-pool updates remain unverified, rather than inferred from the endpoint's name.
+An invalid edit (an unsupported name, a numeric string, a value out of range) on an existing
+`AksCluster` stops observation until it is corrected: the controller sets `Degraded` and
+`InSync=False` with reason `InvalidSysctls` and returns before reading the cluster from Azure,
+so the provisioning state, node-pool status, Azure's latest operation and the kubeconfig Secret
+are not refreshed meanwhile. The Azure cluster itself is untouched. Fix or revert the edit and
+the next reconcile observes the cluster again. The same edit on a `KubernetesCluster` marks it
+`Degraded` and is not copied to its `AksCluster`, which keeps its last valid spec and goes on
+being observed.
 
-Before applying this to existing pools, obtain provider confirmation or qualify an approved
-nonprod update. If replacement is required, design it in the operator with persistent progress,
-capacity/quota checks, workload placement, disruption budgets, drain failure recovery, rollback
-and safe retirement of the old pool. Neither path is implemented by this change.
+## AKS cannot change an existing pool's settings
+
+AKS takes `linuxOSConfig` only when a cluster or pool is created. Microsoft's
+[custom node configuration guide](https://learn.microsoft.com/en-us/azure/aks/custom-node-configuration)
+documents it only at `az aks create` and `az aks nodepool add`; the
+[`az aks nodepool` reference](https://learn.microsoft.com/en-us/cli/azure/aks/nodepool?view=azure-cli-latest)
+has `--linux-os-config` on `add` and not on `update` (core or `aks-preview`); and the provider
+refuses such an update with `CustomKubeletConfigOrCustomLinuxOSConfigCanNotBeChanged`. The same
+guide says node image upgrades reapply the configuration and scale-out preserves it.
+
+An existing cluster therefore gets the setting only through a pool created with it. How the
+operator does that is designed, and awaiting Steve's approval, in
+[node-pool replacement](node-pool-replacement.md): replacing and draining the shared pools
+cannot finish because the writer and data stores have `maxUnavailable: 0` budgets, so the
+recommendation is to add a reader pool with the setting and place the readers on it. Until that
+is approved and implemented, the setting reaches only clusters created after it is declared.
+
+## Which pools
+
+Readers have no node placement today, so they can run on any pool: `agentpool` and `userpool`
+on `orama-nonprod-cluster-01`, `orama-production-cluster-02` and `orama-production-cluster-03`.
+Declaring `vm.max_map_count: 4194304` on both pools of each cluster is the change that would
+cover them without placement. It is not committed: applied today it would only turn `InSync`
+False, and a file that differs from what is applied is state the repository misstates. With the
+recommended design, the setting goes on a new `readers` pool instead.
 
 ## Reader value and rollout gates
 
@@ -90,16 +112,13 @@ At that reported rate, 1,048,576 mappings provide about 21 days from zero, and 4
 about 84 days; existing mappings reduce that headroom. A higher limit postpones exhaustion
 and does not resolve unbounded mapping growth.
 
-Record the actual Prod 1 reader node limit, the reader process's current mapping count,
-process start time and at least two timestamped counts for the same process before claiming
-the value has live evidence. Read `/proc/sys/vm/max_map_count` and count `/proc/<pid>/maps` via
-an approved read-only host access path; keep customer paths and command-line secrets out of
-receipts. No approved source host or metrics access path was available for a fresh measurement.
+Prod 1's value is read on the US reader (`i-0dd41c106a2236d3d`, us-east-2) over SSM, read-only,
+by whoever holds Prod 1 access: `/proc/sys/vm/max_map_count`, the reader process's start time
+and its line count in `/proc/<pid>/maps`, twice at least an hour apart. Keep customer paths and
+command-line secrets out of what is recorded.
 
-Roll out through the resources in `config/clusters/`: qualify
-`orama-nonprod-cluster-01` first, then ask for production approval before
-`orama-production-cluster-02` and `orama-production-cluster-03`. Existing-pool lifecycle support
-is a prerequisite. Verify the actual node kernel value, reader scheduling, and that the
-setting survives node replacement/scale-out; verify `InSync` against Azure as well.
-Code and stub tests do not qualify a live rollout. No cluster resource or live setting was
-changed for this implementation.
+Roll out through the resources in `config/clusters/`: `orama-nonprod-cluster-01` first, then,
+with production approval, `orama-production-cluster-02` and `orama-production-cluster-03`.
+Verify the node kernel value (`/proc/sys/vm/max_map_count` from a pod on the pool), that readers
+run on the configured pool, and `InSync=True`. No cluster resource or live setting was changed
+for this implementation.

@@ -534,5 +534,6 @@ decision 46.
 
 `KubernetesCluster.spec.nodePools[].sysctls` commits the Linux settings a pool needs.
 `AksCluster` validates and maps them to Azure on creation, then reports configuration drift
-through `InSync`. [Node sysctls](node-sysctls.md) lists supported values, the existing-pool
-update limitation, and the gated rollout checks.
+through `InSync`. [Node sysctls](node-sysctls.md) lists supported values, why AKS cannot
+change an existing pool, and the rollout checks; [node-pool replacement](node-pool-replacement.md)
+is the design, awaiting approval, for giving an existing cluster the setting.
