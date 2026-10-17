@@ -26,6 +26,11 @@ spec:
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-dev.oramadev.net
+      image: oramasearch/lake:dev-911a1d75
+      clerk:
+        secretKeySecretRef: {name: clerk-secret-key}
+    secrets:
+    - {name: clerk-lake-dev, namespace: lake, as: clerk-secret-key}
   - clusterRef: orama-nonprod-cluster-01
     name: staging
     spec:
