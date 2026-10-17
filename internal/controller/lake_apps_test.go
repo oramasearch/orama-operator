@@ -135,7 +135,7 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "apps-test", UID: types.UID("test-lake")},
 		Spec: oramav1alpha1.LakeSpec{Image: "oramasearch/lake:test", Namespace: "lake", Host: "lake.example.test", PullSecretName: "docker-pull", Apps: oramav1alpha1.LakeAppsSpec{
-			Enabled: true, Wildcard: "apps.example.test", RuntimeImage: "oramasearch/app-runtime:0.1.0",
+			Wildcard: "apps.example.test", RuntimeImage: "oramasearch/app-runtime:0.1.0",
 		}},
 	}
 	for _, object := range []client.Object{

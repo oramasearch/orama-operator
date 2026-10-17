@@ -58,15 +58,26 @@ spec:
             properties:
               content:
                 description: Content is the record target (an IP for A, a hostname
-                  for CNAME).
+                  for CNAME, the text for TXT).
+                type: string
+              deletionPolicy:
+                description: |-
+                  DeletionPolicy decides what deleting this resource does to the Cloudflare record. Delete (the
+                  default) removes it. Retain leaves it: for a record another resource may also keep, such as a
+                  Clerk production instance's records, which every Lake sharing that instance writes.
+                enum:
+                - Delete
+                - Retain
                 type: string
               name:
                 description: Name is the record FQDN (e.g. app.orama.com).
                 type: string
               proxied:
                 default: true
-                description: Proxied routes the record through Cloudflare's proxy
-                  (orange-cloud).
+                description: |-
+                  Proxied routes the record through Cloudflare's proxy (orange-cloud). Always written, so a
+                  controller's false is kept rather than replaced by the default (a Clerk record must not be
+                  proxied); a resource that leaves it out gets true.
                 type: boolean
               secretRef:
                 description: |-
@@ -74,8 +85,8 @@ spec:
                   `accountID`) — normally the CR's `spec.cloudflare.apiTokenSecretRef`.
                 type: string
               type:
-                description: Type is A or CNAME; empty = inferred from Content (IP
-                  → A, hostname → CNAME).
+                description: Type is A, CNAME or TXT; empty = inferred from Content
+                  (IP → A, hostname → CNAME).
                 type: string
             required:
             - content
