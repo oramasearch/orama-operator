@@ -48,6 +48,15 @@ type fakeServiceStore struct {
 	services []LakeService
 	upserts  []LakeServiceStatus
 	opened   int
+	// network and networkUpserts are the Connection desired/status half. networkMissing models a
+	// schema before migration 0084_network installed network_guard.
+	network        LakeNetworkSnapshot
+	networkUpserts []LakeNetworkConnectionStatus
+	networkMissing bool
+	networkErr     error
+	// egress and egressUpserts are the EgressRule desired/status half (operator#470).
+	egress        LakeNetworkEgressSnapshot
+	egressUpserts []LakeNetworkEgressRuleStatus
 	// stores and storeUpserts are the stores half (lake_stores_test.go). storesMissing makes
 	// ListStores fail as a schema before 0028_stores does; storesErr fails it any other way.
 	stores        []LakeStore
@@ -101,6 +110,81 @@ type fakeServiceStore struct {
 	deployments             []LakeMethodologyDeployment
 	deploymentStatusUpserts []LakeMethodologyDeploymentStatus
 	deploymentsMissing      bool
+}
+
+func (f *fakeServiceStore) ListNetworkConnections(context.Context) (LakeNetworkSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkMissing {
+		return LakeNetworkSnapshot{}, errNetworkGuardMissing
+	}
+	if f.networkErr != nil {
+		return LakeNetworkSnapshot{}, f.networkErr
+	}
+	out := LakeNetworkSnapshot{
+		Workspaces:  append([]LakeNetworkWorkspace(nil), f.network.Workspaces...),
+		Connections: append([]LakeNetworkConnection(nil), f.network.Connections...),
+	}
+	for i := range out.Connections {
+		out.Connections[i].Ports = append([]int32(nil), out.Connections[i].Ports...)
+		if out.Connections[i].Status != nil {
+			status := *out.Connections[i].Status
+			out.Connections[i].Status = &status
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeServiceStore) ListNetworkEgressRules(context.Context) (LakeNetworkEgressSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.networkMissing {
+		return LakeNetworkEgressSnapshot{}, errNetworkGuardMissing
+	}
+	if f.networkErr != nil {
+		return LakeNetworkEgressSnapshot{}, f.networkErr
+	}
+	out := LakeNetworkEgressSnapshot{
+		Workspaces: append([]LakeNetworkWorkspace(nil), f.egress.Workspaces...),
+		Rules:      append([]LakeNetworkEgressRule(nil), f.egress.Rules...),
+	}
+	for i := range out.Rules {
+		out.Rules[i].Ports = append([]int32(nil), out.Rules[i].Ports...)
+		if out.Rules[i].Status != nil {
+			status := *out.Rules[i].Status
+			out.Rules[i].Status = &status
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeServiceStore) UpsertNetworkEgressRuleStatus(_ context.Context, status LakeNetworkEgressRuleStatus) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.egressUpserts = append(f.egressUpserts, status)
+	for i := range f.egress.Rules {
+		if f.egress.Rules[i].ID == status.RuleID {
+			copied := status
+			f.egress.Rules[i].Status = &copied
+		}
+	}
+	return nil
+}
+
+func (f *fakeServiceStore) UpsertNetworkConnectionStatus(
+	_ context.Context,
+	status LakeNetworkConnectionStatus,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.networkUpserts = append(f.networkUpserts, status)
+	for i := range f.network.Connections {
+		if f.network.Connections[i].ID == status.ConnectionID {
+			copied := status
+			f.network.Connections[i].Status = &copied
+		}
+	}
+	return nil
 }
 
 func (f *fakeServiceStore) ListBuilds(context.Context) ([]LakeBuild, error) {
@@ -601,6 +685,10 @@ func TestServicesPostgresCreateAndCredential(t *testing.T) {
 	owner, _, _ := unstructured.NestedString(cluster.Object, "spec", "bootstrap", "initdb", "owner")
 	if instances != 3 || size != "15Gi" || class != "managed-premium" || database != "app" || owner != "app" {
 		t.Fatalf("unexpected CNPG spec: %v", cluster.Object["spec"])
+	}
+	// operator#469: the operator signs in as the superuser to keep per-connection roles.
+	if superuser, _, _ := unstructured.NestedBool(cluster.Object, "spec", "enableSuperuserAccess"); !superuser {
+		t.Fatalf("superuser access is off: %v", cluster.Object["spec"])
 	}
 	endpoint := "prod-svc-222222222222-rw.lake.svc.cluster.local:5432"
 	expectStatus(t, store.status(t, testPostgresID), ServicePhaseProvisioning, "waiting for the Postgres instances", endpoint)

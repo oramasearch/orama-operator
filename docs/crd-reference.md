@@ -28,6 +28,8 @@ pointing at the primary); the full sample list is in
 
 Every component has `enabled`. Data stores also have `mode: in-cluster|external`,
 `placement: local|central`, `replicate`, and `endpoint`/`credentialsSecretRef`.
+`spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
+serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
@@ -108,6 +110,7 @@ service. Sample: [`../config/samples/oramazettacluster.yaml`](../config/samples/
 | `spec.requireAuth` | **DEPRECATED / no-op** as of [zetta#799](https://github.com/oramasearch/zetta/issues/799). The engine made auth **mandatory** and removed `--require-auth` — every node ALWAYS gates its HTTP/MCP/SQL surface on a bearer that resolves to a user; there is no unauthenticated/plaintext/legacy-shared-secret mode. The operator now **ALWAYS** mints a 64-hex admin token into Secret `<name>-zetta-admin` (key `token`, mint-once), injects it as env `ZETTA_ADMIN_TOKEN` on every node, from which the engine seeds the owner (never as `--admin-token`: argv is readable by every process on the node, [operator#279](https://github.com/oramasearch/orama-operator/issues/279); redacted to `****` in the pod log), authenticates its **own** Zetta SQL client + schema-provisioning Job with it, and the `ZettaClusterE2ETest` always runs its authz assertions (`ZETTA_E2E_REQUIRE_AUTH=1`). **Image requirement:** the target's image MUST be an **auth-capable build** ([zetta#799](https://github.com/oramasearch/zetta/issues/799)) — the pre-#799 sandbox image rejects it. The field is retained for API compatibility; setting it has no effect (auth is enforced regardless). Sample: [`../config/samples/zetta-require-auth.yaml`](../config/samples/zetta-require-auth.yaml). |
 | `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** When `true` **and** `spec.host` is set, the operator provisions the nginx Ingress (+ the Cloudflare DNS record below if `dnsSecretRef` is set), proxying the whole host to `:4800`. When `false` (or `host` empty) **nothing external is created and any previously created Ingress/DNS are torn down** — even if `host` is still set. Lets you keep `host` recorded while toggling exposure off, instead of overloading "empty host" as the off switch. |
 | `spec.host` | The **domain name** the API/UI (:4800) is exposed at (e.g. `zetta.oramadev.net`) when `ingressEnabled` is `true` — the whole host proxies to the node's `:4800`, so root `/` is the node's **web dashboard** and other paths are MCP/REST/serving. Requires an ingress controller. Names the endpoint; `ingressEnabled` is the on/off switch. |
+| `spec.ingressClassName` | `nginx` (default) or `zetta-tunnel`: which ingress serves the cluster's Ingress; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)). |
 | `spec.dnsSecretRef.name` | With `ingressEnabled` + `spec.host`, create a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord` CR, using the named Secret (keys `token`/`zoneID`/`accountID`) — normally the same `cloudflare-api-token` Secret the `OramaCloudV1` uses. |
 | `spec.capacity.karpenter.enabled` | **Default `false`. Opt-in elastic node capacity** ([operator#69](https://github.com/oramasearch/orama-operator/issues/69), first slice). When `true`, the operator owns a Karpenter **`NodePool`** and pins the Zetta pods onto it (a dedicated taint `orama.cloud/zetta:NoSchedule` + toleration and the `orama.cloud/zetta-pool` nodeSelector), so raising `spec.replicas` past current node capacity leaves pods **Pending → Karpenter provisions matching nodes just-in-time →** the new pods schedule and join the CRDT cluster. Scheduling-driven scale-up; the Zetta-signal-driven trigger (`orama_control.scale_requests`) is a later slice. |
 | `spec.capacity.karpenter.nodeClassRef` | The provider **NodeClass** Karpenter launches nodes from — `{group, kind, name}` (the Karpenter v1 `nodeClassRef` shape). Defaults `group: karpenter.k8s.aws`, `kind: EC2NodeClass` (EKS); on AKS NAP set `group: karpenter.azure.com`, `kind: AKSNodeClass`. **`name` is REQUIRED when enabled** — the operator owns only the cloud-neutral NodePool; the NodeClass (AMI/subnet/IAM on AWS) is platform-owned. Missing name ⇒ `CapacityReady=False, Reason=Blocked`. |
@@ -263,6 +266,192 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `ReplacingMigrationJob` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
 
+## `NetworkSandbox` (separate CRD, namespaced) — default-deny with explicit paths
+
+Short name: `netsandbox`. One resource describes the network boundary of its owner's pods.
+Required `spec.podSelector` identifies those pods; explicit `{}` is appropriate only in a fully
+owned workspace namespace. The controller always renders `NetworkPolicy/default-deny`, selecting
+only those pods for both ingress and egress with no rules. It also always renders the owner-scoped
+`CiliumNetworkPolicy/deny-cloud-metadata`, denying all egress to `169.254.169.254/32`,
+`168.63.129.16/32` and `fd00:ec2::254/128`, regardless of other allows. Cilium v2 API and dataplane
+support are required. Each allowance selector is intersected with the owner selector, including
+Cilium endpoint selectors. `spec.policies` lists exceptions expressible as Kubernetes NetworkPolicy;
+each item has a unique `name`, a required human `comment` identifying
+the component and reason, and the complete `networking.k8s.io/v1` policy `spec`. The comment is
+copied to the rendered policy as `orama.cloud/network-policy-comment`.
+
+`spec.ciliumPolicies` has the same name/comment contract and a Cilium v2 `spec`. It is only for a
+path Kubernetes NetworkPolicy cannot express and is empty for ordinary pod, namespace, CIDR and
+port rules. The mandatory metadata deny is generated even when this field is empty, and its name
+is reserved: declarations cannot override it. `spec.policyLabels` is copied to all rendered policies
+so a parent can preserve its existing ownership labels while the sandbox adopts live policies.
+`spec.mesh.enrolled` enrols every selected pod in zetta-tunnel's mesh: each declared Connection
+allowance (`connection-…`) then renders only TCP 15008, the mesh's mutual-TLS port, and the node
+agent captures the pods ([`infrastructure/mesh.md`](infrastructure/mesh.md)). A Lake workspace's
+comes from `spec.workspaces.overrides.<id>.mesh`.
+
+The controller owns the rendered policies, removes an owned policy no longer declared, and refuses
+to take over a policy controlled by another resource. It reports `status.observedGeneration`, the
+ordinary and Cilium policy counts (including mandatory denies), and `conditions[Ready]`. Stable
+reconciliation writes no status. Owner watches repair both kinds; owner references garbage-collect
+them with the sandbox. Details and the AKS live observation are in
+[`infrastructure/network-sandbox.md`](infrastructure/network-sandbox.md#mandatory-cloud-metadata-deny).
+
+## `Connection` (separate CRD, namespaced) — one declared workload path
+
+Short name: `conn`. Lake's guarded Postgres intake creates one resource in the owning workspace
+namespace for each `network_connections` row. Users and tenant workloads do not write this kind.
+The controller resolves Lake IDs to operator-owned pod labels, writes paired ingress and egress
+allowances into that workspace's `NetworkSandbox`, and renders them synchronously. The sandbox,
+not the `Connection`, owns the resulting `NetworkPolicy` objects. Details:
+[`infrastructure/connections.md`](infrastructure/connections.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.lakeRef` | Cluster-scoped Lake that owns and materialized the resource. Immutable. |
+| `spec.connectionId` | Immutable UUID of the Lake `network_connections` row. |
+| `spec.customerId` / `.workspaceId` | Immutable Lake ownership UUIDs. The resource must be in the reconciled namespace of that workspace. |
+| `spec.sourceKind` / `.sourceId` | Source identity: `app \| service \| agent \| tunnel` plus its Lake UUID. Apps resolve through their existing `LakeApp` workload identity; services and agents use operator-owned ID labels. |
+| `spec.targetKind` / `.targetId` | Destination identity: `service \| app` plus its Lake UUID. Selection is restricted to the CR's namespace. |
+| `spec.ports[]` | Destination TCP ports, each 1–65535. Empty resolves to the target's Kubernetes Service target ports, including named ports; it never means all pod ports. |
+| `spec.credentialScope` | Optional, app to service only: `{access: read \| write, schema?}`. The operator keeps one role for this connection in the target's datastore (Postgres first) with exactly these grants and writes its credential as a workspace secret ([operator#469](https://github.com/oramasearch/orama-operator/issues/469)). |
+| `spec.desired` | `present \| absent`. Absent removes both rendered sides, and drops any credential role, before status becomes `Deleted`. |
+| `spec.generation` | Lake row generation, minimum 1. A new generation of a credential-scoped connection rotates its credential. |
+| `status.phase` / `.message` | `Pending \| Ready \| Failed \| Deleted` and a stable explanation. |
+| `status.observedGeneration` | Lake generation represented by the status and returned to Postgres. |
+| `status.credentialSecret` | `lake-secret://<mount id>/connection-<id>`: the workspace secret holding the issued credential, returned to Postgres as `credential_secret`. Never the credential. |
+| `status.credentialRole` / `.credentialGeneration` | The datastore role issued for this connection and the generation it was issued for. |
+| `status.conditions[Ready]` | True only after the paired policies have been rendered. Stable reconciliation does not rewrite it. |
+
+## `EgressRule` (separate CRD, namespaced) — one outside destination
+
+Short name: `egr`. Lake's guarded Postgres intake creates one resource per `network_egress_rules`
+row in the owning workspace namespace (`egress-<row id>`); the workspace reconciler keeps one more,
+`internet-https`, for a workspace whose `internetEgress` override is on. Users and tenant workloads
+do not write this kind. The controller adds the rule's allowances to the workspace `NetworkSandbox`
+and, for a DNS name, keeps the workspace's zetta-tunnel egress gateway. Details:
+[`infrastructure/egress-rules.md`](infrastructure/egress-rules.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.lakeRef` | Cluster-scoped Lake that owns the resource. Immutable. |
+| `spec.ruleId` | Immutable UUID of the Lake row. Empty only for the operator's `internet-https` rule. |
+| `spec.customerId` / `.workspaceId` | Lake ownership UUIDs. |
+| `spec.sourceKind` / `.sourceId` | `app \| service \| agent` and its Lake UUID, set together. Unset: every workload in the workspace. |
+| `spec.cidr` | An outside range, enforced by policy. Loopback, link-local and cluster addresses inside it are always excepted; a range wholly inside them is refused. |
+| `spec.dnsName` | An exact lower-case host name, enforced by the egress gateway; the source may reach only the gateway. |
+| `spec.publicInternet` | Every public address, as `internetEgress` has always allowed. Only the operator's own rule. |
+| `spec.ports[]` | 1 to 64 distinct TCP ports. |
+| `spec.desired` | `present \| absent`. Absent removes every allowance and re-renders the gateway snapshot before `Deleted`. |
+| `spec.generation` | Lake row generation, minimum 1. |
+| `status.phase` / `.message` | `Pending \| Ready \| Failed \| Deleted`; a Ready name rule's message names the gateway address. |
+| `status.observedGeneration` | Lake generation represented by the status and returned to Postgres. |
+
+Exactly one of `cidr`, `dnsName` and `publicInternet` is set (a CEL rule on the CRD).
+
+## `Tunnel` (separate CRD, namespaced) — one person, one target, for a time
+
+Short name: `tun`. The abstract kind (principle 10): Lake's guarded intake creates one per
+`network_tunnel_grants` row in the workspace namespace, named `tunnel-<grant id>`. Users and tenant
+workloads do not write it. The controller picks the concrete kind from `spec.providerRef`, keeps
+exactly that child, mirrors its status, and on expiry or revocation deletes the child before
+reporting `Expired` or `Revoked`. Details: [`infrastructure/tunnels.md`](infrastructure/tunnels.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.lakeRef` / `.grantId` | The Lake and the grant row id. Immutable. The grant id is the identity in the developer's certificate. |
+| `spec.customerId` / `.workspaceId` | Immutable Lake ownership UUIDs. |
+| `spec.userId` | The Lake user the grant is for. |
+| `spec.targetKind` / `.targetId` / `.port` | `service \| app`, its Lake UUID and the target Service's port (1–65535). Nothing else is reachable. |
+| `spec.expiresAt` / `.revokedAt` | The grant ends at `expiresAt`, or at once when `revokedAt` is set. |
+| `spec.clientCAPEM` | Lake's per-customer CA (public), from `client_ca_pem` (Lake 0085). Required by `ZettaTunnel`. |
+| `spec.subject` | The person's e-mail address, set only for a `cloudflare` provider (Cloudflare Access). |
+| `spec.providerRef` | A `TunnelProvider` in the namespace. Empty: Orama's own `ZettaTunnel`. |
+| `spec.generation` | Lake row generation, minimum 1. |
+| `status.phase` / `.message` | `Pending \| Ready \| Expired \| Revoked \| Failed`. |
+| `status.provider` | `ZettaTunnel` or `CloudflareTunnel`. |
+| `status.endpoint` / `.relayCAPEM` | What the client connects to, and the relay's CA, only while `Ready`; returned to `network_tunnel_grant_status`. |
+| `status.observedGeneration` / `.conditions[Ready]` | Lake generation acknowledged; comparison-gated. |
+
+## `TunnelProvider` (separate CRD, namespaced) — the vendor, account and credentials behind tunnels
+
+Short name: `tunprov`. A `TunnelProvider` named `default` in a workspace namespace is the provider
+for that workspace's Lake-granted tunnels. CEL rules require `spec.cloudflare` for type `cloudflare`
+and forbid it for `zetta`. The controller reports `conditions[Ready]` (the token Secret and key
+exist); it never calls the vendor.
+
+| Field | Meaning |
+|---|---|
+| `spec.type` | `zetta` (Orama's own zetta-tunnel) or `cloudflare` (the customer's own account only). |
+| `spec.customerId` | The Lake customer it belongs to. A `Tunnel` of another customer is refused. |
+| `spec.cloudflare.accountId` / `.zoneId` / `.domain` | The customer's account, zone and the domain under which hostnames `tunnel-<grant id>.<domain>` are made. |
+| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of a Secret in the namespace: the customer's API token (Cloudflare Tunnel edit, Access apps and policies edit, DNS edit). Never written or logged by the operator. |
+
+## `ZettaTunnel` (separate CRD, namespaced) — a tunnel carried by zetta-tunnel
+
+Short name: `ztun`. Created and owned by a `Tunnel`. Runs the grant's zetta-tunnel endpoint in the
+workspace (Secret, Service and Deployment `tunnel-<grant id>`), the generated
+`Connection/connection-tunnel-<grant id>` from the endpoint to the target, and the workspace sandbox
+allowance admitting only the relay. Every `ZettaTunnel` feeds the cluster's one relay in namespace
+`zetta-tunnel`. A finalizer removes the allowance, the endpoint and the Connection before it goes.
+
+| Field | Meaning |
+|---|---|
+| `spec.lakeRef`, `.grantId`, `.customerId`, `.workspaceId`, `.targetKind`, `.targetId`, `.port`, `.expiresAt` | The grant, copied from the `Tunnel`. |
+| `spec.clientCAPEM` | The CA(s) the relay trusts for this grant's developer certificates. |
+| `status.phase` / `.message` | `Pending \| Ready \| Expired \| Failed`. |
+| `status.endpoint` / `.relayCAPEM` | The relay's public `host:443` and its server CA, while `Ready`. |
+| `status.target` | The in-cluster `host:port` the endpoint is fixed to. |
+
+## `CloudflareTunnel` (separate CRD, namespaced) — a tunnel carried by the customer's Cloudflare account
+
+Short name: `cftun`. Created and owned by a `Tunnel` whose provider is of type `cloudflare`. Makes a
+remotely managed tunnel, a CNAME and an Access application admitting only `spec.subject` in the
+customer's account, and runs `cloudflared` in the workspace with the generated Connection to the
+target. A finalizer deletes those Cloudflare objects with the customer's token.
+
+| Field | Meaning |
+|---|---|
+| grant fields | As on `ZettaTunnel`. |
+| `spec.providerRef` | The `cloudflare` `TunnelProvider`. |
+| `spec.subject` | The one e-mail address Cloudflare Access admits. |
+| `status.endpoint` | The hostname `tunnel-<grant id>.<domain>`. |
+| `status.tunnelId` / `.dnsRecordId` / `.accessApplicationId` | The Cloudflare objects made, deleted exactly at teardown. |
+
+## `PeerConnection` (separate CRD, namespaced) — one end of a peer
+
+Short name: `peer`. Named services exchanged with another cluster or network through zetta-tunnel's
+peer gateway (decision D6); no address is routed. Lake's guarded intake creates one per
+`network_peers` row (`peer-<row id>`); Orama's own stacks write their own. Details:
+[`infrastructure/peer-connections.md`](infrastructure/peer-connections.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.peerId` | The identity both ends share (the Lake row id). Immutable. |
+| `spec.lakeRef` / `.customerId` / `.workspaceId` | Set for a Lake peer. |
+| `spec.remote` | The other gateway's `host:port`. Empty: the address the `PeerLink` passed in the credentials Secret. |
+| `spec.exports[]` | `{name?, targetKind: service \| app \| kubernetesService, targetId \| serviceName, port}`. A CEL rule requires `serviceName` for `kubernetesService`, else `targetId`. Empty `name`: the target Service's name. |
+| `spec.imports[]` | `{name, port}`: the other end's export names (lowercase DNS-style, never an address). Each becomes Service `peer-<name>` here. |
+| `spec.credentialsSecretName` | Default `<name>-credentials`; written only by a `PeerLink`. |
+| `spec.pullSecretName` | The gateway's image pull secret; a Lake peer uses the Lake's. |
+| `spec.desired` / `.generation` | `present \| absent` (default `present`) and the row generation (default 1). |
+| `status.phase` / `.message` | `Pending \| Ready \| Failed \| Deleted`; the message lists where each import is reachable. |
+| `status.address` / `.identity` | This gateway's public `host:7446` and certificate identity. |
+| `status.imports[]` / `.exports[]` | Resolved Services and targets. |
+
+## `PeerLink` (separate CRD, cluster-scoped) — credentials for a pair, through the managing cluster
+
+Short name: `peerlink`. Lives on the managing cluster. Mints the pair's CA once, one certificate per
+end (`<end>.<peerId>.peer.orama.internal`, client and server), and writes each end's credentials
+Secret on its cluster with the other end's identity and address. Deleting it deletes both Secrets.
+
+| Field | Meaning |
+|---|---|
+| `spec.peerId` | The pair's peer id. Immutable. |
+| `spec.ends[2]` | `{name, clusterRef?, namespace, peerConnection}`; `clusterRef` empty is this cluster. The two names differ (CEL). |
+| `status.phase` | `Ready` once both Secrets are current and both ends report an address. |
+| `status.ends[]` | `{name, identity, written, address, message}`. |
+
 ## `ClerkApplication` (separate CRD) — Clerk auth per environment
 
 Provisions a **Clerk application per environment** (dev/testing/staging/prod) via the Clerk
@@ -334,7 +523,11 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. The Ingress permits `64m` request bodies and disables request/response buffering for Lake's streaming transfers. |
 | `spec.tls.secretName` | Optional `kubernetes.io/tls` Secret in `spec.namespace`. With ingress enabled and a host set, renders the Ingress TLS host and enables nginx HTTPS redirect. Empty is the backward-compatible HTTP-only default. |
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
+| `spec.ingressClassName` | `nginx` (default) or `zetta-tunnel`: which ingress serves the Lake's Ingress and its environments'. DNS follows, because it is written from the Ingress's address. The per-cluster cutover sets it in the cluster's set member ([`infrastructure/ingress.md`](infrastructure/ingress.md)). |
 | `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. |
+| `spec.region` | `{name, label}`: where the Lake runs, for its region picker (decision 64). Rendered as `LAKE_REGION` and `LAKE_REGION_LABEL`. In a LakeSet, `name` comes from the member's cluster ([`lake/README.md#regions`](lake/README.md#regions)). |
+| `spec.regions` | The deployment's regions as the picker offers them, `[{name, label, host, latitude, longitude}]`, rendered as `LAKE_REGIONS` (JSON). A LakeSet computes it from its members. |
+| `spec.apexHost` | A second host the Lake answers (the region picker, e.g. `lake.live`). With `ingressEnabled` + `host`, adds an Ingress rule (and TLS host) and, with `dnsSecretRef`, an owned proxied `<lake>-apex-dns` record; rendered as `LAKE_APEX_HOST`. Removing it removes both. |
 | `spec.previewWildcard` | DNS suffix for preview environments. `preview.example.com` yields `<change-short>.preview.example.com`; with Lake ingress and DNS enabled, the Lake owns one `*.preview.example.com` Cloudflare record and previews do not create records per change. |
 | `spec.apps.runtimeImage` | Private app-runtime image used by `LakeApp` resources in runtime mode. With apps enabled, the operator also injects it into lake as the reserved `LAKE_APPS_RUNTIME_IMAGE`, which lake uses as the base image for generated app builds. |
 | `spec.apps.enabled` | Opt-in apps-table synchronization from Lake control Postgres. Default `false`; disabling preserves existing apps. Uses `lake_apps` notifications and a 60-second fallback list. Builds have separate configuration in #195. |
@@ -365,7 +558,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.snapshots.enabled` / `.className` / `.driver` | **Default `false`.** Scheduled CSI snapshots of lake's store volume and of every workspace Zetta's volumes, from lake's `volume_snapshot_policies` (lake migration `0069`, operator#260). The operator creates the `VolumeSnapshotClass` `className` (default `lake-retain`) for `driver` (default `disk.csi.azure.com`) with `deletionPolicy: Retain` when it is absent, and refuses an existing one that is not `Retain`. Each target's claims get a `VolumeSnapshot` `<claim>-<UTC timestamp>` labelled `orama.cloud/snapshot-target`, when the schedule comes due, when there is none yet and when lake's `requested_at` is newer than the last; only `readyToUse` snapshots count toward `keep` and the newest ready one is never deleted; the newest failed one is kept for diagnosis and older failed ones deleted; before a live target's snapshot is pruned its bound content (checked for the driver and its binding) is switched to `deletionPolicy: Delete` so the cloud snapshot goes too; hand-made and other targets' snapshots are never touched; bound contents are labelled with the target; requests and schedules are judged by Postgres's `now()`; a schedule that never fires is reported and takes nothing (a request still works); and `volume_snapshot_status` reports the newest. `lake_volume_snapshots` notifications wake the controller; it also polls every 60 seconds. Requires Postgres and the `snapshot.storage.k8s.io` CRDs. See [`lake/volume-snapshots.md`](lake/volume-snapshots.md). |
 | `spec.workspaces.maxWorkspaces` | Cap on running or stopped workspace namespaces. `0` is unlimited. Lowering it never removes an existing namespace. A new row over the cap is `Failed` with `workspace quota reached (<n>)`. |
 | `spec.workspaces.defaultPlan` / `.plans` | Named workspace ResourceQuota and LimitRange profiles. Empty `defaultPlan` selects the built-in `default` plan. A custom plan provides `quota`, `defaultRequest` and `default` ResourceLists; missing or incomplete plans fail closed. |
-| `spec.workspaces.overrides[uuid]` | Per-workspace `{plan, internetEgress}`. A missing override uses the default plan and denies internet access. `internetEgress: true` allows only public TCP 443 while excluding private/reserved ranges, metadata, Kubernetes API Service and endpoints, and current Node addresses and Pod CIDRs. |
+| `spec.workspaces.overrides[uuid]` | Per-workspace `{plan, internetEgress, mesh}`. `mesh: true` enrols the workspace's sandbox in zetta-tunnel's mesh (default `false`; [`infrastructure/mesh.md`](infrastructure/mesh.md)). A missing override uses the default plan and denies internet access. `internetEgress: true` allows only public TCP 443 while excluding private/reserved ranges, metadata, Kubernetes API Service and endpoints, and current Node addresses and Pod CIDRs; the operator carries it as the workspace's `EgressRule/internet-https`. |
 | `status.readyReplicas` / `.phase` | Replica count and overall service state: `Progressing \| Ready \| Degraded`. `Ready` requires the current Deployment generation with the desired positive ready/updated/available replica counts, a Bound store, enabled Postgres readiness and current applied schema, enabled Zetta readiness, and valid enabled backup configuration. Replica count alone does not establish readiness. Written only on a real transition. |
 | `status.conditions[Ready]` | `LakeReady` on success. Pending work reports `Progressing` with `DeploymentProgressing`, `PostgresNotReady`, `SchemaPending`, `SchemaNotCurrent`, or the store/Zetta reason. Failed schema (`SchemaFailed`), Deployment replica failure (`ReplicaFailure`) or progress deadline (`ProgressDeadlineExceeded`), degraded Zetta, and invalid enabled backup configuration report `Degraded`. Failures take precedence over pending work; messages explain the blocker. Unchanged observations preserve transition times and write no status. |
 | `status.store` / `conditions[StoreReady]` | Selected `claimName`, PVC `phase`, and bound `capacity`. `StoreReady=False` reports a missing or unbound claim; an unbound store keeps the overall phase out of `Ready`. |

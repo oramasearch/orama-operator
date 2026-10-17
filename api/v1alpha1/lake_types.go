@@ -131,6 +131,14 @@ type LakeSpec struct {
 	// +optional
 	IngressEnabled bool `json:"ingressEnabled,omitempty"`
 
+	// IngressClassName is the ingress controller that serves this Lake's Ingress and its environments' Ingresses: "nginx"
+	// (ingress-nginx, the default until a cluster's cutover) or "zetta-tunnel" (zetta-tunnel's
+	// ingress gateway, docs/infrastructure/ingress.md). Changing it moves the hosts' DNS, because DNS
+	// follows the Ingress's load-balancer address.
+	// +kubebuilder:validation:Enum=nginx;zetta-tunnel
+	// +optional
+	IngressClassName string `json:"ingressClassName,omitempty"`
+
 	// TLS terminates HTTPS at the nginx Ingress. It has no effect unless IngressEnabled and Host
 	// are also set. The referenced kubernetes.io/tls Secret must exist in spec.namespace.
 	// +optional
@@ -156,6 +164,26 @@ type LakeSpec struct {
 	// +optional
 	PreviewWildcard string `json:"previewWildcard,omitempty"`
 
+	// Region is where this Lake runs, for people choosing between a deployment's regions
+	// (decision 64). A LakeSet fills Name from the member's KubernetesCluster; Label is stated.
+	// The Lake receives them as LAKE_REGION and LAKE_REGION_LABEL.
+	// +optional
+	Region *LakeRegionSpec `json:"region,omitempty"`
+
+	// Regions are every region of the deployment this Lake belongs to, its own included, as its
+	// region picker offers them (LAKE_REGIONS, JSON). A LakeSet computes the list from its members
+	// and writes it into each one; a set does not state it.
+	// +optional
+	Regions []LakeRegion `json:"regions,omitempty"`
+
+	// ApexHost is a second host this Lake answers, where it serves the region picker (lake.live in
+	// front of eu.lake.live and us.lake.live). The Ingress gets a rule for it and, with
+	// DNSSecretRef, an owned proxied DNS record; removing the field removes both. The Lake receives
+	// it as LAKE_APEX_HOST. It has no effect without IngressEnabled and Host. At most one member of
+	// a LakeSet sets it.
+	// +optional
+	ApexHost string `json:"apexHost,omitempty"`
+
 	// DeploySync configures how frequently this operator materializes desired deployment rows from
 	// its Zetta orama_control database into LakeEnvironment resources.
 	// +optional
@@ -180,6 +208,36 @@ type LakeSpec struct {
 	// snapshot.storage.k8s.io CRDs. See docs/lake/volume-snapshots.md.
 	// +optional
 	Snapshots LakeSnapshotsSpec `json:"snapshots,omitempty"`
+}
+
+// LakeRegionSpec is the region a Lake runs in.
+type LakeRegionSpec struct {
+	// Name is the cloud region (swedencentral). In a LakeSet it comes from the member's cluster
+	// and cannot be stated differently.
+	// +optional
+	Name string `json:"name,omitempty"`
+	// Label is the region's name for people ("Europe").
+	// +optional
+	Label string `json:"label,omitempty"`
+}
+
+// LakeRegion is one region of a deployment, as a region picker offers it.
+type LakeRegion struct {
+	// Name is the cloud region.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Label is the region's name for people.
+	// +kubebuilder:validation:MinLength=1
+	Label string `json:"label"`
+	// Host is the region's Lake host (eu.lake.live).
+	// +kubebuilder:validation:MinLength=1
+	Host string `json:"host"`
+	// Latitude and Longitude locate the region's datacenter in decimal degrees, so a picker can
+	// preselect the region closest to a visitor.
+	// +kubebuilder:validation:MinLength=1
+	Latitude string `json:"latitude"`
+	// +kubebuilder:validation:MinLength=1
+	Longitude string `json:"longitude"`
 }
 
 // LakeSnapshotsSpec configures the scheduled CSI snapshots of lake's volumes.
@@ -218,7 +276,9 @@ type LakeAppsSpec struct {
 	// +optional
 	Wildcard string `json:"wildcard,omitempty"`
 
-	// IngressClass selects the ingress controller for apps. Empty defaults to nginx.
+	// IngressClass selects the ingress controller for apps. Empty defaults to nginx. Apps stay on nginx
+	// through the zetta-tunnel cutover: the gateway does not make nginx's auth subrequest to Lake or
+	// count bytes per Ingress (docs/infrastructure/ingress.md).
 	// +optional
 	IngressClass string `json:"ingressClass,omitempty"`
 
@@ -423,6 +483,12 @@ type LakeWorkspaceOverrideSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	InternetEgress bool `json:"internetEgress,omitempty"`
+
+	// Mesh enrols the workspace's pods in zetta-tunnel's mesh through its NetworkSandbox
+	// (docs/infrastructure/mesh.md). Every path between them must then be a declared Connection.
+	// +kubebuilder:default=false
+	// +optional
+	Mesh bool `json:"mesh,omitempty"`
 }
 
 // LakeTLSSpec configures HTTPS termination for a Lake Ingress.

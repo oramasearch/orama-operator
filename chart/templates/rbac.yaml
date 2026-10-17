@@ -22,6 +22,15 @@ rules:
   - apiGroups: ["orama.cloud"]
     resources:
       - oramacloudv1s
+      - networksandboxes
+      - connections
+      - egressrules
+      - tunnels
+      - tunnelproviders
+      - zettatunnels
+      - cloudflaretunnels
+      - peerconnections
+      - peerlinks
       - oramazettaclusters
       - oramacloudv1e2etests
       - zettaclustere2etests
@@ -49,6 +58,15 @@ rules:
   - apiGroups: ["orama.cloud"]
     resources:
       - oramacloudv1s/status
+      - networksandboxes/status
+      - connections/status
+      - egressrules/status
+      - tunnels/status
+      - tunnelproviders/status
+      - zettatunnels/status
+      - cloudflaretunnels/status
+      - peerconnections/status
+      - peerlinks/status
       - oramazettaclusters/status
       - oramacloudv1e2etests/status
       - zettaclustere2etests/status
@@ -65,6 +83,13 @@ rules:
       - lakerestorerehearsals/status
       - lakesealedsecrets/status
       - oramacloudv1s/finalizers
+      - connections/finalizers
+      - egressrules/finalizers
+      - tunnels/finalizers
+      - zettatunnels/finalizers
+      - cloudflaretunnels/finalizers
+      - peerconnections/finalizers
+      - peerlinks/finalizers
       - oramazettaclusters/finalizers
       - cloudflarednsrecords/finalizers
       - cloudflarekvnamespaces/finalizers
@@ -181,6 +206,18 @@ rules:
     verbs: ["get", "list", "watch", "patch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
+    verbs: ["*"]
+  # zetta-tunnel's ingress gateway: its IngressClass, and the address of the Ingresses it serves.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingressclasses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses/status"]
+    verbs: ["get", "update", "patch"]
+  # Every NetworkSandbox requires an owner-scoped CiliumNetworkPolicy metadata deny.
+  # The controller watches these policies for drift and deletion repair.
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
     verbs: ["*"]
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]

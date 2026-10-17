@@ -163,6 +163,11 @@ func (tidbServiceKind) credential(_ context.Context, _ client.Reader, in catalog
 	return credential, "", err
 }
 
+// podSelector: the TiDB servers only; clients never reach PD or TiKV.
+func (tidbServiceKind) podSelector(in catalogService) map[string]string {
+	return map[string]string{tidbInstanceLabel: in.name, tidbManagedByLabel: tidbManagedBy, "app.kubernetes.io/component": "tidb"}
+}
+
 // claimSelectors: TiDB Operator labels PD and TiKV claims with the cluster's instance and keeps
 // them after the TidbCluster is deleted.
 func (tidbServiceKind) claimSelectors(in catalogService) []client.MatchingLabels {

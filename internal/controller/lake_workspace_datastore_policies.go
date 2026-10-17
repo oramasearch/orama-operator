@@ -13,7 +13,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // The datastore operators that run lake's managed services reconcile pods inside a workspace
@@ -69,10 +68,11 @@ var (
 // workspaceOperatorIngress lets one datastore operator reach one kind of operand pod on the ports
 // it calls.
 type workspaceOperatorIngress struct {
-	name  string
-	pods  metav1.LabelSelector
-	from  workspaceOperatorPeer
-	ports []int32
+	name    string
+	comment string
+	pods    metav1.LabelSelector
+	from    workspaceOperatorPeer
+	ports   []int32
 }
 
 func labelExists(key string) metav1.LabelSelectorRequirement {
@@ -91,7 +91,8 @@ var workspaceOperatorIngresses = []workspaceOperatorIngress{
 	{
 		// Status extraction, promotion and switchover go to the instance manager's status port;
 		// the operator also connects to Postgres itself.
-		name: "allow-cnpg-operator-ingress",
+		name:    "allow-cnpg-operator-ingress",
+		comment: "CloudNativePG needs the instance-manager status port and Postgres port to manage workspace Postgres clusters.",
 		pods: metav1.LabelSelector{
 			MatchLabels:      map[string]string{"cnpg.io/podRole": "instance"},
 			MatchExpressions: []metav1.LabelSelectorRequirement{labelExists("cnpg.io/cluster")},
@@ -102,7 +103,8 @@ var workspaceOperatorIngresses = []workspaceOperatorIngress{
 	{
 		// The operator queries every ClickHouse host over HTTP to decide when it is ready and to
 		// propagate schema.
-		name: "allow-clickhouse-operator-ingress",
+		name:    "allow-clickhouse-operator-ingress",
+		comment: "The Altinity operator needs ClickHouse HTTP to observe readiness and propagate schema.",
 		pods: metav1.LabelSelector{
 			MatchLabels:      map[string]string{clickHouseAppLabel: clickHouseAppValue},
 			MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(clickHouseInstallationLabel)},
@@ -113,7 +115,8 @@ var workspaceOperatorIngresses = []workspaceOperatorIngress{
 	{
 		// A replicated installation points at a Keeper; the operator creates the cluster's root
 		// path there over the ZooKeeper protocol.
-		name: "allow-clickhouse-keeper-operator-ingress",
+		name:    "allow-clickhouse-keeper-operator-ingress",
+		comment: "The Altinity operator needs the Keeper client port to create replicated ClickHouse paths.",
 		pods: metav1.LabelSelector{
 			MatchLabels:      map[string]string{clickHouseKeeperAppLabel: clickHouseAppValue},
 			MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(clickHouseKeeperLabel)},
@@ -123,30 +126,34 @@ var workspaceOperatorIngresses = []workspaceOperatorIngress{
 	},
 	{
 		// PD's client API: members, health and store state.
-		name:  "allow-tidb-pd-operator-ingress",
-		pods:  tidbComponentPods("pd"),
-		from:  workspaceTiDBOperator,
-		ports: []int32{tidbPDClientPort},
+		name:    "allow-tidb-pd-operator-ingress",
+		comment: "The TiDB operator needs PD's client API for member, health and store state.",
+		pods:    tidbComponentPods("pd"),
+		from:    workspaceTiDBOperator,
+		ports:   []int32{tidbPDClientPort},
 	},
 	{
 		// TiKV's status port: leader counts during an upgrade.
-		name:  "allow-tidb-tikv-operator-ingress",
-		pods:  tidbComponentPods("tikv"),
-		from:  workspaceTiDBOperator,
-		ports: []int32{tidbTiKVStatusPort},
+		name:    "allow-tidb-tikv-operator-ingress",
+		comment: "The TiDB operator needs TiKV's status port to count leaders during upgrades.",
+		pods:    tidbComponentPods("tikv"),
+		from:    workspaceTiDBOperator,
+		ports:   []int32{tidbTiKVStatusPort},
 	},
 	{
 		// TiDB's status port for health, and its SQL port, where the operator sets the root
 		// password that createPassword asks for.
-		name:  "allow-tidb-operator-ingress",
-		pods:  tidbComponentPods("tidb"),
-		from:  workspaceTiDBOperator,
-		ports: []int32{tidbPort, tidbStatusPort},
+		name:    "allow-tidb-operator-ingress",
+		comment: "The TiDB operator needs TiDB SQL and status ports for health and root-password setup.",
+		pods:    tidbComponentPods("tidb"),
+		from:    workspaceTiDBOperator,
+		ports:   []int32{tidbPort, tidbStatusPort},
 	},
 	{
 		// The Cassandra management API. cass-operator starts every node through it
 		// (MGMT_API_EXPLICIT_START), so a node never starts without this flow.
-		name: "allow-cassandra-operator-ingress",
+		name:    "allow-cassandra-operator-ingress",
+		comment: "The K8ssandra operators need the Cassandra management API to start, drain and manage nodes.",
 		pods: metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(cassandraClusterLabel)},
 		},
@@ -156,7 +163,8 @@ var workspaceOperatorIngresses = []workspaceOperatorIngress{
 	{
 		// The operator forms the cluster (CLUSTER MEET, slot assignment, replication) and reads
 		// its state over the Valkey port of each node.
-		name: "allow-valkey-operator-ingress",
+		name:    "allow-valkey-operator-ingress",
+		comment: "The Valkey operator needs each node's Valkey port to form and observe the cluster.",
 		pods: metav1.LabelSelector{
 			MatchLabels:      map[string]string{workspaceManagedByLabel: valkeyManagedBy},
 			MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(valkeyClusterLabel)},
@@ -169,8 +177,9 @@ var workspaceOperatorIngresses = []workspaceOperatorIngress{
 // workspaceAPIServerClient is a kind of operand pod that reads the Kubernetes API with its own
 // ServiceAccount.
 type workspaceAPIServerClient struct {
-	name string
-	pods metav1.LabelSelector
+	name    string
+	comment string
+	pods    metav1.LabelSelector
 }
 
 // workspaceAPIServerClients is every operand that needs the Kubernetes API, one NetworkPolicy each.
@@ -178,7 +187,8 @@ var workspaceAPIServerClients = []workspaceAPIServerClient{
 	{
 		// The CNPG instance manager, and the initdb and join Jobs, read their Cluster, hold the
 		// primary lease and report status through the API.
-		name: "allow-cnpg-apiserver-egress",
+		name:    "allow-cnpg-apiserver-egress",
+		comment: "CloudNativePG instances and bootstrap jobs need the Kubernetes API for their Cluster, leases and status.",
 		pods: metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{labelExists("cnpg.io/cluster")},
 		},
@@ -186,7 +196,8 @@ var workspaceAPIServerClients = []workspaceAPIServerClient{
 	{
 		// Strimzi's Topic and User Operators watch KafkaTopic and KafkaUser and write the user's
 		// credential Secret, which the Kafka service's connection is read from.
-		name: "allow-strimzi-apiserver-egress",
+		name:    "allow-strimzi-apiserver-egress",
+		comment: "Strimzi entity operators need the Kubernetes API for topics, users and credential Secrets.",
 		pods: metav1.LabelSelector{MatchLabels: map[string]string{
 			strimziKindLabel:            "Kafka",
 			"strimzi.io/component-type": "entity-operator",
@@ -194,8 +205,9 @@ var workspaceAPIServerClients = []workspaceAPIServerClient{
 	},
 	{
 		// TiDB's discovery service reads the TidbCluster to tell each PD how to join.
-		name: "allow-tidb-discovery-apiserver-egress",
-		pods: tidbComponentPods("discovery"),
+		name:    "allow-tidb-discovery-apiserver-egress",
+		comment: "TiDB discovery needs the Kubernetes API to read its TidbCluster and tell PD how to join.",
+		pods:    tidbComponentPods("discovery"),
 	},
 }
 
@@ -246,15 +258,7 @@ type workspaceAPIServerTarget struct {
 // and every endpoint address are allowed, on the Service port and on each endpoint port. The
 // endpoints are required: an egress rule with no destination would allow every destination.
 func (r *LakeWorkspacesReconciler) readWorkspaceAPIServerTarget(ctx context.Context) (workspaceAPIServerTarget, error) {
-	var kubernetes corev1.Service
-	if err := r.apiReader().Get(ctx, client.ObjectKey{Namespace: "default", Name: "kubernetes"}, &kubernetes); err != nil {
-		return workspaceAPIServerTarget{}, fmt.Errorf("read the Kubernetes API Service: %w", err)
-	}
-	var endpoints corev1.Endpoints
-	if err := r.apiReader().Get(ctx, client.ObjectKey{Namespace: "default", Name: "kubernetes"}, &endpoints); err != nil {
-		return workspaceAPIServerTarget{}, fmt.Errorf("read the Kubernetes API endpoints: %w", err)
-	}
-	return workspaceAPIServerTargetFrom(&kubernetes, &endpoints)
+	return readKubernetesAPIServerTarget(ctx, r.apiReader())
 }
 
 func workspaceAPIServerTargetFrom(

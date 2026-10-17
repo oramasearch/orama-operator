@@ -172,6 +172,9 @@ platform. BuildKit uses this repo's `Dockerfile` on the remote builder and pushe
 registry. Record the successful push's digest and confirm the installation identity can pull it
 before distributing the tag. If builder or publishing access is unavailable, obtain the published
 image from the release maintainer instead; a native `go build` alone does not publish an image.
+The image carries two binaries: `/manager`, and `/mesh-projector` (`cmd/mesh-projector`), the
+node-local half of zetta-tunnel's mesh that the mesh DaemonSet runs beside the agent
+([`infrastructure/mesh.md`](infrastructure/mesh.md)).
 Application component images are supplied by their owning projects, not built in this repository.
 
 The manager and application pull-secret settings are described separately in

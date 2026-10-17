@@ -44,7 +44,8 @@ single-build scoped; the Job pushes through Lake's in-cluster registry, reuses a
 cache, and reports its digest, size, progress, and failures. See [`builds.md`](builds.md).
 
 With `spec.workspaces.enabled`, the operator follows lake's `workspaces` table and creates one
-restricted namespace and Zetta data plane per workspace. Default-deny network policy, restricted
+restricted namespace and Zetta data plane per workspace. An owned `NetworkSandbox` renders
+default-deny network policy, restricted
 Pod Security Admission, tokenless service accounts, plan quotas and local credentials make the
 namespace the trust boundary; see [`workspaces.md`](workspaces.md). Narrow per-kind policies let
 the datastore operators reach their pods there, and let CNPG, Strimzi's entity operator and TiDB
@@ -150,7 +151,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    request bodies without buffering streaming requests or responses. `tls.secretName` adds the
    host certificate and HTTPS redirect. When `previewWildcard` is set, the Lake also owns one
    wildcard record against the same ingress address; individual previews do not create
-   Cloudflare records.
+   Cloudflare records. `apexHost` adds a second rule to the same Ingress (and to its TLS hosts)
+   and an owned `<lake>-apex-dns` record, for the region picker in front of a deployment's
+   regions ([regions](#regions)); removing it removes both.
 13. **Deployment environments** — desired rows in the operator's Zetta
    `orama_control.deployments` table become Lake-owned `LakeEnvironment` CRs in this namespace.
    Each CR owns its profiled workload Namespace through a verified finalizer. Referenced
@@ -636,3 +639,29 @@ Details and the not-yet list: https://github.com/oramasearch/lake/blob/main/docs
 - [`workload-resources.md`](workload-resources.md) — the `workload_resources` contract lake meters compute from: what each kind maps to, the effective-request arithmetic, GPU class and VRAM, and when a row is written, kept and deleted (lake#643).
 - [`methodology-runs.md`](methodology-runs.md) — a workspace methodology's runs as untrusted code: the stage, sandbox and collect pods, their namespace and policies, phases, the per-workspace queue, GPU placement and metering (lake#655, orama-operator#293), and serving a trained model from Ship → Models (lake#690).
 - [`agents.md`](agents.md) — the Agent Library's agents, the launches of user-created agents on agent-runtime, their cron schedules as CronJobs, and each library agent's own agent-bus credential (lake#228, lake#231, lake#244, lake#269).
+
+## Regions
+
+Decision 64 ([liquid-bridge#39](https://github.com/oramasearch/liquid-bridge/issues/39),
+[operator#512](https://github.com/oramasearch/orama-operator/issues/512)): production Lake runs one
+Lake per region, each at its own host (`eu.lake.live`, `us.lake.live`), with a region picker at the
+apex (`lake.live`). A workspace belongs to the region it was created in; nothing joins the regions
+yet. One `LakeSet` manages them all, and the operator supplies everything lake's picker needs:
+
+| Field | Env var lake reads | Set by |
+|---|---|---|
+| `spec.region.name` | `LAKE_REGION` | the LakeSet, from the member's `KubernetesCluster` region; a different stated name is refused |
+| `spec.region.label` | `LAKE_REGION_LABEL` | stated on the member ("Europe") |
+| `spec.regions` | `LAKE_REGIONS` (JSON `[{name, label, host, latitude, longitude}]`) | the LakeSet: one entry per member with a region label, written into each such member; stating it in a set is refused |
+| `spec.apexHost` | `LAKE_APEX_HOST` | stated on one member; a second is refused. Adds the Ingress rule and DNS record above |
+
+The four env names are reserved: the same names in `spec.env` are ignored. A Lake with none of these
+fields (nonprod, a dedicated instance) gets none of the variables and shows no picker.
+
+Region locations come from `cloudRegionLocations` in `internal/controller/lake_regions.go`, copied
+from `az account list-locations`. A member in a region missing there is refused with a message
+naming the region; add the region's latitude and longitude to the table to fix it.
+
+**Verify:** `kubectl get lake <name> -n <ns> -o jsonpath='{.spec.regions}'` on the member's
+cluster, and `kubectl get deploy lake-<name> -n <ns> -o yaml | grep -A1 LAKE_REGION`.
+

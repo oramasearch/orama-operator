@@ -136,7 +136,7 @@ func lakeBuildsEnabled(lake *oramav1alpha1.Lake) bool {
 }
 
 func lakeControlRowsEnabled(lake *oramav1alpha1.Lake) bool {
-	return lakeServicesEnabled(lake) || lakeBuildsEnabled(lake)
+	return lakeServicesEnabled(lake) || lakeBuildsEnabled(lake) || lakeWorkspacesEnabled(lake)
 }
 
 func buildCacheEnabled(lake *oramav1alpha1.Lake) bool {

@@ -159,7 +159,7 @@ func zettaPodLabels(z *oramav1alpha1.OramaZettaCluster) map[string]string {
 	// LakeApp egress is label-scoped to the exact managed service. Preserve only the Lake service
 	// identity labels on pods. The StatefulSet selector deliberately remains zettaLabels because it
 	// is immutable after cluster creation.
-	for _, key := range []string{serviceLakeLabel, serviceIDLabel, serviceKindLabel, serviceCustomerLabel, workspaceIDLabel, workspaceLabel} {
+	for _, key := range []string{serviceLakeLabel, serviceIDLabel, serviceKindLabel, serviceCustomerLabel, workspaceIDLabel, workspaceLabel, lakeInstanceLabel} {
 		if value := z.Labels[key]; value != "" {
 			labels[key] = value
 		}
@@ -619,7 +619,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaIngress(ctx context.Context,
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: z.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
 		ing.Labels = lbls
-		ing.Spec.IngressClassName = strPtr("nginx")
+		ing.Spec.IngressClassName = strPtr(ingressClassOrDefault(z.Spec.IngressClassName))
 		ing.Spec.Rules = []networkingv1.IngressRule{{
 			Host: z.Spec.Host,
 			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{

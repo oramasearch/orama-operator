@@ -48,6 +48,9 @@ import (
 type LakeReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// OperatorNamespace is the namespace of the manager pod that reads Lake's control database and
+	// Zetta API. Empty omits those in-cluster ingress allowances in local unit tests.
+	OperatorNamespace string
 	// ServiceStores opens lake's control Postgres for the managed-services poll. Nil uses pgx;
 	// tests substitute a fake store.
 	ServiceStores LakeServiceStoreOpener
@@ -231,6 +234,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		"app.kubernetes.io/instance":   lake.Name,
 		"app.kubernetes.io/managed-by": "orama-operator",
 	}
+	if err := r.reconcileLakeNetworkSandbox(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile network sandbox: %w", err)
+	}
 	name := "lake-" + lake.Name
 	zetta, err := r.reconcileLakeZetta(ctx, &lake, ns, labels)
 	if err != nil {
@@ -304,7 +310,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("read deployment while waiting for schema: %w", err)
 	}
 
-	// Lake-owned control rows (services, stores, agents, builds): best-effort, never fail the Lake.
+	// Lake-owned control rows (connections, services, stores, agents, builds): best-effort, never fail the Lake.
 	// The tables exist only once the schema has applied, so the poll waits for it.
 	controlRowsChanging := false
 	if lakeControlRowsEnabled(&lake) && schemaReady {
@@ -503,7 +509,7 @@ func (r *LakeReconciler) reconcileLakeZetta(
 	// Postgres, not an operator schema on Zetta.
 	operatorSchema := false
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, zetta, func() error {
-		zetta.Labels = labels
+		zetta.Labels = withLabels(labels, lakeInstancePodLabels(lake))
 		zetta.Spec = oramav1alpha1.OramaZettaClusterSpec{
 			Replicas:                replicas,
 			Image:                   lake.Spec.Zetta.Image,
@@ -608,7 +614,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 		deployment.Spec.Replicas = &replicas
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		deployment.Spec.Strategy = strategy
-		deployment.Spec.Template.ObjectMeta.Labels = labels
+		deployment.Spec.Template.ObjectMeta.Labels = withLabels(labels, lakeInstancePodLabels(lake))
 		deployment.Spec.Template.Spec = corev1.PodSpec{
 			// ndots:2, so the full Service names lake dials resolve on the first query.
 			DNSConfig: lakePodDNSConfig(),
@@ -1175,6 +1181,10 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 	// Its agents (lake_agents.go): where the library agents are, lake's own in-cluster address,
 	// the model, and the token lake presents to agent services.
 	env = append(env, lakeAgentEnv(lake, lakeNamespace(lake))...)
+	env = append(env, lakeRegionEnv(lake)...)
+	for _, name := range lakeRegionEnvNames {
+		reserved[name] = struct{}{}
+	}
 	for _, custom := range lake.Spec.Env {
 		if _, found := reserved[custom.Name]; found {
 			continue
@@ -1294,6 +1304,11 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 			}
 		}
 		cluster.Object["spec"] = spec
+		// CNPG propagates inherited metadata to instances and bootstrap Jobs. Do not copy Lake's
+		// application labels: its Service must not select the database pods.
+		if err := unstructured.SetNestedStringMap(cluster.Object, lakeInstancePodLabels(lake), "spec", "inheritedMetadata", "labels"); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)
 	})
 	if err != nil {
@@ -1478,7 +1493,7 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 		return err
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ps, func() error {
-		ps.Labels = lbls
+		ps.Labels = withLabels(lbls, lakeInstancePodLabels(lake))
 		ps.Spec = oramav1alpha1.PostgresSchemaSpec{
 			ConnectionSecretRef: oramav1alpha1.PostgresSecretKeyRef{Name: lakeControlDB(lake.Name) + "-app", Key: "uri"},
 			SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: cmName, Key: "schema.sql"},
@@ -1531,6 +1546,11 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	dnsRecord := func() *oramav1alpha1.CloudflareDNSRecord {
 		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: dnsName, Namespace: ns}}
 	}
+	// The apex host's record (decision 64): the region picker's host, beside the Lake's own.
+	apexRecord := func() *oramav1alpha1.CloudflareDNSRecord {
+		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: svcName + "-apex-dns", Namespace: ns}}
+	}
+	apex := lakeApexHost(lake)
 	if !lake.Spec.IngressEnabled || lake.Spec.Host == "" {
 		if err := deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}); err != nil {
 			return err
@@ -1538,28 +1558,38 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		if err := deleteIfExists(ctx, r.Client, dnsRecord()); err != nil {
 			return err
 		}
+		if err := deleteIfExists(ctx, r.Client, apexRecord()); err != nil {
+			return err
+		}
 		return r.deleteLakePreviewDNSRecords(ctx, lake, ns, "")
+	}
+	hosts := []string{lake.Spec.Host}
+	if apex != "" {
+		hosts = append(hosts, apex)
 	}
 	prefix := networkingv1.PathTypePrefix
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
 		ing.Labels = lbls
 		ing.Annotations = lakeIngressAnnotations(lake.Spec.TLS.SecretName != "")
-		ing.Spec.IngressClassName = strPtr("nginx")
-		ing.Spec.Rules = []networkingv1.IngressRule{{
-			Host: lake.Spec.Host,
-			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
-				Paths: []networkingv1.HTTPIngressPath{{
-					Path: "/", PathType: &prefix,
-					Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-						Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeServicePort}}},
+		ing.Spec.IngressClassName = strPtr(ingressClassOrDefault(lake.Spec.IngressClassName))
+		ing.Spec.Rules = nil
+		for _, host := range hosts {
+			ing.Spec.Rules = append(ing.Spec.Rules, networkingv1.IngressRule{
+				Host: host,
+				IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
+					Paths: []networkingv1.HTTPIngressPath{{
+						Path: "/", PathType: &prefix,
+						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
+							Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeServicePort}}},
+					}},
 				}},
-			}},
-		}}
+			})
+		}
 		ing.Spec.TLS = nil
 		if lake.Spec.TLS.SecretName != "" {
 			ing.Spec.TLS = []networkingv1.IngressTLS{{
-				Hosts:      []string{lake.Spec.Host},
+				Hosts:      hosts,
 				SecretName: lake.Spec.TLS.SecretName,
 			}}
 		}
@@ -1571,7 +1601,15 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		if err := deleteIfExists(ctx, r.Client, dnsRecord()); err != nil {
 			return err
 		}
+		if err := deleteIfExists(ctx, r.Client, apexRecord()); err != nil {
+			return err
+		}
 		return r.deleteLakePreviewDNSRecords(ctx, lake, ns, "")
+	}
+	if apex == "" {
+		if err := deleteIfExists(ctx, r.Client, apexRecord()); err != nil {
+			return err
+		}
 	}
 	previewDNSName := ""
 	if lake.Spec.PreviewWildcard == "" {
@@ -1593,6 +1631,16 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		return controllerutil.SetControllerReference(lake, rec, r.Scheme)
 	}); err != nil {
 		return err
+	}
+	if apex != "" {
+		apexRec := apexRecord()
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, apexRec, func() error {
+			apexRec.Labels = lbls
+			apexRec.Spec.SecretRef, apexRec.Spec.Name, apexRec.Spec.Content, apexRec.Spec.Proxied = lake.Spec.DNSSecretRef.Name, apex, target, true
+			return controllerutil.SetControllerReference(lake, apexRec, r.Scheme)
+		}); err != nil {
+			return err
+		}
 	}
 	if lake.Spec.PreviewWildcard == "" {
 		return nil
@@ -1697,6 +1745,8 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
 		Owns(&oramav1alpha1.LakeSealedSecret{}).
+		Owns(&oramav1alpha1.NetworkSandbox{}).
+		Watches(&oramav1alpha1.LakeApp{}, handler.EnqueueRequestsFromMapFunc(lakeRequestsForAppSandbox)).
 		Owns(&oramav1alpha1.OramaZettaCluster{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
 		Owns(newCNPGScheduledBackup(nil, ""))

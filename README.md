@@ -16,16 +16,19 @@ into running systems:
   control-plane DB, analytics, cache, broker, ingestion, workers), one CR per cluster.
 - The supporting CRDs those own: `PostgresSchema`, `RabbitMQTopology`, `CloudflareDNSRecord`,
   `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `ClerkApplication`,
-  `LakeSealedSecret`, `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and the three e2e
-  test CRDs, including `LakeE2ETest`.
+  `NetworkSandbox`, `Connection`, `Tunnel`, `TunnelProvider`, `ZettaTunnel`, `CloudflareTunnel`,
+  `PeerConnection`, `PeerLink`,
+  `LakeSealedSecret`, `LakeEnvironment`, `LakeApp`, `LakeRestoreRehearsal`, and
+  the three e2e test CRDs, including `LakeE2ETest`.
 - The infrastructure kinds: `KubernetesClusterProvider`, `KubernetesCluster` and `AksCluster`
   create clusters; `ClusterHelmRelease` and `OramaOperator` install a managed cluster's platform
   layer and its own operator; `LakeSet` and `OramaCloudV1Set` run instances on managed clusters
   from one template.
 
-That is 24 resource kinds, all installed by the chart on every cluster. The release notes say what
-each one reconciles: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
-[v0.2.0](docs/releases/v0.2.0.md) for the rest.
+That is 33 resource kinds, all installed by the chart on every cluster. The release notes cover
+them all: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
+[v0.2.0](docs/releases/v0.2.0.md) for the next seven, and
+[v0.3.0](docs/releases/v0.3.0.md) for the nine secure-networking kinds.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -33,8 +36,9 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.2.0** (2026-10-14);
-[`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md) says what is new since v0.1.0, the first.
+The current release is **v0.3.0** (2026-10-17);
+[`docs/releases/v0.3.0.md`](docs/releases/v0.3.0.md) says what is new since v0.2.0: secure
+networking and regions.
 
 The operator runs on four AKS clusters. The management cluster, `orama-production-cluster-01`, is
 the development environment whatever its name says; it runs `Lake/prod`, live at
@@ -45,6 +49,25 @@ are operated: [`config/clusters/`](config/clusters/README.md) and
 [`docs/infrastructure/operations.md`](docs/infrastructure/operations.md).
 Every `OramaCloudV1` component reconciler is implemented and was validated on AKS; the Cloudflare
 load balancer and the Karpenter capacity slices are implemented but not yet live-tested.
+The owner-scoped `NetworkSandbox` rollout for Lake, workspace and Cloud v1 workloads, including
+resolved-address public egress lockdown for Cloud v1 writer and reader pods, is implemented and
+native-tested. The 2026-10-14 AKS probe found that metadata traffic bypassed NetworkPolicy `ipBlock`
+exclusions; an explicit Cilium deny blocked it while public HTTPS worked. Every sandbox now renders
+that mandatory owner-scoped deny for cloud metadata and host-service addresses; generated-policy
+rollout verification remains pending. Only the operator manager can write Kubernetes, Cilium or
+Orama secure-networking policy; tenant, Lake, app, agent and build identities are denied and covered
+by static and native API-server RBAC tests. Shared namespaces leave unrelated pods, including the operator,
+outside the sandbox. Lake `Connection` rows now become paired, sandbox-owned ingress and egress;
+the broad workspace-internal allowance remains only until every initial row is enforced. Native proof
+is complete and the named nonprod connectivity probe remains pending. Details:
+[`Network sandboxes`](docs/infrastructure/network-sandbox.md) and
+[`Declared connections`](docs/infrastructure/connections.md). Lake tunnel grants become `Tunnel`s carried
+by zetta-tunnel (one relay per cluster, one endpoint per grant) or a customer's own Cloudflare account:
+[`Developer tunnels`](docs/infrastructure/tunnels.md). Peers exchange named services between clusters
+through zetta-tunnel gateways, with credentials only from the managing cluster:
+[`Peer connections`](docs/infrastructure/peer-connections.md). zetta-tunnel's ingress gateway runs on every
+cluster beside ingress-nginx until each cluster's cutover: [`Ingress`](docs/infrastructure/ingress.md). Its mesh agent runs on every node; a namespace is enrolled
+through its NetworkSandbox: [`Mesh`](docs/infrastructure/mesh.md).
 Per-reconciler status and the remaining hardening work are in
 [`docs/components.md`](docs/components.md).
 

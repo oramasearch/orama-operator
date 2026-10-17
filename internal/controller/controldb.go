@@ -101,6 +101,10 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 			}
 		}
 		cluster.Object["spec"] = spec
+		// Cluster metadata alone is not inherited by CNPG instance and bootstrap Job pods.
+		if err := unstructured.SetNestedStringMap(cluster.Object, labelsFor(oc, "controldb"), "spec", "inheritedMetadata", "labels"); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(oc, cluster, r.Scheme)
 	})
 	if err != nil {

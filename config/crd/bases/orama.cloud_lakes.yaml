@@ -126,6 +126,14 @@ spec:
                       agent runs on. Empty: launches are reported Failed and nothing runs.
                     type: string
                 type: object
+              apexHost:
+                description: |-
+                  ApexHost is a second host this Lake answers, where it serves the region picker (lake.live in
+                  front of eu.lake.live and us.lake.live). The Ingress gets a rule for it and, with
+                  DNSSecretRef, an owned proxied DNS record; removing the field removes both. The Lake receives
+                  it as LAKE_APEX_HOST. It has no effect without IngressEnabled and Host. At most one member of
+                  a LakeSet sets it.
+                type: string
               apps:
                 description: Apps configures apps-table synchronization, LakeApp runtime
                   delivery and public addressing.
@@ -137,8 +145,10 @@ spec:
                       Disabling stops synchronization without deleting existing apps.
                     type: boolean
                   ingressClass:
-                    description: IngressClass selects the ingress controller for apps.
-                      Empty defaults to nginx.
+                    description: |-
+                      IngressClass selects the ingress controller for apps. Empty defaults to nginx. Apps stay on nginx
+                      through the zetta-tunnel cutover: the gateway does not make nginx's auth subrequest to Lake or
+                      count bytes per Ingress (docs/infrastructure/ingress.md).
                     type: string
                   runtimeImage:
                     description: RuntimeImage is the private app-runtime image used
@@ -413,6 +423,16 @@ spec:
                   default.'
                 minLength: 1
                 type: string
+              ingressClassName:
+                description: |-
+                  IngressClassName is the ingress controller that serves this Lake's Ingress and its environments' Ingresses: "nginx"
+                  (ingress-nginx, the default until a cluster's cutover) or "zetta-tunnel" (zetta-tunnel's
+                  ingress gateway, docs/infrastructure/ingress.md). Changing it moves the hosts' DNS, because DNS
+                  follows the Ingress's load-balancer address.
+                enum:
+                - nginx
+                - zetta-tunnel
+                type: string
               ingressEnabled:
                 default: false
                 description: |-
@@ -569,6 +589,59 @@ spec:
                   PullSecretName, if set, is attached to the lake pods as an imagePullSecret. Needed for a
                   private spec.image (oramasearch/lake is private). The Secret must exist in spec.namespace.
                 type: string
+              region:
+                description: |-
+                  Region is where this Lake runs, for people choosing between a deployment's regions
+                  (decision 64). A LakeSet fills Name from the member's KubernetesCluster; Label is stated.
+                  The Lake receives them as LAKE_REGION and LAKE_REGION_LABEL.
+                properties:
+                  label:
+                    description: Label is the region's name for people ("Europe").
+                    type: string
+                  name:
+                    description: |-
+                      Name is the cloud region (swedencentral). In a LakeSet it comes from the member's cluster
+                      and cannot be stated differently.
+                    type: string
+                type: object
+              regions:
+                description: |-
+                  Regions are every region of the deployment this Lake belongs to, its own included, as its
+                  region picker offers them (LAKE_REGIONS, JSON). A LakeSet computes the list from its members
+                  and writes it into each one; a set does not state it.
+                items:
+                  description: LakeRegion is one region of a deployment, as a region
+                    picker offers it.
+                  properties:
+                    host:
+                      description: Host is the region's Lake host (eu.lake.live).
+                      minLength: 1
+                      type: string
+                    label:
+                      description: Label is the region's name for people.
+                      minLength: 1
+                      type: string
+                    latitude:
+                      description: |-
+                        Latitude and Longitude locate the region's datacenter in decimal degrees, so a picker can
+                        preselect the region closest to a visitor.
+                      minLength: 1
+                      type: string
+                    longitude:
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Name is the cloud region.
+                      minLength: 1
+                      type: string
+                  required:
+                  - host
+                  - label
+                  - latitude
+                  - longitude
+                  - name
+                  type: object
+                type: array
               replicas:
                 default: 1
                 description: Replicas of the lake Deployment.
@@ -1138,6 +1211,12 @@ spec:
                           description: |-
                             InternetEgress permits outbound TCP 443 to public addresses. Private, link-local, metadata,
                             node and cluster ranges remain denied.
+                          type: boolean
+                        mesh:
+                          default: false
+                          description: |-
+                            Mesh enrols the workspace's pods in zetta-tunnel's mesh through its NetworkSandbox
+                            (docs/infrastructure/mesh.md). Every path between them must then be a declared Connection.
                           type: boolean
                         plan:
                           description: Plan selects one entry in spec.workspaces.plans,

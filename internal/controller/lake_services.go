@@ -142,6 +142,12 @@ type LakeServiceStatus struct {
 type LakeServiceStore interface {
 	ListServices(ctx context.Context) ([]LakeService, error)
 	UpsertServiceStatus(ctx context.Context, status LakeServiceStatus) error
+	// The secure-networking half (lake migration 0084_network). The pgx implementation checks
+	// network_guard before reading either desired or status rows.
+	ListNetworkConnections(ctx context.Context) (LakeNetworkSnapshot, error)
+	UpsertNetworkConnectionStatus(ctx context.Context, status LakeNetworkConnectionStatus) error
+	ListNetworkEgressRules(ctx context.Context) (LakeNetworkEgressSnapshot, error)
+	UpsertNetworkEgressRuleStatus(ctx context.Context, status LakeNetworkEgressRuleStatus) error
 	ListStores(ctx context.Context) ([]LakeStore, error)
 	UpsertStoreStatus(ctx context.Context, status LakeStoreStatus) error
 	// The store mounts half (lake_store_mounts.go, lake#666). ListStoreMounts and ListStoreUsage
@@ -375,8 +381,8 @@ func foreignServiceMessage(kind, namespace, name string) string {
 	return fmt.Sprintf("%s %s/%s exists and is not this Lake's service", kind, namespace, name)
 }
 
-// reconcileLakeServices is one poll of Lake-owned control rows: services, stores, agents, and
-// builds. It is best-effort: a Secret that is not there yet, an unreachable database, or a failed
+// reconcileLakeServices is one poll of Lake-owned control rows: connections, services, stores,
+// agents, and builds. It is best-effort: a Secret that is not there yet, an unreachable database, or a failed
 // Kubernetes call is logged and retried on the Lake's next requeue and never fails Lake reconcile.
 // It reports whether any row is still changing, so the Lake is polled fast until it settles.
 func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) bool {
@@ -409,6 +415,18 @@ func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav
 	}
 	defer func() { _ = store.Close(context.Background()) }()
 	changing := false
+	if lakeWorkspacesEnabled(lake) && r.reconcileLakeConnections(passCtx, lake, store) {
+		changing = true
+	}
+	if lakeWorkspacesEnabled(lake) && r.reconcileLakeEgressRules(passCtx, lake, store) {
+		changing = true
+	}
+	if lakeWorkspacesEnabled(lake) && r.reconcileLakeTunnels(passCtx, lake, store) {
+		changing = true
+	}
+	if lakeWorkspacesEnabled(lake) && r.reconcileLakePeers(passCtx, lake, store) {
+		changing = true
+	}
 	if lakeServicesEnabled(lake) {
 		services, err := store.ListServices(passCtx)
 		if err != nil {
@@ -946,6 +964,12 @@ func (r *LakeReconciler) reconcilePostgresService(ctx context.Context, lake *ora
 		// Individual fields rather than a whole spec, so CloudNativePG's defaults survive and a
 		// steady cluster is never rewritten. Storage and bootstrap are set once, at creation.
 		if err := unstructured.SetNestedField(cluster.Object, int64(spec.Instances), "spec", "instances"); err != nil {
+			return err
+		}
+		// The operator signs in as the superuser to keep one role per credential-scoped
+		// Connection (operator#469). CloudNativePG writes the <cluster>-superuser Secret, which
+		// only the operator reads; it is never delivered to an app.
+		if err := unstructured.SetNestedField(cluster.Object, true, "spec", "enableSuperuserAccess"); err != nil {
 			return err
 		}
 		if creating {

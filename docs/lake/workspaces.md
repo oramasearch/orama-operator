@@ -140,8 +140,9 @@ Every workspace namespace receives all of the following:
   operator-owned service pods also set `automountServiceAccountToken: false` on their pod specs.
   The operator creates no Role or RoleBinding in the namespace and binds no ClusterRole to it.
 - One `ResourceQuota` and `LimitRange` selected by the workspace's declarative plan.
-- A default-deny NetworkPolicy for both ingress and egress, followed only by the explicit policies
-  below.
+- An owned `NetworkSandbox` that renders default-deny for both ingress and egress, followed only by
+  the explicit policies below. The stage-1 ownership migration preserves former policy specs;
+  stage 2 retires only `allow-workspace-internal` after initial Connections are Ready.
 - A local copy of the Lake image-pull Secret, when configured. Zetta's admin and cluster tokens are
   minted by the Zetta controller in this namespace. Agent provider and service credentials are
   copied here, and per-run and synchronized-app credentials are minted here. The trusted Lake pod
@@ -168,8 +169,11 @@ RFC1918/private ranges, the metadata endpoint `169.254.169.254`, and non-DNS tra
 
 | From | To | Ports | Why |
 |---|---|---|---|
-| workspace pod | pod in the same workspace namespace | all | Zetta peers, customer services and local applications must communicate inside their trust boundary |
+| workspace pod | pod in the same workspace namespace | all | rollout compatibility only before `network_guard` and while every seeded initial `Connection` becomes Ready; then this path is removed permanently |
+| declared app, service, agent or tunnel source | declared service or app target in the same workspace | explicit TCP ports, or only the target Service ports when empty | paired ingress and egress generated from one Lake `network_connections` row; see [`../infrastructure/connections.md`](../infrastructure/connections.md) |
 | Lake pod in the Lake namespace | workspace pod | TCP 4800, 8080 | Lake calls Zetta and agent HTTP APIs; namespace and pod selectors prevent another workspace from using this rule |
+| owning Lake pod in its exact namespace | vendor-labelled workspace service pods | TCP 5432 (Postgres), 9092 (Kafka), 8123/9000 (ClickHouse), 4000 (TiDB), 9042 (Cassandra), 6379 (Valkey) | six separate client-ingress policies pair with Lake egress for the projected Data / Connections endpoints; no management ports or new Orama operator access |
+| owning Lake pod in its exact namespace | its synchronized app's labelled pod | the app's declared port | app backend proxying; the app's access policy admits only this Lake and exact app port |
 | operator pod in its release namespace | workspace pod | TCP 4800, 8080 | operational reconciliation and verification use the same narrow application ports; the chart supplies the release namespace through `POD_NAMESPACE`, so a tenant cannot gain access by copying the operator pod label |
 | nginx ingress pod in `ingress-nginx` | synchronized app pod | the app's declared port | serves an app host; the per-app policy selects only that app's identity labels and port |
 | workspace pod | CoreDNS pods in `kube-system` | UDP/TCP 53 | service discovery |
@@ -178,12 +182,22 @@ RFC1918/private ranges, the metadata endpoint `169.254.169.254`, and non-DNS tra
 | datastore operator pod in its own namespace | the operand pods it manages | per kind, below | the CNPG, Altinity, TiDB, K8ssandra and Valkey operators reconcile their pods over the network |
 | CNPG pods, Strimzi entity operator, TiDB discovery | the Kubernetes API Service address and its endpoints | the Service port and each endpoint port | these pods read and write their own custom resources with their own ServiceAccount |
 
+The six Lake service-ingress policies are additions approved during the NetworkSandbox review.
+Former workspace policies keep their names and specs until connection activation; that transition
+removes only `allow-workspace-internal`. The inferred client contract, code
+audit and paired-path tests are documented in
+[`../infrastructure/network-sandbox.md`](../infrastructure/network-sandbox.md).
+
 Internet egress is denied by default. `spec.workspaces.overrides[<workspace UUID>].internetEgress`
-adds or removes the TCP 443 policy for that workspace alone. Before enabling it, the operator reads
+adds or removes the TCP 443 policy for that workspace alone. Since operator#470 the policy is
+rendered by the operator-owned `EgressRule/internet-https` (`publicInternet: true`, port 443) under
+its original name and spec; see [egress rules](../infrastructure/egress-rules.md#internetegress-is-an-egressrule). Before enabling it, the operator reads
 the `default/kubernetes` Service and Endpoints plus every Node address and pod CIDR, then adds them
-as exclusions. If those reads fail, it refuses to create the internet policy; the base default-deny
-and narrow internal policies are installed before that calculation, and any older internet policy
-is removed so a stale exclusion list cannot remain active.
+as exclusions. If those reads fail on a new namespace, it refuses to create the internet policy;
+the base default-deny and narrow internal policies are installed before that calculation. An
+existing sandbox retains its last successfully discovered public rule and returns an error for
+retry, so a transient API read cannot remove a required route or replace it with a guessed
+exclusion list.
 
 ## Datastore operator flows (operator#268)
 
@@ -201,6 +215,7 @@ whose kind is not in use selects no pod.
 |---|---|---|---|---|
 | `allow-cnpg-apiserver-egress` | `cnpg.io/cluster` exists (instances and the initdb/join Jobs) | Kubernetes API, see below | Service port + endpoint ports | initdb, the instance manager's `Cluster` reads, primary lease and status |
 | `allow-cnpg-operator-ingress` | `cnpg.io/podRole=instance` with `cnpg.io/cluster` | `cnpg-system`, `app.kubernetes.io/name=cloudnative-pg` | TCP 8000, 5432 | status extraction, promotion and switchover |
+| `allow-operator-to-postgres` | `cnpg.io/podRole=instance` with `cnpg.io/cluster` | the Orama operator's namespace, `app.kubernetes.io/name=orama-operator` | TCP 5432 | per-connection roles of credential-scoped Connections ([#469](https://github.com/oramasearch/orama-operator/issues/469)) |
 | `allow-strimzi-apiserver-egress` | `strimzi.io/kind=Kafka`, `strimzi.io/component-type=entity-operator` | Kubernetes API | Service port + endpoint ports | the Topic and User Operators watch `KafkaTopic`/`KafkaUser` and write the user Secret the Kafka connection is read from |
 | `allow-tidb-discovery-apiserver-egress` | `app.kubernetes.io/component=discovery`, `app.kubernetes.io/managed-by=tidb-operator` | Kubernetes API | Service port + endpoint ports | discovery reads the `TidbCluster` to tell each PD how to join |
 | `allow-clickhouse-operator-ingress` | `clickhouse.altinity.com/app=chop` with `clickhouse.altinity.com/chi` | `clickhouse-system`, `app.kubernetes.io/name=altinity-clickhouse-operator` | TCP 8123 | host readiness and schema queries over HTTP |

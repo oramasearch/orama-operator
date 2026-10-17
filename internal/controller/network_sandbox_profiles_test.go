@@ -1,0 +1,304 @@
+/*
+Copyright 2026 OramaSearch.
+Licensed under the Apache License, Version 2.0.
+*/
+
+package controller
+
+import (
+	"context"
+	"reflect"
+	"strings"
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
+)
+
+type failingSandboxDiscoveryReader struct {
+	client.Reader
+}
+
+func (r failingSandboxDiscoveryReader) Get(
+	ctx context.Context,
+	key client.ObjectKey,
+	object client.Object,
+	options ...client.GetOption,
+) error {
+	if key.Namespace == "default" && key.Name == "kubernetes" {
+		return apierrors.NewServiceUnavailable("test API discovery failure")
+	}
+	return r.Reader.Get(ctx, key, object, options...)
+}
+
+func sandboxDiscoveryObjects() []client.Object {
+	return []client.Object{
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
+			Spec: corev1.ServiceSpec{
+				ClusterIP:  "10.96.0.1",
+				ClusterIPs: []string{"10.96.0.1", "fd00:96::1"},
+				Ports:      []corev1.ServicePort{{Port: 443}},
+			},
+		},
+		&corev1.Endpoints{
+			ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
+			Subsets: []corev1.EndpointSubset{{
+				Addresses:         []corev1.EndpointAddress{{IP: "20.237.72.161"}, {IP: "2603:1030:20e:3::10"}},
+				NotReadyAddresses: []corev1.EndpointAddress{{IP: "20.237.72.162"}, {IP: "2603:1030:20e:3::11"}},
+				Ports:             []corev1.EndpointPort{{Port: 6443}},
+			}},
+		},
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "worker-1"},
+			Spec: corev1.NodeSpec{
+				PodCIDR:  "11.244.0.0/24",
+				PodCIDRs: []string{"11.244.0.0/24", "2603:1030:20e:42::/64"},
+			},
+			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: "20.51.1.20"},
+				{Type: corev1.NodeInternalIP, Address: "2603:1030:20e:3::20"},
+			}},
+		},
+	}
+}
+
+func allowanceByName(t *testing.T, sandbox *oramav1alpha1.NetworkSandbox, name string) oramav1alpha1.NetworkSandboxPolicy {
+	t.Helper()
+	for _, allowance := range sandbox.Spec.Policies {
+		if allowance.Name == name {
+			return allowance
+		}
+	}
+	t.Fatalf("allowance %q not found", name)
+	return oramav1alpha1.NetworkSandboxPolicy{}
+}
+
+func assertJustifiedNarrowAllowances(t *testing.T, sandbox *oramav1alpha1.NetworkSandbox) {
+	t.Helper()
+	seen := map[string]struct{}{}
+	for _, allowance := range sandbox.Spec.Policies {
+		if strings.TrimSpace(allowance.Comment) == "" {
+			t.Errorf("allowance %q has no component justification", allowance.Name)
+		}
+		if _, ok := seen[allowance.Name]; ok {
+			t.Errorf("duplicate allowance %q", allowance.Name)
+		}
+		seen[allowance.Name] = struct{}{}
+		for _, ingress := range allowance.Spec.Ingress {
+			if len(ingress.From) == 0 {
+				t.Errorf("allowance %q has unrestricted ingress", allowance.Name)
+			}
+		}
+		for _, egress := range allowance.Spec.Egress {
+			if len(egress.To) == 0 {
+				t.Errorf("allowance %q has unrestricted egress", allowance.Name)
+			}
+		}
+	}
+}
+
+func TestLakeNetworkSandboxListsOnlyJustifiedNarrowPaths(t *testing.T) {
+	ctx := context.Background()
+	scheme := newLakeScheme(t)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "lake", UID: types.UID("lake-uid")},
+		Spec: oramav1alpha1.LakeSpec{
+			Namespace:      "lake-system",
+			Image:          "oramasearch/lake:test",
+			IngressEnabled: true,
+			Host:           "lake.example.test",
+		},
+	}
+	objects := append([]client.Object{lake}, sandboxDiscoveryObjects()...)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	reconciler := &LakeReconciler{
+		Client:            kube,
+		Scheme:            scheme,
+		APIReader:         kube,
+		OperatorNamespace: "orama-system",
+	}
+	if err := reconciler.reconcileLakeNetworkSandbox(ctx, lake, lake.Spec.Namespace, map[string]string{"test": "lake"}); err != nil {
+		t.Fatalf("reconcile Lake NetworkSandbox: %v", err)
+	}
+	var sandbox oramav1alpha1.NetworkSandbox
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: lake.Spec.Namespace, Name: networkSandboxName}, &sandbox); err != nil {
+		t.Fatal(err)
+	}
+	assertJustifiedNarrowAllowances(t, &sandbox)
+	for _, name := range []string{
+		"allow-lake-to-controldb",
+		"allow-lake-to-zetta",
+		"allow-lake-to-workspaces",
+		"allow-lake-apiserver-egress",
+		"allow-cnpg-apiserver-egress",
+		"allow-lake-public-https",
+		"allow-ingress-nginx",
+	} {
+		allowanceByName(t, &sandbox, name)
+	}
+	var deny networkingv1.NetworkPolicy
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: lake.Spec.Namespace, Name: networkSandboxDefaultDenyName}, &deny); err != nil {
+		t.Fatalf("default deny was not rendered: %v", err)
+	}
+}
+
+func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) {
+	ctx := context.Background()
+	scheme := ocv1TestScheme(t)
+	stack := newOCV1(nil)
+	stack.Spec.Components.ControlDB.Mode = "external"
+	objects := append([]client.Object{stack}, sandboxDiscoveryObjects()...)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	reconciler := &OramaCloudV1Reconciler{
+		Client:            kube,
+		Scheme:            scheme,
+		APIReader:         kube,
+		OperatorNamespace: "orama-system",
+	}
+	if err := reconciler.reconcileNetworkSandbox(ctx, stack); err != nil {
+		t.Fatalf("reconcile Cloud v1 NetworkSandbox: %v", err)
+	}
+	var sandbox oramav1alpha1.NetworkSandbox
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: stack.Namespace, Name: networkSandboxName}, &sandbox); err != nil {
+		t.Fatal(err)
+	}
+	assertJustifiedNarrowAllowances(t, &sandbox)
+	for _, component := range []string{"writer", "reader"} {
+		engineLabels := labelsFor(stack, component)
+		var enginePolicyNames []string
+		for _, allowance := range sandbox.Spec.Policies {
+			if len(allowance.Spec.Egress) > 0 && selects(t, allowance.Spec.PodSelector, engineLabels) {
+				enginePolicyNames = append(enginePolicyNames, allowance.Name)
+			}
+		}
+		if !reflect.DeepEqual(enginePolicyNames, []string{
+			"allow-dns-egress",
+			"allow-engine-egress",
+			"allow-engine-public-internet",
+		}) {
+			t.Fatalf("%s egress policies = %v", component, enginePolicyNames)
+		}
+	}
+
+	internal := allowanceByName(t, &sandbox, "allow-engine-egress")
+	if len(internal.Spec.Egress) != 2 {
+		t.Fatalf("engine internal egress = %+v", internal.Spec.Egress)
+	}
+	if !selects(t, *internal.Spec.Egress[0].To[0].PodSelector, labelsFor(stack, "broker")) ||
+		!reflect.DeepEqual(policyPorts(t, internal.Spec.Egress[0].Ports), []int32{5552}) {
+		t.Fatalf("engine broker rule = %+v", internal.Spec.Egress[0])
+	}
+	if !selects(t, *internal.Spec.Egress[1].To[0].PodSelector, labelsFor(stack, "embeddings")) ||
+		!reflect.DeepEqual(policyPorts(t, internal.Spec.Egress[1].Ports), []int32{50051}) {
+		t.Fatalf("engine embeddings rule = %+v", internal.Spec.Egress[1])
+	}
+
+	dns := allowanceByName(t, &sandbox, "allow-dns-egress")
+	if len(dns.Spec.Egress) != 1 || len(dns.Spec.Egress[0].Ports) != 2 {
+		t.Fatalf("engine DNS rule = %+v", dns.Spec.Egress)
+	}
+	protocols := map[corev1.Protocol]bool{}
+	for _, port := range dns.Spec.Egress[0].Ports {
+		if port.Protocol == nil || port.Port == nil || port.Port.IntVal != 53 {
+			t.Fatalf("engine DNS port = %+v", port)
+		}
+		protocols[*port.Protocol] = true
+	}
+	if !protocols[corev1.ProtocolTCP] || !protocols[corev1.ProtocolUDP] {
+		t.Fatalf("engine DNS protocols = %v", protocols)
+	}
+
+	engine := allowanceByName(t, &sandbox, "allow-engine-public-internet")
+	if len(engine.Spec.Egress) != 1 || len(engine.Spec.Egress[0].Ports) != 1 {
+		t.Fatalf("engine public rule must allow every public URL TCP port: %+v", engine.Spec.Egress)
+	}
+	publicPort := engine.Spec.Egress[0].Ports[0]
+	if publicPort.Protocol == nil || *publicPort.Protocol != corev1.ProtocolTCP || publicPort.Port != nil || publicPort.EndPort != nil {
+		t.Fatalf("engine public port restriction = %+v", publicPort)
+	}
+	excluded := map[string]bool{}
+	cidrs := map[string]bool{}
+	for _, peer := range engine.Spec.Egress[0].To {
+		if peer.IPBlock == nil {
+			t.Fatalf("engine public peer is not an IP block: %+v", peer)
+		}
+		cidrs[peer.IPBlock.CIDR] = true
+		for _, value := range peer.IPBlock.Except {
+			excluded[value] = true
+		}
+	}
+	if !cidrs["0.0.0.0/0"] || !cidrs["::/0"] || len(cidrs) != 2 {
+		t.Fatalf("engine public CIDRs = %v", cidrs)
+	}
+	for _, value := range []string{
+		"10.0.0.0/8",
+		"100.64.0.0/10",
+		"169.254.0.0/16",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"::1/128",
+		"fc00::/7",
+		"fe80::/10",
+		"11.244.0.0/24",
+		"2603:1030:20e:42::/64",
+		"20.51.1.20/32",
+		"2603:1030:20e:3::20/128",
+		"20.237.72.161/32",
+		"20.237.72.162/32",
+		"2603:1030:20e:3::10/128",
+		"2603:1030:20e:3::11/128",
+	} {
+		if !excluded[value] {
+			t.Errorf("engine public rule does not exclude %s", value)
+		}
+	}
+	for _, name := range []string{
+		"allow-dashboard-egress",
+		"allow-cnpg-apiserver-egress",
+		"allow-dashboard-ingress-nginx",
+		"allow-docs-ingress-nginx",
+		"allow-control-clients-external-postgres",
+	} {
+		allowanceByName(t, &sandbox, name)
+	}
+}
+
+func TestNetworkSandboxPreservesDiscoveredPathsDuringReadFailure(t *testing.T) {
+	ctx := context.Background()
+	scheme := newLakeScheme(t)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "lake", UID: types.UID("lake-uid")},
+		Spec:       oramav1alpha1.LakeSpec{Namespace: "lake-system", Image: "oramasearch/lake:test"},
+	}
+	objects := append([]client.Object{lake}, sandboxDiscoveryObjects()...)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	reconciler := &LakeReconciler{Client: kube, Scheme: scheme, APIReader: kube}
+	if err := reconciler.reconcileLakeNetworkSandbox(ctx, lake, lake.Spec.Namespace, nil); err != nil {
+		t.Fatal(err)
+	}
+	reconciler.APIReader = failingSandboxDiscoveryReader{Reader: kube}
+	if err := reconciler.reconcileLakeNetworkSandbox(ctx, lake, lake.Spec.Namespace, nil); err == nil {
+		t.Fatal("reconcile succeeded during Kubernetes API discovery failure")
+	}
+	var sandbox oramav1alpha1.NetworkSandbox
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: lake.Spec.Namespace, Name: networkSandboxName}, &sandbox); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"allow-lake-apiserver-egress",
+		"allow-cnpg-apiserver-egress",
+		"allow-lake-public-https",
+		"allow-agents-public-https",
+		"allow-controldb-backup-public-https",
+	} {
+		allowanceByName(t, &sandbox, name)
+	}
+}

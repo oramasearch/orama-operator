@@ -400,7 +400,10 @@ func (r *LakeReconciler) reconcileLakeLibraryAgents(ctx context.Context, lake *o
 			secretEnv("AGENT_BUS_TOKEN", lakeAgentBusSecret(lake.Name), agent.Key),
 			corev1.EnvVar{Name: "AGENT_BUS_AGENT", Value: agent.Key})
 		pod := agentPodSpec(lake, agent.Image, env, true)
-		libraryLabels := agentLabels(labels, agent.Key, name, map[string]string{libraryAgentLabel: agent.Key})
+		libraryLabels := agentLabels(labels, agent.Key, name, map[string]string{
+			libraryAgentLabel: agent.Key,
+			lakeInstanceLabel: lake.Name,
+		})
 		if _, err := r.reconcileAgentService(ctx, lake, namespace, name, libraryLabels, selector, pod); err != nil {
 			return err
 		}
@@ -593,7 +596,10 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 	}
 	status.CredentialSHA256 = credentialDigest(credential)
 	name := agentLaunchName(lake.Name, launch.Slug)
-	launchLabels := agentLabels(labels, "agent-runtime", name, map[string]string{agentLaunchIDLabel: launch.ID})
+	launchLabels := agentLabels(labels, "agent-runtime", name, map[string]string{
+		agentLaunchIDLabel:     launch.ID,
+		connectionAgentIDLabel: launch.AgentID,
+	})
 	if launch.Mode == agentLaunchModeService {
 		selector := map[string]string{"app.kubernetes.io/name": "agent-runtime", "app.kubernetes.io/instance": name}
 		available, err := r.reconcileAgentService(ctx, lake, namespace, name, launchLabels, selector,

@@ -118,6 +118,7 @@ func (r *LakeWorkspacesReconciler) apiReader() client.Reader {
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=orama.cloud,resources=egressrules,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts;secrets;resourcequotas;limitranges;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;endpoints;nodes,verbs=get;list;watch
@@ -758,6 +759,11 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceProfile(
 	internet bool,
 ) error {
 	labels := workspaceLabels(lake, row)
+	// internetEgress is an EgressRule (operator#470). It is written before the sandbox is rebuilt,
+	// so the rebuild keeps the rule's allowance and the path never closes during the change.
+	if err := r.reconcileWorkspaceInternetRule(ctx, lake, row, namespace, internet); err != nil {
+		return err
+	}
 	if err := r.reconcileWorkspaceNetworkPolicies(ctx, lake, namespace, labels, internet); err != nil {
 		return err
 	}
@@ -812,25 +818,206 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceNetworkPolicies(
 	labels map[string]string,
 	internet bool,
 ) error {
-	policies := []*networkingv1.NetworkPolicy{
-		workspaceDefaultDenyPolicy(namespace, labels),
-		workspaceInternalPolicy(namespace, labels),
-		workspaceLakeIngressPolicy(lake, r.OperatorNamespace, namespace, labels),
-		workspaceDNSPolicy(namespace, labels),
-		workspaceLakeEgressPolicy(lake, namespace, labels),
+	connectionsActive, err := r.workspaceConnectionsActive(ctx, namespace)
+	if err != nil {
+		return err
+	}
+	policies := []oramav1alpha1.NetworkSandboxPolicy{
+		sandboxAllowance(
+			"Lake and the operator need workspace Zetta and agent HTTP ports to reconcile the workspace and its workloads.",
+			workspaceLakeIngressPolicy(lake, r.OperatorNamespace, namespace, labels),
+		),
+		sandboxAllowance(
+			"Every workspace workload needs cluster DNS over UDP and TCP for Service discovery.",
+			workspaceDNSPolicy(namespace, labels),
+		),
+		sandboxAllowance(
+			"Workspace workloads call their owning Lake API for control-plane operations and status.",
+			workspaceLakeEgressPolicy(lake, namespace, labels),
+		),
+	}
+	if !connectionsActive {
+		policies = append(policies, sandboxAllowance(
+			"Existing workspace workloads retain same-namespace traffic until every initial Lake Connection is enforced.",
+			workspaceInternalPolicy(namespace, labels),
+		))
 	}
 	for _, allowance := range workspaceOperatorIngresses {
-		policies = append(policies, workspaceOperatorIngressPolicy(allowance, namespace, labels))
+		policies = append(
+			policies,
+			sandboxAllowance(allowance.comment, workspaceOperatorIngressPolicy(allowance, namespace, labels)),
+		)
 	}
-	for _, desired := range policies {
-		if err := r.reconcileWorkspaceNetworkPolicy(ctx, labels, desired); err != nil {
-			return err
+	if r.OperatorNamespace != "" {
+		policies = append(policies, sandboxAllowance(
+			"The Orama operator signs in to workspace Postgres services to keep the roles of credential-scoped Connections (operator#469).",
+			workspaceOperatorPostgresPolicy(r.OperatorNamespace, namespace, labels),
+		))
+	}
+	policies = append(policies, workspaceLakeServiceIngressAllowances(lake)...)
+	connectionPolicies, connectionErr := r.existingWorkspaceConnectionAllowances(ctx, namespace)
+	policies = append(policies, connectionPolicies...)
+	target, apiErr := r.readWorkspaceAPIServerTarget(ctx)
+	if apiErr == nil {
+		for _, apiClient := range workspaceAPIServerClients {
+			policies = append(
+				policies,
+				sandboxAllowance(
+					apiClient.comment,
+					workspaceAPIServerEgressPolicy(apiClient, target, namespace, labels),
+				),
+			)
 		}
+	} else {
+		var names []string
+		for _, apiClient := range workspaceAPIServerClients {
+			names = append(names, apiClient.name)
+		}
+		preserved, preserveErr := existingSandboxAllowances(ctx, r.Client, namespace, names...)
+		policies = append(policies, preserved...)
+		apiErr = errors.Join(apiErr, preserveErr)
 	}
-	// Both remaining policies depend on the Kubernetes API address; each is attempted so a failure
-	// of one never leaves the other stale.
-	apiErr := r.reconcileWorkspaceAPIServerPolicies(ctx, namespace, labels)
-	return errors.Join(apiErr, r.reconcileWorkspaceInternet(ctx, namespace, labels, internet))
+	// The internetEgress allowance is rendered by its EgressRule (internet-https); while the
+	// override is on, the rebuild keeps what that rule rendered. Turning the override off drops it
+	// here at once, and the rule is deleted.
+	var internetErr error
+	if internet {
+		var preserved []oramav1alpha1.NetworkSandboxPolicy
+		preserved, internetErr = existingSandboxAllowances(ctx, r.Client, namespace, workspaceInternetName)
+		policies = append(policies, preserved...)
+	}
+	egressPolicies, egressErr := r.existingWorkspaceEgressAllowances(ctx, namespace)
+	policies = append(policies, egressPolicies...)
+	internetErr = errors.Join(internetErr, egressErr)
+	var mesh *oramav1alpha1.NetworkSandboxMesh
+	if lake.Spec.Workspaces.Overrides[labels[workspaceLabel]].Mesh {
+		mesh = &oramav1alpha1.NetworkSandboxMesh{Enrolled: true}
+	}
+	_, reconcileErr := reconcileOwnedMeshNetworkSandbox(
+		ctx,
+		r.Client,
+		r.Scheme,
+		lake,
+		namespace,
+		labels,
+		metav1.LabelSelector{},
+		policies,
+		mesh,
+	)
+	return errors.Join(connectionErr, apiErr, internetErr, reconcileErr)
+}
+
+func (r *LakeWorkspacesReconciler) workspaceConnectionsActive(
+	ctx context.Context,
+	namespace string,
+) (bool, error) {
+	var workspace corev1.Namespace
+	// Uncached: the operator never lists or watches Namespaces (operator#106).
+	if err := r.apiReader().Get(ctx, client.ObjectKey{Name: namespace}, &workspace); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read workspace connection rollout state: %w", err)
+	}
+	return workspace.Annotations[workspaceConnectionsActiveAnnotation] == "true", nil
+}
+
+func (r *LakeWorkspacesReconciler) existingWorkspaceConnectionAllowances(
+	ctx context.Context,
+	namespace string,
+) ([]oramav1alpha1.NetworkSandboxPolicy, error) {
+	var connections oramav1alpha1.ConnectionList
+	if err := r.List(ctx, &connections, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list workspace Connections: %w", err)
+	}
+	var names []string
+	for i := range connections.Items {
+		connection := &connections.Items[i]
+		if connection.Spec.Desired != oramav1alpha1.ConnectionDesiredPresent || !connection.DeletionTimestamp.IsZero() {
+			continue
+		}
+		names = append(names, connectionAllowanceNames(connection)...)
+	}
+	tunnelNames, err := workspaceTunnelAllowanceNames(ctx, r.Client, namespace)
+	if err != nil {
+		return nil, err
+	}
+	names = append(names, tunnelNames...)
+	sort.Strings(names)
+	return existingSandboxAllowances(ctx, r.Client, namespace, names...)
+}
+
+// existingWorkspaceEgressAllowances keeps what the workspace's Lake-declared EgressRules rendered.
+func (r *LakeWorkspacesReconciler) existingWorkspaceEgressAllowances(
+	ctx context.Context,
+	namespace string,
+) ([]oramav1alpha1.NetworkSandboxPolicy, error) {
+	var rules oramav1alpha1.EgressRuleList
+	if err := r.List(ctx, &rules, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list workspace EgressRules: %w", err)
+	}
+	var names []string
+	for i := range rules.Items {
+		rule := &rules.Items[i]
+		if rule.Spec.RuleID == "" || rule.Spec.Desired != oramav1alpha1.EgressRuleDesiredPresent || !rule.DeletionTimestamp.IsZero() {
+			continue
+		}
+		names = append(names, egressRuleAllowanceNames(rule)...)
+	}
+	sort.Strings(names)
+	return existingSandboxAllowances(ctx, r.Client, namespace, names...)
+}
+
+// reconcileWorkspaceInternetRule keeps the EgressRule that carries the workspace's internetEgress:
+// port 443 to every public address, exactly what the override has always allowed. It is the
+// operator's own rule (Lake writes no row for it) and is deleted when the override is off.
+func (r *LakeWorkspacesReconciler) reconcileWorkspaceInternetRule(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	row *LakeWorkspaceRow,
+	namespace string,
+	internet bool,
+) error {
+	rule := &oramav1alpha1.EgressRule{ObjectMeta: metav1.ObjectMeta{Name: workspaceInternetRuleName, Namespace: namespace}}
+	if !internet {
+		if err := r.Get(ctx, client.ObjectKeyFromObject(rule), rule); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if !metav1.IsControlledBy(rule, lake) || !rule.DeletionTimestamp.IsZero() {
+			return nil
+		}
+		if err := r.Delete(ctx, rule); err != nil && client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("remove the workspace internet EgressRule: %w", err)
+		}
+		return nil
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, rule, func() error {
+		if rule.ResourceVersion != "" && !metav1.IsControlledBy(rule, lake) {
+			return fmt.Errorf("EgressRule %s/%s is not controlled by Lake %q", namespace, rule.Name, lake.Name)
+		}
+		rule.Labels = withLabels(rule.Labels, map[string]string{
+			serviceLakeLabel: lake.Name,
+			workspaceLabel:   row.ID,
+		})
+		customer := ""
+		if parsed, err := uuid.Parse(row.CustomerID); err == nil && parsed.String() == row.CustomerID {
+			customer = row.CustomerID
+		}
+		rule.Spec = oramav1alpha1.EgressRuleSpec{
+			LakeRef:        lake.Name,
+			CustomerID:     customer,
+			WorkspaceID:    row.ID,
+			PublicInternet: true,
+			Ports:          []int32{443},
+			Desired:        oramav1alpha1.EgressRuleDesiredPresent,
+			Generation:     1,
+		}
+		return controllerutil.SetControllerReference(lake, rule, r.Scheme)
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile the workspace internet EgressRule: %w", err)
+	}
+	return nil
 }
 
 func (r *LakeWorkspacesReconciler) reconcileWorkspaceInternet(
@@ -943,6 +1130,31 @@ func workspaceLakeIngressPolicy(
 	}
 }
 
+// workspaceOperatorPostgresName lets the Orama operator reach workspace Postgres instances.
+const workspaceOperatorPostgresName = "allow-operator-to-postgres"
+
+func workspaceOperatorPostgresPolicy(operatorNamespace, namespace string, labels map[string]string) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: workspacePolicyMeta(workspaceOperatorPostgresName, namespace, labels),
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels:      map[string]string{"cnpg.io/podRole": "instance"},
+				MatchExpressions: []metav1.LabelSelectorRequirement{labelExists("cnpg.io/cluster")},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{
+				From: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: namespaceNameSelector(operatorNamespace),
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						"app.kubernetes.io/name": "orama-operator",
+					}},
+				}},
+				Ports: []networkingv1.NetworkPolicyPort{workspaceTCPPort(servicePostgresPort)},
+			}},
+		},
+	}
+}
+
 func workspaceDNSPolicy(namespace string, labels map[string]string) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: workspacePolicyMeta(workspaceDNSName, namespace, labels),
@@ -1011,50 +1223,9 @@ func (r *LakeWorkspacesReconciler) workspaceInternetPolicy(
 	namespace string,
 	labels map[string]string,
 ) (*networkingv1.NetworkPolicy, error) {
-	exceptions := append([]string(nil), workspacePublicIPExceptions...)
-	var kubernetes corev1.Service
-	if err := r.apiReader().Get(ctx, client.ObjectKey{Namespace: "default", Name: "kubernetes"}, &kubernetes); err != nil {
-		return nil, fmt.Errorf("read the Kubernetes API Service before allowing internet egress: %w", err)
-	}
-	for _, ip := range append([]string{kubernetes.Spec.ClusterIP}, kubernetes.Spec.ClusterIPs...) {
-		exceptions = appendAddressException(exceptions, ip)
-	}
-	var endpoints corev1.Endpoints
-	if err := r.apiReader().Get(ctx, client.ObjectKey{Namespace: "default", Name: "kubernetes"}, &endpoints); err != nil {
-		return nil, fmt.Errorf("read the Kubernetes API endpoints before allowing internet egress: %w", err)
-	}
-	for _, subset := range endpoints.Subsets {
-		for _, address := range append(subset.Addresses, subset.NotReadyAddresses...) {
-			exceptions = appendAddressException(exceptions, address.IP)
-		}
-	}
-	var nodes corev1.NodeList
-	if err := r.apiReader().List(ctx, &nodes); err != nil {
-		return nil, fmt.Errorf("list node addresses before allowing internet egress: %w", err)
-	}
-	for i := range nodes.Items {
-		for _, cidr := range append([]string{nodes.Items[i].Spec.PodCIDR}, nodes.Items[i].Spec.PodCIDRs...) {
-			if prefix, err := netip.ParsePrefix(cidr); err == nil {
-				exceptions = append(exceptions, prefix.Masked().String())
-			}
-		}
-		for _, address := range nodes.Items[i].Status.Addresses {
-			exceptions = appendAddressException(exceptions, address.Address)
-		}
-	}
-	sort.Strings(exceptions)
-	exceptions = sortedUnique(exceptions)
-	var ipv4, ipv6 []string
-	for _, value := range exceptions {
-		prefix, err := netip.ParsePrefix(value)
-		if err != nil {
-			return nil, fmt.Errorf("invalid workspace internet exclusion %q: %w", value, err)
-		}
-		if prefix.Addr().Is4() {
-			ipv4 = append(ipv4, value)
-		} else {
-			ipv6 = append(ipv6, value)
-		}
+	peers, err := publicInternetPeers(ctx, r.apiReader())
+	if err != nil {
+		return nil, err
 	}
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: workspacePolicyMeta(workspaceInternetName, namespace, labels),
@@ -1062,10 +1233,7 @@ func (r *LakeWorkspacesReconciler) workspaceInternetPolicy(
 			PodSelector: metav1.LabelSelector{},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 			Egress: []networkingv1.NetworkPolicyEgressRule{{
-				To: []networkingv1.NetworkPolicyPeer{
-					{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0", Except: ipv4}},
-					{IPBlock: &networkingv1.IPBlock{CIDR: "::/0", Except: ipv6}},
-				},
+				To:    peers,
 				Ports: []networkingv1.NetworkPolicyPort{workspaceTCPPort(443)},
 			}},
 		},
@@ -1288,6 +1456,7 @@ func (r *LakeWorkspacesReconciler) deleteLegacyWorkspace(
 func (r *LakeWorkspacesReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.Lake{}).
+		Owns(&oramav1alpha1.NetworkSandbox{}).
 		Owns(&oramav1alpha1.OramaZettaCluster{})
 	if r.Events != nil {
 		builder = builder.WatchesRawSource(source.Channel(r.Events, &handler.EnqueueRequestForObject{}))

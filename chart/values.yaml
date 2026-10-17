@@ -29,6 +29,13 @@ lakeServices:
   duckdbImage: oramasearch/lake-duckdb:0.1.0
   polarsImage: oramasearch/lake-polars:0.1.0
 
+# Images the operator runs for secure networking (docs/infrastructure/tunnels.md). zetta-tunnel is
+# private: its pods use their Lake's spec.pullSecretName. cloudflared runs only for a
+# CloudflareTunnel, in a customer's own Cloudflare account.
+networking:
+  zettaTunnelImage: oramasearch/zetta-tunnel:main-9cd11b4
+  cloudflaredImage: cloudflare/cloudflared:2026.10.0
+
 controlPlane:
   service:
     port: 8090

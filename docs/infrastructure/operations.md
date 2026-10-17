@@ -185,6 +185,13 @@ kubectl --context orama-production-cluster-01 get lset <name> \
   -o jsonpath='{range .status.memberStatuses[*]}{.name} {.namespace} {.phase} {.version} | {.message}{"\n"}{end}'
 ```
 
+## Move a cluster's hosts from ingress-nginx to zetta-tunnel
+
+Change the cluster's set members' ingress class in `config/clusters/sets/`, after cert-manager has
+issued the hosts' certificates; the steps and checks are in [Ingress](ingress.md#cutover-per-cluster).
+Removing ingress-nginx is a platform change made in `helmfile.yaml` and every `platform.yaml` together,
+only after every cluster is cut over.
+
 ## Things that have gone wrong, and what they looked like
 
 | Symptom | Cause | What to do |

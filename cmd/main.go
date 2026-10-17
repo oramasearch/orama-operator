@@ -35,6 +35,7 @@ func init() {
 
 func main() {
 	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage, lakeDuckDBImage, lakePolarsImage string
+	var zettaTunnelImage, cloudflaredImage string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
@@ -46,6 +47,10 @@ func main() {
 		"the lake-duckdb image for a Lake's duckdb services when its spec.services.duckdbImage is empty")
 	flag.StringVar(&lakePolarsImage, "lake-polars-image", controller.DefaultLakePolarsImage,
 		"the lake-polars image for a Lake's polars services when its spec.services.polarsImage is empty")
+	flag.StringVar(&zettaTunnelImage, "zetta-tunnel-image", controller.DefaultZettaTunnelImage,
+		"the zetta-tunnel image every zetta-tunnel role the operator runs uses")
+	flag.StringVar(&cloudflaredImage, "cloudflared-image", controller.DefaultCloudflaredImage,
+		"the cloudflared image a CloudflareTunnel's connector runs")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -80,10 +85,85 @@ func main() {
 	}
 
 	if err = (&controller.OramaCloudV1Reconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		APIReader:         mgr.GetAPIReader(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1")
+		os.Exit(1)
+	}
+	if err = (&controller.NetworkSandboxReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1")
+		setupLog.Error(err, "unable to create controller", "controller", "NetworkSandbox")
+		os.Exit(1)
+	}
+	if err = (&controller.ConnectionReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Connection")
+		os.Exit(1)
+	}
+	if err = (&controller.EgressRuleReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "EgressRule")
+		os.Exit(1)
+	}
+	if err = (&controller.TunnelReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Tunnel")
+		os.Exit(1)
+	}
+	if err = (&controller.TunnelProviderReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "TunnelProvider")
+		os.Exit(1)
+	}
+	if err = (&controller.ZettaTunnelReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Image:             zettaTunnelImage,
+		APIReader:         mgr.GetAPIReader(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ZettaTunnel")
+		os.Exit(1)
+	}
+	if err = (&controller.PeerConnectionReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Image:     zettaTunnelImage,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PeerConnection")
+		os.Exit(1)
+	}
+	if err = (&controller.PeerLinkReconciler{
+		Client:            mgr.GetClient(),
+		APIReader:         mgr.GetAPIReader(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PeerLink")
+		os.Exit(1)
+	}
+	if err = (&controller.CloudflareTunnelReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Image:     cloudflaredImage,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "CloudflareTunnel")
 		os.Exit(1)
 	}
 	if err = (&controller.OramaZettaClusterReconciler{
@@ -151,14 +231,15 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.LakeReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		SQLiteImage:   lakeSQLiteImage,
-		DuckDBImage:   lakeDuckDBImage,
-		PolarsImage:   lakePolarsImage,
-		ServiceEvents: servicesListener.Events,
-		APIReader:     mgr.GetAPIReader(),
-		Clientset:     clientset,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		SQLiteImage:       lakeSQLiteImage,
+		DuckDBImage:       lakeDuckDBImage,
+		PolarsImage:       lakePolarsImage,
+		ServiceEvents:     servicesListener.Events,
+		APIReader:         mgr.GetAPIReader(),
+		Clientset:         clientset,
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lake")
 		os.Exit(1)

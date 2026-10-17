@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -130,7 +131,7 @@ func newWorkspaceHarness(t *testing.T, lake *oramav1alpha1.Lake, objects ...clie
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(all...).
-		WithStatusSubresource(&oramav1alpha1.OramaZettaCluster{}).
+		WithStatusSubresource(&oramav1alpha1.OramaZettaCluster{}, &oramav1alpha1.EgressRule{}).
 		Build()
 	return &LakeWorkspacesReconciler{
 		Client:            c,
@@ -138,6 +139,26 @@ func newWorkspaceHarness(t *testing.T, lake *oramav1alpha1.Lake, objects ...clie
 		APIReader:         c,
 		OperatorNamespace: "orama-system",
 	}, c
+}
+
+// renderWorkspaceEgressRules runs the EgressRule controller over every rule in the namespace, as
+// the manager does after the workspace reconciler writes the internetEgress rule (operator#470).
+func renderWorkspaceEgressRules(t *testing.T, kube client.Client, namespace string) {
+	t.Helper()
+	ctx := context.Background()
+	reconciler := &EgressRuleReconciler{Client: kube, Scheme: kube.Scheme()}
+	var rules oramav1alpha1.EgressRuleList
+	if err := kube.List(ctx, &rules, client.InNamespace(namespace)); err != nil {
+		t.Fatal(err)
+	}
+	for i := range rules.Items {
+		request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&rules.Items[i])}
+		for pass := 0; pass < 2; pass++ {
+			if _, err := reconciler.Reconcile(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 }
 
 // defaultKubernetesAPIObjects is the default/kubernetes Service and Endpoints a real API server
@@ -245,12 +266,23 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 	if err := kube.List(ctx, &policies, client.InNamespace(testWorkspaceName)); err != nil {
 		t.Fatal(err)
 	}
-	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients); len(policies.Items) != want {
+	// Six additional Lake-only client policies pair with its egress; all legacy policies remain.
+	// One more lets the operator reach workspace Postgres for credential roles (operator#469).
+	if want := 5 + len(workspaceOperatorIngresses) + len(workspaceAPIServerClients) + 6 + 1; len(policies.Items) != want {
 		t.Fatalf("network policies = %d, want %d", len(policies.Items), want)
 	}
 	for _, policy := range policies.Items {
 		if policy.Name == workspaceInternetName {
 			t.Fatal("internet egress is allowed without an explicit workspace override")
+		}
+		if policy.Name == workspaceOperatorPostgresName {
+			from := policy.Spec.Ingress[0].From
+			if len(from) != 1 || from[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "orama-system" ||
+				from[0].PodSelector.MatchLabels["app.kubernetes.io/name"] != "orama-operator" ||
+				len(policy.Spec.Ingress[0].Ports) != 1 || policy.Spec.Ingress[0].Ports[0].Port.IntVal != servicePostgresPort ||
+				policy.Spec.PodSelector.MatchLabels["cnpg.io/podRole"] != "instance" {
+				t.Fatalf("operator Postgres ingress = %#v", policy.Spec)
+			}
 		}
 		if policy.Name == workspaceLakeIngressName {
 			operatorNamespace := policy.Spec.Ingress[0].From[1].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]
@@ -369,6 +401,8 @@ func TestLakeWorkspaceInternetEgressExcludesClusterAndMetadata(t *testing.T) {
 	reconciler, kube := newWorkspaceHarness(t, lake, kubernetes, endpoints, node)
 	store := &fakeWorkspacesStore{rows: []LakeWorkspaceRow{testWorkspaceRow("running")}}
 	reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows)
+	// internetEgress is the EgressRule internet-https (operator#470), rendered by its controller.
+	renderWorkspaceEgressRules(t, kube, testWorkspaceName)
 	var policy networkingv1.NetworkPolicy
 	if err := kube.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: workspaceInternetName}, &policy); err != nil {
 		t.Fatal(err)

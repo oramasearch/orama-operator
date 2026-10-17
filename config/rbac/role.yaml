@@ -127,6 +127,18 @@ rules:
   - update
   - watch
 - apiGroups:
+  - cilium.io
+  resources:
+  - ciliumnetworkpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - clickhouse-keeper.altinity.com
   resources:
   - clickhousekeeperinstallations
@@ -222,6 +234,17 @@ rules:
 - apiGroups:
   - networking.k8s.io
   resources:
+  - ingressclasses
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
   - ingresses
   - networkpolicies
   verbs:
@@ -233,6 +256,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - orama.cloud
   resources:
   - aksclusters
@@ -241,7 +272,10 @@ rules:
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
+  - cloudflaretunnels
   - clusterhelmreleases
+  - connections
+  - egressrules
   - kubernetesclusterproviders
   - kubernetesclusters
   - lakeapps
@@ -251,14 +285,19 @@ rules:
   - lakes
   - lakesealedsecrets
   - lakesets
+  - networksandboxes
   - oramacloudv1e2etests
   - oramacloudv1s
   - oramacloudv1sets
   - oramaoperators
   - oramazettaclusters
+  - peerconnections
+  - peerlinks
   - postgresschemas
   - rabbitmqtopologies
+  - tunnels
   - zettaclustere2etests
+  - zettatunnels
   verbs:
   - create
   - delete
@@ -276,7 +315,10 @@ rules:
   - cloudflarekvnamespaces/finalizers
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
+  - cloudflaretunnels/finalizers
   - clusterhelmreleases/finalizers
+  - connections/finalizers
+  - egressrules/finalizers
   - kubernetesclusterproviders/finalizers
   - kubernetesclusters/finalizers
   - lakeapps/finalizers
@@ -287,7 +329,11 @@ rules:
   - oramacloudv1sets/finalizers
   - oramaoperators/finalizers
   - oramazettaclusters/finalizers
+  - peerconnections/finalizers
+  - peerlinks/finalizers
   - rabbitmqtopologies/finalizers
+  - tunnels/finalizers
+  - zettatunnels/finalizers
   verbs:
   - update
 - apiGroups:
@@ -299,7 +345,10 @@ rules:
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
+  - cloudflaretunnels/status
   - clusterhelmreleases/status
+  - connections/status
+  - egressrules/status
   - kubernetesclusterproviders/status
   - kubernetesclusters/status
   - lakeapps/status
@@ -309,18 +358,34 @@ rules:
   - lakes/status
   - lakesealedsecrets/status
   - lakesets/status
+  - networksandboxes/status
   - oramacloudv1e2etests/status
   - oramacloudv1s/status
   - oramacloudv1sets/status
   - oramaoperators/status
   - oramazettaclusters/status
+  - peerconnections/status
+  - peerlinks/status
   - postgresschemas/status
   - rabbitmqtopologies/status
+  - tunnelproviders/status
+  - tunnels/status
   - zettaclustere2etests/status
+  - zettatunnels/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - orama.cloud
+  resources:
+  - tunnelproviders
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - pingcap.com
   resources:
