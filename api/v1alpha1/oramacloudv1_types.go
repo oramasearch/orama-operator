@@ -288,6 +288,14 @@ type WriterSpec struct {
 	// Unset renders no writer_side.jwt block.
 	// +optional
 	JWT *WriterJWTSpec `json:"jwt,omitempty"`
+	// Host publishes the writer on this public DNS name (for example writer.orama.ing), without a
+	// scheme, path or port: an owned Ingress with origin TLS to the writer Service on 8080 and, with
+	// Cloudflare DNS managed, a proxied DNS record. Only a primary region publishes its writer.
+	// Empty keeps the writer internal.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
+	// +optional
+	Host string `json:"host,omitempty"`
 }
 
 // WriterJWTSpec is the writer's dashboard JWKS provider. The writer accepts a token whose issuer is
@@ -299,7 +307,8 @@ type WriterJWTSpec struct {
 	// +optional
 	JWKSURL string `json:"jwksURL,omitempty"`
 	// Audiences are the accepted audiences: each exact writer URL the dashboard signs tokens for
-	// (the writer_url of a control-DB oramacore_clusters row). Required, at least one.
+	// (the writer_url of a control-DB oramacore_clusters row). Required, at least one. With
+	// engine.writer.host set, https://<host> (no trailing slash) must be one of them.
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=128
 	// +optional
@@ -314,6 +323,14 @@ type ReaderSpec struct {
 	HPA *HPASpec `json:"hpa,omitempty"`
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// Host publishes the readers on this public DNS name (for example reader.orama.ing), without a
+	// scheme, path or port: an owned Ingress with origin TLS to the reader Service on 80 (through
+	// Envoy when it is enabled) and, with Cloudflare DNS managed, a proxied DNS record. Empty keeps
+	// the readers internal.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
+	// +optional
+	Host string `json:"host,omitempty"`
 }
 
 type HPASpec struct {

@@ -80,6 +80,10 @@ static_resources:
 // with an Envoy sidecar on readers, plus a shared config ConfigMap and Services.
 func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.Engine.Enabled {
+		// The public endpoints go first: their Ingresses are deleted only while this CR controls them.
+		if err := r.reconcileEngineIngresses(ctx, oc); err != nil {
+			return err
+		}
 		return r.teardownByComponent(ctx, oc, "engine", "embeddings", "writer", "reader")
 	}
 	if err := validateEngineImages(oc); err != nil {
@@ -128,7 +132,7 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	if err := r.reconcileReaders(ctx, oc, llmSecretHash, credentialsHashes["reader"]); err != nil {
 		return fmt.Errorf("readers: %w", err)
 	}
-	return nil
+	return r.reconcileEngineIngresses(ctx, oc)
 }
 
 // holdEngine scales the writer StatefulSet and reader Deployment that exist to zero replicas,

@@ -265,6 +265,7 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-cnpg-operator-ingress`, `allow-cnpg-apiserver-egress` | CloudNativePG manages control DB through 8000/5432 and its selected pods/jobs reach the API. |
 | `allow-operator-to-broker-management` | The Orama operator's `RabbitMQTopology` reconciler reaches management port 15672. |
 | `allow-dashboard-ingress-nginx`, `allow-docs-ingress-nginx` | ingress-nginx reaches only dashboard/docs port 3000. |
+| `allow-writer-ingress-nginx`, `allow-reader-ingress-nginx` | Only while `engine.writer.host` (primary region) or `engine.reader.host` is published: ingress-nginx and zetta-tunnel's ingress gateway reach this stack's writer pods on 8080, or its reader pods on 80 with Envoy and 8080 without ([#385](https://github.com/oramasearch/orama-operator/issues/385)). |
 | `allow-engine-public-internet` | Writer/readers reach public IPv4 and IPv6 addresses on any TCP port for customer JavaScript hook URLs. Private, link-local, metadata, carrier-grade NAT, API-server, node-address and pod-CIDR destinations are excluded after DNS resolution. |
 | `allow-dashboard-public-https`, `allow-workers-public-https`, `allow-index-builder-public-https`, `allow-harvest-public-https`, `allow-embeddings-public-https`, `allow-search-workers-public-https` | Selected application components reach public HTTPS for their configured providers and downloads. |
 | `allow-selenium-public-internet` | Selenium reaches public TCP 80/443 for customer-requested crawls. |

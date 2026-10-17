@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
+| **engine** | `internal/controller/engine.go`, `cloudv1_networking.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap`; with `writer.host` / `reader.host`, the `<cr>-writer` / `<cr>-reader` Ingresses with origin TLS | ✅ **done** (validated on AKS); public hosts 🟡 **implemented** ([#385](https://github.com/oramasearch/orama-operator/issues/385)), fake-client coverage, not yet proven on `v1-dev` |
 | **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -86,6 +86,11 @@ cleanup succeeded; other API failures retain the finalizer. Missing credentials 
 an ID to clean up retain the finalizer and retry after five minutes. A resource without
 an ID releases its finalizer without Cloudflare calls. Lake, Zetta and Cloud v1 parents
 continue to create the same child CRs.
+
+A changed `spec.name` (or type) creates the record at the new name first; then the record
+in `status.recordID` goes through the same owned delete, so a rename never leaves the old
+name live ([#529](https://github.com/oramasearch/orama-operator/issues/529)) and never
+deletes a record the operator did not create. A failed delete keeps the old ID and retries.
 
 The operator never takes over Prod 1's live `app.orama.com`. Its cutover repoint remains
 a reviewed Cloudflare change in the bridge
@@ -250,6 +255,10 @@ DNS and public-address paths. The public path permits any TCP port because custo
 hooks may call an arbitrary public URL, but both IPv4 and IPv6 blocks exclude private, link-local,
 metadata, carrier-grade NAT, API-server, node-address and pod-CIDR destinations. The API, node and
 pod exclusions are discovered from the cluster and retained across transient discovery failure.
+While `engine.writer.host` (primary region) or `engine.reader.host` is published, the sandbox also
+admits ingress-nginx and zetta-tunnel's ingress gateway, and nothing else, to that stack's writer
+pods on 8080 (`allow-writer-ingress-nginx`) or reader pods on the port behind the reader Service: 80
+with Envoy, 8080 without (`allow-reader-ingress-nginx`). The rule goes away with the endpoint.
 
 ## Workload hardening — applied to EVERY component ([#18](https://github.com/oramasearch/orama-operator/issues/18))
 
@@ -322,6 +331,19 @@ Driven by `spec.region.role`:
   `oramacore` container (the combined or the reader-only image) **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
   127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set.
   Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
+- **Public hosts** (`cloudv1_networking.go`, [#385](https://github.com/oramasearch/orama-operator/issues/385))
+  — `reconcileEngineIngresses` runs at the end of the enabled path and before the teardown on the
+  disabled path. `writer.host` (primary region only) renders Ingress `<cr>-writer` → Service
+  `<cr>-writer`:8080; `reader.host` renders `<cr>-reader` → `<cr>-reader`:80, whichever Envoy setting.
+  Both go through `upsertIngress` (the dashboard's ingress class and origin TLS) and are controlled
+  by the CR. A host cleared, the engine disabled or the writer's region turned `read` deletes that
+  Ingress through `deletePublicEndpointOwned`, only when the CR controls it (UID and
+  resourceVersion preconditions). A same-name Ingress the CR does not control is left alone and
+  fails publication with a conflict. `writerPublicHost` and `readerPublicHost` decide whether an
+  endpoint is published, for the Ingress, its sandbox rule and its DNS record alike. With
+  `writer.jwt` set, `https://<writer.host>` must be an exact audience or the reconcile fails before
+  any engine object changes. `/metrics` stays reachable on these hosts until the deny companions of
+  [#314](https://github.com/oramasearch/orama-operator/issues/314) land.
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
   **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
@@ -609,17 +631,36 @@ Routed through the shared `reconcileApp` builder, so it inherits the workload-ha
 
 ## Cloudflare (`cloudflare.go`) — 🟡 implemented, not live-tested
 
-Cloudflare stays the permanent edge/geo-LB; the operator reconciles CF **DNS** via the
-CF API (raw HTTP): it upserts a proxied record pointing `dashboard.host` at this
-cluster's ingress address. **Safe no-op** unless fully configured — `enabled` +
-`apiTokenSecretRef` → a Secret with keys `token` + `zoneID` + `accountID` + `manageDNS` + a resolvable
-ingress target. The no-op path is validated on AKS (loop stays green with `enabled`
-but no token).
+Cloudflare stays the permanent edge/geo-LB. The main loop never calls the CF API: it keeps owned
+child CRs, whose controllers do. `reconcilePublicDNS` keeps one proxied `CloudflareDNSRecord` per
+published endpoint, `<cr>-dashboard-dns`, `<cr>-writer-dns` and `<cr>-reader-dns`, while
+`cloudflare.enabled`, `manageDNS` and a non-empty `apiTokenSecretRef.name` are set and the
+component is published (dashboard enabled with a host; engine enabled with `reader.host`; the same
+plus a primary region for `writer.host`). Each record's `spec.name` is the host, `spec.content` the
+first address of its own Ingress (`componentIngressTarget`: hostname before IP; empty while the
+Ingress is absent, deleting or unaddressed), `spec.secretRef` the token Secret, `spec.type` empty.
+Every host must be in the zone of the Secret's `zoneID`.
+
+The lifecycle runs before the Cloudflare early return, so disabling Cloudflare or DNS removes the
+records too:
+
+- not published, or DNS not managed: the child is deleted (when the CR controls it and it is not
+  already deleting), and its finalizer cleans up the Cloudflare record;
+- a child being deleted is left untouched until its deletion event, even if re-enabled meanwhile;
+- a host or Secret name change on a child with `status.recordID` deletes it with its old spec,
+  before any address check; the replacement is created on a later reconcile. Without a record ID
+  the same child is updated;
+- no Ingress address: nothing is created and an existing child keeps its content;
+- an address change patches only the child's spec, under optimistic locking, keeping its status
+  and finalizer;
+- a same-name child the CR does not control is left alone and reported as a conflict.
+
+KV namespaces, the R2 bucket and the Load Balancing guidance follow, unchanged. The no-op path is
+validated on AKS (loop stays green with `enabled` but no token).
 
 > **Follow-ups:** validate against a live Cloudflare account; add **Load Balancing**
 > (geo-steered pools + health checks across the regional clusters — the actual
-> geo-LB); deprovision records on teardown; surface the managed hostnames beyond just
-> the dashboard.
+> geo-LB); select a zone per host, so one stack's hosts can span zones.
 
 ## Zetta elastic capacity (`zetta_capacity.go`) — 🟡 implemented, opt-in, not live-tested
 

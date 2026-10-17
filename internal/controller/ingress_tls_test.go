@@ -275,6 +275,24 @@ func TestCloudV1IngressesRequestOriginTLS(t *testing.T) {
 			run:  func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error { return r.reconcileDocs(ctx, o) },
 			host: "docs-dev.oramadev.net",
 		},
+		"v1-dev-writer": {
+			enable: func(o *oramav1alpha1.OramaCloudV1) {
+				o.Spec.Components.Engine = oramav1alpha1.EngineSpec{Enabled: true, Writer: oramav1alpha1.WriterSpec{Host: "writer-dev.oramadev.net"}}
+			},
+			run: func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error {
+				return r.reconcileEngineIngresses(ctx, o)
+			},
+			host: "writer-dev.oramadev.net",
+		},
+		"v1-dev-reader": {
+			enable: func(o *oramav1alpha1.OramaCloudV1) {
+				o.Spec.Components.Engine = oramav1alpha1.EngineSpec{Enabled: true, Reader: oramav1alpha1.ReaderSpec{Host: "reader-dev.oramadev.net"}}
+			},
+			run: func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error {
+				return r.reconcileEngineIngresses(ctx, o)
+			},
+			host: "reader-dev.oramadev.net",
+		},
 	}
 	for name, b := range builders {
 		t.Run(name, func(t *testing.T) {
