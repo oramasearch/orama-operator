@@ -7,6 +7,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -99,6 +101,9 @@ type appDef struct {
 	// read by secretKeyRef (broker admin, cache auth, master API key). Their data hash is on the pod
 	// template, so a changed credential rolls the app (#307).
 	credentialSecrets []string
+	// podAnnotations go on the pod template, so a change to one rolls the Deployment. An app whose
+	// envFrom value only takes effect at process start uses a hash of it to roll on change.
+	podAnnotations map[string]string
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
@@ -132,6 +137,12 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			return err
 		}
 		annotations = map[string]string{credentialsHashKey: hash}
+	}
+	for k, v := range def.podAnnotations {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[k] = v
 	}
 
 	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
@@ -298,7 +309,19 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		initContainers:    initContainers,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
+		// The dashboard reads JWT_ISSUER from the shared ConfigMap only at start: roll it when the
+		// effective issuer changes, so it signs with the issuer the writer verifies.
+		podAnnotations: map[string]string{jwtIssuerHashKey: jwtIssuerHash(oc)},
 	})
+}
+
+// jwtIssuerHashKey is the dashboard pod-template annotation holding jwtIssuerHash.
+const jwtIssuerHashKey = "orama.cloud/jwt-issuer-hash"
+
+// jwtIssuerHash is the SHA-256 of the effective issuer, jwtIssuer(oc).
+func jwtIssuerHash(oc *oramav1alpha1.OramaCloudV1) string {
+	sum := sha256.Sum256([]byte(jwtIssuer(oc)))
+	return hex.EncodeToString(sum[:])
 }
 
 // reconcileDocs provisions docs.orama.com (Next.js + Fumadocs) as a Deployment + Service

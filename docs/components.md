@@ -91,7 +91,14 @@ PVCs are left behind (data preserved). Idempotent — `enable → disable → en
   keypair** once (create-if-absent) into `<cr>-jwt` (private + public, for the
   **dashboard** to sign the OramaCore writer JWT) and `<cr>-jwt-pub` (public **only**,
   for the **engine** to verify). Least-privilege: the engine never receives the
-  private key. `JWT_ISSUER` is non-secret (in the ConfigMap).
+  private key. Each stack generates its own pair; no other stack's keys are copied in. The
+  pair is never rotated. When `<cr>-jwt-pub` is missing (an interrupted first run, or the Secret
+  was deleted) the next reconcile recreates it from `<cr>-jwt`'s `JWT_PUBLIC_KEY` alone, with the
+  same labels and owner; a signing Secret without that key fails the reconcile with a readable
+  message and is left as it is. When two reconciles race to create `<cr>-jwt`, the loser derives
+  the public Secret from the winner's pair. `JWT_ISSUER` is non-secret (in the ConfigMap):
+  `jwtIssuer(oc)`, which is `spec.jwtIssuer`, or `orama-cloud` when that is empty, the same
+  function the writer's JWT provider reads.
 
 **Validated on AKS (2026-07-08):** per-component secrets are generated (the
 `search-secret` holds only `TYPESENSE_API_KEY`, **not** the Cloudflare token); the
@@ -375,6 +382,22 @@ Driven by `spec.region.role`:
   ([Network sandboxes](#network-sandboxes-internalcontrollernetworksandbox_controllergo)) and the
   secure networking work in [#437](https://github.com/oramasearch/orama-operator/issues/437), not
   by this list.
+- **Writer JWT provider** ([#384](https://github.com/oramasearch/orama-operator/issues/384)) —
+  with `engine.writer.jwt` set, `writerSideYAML` ends with `writerJWTYAML` (`engine_jwt.go`): one
+  `dashboard` JWKS provider whose `issuers` is `[jwtIssuer(oc)]`, the dashboard's own `JWT_ISSUER`,
+  whose `audiences` are `engine.writer.jwt.audiences` in order without duplicates, and whose
+  `jwks_url` defaults to the dashboard Service in the same namespace,
+  `http://<cr>-dashboard:3000/api/.well-known/jwks.json` (the dashboard serves it from
+  `JWT_PUBLIC_KEY`). Every string is a quoted, escaped YAML scalar. The combined and writer-only
+  configs carry it, the reader-only config does not, and the block is in the hashed template, so a
+  change rolls the writer only (both pods in combined mode). `validateWriterJWT` runs in
+  `reconcileEngine` before any engine object is written and refuses an empty issuer, no audience,
+  an empty or over-long field, and an unusable JWKS URL
+  ([crd-reference.md](crd-reference.md#speccomponentsenginewriterjwt)). Unset, the config has no
+  `jwt` block, as before. **Tokens Prod 1 issued** do not verify here: this stack signs with its
+  own key, so the writer rejects them, expired or not. The dashboard signs each one for 10 minutes
+  (`expiresIn: '10m'` in `src/app/api/user/jwt/route.ts`), and `@orama/core` 1.2.19 asks for a new
+  one before every request.
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
   BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets
@@ -477,7 +500,11 @@ host is set)**.
   **Selenium** grid Deployment.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
-- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`.
+- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`. It reads
+  `JWT_ISSUER` from the shared ConfigMap through `envFrom`, which a running process does not
+  re-read, so its pod template carries `orama.cloud/jwt-issuer-hash`, the SHA-256 of
+  `jwtIssuer(oc)`: a change to the effective issuer rolls it. Audience and JWKS URL changes do not.
+  The upgrade that adds the annotation rolls the dashboard once.
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.
