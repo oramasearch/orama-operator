@@ -18,7 +18,6 @@ spec:
       - name: LAKE_PUBLIC_HOST
         value: lake-dev.oramadev.net
       host: lake-dev.oramadev.net
-      apexHost: lake-nonprod.oramadev.net
       region:
         label: Dev
   - clusterRef: orama-nonprod-cluster-01
