@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go`, `cloudv1_networking.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap`; with `writer.host` / `reader.host`, the `<cr>-writer` / `<cr>-reader` Ingresses with origin TLS | ✅ **done** (validated on AKS); public hosts 🟡 **implemented** ([#385](https://github.com/oramasearch/orama-operator/issues/385)), fake-client coverage, not yet proven on `v1-dev` |
+| **engine** | `internal/controller/engine.go`, `cloudv1_networking.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap`; with `writer.host` / `reader.host`, the `<cr>-writer` / `<cr>-reader` Ingresses with origin TLS | ✅ **done** (validated on AKS); public hosts 🟡 **implemented** ([#385](https://github.com/oramasearch/orama-operator/issues/385)), fake-client coverage, not yet proven on `v1-dev` |
 | **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -327,12 +327,41 @@ Driven by `spec.region.role`:
   a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
-- **Readers** (primary + read tiers) — a `Deployment` (`reader.replicas`) with the
+- **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` with the
   `oramacore` container (the combined or the reader-only image) **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
   127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set. Envoy answers
   `/metrics` with 404 itself, by a route before its catch-all, so OramaCore's Prometheus endpoint is
   never served through the reader Service ([#314](https://github.com/oramasearch/orama-operator/issues/314)).
-  Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
+  Service `<cr>-reader` on `:80` (→ Envoy, or → `:8080` if Envoy is off)
+  ([#382](https://github.com/oramasearch/orama-operator/issues/382)):
+  - **One disk per reader.** A `data` claim template (`ReadWriteOnce`, 512Gi) mounted at
+    `/app/.data`, so reader `n` has its own claim `data-<cr>-reader-<n>`, never the writer's. The
+    reader keeps its index and its last applied stream offset (`/app/.data/reader/read.info`)
+    there, so a replaced pod resumes from that offset instead of replaying the stream from 0. It
+    still needs the operations after its offset to be in the stream (5 GB, see broker-topology);
+    a reader on a new, empty claim builds from the stream and is partial once the stream has
+    passed 5 GB (seeding is [#458](https://github.com/oramasearch/orama-operator/issues/458)).
+  - **Size.** The template cannot change after the StatefulSet exists, so a stack's readers get
+    512Gi once. The EU Prod 1 reader's data directory still has to be measured (a read-only `du` on
+    the eu-central-1 reader) before the first production apply; the evidence so far is the US
+    reader's ~171 GB index (2026-05-18) and the EU reader's root volume, at most 223 GiB used with
+    the OS on 2026-10-12. The reasoning is above `readerDataSize` in `engine.go`.
+  - **Fixed count, no autoscaler.** `replicas` is `reader.replicas` (0 or unset → 3), set on every
+    reconcile; `podManagementPolicy: Parallel` starts them together. No HorizontalPodAutoscaler is
+    created and `reader.hpa` is ignored. Claims are kept when the count drops or the StatefulSet is
+    deleted (Kubernetes' default `Retain`; the operator sets no retention policy), and a reader
+    that comes back reuses its claim.
+  - **Headless Service** `<cr>-reader-headless` (`clusterIP: None`, reader selectors, `http`
+    `:8080` straight to OramaCore with Envoy on or off, Ready pods only) is the StatefulSet's
+    `serviceName` from creation, with analytics on or off, so each Ready reader is addressable as
+    `<cr>-reader-<n>.<cr>-reader-headless.<ns>.svc:8080`.
+  - **From a reader Deployment.** Earlier operator versions ran `<cr>-reader` as a Deployment on an
+    `emptyDir`. The operator deletes that Deployment (only when the CR controls it) with foreground
+    propagation and creates the StatefulSet once it and its pods are gone; the reconcile reports
+    `ReconcileError` until then and readers are down meanwhile. Nothing is copied from the
+    `emptyDir`. A Deployment of that name the CR does not control is left alone and blocks the
+    readers with a conflict error. Disabling the engine removes the StatefulSet, both reader
+    Services and the PDB, and keeps the claims, as for the writer.
 - **Public hosts** (`cloudv1_networking.go`, [#385](https://github.com/oramasearch/orama-operator/issues/385))
   — `reconcileEngineIngresses` runs at the end of the enabled path and before the teardown on the
   disabled path. `writer.host` (primary region only) renders Ingress `<cr>-writer` → Service
@@ -364,7 +393,7 @@ Driven by `spec.region.role`:
   ([ingress](infrastructure/ingress.md#what-it-serves)): Cloud v1's engine hosts stay on ingress-nginx
   (decision 5b of the 2026-10-16 decisions page), and a stack set to `ingressClassName:
   zetta-tunnel` gets no gateway address for them. Inside the cluster `/metrics` stays on each pod's
-  `:8080` (`<cr>-writer:8080`, a reader pod's IP on 8080; the reader Service's port 80 is the public
+  `:8080` (`<cr>-writer:8080`, each reader at `<cr>-reader-<n>.<cr>-reader-headless:8080`; the reader Service's port 80 is the public
   path). How Prometheus scrapes it is [#15](https://github.com/oramasearch/orama-operator/issues/15).
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
@@ -433,7 +462,8 @@ Driven by `spec.region.role`:
   broker admin and master key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
   The controller watches Secrets and maps a change to every CR that reads it, so a rotated key rolls
   the writer and readers with no restart by hand. Without a usable master key the writer and
-  readers are held at zero replicas. The LLM settings and keys are checked before any engine object is
+  reader StatefulSets are held at zero replicas, and so is a reader Deployment left by an earlier
+  operator version. The LLM settings and keys are checked before any engine object is
   written: invalid input leaves the running engine untouched with `Ready=False`. All children set
   an owner reference to the CR, so deleting the CR cascade-deletes them.
 - **Hooks deny list** ([#306](https://github.com/oramasearch/orama-operator/issues/306)) —
@@ -523,7 +553,7 @@ while the rendered file in the pod holds the real value.
 > [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
 > tooling (`oramasearch/embeddings-server-py:{cpu,gpu}-latest`, private Docker Hub — the tag
 > is auto-picked from `writer.gpu`; just set `spec.images.pullSecretName`); RabbitMQ
-> writer→reader replication (currently in-memory transport, single-node); HPA + the
+> writer→reader replication (currently in-memory transport, single-node); the
 > reader→primary-writer endpoint on read tiers.
 
 ## controlDB (`internal/controller/controldb.go`)

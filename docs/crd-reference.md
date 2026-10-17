@@ -165,7 +165,9 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
 
-`engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
+`engine.reader.replicas` is the fixed number of readers (0 or unset → 3), each with its own data
+volume ([components.md](components.md)); `engine.reader.hpa` is accepted but ignored: no autoscaler is
+created. `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
 
 ### Extra hosts (`extraHosts`)
