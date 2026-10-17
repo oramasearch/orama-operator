@@ -11,7 +11,8 @@ the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-brid
 tooling and pushed to **private Docker Hub**; set `spec.images.tag` + `spec.images.pullSecretName`
 ([install §4](install.md#4-override-the-dummy-secrets--images-for-real-use)). Remaining `OramaCloudV1`
 work is **hardening**: full config/secrets, HPA, Cloudflare LB, the workers-bundle in-cluster
-wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows below.
+wiring. Component storage growth has fake-client/API coverage; its live `v1-dev` proof remains
+pending approval ([details](#component-storage)). The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows below.
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
@@ -103,6 +104,70 @@ new controller, so `ownerComment` persists. Lake's unchanged-ID/comment/`modifie
 proof and the `oramadev.net` conflict, owned cleanup and lost-comment tests remain
 pending Steve's explicit approval for each rollout and test-resource change; rehearse
 on `v1-dev` first. The HTTP/fake-client and local API-server tests do not claim a live rollout.
+
+## Component storage
+
+`internal/controller/storage.go` runs after ordinary component provisioning. It manages the
+primary's enabled writer, the readers of an enabled engine in either region role, and the enabled
+analytics/cache/broker/search stores selected by their existing in-cluster mode and placement checks. External stores, disabled components, a read
+region's absent writer, and central stores skipped in a read region contribute no mismatch.
+ControlDB follows its existing enabled/in-cluster policy; this change does not alter its external
+mode behavior. HARVEST Mongo keeps the shared helper's `10Gi`/default-class output and has no
+storage setting.
+
+Writer and store `storage.size` default to `10Gi`, and `engine.reader.storage.size` to `512Gi`
+(`readerDataSize`, the reader size #382 chose); `storage.storageClassName` is optional. Omitted
+storage, `{}`, or a missing size resolves to that default even before API admission. Explicit sizes
+must be positive Kubernetes quantities, compared with `Cmp` (`10240Mi` equals `10Gi`), and explicit
+class names must be nonempty. The [field reference](crd-reference.md#component-storage) lists every
+path. Set templates use `spec.template.components`, with the same component fields.
+
+The StatefulSet creation callback initializes the `data` claim template once. Later reconciliations
+preserve its full fetched contents, including admission fields and its original size/class, while
+Services, PDBs, pod templates and ordinary settings continue to reconcile. The storage pass checks
+the controlled StatefulSet's `data` claims in the same namespace, using complete names of the form
+`data-<statefulset>-<numeric ordinal>`. Retained matching claims are included; direct umbrella
+ownership on a PVC is unnecessary under StatefulSet's default retention policy. Similar prefixes,
+other namespaces and claims controlled by unrelated workloads are never adopted or resized.
+
+For each compatible claim the operator patches only a larger `spec.resources.requests.storage`,
+with optimistic concurrency. Equal numeric quantities do nothing. It never changes PV capacity.
+A shrink compares against the requested size; capacity is extra evidence because a provisioner
+can round it upward. An explicit class mismatch blocks the entire write to that claim, including
+an otherwise valid increase, and all applicable differences remain in status. A missing required
+claim remains pending; when it appears from the unchanged old template, a later pass grows it.
+Read/write failures identify the resource and API error and do not block other storage updates.
+
+CNPG creation renders the resolved size and optional `storageClass`. Ordinary reconciliation
+preserves an existing Cluster's whole `spec.storage`, so rejected storage settings cannot block
+unrelated spec or schema reconciliation. The storage pass increases only `spec.storage.size`,
+preserving all other storage keys and retaining the class when omitted. Changing the class,
+including adding an explicit class to an existing classless Cluster, or reducing size leaves its
+storage unchanged. The operator never resizes CNPG-owned PVCs itself.
+
+`StorageApplied` is one merged condition with the current `ObservedGeneration`. It preserves
+`Ready`, phase, component readiness and other conditions. `True / Applied` means desired
+configuration was accepted, including the no-local-storage case; it does not mean physical
+expansion completed. Failures use `ShrinkNotSupported`, `StorageClassChangeNotSupported`,
+`StorageUpdateFailed`, or `ClaimsPending`; multiple reasons use `MultipleStorageIssues` with
+stable sorted resource messages. One success cannot erase another resource's failure. Accepted
+settings and successful retries recover the condition; unchanged results cause no status write.
+Removing storage settings after growth resolves to the component's default, so recovery requires
+restoring the current grown request rather than relying on the old default.
+
+A 20-second bounded poll continues whenever managed storage exists, including with Ready
+workloads. CSI/kubelet perform disk/filesystem expansion after accepting PVC requests; CNPG
+performs its own expansion after accepting the Cluster size. The StorageClass must allow expansion
+and its CSI driver must support the disk/filesystem operation. See
+[Kubernetes expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)
+and [CNPG expansion](https://cloudnative-pg.io/docs/1.27/storage/#volume-expansion).
+Fake-client and API-server tests verify requests, immutability, retries, admission and status;
+they cannot establish filesystem growth. Writer, readers, one store, and CNPG still require approved
+`v1-dev` proof through committed `config/clusters/sets/v1-nonprod.yaml` changes, with read-only
+inspection of capacities, filesystems and unchanged StatefulSet identities/templates. Retain every
+successfully grown size in that file. Operator rollout and each set apply need Steve's consent.
+Every size in `v1-prod.yaml` names its source; the file's Blocked list is what still stands
+before the first production apply.
 
 ## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 
@@ -346,15 +411,17 @@ Driven by `spec.region.role`:
   never served through the reader Service ([#314](https://github.com/oramasearch/orama-operator/issues/314)).
   Service `<cr>-reader` on `:80` (→ Envoy, or → `:8080` if Envoy is off)
   ([#382](https://github.com/oramasearch/orama-operator/issues/382)):
-  - **One disk per reader.** A `data` claim template (`ReadWriteOnce`, 512Gi) mounted at
+  - **One disk per reader.** A `data` claim template (`ReadWriteOnce`, `reader.storage`, 512Gi by
+    default) mounted at
     `/app/.data`, so reader `n` has its own claim `data-<cr>-reader-<n>`, never the writer's. The
     reader keeps its index and its last applied stream offset (`/app/.data/reader/read.info`)
     there, so a replaced pod resumes from that offset instead of replaying the stream from 0. It
     still needs the operations after its offset to be in the stream (5 GB, see broker-topology);
     a reader on a new, empty claim builds from the stream and is partial once the stream has
     passed 5 GB (seeding is [#458](https://github.com/oramasearch/orama-operator/issues/458)).
-  - **Size.** The template cannot change after the StatefulSet exists, so a stack's readers get
-    512Gi once. The EU Prod 1 reader's data directory still has to be measured (a read-only `du` on
+  - **Size.** The template cannot change after the StatefulSet exists, so it keeps the size and
+    class it was created with; a larger `reader.storage.size` grows every reader's claim instead
+    ([component storage](#component-storage)). The EU Prod 1 reader's data directory still has to be measured (a read-only `du` on
     the eu-central-1 reader) before the first production apply; the evidence so far is the US
     reader's ~171 GB index (2026-05-18) and the EU reader's root volume, at most 223 GiB used with
     the OS on 2026-10-12. The reasoning is above `readerDataSize` in `engine.go`.
@@ -587,7 +654,7 @@ provisioned as an **unstructured** object so the operator stays decoupled from C
 Go types/version. Requires the CNPG operator (installed via the helmfile).
 
 - **Primary** — a fresh cluster, `spec.instances` from the profile (light 1 / medium
-  2 / heavy 3), `10Gi` storage, `bootstrap.initdb` creating the `oramacore` database.
+  2 / heavy 3), `controlDB.storage` (default `10Gi`; [component storage](#component-storage)), `bootstrap.initdb` creating the `oramacore` database.
 - **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** streaming
   from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
 - `mode: external` skips creation (the app uses the external endpoint). Owner ref on

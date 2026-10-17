@@ -179,8 +179,9 @@ spec:
           reader:
             host: reader.orama.ing
             replicas: 2
-            # Each reader's disk is #382's fixed 512Gi, which has no field: about twice the largest Prod 1
-            # reader's use (US, ~272 GiB of 931 GiB, OS included; bridge decisions 2026-10-17 #3).
+            # Each reader's disk is 512Gi, #382's default: about twice the largest Prod 1 reader's use
+            # (US, ~272 GiB of 931 GiB, OS included; bridge decisions 2026-10-17 #3). #505 grows the claims later.
+            storage: { size: 512Gi, storageClassName: managed-csi-premium }
         dashboard:
           enabled: true
           host: app.orama.ing
