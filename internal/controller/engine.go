@@ -81,8 +81,17 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	if err := validateEngineImages(oc); err != nil {
 		return err
 	}
+	// Everything the engine templates depend on is checked before the first engine object is
+	// written, so invalid LLM settings or a missing key leave the running engine as it is.
+	if err := validateLLM(oc); err != nil {
+		return err
+	}
 	if _, err := r.ensureComponentSecret(ctx, oc, "engine"); err != nil {
 		return fmt.Errorf("engine secret: %w", err)
+	}
+	llmSecretHash, err := r.engineLLMSecretHash(ctx, oc)
+	if err != nil {
+		return err
 	}
 	if err := r.reconcileEngineConfig(ctx, oc); err != nil {
 		return fmt.Errorf("engine config: %w", err)
@@ -91,11 +100,11 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 		return fmt.Errorf("embeddings: %w", err)
 	}
 	if oc.Spec.Region.Role == "primary" {
-		if err := r.reconcileWriter(ctx, oc); err != nil {
+		if err := r.reconcileWriter(ctx, oc, llmSecretHash); err != nil {
 			return fmt.Errorf("writer: %w", err)
 		}
 	}
-	if err := r.reconcileReaders(ctx, oc); err != nil {
+	if err := r.reconcileReaders(ctx, oc, llmSecretHash); err != nil {
 		return fmt.Errorf("readers: %w", err)
 	}
 	return nil
@@ -177,8 +186,8 @@ func (r *OramaCloudV1Reconciler) reconcileEngineConfig(ctx context.Context, oc *
 // the shared <cr>-embeddings ai-server.
 //
 // Every engine config is a template. master_api_key is a __MASTER_API_KEY__ placeholder (this string
-// lives in a ConfigMap) and the Groq key a __GROQ_API_KEY__ one: the render-config init container
-// substitutes the real values from the engine Secret at pod start, so no credential ever sits in the
+// lives in a ConfigMap) and each LLM provider's key a __<PROVIDER>_API_KEY__ one: the render-config
+// init container substitutes the real values at pod start, so no credential ever sits in the
 // ConfigMap. OramaCore can't take them from env — config's ORAMACORE_ override splits on "_" and
 // can't reach the nested writer_side.master_api_key.
 func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
@@ -229,7 +238,7 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
       queue_capacity: 100
       max_execution_time: 1s
       max_startup_time: 100ms
-  master_api_key: "__MASTER_API_KEY__"
+  master_api_key: '__MASTER_API_KEY__'
   config:
     data_dir: /app/.data/writer
     embedding_queue_limit: 50000
@@ -263,7 +272,8 @@ func readerSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
 
 // aiServerYAML is the ai_server section both sides share. The embeddings ai-server is the SHARED
 // <cr>-embeddings Deployment (#14), reached by its Service DNS name — not a per-pod 127.0.0.1
-// sidecar — so the model loads into RAM once, not once per engine pod.
+// sidecar — so the model loads into RAM once, not once per engine pod. The LLM settings come from
+// spec.llm (engine_llm.go).
 func aiServerYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	ep := "CPUExecutionProvider"
 	if oc.Spec.Components.Engine.Writer.GPU {
@@ -282,16 +292,7 @@ func aiServerYAML(oc *oramav1alpha1.OramaCloudV1) string {
     execution_providers:
       - %s
     total_threads: 8
-  llm:
-    local: false
-    port: 8000
-    host: 127.0.0.1
-    model: "Qwen/Qwen2.5-3B-Instruct"
-  remote_llms:
-    - provider: groq
-      api_key: "__GROQ_API_KEY__"
-      default_model: llama-3.3-70b-versatile
-`, oc.Name+"-embeddings", ep)
+`, oc.Name+"-embeddings", ep) + llmSelectorYAML(oc) + llmYAML(oc)
 }
 
 // embeddingsContainer is the OramaCore ai-server (gRPC embeddings on :50051). It runs as ONE
@@ -369,17 +370,17 @@ func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	}
 }
 
-// renderConfigInit substitutes the MASTER_API_KEY and GROQ_API_KEY (from the engine Secret, via
-// envFrom) into the ConfigMap template at configKey (the pod's engineSide) and writes the rendered
-// file to the shared rendered-config emptyDir that the OramaCore container reads via CONFIG_PATH.
-// This keeps the credential out of the ConfigMap while leaving the reviewable config in
-// one. (The key must be sed-safe — no '#', '&', '\' — which holds for base64url/hex API
-// keys; the operator's dev default and prod overrides both satisfy this.)
-func renderConfigInit(oc *oramav1alpha1.OramaCloudV1, configKey string) corev1.Container {
+// renderConfigInit fills the key placeholders of the pod's template (side.configKey) and writes the
+// rendered file to the shared rendered-config emptyDir that the OramaCore container reads via
+// CONFIG_PATH, so the credentials stay out of the ConfigMap while the reviewable config lives in one.
+// Values come from the engine Secret (envFrom), and a provider with an apiKeySecretRef from that
+// Secret through an explicit env entry, which takes precedence (renderConfigScript, llmKeySecretEnv).
+func renderConfigInit(oc *oramav1alpha1.OramaCloudV1, side engineSide) corev1.Container {
 	return corev1.Container{
 		Name:    "render-config",
 		Image:   "busybox:1.37",
-		Command: []string{"sh", "-c", `sed -e "s#__MASTER_API_KEY__#${MASTER_API_KEY}#g" -e "s#__GROQ_API_KEY__#${GROQ_API_KEY}#g" /tmpl/` + configKey + ` > /etc/oramacore/config.yaml`},
+		Command: []string{"sh", "-c", renderConfigScript(oc, side)},
+		Env:     llmKeySecretEnv(oc),
 		EnvFrom: envFromFor(oc, "engine"),
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "config", MountPath: "/tmpl"},
@@ -395,7 +396,9 @@ func renderedConfigVolume() corev1.Volume {
 	return corev1.Volume{Name: "rendered-config", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
 }
 
-func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+// reconcileWriter owns the writer StatefulSet, Service and PDB. llmSecretHash is engineLLMSecretHash,
+// resolved before any engine object is written.
+func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, llmSecretHash string) error {
 	name := oc.Name + "-writer"
 	lbls := labelsFor(oc, "writer")
 	w := oc.Spec.Components.Engine.Writer
@@ -422,12 +425,12 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		// The GPU belongs to the shared embeddings Deployment (#14), not the writer — OramaCore
 		// is CPU; the embedding model is the GPU consumer (see reconcileEmbeddings).
 		sts.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side)},
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side, llmSecretHash)},
 			Spec: corev1.PodSpec{
 				ImagePullSecrets:              imagePullSecrets(oc),
 				NodeSelector:                  w.NodeSelector,
 				Tolerations:                   w.Tolerations,
-				InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc, side.configKey)},
+				InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc, side)},
 				Containers:                    []corev1.Container{c},
 				Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
 				TerminationGracePeriodSeconds: int64Ptr(writerGracePeriodSeconds),
@@ -448,7 +451,9 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 	return r.upsertPDB(ctx, oc, name, "writer", 0)
 }
 
-func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+// reconcileReaders owns the reader Deployment, Service and PDB. llmSecretHash is
+// engineLLMSecretHash, resolved before any engine object is written.
+func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, llmSecretHash string) error {
 	name := oc.Name + "-reader"
 	lbls := labelsFor(oc, "reader")
 	rd := oc.Spec.Components.Engine.Reader
@@ -480,7 +485,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		}
 		podSpec := corev1.PodSpec{
 			ImagePullSecrets:              imagePullSecrets(oc),
-			InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc, side.configKey)},
+			InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc, side)},
 			Containers:                    containers,
 			Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume(), dataEmptyDir()},
 			TerminationGracePeriodSeconds: int64Ptr(readerGracePeriodSeconds),
@@ -491,7 +496,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			podSpec.TopologySpreadConstraints = spreadConstraints(lbls)
 		}
 		dep.Spec.Template = corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side)},
+			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side, llmSecretHash)},
 			Spec:       podSpec,
 		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
@@ -552,15 +557,18 @@ func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1, side string) corev1.Cont
 }
 
 // engineConfigAnnotations is the side's pod-template annotations. The init container renders the
-// config only at pod start, so a side-only template change must roll the pod: the annotation is the
-// SHA-256 of that side's unrendered template, and a change to one side rolls only that side. The
-// combined config is not hashed, so a stack without side-only images keeps its pod template.
-func engineConfigAnnotations(s engineSide) map[string]string {
-	if s.configKey == combinedConfigKey {
-		return nil
-	}
+// config only at pod start, so a change to what it renders must roll the pod:
+//   - orama.cloud/config-hash is the SHA-256 of the side's unrendered template (placeholders, not
+//     keys). With side-only images a change to one side's template rolls only that side; the
+//     combined config is hashed the same way, and rolls both.
+//   - orama.cloud/llm-secret-hash is engineLLMSecretHash, identical on both sides, so a rotated key
+//     in the engine Secret or an apiKeySecretRef Secret rolls the writer and readers.
+func engineConfigAnnotations(s engineSide, llmSecretHash string) map[string]string {
 	sum := sha256.Sum256([]byte(s.template))
-	return map[string]string{"orama.cloud/config-hash": hex.EncodeToString(sum[:])}
+	return map[string]string{
+		"orama.cloud/config-hash": hex.EncodeToString(sum[:]),
+		llmSecretHashKey:          llmSecretHash,
+	}
 }
 
 func envoySidecar() corev1.Container {

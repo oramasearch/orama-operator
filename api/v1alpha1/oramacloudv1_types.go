@@ -105,32 +105,62 @@ type ImagesSpec struct {
 }
 
 // LLMSpec configures the answer/RAG language-model providers. v1 offers MULTIPLE
-// providers at once (Groq/OpenAI/Anthropic in prod) and end users/customers pick per
-// query — so this is a list, not a single choice. Keys come from the engine/workers/
-// dashboard scoped secrets (or a per-provider apiKeySecretRef).
+// providers at once (Prod 1 runs OpenAI, Google, Groq and Anthropic) and end users/customers pick
+// per query, so this is a list, not a single choice. Keys come from <cr>-engine-secret under
+// <PROVIDER>_API_KEY, or from a provider's apiKeySecretRef.
 type LLMSpec struct {
-	// Providers available for selection. If empty, defaults to groq + openai + anthropic.
+	// Providers available for selection. Each renders one ai_server.remote_llms entry whose default
+	// model is the provider's first model. If empty, defaults to Prod 1's set: openai (gpt-5.2),
+	// google (gemini-2.0-flash-001), groq (openai/gpt-oss-120b), anthropic (claude-sonnet-4-5).
 	// +optional
 	Providers []LLMProvider `json:"providers,omitempty"`
-	// Default provider used when a request doesn't name one.
+	// Default provider used when a request doesn't name one. It must be one of the providers; the
+	// engine sends such requests to its built-in URL with its first model and key. Empty means groq.
 	// +kubebuilder:default=groq
 	Default string `json:"default,omitempty"`
+	// AutomaticEmbeddingsSelector is the provider and model the engine asks to choose which document
+	// properties to embed for collections with automatic embeddings. Its provider must be one of the
+	// providers. Unset renders no selector, including on a CR without spec.llm.
+	// +optional
+	AutomaticEmbeddingsSelector *LLMModelRef `json:"automaticEmbeddingsSelector,omitempty"`
 }
 
 // LLMProvider is one selectable LLM backend.
 type LLMProvider struct {
 	// Name of the provider.
-	// +kubebuilder:validation:Enum=groq;openai;anthropic;vllm
+	// +kubebuilder:validation:Enum=groq;openai;anthropic;google;vllm
 	Name string `json:"name"`
-	// Models this provider offers (the catalog the end user can pick from).
+	// Models this provider offers. The first is the provider's default model; the list does not
+	// restrict the model a request names.
 	// +optional
 	Models []string `json:"models,omitempty"`
-	// APIKeySecretRef overrides the default per-component key for this provider.
+	// APIKeySecretRef takes this provider's key from a Secret in the CR's namespace instead of
+	// <cr>-engine-secret. The operator reads it and never creates or changes it.
 	// +optional
-	APIKeySecretRef *corev1.LocalObjectReference `json:"apiKeySecretRef,omitempty"`
+	APIKeySecretRef *LLMKeySecretRef `json:"apiKeySecretRef,omitempty"`
 	// GPU requests a GPU for an in-cluster vLLM provider (name=vllm).
 	// +optional
 	GPU bool `json:"gpu,omitempty"`
+}
+
+// LLMKeySecretRef names the Secret key that holds a provider's API key, in the CR's namespace.
+type LLMKeySecretRef struct {
+	// Name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Key in the Secret. Empty means <PROVIDER>_API_KEY, for example GOOGLE_API_KEY.
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
+// LLMModelRef is one model of one remote provider.
+type LLMModelRef struct {
+	// Provider of the model.
+	// +kubebuilder:validation:Enum=groq;openai;anthropic;google
+	Provider string `json:"provider"`
+	// Model name, sent to the provider as is.
+	// +kubebuilder:validation:MinLength=1
+	Model string `json:"model"`
 }
 
 // CloudflareSpec configures the operator's Cloudflare API reconciler. DNS + load

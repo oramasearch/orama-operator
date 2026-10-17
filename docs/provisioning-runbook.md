@@ -101,6 +101,7 @@ that already exists, so **set these before first reconcile or delete+recreate to
 | **OpenAI** | engine, workers, openai-decrypter | `OPENAI_API_KEY` | platform.openai.com → API keys |
 | **Groq** | engine, workers | `GROQ_API_KEY` | console.groq.com |
 | **Anthropic** | engine, workers | `ANTHROPIC_API_KEY` | console.anthropic.com |
+| **Google (Gemini)** | engine | `GOOGLE_API_KEY` | aistudio.google.com → API keys |
 | **HuggingFace** | engine (model pulls) | `HF_TOKEN` | huggingface.co → settings → tokens |
 | **Apify** | index-builder (crawler) | `APIFY_TOKEN` | console.apify.com → integrations |
 | **Ably** | harvest, index-builder (live progress) | `ABLY_API_KEY` | ably.com → app → API keys |
@@ -113,16 +114,18 @@ that already exists, so **set these before first reconcile or delete+recreate to
 
 Example — set a real key on a component secret (delete+recreate to override the dummy):
 ```bash
-kubectl delete secret v1-engine -n orama-system --ignore-not-found
-kubectl create secret generic v1-engine -n orama-system \
+kubectl delete secret v1-engine-secret -n orama-system --ignore-not-found
+kubectl create secret generic v1-engine-secret -n orama-system \
   --from-literal=MASTER_API_KEY='<gen-or-real>' \
   --from-literal=OPENAI_API_KEY='sk-...' \
   --from-literal=GROQ_API_KEY='gsk_...' \
   --from-literal=ANTHROPIC_API_KEY='sk-ant-...' \
+  --from-literal=GOOGLE_API_KEY='AIza...' \
   --from-literal=HF_TOKEN='hf_...'
-# then bounce the consumer so it re-reads:
-kubectl rollout restart statefulset/v1-writer deploy/v1-reader -n orama-system
 ```
+The operator watches the engine Secret (and any `spec.llm.providers[].apiKeySecretRef` Secret)
+and rolls the writer and readers when a value changes; no restart is needed
+([crd-reference.md](crd-reference.md#specllm)).
 
 > **QStash / Upstash:** the operator points `QSTASH_URL` at the **in-cluster RabbitMQ**
 > (`v1-broker:5672`) as a shim, so no Upstash account is needed for the sandbox. Supply a

@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -135,5 +136,8 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&oramav1alpha1.NetworkSandbox{}).
 		Owns(&oramav1alpha1.RabbitMQTopology{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
+		// LLM key Secrets supplied outside the operator have no owner reference: map them to the CRs
+		// whose engine reads them, so a rotated key rolls the engine (engine_llm.go).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForEngineLLMSecret)).
 		Complete(r)
 }

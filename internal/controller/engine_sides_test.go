@@ -34,8 +34,10 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// combinedConfigFixture is config.yaml for a CR named v1 with a CPU writer, captured from the
-// renderer before it was split into sections. The combined config must stay byte-for-byte this.
+// combinedConfigFixture is config.yaml for a CR named v1 with a CPU writer and no spec.llm, captured
+// from the renderer before it was split into sections, with the LLM section rendered from the default
+// providers (#304) and the master key single-quoted for safe substitution. The combined config must
+// stay byte-for-byte this.
 const combinedConfigFixture = `http:
   host: 0.0.0.0
   port: 8080
@@ -61,7 +63,7 @@ writer_side:
       queue_capacity: 100
       max_execution_time: 1s
       max_startup_time: 100ms
-  master_api_key: "__MASTER_API_KEY__"
+  master_api_key: '__MASTER_API_KEY__'
   config:
     data_dir: /app/.data/writer
     embedding_queue_limit: 50000
@@ -99,17 +101,33 @@ ai_server:
     total_threads: 8
   llm:
     local: false
-    port: 8000
-    host: 127.0.0.1
-    model: "Qwen/Qwen2.5-3B-Instruct"
+    host: "https://api.groq.com/openai/v1"
+    model: "openai/gpt-oss-120b"
+    api_key: '__GROQ_API_KEY__'
   remote_llms:
+    - provider: openai
+      api_key: '__OPENAI_API_KEY__'
+      default_model: "gpt-5.2"
+    - provider: google
+      api_key: '__GOOGLE_API_KEY__'
+      default_model: "gemini-2.0-flash-001"
     - provider: groq
-      api_key: "__GROQ_API_KEY__"
-      default_model: llama-3.3-70b-versatile
+      api_key: '__GROQ_API_KEY__'
+      default_model: "openai/gpt-oss-120b"
+    - provider: anthropic
+      api_key: '__ANTHROPIC_API_KEY__'
+      default_model: "claude-sonnet-4-5"
 `
 
-// combinedRenderCommand is the render-config script every engine pod ran before side-only images.
-const combinedRenderCommand = `sed -e "s#__MASTER_API_KEY__#${MASTER_API_KEY}#g" -e "s#__GROQ_API_KEY__#${GROQ_API_KEY}#g" /tmpl/config.yaml > /etc/oramacore/config.yaml`
+// combinedRenderCommand is the render-config script of every engine pod without side-only images and
+// with the default providers.
+const combinedRenderCommand = `esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e 's/[\\&#]/\\&/g'; }; sed` +
+	` -e "s#__MASTER_API_KEY__#$(esc "${MASTER_API_KEY}")#g"` +
+	` -e "s#__OPENAI_API_KEY__#$(esc "${OPENAI_API_KEY}")#g"` +
+	` -e "s#__GOOGLE_API_KEY__#$(esc "${GOOGLE_API_KEY}")#g"` +
+	` -e "s#__GROQ_API_KEY__#$(esc "${GROQ_API_KEY}")#g"` +
+	` -e "s#__ANTHROPIC_API_KEY__#$(esc "${ANTHROPIC_API_KEY}")#g"` +
+	` /tmpl/config.yaml > /etc/oramacore/config.yaml`
 
 const (
 	testWriterImage = "oramasearch/oramacore-writer@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -299,7 +317,7 @@ func TestEngineImageSelection(t *testing.T) {
 	}
 }
 
-// Without both side overrides the engine renders exactly what it did before side-only images.
+// Without both side overrides the engine renders the combined config, hashed like a side's.
 func TestEngineWithoutSideImagesIsUnchanged(t *testing.T) {
 	for name, overrides := range map[string]map[string]string{
 		"nil":          nil,
@@ -325,8 +343,8 @@ func TestEngineWithoutSideImagesIsUnchanged(t *testing.T) {
 				if got := renderInit(t, spec.Spec).Command[2]; got != combinedRenderCommand {
 					t.Errorf("%s render-config command = %q, want %q", side, got, combinedRenderCommand)
 				}
-				if spec.Annotations != nil {
-					t.Errorf("%s pod template annotations = %v, want none", side, spec.Annotations)
+				if got, want := spec.Annotations[configHashKey], templateSHA256(combinedConfigFixture); got != want {
+					t.Errorf("%s config hash = %q, want SHA-256 of config.yaml %q", side, got, want)
 				}
 			}
 		})
@@ -405,13 +423,13 @@ func TestEngineSideOnlyPodsAndConfigs(t *testing.T) {
 
 	writer, reader := cm.Data["writer.yaml"], cm.Data["reader.yaml"]
 	for _, s := range []string{"client_provided_name: oramacore-writer", "producer_name: write", "host: v1-broker",
-		"data_dir: /app/.data/writer", `master_api_key: "__MASTER_API_KEY__"`, "host: v1-embeddings", `api_key: "__GROQ_API_KEY__"`} {
+		"data_dir: /app/.data/writer", `master_api_key: '__MASTER_API_KEY__'`, "host: v1-embeddings", `api_key: '__GROQ_API_KEY__'`} {
 		if !strings.Contains(writer, s) {
 			t.Errorf("writer.yaml lacks %q", s)
 		}
 	}
 	for _, s := range []string{"client_provided_name: oramacore-reader", "consumer_name: reader", "host: v1-broker",
-		"data_dir: /app/.data/reader", "host: v1-embeddings", `api_key: "__GROQ_API_KEY__"`} {
+		"data_dir: /app/.data/reader", "host: v1-embeddings", `api_key: '__GROQ_API_KEY__'`} {
 		if !strings.Contains(reader, s) {
 			t.Errorf("reader.yaml lacks %q", s)
 		}
@@ -628,7 +646,7 @@ func TestEngineSidesConditionPersisted(t *testing.T) {
 func TestEngineConfigHashIsPerSide(t *testing.T) {
 	oc := engineOC(withSideImages)
 	writer, reader := engineSideFor(oc, "writer"), engineSideFor(oc, "reader")
-	hash := func(s engineSide) string { return engineConfigAnnotations(s)[configHashKey] }
+	hash := func(s engineSide) string { return engineConfigAnnotations(s, "")[configHashKey] }
 
 	// Edit one side's template the way a side-only setting would; only that side's hash moves.
 	before := map[string]string{"writer": hash(writer), "reader": hash(reader)}
@@ -646,8 +664,8 @@ func TestEngineConfigHashIsPerSide(t *testing.T) {
 			}
 		}
 	}
-	if engineConfigAnnotations(engineSideFor(engineOC(nil), "writer")) != nil {
-		t.Error("the combined config carries a hash")
+	if combined := engineSideFor(engineOC(nil), "writer"); hash(combined) != templateSHA256(combined.template) {
+		t.Error("the combined config is not hashed")
 	}
 
 	h := newEngineHarness(t)
@@ -690,7 +708,7 @@ func TestEngineModeTransitionsInPlace(t *testing.T) {
 	h := newEngineHarness(t, claim)
 	oc := engineOC(func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Engine.Envoy = true })
 
-	expect := func(mode string, keys []string, writerImage, readerImage, writerKey, readerKey string, hashed bool) {
+	expect := func(mode string, keys []string, writerImage, readerImage, writerKey, readerKey string) {
 		t.Helper()
 		cm := h.engineConfig()
 		if got := dataKeys(cm); !reflect.DeepEqual(got, keys) {
@@ -709,8 +727,8 @@ func TestEngineModeTransitionsInPlace(t *testing.T) {
 			if got := renderSource(t, p.spec.Spec); got != p.key {
 				t.Errorf("%s: %s renders %q, want %q", mode, p.side, got, p.key)
 			}
-			if _, ok := p.spec.Annotations[configHashKey]; ok != hashed {
-				t.Errorf("%s: %s config hash present = %v, want %v", mode, p.side, ok, hashed)
+			if got, want := p.spec.Annotations[configHashKey], templateSHA256(cm.Data[p.key]); got != want {
+				t.Errorf("%s: %s config hash = %q, want SHA-256 of %s", mode, p.side, got, p.key)
 			}
 		}
 		if container(h.reader().Spec.Template.Spec, "envoy") == nil {
@@ -728,14 +746,14 @@ func TestEngineModeTransitionsInPlace(t *testing.T) {
 	}
 
 	h.reconcile(oc)
-	expect("combined", []string{"config.yaml", "envoy.yaml"}, "oramasearch/oramacore:latest", "oramasearch/oramacore:latest", "config.yaml", "config.yaml", false)
+	expect("combined", []string{"config.yaml", "envoy.yaml"}, "oramasearch/oramacore:latest", "oramasearch/oramacore:latest", "config.yaml", "config.yaml")
 	writerUID := h.writer().UID
 	withSideImages(oc)
 	h.reconcile(oc)
-	expect("separated", []string{"envoy.yaml", "reader.yaml", "writer.yaml"}, testWriterImage, testReaderImage, "writer.yaml", "reader.yaml", true)
+	expect("separated", []string{"envoy.yaml", "reader.yaml", "writer.yaml"}, testWriterImage, testReaderImage, "writer.yaml", "reader.yaml")
 	oc.Spec.Images.Overrides = nil
 	h.reconcile(oc)
-	expect("combined again", []string{"config.yaml", "envoy.yaml"}, "oramasearch/oramacore:latest", "oramasearch/oramacore:latest", "config.yaml", "config.yaml", false)
+	expect("combined again", []string{"config.yaml", "envoy.yaml"}, "oramasearch/oramacore:latest", "oramasearch/oramacore:latest", "config.yaml", "config.yaml")
 	if h.writer().UID != writerUID {
 		t.Error("the writer StatefulSet was recreated")
 	}
@@ -767,9 +785,11 @@ func TestEngineReadRegionRunsReaderOnly(t *testing.T) {
 	}
 }
 
-// The render-config script writes the selected template to config.yaml with both keys filled in.
+// The render-config script writes the selected template to config.yaml with every key filled in.
 func TestRenderConfigInitRendersSelectedTemplate(t *testing.T) {
 	const master, groq = "synthetic-master-0123abcd", "gsk_synthetic_4567efgh"
+	keys := map[string]string{"__MASTER_API_KEY__": master, "__GROQ_API_KEY__": groq,
+		"__OPENAI_API_KEY__": "sk-synthetic", "__GOOGLE_API_KEY__": "AIza-synthetic", "__ANTHROPIC_API_KEY__": "sk-ant-synthetic"}
 	for _, oc := range []*oramav1alpha1.OramaCloudV1{engineOC(nil), engineOC(withSideImages)} {
 		h := newEngineHarness(t)
 		h.reconcile(oc)
@@ -792,7 +812,12 @@ func TestRenderConfigInitRendersSelectedTemplate(t *testing.T) {
 			script = strings.ReplaceAll(script, "/tmpl/", tmpl+"/")
 			script = strings.ReplaceAll(script, "/etc/oramacore/", out+"/")
 			cmd := exec.Command("sh", "-c", script)
-			cmd.Env = append(os.Environ(), "MASTER_API_KEY="+master, "GROQ_API_KEY="+groq)
+			cmd.Env = os.Environ()
+			var pairs []string
+			for placeholder, v := range keys {
+				cmd.Env = append(cmd.Env, strings.Trim(placeholder, "_")+"="+v)
+				pairs = append(pairs, placeholder, v)
+			}
 			if b, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("render-config: %v: %s", err, b)
 			}
@@ -800,13 +825,13 @@ func TestRenderConfigInitRendersSelectedTemplate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := strings.NewReplacer("__MASTER_API_KEY__", master, "__GROQ_API_KEY__", groq).Replace(cm.Data[key])
+			want := strings.NewReplacer(pairs...).Replace(cm.Data[key])
 			if string(got) != want {
 				t.Errorf("rendered %s =\n%s\nwant\n%s", key, got, want)
 			}
 		}
 		for k, v := range cm.Data {
-			if strings.Contains(v, master) || strings.Contains(v, groq) {
+			if strings.Contains(v, master) || strings.Contains(v, groq) || strings.Contains(v, "synthetic") {
 				t.Errorf("ConfigMap key %s holds a key value", k)
 			}
 		}
