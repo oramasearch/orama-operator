@@ -146,5 +146,9 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// broker or cache credential) have no owner reference: map them to the CRs that read them,
 		// so a changed value rolls their consumers (requestsForSecret).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForSecret)).
+		// Likewise the Secrets and ConfigMaps the dashboard takes its environment from, so a changed,
+		// created or deleted one re-hashes and rolls the dashboard (dashboard_env.go).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
 		Complete(r)
 }

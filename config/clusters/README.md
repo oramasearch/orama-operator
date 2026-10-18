@@ -48,6 +48,12 @@ way and is named by `template.masterAPIKeySecretRef` (or a member's `spec`); the
 generates it, and without it the member's writer and readers stay at zero replicas. Changing a
 copied Secret's source, or its data on the managing cluster, rolls the member's consumers of it.
 
+A set's `spec.secrets` list copies each named Secret from there into every member's namespace (for
+example the dashboard's environment Secret, which the set's template references in
+`components.dashboard.envFrom`); see
+[the dashboard's environment](../../docs/components.md#the-dashboards-environment). Creating or
+changing a source Secret is a write on the managing cluster and needs Steve's consent.
+
 An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
 reference rows the operator seeds into its control database
 ([`docs/components.md`](../../docs/components.md#the-control-dbs-schema)). `v1-nonprod` leaves it

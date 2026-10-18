@@ -158,7 +158,7 @@ serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrast
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
 | `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `reader.{replicas,hpa,resources}`, `envoy` | OramaCore writer + readers + Envoy |
-| `dashboard` | `host` | app.orama.com (Next.js) |
+| `dashboard` | `host`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `stripePrices` | Always in-cluster CloudNativePG |
@@ -218,6 +218,73 @@ The condition observes the current generation and recovers after accepted settin
 retries. A rejected setting may coexist with `Ready=True`. The operator polls every 20 seconds
 while locally managed storage exists, even with Ready workloads, and writes status only on change.
 See [component reconciliation](components.md#component-storage) for scope and expansion ownership.
+
+### `spec.components.dashboard`
+
+The dashboard's toggle and host (`enabled`, `host`, `resources`, as for `docs`), plus the rest of its
+environment from Secrets and ConfigMaps in the instance's namespace
+([operator#311](https://github.com/oramasearch/orama-operator/issues/311)).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `envFrom` | `[]EnvFromSource` | Secrets (`secretRef`) and ConfigMaps (`configMapRef`), each with an optional `prefix` and `optional`. Appended after the operator's own sources (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`), so a key here overrides the shared ConfigMap and the seeded dashboard Secret, and a later entry overrides an earlier one. |
+| `env` | `[]EnvVar` | Variables as in a container: a `value`, or `valueFrom` with `secretKeyRef`, `configMapKeyRef`, `fieldRef` or `resourceFieldRef`. Appended after the operator's explicit env; an entry with the same name as an operator variable replaces it, and for a name listed twice the last entry wins, so each name appears once. |
+
+```yaml
+spec:
+  components:
+    dashboard:
+      enabled: true
+      envFrom:
+        - secretRef:
+            name: dashboard-extra
+      env:
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: stripe-test
+              key: api-key
+```
+
+**Precedence**, lowest to highest: the operator's envFrom, `envFrom`, the operator's explicit env
+(`MASTER_API_KEY` from `spec.masterAPIKeySecretRef`, `POSTGRES_PASSWORD`, `DATABASE_URL`), `env`.
+
+**Refused variables.** `DATABASE_URL`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`,
+`POSTGRES_PASSWORD`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`,
+`JWT_ISSUER` and `MASTER_API_KEY` belong to the operator (the control DB, the generated `<cr>-jwt`, the
+operator's JWT issuer, and `spec.masterAPIKeySecretRef`). Naming one in `env`, or carrying one as a key of an `envFrom` source after
+its `prefix` (`prefix: JWT_` with key `PRIVATE_KEY` is `JWT_PRIVATE_KEY`), fails the reconcile, even
+when a later entry would shadow it and even when the source is `optional`.
+
+**References.** Each `envFrom` entry sets exactly one of `secretRef` and `configMapRef`, with a name;
+each key selector in `env` sets a name and a key. References are local to the instance's namespace.
+A missing object, or a missing key behind a `secretKeyRef`/`configMapKeyRef`, fails the reconcile
+unless the reference is `optional: true`; `optional` covers only a missing object or key, never a read
+error or a refused variable. An empty value is a present value. Optional references stay in the
+container as written, so Kubernetes applies its usual semantics. ConfigMap `binaryData` never reaches
+the environment and is neither read nor hashed.
+
+Every failure sets `Ready=False` (`ReconcileError`) with a message such as `dashboard:
+dashboard.envFrom[0] (Secret extra) sets MASTER_API_KEY, which the operator owns (it comes from
+spec.masterAPIKeySecretRef); remove it` or `dashboard:
+dashboard.envFrom[0]: Secret orama-system/extra does not exist`, naming the field index, the object and
+the variable, never a value. The check runs before the dashboard Deployment is written, so the
+running dashboard keeps its last valid template. Fixing the spec or (re)creating the object recovers
+on the next reconcile, which the watch below triggers. A disabled dashboard is torn down without
+reading or checking either field.
+
+**Rolling on change.** The pod template carries `orama.cloud/dashboard-env-hash`: the SHA-256 (64
+lowercase hex characters) of the data of every `envFrom` source and of the selected key behind every
+`env` key selector, with each object's kind, name, order, prefix and selected key, and whether an
+optional object or key is present. The controller watches the referenced Secrets and ConfigMaps,
+owned or not, so a changed value, a created or deleted optional source, or an added or removed
+selected key rolls the dashboard. Metadata changes and unselected keys of a selector-only object do
+not. The annotation holds a hash only; values are written nowhere else. With no Secret or ConfigMap
+reference the annotation is absent, so a dashboard with neither field set keeps the template it had
+before these fields existed.
+
+How the environment Secret reaches each cluster is in
+[components.md](components.md#the-dashboards-environment).
 
 ## `status`
 
