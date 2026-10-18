@@ -40,7 +40,7 @@ clusters the drain cannot finish without downtime:
   `maxUnavailable: 0` (`internal/controller/engine.go` `upsertPDB(..., "writer", 0)`,
   `internal/controller/datastore.go`). An eviction of those pods is refused for as long as the
   budget stands, by design.
-- Readers have no node placement (no `nodeSelector` or affinity on the reader StatefulSet), so
+- Readers have no node placement (no `nodeSelector` or affinity on the reader Deployment (a StatefulSet once #550 lands)), so
   readers, the writer and the data stores share `agentpool` and `userpool` on
   `orama-nonprod-cluster-01`, `orama-production-cluster-02` and `-03`. Every pool readers can
   use also holds zero-budget pods.
@@ -92,8 +92,8 @@ Only the readers need the setting (#454). Instead of replacing shared pools:
    `sysctls: {vm.max_map_count: 4194304}`, label `orama.cloud/pool: readers`), in each cluster's
    `cluster.yaml`. The `AksCluster` controller learns to **add** a declared pool that is missing
    (`PUT .../agentPools/<name>`). It still never changes or deletes an existing pool.
-2. The reader StatefulSet gets a required node placement on that label. The StatefulSet's rolling
-   update moves readers one at a time under the reader budget (`maxUnavailable: 1`), the same way
+2. The reader Deployment (a StatefulSet once #550 lands) gets a required node placement on that
+   label. Its rolling update moves readers one at a time under the reader budget (`maxUnavailable: 1`), the same way
    an image roll does. The writer and the data stores do not move.
 
 No pool is drained, no zero-budget pod is evicted, and the existing pools keep running as they
