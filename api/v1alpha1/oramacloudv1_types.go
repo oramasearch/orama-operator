@@ -270,8 +270,9 @@ type EngineSpec struct {
 // VolumeSpec configures a new volume and operator-managed increases to existing storage.
 // StatefulSet claim templates are immutable; existing claims grow independently.
 type VolumeSpec struct {
-	// Size is a positive Kubernetes quantity, compared numerically. Omission resolves
-	// to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+	// Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+	// component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+	// existing storage is unsupported.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))",message="size must be a positive Kubernetes quantity"
 	Size *resource.Quantity `json:"size,omitempty"`
@@ -343,6 +344,11 @@ type WriterJWTSpec struct {
 type ReaderSpec struct {
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
+	// Storage configures each reader's data volume (default 512Gi and cluster default class).
+	// The StatefulSet's claim template keeps the values it was created with; the operator grows
+	// every reader's existing claim instead.
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// HPA autoscales readers on load when set.
 	// +optional
 	HPA *HPASpec `json:"hpa,omitempty"`

@@ -105,14 +105,17 @@ on `v1-dev` first. The HTTP/fake-client and local API-server tests do not claim 
 ## Component storage
 
 `internal/controller/storage.go` runs after ordinary component provisioning. It manages the
-primary's enabled writer and the enabled analytics/cache/broker/search stores selected by their
+primary's enabled writer, the readers of an enabled engine (in a primary or read region), and the
+enabled analytics/cache/broker/search stores selected by their
 existing in-cluster mode and placement checks. External stores, disabled components, a read
 region's absent writer, and central stores skipped in a read region contribute no mismatch.
 ControlDB follows its existing enabled/in-cluster policy; this change does not alter its external
-mode behavior. Readers keep their fixed `512Gi` claims ([engine](#engine-internalcontrollerenginego)); HARVEST Mongo keeps the shared helper's
-`10Gi`/default-class output and has no new storage setting.
+mode behavior. HARVEST Mongo keeps the shared helper's `10Gi`/default-class output and has no new
+storage setting.
 
-Writer and store `storage.size` default to `10Gi`; `storage.storageClassName` is optional. Omitted
+Writer and store `storage.size` default to `10Gi`, and `reader.storage.size` to `512Gi`
+([engine](#engine-internalcontrollerenginego)); every reader's claim `data-<cr>-reader-<n>` grows
+like the writer's; `storage.storageClassName` is optional. Omitted
 storage, `{}`, or a missing size resolves to that default even before API admission. Explicit sizes
 must be positive Kubernetes quantities, compared with `Cmp` (`10240Mi` equals `10Gi`), and explicit
 class names must be nonempty. The [field reference](crd-reference.md#component-storage) lists every
@@ -403,8 +406,10 @@ Driven by `spec.region.role`:
     `incident-2026-10-12-reader-stalls.md`, "Host storage": each Prod 1 reader has a 1,000 GB
     (931 GiB) gp3 root volume, with EU 777, US 659 and Asia 740 GiB free on 2026-10-12, so about
     154, 272 and 191 GiB used, OS included. 512Gi is about twice the US figure, rounded up, and an
-    upper bound since the used figures include the OS. The template cannot change after the
-    StatefulSet exists, so a stack's readers get 512Gi once.
+    upper bound since the used figures include the OS. It is the default of `reader.storage.size`.
+    The template keeps the size it was created with; a larger `reader.storage.size` grows every
+    reader's existing claim ([Component storage](#component-storage)), and a smaller one is a
+    refused shrink.
   - **Fixed count, no autoscaler.** `replicas` is `reader.replicas` (0 or unset → 3), set on every
     reconcile; `podManagementPolicy: Parallel` starts them together. No HorizontalPodAutoscaler is
     created and `reader.hpa` is ignored. Claims are kept when the count drops or the StatefulSet is
