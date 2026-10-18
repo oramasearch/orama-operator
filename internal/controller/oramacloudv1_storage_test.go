@@ -623,7 +623,7 @@ func TestOCV1StorageRefusesForeignOwnership(t *testing.T) {
 	}
 }
 
-// A reader's claims start at readerDataSize, not the 10Gi fallback, and grow like any other.
+// A reader's claims start at readerDataSize (10Gi, as every volume) and grow like any other.
 func TestOCV1StorageGrowsReaderClaimsFromTheReaderDefault(t *testing.T) {
 	ctx := context.Background()
 	oc := newOCV1(nil)
