@@ -365,27 +365,39 @@ annotation.
 
 ## Service e2e
 
-`LakeE2ETest` is a cluster-scoped, explicit test trigger; ordinary Lake reconciliation never runs
-the suite. It waits for the target Lake to have a ready replica, ready control-plane Postgres, and
-an applied schema, then creates Job `<test-name>-e2e` in `Lake.spec.namespace`. The required runner
-image owns the cross-repository workflow: sign up a fresh user, create a repository, invoke the real
-liquid client to push it through Lake's sync endpoint, pull into an empty checkout, and compare the
-file bytes. The operator supplies only the in-cluster base URL and resource UID as
-`LAKE_E2E_BASE_URL` and `LAKE_E2E_RUN_ID`; it does not give the suite the Lake admin bearer.
+`LakeE2ETest` runs lake's end-to-end suite, the private runner image `oramasearch/lake-e2e` from
+[oramasearch/lake-e2e](https://github.com/oramasearch/lake-e2e)
+([#537](https://github.com/oramasearch/orama-operator/issues/537)). It is the **testing → staging
+gate for a substantial lake release** (a version release, a schema change, or a change across lake
+and the operator): the release goes to the `testing` member of `lake-nonprod`, a `LakeE2ETest`
+runs against that member, and the release moves on to staging only when the run is `Succeeded`
+or every failure is understood and filed. It is an explicit trigger: ordinary Lake reconciliation
+never runs it, and production runs none because none is created there.
 
-Apply [`../../config/samples/lake-e2e-test.yaml`](../../config/samples/lake-e2e-test.yaml) after
-replacing its runner image placeholder with an immutable published tag. `spec.pullSecretName`
-overrides image authentication for the Job; when omitted, the controller reuses the target Lake's
-pull Secret. Inspect it with:
+The suite signs up a fresh test person as a person does (on a Lake without Clerk, lake's own
+sign-up with a TAAP identity document liquid makes in the run's own HOME; on a Lake with Clerk, a
+one-time Clerk sign-in ticket for a user it creates, given `LAKE_E2E_CLERK_SECRET_KEY`), never the
+admin bearer, and then does every Lake feature through REST, MCP and a headless Chromium:
+repositories pushed and pulled with liquid, the forge, drives, data, connections, models,
+experiments, agents, methodologies, solutions, services, apps, the network, organizations,
+secrets, usage and billing, and every page of the web app. Its last group fails when the Lake has a
+capability in `/v1/openapi.json` or a page no step covers; the inventory is the runner repository's
+`docs/inventory.md`. Every step reports pass, fail or skip with a reason. It changes data only in
+the Lake it runs against, as its own test people, and deletes what it made where Lake allows.
+
+Create the test on the member's cluster (`orama-nonprod-cluster-01` for `lake-nonprod`), from
+[`../../config/samples/lake-e2e-test.yaml`](../../config/samples/lake-e2e-test.yaml) with the image
+tag filled in, and read the result:
 
 ```sh
-kubectl get lakee2e hello
-kubectl logs -n lake-dev job/hello-e2e
+kubectl get lakee2e testing-gate                       # Phase, Pass, Fail, Skip
+kubectl get lakee2e testing-gate -o jsonpath='{.status.failed}'
+kubectl logs -n lake-testing job/testing-gate-e2e-<generation>
 ```
 
-Deleting and recreating the test resource starts a new run with a new UID and garbage-collects the
-old Job. The k0s and air-gapped cluster executions for issue #123 remain deferred; the controller's
-resource wiring and status transitions are covered with the fake client.
+To run it again (the next release), change `spec.runID` and apply the file again; nothing is
+deleted. The run's Job is `<name>-e2e-<generation>`; the previous run's Job is removed once the new
+run finishes. The fields are in [`../crd-reference.md`](../crd-reference.md#lakee2etest-separate-crd-cluster-scoped).
 
 ## Deploying the operator with Lake support
 
