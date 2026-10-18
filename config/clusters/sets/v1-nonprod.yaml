@@ -38,6 +38,8 @@ spec:
     namespace: orama-system
   - name: v1-nonprod-master-api-key
     namespace: orama-system
+  - name: v1-nonprod-dashboard-env
+    namespace: orama-system
   template:
     cloudflare:
       apiTokenSecretRef:
@@ -66,6 +68,16 @@ spec:
         placement: local
       dashboard:
         enabled: true
+        # Orama's platform keys for the dashboard (Stripe test mode, Resend, Slack, PRIVATE_API_KEY,
+        # CRON_SECRET), from one Secret on the managing cluster that the set copies.
+        envFrom:
+        - secretRef:
+            name: v1-nonprod-dashboard-env
+        # Prod 1's three dashboard crons, created suspended; CRON_SECRET comes from the envFrom Secret.
+        # Unsuspending is a committed change here, never an edit of the CronJobs.
+        crons:
+          enabled: true
+          suspend: true
       disco:
         enabled: true
       docs:

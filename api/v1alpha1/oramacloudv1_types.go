@@ -7,6 +7,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -234,7 +235,7 @@ type ComponentsSpec struct {
 	// +optional
 	IngressClassName string `json:"ingressClassName,omitempty"`
 
-	Dashboard ToggleWithHost `json:"dashboard,omitempty"` // app.orama.com (Next.js)
+	Dashboard DashboardSpec  `json:"dashboard,omitempty"` // app.orama.com (Next.js)
 	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
@@ -268,7 +269,25 @@ type EngineSpec struct {
 	Envoy bool `json:"envoy,omitempty"`
 }
 
+// VolumeSpec configures a new volume and operator-managed increases to existing storage.
+// StatefulSet claim templates are immutable; existing claims grow independently.
+type VolumeSpec struct {
+	// Size is a positive Kubernetes quantity, compared numerically. Omission resolves
+	// to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))",message="size must be a positive Kubernetes quantity"
+	Size *resource.Quantity `json:"size,omitempty"`
+	// StorageClassName selects a class at creation. Omission uses the cluster default
+	// for new volumes and retains the existing class. Existing classes cannot change.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	StorageClassName *string `json:"storageClassName,omitempty"`
+}
+
 type WriterSpec struct {
+	// Storage configures the writer's data volume (default 10Gi and cluster default class).
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// GPU requests nvidia.com/gpu for the writer's BUILT-IN embeddings generation
 	// (ONNX Runtime + CUDA; prod: L40S). Set false to use CPU embeddings or a remote
 	// embeddings server. (This is the main reason a GPU node is needed at all; the
@@ -425,6 +444,10 @@ type StripeAddonPrice struct {
 // DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
 // operator/chart), pointed at an external endpoint, or centrally located.
 type DataStoreSpec struct {
+	// Storage configures local data volumes (default 10Gi and cluster default class).
+	// The operator grows PVC requests, or the CNPG Cluster size for controlDB.
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 	// Mode: "in-cluster" (operator provisions it) or "external" (use Endpoint).
@@ -477,6 +500,73 @@ type ToggleWithHost struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and
+// ConfigMaps in the instance's namespace (operator#311). Precedence, lowest to highest: the
+// operator's envFrom (<cr>-config, <cr>-dashboard-secret, <cr>-jwt), envFrom, the operator's
+// explicit env, env. DATABASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_PASSWORD,
+// JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER and MASTER_API_KEY belong to the operator: supplying one
+// through either field fails the reconcile.
+// +kubebuilder:validation:XValidation:rule="!has(self.crons) || !has(self.crons.enabled) || !self.crons.enabled || (has(self.enabled) && self.enabled)",message="dashboard.crons requires the dashboard enabled"
+type DashboardSpec struct {
+	ToggleWithHost `json:",inline"`
+	// EnvFrom adds Secrets and ConfigMaps (in the instance's namespace) after the operator's own
+	// envFrom sources, so a key here overrides the shared ConfigMap and the seeded dashboard Secret,
+	// and a later entry overrides an earlier one. It never overrides the operator's explicit env.
+	// Each entry sets exactly one of secretRef and configMapRef. A missing object fails the
+	// reconcile unless the reference is optional. A change to a referenced object rolls the
+	// dashboard (pod-template annotation orama.cloud/dashboard-env-hash).
+	// +optional
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
+	// Env adds variables after the operator's explicit env (e.g. STRIPE_SECRET_KEY from a
+	// secretKeyRef). An entry with the same name as an operator variable replaces it; for a name
+	// listed twice the last entry wins. A non-optional secretKeyRef or configMapKeyRef whose object
+	// or key is missing fails the reconcile; a change to the selected key rolls the dashboard.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+	// Crons runs the dashboard's scheduled calls (Prod 1's Vercel crons) as CronJobs, and optionally
+	// the e2e canary (operator#17). Off unless enabled; requires the dashboard enabled.
+	// +optional
+	Crons DashboardCronsSpec `json:"crons,omitempty"`
+}
+
+// DashboardCronsSpec turns on the dashboard's three scheduled calls, with Prod 1's fixed schedules:
+// <cr>-dashboard-cron-crawler (every minute), -index-gc (hourly) and -consumption-sync (every six
+// hours, UTC). Each GETs the in-cluster dashboard Service with Authorization: Bearer $CRON_SECRET,
+// where CRON_SECRET is read from the Secret key the dashboard itself takes it from (envFrom or env).
+// Running them on Prod 1 and Prod 2 at once would crawl and bill twice, so they are created
+// suspended; the cutover unsuspends them through the set file.
+// +kubebuilder:validation:XValidation:rule="!has(self.e2eCanary) || (has(self.enabled) && self.enabled)",message="dashboard.crons.e2eCanary requires dashboard.crons enabled"
+type DashboardCronsSpec struct {
+	// Enabled creates the three CronJobs. Disabling deletes them.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Suspend is copied to the spec.suspend of the three CronJobs and the e2e canary's. It stops new
+	// runs and does not cancel a run already in progress.
+	// +kubebuilder:default=true
+	// +optional
+	Suspend *bool `json:"suspend,omitempty"`
+	// E2ECanary runs Prod 1's e2e canary (every five minutes) and its collection prune (daily at
+	// 04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. It follows crons.suspend.
+	// Removing it deletes the CronJob and its state volume.
+	// +optional
+	E2ECanary *E2ECanarySpec `json:"e2eCanary,omitempty"`
+}
+
+// E2ECanarySpec is the canary's image and target. The canary signs in through the in-cluster
+// dashboard's /api/user/jwt with the canary project's private API key, writes a probe document and
+// checks it on the readers the dashboard returns and on the in-cluster reader.
+// +kubebuilder:validation:XValidation:rule="has(self.secretRef.name) && size(self.secretRef.name) > 0",message="dashboard.crons.e2eCanary.secretRef needs a name"
+type E2ECanarySpec struct {
+	// Image runs monitor-test (oramacore-test-e2e) and provides /bin/sh, curl and jq for the prune.
+	// It must be pinned to a digest (name@sha256:<64 hex>).
+	// +kubebuilder:validation:Pattern=`^[^@\s]+@sha256:[a-f0-9]{64}$`
+	Image string `json:"image"`
+	// SecretRef names a Secret in the instance's namespace with the non-empty keys collectionID,
+	// indexID and apiKey: the canary collection, its index, and the project's private API key.
+	// Delivered through the set's secrets list.
+	SecretRef corev1.LocalObjectReference `json:"secretRef"`
+}
+
 // PeerSpec identifies another region for cross-cluster wiring (no mesh).
 type PeerSpec struct {
 	Name   string `json:"name"`
@@ -509,7 +599,8 @@ type OramaCloudV1Status struct {
 	// component regressed) | Pending.
 	Phase string `json:"phase,omitempty"`
 	// Conditions follows the standard k8s condition convention (the Ready condition is the
-	// machine-readable roll-up).
+	// machine-readable workload roll-up). StorageApplied independently reports accepted
+	// storage configuration, not completed disk/filesystem expansion.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// ComponentsReady is the ready/total count (e.g. "22/22").

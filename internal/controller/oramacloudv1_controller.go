@@ -40,14 +40,12 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile is the control loop. It reconciles each enabled component in turn,
-// driven by .spec.region.role. Components still TODO: control-plane Postgres (CNPG),
-// ClickHouse, RabbitMQ, Redis, Typesense, HARVEST+Mongo, index-builder + workers,
-// DISCO, dashboard, IdP shim, Cloudflare (DNS+LB via API), demo seed. See docs/.
+// Reconcile provisions enabled components in dependency order, applies storage intent, and
+// rolls up workload readiness independently of storage configuration acceptance.
 func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 
@@ -108,9 +106,10 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Roll child readiness up into the phase (#37): Ready once every owned workload is ready,
 	// else Provisioning. Requeue while still coming up so the phase advances as pods go ready —
-	// Owns() events cover most transitions; the requeue is the backstop (e.g. the polled CNPG
-	// cluster readiness).
-	if r.applyReadiness(ctx, &oc, masterKey) {
+	// Owns() events cover most transitions; the requeue is also the backstop for CNPG readiness,
+	// PVC creation and storage retries even after workloads become Ready.
+	managedStorage := r.reconcileStorage(ctx, &oc)
+	if r.applyReadiness(ctx, &oc, masterKey) && !managedStorage {
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
@@ -139,6 +138,8 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&batchv1.Job{}).
+		Owns(&batchv1.CronJob{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Owns(&oramav1alpha1.CloudflareKVNamespace{}).
 		Owns(&oramav1alpha1.CloudflareR2Bucket{}).
@@ -149,5 +150,11 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// broker or cache credential) have no owner reference: map them to the CRs that read them,
 		// so a changed value rolls their consumers (requestsForSecret).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForSecret)).
+		// Likewise the Secrets and ConfigMaps the dashboard takes its environment from, so a changed,
+		// created or deleted one re-hashes and rolls the dashboard (dashboard_env.go).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
+		// And the e2e canary's target Secret, so creating or fixing it retries at once (dashboard_crons.go).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForE2ECanarySecret)).
 		Complete(r)
 }
