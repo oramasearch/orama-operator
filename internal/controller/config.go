@@ -89,9 +89,7 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 			"ORAMACORE_READER_URL":  "http://" + n + "-reader",
 			"EMBEDDINGS_URL":        "http://" + n + "-disco:50051",
 			// #8 QStash-equivalent: the in-cluster RabbitMQ (a true QStash HTTP shim is a follow-up).
-			"QSTASH_URL": "http://" + n + "-broker:5672",
-			// #4 Airbyte: installed via its Helm chart (helmfile platformDeps); dashboard/index-builder use this.
-			"AIRBYTE_URL":                 "http://airbyte-airbyte-server-svc.airbyte:8001",
+			"QSTASH_URL":                  "http://" + n + "-broker:5672",
 			"KC_HTTP_ENABLED":             "true",
 			"KC_PROXY_HEADERS":            "xforwarded",
 			"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
@@ -271,7 +269,6 @@ func componentSecretData(component string) map[string]string {
 			"FIREBASE_SERVICE_ACCOUNT": "dev-firebase-service-account-json",
 			"STRIPE_SECRET_KEY":        "dev-stripe-secret-key",
 			"STRIPE_WEBHOOK_SECRET":    "dev-stripe-webhook-secret",
-			"AIRBYTE_CLIENT_SECRET":    "dev-airbyte-client-secret",
 			"RESEND_API_KEY":           "dev-resend-api-key",
 			"SLACK_TOKEN":              "dev-slack-token",
 		}

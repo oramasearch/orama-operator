@@ -26,12 +26,11 @@ spec:
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-dev.oramadev.net
-      image: oramasearch/lake:dev-51fe838b
+      image: oramasearch/lake:dev-34718173
+      clerk:
+        secretKeySecretRef: {name: clerk-secret-key}
     secrets:
-    - name: lake-prod-openai
-      namespace: lake
-    - name: lake-prod-stripe
-      namespace: lake
+    - {name: clerk-lake-dev, namespace: lake, as: clerk-secret-key}
   - clusterRef: orama-nonprod-cluster-01
     name: staging
     spec:
@@ -45,6 +44,14 @@ spec:
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
         value: lake-staging.oramadev.net
+      - name: LAKE_OPENAI_API_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
+      - name: LAKE_BILLING
+        value: "on"
+      - name: LAKE_STRIPE_SECRET_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
+      - name: LAKE_STRIPE_WEBHOOK_SECRET
+        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-staging.oramadev.net
   - clusterRef: orama-nonprod-cluster-01
     name: testing
@@ -59,6 +66,14 @@ spec:
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
         value: lake-testing.oramadev.net
+      - name: LAKE_OPENAI_API_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
+      - name: LAKE_BILLING
+        value: "on"
+      - name: LAKE_STRIPE_SECRET_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
+      - name: LAKE_STRIPE_WEBHOOK_SECRET
+        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-testing.oramadev.net
   deletionPolicy: Retain
   secrets:
@@ -66,10 +81,14 @@ spec:
     namespace: lake
   - name: cloudflare-api-token
     namespace: lake
+  - name: lake-prod-openai
+    namespace: lake
+  - name: lake-prod-stripe
+    namespace: lake
   template:
     dnsSecretRef:
       name: cloudflare-api-token
-    image: oramasearch/lake:20261012a
+    image: oramasearch/lake:dev-51fe838b
     ingressEnabled: true
     postgres:
       enabled: true

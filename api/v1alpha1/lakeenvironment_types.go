@@ -77,6 +77,46 @@ type LakeEnvironmentSpec struct {
 	// hostname from Change and the Lake's previewWildcard instead.
 	// +optional
 	Host string `json:"host,omitempty"`
+
+	// Domains are the custom domains lake requested for this environment (its
+	// orama_control.domains rows). Each is served by the environment's Ingress and, when the Lake
+	// has a dnsSecretRef, gets a Cloudflare DNS record owned by this environment.
+	// +optional
+	// +listType=map
+	// +listMapKey=host
+	Domains []LakeEnvironmentDomain `json:"domains,omitempty"`
+}
+
+// LakeEnvironmentDomain is one custom domain of an environment.
+type LakeEnvironmentDomain struct {
+	// Host is the exact public hostname.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Host string `json:"host"`
+
+	// TLS is how the certificate is provided, as lake records it: acme or provided.
+	// +kubebuilder:validation:Enum=acme;provided
+	// +optional
+	TLS string `json:"tls,omitempty"`
+}
+
+const (
+	LakeEnvironmentDomainPending = "pending"
+	LakeEnvironmentDomainActive  = "active"
+	LakeEnvironmentDomainFailed  = "failed"
+)
+
+// LakeEnvironmentDomainStatus is the observed state of one custom domain.
+type LakeEnvironmentDomainStatus struct {
+	// Host is the domain's hostname.
+	Host string `json:"host"`
+
+	// Status is pending, active, or failed: the words lake shows for a domain.
+	Status string `json:"status"`
+
+	// Message says why a domain is pending or failed.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // LakeEnvironmentStatus is the observed state of a deployed environment.
@@ -96,6 +136,10 @@ type LakeEnvironmentStatus struct {
 	// DeploymentID is the stable deployment-row identifier materialized into this resource.
 	// +optional
 	DeploymentID string `json:"deploymentId,omitempty"`
+
+	// Domains reports each custom domain in spec.domains.
+	// +optional
+	Domains []LakeEnvironmentDomainStatus `json:"domains,omitempty"`
 
 	// Conditions contains the standard Ready condition and failure details.
 	// +optional
