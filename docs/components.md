@@ -376,8 +376,10 @@ Driven by `spec.region.role`:
   conflict refusal, so a published host never serves `/` without its `/metrics` refused; the
   disabled-engine teardown removes it by its writer or reader label. The readers keep Envoy's 404
   as well, so they stay closed if a companion is missing. zetta-tunnel's ingress gateway cannot
-  refuse a source, so it serves no host that a companion covers
-  ([ingress](infrastructure/ingress.md#what-it-serves)): Cloud v1's engine hosts stay on ingress-nginx
+  refuse a source, so, as an interim guard until
+  [#575](https://github.com/oramasearch/orama-operator/issues/575), it serves no host that a companion
+  covers ([ingress](infrastructure/ingress.md#what-it-serves)); for the engine hosts, whose sandbox
+  rules already admit ingress-nginx only (bridge decision 19 of 2026-10-17), it is a second safeguard: Cloud v1's engine hosts stay on ingress-nginx
   (decision 5b of the 2026-10-16 decisions page), and a stack set to `ingressClassName:
   zetta-tunnel` gets no gateway address for them. Inside the cluster `/metrics` stays on each pod's
   `:8080` (`<cr>-writer:8080`, a reader pod's IP on 8080; the reader Service's port 80 is the public
