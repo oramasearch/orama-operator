@@ -86,6 +86,14 @@ lake through Clerk's Backend API, writes a production instance's DNS records, an
 environments. See [`clerk.md`](clerk.md) (operator#541), which also lists the one-time dashboard
 steps and the Secrets to create.
 
+## Origin TLS
+
+Every Lake Ingress (the Lake's own, its app and preview wildcards, its apps and its environments)
+serves HTTPS with a Let's Encrypt certificate issued through the Lake's `dnsSecretRef`, and the
+Lake's Cloudflare zone is secured by an `EdgeZonePolicy` the Lake owns: Full (strict), authenticated
+origin pulls and Always Use HTTPS, each only once probes show it is safe. The token needs Zone > Zone
+Settings > Edit besides DNS Edit. See [`origin-tls.md`](origin-tls.md) (operator#578).
+
 ## Every Lake runs every feature
 
 Steve, 2026-10-17: *"all features should be enabled on all environments"* ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)).

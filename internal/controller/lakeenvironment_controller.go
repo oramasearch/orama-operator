@@ -648,6 +648,9 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentIngress(ctx context.Cont
 		if err := deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}); err != nil {
 			return nil, err
 		}
+		if err := r.deleteEnvironmentTLS(ctx, lake, environment, namespace); err != nil {
+			return nil, err
+		}
 		return failedDomainStatuses(environment, fmt.Sprintf("Lake %q does not enable ingress (spec.ingressEnabled)", lake.Name)), nil
 	}
 
@@ -681,7 +684,41 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentIngress(ctx context.Cont
 		return nil, err
 	}
 	if len(hosts) == 0 {
+		if err := r.deleteEnvironmentTLS(ctx, lake, environment, namespace); err != nil {
+			return nil, err
+		}
 		return nil, deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
+	}
+
+	// Origin TLS (operator#578): every host's certificate, issued in the Lake namespace and copied
+	// here, and the zone's redirect and client-certificate settings.
+	// A Lake without a DNS credential cannot issue certificates (docs/lake/origin-tls.md).
+	var tlsHosts []string
+	if lakeHasDNSCredential(lake) {
+		tlsHosts = hosts
+	}
+	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), tlsHosts)
+	if err != nil {
+		return nil, fmt.Errorf("environment certificates: %w", err)
+	}
+	tls, err := copyLakeTLSSecrets(ctx, r.Client, lake, namespace, name, tlsHosts, sources, func(secret *corev1.Secret) {
+		secret.Labels = environmentLabels(environment)
+		secret.Annotations = map[string]string{environmentOwnerAnnotation: environmentOwner(environment)}
+	})
+	if err != nil {
+		return nil, err
+	}
+	edge, err := readLakeEdge(ctx, r.Client, lake)
+	if err != nil {
+		return nil, err
+	}
+	caRef, err := reconcileEdgeClientCA(ctx, r.Client, namespace, name+"-edge-client-ca", edge, func(secret *corev1.Secret) error {
+		secret.Labels = environmentLabels(environment)
+		secret.Annotations = map[string]string{environmentOwnerAnnotation: environmentOwner(environment)}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	prefix := networkingv1.PathTypePrefix
@@ -707,6 +744,8 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentIngress(ctx context.Cont
 			})
 		}
 		ingress.Spec.Rules = rules
+		ingress.Spec.TLS = tls
+		applyLakeEdgeAnnotations(ingress, edge, caRef)
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("reconcile environment Ingress: %w", err)
@@ -894,7 +933,46 @@ func (r *LakeEnvironmentReconciler) teardownEnvironmentWorkload(ctx context.Cont
 			return err
 		}
 	}
+	if err := deleteLakeTLSCopies(ctx, r.Client, namespace, name, nil); err != nil {
+		return err
+	}
+	if err := deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name + "-edge-client-ca", Namespace: namespace}}); err != nil {
+		return err
+	}
 	return r.deleteEnvironmentDNSRecords(ctx, environment, nil)
+}
+
+func environmentTLSOwner(environment *oramav1alpha1.LakeEnvironment) string {
+	return lakeTLSOwnerValue("LakeEnvironment", environment.Namespace+"/"+environment.Name)
+}
+
+// deleteEnvironmentTLS removes the environment's Certificates, their copies and the edge CA Secret.
+func (r *LakeEnvironmentReconciler) deleteEnvironmentTLS(ctx context.Context, lake *oramav1alpha1.Lake, environment *oramav1alpha1.LakeEnvironment, namespace string) error {
+	name := environmentWorkloadName(environment)
+	if _, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), nil); err != nil {
+		return err
+	}
+	if err := deleteLakeTLSCopies(ctx, r.Client, namespace, name, nil); err != nil {
+		return err
+	}
+	return deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name + "-edge-client-ca", Namespace: namespace}})
+}
+
+// requestsForEnvironmentEdge re-reconciles the environments in a Lake namespace when one of its
+// certificates is issued or renewed, or its zone policy changes.
+func (r *LakeEnvironmentReconciler) requestsForEnvironmentEdge(ctx context.Context, object client.Object) []reconcile.Request {
+	if _, ok := object.(*corev1.Secret); ok && !isLakeCertificateSecret(object) {
+		return nil
+	}
+	var environments oramav1alpha1.LakeEnvironmentList
+	if err := r.List(ctx, &environments, client.InNamespace(object.GetNamespace())); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(environments.Items))
+	for i := range environments.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&environments.Items[i])})
+	}
+	return requests
 }
 
 func (r *LakeEnvironmentReconciler) finalizeLakeEnvironment(ctx context.Context, environment *oramav1alpha1.LakeEnvironment) (ctrl.Result, error) {
@@ -1014,6 +1092,8 @@ func (r *LakeEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&appsv1.Deployment{}, mapObject).
 		Watches(&corev1.Service{}, mapObject).
 		Watches(&corev1.Secret{}, mapObject).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForEnvironmentEdge)).
+		Watches(&oramav1alpha1.EdgeZonePolicy{}, handler.EnqueueRequestsFromMapFunc(r.requestsForEnvironmentEdge)).
 		Watches(&networkingv1.Ingress{}, mapObject).
 		Watches(&networkingv1.NetworkPolicy{}, mapObject).
 		Watches(&corev1.ResourceQuota{}, mapObject).

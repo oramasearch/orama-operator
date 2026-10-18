@@ -181,6 +181,27 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ClerkApplication")
 		os.Exit(1)
 	}
+	if err = (&controller.EdgeProviderReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "EdgeProvider")
+		os.Exit(1)
+	}
+	if err = (&controller.EdgeZonePolicyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "EdgeZonePolicy")
+		os.Exit(1)
+	}
+	if err = (&controller.CloudflareZonePolicyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "CloudflareZonePolicy")
+		os.Exit(1)
+	}
 	if err = (&controller.CloudflareDNSRecordReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),

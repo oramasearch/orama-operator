@@ -19,6 +19,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -434,15 +435,48 @@ func TestReconcileZettaIngressGate(t *testing.T) {
 		}
 	})
 
+	t.Run("gate on + host without a DNS credential → refused, no HTTP-only ingress", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+		z := newZettaTestCluster()
+		z.Spec.Host, z.Spec.IngressEnabled = "zetta.example.com", true
+		r := &OramaZettaClusterReconciler{Client: cl, Scheme: scheme}
+		if err := r.reconcileZettaIngress(ctx, z, "z0-zetta", zettaLabels(z)); err == nil || !strings.Contains(err.Error(), "dnsSecretRef") {
+			t.Fatalf("err = %v, want the missing dnsSecretRef named", err)
+		}
+		if hasIngress(t, cl) {
+			t.Fatal("Ingress created without a certificate source")
+		}
+	})
+
 	t.Run("gate on + host → ingress created, then gate off → torn down", func(t *testing.T) {
 		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 		z := newZettaTestCluster()
 		z.Spec.Host, z.Spec.IngressEnabled = "zetta.example.com", true
+		z.Spec.DNSSecretRef = &corev1.LocalObjectReference{Name: "cloudflare-api-token"}
 		reconcile(t, z, cl)
 
 		var ing networkingv1.Ingress
 		if err := cl.Get(ctx, ingKey, &ing); err != nil {
 			t.Fatalf("expected Ingress created: %v", err)
+		}
+		// Origin TLS (operator#578): the host's certificate from the Zetta's own Issuer, and the
+		// redirect.
+		if len(ing.Spec.TLS) != 1 || ing.Spec.TLS[0].SecretName != "zetta.example.com-tls" ||
+			ing.Annotations[annotationCertManagerIssuer] != "z0-letsencrypt" ||
+			ing.Annotations[annotationNginxSSLRedirect] != "true" {
+			t.Errorf("zetta ingress TLS = %+v annotations %+v", ing.Spec.TLS, ing.Annotations)
+		}
+		issuer := &unstructured.Unstructured{}
+		issuer.SetGroupVersionKind(certManagerIssuerGVK)
+		if err := cl.Get(ctx, types.NamespacedName{Name: "z0-letsencrypt", Namespace: "orama-system"}, issuer); err != nil {
+			t.Fatalf("issuer: %v", err)
+		}
+		solvers, _, _ := unstructured.NestedSlice(issuer.Object, "spec", "acme", "solvers")
+		if len(solvers) != 1 {
+			t.Fatalf("solvers = %v", solvers)
+		}
+		if name, _, _ := unstructured.NestedString(solvers[0].(map[string]any), "dns01", "cloudflare", "apiTokenSecretRef", "name"); name != "cloudflare-api-token" {
+			t.Errorf("issuer token = %q, want the Zetta's dnsSecretRef", name)
 		}
 		if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != "nginx" {
 			t.Errorf("ingressClassName = %v, want nginx", ing.Spec.IngressClassName)
