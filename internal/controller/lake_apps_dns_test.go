@@ -24,7 +24,7 @@ func TestLakeAppsWildcardDNSLifecycle(t *testing.T) {
 	scheme := newLakeAppScheme(t)
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: "lake-uid"},
-		Spec: oramav1alpha1.LakeSpec{Namespace: "lake", Apps: oramav1alpha1.LakeAppsSpec{Enabled: true, Wildcard: "apps.example.test"},
+		Spec: oramav1alpha1.LakeSpec{Namespace: "lake", Apps: oramav1alpha1.LakeAppsSpec{Wildcard: "apps.example.test"},
 			DNSSecretRef: &corev1.LocalObjectReference{Name: "cloudflare"}},
 	}
 	class := "nginx"
@@ -80,10 +80,10 @@ func TestLakeAppsWildcardDNSLifecycle(t *testing.T) {
 	if len(list()) != 2 {
 		t.Fatal("wildcard change did not replace only the owned record")
 	}
-	lake.Spec.Apps.Enabled = false
+	lake.Spec.DNSSecretRef = nil
 	reconcile()
 	if records := list(); len(records) != 1 || records[0].Name != "foreign" {
-		t.Fatal("disable did not preserve the foreign DNS record")
+		t.Fatal("removing the DNS credentials did not preserve the foreign DNS record")
 	}
 }
 

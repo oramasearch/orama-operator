@@ -16,8 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -31,40 +33,91 @@ const (
 	deploymentRecordTypeDesired   = "desired"
 	deploymentRecordTypeStatus    = "status"
 	deploymentRecordLabel         = "orama.cloud/deployment-id"
+	// deploymentPhaseRequested is the phase of a desired row: asked for, not yet materialized.
+	deploymentPhaseRequested = "Pending"
+	// domainStatusDeleted answers a domain tombstone once the operator has removed the domain.
+	domainStatusDeleted = "deleted"
+	// zettaRowTimeLayout is lake's row time: UTC with exactly six fractional digits, so that the
+	// string order lake sorts rows by is the time order (lake docs/api/platform.md).
+	zettaRowTimeLayout = "2006-01-02T15:04:05.000000Z"
+)
+
+// The operator's orama_control columns are lake's contract (operator#560, Steve 2026-10-17: lake's
+// format is the contract and the operator conforms). Each list is a copy of lake's
+// include/lake/control/zetta_control.hpp; lake selects exactly these columns WHERE lake =
+// LAKE_PUBLIC_HOST, and Zetta refuses a SELECT naming a column no row of the table carries
+// (zetta#1218), so every row the operator writes carries every one of them.
+var (
+	lakeDeploymentColumns = []string{
+		"operator", "lake", "repository", "environment", "kind", "change", "image", "deployment_id",
+		"requested_by", "requested_at", "phase", "namespace", "url", "message", "updated_at",
+		"ordering_token",
+	}
+	lakeEnvironmentEnvColumns = []string{
+		"lake", "repository", "environment", "key", "value", "deleted", "set_by", "updated_at",
+		"ordering_token",
+	}
+	lakeDomainColumns = []string{
+		"lake", "repository", "environment", "host", "tls", "status", "message", "deleted",
+		"requested_by", "updated_at", "ordering_token",
+	}
+	// operatorDeploymentColumns are the operator's own columns on the same rows: what a
+	// LakeEnvironment needs that lake does not read. lake ignores them.
+	operatorDeploymentColumns = []string{
+		"record_type", "replicas", "port", "env_json", "secret_refs_json", "host", "withdrawn",
+		"change_closed",
+	}
 )
 
 var digestReferencePattern = regexp.MustCompile(`^.+@sha256:[a-fA-F0-9]{64}$`)
 
 type zettaDeploymentEvent struct {
-	DeploymentID string
-	RecordType   string
-	Lake         string
-	Repository   string
-	Environment  string
-	Kind         string
-	Change       string
-	Image        string
-	Replicas     int32
-	Port         int32
-	Env          []oramav1alpha1.LakeEnvironmentVariable
-	SecretRefs   []string
-	Host         string
-	Withdrawn    bool
-	ChangeClosed bool
-	Phase        string
-	URL          string
-	Message      string
-	UpdatedAt    string
-	ParseError   string
+	DeploymentID  string
+	RecordType    string
+	Operator      string
+	Lake          string
+	Repository    string
+	Environment   string
+	Kind          string
+	Change        string
+	Image         string
+	RequestedBy   string
+	RequestedAt   string
+	Replicas      int32
+	Port          int32
+	Env           []oramav1alpha1.LakeEnvironmentVariable
+	SecretRefs    []string
+	Host          string
+	Withdrawn     bool
+	ChangeClosed  bool
+	Phase         string
+	Namespace     string
+	URL           string
+	Message       string
+	UpdatedAt     string
+	OrderingToken string
+	ParseError    string
+	// raw is the row as read, the last tie-break of lake's row order.
+	raw map[string]string
 }
 
 type zettaDeploymentState struct {
 	Desired *zettaDeploymentEvent
 	Status  *zettaDeploymentEvent
+	// Latest is the newest row of either kind, in lake's order: the row lake shows. A status row
+	// is written after it, so lake shows the status.
+	Latest *zettaDeploymentEvent
 }
 
-// reconcileZettaDeployments pulls desired deployment events from the operator's own Zetta control
-// plane and materializes local rows into LakeEnvironment CRs. Errors are best-effort: the Zetta HTTP
+// zettaPlatformRows is one Lake's three orama_control tables, as read.
+type zettaPlatformRows struct {
+	Deployments    []map[string]string
+	EnvironmentEnv []map[string]string
+	Domains        []map[string]string
+}
+
+// reconcileZettaDeployments pulls lake's platform rows from the operator's own Zetta control
+// plane and materializes them into LakeEnvironment CRs. Errors are best-effort: the Zetta HTTP
 // surface is known to flap, and the periodic poll retries without destabilizing the Zetta workload.
 func (r *OramaZettaClusterReconciler) reconcileZettaDeployments(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, clientService string) {
 	log := logf.FromContext(ctx)
@@ -75,22 +128,61 @@ func (r *OramaZettaClusterReconciler) reconcileZettaDeployments(ctx context.Cont
 	}
 	base := r.zettaBaseURL(z, clientService)
 	for _, lake := range r.localDeploymentLakes(ctx, z.Namespace) {
-		rows, err := zettaSQLQuery(ctx, base, token, "orama_control", deploymentSelectSQL(lake.Name))
+		host := lakeRowHost(&lake)
+		if host == "" {
+			log.V(1).Info("deployment sync skipped — the Lake has no literal public host to name its rows", "lake", lake.Name)
+			continue
+		}
+		rows, err := readZettaPlatformRows(ctx, base, token, host)
 		if err != nil {
 			log.V(1).Info("deployment sync deferred — Zetta query failed", "lake", lake.Name, "err", err.Error())
 			continue
 		}
-		r.materializeZettaDeploymentRows(ctx, z, base, token, rows)
+		r.materializeZettaPlatformRows(ctx, &lake, host, base, token, rows)
 	}
 }
 
-func (r *OramaZettaClusterReconciler) materializeZettaDeploymentRows(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, base, token string, rows []map[string]string) {
+func readZettaPlatformRows(ctx context.Context, base, token, host string) (zettaPlatformRows, error) {
+	var rows zettaPlatformRows
+	var err error
+	if rows.Deployments, err = zettaSQLQuery(ctx, base, token, "orama_control", deploymentSelectSQL(host)); err != nil {
+		return rows, err
+	}
+	if rows.EnvironmentEnv, err = zettaSQLQuery(ctx, base, token, "orama_control", platformSelectSQL("environment_env", lakeEnvironmentEnvColumns, host)); err != nil {
+		return rows, err
+	}
+	if rows.Domains, err = zettaSQLQuery(ctx, base, token, "orama_control", platformSelectSQL("domains", lakeDomainColumns, host)); err != nil {
+		return rows, err
+	}
+	return rows, nil
+}
+
+// lakeRowHost is the value lake writes in every orama_control row's `lake` column: its
+// LAKE_PUBLIC_HOST (lakePublicHost: spec.env's literal value, else spec.host, as lakeEnv gives it).
+// A LAKE_PUBLIC_HOST taken from a Secret or ConfigMap cannot be known here, so that Lake has none.
+func lakeRowHost(lake *oramav1alpha1.Lake) string {
+	for _, variable := range lake.Spec.Env {
+		if variable.Name == "LAKE_PUBLIC_HOST" && variable.Value == "" && variable.ValueFrom != nil {
+			return ""
+		}
+	}
+	return lakePublicHost(lake)
+}
+
+func (r *OramaZettaClusterReconciler) materializeZettaPlatformRows(ctx context.Context, lake *oramav1alpha1.Lake, host, base, token string, rows zettaPlatformRows) {
 	log := logf.FromContext(ctx)
-	for _, state := range latestDeploymentEnvironmentStates(reduceDeploymentRows(rows)) {
+	env := latestEnvironmentEnv(rows.EnvironmentEnv)
+	domains := planLakeDomains(lake, host, rows.Domains)
+	operator := r.operatorID(ctx)
+	for _, state := range latestDeploymentEnvironmentStates(reduceDeploymentRows(rows.Deployments)) {
 		deploymentID := state.Desired.DeploymentID
-		if err := r.reconcileZettaDeployment(ctx, z, base, token, deploymentID, state); err != nil {
+		identity := platformEnvironmentKey(state.Desired.Repository, state.Desired.Environment)
+		if err := r.reconcileZettaDeployment(ctx, lake, base, token, operator, state, env[identity], domains.active[identity]); err != nil {
 			log.Error(err, "deployment sync deferred", "deploymentId", deploymentID)
 		}
+	}
+	if err := r.writeDomainStatuses(ctx, lake, base, token, domains); err != nil {
+		log.Error(err, "domain status sync deferred", "lake", lake.Name)
 	}
 }
 
@@ -121,10 +213,13 @@ func latestDeploymentEnvironmentStates(states map[string]*zettaDeploymentState) 
 	return result
 }
 
-func deploymentSelectSQL(lake string) string {
-	return "SELECT deployment_id, record_type, lake, repository, environment, kind, change_id, image, " +
-		"replicas, port, env_json, secret_refs_json, host, withdrawn, change_closed, phase, url, " +
-		"message, updated_at FROM deployments WHERE lake = " + deploymentSQLQuote(lake)
+// deploymentSelectSQL reads one Lake's deployment rows: lake's columns, then the operator's own.
+func deploymentSelectSQL(host string) string {
+	return platformSelectSQL("deployments", append(append([]string(nil), lakeDeploymentColumns...), operatorDeploymentColumns...), host)
+}
+
+func platformSelectSQL(table string, columns []string, host string) string {
+	return "SELECT " + strings.Join(columns, ", ") + " FROM " + table + " WHERE lake = " + deploymentSQLQuote(host)
 }
 
 func reduceDeploymentRows(rows []map[string]string) map[string]*zettaDeploymentState {
@@ -139,6 +234,9 @@ func reduceDeploymentRows(rows []map[string]string) map[string]*zettaDeploymentS
 			state = &zettaDeploymentState{}
 			states[event.DeploymentID] = state
 		}
+		if deploymentEventIsNewer(state.Latest, event) {
+			state.Latest = event
+		}
 		if event.RecordType == deploymentRecordTypeStatus {
 			if deploymentEventIsNewer(state.Status, event) {
 				state.Status = event
@@ -152,47 +250,62 @@ func reduceDeploymentRows(rows []map[string]string) map[string]*zettaDeploymentS
 	return states
 }
 
+// lakeRowOrder is lake's platform_row_order (src/control/platform_records.cpp): the updated_at
+// string with a second-resolution time widened to six zero digits, then ordering_token, then the
+// row itself as the final tie-break.
+func lakeRowOrder(updatedAt, orderingToken string, raw map[string]string) [3]string {
+	if strings.HasSuffix(updatedAt, "Z") && !strings.Contains(updatedAt, ".") {
+		updatedAt = strings.TrimSuffix(updatedAt, "Z") + ".000000Z"
+	}
+	canonical, _ := json.Marshal(raw)
+	return [3]string{updatedAt, orderingToken, string(canonical)}
+}
+
+func lakeRowIsNewer(candidate, current [3]string) bool {
+	for i := range candidate {
+		if candidate[i] != current[i] {
+			return candidate[i] > current[i]
+		}
+	}
+	return false
+}
+
 func deploymentEventIsNewer(current, candidate *zettaDeploymentEvent) bool {
 	if current == nil {
 		return true
 	}
-	currentTime, currentErr := time.Parse(time.RFC3339Nano, current.UpdatedAt)
-	candidateTime, candidateErr := time.Parse(time.RFC3339Nano, candidate.UpdatedAt)
-	if currentErr == nil && candidateErr == nil {
-		if !candidateTime.Equal(currentTime) {
-			return candidateTime.After(currentTime)
-		}
-	} else if candidate.UpdatedAt != current.UpdatedAt {
-		return candidate.UpdatedAt > current.UpdatedAt
-	}
-	currentJSON, _ := json.Marshal(current)
-	candidateJSON, _ := json.Marshal(candidate)
-	return string(candidateJSON) > string(currentJSON)
+	return lakeRowIsNewer(
+		lakeRowOrder(candidate.UpdatedAt, candidate.OrderingToken, candidate.raw),
+		lakeRowOrder(current.UpdatedAt, current.OrderingToken, current.raw),
+	)
 }
 
 func parseDeploymentRow(row map[string]string) (*zettaDeploymentEvent, error) {
 	event := &zettaDeploymentEvent{
-		DeploymentID: row["deployment_id"],
-		RecordType:   row["record_type"],
-		Lake:         row["lake"],
-		Repository:   row["repository"],
-		Environment:  row["environment"],
-		Kind:         row["kind"],
-		Change:       row["change_id"],
-		Image:        row["image"],
-		Host:         row["host"],
-		Withdrawn:    parseDeploymentBool(row["withdrawn"]),
-		ChangeClosed: parseDeploymentBool(row["change_closed"]),
-		Phase:        row["phase"],
-		URL:          row["url"],
-		Message:      row["message"],
-		UpdatedAt:    row["updated_at"],
+		DeploymentID:  row["deployment_id"],
+		RecordType:    row["record_type"],
+		Operator:      row["operator"],
+		Lake:          row["lake"],
+		Repository:    row["repository"],
+		Environment:   row["environment"],
+		Kind:          row["kind"],
+		Change:        row["change"],
+		Image:         row["image"],
+		RequestedBy:   row["requested_by"],
+		RequestedAt:   row["requested_at"],
+		Host:          row["host"],
+		Withdrawn:     parseDeploymentBool(row["withdrawn"]),
+		ChangeClosed:  parseDeploymentBool(row["change_closed"]),
+		Phase:         row["phase"],
+		Namespace:     row["namespace"],
+		URL:           row["url"],
+		Message:       row["message"],
+		UpdatedAt:     row["updated_at"],
+		OrderingToken: row["ordering_token"],
+		raw:           row,
 	}
 	if event.RecordType == "" {
 		event.RecordType = deploymentRecordTypeDesired
-	}
-	if event.RecordType == deploymentRecordTypeStatus {
-		return event, nil
 	}
 	replicas, err := parseDeploymentInt(row["replicas"], 1)
 	if err != nil {
@@ -254,7 +367,7 @@ func validateDeploymentEvent(event *zettaDeploymentEvent) error {
 	case event.Kind != oramav1alpha1.LakeEnvironmentKindNamed && event.Kind != oramav1alpha1.LakeEnvironmentKindPreview:
 		return fmt.Errorf("kind must be named or preview")
 	case event.Change == "":
-		return fmt.Errorf("change_id is required")
+		return fmt.Errorf("change is required")
 	case !digestReferencePattern.MatchString(event.Image):
 		return fmt.Errorf("image must be an immutable sha256 digest reference")
 	case event.Replicas < 1:
@@ -266,29 +379,27 @@ func validateDeploymentEvent(event *zettaDeploymentEvent) error {
 	}
 }
 
-func (r *OramaZettaClusterReconciler) reconcileZettaDeployment(ctx context.Context, z *oramav1alpha1.OramaZettaCluster, base, token, deploymentID string, state *zettaDeploymentState) error {
+func (r *OramaZettaClusterReconciler) reconcileZettaDeployment(
+	ctx context.Context,
+	lake *oramav1alpha1.Lake,
+	base, token, operator string,
+	state *zettaDeploymentState,
+	env []oramav1alpha1.LakeEnvironmentVariable,
+	domains []oramav1alpha1.LakeEnvironmentDomain,
+) error {
 	desired := state.Desired
-	var lake oramav1alpha1.Lake
-	if err := r.Get(ctx, client.ObjectKey{Name: desired.Lake}, &lake); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return err
-	}
-	lakeNamespace := lake.Spec.Namespace
-	if lakeNamespace == "" {
-		lakeNamespace = "lake-dev"
-	}
-	if lakeNamespace != z.Namespace {
-		return nil
+	deploymentID := desired.DeploymentID
+	lakeNamespace := lakeWorkloadNamespace(lake)
+	transition := func(phase, namespace, url, message string) error {
+		return writeDeploymentTransition(ctx, base, token, operator, state, phase, namespace, url, message, time.Now())
 	}
 
 	if err := validateDeploymentEvent(desired); err != nil {
-		return r.writeDeploymentTransition(ctx, base, token, deploymentID, desired.Lake, state.Status, oramav1alpha1.LakeEnvironmentPhaseDegraded, "", err.Error())
+		return transition(oramav1alpha1.LakeEnvironmentPhaseDegraded, "", "", err.Error())
 	}
-	name := deploymentEnvironmentName(desired)
+	name := deploymentEnvironmentName(lake.Name, desired)
 	key := client.ObjectKey{Namespace: lakeNamespace, Name: name}
-	if err := r.deleteSupersededLakeEnvironments(ctx, &lake, desired, lakeNamespace, name); err != nil {
+	if err := r.deleteSupersededLakeEnvironments(ctx, lake, desired, lakeNamespace, name); err != nil {
 		return err
 	}
 	if deploymentShouldTearDown(desired) {
@@ -298,11 +409,10 @@ func (r *OramaZettaClusterReconciler) reconcileZettaDeployment(ctx context.Conte
 			exists = false
 		} else if err != nil {
 			return err
-		} else if !metav1.IsControlledBy(&environment, &lake) {
+		} else if !metav1.IsControlledBy(&environment, lake) {
 			return fmt.Errorf("refusing to delete LakeEnvironment %s/%s not owned by Lake %s", key.Namespace, key.Name, lake.Name)
 		}
-		message := deploymentTeardownMessage(desired)
-		if err := r.writeDeploymentTransition(ctx, base, token, deploymentID, desired.Lake, state.Status, oramav1alpha1.LakeEnvironmentPhaseTornDown, "", message); err != nil {
+		if err := transition(oramav1alpha1.LakeEnvironmentPhaseTornDown, "", "", deploymentTeardownMessage(desired)); err != nil {
 			return err
 		}
 		if !exists {
@@ -315,7 +425,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaDeployment(ctx context.Conte
 	}
 	var existing oramav1alpha1.LakeEnvironment
 	if err := r.Get(ctx, key, &existing); err == nil {
-		if !metav1.IsControlledBy(&existing, &lake) {
+		if !metav1.IsControlledBy(&existing, lake) {
 			return fmt.Errorf("LakeEnvironment %s/%s is not owned by Lake %s", key.Namespace, key.Name, lake.Name)
 		}
 	} else if !apierrors.IsNotFound(err) {
@@ -333,7 +443,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaDeployment(ctx context.Conte
 		}
 		environment.Labels[deploymentRecordLabel] = deploymentIDLabelValue(deploymentID)
 		environment.Spec = oramav1alpha1.LakeEnvironmentSpec{
-			LakeRef:     desired.Lake,
+			LakeRef:     lake.Name,
 			Repository:  desired.Repository,
 			Environment: desired.Environment,
 			Kind:        desired.Kind,
@@ -341,11 +451,12 @@ func (r *OramaZettaClusterReconciler) reconcileZettaDeployment(ctx context.Conte
 			Image:       desired.Image,
 			Replicas:    desired.Replicas,
 			Port:        desired.Port,
-			Env:         desired.Env,
+			Env:         mergeEnvironmentVariables(desired.Env, env),
 			SecretRefs:  desired.SecretRefs,
 			Host:        desired.Host,
+			Domains:     domains,
 		}
-		return controllerutil.SetControllerReference(&lake, environment, r.Scheme)
+		return controllerutil.SetControllerReference(lake, environment, r.Scheme)
 	}); err != nil {
 		return err
 	}
@@ -355,7 +466,26 @@ func (r *OramaZettaClusterReconciler) reconcileZettaDeployment(ctx context.Conte
 	if environment.Status.Phase == "" || environment.Status.DeploymentID != deploymentID {
 		return nil
 	}
-	return r.writeDeploymentTransition(ctx, base, token, deploymentID, desired.Lake, state.Status, environment.Status.Phase, environment.Status.URL, lakeEnvironmentStatusMessage(environment))
+	return transition(environment.Status.Phase, lakeEnvironmentNamespace(environment), environment.Status.URL, lakeEnvironmentStatusMessage(environment))
+}
+
+// mergeEnvironmentVariables is the deployment's own variables, then lake's environment values
+// (orama_control.environment_env), which win for the same name.
+func mergeEnvironmentVariables(desired, values []oramav1alpha1.LakeEnvironmentVariable) []oramav1alpha1.LakeEnvironmentVariable {
+	if len(values) == 0 {
+		return desired
+	}
+	override := make(map[string]string, len(values))
+	for _, variable := range values {
+		override[variable.Name] = variable.Value
+	}
+	merged := make([]oramav1alpha1.LakeEnvironmentVariable, 0, len(desired)+len(values))
+	for _, variable := range desired {
+		if _, found := override[variable.Name]; !found {
+			merged = append(merged, variable)
+		}
+	}
+	return append(merged, values...)
 }
 
 func (r *OramaZettaClusterReconciler) deleteSupersededLakeEnvironments(
@@ -373,7 +503,7 @@ func (r *OramaZettaClusterReconciler) deleteSupersededLakeEnvironments(
 		environment := &environments.Items[i]
 		if environment.Name == keepName ||
 			!metav1.IsControlledBy(environment, lake) ||
-			environment.Spec.LakeRef != desired.Lake ||
+			environment.Spec.LakeRef != lake.Name ||
 			environment.Spec.Repository != desired.Repository ||
 			environment.Spec.Environment != desired.Environment {
 			continue
@@ -396,8 +526,10 @@ func deploymentTeardownMessage(event *zettaDeploymentEvent) string {
 	return "preview change closed"
 }
 
-func deploymentEnvironmentName(event *zettaDeploymentEvent) string {
-	return lakeEnvironmentResourceName(event.Lake, event.Repository, event.Environment)
+// deploymentEnvironmentName names the LakeEnvironment of a row by the Lake's resource name, not
+// the public host in the row, so a Lake's environments keep their names whatever its host.
+func deploymentEnvironmentName(lakeName string, event *zettaDeploymentEvent) string {
+	return lakeEnvironmentResourceName(lakeName, event.Repository, event.Environment)
 }
 
 func lakeEnvironmentResourceName(lake, repository, environment string) string {
@@ -435,29 +567,300 @@ func apimetaFindStatusCondition(conditions []metav1.Condition, conditionType str
 	return nil
 }
 
-func (r *OramaZettaClusterReconciler) writeDeploymentTransition(ctx context.Context, base, token, deploymentID, lake string, previous *zettaDeploymentEvent, phase, url, message string) error {
-	if previous != nil && previous.Phase == phase && previous.URL == url && previous.Message == message {
+// writeDeploymentTransition appends one status row when the observed state differs from the last
+// status row. The row repeats the desired row's identity and request (lake shows the newest row of
+// a deployment, and refuses a row without repository, environment or updated_at), and it is
+// timed after the newest row of the deployment, so lake shows it whatever the clocks say.
+func writeDeploymentTransition(
+	ctx context.Context,
+	base, token, operator string,
+	state *zettaDeploymentState,
+	phase, namespace, url, message string,
+	now time.Time,
+) error {
+	desired := state.Desired
+	if desired.DeploymentID == "" || desired.Repository == "" || desired.Environment == "" || desired.Lake == "" {
+		// lake drops a whole sync on a row without its identity; such a desired row gets no answer.
 		return nil
 	}
-	statement := insertDeploymentStatusSQL(deploymentID, lake, phase, url, message, time.Now().UTC().Format(time.RFC3339Nano))
-	return zettaSQL(ctx, base, token, "orama_control", statement)
+	if previous := state.Status; previous != nil && previous.Phase == phase && previous.URL == url &&
+		previous.Message == message && previous.Namespace == namespace {
+		return nil
+	}
+	after := desired.UpdatedAt
+	if state.Latest != nil {
+		after = state.Latest.UpdatedAt
+	}
+	row := *desired
+	row.RecordType = deploymentRecordTypeStatus
+	row.Operator = operator
+	row.Phase = phase
+	row.Namespace = namespace
+	row.URL = url
+	row.Message = message
+	row.UpdatedAt = zettaRowTimeAfter(now, after)
+	row.OrderingToken = uuid.NewString()
+	return zettaSQL(ctx, base, token, "orama_control", insertDeploymentRowSQL(&row))
 }
 
-func insertDeploymentStatusSQL(deploymentID, lake, phase, url, message, updatedAt string) string {
-	return fmt.Sprintf(
-		"INSERT INTO deployments (deployment_id, record_type, lake, phase, url, message, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-		deploymentSQLQuote(deploymentID),
-		deploymentSQLQuote(deploymentRecordTypeStatus),
-		deploymentSQLQuote(lake),
-		deploymentSQLQuote(phase),
-		deploymentSQLQuote(url),
-		deploymentSQLQuote(message),
-		deploymentSQLQuote(updatedAt),
-	)
+// insertDeploymentRowSQL appends one deployments row with every column, lake's and the
+// operator's, so no SELECT of either is refused.
+func insertDeploymentRowSQL(event *zettaDeploymentEvent) string {
+	envJSON := "[]"
+	if len(event.Env) > 0 {
+		encoded, _ := json.Marshal(event.Env)
+		envJSON = string(encoded)
+	}
+	secretJSON := "[]"
+	if len(event.SecretRefs) > 0 {
+		encoded, _ := json.Marshal(event.SecretRefs)
+		secretJSON = string(encoded)
+	}
+	values := map[string]string{
+		"operator":         event.Operator,
+		"lake":             event.Lake,
+		"repository":       event.Repository,
+		"environment":      event.Environment,
+		"kind":             event.Kind,
+		"change":           event.Change,
+		"image":            event.Image,
+		"deployment_id":    event.DeploymentID,
+		"requested_by":     event.RequestedBy,
+		"requested_at":     event.RequestedAt,
+		"phase":            event.Phase,
+		"namespace":        event.Namespace,
+		"url":              event.URL,
+		"message":          event.Message,
+		"updated_at":       event.UpdatedAt,
+		"ordering_token":   event.OrderingToken,
+		"record_type":      event.RecordType,
+		"replicas":         strconv.Itoa(int(event.Replicas)),
+		"port":             strconv.Itoa(int(event.Port)),
+		"env_json":         envJSON,
+		"secret_refs_json": secretJSON,
+		"host":             event.Host,
+		"withdrawn":        strconv.FormatBool(event.Withdrawn),
+		"change_closed":    strconv.FormatBool(event.ChangeClosed),
+	}
+	columns := append(append([]string(nil), lakeDeploymentColumns...), operatorDeploymentColumns...)
+	literals := make([]string, len(columns))
+	for i, column := range columns {
+		literals[i] = deploymentSQLQuote(values[column])
+	}
+	return "INSERT INTO deployments (" + strings.Join(columns, ", ") + ") VALUES (" + strings.Join(literals, ", ") + ")"
+}
+
+// zettaRowTime formats a row time as lake does.
+func zettaRowTime(value time.Time) string {
+	return value.UTC().Format(zettaRowTimeLayout)
+}
+
+// zettaRowTimeAfter is now, or one microsecond after `after` when now is not later: a row that
+// answers another must sort after it in lake's order even if this clock is behind lake's.
+func zettaRowTimeAfter(now time.Time, after string) string {
+	now = now.UTC().Truncate(time.Microsecond)
+	if previous, err := time.Parse(time.RFC3339Nano, after); err == nil {
+		floor := previous.UTC().Truncate(time.Microsecond).Add(time.Microsecond)
+		if now.Before(floor) {
+			now = floor
+		}
+	}
+	return zettaRowTime(now)
 }
 
 func deploymentSQLQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func sqlBool(value bool) string {
+	if value {
+		return "TRUE"
+	}
+	return "FALSE"
+}
+
+func platformEnvironmentKey(repository, environment string) string {
+	return repository + "\n" + environment
+}
+
+// latestPlatformRows reduces an append-only lake table to its newest row per key, in lake's
+// order. Rows without the key's fields are skipped (lake refuses them too).
+func latestPlatformRows(rows []map[string]string, keyColumns ...string) map[string]map[string]string {
+	latest := make(map[string]map[string]string)
+	for _, row := range rows {
+		parts := make([]string, 0, len(keyColumns))
+		complete := row["updated_at"] != ""
+		for _, column := range keyColumns {
+			if row[column] == "" {
+				complete = false
+			}
+			parts = append(parts, row[column])
+		}
+		if !complete {
+			continue
+		}
+		key := strings.Join(parts, "\n")
+		current, found := latest[key]
+		if !found || lakeRowIsNewer(
+			lakeRowOrder(row["updated_at"], row["ordering_token"], row),
+			lakeRowOrder(current["updated_at"], current["ordering_token"], current),
+		) {
+			latest[key] = row
+		}
+	}
+	return latest
+}
+
+// latestEnvironmentEnv is lake's environment values per environment: the newest row per
+// (repository, environment, key), tombstones dropped, sorted by name.
+func latestEnvironmentEnv(rows []map[string]string) map[string][]oramav1alpha1.LakeEnvironmentVariable {
+	byEnvironment := make(map[string][]oramav1alpha1.LakeEnvironmentVariable)
+	for _, row := range latestPlatformRows(rows, "repository", "environment", "key") {
+		if parseDeploymentBool(row["deleted"]) || strings.Contains(row["key"], "=") {
+			continue
+		}
+		identity := platformEnvironmentKey(row["repository"], row["environment"])
+		byEnvironment[identity] = append(byEnvironment[identity], oramav1alpha1.LakeEnvironmentVariable{Name: row["key"], Value: row["value"]})
+	}
+	for identity := range byEnvironment {
+		variables := byEnvironment[identity]
+		sort.Slice(variables, func(i, j int) bool { return variables[i].Name < variables[j].Name })
+	}
+	return byEnvironment
+}
+
+// lakeDomainPlan is what the operator does with one Lake's domains rows.
+type lakeDomainPlan struct {
+	// latest is the newest row per (repository, environment, host), in key order.
+	latest []map[string]string
+	// active is the valid, not deleted domains per environment: what goes in spec.domains.
+	active map[string][]oramav1alpha1.LakeEnvironmentDomain
+	// refused names the domains that are not applied, by row key, with the reason.
+	refused map[string]string
+}
+
+func domainRowKey(row map[string]string) string {
+	return strings.Join([]string{row["repository"], row["environment"], row["host"]}, "\n")
+}
+
+// planLakeDomains reduces lake's domain requests and decides which ones an environment serves.
+// A host is applied once per Lake: it must be a DNS name, not the Lake's own host, and not
+// already claimed by another environment of the Lake (the first in key order keeps it).
+func planLakeDomains(lake *oramav1alpha1.Lake, host string, rows []map[string]string) lakeDomainPlan {
+	latest := latestPlatformRows(rows, "repository", "environment", "host")
+	keys := make([]string, 0, len(latest))
+	for key := range latest {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	plan := lakeDomainPlan{
+		active:  make(map[string][]oramav1alpha1.LakeEnvironmentDomain),
+		refused: make(map[string]string),
+	}
+	claimed := make(map[string]string)
+	for _, key := range keys {
+		row := latest[key]
+		plan.latest = append(plan.latest, row)
+		if parseDeploymentBool(row["deleted"]) {
+			continue
+		}
+		domain := strings.ToLower(row["host"])
+		identity := platformEnvironmentKey(row["repository"], row["environment"])
+		switch {
+		case domain != row["host"] || len(validation.IsDNS1123Subdomain(domain)) != 0 || !strings.Contains(domain, "."):
+			plan.refused[key] = fmt.Sprintf("%q is not a lowercase DNS name", row["host"])
+			continue
+		case domain == host || domain == lake.Spec.Host:
+			plan.refused[key] = fmt.Sprintf("%q is the Lake's own host", domain)
+			continue
+		case claimed[domain] != "" && claimed[domain] != identity:
+			plan.refused[key] = fmt.Sprintf("%q is already a domain of another environment", domain)
+			continue
+		}
+		claimed[domain] = identity
+		tls := row["tls"]
+		if tls != "provided" {
+			tls = "acme"
+		}
+		plan.active[identity] = append(plan.active[identity], oramav1alpha1.LakeEnvironmentDomain{Host: domain, TLS: tls})
+	}
+	return plan
+}
+
+// writeDomainStatuses answers each domain request with a status row (lake docs/api/platform.md:
+// "requests by Lake; operator materializes status"): deleted once a tombstone is applied, failed
+// when refused, pending until the environment serves it, then what the environment reports. A row
+// is appended only when the status or message differs from the newest row.
+//
+// lake and the operator both append rows for one domain, and the newest by updated_at wins. So an
+// answer is timed one microsecond after the row it answers, never at this clock's now: an answer
+// timed by a clock ahead of lake's would sort after lake's next request (a tombstone, a changed
+// tls) and hide it.
+func (r *OramaZettaClusterReconciler) writeDomainStatuses(ctx context.Context, lake *oramav1alpha1.Lake, base, token string, plan lakeDomainPlan) error {
+	if len(plan.latest) == 0 {
+		return nil
+	}
+	var environments oramav1alpha1.LakeEnvironmentList
+	if err := r.List(ctx, &environments, client.InNamespace(lakeWorkloadNamespace(lake))); err != nil {
+		return err
+	}
+	byIdentity := make(map[string]*oramav1alpha1.LakeEnvironment)
+	for i := range environments.Items {
+		environment := &environments.Items[i]
+		if !metav1.IsControlledBy(environment, lake) || !environment.DeletionTimestamp.IsZero() {
+			continue
+		}
+		byIdentity[platformEnvironmentKey(environment.Spec.Repository, environment.Spec.Environment)] = environment
+	}
+	for _, row := range plan.latest {
+		status, message := domainObservedStatus(row, plan.refused[domainRowKey(row)], byIdentity[platformEnvironmentKey(row["repository"], row["environment"])])
+		if row["status"] == status && row["message"] == message {
+			continue
+		}
+		if err := zettaSQL(ctx, base, token, "orama_control", insertDomainStatusSQL(row, status, message, zettaRowTimeAfter(time.Time{}, row["updated_at"]), uuid.NewString())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func domainObservedStatus(row map[string]string, refused string, environment *oramav1alpha1.LakeEnvironment) (string, string) {
+	switch {
+	case parseDeploymentBool(row["deleted"]):
+		return domainStatusDeleted, ""
+	case refused != "":
+		return oramav1alpha1.LakeEnvironmentDomainFailed, refused
+	case environment == nil:
+		return oramav1alpha1.LakeEnvironmentDomainPending, fmt.Sprintf("waiting for a deployment of environment %q", row["environment"])
+	}
+	for _, domain := range environment.Status.Domains {
+		if domain.Host == row["host"] {
+			return domain.Status, domain.Message
+		}
+	}
+	return oramav1alpha1.LakeEnvironmentDomainPending, "waiting for the environment to apply the domain"
+}
+
+// insertDomainStatusSQL appends the operator's answer to a domain row, in lake's columns.
+func insertDomainStatusSQL(row map[string]string, status, message, updatedAt, orderingToken string) string {
+	tls := row["tls"]
+	if tls == "" {
+		tls = "acme"
+	}
+	values := []string{
+		deploymentSQLQuote(row["lake"]),
+		deploymentSQLQuote(row["repository"]),
+		deploymentSQLQuote(row["environment"]),
+		deploymentSQLQuote(row["host"]),
+		deploymentSQLQuote(tls),
+		deploymentSQLQuote(status),
+		deploymentSQLQuote(message),
+		sqlBool(parseDeploymentBool(row["deleted"])),
+		deploymentSQLQuote(row["requested_by"]),
+		deploymentSQLQuote(updatedAt),
+		deploymentSQLQuote(orderingToken),
+	}
+	return "INSERT INTO domains (" + strings.Join(lakeDomainColumns, ", ") + ") VALUES (" + strings.Join(values, ", ") + ")"
 }
 
 func (r *OramaZettaClusterReconciler) localDeploymentLakes(ctx context.Context, namespace string) []oramav1alpha1.Lake {
@@ -467,11 +870,7 @@ func (r *OramaZettaClusterReconciler) localDeploymentLakes(ctx context.Context, 
 	}
 	local := make([]oramav1alpha1.Lake, 0, len(lakes.Items))
 	for i := range lakes.Items {
-		lakeNamespace := lakes.Items[i].Spec.Namespace
-		if lakeNamespace == "" {
-			lakeNamespace = "lake-dev"
-		}
-		if lakeNamespace == namespace {
+		if lakeWorkloadNamespace(&lakes.Items[i]) == namespace {
 			local = append(local, lakes.Items[i])
 		}
 	}
@@ -487,11 +886,7 @@ func (r *OramaZettaClusterReconciler) deploymentSyncInterval(ctx context.Context
 	found := false
 	for i := range lakes.Items {
 		lake := &lakes.Items[i]
-		lakeNamespace := lake.Spec.Namespace
-		if lakeNamespace == "" {
-			lakeNamespace = "lake-dev"
-		}
-		if lakeNamespace != namespace {
+		if lakeWorkloadNamespace(lake) != namespace {
 			continue
 		}
 		candidate := lake.Spec.DeploySync.Interval.Duration

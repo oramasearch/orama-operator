@@ -202,7 +202,7 @@ func TestLakeNetworkSandboxLabelsCoverOnlyOwnedWorkloads(t *testing.T) {
 	assertSandboxExcludes(t, kube, lakeNamespace(lake), nil,
 		map[string]string{"app.kubernetes.io/name": "orama-operator"}, map[string]string{lakeInstanceLabel: "another-lake"})
 	var deployments appsv1.DeploymentList
-	if err := kube.List(ctx, &deployments); err != nil || len(deployments.Items) != 3 {
+	if err := kube.List(ctx, &deployments); err != nil || len(deployments.Items) != 1+len(wantLakeDefaultLibrary) {
 		t.Fatalf("Lake and library deployments = %d, error %v", len(deployments.Items), err)
 	}
 	for _, deployment := range deployments.Items {

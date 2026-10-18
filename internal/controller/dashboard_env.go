@@ -8,11 +8,13 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
+	"hash"
 	"maps"
 	"slices"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,6 +42,9 @@ const dashboardEnvHashAnnotation = "orama.cloud/dashboard-env-hash"
 // dashboardOwnedEnv maps each variable the operator owns on the dashboard to what controls it.
 var dashboardOwnedEnv = map[string]string{
 	"DATABASE_URL":      "the control DB (spec.components.controlDB)",
+	"POSTGRES_HOST":     "the control DB (spec.components.controlDB)",
+	"POSTGRES_PORT":     "the control DB (spec.components.controlDB)",
+	"POSTGRES_DB":       "the control DB (spec.components.controlDB)",
 	"POSTGRES_PASSWORD": "the control DB (spec.components.controlDB)",
 	"JWT_PRIVATE_KEY":   "the operator-generated <cr>-jwt Secret",
 	"JWT_PUBLIC_KEY":    "the operator-generated <cr>-jwt Secret",
@@ -78,7 +83,7 @@ func validateDashboardEnv(oc *oramav1alpha1.OramaCloudV1) error {
 // dashboardEnvSource is one dashboard.envFrom entry with the data it read.
 type dashboardEnvSource struct {
 	Kind, Name, Prefix string
-	Data               map[string]string // nil for an absent optional object
+	Data               map[string]string // raw bytes as Go strings; nil for an absent optional object
 }
 
 // envFromRef unpacks a validated envFrom entry into its kind, name and optional flag.
@@ -160,18 +165,14 @@ func (r *OramaCloudV1Reconciler) dashboardEnvSources(ctx context.Context, oc *or
 
 // dashboardEnvHash is the hex SHA-256 of the envFrom sources' data and of the value behind every key
 // selector in the dashboard env that reaches the container, or "" when neither references an object.
-// A non-optional selector whose object or key is missing fails. The input is JSON (map keys sorted)
-// and records kind, name, order, prefix and selected key, and whether an optional object or key is
-// present, so an absent optional key and a present empty value hash differently.
+// A non-optional selector whose object or key is missing fails. Every field goes into the hash as
+// its raw bytes behind a length prefix (hashFields), with each source's keys sorted, so a Secret
+// value that is not valid UTF-8 hashes as itself. The input records kind, name, order, prefix and
+// selected key, and whether an optional object or key is present, so an absent optional key and a
+// present empty value hash differently.
 func (r *OramaCloudV1Reconciler) dashboardEnvHash(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, sources []dashboardEnvSource) (string, error) {
-	type selectedKey struct {
-		Kind    string `json:"kind"`
-		Name    string `json:"name"`
-		Key     string `json:"key"`
-		Present bool   `json:"present"`
-		Value   string `json:"value"`
-	}
-	var keys []selectedKey
+	h := sha256.New()
+	keys := 0
 	for _, e := range overrideEnv(nil, oc.Spec.Components.Dashboard.Env) {
 		kind, name, key, optional, ok := envKeyRef(e)
 		if !ok {
@@ -188,28 +189,38 @@ func (r *OramaCloudV1Reconciler) dashboardEnvHash(ctx context.Context, oc *orama
 			}
 			return "", fmt.Errorf("dashboard.env %s: %s %s/%s has no key %s", e.Name, kind, oc.Namespace, name, key)
 		}
-		keys = append(keys, selectedKey{Kind: kind, Name: name, Key: key, Present: has, Value: value})
+		hashFields(h, "key", kind, name, key, presence(has), value)
+		keys++
 	}
-	if len(sources) == 0 && len(keys) == 0 {
+	if len(sources) == 0 && keys == 0 {
 		return "", nil
 	}
-	type source struct {
-		Kind    string            `json:"kind"`
-		Name    string            `json:"name"`
-		Prefix  string            `json:"prefix"`
-		Present bool              `json:"present"`
-		Data    map[string]string `json:"data"`
-	}
-	in := struct {
-		EnvFrom []source      `json:"envFrom"`
-		Keys    []selectedKey `json:"keys"`
-	}{Keys: keys}
 	for _, s := range sources {
-		in.EnvFrom = append(in.EnvFrom, source{Kind: s.Kind, Name: s.Name, Prefix: s.Prefix, Present: s.Data != nil, Data: s.Data})
+		hashFields(h, "envFrom", s.Kind, s.Name, s.Prefix, presence(s.Data != nil), strconv.Itoa(len(s.Data)))
+		for _, k := range slices.Sorted(maps.Keys(s.Data)) {
+			hashFields(h, k, s.Data[k])
+		}
 	}
-	b, _ := json.Marshal(in) // strings, bools and string maps only: Marshal cannot fail
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// hashFields writes each field to h as an 8-byte big-endian length and its raw bytes, so no two
+// different field sequences write the same bytes.
+func hashFields(h hash.Hash, fields ...string) {
+	var n [8]byte
+	for _, f := range fields {
+		binary.BigEndian.PutUint64(n[:], uint64(len(f)))
+		h.Write(n[:])
+		h.Write([]byte(f))
+	}
+}
+
+// presence is "1" for a present object or key and "0" for an absent optional one.
+func presence(present bool) string {
+	if present {
+		return "1"
+	}
+	return "0"
 }
 
 // overrideEnv returns base without the names extra sets, followed by extra with only the last entry

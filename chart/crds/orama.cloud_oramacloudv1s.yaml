@@ -645,8 +645,9 @@ spec:
                       DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and
                       ConfigMaps in the instance's namespace (operator#311). Precedence, lowest to highest: the
                       operator's envFrom (<cr>-config, <cr>-dashboard-secret, <cr>-jwt), envFrom, the operator's
-                      explicit env, env. DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER
-                      and MASTER_API_KEY belong to the operator: supplying one through either field fails the reconcile.
+                      explicit env, env. DATABASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_PASSWORD,
+                      JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER and MASTER_API_KEY belong to the operator: supplying one
+                      through either field fails the reconcile.
                     properties:
                       crons:
                         description: |-
@@ -1908,13 +1909,10 @@ spec:
                       properties:
                         apiKeySecretRef:
                           description: |-
-                            APIKeySecretRef takes this provider's key from a Secret in the CR's namespace instead of
-                            <cr>-engine-secret. The operator reads it and never creates or changes it.
+                            APIKeySecretRef takes this provider's key from <PROVIDER>_API_KEY (for example GOOGLE_API_KEY)
+                            in a Secret in the CR's namespace instead of <cr>-engine-secret. The operator reads it and
+                            never creates or changes it.
                           properties:
-                            key:
-                              description: Key in the Secret. Empty means <PROVIDER>_API_KEY,
-                                for example GOOGLE_API_KEY.
-                              type: string
                             name:
                               description: Name of the Secret.
                               minLength: 1

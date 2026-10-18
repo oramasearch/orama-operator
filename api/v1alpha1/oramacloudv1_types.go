@@ -154,8 +154,9 @@ type LLMProvider struct {
 	// restrict the model a request names.
 	// +optional
 	Models []string `json:"models,omitempty"`
-	// APIKeySecretRef takes this provider's key from a Secret in the CR's namespace instead of
-	// <cr>-engine-secret. The operator reads it and never creates or changes it.
+	// APIKeySecretRef takes this provider's key from <PROVIDER>_API_KEY (for example GOOGLE_API_KEY)
+	// in a Secret in the CR's namespace instead of <cr>-engine-secret. The operator reads it and
+	// never creates or changes it.
 	// +optional
 	APIKeySecretRef *LLMKeySecretRef `json:"apiKeySecretRef,omitempty"`
 	// GPU requests a GPU for an in-cluster vLLM provider (name=vllm).
@@ -163,14 +164,12 @@ type LLMProvider struct {
 	GPU bool `json:"gpu,omitempty"`
 }
 
-// LLMKeySecretRef names the Secret key that holds a provider's API key, in the CR's namespace.
+// LLMKeySecretRef names the Secret, in the CR's namespace, that holds a provider's API key under
+// <PROVIDER>_API_KEY.
 type LLMKeySecretRef struct {
 	// Name of the Secret.
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
-	// Key in the Secret. Empty means <PROVIDER>_API_KEY, for example GOOGLE_API_KEY.
-	// +optional
-	Key string `json:"key,omitempty"`
 }
 
 // LLMModelRef is one model of one remote provider.
@@ -246,8 +245,6 @@ type ComponentsSpec struct {
 	// kept for API compatibility; setting it has no effect.
 	OramasearchApp ToggleWithHost `json:"oramasearchApp,omitempty"`
 	SearchWorkers  Toggle         `json:"searchWorkers,omitempty"` // index-manager hosted-search serving workers
-	// Airbyte (#4) is a heavy multi-service platform → installed via its Helm chart (helmfile
-	// platformDeps), not a CR component; the dashboard/index-builder reference its endpoint.
 }
 
 // EngineSpec configures the OramaCore engine.
@@ -383,8 +380,9 @@ type ToggleWithHost struct {
 // DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and
 // ConfigMaps in the instance's namespace (operator#311). Precedence, lowest to highest: the
 // operator's envFrom (<cr>-config, <cr>-dashboard-secret, <cr>-jwt), envFrom, the operator's
-// explicit env, env. DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER
-// and MASTER_API_KEY belong to the operator: supplying one through either field fails the reconcile.
+// explicit env, env. DATABASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_PASSWORD,
+// JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER and MASTER_API_KEY belong to the operator: supplying one
+// through either field fails the reconcile.
 // +kubebuilder:validation:XValidation:rule="!has(self.crons) || !has(self.crons.enabled) || !self.crons.enabled || (has(self.enabled) && self.enabled)",message="dashboard.crons requires the dashboard enabled"
 type DashboardSpec struct {
 	ToggleWithHost `json:",inline"`
