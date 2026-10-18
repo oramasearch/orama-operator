@@ -32,6 +32,7 @@ import (
 // operator) — tracked in docs/components.md.
 type dataStoreDef struct {
 	component string
+	storage   *oramav1alpha1.VolumeSpec
 	image     string
 	ports     []corev1.ContainerPort
 	dataPath  string
@@ -72,6 +73,7 @@ func (r *OramaCloudV1Reconciler) reconcileDataStore(ctx context.Context, oc *ora
 	if spec.Placement == "central" && oc.Spec.Region.Role == "read" {
 		return nil
 	}
+	def.storage = spec.Storage
 	return r.provisionStatefulSet(ctx, oc, def)
 }
 
@@ -181,7 +183,10 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 				TerminationGracePeriodSeconds: int64Ptr(grace),
 			},
 		}
-		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC()}
+		// Preserve the fetched template in full, including admission-populated fields.
+		if sts.ResourceVersion == "" {
+			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(def.storage)}
+		}
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err

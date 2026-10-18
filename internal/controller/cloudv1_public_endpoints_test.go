@@ -39,7 +39,7 @@ func publicStack(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaClou
 			Writer: oramav1alpha1.WriterSpec{Host: publicWriterHost},
 			Reader: oramav1alpha1.ReaderSpec{Host: publicReaderHost},
 		}
-		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true, Host: publicDashboardHost}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: publicDashboardHost}}
 		o.Spec.Cloudflare.ManageDNS = true
 		if mut != nil {
 			mut(o)
