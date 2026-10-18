@@ -72,9 +72,9 @@
 # #572 derived dashboard values, #573 the stack's own ingress-nginx, #574 HPES, #575 no tunnel ingress,
 # #562 the Redis HTTP shim): required values this file cannot carry yet. Each needs its prerequisite first; none is
 # worked around here, and no internal password is copied to bypass a missing generator.
-#   Images: not pinned by digest and not mirrored privately (Steve, 2026-10-17). Our own images run by
-#     their release tags (main-<sha> or vX.Y.Z), which never move. Upstream images run on exact version
-#     tags, which the operator's defaults now carry (orama-operator#609). Still to build before an apply:
+#   Images: not pinned by digest, not mirrored privately, and not moved to exact version tags (Steve,
+#     2026-10-17). Our own images run by their release tags (main-<sha> or vX.Y.Z); upstream images run
+#     on the operator's default tags. Still to build before an apply:
 #     - oramacore-writer, oramacore-reader: the v1.2.39 side-only images (#308, orama-cloud-v1-bridge#5),
 #       and the reader with oramacore#340/#341 (#597). Without both overrides the engine runs the combined
 #       image.
