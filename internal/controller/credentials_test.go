@@ -485,7 +485,6 @@ func TestMasterAPIKeyGate(t *testing.T) {
 	}
 	ref := &oramav1alpha1.MasterAPIKeySecretRef{Name: testMasterSecret}
 	cases := map[string]tc{
-		"unset":       {nil, map[string]string{"MASTER_API_KEY": testMasterKey}, "MasterAPIKeyRefMissing", "spec.masterAPIKeySecretRef.name is required"},
 		"secret gone": {ref, nil, "MasterAPIKeySecretMissing", "Secret orama-system/v1-master key MASTER_API_KEY"},
 		"key absent":  {ref, map[string]string{"token": testMasterKey}, "MasterAPIKeyKeyMissing", "Secret orama-system/v1-master key MASTER_API_KEY"},
 		"custom key absent": {&oramav1alpha1.MasterAPIKeySecretRef{Name: testMasterSecret, Key: "token"},
@@ -602,14 +601,55 @@ func TestMasterAPIKeyGateDisabledEngine(t *testing.T) {
 			}
 		})
 	}
-	// A consumer without a reference cannot be wired: it is not created, and Ready says why.
+	// A consumer on a stack that names no master key reads the generated one (#615).
 	h := newEngineHarness(t, newOCV1(func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Workers.Enabled = true }))
 	h.mustRun()
-	if ready := h.readyCondition(); ready == nil || ready.Reason != "MasterAPIKeyRefMissing" {
-		t.Errorf("Ready = %+v, want MasterAPIKeyRefMissing", ready)
+	if ready := h.readyCondition(); ready != nil && strings.HasPrefix(ready.Reason, "MasterAPIKey") {
+		t.Errorf("Ready = %+v, want no master key failure", ready)
 	}
-	if h.get("v1-workers", &appsv1.Deployment{}) {
-		t.Error("workers were created without a master key reference")
+	workers := &appsv1.Deployment{}
+	if !h.get("v1-workers", workers) {
+		t.Fatal("workers were not created with the generated master key")
+	}
+	found := false
+	for _, e := range workers.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "MASTER_API_KEY" && e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil &&
+			e.ValueFrom.SecretKeyRef.Name == "v1-master-api-key" && e.ValueFrom.SecretKeyRef.Key == "MASTER_API_KEY" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("workers do not read MASTER_API_KEY from the generated v1-master-api-key")
+	}
+}
+
+// TestGeneratedMasterAPIKey checks that a stack naming no master key gets <cr>-master-api-key, a
+// random 48-character hex MASTER_API_KEY, created once and never replaced, that the engine runs on
+// it, and that a stack naming its own Secret gets no generated one (#615).
+func TestGeneratedMasterAPIKey(t *testing.T) {
+	oc := stackOC(func(o *oramav1alpha1.OramaCloudV1) { o.Spec.MasterAPIKeySecretRef = nil })
+	h := newEngineHarness(t, oc, engineSecret())
+	h.mustRun()
+	sec := h.secret("v1-master-api-key")
+	key := string(sec.Data["MASTER_API_KEY"])
+	if len(key) != 48 || strings.Trim(key, "0123456789abcdef") != "" {
+		t.Fatalf("generated MASTER_API_KEY has %d characters, want 48 lowercase hex", len(key))
+	}
+	if ready := h.readyCondition(); ready != nil && strings.HasPrefix(ready.Reason, "MasterAPIKey") {
+		t.Errorf("Ready = %+v, want no master key failure", ready)
+	}
+	if w := h.writer(); replicasOf(w.Spec.Replicas) == 0 {
+		t.Error("the writer is held with a generated master key")
+	}
+	h.mustRun()
+	if got := string(h.secret("v1-master-api-key").Data["MASTER_API_KEY"]); got != key {
+		t.Error("the generated master key changed on a second reconcile")
+	}
+
+	named := newEngineHarness(t, stackOC(nil), engineSecret())
+	named.mustRun()
+	if named.get("v1-master-api-key", &corev1.Secret{}) {
+		t.Error("a stack naming its master key Secret got a generated one")
 	}
 }
 
@@ -839,7 +879,19 @@ func TestE2ERunnerUsesTargetMasterKeyRef(t *testing.T) {
 	if err := cl.Create(context.Background(), target); err != nil {
 		t.Fatal(err)
 	}
-	pending("to set spec.masterAPIKeySecretRef")
+	// A target naming no master key reads the generated <cr>-master-api-key (#615).
+	run()
+	generated := &batchv1.Job{}
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "orama-system", Name: "smoke-e2e"}, generated); err != nil {
+		t.Fatal(err)
+	}
+	wantGenerated := secretKeyEnv("MASTER_API_KEY", "v1-master-api-key", "MASTER_API_KEY")
+	if env := generated.Spec.Template.Spec.Containers[0].Env; !slices.ContainsFunc(env, func(e corev1.EnvVar) bool { return reflect.DeepEqual(e, wantGenerated) }) {
+		t.Errorf("runner env = %+v, want MASTER_API_KEY from the generated v1-master-api-key", env)
+	}
+	if err := cl.Delete(context.Background(), generated); err != nil {
+		t.Fatal(err)
+	}
 
 	target.Spec.MasterAPIKeySecretRef = &oramav1alpha1.MasterAPIKeySecretRef{Name: "shared-master", Key: "token"}
 	if err := cl.Update(context.Background(), target); err != nil {

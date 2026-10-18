@@ -113,15 +113,19 @@ control database's `oramacore_clusters.master_api_key`, which the dashboard uses
 calls. On a control DB with no row the operator inserts the `c1` row with this key once, and never
 changes it ([`ClusterRowReady`](#statusconditionsclusterrowready)).
 
+**Unset means generated (#615).** With no reference, or one with an empty name, the operator creates
+`<cr>-master-api-key` (`MASTER_API_KEY`, 48 random hex characters) once and never replaces it, and
+every consumer reads it. Name a Secret only when the stack must carry an existing key, as production
+carries Prod 1's: the `c1` cluster row keeps the key it was inserted with.
+
 **The engine needs a real key.** While `components.engine.enabled` is true the operator checks the
-reference on every reconcile, before it writes a writer or reader template. On a failure the writer
+master key Secret on every reconcile, before it writes a writer or reader template. On a failure the writer
 and readers are not created, or a running stack's are scaled to zero with their volumes and
 credentials kept, the phase is `Degraded`, and `Ready=False` names the namespace, Secret and key,
 never the value:
 
 | Failure | `Ready` reason |
 |---|---|
-| reference unset, or its name empty | `MasterAPIKeyRefMissing` (`spec.masterAPIKeySecretRef.name is required`) |
 | the Secret does not exist | `MasterAPIKeySecretMissing` |
 | the key does not exist | `MasterAPIKeyKeyMissing` |
 | the value is empty | `MasterAPIKeyEmpty` |

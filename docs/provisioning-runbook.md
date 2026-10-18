@@ -161,9 +161,11 @@ for a prod-grade deployment.
   `DISCO_SECRET`, `HARVEST_SIGN` (job signing, shared master↔worker↔index-builder),
   `DECRYPTER_API_SECRET_BASE64` and the ClickHouse/Typesense passwords are still seeded `dev-*`
   placeholders.
-- **Supplied, never generated:** `MASTER_API_KEY`, through `spec.masterAPIKeySecretRef`. It must
-  equal the target control database's `oramacore_clusters.master_api_key`; without a real one the
-  engine is held at zero and `Ready` names the cause.
+- **Generated unless supplied:** `MASTER_API_KEY`. With no `spec.masterAPIKeySecretRef` the operator
+  generates `<cr>-master-api-key` once (#615), which suits a fresh stack. A stack carrying copied data
+  names a supplied Secret instead (production: Prod 1's key), since the key must equal the control
+  database's `oramacore_clusters.master_api_key`; a named Secret that is missing or not real holds
+  the engine at zero and `Ready` names the cause.
 - **The `oramacore_clusters` row:** cluster rows are never copied from Prod 1. On an in-cluster
   control DB with no row, the operator inserts the stack's only row once both public hosts are set,
   all three schemas apply and the master key is valid: prefix `c1`, `writer_url`

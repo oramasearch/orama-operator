@@ -19,9 +19,9 @@ spec:
     name: us-east
     role: primary
   profile: light
-  # The engine master key, supplied as a Secret in this namespace (the operator never generates
-  # one). It must equal the control database's oramacore_clusters.master_api_key; without it the
-  # writer and readers stay at zero replicas and Ready names the cause.
+  # The engine master key, supplied as a Secret in this namespace (omit it and the operator generates
+  # one, #615). A named key must equal the control database's oramacore_clusters.master_api_key; a named Secret
+  # that is missing or not real holds the writer and readers at zero and Ready names the cause.
   masterAPIKeySecretRef:
     name: v1-master-api-key   # key defaults to MASTER_API_KEY
   idp:
