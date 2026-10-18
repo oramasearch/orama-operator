@@ -38,6 +38,9 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 The managing cluster, `orama-production-cluster-01`, was created by hand before these kinds
 existed and has no `KubernetesCluster` of its own.
 
+`sets/v1-prod.yaml` states the source of each component storage size next to the setting. The
+operator only grows volumes, so a size raised in a set file stays raised there.
+
 No file here holds a secret. Secrets are named by reference and live on the managing cluster.
 
 An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
