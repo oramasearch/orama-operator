@@ -280,7 +280,10 @@ registry access.
   upgrade. Changing pull policy does not supply registry access. Mutable-tag behavior is tracked
   separately in [#103](https://github.com/oramasearch/orama-operator/issues/103).
 - **Existing CRDs:** Helm installs files under `crds/` on first installation but does not upgrade
-  them. Apply `kubectl apply -f chart/crds/` before an upgrade that changes the CRDs. An installation
+  them. Apply the CRDs widened before an upgrade that changes them, and `chart/crds/` exactly once
+  the new operator has replaced the old one, so a removed field is never pruned under the old
+  operator ([`operations/crd-rollout.md`](operations/crd-rollout.md#removing-or-changing-a-field-crds-in-two-steps-around-the-roll),
+  `hack/crdunion`). An installation
   that already manages CRDs separately can use `--skip-crds` — but Helm applies `chart/crds` on
   install only, so an upgrade never adds a new one. See
   [`operations/crd-rollout.md`](operations/crd-rollout.md) and run
@@ -290,8 +293,8 @@ registry access.
   and the CRDs; registry credentials cannot fix them.
 - **Volume snapshots and growth (operator#259, operator#260):** the ClusterRole reads
   `storageclasses` and manages `snapshot.storage.k8s.io` snapshots, classes and contents (never
-  deleting a class or a content). Those grants are harmless where the snapshot CRDs are absent; a
-  Lake's `spec.snapshots.enabled` then reports the missing CRDs in lake's `volume_snapshot_status`.
+  deleting a class or a content). Those grants are harmless where the snapshot CRDs are absent; every
+  Lake's snapshots then report the missing CRDs in lake's `volume_snapshot_status`.
   The `Lake` CRD gains `spec.snapshots`, so apply `chart/crds/` before upgrading. See
   [`lake/volume-snapshots.md`](lake/volume-snapshots.md).
 - **Multi-region:** install one operator and one v1 CR per cluster, with one primary and the

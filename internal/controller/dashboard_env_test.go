@@ -471,6 +471,11 @@ func TestDashboardEnvHashInput(t *testing.T) {
 		"present, empty": {{Kind: "Secret", Name: "x", Data: map[string]string{}}},
 		"order 1":        {x, {Kind: "Secret", Name: "w", Data: a}},
 		"order 2":        {{Kind: "Secret", Name: "w", Data: a}, x},
+		// Secret data is bytes: two values that are not valid UTF-8 must not collapse into one.
+		"raw byte ff":      {{Kind: "Secret", Name: "x", Data: map[string]string{"A": "\xff"}}},
+		"raw byte fe":      {{Kind: "Secret", Name: "x", Data: map[string]string{"A": "\xfe"}}},
+		"key/value border": {{Kind: "Secret", Name: "x", Data: map[string]string{"AB": "C"}}},
+		"value/key border": {{Kind: "Secret", Name: "x", Data: map[string]string{"A": "BC"}}},
 	} {
 		h := hash(srcs...)
 		if other, seen := distinct[h]; seen {

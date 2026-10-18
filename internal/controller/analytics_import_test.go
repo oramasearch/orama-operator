@@ -33,7 +33,7 @@ func importOC(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCloudV1
 	return stackOC(func(o *oramav1alpha1.OramaCloudV1) {
 		c := &o.Spec.Components
 		c.Analytics = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
-		c.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
+		c.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}}
 		c.AnalyticsProcessor.Import.Enabled = true
 		if mut != nil {
 			mut(o)

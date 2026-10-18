@@ -58,30 +58,53 @@ spec:
             properties:
               content:
                 description: Content is the record target (an IP for A, a hostname
-                  for CNAME).
+                  for CNAME, the text for TXT).
+                type: string
+              deletionPolicy:
+                description: |-
+                  DeletionPolicy decides what deleting this resource does to the Cloudflare record. Delete (the
+                  default) removes it. Retain leaves it: for a record another resource may also keep, such as a
+                  Clerk production instance's records, which every Lake sharing that instance writes.
+                enum:
+                - Delete
+                - Retain
                 type: string
               name:
                 description: Name is the record FQDN (e.g. app.orama.com).
                 type: string
               proxied:
                 default: true
-                description: Proxied routes the record through Cloudflare's proxy
-                  (orange-cloud).
+                description: |-
+                  Proxied routes the record through Cloudflare's proxy (orange-cloud). Always written, so a
+                  controller's false is kept rather than replaced by the default (a Clerk record must not be
+                  proxied); a resource that leaves it out gets true.
                 type: boolean
               secretRef:
                 description: |-
                   SecretRef names the Secret holding the Cloudflare credentials (`token`, `zoneID`,
                   `accountID`) — normally the CR's `spec.cloudflare.apiTokenSecretRef`.
                 type: string
+              sharedOwner:
+                description: |-
+                  SharedOwner names the one owner of a record several resources keep, such as `clerk/<instance
+                  ID>` for a Clerk production instance's records. The record is created with the comment
+                  `orama-operator:<sharedOwner>` instead of `orama-operator:<namespace>/<name>`, so every
+                  resource with the same sharedOwner recognises it as the operator's own; a record without that
+                  comment is still refused. It requires deletionPolicy Retain: no single resource deletes it.
+                type: string
               type:
-                description: Type is A or CNAME; empty = inferred from Content (IP
-                  → A, hostname → CNAME).
+                description: Type is A, CNAME or TXT; empty = inferred from Content
+                  (IP → A, hostname → CNAME).
                 type: string
             required:
             - content
             - name
             - secretRef
             type: object
+            x-kubernetes-validations:
+            - message: sharedOwner requires deletionPolicy Retain
+              rule: '!has(self.sharedOwner) || size(self.sharedOwner) == 0 || (has(self.deletionPolicy)
+                && self.deletionPolicy == ''Retain'')'
           status:
             description: CloudflareDNSRecordStatus is the observed state — the provisioned
               Cloudflare record.

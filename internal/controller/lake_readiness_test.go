@@ -229,24 +229,24 @@ func TestLakeReadinessRecoveryAndDatabaseLoss(t *testing.T) {
 	f.schema("Failed")
 	f.reconcile()
 	f.expectState("Degraded", "SchemaFailed")
-	f.expectQuiet(lakeStatusRequeue)
+	f.expectQuiet(lakeControlRowsRequeue)
 
 	f.database(1, 1)
 	f.schema("Applying")
 	f.reconcile()
 	f.expectState("Progressing", "SchemaPending")
-	f.expectQuiet(lakeStatusRequeue)
+	f.expectQuiet(lakeControlRowsRequeue)
 
 	f.schema("Applied")
 	f.reconcile()
 	f.expectState("Ready", "LakeReady")
-	f.expectQuiet(lakeStatusRequeue)
+	f.expectQuiet(lakeControlRowsRequeue)
 
 	// Only CNPG status changes after success; the returned poll must observe the loss.
 	f.database(0, 1)
 	f.reconcile()
 	f.expectState("Progressing", "PostgresNotReady")
-	f.expectQuiet(lakeStatusRequeue)
+	f.expectQuiet(lakeControlRowsRequeue)
 	if f.lake.Status.PostgresReady {
 		t.Error("database readiness remained true after CNPG readiness loss")
 	}
@@ -254,7 +254,7 @@ func TestLakeReadinessRecoveryAndDatabaseLoss(t *testing.T) {
 	f.database(1, 1)
 	f.reconcile()
 	f.expectState("Ready", "LakeReady")
-	f.expectQuiet(lakeStatusRequeue)
+	f.expectQuiet(lakeControlRowsRequeue)
 	t.Log("schema/database recovery and subsequent database loss verified; steady-state status writes=0")
 }
 
@@ -285,14 +285,14 @@ func TestLakeReadinessDeploymentCounts(t *testing.T) {
 			f.deployment(2, tc.status)
 			f.reconcile()
 			f.expectState("Progressing", "DeploymentProgressing")
-			f.expectQuiet(lakeStatusRequeue)
+			f.expectQuiet(lakeControlRowsRequeue)
 
 			f.deployment(2, appsv1.DeploymentStatus{
 				ObservedGeneration: 2, ReadyReplicas: 2, UpdatedReplicas: 2, AvailableReplicas: 2,
 			})
 			f.reconcile()
 			f.expectState("Ready", "LakeReady")
-			f.expectQuiet(lakeStatusRequeue)
+			f.expectQuiet(lakeControlRowsRequeue)
 		})
 	}
 }
@@ -317,7 +317,7 @@ func TestLakeReadinessDeploymentFailures(t *testing.T) {
 			f.deployment(1, status)
 			f.reconcile()
 			f.expectState("Degraded", tc.reason)
-			f.expectQuiet(lakeStatusRequeue)
+			f.expectQuiet(lakeControlRowsRequeue)
 
 			// A new rollout first waits for the controller to replace the old failure status.
 			f.deployment(2, status)
@@ -364,7 +364,7 @@ func TestLakeReadinessCurrentSchema(t *testing.T) {
 			f.updateStatus(schema)
 			f.reconcile()
 			f.expectState(tc.wantPhase, tc.wantReason)
-			f.expectQuiet(lakeStatusRequeue)
+			f.expectQuiet(lakeControlRowsRequeue)
 			f.schema("Applied")
 			f.reconcile()
 			f.expectState("Ready", "LakeReady")
@@ -390,7 +390,7 @@ func TestLakeReadinessConfiguredDatabaseInstances(t *testing.T) {
 	f.database(3, 3)
 	f.reconcile()
 	f.expectState("Ready", "LakeReady")
-	f.expectQuiet(lakeStatusRequeue)
+	f.expectQuiet(lakeControlRowsRequeue)
 
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
@@ -452,11 +452,11 @@ func TestLakeReadinessStoreAndZettaGates(t *testing.T) {
 	f.updateStatus(zetta)
 	f.reconcile()
 	f.expectState("Degraded", "ZettaDegraded")
-	f.expectQuiet(lakeStatusRequeue)
+	f.expectQuiet(lakeControlRowsRequeue)
 	zetta.Status.Phase = "Ready"
 	zetta.Status.ReadyNodes = 1
 	f.updateStatus(zetta)
 	f.reconcile()
 	f.expectState("Ready", "LakeReady")
-	f.expectQuiet(lakeStatusRequeue)
+	f.expectQuiet(lakeControlRowsRequeue)
 }

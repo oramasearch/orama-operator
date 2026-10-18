@@ -4445,3 +4445,77 @@ INSERT INTO schema_migrations (version) VALUES ('0084_network') ON CONFLICT DO N
 ALTER TABLE network_tunnel_grants ADD COLUMN IF NOT EXISTS client_ca_pem text NOT NULL DEFAULT '';
 ALTER TABLE network_tunnel_grant_status ADD COLUMN IF NOT EXISTS relay_ca_pem text NOT NULL DEFAULT '';
 INSERT INTO schema_migrations (version) VALUES ('0085_network_tunnel_ca') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0086_identity_links (lake#762, liquid-bridge decision 65): every new account starts with a
+-- managed key (custodial_identities), and the person may later use their own identity instead.
+-- The account keeps its TAAP identifier, so grants, audit and repositories stay with it; its
+-- signing key becomes the person's own key as a linked successor, recorded once here with both
+-- signatures, and the managed seed is wiped in the same transaction (wrapped_seed NULL,
+-- seed_destroyed_at set). The public key stays so the managed signature on the link verifies.
+-- A challenge binds the person's identity document to one account and expires in ten minutes.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE custodial_identities ALTER COLUMN wrapped_seed DROP NOT NULL;
+ALTER TABLE custodial_identities ADD COLUMN IF NOT EXISTS seed_destroyed_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS identity_link_challenges (
+    challenge         text        PRIMARY KEY,
+    user_id           uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_taap_id   text        NOT NULL,
+    own_taap_id       text        NOT NULL,
+    own_document      text        NOT NULL,
+    own_document_hash text        NOT NULL,
+    statement         jsonb       NOT NULL,
+    expires_at        timestamptz NOT NULL,
+    used_at           timestamptz,
+    created_at        timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS identity_link_challenges_user_idx
+    ON identity_link_challenges (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS identity_links (
+    user_id           uuid        PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    account_taap_id   text        NOT NULL UNIQUE,
+    own_taap_id       text        NOT NULL UNIQUE,
+    own_document      text        NOT NULL,
+    own_document_hash text        NOT NULL,
+    link_document     jsonb       NOT NULL,
+    linked_at         timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS identity_links_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0086_identity_links') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0087_clerk_webhooks (lake#765): Clerk's user events reach Lake. A user.deleted disables the
+-- account (users.disabled_at) and revokes its sessions; nothing is erased. Each delivery (its
+-- svix-id) is applied once. See docs/api/clerk.md#webhooks.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS clerk_webhook_deliveries (
+    svix_id       text        PRIMARY KEY,
+    event_type    text        NOT NULL,
+    clerk_subject text        NOT NULL DEFAULT '',
+    received_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS clerk_webhooks_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0087_clerk_webhooks') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0088_repository_liquid_ids (lake#805): the id liquid gave each repository (`repository::id()`,
+-- 32 lowercase hex digits). A checkout cloned from a lake repository shares it, and
+-- `liquid deploy` sends it as the deployment row's `repository`, so the platform sync finds the
+-- lake repository a row names through it. Null until lake reads it: the sync fills it in when a
+-- row names an id it does not know, and every push records it again (a repository created empty
+-- takes the identity of the first push). Not unique: a repository pushed from another's clone
+-- shares that repository's id, and the sync reports such a row instead of guessing.
+-- See docs/api/platform.md#which-repository-a-row-names.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE repositories ADD COLUMN IF NOT EXISTS liquid_id text;
+CREATE INDEX IF NOT EXISTS repositories_liquid_id_idx ON repositories (liquid_id)
+    WHERE liquid_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS repository_liquid_ids_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0088_repository_liquid_ids') ON CONFLICT DO NOTHING;

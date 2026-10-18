@@ -169,7 +169,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"The dashboard uses control Postgres, cache, analytics, search, OramaCore, Keycloak and the Airbyte API.",
+			"The dashboard uses control Postgres, cache, analytics, search, OramaCore and Keycloak.",
 			oramaCloudEgressPolicy(
 				"allow-dashboard-egress",
 				dashboard,
@@ -180,7 +180,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 				egressTo(writer, 8080),
 				egressTo(readerPods, 80, 8080),
 				egressTo(keycloak, 8080),
-				airbyteEgressRule(),
 			),
 		),
 		sandboxAllowance(
@@ -205,7 +204,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"Index builder uses dashboard, cache, control Postgres, DISCO, search, decrypter, HARVEST and Airbyte APIs.",
+			"Index builder uses dashboard, cache, control Postgres, DISCO, search, decrypter and HARVEST APIs.",
 			oramaCloudEgressPolicy(
 				"allow-index-builder-egress",
 				indexBuilder,
@@ -216,7 +215,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 				egressTo(search, 8108),
 				egressTo(openAIDecrypter, 8080),
 				egressTo(harvestMaster, 8080),
-				airbyteEgressRule(),
 			),
 		),
 		sandboxAllowance(
@@ -410,18 +408,19 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			oramaCloudIngressPolicy("allow-docs-ingress-nginx", docs, ingressGatewayRule(3000)),
 		),
 	)
-	// The public engine endpoints (cloudv1_networking.go): only while each is published, and only to
-	// this stack's writer or reader pods on the port behind its Ingress backend.
+	// The public engine endpoints (cloudv1_networking.go): only while each is published, only to this
+	// stack's writer or reader pods on the port behind its Ingress backend, and only from ingress-nginx:
+	// Cloud v1 is never served by the zetta-tunnel gateway (bridge decisions of 2026-10-17, 19).
 	if writerPublicHost(oc) != "" {
 		allowances = append(allowances, sandboxAllowance(
-			"ingress-nginx and zetta-tunnel's ingress gateway need the writer API port for its public Ingress backend.",
-			oramaCloudIngressPolicy("allow-writer-ingress-nginx", writer, ingressGatewayRule(oramacorePort)),
+			"ingress-nginx needs the writer API port for its public Ingress backend.",
+			oramaCloudIngressPolicy("allow-writer-ingress-nginx", writer, ingressNginxRule(oramacorePort)),
 		))
 	}
 	if readerPublicHost(oc) != "" {
 		allowances = append(allowances, sandboxAllowance(
-			"ingress-nginx and zetta-tunnel's ingress gateway need the reader pod port behind the reader Service for its public Ingress backend.",
-			oramaCloudIngressPolicy("allow-reader-ingress-nginx", readerPods, ingressGatewayRule(readerPodPort(oc))),
+			"ingress-nginx needs the reader pod port behind the reader Service for its public Ingress backend.",
+			oramaCloudIngressPolicy("allow-reader-ingress-nginx", readerPods, ingressNginxRule(readerPodPort(oc))),
 		))
 	}
 	if internetErr == nil {
@@ -437,23 +436,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			searchWorkers,
 			cnpgPods,
 		)...)
-		if oc.Spec.Components.ControlDB.Mode == "external" {
-			externalDBClients := oramaCloudComponentSelector(
-				oc,
-				"dashboard",
-				"index-builder",
-				"analytics-processor",
-				"pgadmin",
-			)
-			allowances = append(allowances, sandboxAllowance(
-				"Control database clients reach a configured external Postgres endpoint on public TCP 5432; the destination is inferred because the URI is stored in a Secret.",
-				oramaCloudEgressPolicy(
-					"allow-control-clients-external-postgres",
-					externalDBClients,
-					publicEgressRule(publicPeers, 5432),
-				),
-			))
-		}
 	} else {
 		publicPolicyNames := []string{
 			"allow-engine-public-internet",
@@ -465,9 +447,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			"allow-embeddings-public-https",
 			"allow-search-workers-public-https",
 			"allow-controldb-primary-replication",
-		}
-		if oc.Spec.Components.ControlDB.Mode == "external" {
-			publicPolicyNames = append(publicPolicyNames, "allow-control-clients-external-postgres")
 		}
 		preserved, preserveErr := existingSandboxAllowances(
 			ctx,
@@ -513,13 +492,11 @@ func ingressGatewayRule(ports ...int32) networkingv1.NetworkPolicyIngressRule {
 	}
 }
 
-func airbyteEgressRule() networkingv1.NetworkPolicyEgressRule {
-	return networkingv1.NetworkPolicyEgressRule{
-		To: []networkingv1.NetworkPolicyPeer{{
-			NamespaceSelector: namespaceNameSelector("airbyte"),
-			PodSelector:       &metav1.LabelSelector{},
-		}},
-		Ports: tcpPorts(8001),
+// ingressNginxRule admits ingress-nginx alone on the given pod ports: the public engine hosts.
+func ingressNginxRule(ports ...int32) networkingv1.NetworkPolicyIngressRule {
+	return networkingv1.NetworkPolicyIngressRule{
+		From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"})},
+		Ports: tcpPorts(ports...),
 	}
 }
 

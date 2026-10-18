@@ -202,9 +202,6 @@ func validateLakeApp(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) (stri
 		if app.Spec.Sync == nil && (app.Spec.Source.TokenSecretRef.Name == "" || app.Spec.Source.TokenSecretRef.Key == "") {
 			return "SourceCredentialRequired", "runtime mode requires spec.source.tokenSecretRef name and key"
 		}
-		if lake.Spec.Apps.RuntimeImage == "" {
-			return "RuntimeImageMissing", "runtime mode requires Lake spec.apps.runtimeImage"
-		}
 	case oramav1alpha1.LakeAppModeImage:
 		if app.Spec.Image == "" {
 			return "ImageRequired", "image mode requires spec.image"
@@ -1157,7 +1154,7 @@ func lakeAppHost(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) string {
 	if app.Spec.Host != "" {
 		return app.Spec.Host
 	}
-	wildcard := strings.TrimPrefix(lake.Spec.Apps.Wildcard, "*.")
+	wildcard := lakeAppsWildcard(lake)
 	if wildcard == "" {
 		return ""
 	}
@@ -1182,7 +1179,7 @@ func lakeAppRevision(app *oramav1alpha1.LakeApp) string {
 func lakeAppImage(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) string {
 	mode := app.Spec.Mode
 	if mode == "" || mode == oramav1alpha1.LakeAppModeRuntime {
-		return lake.Spec.Apps.RuntimeImage
+		return lakeAppsRuntimeImage(lake)
 	}
 	return app.Spec.Image
 }
@@ -1530,7 +1527,7 @@ func lakeAppAuthSignin(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) str
 }
 
 func lakeAppUsesWildcard(lake *oramav1alpha1.Lake, host string) bool {
-	wildcard := strings.TrimPrefix(lake.Spec.Apps.Wildcard, "*.")
+	wildcard := lakeAppsWildcard(lake)
 	return wildcard != "" && strings.HasSuffix(host, "."+wildcard)
 }
 

@@ -16,6 +16,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -62,7 +63,9 @@ func (r *OramaCloudV1Reconciler) teardownByComponent(ctx context.Context, oc *or
 
 // teardownControlDB removes the CNPG Cluster when the control DB is disabled. CNPG's own reclaim
 // policy governs the underlying PVC; the operator just removes the Cluster CR + the component's
-// owned resources.
+// owned resources, including its PostgresSchemas, so their controller schedules no migration Job
+// against a removed database (their Jobs are garbage-collected with them). A PostgresSchema is
+// removed only when this stack controls it.
 func (r *OramaCloudV1Reconciler) teardownControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
@@ -70,6 +73,23 @@ func (r *OramaCloudV1Reconciler) teardownControlDB(ctx context.Context, oc *oram
 	cluster.SetNamespace(oc.Namespace)
 	if err := r.Delete(ctx, cluster); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("teardown controldb cluster: %w", err)
+	}
+	var schemas oramav1alpha1.PostgresSchemaList
+	if err := r.List(ctx, &schemas, client.InNamespace(oc.Namespace), client.MatchingLabels{
+		"app.kubernetes.io/managed-by": "orama-cloud-v1-operator",
+		"app.kubernetes.io/instance":   oc.Name,
+		"app.kubernetes.io/component":  "controldb",
+	}); err != nil {
+		return fmt.Errorf("teardown controldb: list schemas: %w", err)
+	}
+	for i := range schemas.Items {
+		ps := &schemas.Items[i]
+		if !metav1.IsControlledBy(ps, oc) {
+			continue
+		}
+		if err := r.Delete(ctx, ps); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("teardown controldb/%s: %w", ps.Name, err)
+		}
 	}
 	return r.teardownByComponent(ctx, oc, "controldb")
 }

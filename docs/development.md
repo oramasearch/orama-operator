@@ -46,6 +46,13 @@ export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)"
 go test ./...
 ```
 
+`TestOCV1StorageAgainstAPIServer` uses these assets to validate component storage quantities and
+classes at admission, enforce real StatefulSet immutability, and accept PVC request growth while
+preserving templates and identities. It creates claims/capacity fixtures explicitly: envtest has
+no StatefulSet controller, CSI resizer, kubelet or CNPG operator. Passing proves configuration
+application, not completed filesystem expansion; unset assets skip this test and do not count as
+passed storage API validation. Run it with `go test ./internal/controller -run '^TestOCV1Storage'`.
+
 The same assets run the workspace envtests. `TestWorkspaceDatastorePoliciesAgainstAPIServer`
 (operator#268) checks that every workspace NetworkPolicy passes API validation, that the
 Kubernetes API egress rule matches the test API server's own `default/kubernetes` Service and
@@ -53,7 +60,7 @@ Endpoints, and that a steady second pass rewrites no policy.
 
 The same assets run `TestDashboardCronsAdmission` (operator#17): the generated `OramaCloudV1` CRD
 refuses `dashboard.crons` without the dashboard, an `e2eCanary` without the crons, and a canary image
-not pinned to a digest. The scripts the dashboard crons and the e2e canary render are run against a
+that is missing or not pinned to a digest. The scripts the dashboard crons and the e2e canary render are run against a
 local HTTP server by `TestDashboardCronScriptAgainstAServer` and `TestE2ECanaryScript`, under `sh` and
 `dash` when present; they need `curl` (and `jq` for the canary) and skip without them.
 
@@ -77,6 +84,14 @@ The Lake schema proof also needs local Postgres and `psql`, `createdb`, and `dro
 Set `LAKE_SCHEMA_TEST_POSTGRES=1` and `PGUSER` to your local role; the suite creates fresh databases
 on `127.0.0.1:5432` and drops only those it created. With this opt-in, missing envtest assets are
 a failure. See [the schema proof and vendoring commands](lake/schema.md#verification).
+
+The Cloud v1 control DB's schema proof (`TestControlDBSchemasAgainstPostgres`, operator#378) needs
+`psql` 14 or later on `PATH` and `CONTROLDB_SCHEMA_TEST_POSTGRES_URI`, an admin URI to a disposable
+PostgreSQL 14 or later server (for example `postgres://postgres@127.0.0.1:5432/postgres`). It creates
+and drops one database per case and runs the rendered migration Jobs' scripts through the real
+reconcilers: an empty database, 0000 to 0007 with an existing team, missing reference rows that roll
+back and then recover, a partial 0008 without its guard, and per-stack Stripe prices. The cases check
+the committed Prod 1 reference rows and a team insert with defaults, rolled back.
 
 The Lake managed-services store runs its pgx SQL against the vendored schema with
 `LAKE_SERVICES_TEST_POSTGRES=1` (connection `LAKE_SERVICES_TEST_POSTGRES_URI`, default

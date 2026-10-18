@@ -20,8 +20,8 @@ import (
 // engine Ingress (<cr>-writer, <cr>-reader) has a companion <cr>-writer-metrics or
 // <cr>-reader-metrics that ingress-nginx answers with 403 for every client. ingress-nginx prefers
 // the companion's Exact /metrics location to the main Ingress's Prefix /. zetta-tunnel's gateway
-// cannot refuse a source, so it serves no host that a companion covers (sourceDeniedHosts). Inside
-// the cluster the endpoint stays on the pod's :8080.
+// cannot refuse a source, so it serves no host that a companion covers (sourceDeniedHosts), an
+// interim guard until #575. Inside the cluster the endpoint stays on the pod's :8080.
 
 const (
 	annotationNginxDenylistSourceRange = "nginx.ingress.kubernetes.io/denylist-source-range"
