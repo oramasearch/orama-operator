@@ -430,7 +430,10 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 				TerminationGracePeriodSeconds: int64Ptr(writerGracePeriodSeconds),
 			},
 		}
-		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC()}
+		// Only initialize templates before creation: the API makes them immutable.
+		if sts.ResourceVersion == "" {
+			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(w.Storage)}
+		}
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err
@@ -464,6 +467,13 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		dep.Spec.Replicas = int32Ptr(replicas)
 		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 		c := oramacoreContainer(oc, "reader", readerStartupTimeout)
+		// A reader is Ready only once it has caught up with the stream head it saw at startup
+		// (oramacore#340). A reader whose replication history has expired exits with
+		// REPLICATION_HISTORY_EXPIRED and never goes Ready; liveness and startup stay on /health so
+		// it is not killed for that. The termination message carries the code into the pod status,
+		// where readerRefusalCause reads it.
+		c.ReadinessProbe.HTTPGet.Path = "/health/ready"
+		c.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError
 		if rd.Resources != nil {
 			c.Resources = *rd.Resources
 		} else {
@@ -616,18 +626,6 @@ func configVolume(oc *oramav1alpha1.OramaCloudV1) corev1.Volume {
 
 func dataEmptyDir() corev1.Volume {
 	return corev1.Volume{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
-}
-
-func dataPVC() corev1.PersistentVolumeClaim {
-	return corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "data"},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
-			},
-		},
-	}
 }
 
 func (r *OramaCloudV1Reconciler) upsertService(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component string, ports []corev1.ServicePort) error {
