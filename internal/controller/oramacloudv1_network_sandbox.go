@@ -117,6 +117,10 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	pgadmin := oramaCloudComponentSelector(oc, "pgadmin")
 	keycloak := oramaCloudComponentSelector(oc, "keycloak")
 	analyticsProcessor := oramaCloudComponentSelector(oc, "analytics-processor")
+	// #421's Jobs: the import CronJob calls the processor; the retention Job sets ClickHouse's TTL over
+	// the native protocol (#616).
+	analyticsImport := oramaCloudComponentSelector(oc, analyticsImportComponent)
+	analyticsRetention := oramaCloudComponentSelector(oc, "analytics-retention")
 	searchWorkers := oramaCloudComponentSelector(
 		oc,
 		"index-shared-worker",
@@ -194,14 +198,27 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"The analytics processor pulls from OramaCore and writes ClickHouse and control Postgres.",
+			"The analytics processor pulls search events from every reader (#419, #421), writes ClickHouse and control Postgres.",
 			oramaCloudEgressPolicy(
 				"allow-analytics-processor-egress",
 				analyticsProcessor,
 				egressTo(analytics, 8123),
 				egressTo(writer, 8080),
+				egressTo(readerPods, 8080),
 				egressTo(controlDB, 5432),
 			),
+		),
+		sandboxAllowance(
+			"The analytics import CronJob calls the analytics processor's import and aggregate endpoints (#421).",
+			oramaCloudEgressPolicy("allow-analytics-import-egress", analyticsImport, egressTo(analyticsProcessor, 8080)),
+		),
+		sandboxAllowance(
+			"The analytics processor accepts the import CronJob's calls (#421).",
+			oramaCloudIngressPolicy("allow-analytics-processor-ingress", analyticsProcessor, ingressFrom(analyticsImport, 8080)),
+		),
+		sandboxAllowance(
+			"The analytics retention Job sets ClickHouse's 30-day TTL with clickhouse-client (#421, #616).",
+			oramaCloudEgressPolicy("allow-analytics-retention-egress", analyticsRetention, egressTo(analytics, 9000)),
 		),
 		sandboxAllowance(
 			"Index builder uses dashboard, cache, control Postgres, DISCO, search, decrypter and HARVEST APIs.",
@@ -275,6 +292,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 				"allow-analytics-ingress",
 				analytics,
 				ingressFrom(oramaCloudComponentSelector(oc, "dashboard", "analytics-processor", "disco", "index-shared-worker", "large-index-worker", "telemetry-worker"), 8123),
+				ingressFrom(analyticsRetention, 9000),
 			),
 		),
 		sandboxAllowance(
@@ -294,11 +312,12 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"OramaCore readers accept queries from dashboard, workers and hosted-search workers.",
+			"OramaCore readers accept queries from dashboard, workers and hosted-search workers, and the analytics processor's pulls (#419).",
 			oramaCloudIngressPolicy(
 				"allow-reader-ingress",
 				readerPods,
 				ingressFrom(oramaCloudComponentSelector(oc, "dashboard", "workers", "index-shared-worker", "large-index-worker", "telemetry-worker"), 80, 8080),
+				ingressFrom(analyticsProcessor, 8080),
 			),
 		),
 		sandboxAllowance(

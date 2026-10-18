@@ -252,7 +252,9 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-engine-egress`, `allow-broker-ingress`, `allow-embeddings-ingress` | Writer/readers reach their RabbitMQ replication stream on 5552 and the engine-owned embeddings gRPC service on 50051, which preserves writes, replication and vector searches; broker also accepts workers/HARVEST AMQP 5672; embeddings also accepts DISCO. |
 | `allow-dashboard-egress` | Dashboard reaches control DB 5432, cache 6379, ClickHouse 8123, Typesense 8108, writer 8080, readers 80/8080 and Keycloak 8080. |
 | `allow-workers-egress` | Bundled workers reach broker 5672, cache 6379 and OramaCore writer/readers. |
-| `allow-analytics-processor-egress` | Analytics processor reaches ClickHouse 8123, writer 8080 and control DB 5432. |
+| `allow-analytics-processor-egress` | Analytics processor reaches ClickHouse 8123, writer 8080, every reader 8080 (it pulls their search events, #419 and #421) and control DB 5432. |
+| `allow-analytics-import-egress`, `allow-analytics-processor-ingress` | The analytics import CronJob (#421) calls the analytics processor on 8080, and the processor admits only it there. |
+| `allow-analytics-retention-egress` | The analytics retention Job (#421) reaches ClickHouse's native port 9000 for `clickhouse-client`; `allow-analytics-ingress` admits it on 9000 (#616). |
 | `allow-index-builder-egress` | Index builder reaches dashboard 3000, cache 6379, control DB 5432, DISCO 8080/50051, Typesense 8108, decrypter 8080 and HARVEST 8080. |
 | `allow-harvest-egress` | HARVEST reaches Mongo 27017, broker 5672, cache 6379 and Selenium 4444. |
 | `allow-disco-egress`, `allow-pgadmin-egress`, `allow-search-workers-egress` | DISCO reaches embeddings; pgAdmin reaches control DB; hosted-search workers reach Typesense, writer/readers and ClickHouse. |
