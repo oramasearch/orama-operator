@@ -599,16 +599,19 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	if len(ing.OwnerReferences) != 1 || ing.OwnerReferences[0].Name != "hello" {
 		t.Errorf("ingress owner refs = %+v", ing.OwnerReferences)
 	}
-	if len(ing.Spec.TLS) != 0 {
-		t.Errorf("default ingress TLS = %+v", ing.Spec.TLS)
+	// Origin TLS by default (operator#578): the issued certificate, and no redirect until the
+	// zone policy reports that the edge reaches the origin over TLS.
+	if len(ing.Spec.TLS) != 1 || ing.Spec.TLS[0].SecretName != "hello.lake.live-tls" ||
+		ing.Annotations[annotationCertManagerIssuer] != "lake-hello-letsencrypt" {
+		t.Errorf("default ingress TLS = %+v annotations %+v", ing.Spec.TLS, ing.Annotations)
 	}
 	if ing.Annotations["nginx.ingress.kubernetes.io/proxy-body-size"] != "64m" ||
 		ing.Annotations["nginx.ingress.kubernetes.io/proxy-buffering"] != "off" ||
 		ing.Annotations["nginx.ingress.kubernetes.io/proxy-request-buffering"] != "off" {
 		t.Errorf("lake ingress annotations = %+v", ing.Annotations)
 	}
-	if _, found := ing.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"]; found {
-		t.Errorf("ssl redirect enabled without TLS: %+v", ing.Annotations)
+	if ing.Annotations[annotationNginxSSLRedirect] != "false" {
+		t.Errorf("ssl redirect before the zone is known: %+v", ing.Annotations)
 	}
 	var rec oramav1alpha1.CloudflareDNSRecord
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello-dns"}, &rec); err == nil {
@@ -629,9 +632,11 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	}
 	if len(ing.Spec.TLS) != 1 || len(ing.Spec.TLS[0].Hosts) != 1 ||
 		ing.Spec.TLS[0].Hosts[0] != "hello.lake.live" ||
-		ing.Spec.TLS[0].SecretName != "lake-origin-tls" ||
-		ing.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"] != "true" {
+		ing.Spec.TLS[0].SecretName != "lake-origin-tls" {
 		t.Errorf("TLS ingress = spec %+v annotations %+v", ing.Spec.TLS, ing.Annotations)
+	}
+	if _, found := ing.Annotations[annotationCertManagerIssuer]; found {
+		t.Errorf("a hand-supplied certificate still requests one: %+v", ing.Annotations)
 	}
 
 	// 3. The ingress controller assigns an address: the DNS record follows.
@@ -658,7 +663,7 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 		t.Errorf("preview wildcard DNS spec = %+v", previewRec.Spec)
 	}
 
-	// 4. Removing the TLS reference removes the certificate and redirect.
+	// 4. Removing the hand-supplied certificate returns to the issued one.
 	if err := c.Get(ctx, types.NamespacedName{Name: "hello"}, lake); err != nil {
 		t.Fatal(err)
 	}
@@ -670,11 +675,8 @@ func TestLakeReconcileIngressAndDNS(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake-dev", Name: "lake-hello"}, &ing); err != nil {
 		t.Fatal(err)
 	}
-	if len(ing.Spec.TLS) != 0 {
-		t.Errorf("TLS was not removed from ingress: %+v", ing.Spec.TLS)
-	}
-	if _, found := ing.Annotations["nginx.ingress.kubernetes.io/ssl-redirect"]; found {
-		t.Errorf("ssl redirect was not removed with TLS: %+v", ing.Annotations)
+	if len(ing.Spec.TLS) != 1 || ing.Spec.TLS[0].SecretName != "hello.lake.live-tls" {
+		t.Errorf("issued certificate not restored: %+v", ing.Spec.TLS)
 	}
 
 	// 5. Gate off: both are torn down, the workloads stay.

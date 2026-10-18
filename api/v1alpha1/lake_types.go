@@ -139,8 +139,11 @@ type LakeSpec struct {
 	// +optional
 	IngressClassName string `json:"ingressClassName,omitempty"`
 
-	// TLS terminates HTTPS at the nginx Ingress. It has no effect unless IngressEnabled and Host
-	// are also set. The referenced kubernetes.io/tls Secret must exist in spec.namespace.
+	// TLS names a hand-supplied certificate for Host and ApexHost. Every Lake Ingress serves HTTPS
+	// whether or not it is set: without it the operator issues the certificates from Let's Encrypt
+	// through DNSSecretRef (operator#578, docs/lake/origin-tls.md). It has no effect unless
+	// IngressEnabled and Host are also set. The referenced kubernetes.io/tls Secret must exist in
+	// spec.namespace.
 	// +optional
 	TLS LakeTLSSpec `json:"tls,omitempty"`
 
@@ -496,8 +499,8 @@ type LakeWorkspaceOverrideSpec struct {
 
 // LakeTLSSpec configures HTTPS termination for a Lake Ingress.
 type LakeTLSSpec struct {
-	// SecretName names a kubernetes.io/tls Secret in spec.namespace. Empty leaves the Ingress on
-	// HTTP only for backward compatibility.
+	// SecretName names a kubernetes.io/tls Secret in spec.namespace for Host and ApexHost. Empty
+	// uses the certificates the operator issues through DNSSecretRef.
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
 }

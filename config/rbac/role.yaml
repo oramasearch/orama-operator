@@ -117,6 +117,7 @@ rules:
 - apiGroups:
   - cert-manager.io
   resources:
+  - certificates
   - issuers
   verbs:
   - create
@@ -273,8 +274,11 @@ rules:
   - cloudflareloadbalancers
   - cloudflarer2buckets
   - cloudflaretunnels
+  - cloudflarezonepolicies
   - clusterhelmreleases
   - connections
+  - edgeproviders
+  - edgezonepolicies
   - egressrules
   - kubernetesclusterproviders
   - kubernetesclusters
@@ -346,8 +350,11 @@ rules:
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
   - cloudflaretunnels/status
+  - cloudflarezonepolicies/status
   - clusterhelmreleases/status
   - connections/status
+  - edgeproviders/status
+  - edgezonepolicies/status
   - egressrules/status
   - kubernetesclusterproviders/status
   - kubernetesclusters/status

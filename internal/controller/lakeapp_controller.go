@@ -1430,10 +1430,49 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 	if err := r.deleteLakeAppDNSRecords(ctx, app, dnsName); err != nil {
 		return err
 	}
+	workloadName := lakeAppWorkloadObjectName(app)
+	tlsOwner := lakeTLSOwnerValue("LakeApp", app.Namespace+"/"+app.Name)
 	if host == "" {
+		if _, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, nil); err != nil {
+			return err
+		}
+		if err := r.deleteLakeAppTLS(ctx, namespace, workloadName); err != nil {
+			return err
+		}
 		return deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{
-			Name: lakeAppWorkloadObjectName(app), Namespace: namespace,
+			Name: workloadName, Namespace: namespace,
 		}})
+	}
+
+	// Origin TLS (operator#578): the host's certificate, issued in the Lake namespace and copied
+	// here, and the zone's redirect and client-certificate settings.
+	// A Lake without a DNS credential cannot issue certificates (docs/lake/origin-tls.md).
+	var tlsHosts []string
+	if lakeHasDNSCredential(lake) {
+		tlsHosts = []string{host}
+	}
+	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, tlsHosts)
+	if err != nil {
+		return fmt.Errorf("app certificate: %w", err)
+	}
+	tls, err := copyLakeTLSSecrets(ctx, r.Client, lake, namespace, workloadName, tlsHosts, sources, func(secret *corev1.Secret) {
+		secret.Labels = lakeAppLabels(app)
+		secret.Annotations = map[string]string{lakeAppOwnerAnnotation: lakeAppOwner(app)}
+	})
+	if err != nil {
+		return err
+	}
+	edge, err := readLakeEdge(ctx, r.Client, lake)
+	if err != nil {
+		return err
+	}
+	caRef, err := reconcileEdgeClientCA(ctx, r.Client, namespace, workloadName+"-edge-client-ca", edge, func(secret *corev1.Secret) error {
+		secret.Labels = lakeAppLabels(app)
+		secret.Annotations = map[string]string{lakeAppOwnerAnnotation: lakeAppOwner(app)}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	prefix := networkingv1.PathTypePrefix
@@ -1441,7 +1480,6 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 	if ingressClass == "" {
 		ingressClass = "nginx"
 	}
-	workloadName := lakeAppWorkloadObjectName(app)
 	ingress := &networkingv1.Ingress{ObjectMeta: lakeAppObjectMeta(app, workloadName, namespace)}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ingress, func() error {
 		ingress.Labels = lakeAppLabels(app)
@@ -1474,6 +1512,8 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 				}},
 			}},
 		}}
+		ingress.Spec.TLS = tls
+		applyLakeEdgeAnnotations(ingress, edge, caRef)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("reconcile app Ingress: %w", err)
@@ -1750,7 +1790,37 @@ func (r *LakeAppReconciler) teardownLakeAppWorkload(ctx context.Context, app *or
 			return err
 		}
 	}
+	if err := r.deleteLakeAppTLS(ctx, namespace, workloadName); err != nil {
+		return err
+	}
 	return r.deleteLakeAppDNSRecords(ctx, app, "")
+}
+
+// deleteLakeAppTLS removes the certificate copies and the edge CA Secret next to an app's Ingress.
+// The app's Certificates in the Lake namespace are owned by the LakeApp and go with it.
+func (r *LakeAppReconciler) deleteLakeAppTLS(ctx context.Context, namespace, workloadName string) error {
+	if err := deleteLakeTLSCopies(ctx, r.Client, namespace, workloadName, nil); err != nil {
+		return err
+	}
+	return deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: workloadName + "-edge-client-ca", Namespace: namespace}})
+}
+
+// requestsForLakeAppEdge re-reconciles the apps in a Lake namespace when one of its certificates is
+// issued or renewed (so the copy follows) or its zone policy changes (the redirect and
+// client-certificate settings follow).
+func (r *LakeAppReconciler) requestsForLakeAppEdge(ctx context.Context, object client.Object) []reconcile.Request {
+	if _, ok := object.(*corev1.Secret); ok && !isLakeCertificateSecret(object) {
+		return nil
+	}
+	var apps oramav1alpha1.LakeAppList
+	if err := r.List(ctx, &apps, client.InNamespace(object.GetNamespace())); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(apps.Items))
+	for i := range apps.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&apps.Items[i])})
+	}
+	return requests
 }
 
 func (r *LakeAppReconciler) deleteLakeAppSharedResources(
@@ -1953,6 +2023,8 @@ func (r *LakeAppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&oramav1alpha1.LakeApp{}).
 		Watches(&oramav1alpha1.Lake{}, handler.EnqueueRequestsFromMapFunc(r.requestsForLakeAppLake)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForLakeAppSourceSecret)).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForLakeAppEdge)).
+		Watches(&oramav1alpha1.EdgeZonePolicy{}, handler.EnqueueRequestsFromMapFunc(r.requestsForLakeAppEdge)).
 		Watches(&oramav1alpha1.LakeSealedSecret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForLakeAppLakeSecret)).
 		Watches(&appsv1.Deployment{}, mapObject).
 		Watches(&corev1.Pod{}, mapObject).

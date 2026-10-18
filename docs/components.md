@@ -898,8 +898,9 @@ never reach an Ingress. Field reference: [`crd-reference.md`](crd-reference.md#e
 
 Every Ingress a Cloud v1 stack renders is encrypted to the origin with a certificate cert-manager
 issues and renews (decision 5 of the 2026-10-16 decisions page in orama-bridge). Lake, Lake app,
-environment and Zetta Ingresses do not request one yet
-([#578](https://github.com/oramasearch/orama-operator/issues/578)).
+environment and public Zetta Ingresses have the same since
+[#578](https://github.com/oramasearch/orama-operator/issues/578), with the Lake's zone secured by the
+operator (`EdgeZonePolicy`); see [Lake origin TLS](#lake-origin-tls-lake_origin_tlsgo-578) below.
 
 - **One `Issuer` per stack.** The step `originTLS` keeps a namespaced cert-manager `Issuer`
   `<cr>-letsencrypt` (Let's Encrypt production, DNS-01 through Cloudflare), owned by the stack. Its
@@ -930,6 +931,32 @@ environment and Zetta Ingresses do not request one yet
   2026-10-17). The HTTP to HTTPS redirect at the edge is declared by the operator
   ([#527](https://github.com/oramasearch/orama-operator/issues/527),
   [#528](https://github.com/oramasearch/orama-operator/issues/528)), never set by hand.
+
+### Lake origin TLS (`lake_origin_tls.go`, [#578](https://github.com/oramasearch/orama-operator/issues/578))
+
+The contract is [`lake/origin-tls.md`](lake/origin-tls.md). What the reconcilers create:
+
+- **`LakeReconciler`**: with a `dnsSecretRef`, the `Issuer` `lake-<name>-letsencrypt` (DNS-01 through
+  the Secret's `token`), and an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for the
+  Secret's `zoneID`. Its Ingress `lake-<name>` gets `applyIngressTLS` for `host` and `apexHost` (or the
+  hand-supplied `spec.tls.secretName`). Two more Ingresses, `lake-<name>-apps-wildcard` and
+  `lake-<name>-preview-wildcard`, request the wildcard certificates and answer unknown names with a
+  permanent redirect to the Lake's host. No `dnsSecretRef` and no `tls.secretName`: the reconcile fails.
+- **`LakeAppReconciler`, `LakeEnvironmentReconciler`**: each host's certificate is issued in the Lake
+  namespace (the wildcard's, or a `Certificate` `<host>-tls` owned by the app or environment) and
+  copied next to the Ingress in the workspace namespace; the copies follow renewals and are removed
+  with the host or the workload.
+- **Every Lake Ingress** takes `ssl-redirect` and the client-certificate requirement from the
+  `EdgeZonePolicy` status (`applyLakeEdgeAnnotations`): the redirect only when the edge reaches the
+  origin over TLS and has a certificate for every host of the Ingress; the requirement
+  (`auth-tls-secret` naming `<ingress>-edge-client-ca`) only once the zone has authenticated origin
+  pulls on.
+- **`EdgeZonePolicyReconciler`** creates the owned `CloudflareZonePolicy` and copies its status;
+  **`CloudflareZonePolicyReconciler`** reads the zone and its proxied records every ten minutes, probes
+  each host's origin and edge, and turns on Full, Full (strict), authenticated origin pulls and Always
+  Use HTTPS in that order, each when its check passes. It never turns one off.
+- **`OramaZettaClusterReconciler`**: a public Zetta's Ingress gets its own `Issuer` `<name>-letsencrypt`
+  from its `dnsSecretRef` and `applyIngressTLS`; without a `dnsSecretRef` the reconcile fails.
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.

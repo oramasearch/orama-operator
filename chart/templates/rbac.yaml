@@ -54,6 +54,9 @@ rules:
       - oramaoperators
       - lakesets
       - oramacloudv1sets
+      - edgeproviders
+      - edgezonepolicies
+      - cloudflarezonepolicies
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -117,6 +120,9 @@ rules:
       - lakesets/finalizers
       - oramacloudv1sets/status
       - oramacloudv1sets/finalizers
+      - edgeproviders/status
+      - edgezonepolicies/status
+      - cloudflarezonepolicies/status
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
@@ -155,10 +161,11 @@ rules:
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters/status"]
     verbs: ["get", "update", "patch"]
-  # Each Cloud v1 stack's Let's Encrypt Issuer for origin TLS (#457). ingress-shim, not the
-  # operator, creates the Certificates, so no certificates grant is needed.
+  # Origin TLS: each Cloud v1 stack's, Lake's and public Zetta's Let's Encrypt Issuer (#457,
+  # #578). ingress-shim creates the Certificates of the Ingresses that name an Issuer; the operator
+  # writes the Certificates of Lake app and environment hosts, issued in the Lake namespace (#578).
   - apiGroups: ["cert-manager.io"]
-    resources: ["issuers"]
+    resources: ["issuers", "certificates"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["clickhouse.altinity.com"]
     resources: ["clickhouseinstallations"]

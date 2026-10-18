@@ -1,0 +1,119 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: edgeproviders.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: EdgeProvider
+    listKind: EdgeProviderList
+    plural: edgeproviders
+    shortNames:
+    - edgeprov
+    singular: edgeprovider
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: EdgeProvider is the vendor, account and credentials the edge
+          resources in its namespace use.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: EdgeProviderSpec carries the vendor, the account and the
+              credentials behind edge resources.
+            properties:
+              cloudflare:
+                description: Cloudflare holds the Cloudflare account and token.
+                properties:
+                  accountId:
+                    description: |-
+                      AccountID is the Cloudflare account. Zone policies do not need it; account-level edge
+                      resources do.
+                    type: string
+                  apiTokenSecretRef:
+                    description: |-
+                      APITokenSecretRef names the API token in this namespace. What it must be allowed depends on
+                      the kinds that use the provider. An EdgeZonePolicy needs, on its zone: Zone > Zone Settings >
+                      Edit and Zone > DNS > Read (DNS > Edit includes it). The operator never writes or logs it.
+                    properties:
+                      key:
+                        description: Key is the key in the Secret's data.
+                        minLength: 1
+                        type: string
+                      name:
+                        description: Name is the Secret's name.
+                        minLength: 1
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                required:
+                - apiTokenSecretRef
+                type: object
+              type:
+                description: Type is the edge vendor. Only cloudflare exists.
+                enum:
+                - cloudflare
+                type: string
+            required:
+            - type
+            type: object
+            x-kubernetes-validations:
+            - message: a cloudflare provider needs spec.cloudflare
+              rule: self.type != 'cloudflare' || has(self.cloudflare)
+          status:
+            description: EdgeProviderStatus reports whether the provider's credentials
+              are present.
+            properties:
+              message:
+                description: Message explains a provider that is not ready.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation the status describes.
+                format: int64
+                type: integer
+              ready:
+                description: |-
+                  Ready is true when the token Secret and key exist. Whether the token is allowed what a kind
+                  needs is reported by that kind.
+                type: boolean
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -201,6 +201,7 @@ A general rule for every kind in this work, and for the operator from here on.
 | `KubernetesCluster` | `AksCluster` | EKS, GKE, the liquid k0s distribution |
 | `DnsRecord` | `CloudflareDnsRecord` | Another DNS provider |
 | `ServiceMesh` | `IstioServiceMesh` | Another mesh |
+| `EdgeZonePolicy` | `CloudflareZonePolicy` | Another CDN or edge provider |
 
 ### A provider is its own resource
 
@@ -214,6 +215,7 @@ provider."*
 | `DnsRecord` | a `DnsProvider` (for example of type Cloudflare) | `CloudflareDnsRecord` |
 | `KubernetesCluster` | a `KubernetesClusterProvider` (of type AKS) | `AksCluster` |
 | `ServiceMesh` | a mesh provider (of type Istio) | `IstioServiceMesh` |
+| `EdgeZonePolicy` | an `EdgeProvider` (of type cloudflare) | `CloudflareZonePolicy` ([`../lake/origin-tls.md`](../lake/origin-tls.md)) |
 
 ```
 KubernetesCluster ──providerRef──▶ KubernetesClusterProvider (type: aks)

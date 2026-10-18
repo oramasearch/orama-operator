@@ -1616,8 +1616,27 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: svcName + "-apex-dns", Namespace: ns}}
 	}
 	apex := lakeApexHost(lake)
+	// Origin TLS (operator#578): the Issuer and the zone policy exist whenever the Lake has a DNS
+	// credential, because its apps and environments use them even without the Lake's own Ingress.
+	if err := reconcileLakeOriginIssuer(ctx, r.Client, r.Scheme, lake, lbls); err != nil {
+		return fmt.Errorf("origin TLS issuer: %w", err)
+	}
+	if err := reconcileLakeEdgePolicy(ctx, r.Client, r.Scheme, lake, lbls); err != nil {
+		return fmt.Errorf("edge zone policy: %w", err)
+	}
+	edge, err := readLakeEdge(ctx, r.Client, lake)
+	if err != nil {
+		return err
+	}
+	caSecret := svcName + "-edge-client-ca"
 	if !lake.Spec.IngressEnabled || lake.Spec.Host == "" {
 		if err := deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}); err != nil {
+			return err
+		}
+		if err := r.reconcileLakeWildcardIngresses(ctx, lake, ns, svcName, lbls, "", lakeEdge{}, ""); err != nil {
+			return err
+		}
+		if err := deleteIfExists(ctx, r.Client, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: caSecret, Namespace: ns}}); err != nil {
 			return err
 		}
 		if err := deleteIfExists(ctx, r.Client, dnsRecord()); err != nil {
@@ -1632,11 +1651,25 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	if apex != "" {
 		hosts = append(hosts, apex)
 	}
+	// No HTTP-only fallback: without a hand-supplied certificate the Lake needs its DNS credential.
+	issuer := ""
+	if lake.Spec.TLS.SecretName == "" {
+		if issuer, err = lakeOriginIssuer(lake); err != nil {
+			return err
+		}
+	}
+	caRef, err := reconcileEdgeClientCA(ctx, r.Client, ns, caSecret, edge, func(secret *corev1.Secret) error {
+		secret.Labels = lbls
+		return controllerutil.SetControllerReference(lake, secret, r.Scheme)
+	})
+	if err != nil {
+		return err
+	}
 	prefix := networkingv1.PathTypePrefix
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: ns}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
 		ing.Labels = lbls
-		ing.Annotations = lakeIngressAnnotations(lake.Spec.TLS.SecretName != "")
+		ing.Annotations = lakeIngressAnnotations()
 		ing.Spec.IngressClassName = strPtr(ingressClassOrDefault(lake.Spec.IngressClassName))
 		ing.Spec.Rules = nil
 		for _, host := range hosts {
@@ -1651,15 +1684,20 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 				}},
 			})
 		}
-		ing.Spec.TLS = nil
 		if lake.Spec.TLS.SecretName != "" {
 			ing.Spec.TLS = []networkingv1.IngressTLS{{
 				Hosts:      hosts,
 				SecretName: lake.Spec.TLS.SecretName,
 			}}
+		} else if err := applyIngressTLS(ing, issuer); err != nil {
+			return err
 		}
+		applyLakeEdgeAnnotations(ing, edge, caRef)
 		return controllerutil.SetControllerReference(lake, ing, r.Scheme)
 	}); err != nil {
+		return err
+	}
+	if err := r.reconcileLakeWildcardIngresses(ctx, lake, ns, svcName, lbls, issuer, edge, caRef); err != nil {
 		return err
 	}
 	if lake.Spec.DNSSecretRef == nil || lake.Spec.DNSSecretRef.Name == "" {
@@ -1711,7 +1749,7 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		return nil
 	}
 	preview := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: previewDNSName, Namespace: ns}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, preview, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, preview, func() error {
 		preview.Labels = make(map[string]string, len(lbls)+1)
 		for key, value := range lbls {
 			preview.Labels[key] = value
@@ -1726,16 +1764,70 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	return err
 }
 
-func lakeIngressAnnotations(tlsEnabled bool) map[string]string {
-	annotations := map[string]string{
+// lakeIngressAnnotations are the Lake Ingress's own nginx settings. TLS, the redirect and the
+// client-certificate requirement are added by applyIngressTLS and applyLakeEdgeAnnotations.
+func lakeIngressAnnotations() map[string]string {
+	return map[string]string{
 		"nginx.ingress.kubernetes.io/proxy-body-size":         "64m",
 		"nginx.ingress.kubernetes.io/proxy-buffering":         "off",
 		"nginx.ingress.kubernetes.io/proxy-request-buffering": "off",
 	}
-	if tlsEnabled {
-		annotations["nginx.ingress.kubernetes.io/ssl-redirect"] = "true"
+}
+
+// reconcileLakeWildcardIngresses keeps one Ingress per wildcard the Lake's apps and previews use
+// (*.<apps wildcard>, *.<preview wildcard>) while the Lake serves them (lakeServesWildcards). Each
+// requests the wildcard's certificate, which the apps and environments under it copy, and makes the
+// origin present that certificate for any name under the wildcard, so the zone's origin check
+// passes for the wildcard DNS record. A name with no app or environment is sent to the Lake's host
+// (a permanent redirect), never to a workload. An empty issuer removes them.
+func (r *LakeReconciler) reconcileLakeWildcardIngresses(ctx context.Context, lake *oramav1alpha1.Lake, ns, svcName string, lbls map[string]string, issuer string, edge lakeEdge, caRef string) error {
+	type wildcard struct{ name, suffix, class string }
+	appsClass := lake.Spec.Apps.IngressClass
+	if appsClass == "" {
+		appsClass = "nginx"
 	}
-	return annotations
+	apps := lakeAppsWildcard(lake)
+	preview := strings.TrimPrefix(lake.Spec.PreviewWildcard, "*.")
+	wildcards := []wildcard{
+		{name: svcName + "-apps-wildcard", suffix: apps, class: appsClass},
+		{name: svcName + "-preview-wildcard", suffix: preview, class: ingressClassOrDefault(lake.Spec.IngressClassName)},
+	}
+	if preview == apps {
+		wildcards[1].suffix = ""
+	}
+	prefix := networkingv1.PathTypePrefix
+	for _, w := range wildcards {
+		ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: w.name, Namespace: ns}}
+		if issuer == "" || w.suffix == "" || !lakeServesWildcards(lake) {
+			if err := deleteIfExists(ctx, r.Client, ing); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
+			ing.Labels = lbls
+			ing.Annotations = map[string]string{annotationNginxPermanentRedirect: "https://" + lake.Spec.Host + "/"}
+			ing.Spec.IngressClassName = strPtr(w.class)
+			ing.Spec.Rules = []networkingv1.IngressRule{{
+				Host: "*." + w.suffix,
+				IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
+					Paths: []networkingv1.HTTPIngressPath{{
+						Path: "/", PathType: &prefix,
+						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
+							Name: svcName, Port: networkingv1.ServiceBackendPort{Number: lakeServicePort}}},
+					}},
+				}},
+			}}
+			if err := applyIngressTLS(ing, issuer); err != nil {
+				return err
+			}
+			applyLakeEdgeAnnotations(ing, edge, caRef)
+			return controllerutil.SetControllerReference(lake, ing, r.Scheme)
+		}); err != nil {
+			return fmt.Errorf("wildcard ingress %s: %w", w.name, err)
+		}
+	}
+	return nil
 }
 
 func lakePreviewDNSRecordName(serviceName, wildcard string) string {
@@ -1807,6 +1899,7 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&networkingv1.Ingress{}).
 		Owns(&networkingv1.NetworkPolicy{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
+		Owns(&oramav1alpha1.EdgeZonePolicy{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
 		Owns(&oramav1alpha1.LakeSealedSecret{}).

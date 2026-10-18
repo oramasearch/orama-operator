@@ -799,6 +799,53 @@ The `app.orama.com` cutover repoint is a reviewed Cloudflare change in the bridg
 listed in [production changes](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/production-changes.md).
 The operator cannot adopt that existing record.
 
+## `EdgeProvider` (separate CRD, namespaced) — the vendor, account and credentials for edge resources
+
+Principle 10's provider resource for the edge kinds (operator#578). A Lake with a `dnsSecretRef` owns
+one, `lake-<name>-edge`.
+
+| Field | Meaning |
+|---|---|
+| `spec.type` | `cloudflare` (the only type). |
+| `spec.cloudflare.accountId` | Optional Cloudflare account ID; zone policies do not need it. |
+| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of the token in this namespace. For an `EdgeZonePolicy`: Zone > Zone Settings > Edit and Zone > DNS > Read on the zone. Never written or logged. |
+| `status.ready`, `status.message` | Whether the Secret and key exist. Whether the token is allowed what a kind needs is reported by that kind. |
+
+## `EdgeZonePolicy` (separate CRD, namespaced) — secure a DNS zone's edge
+
+The provider-neutral request "secure this zone's edge" (operator#578). It has no settings and no off
+switch: it always means origin encryption Full, then Full (strict), authenticated origin pulls, and
+Always Use HTTPS, each turned on only when its check passes, and never turned off. Short name
+`edgezp`; `kubectl get edgezp -A` shows `Origin`, `AOP`, `HTTPS`, `Phase`. A Lake with a
+`dnsSecretRef` owns one, `lake-<name>-edge`. The full contract, the checks and the order are in
+[`lake/origin-tls.md`](lake/origin-tls.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.providerRef.name` | An `EdgeProvider` in this namespace. |
+| `spec.zoneID` | The provider's zone identifier (Cloudflare: the zone ID). |
+| `status.phase` | `Ready` (every setting on), `Progressing` (a setting waits on a check), `Failed` (the zone cannot be read or changed; the message names the missing permission). |
+| `status.originEncryption` | The zone's observed mode: `off`, `flexible`, `full` or `strict`. Lake Ingresses redirect HTTP only at `full` or `strict`. |
+| `status.authenticatedOriginPulls`, `status.originClientCAPEM` | Whether the edge presents its client certificate to origins, and the CA that signs it. Lake Ingresses require the certificate once this is on. |
+| `status.alwaysUseHTTPS` | Whether the edge redirects plain HTTP. |
+| `status.proxiedHosts`, `status.hosts[]` | How many proxied hosts the zone has, and up to 50 that fail a check: `{name, origin, edge}` with the reason for each leg. |
+| `status.conditions` | `Credentials`, `OriginCertificates`, `EdgeCertificates`, `OriginTLSStrict`, `AuthenticatedOriginPulls`, `AlwaysUseHTTPS`. |
+
+Several policies may name one zone (one per Lake); they ask for the same settings. Deleting a policy
+changes nothing in the zone.
+
+## `CloudflareZonePolicy` (separate CRD, namespaced) — an `EdgeZonePolicy` applied to Cloudflare
+
+Created and owned by an `EdgeZonePolicy` whose provider is `cloudflare`, with the same name; a person
+never writes one. The only kind that changes a Cloudflare zone's settings (`ssl`,
+`ssl_automatic_mode`, `tls_client_auth`, `always_use_https`). Short name `cfzp`.
+
+| Field | Meaning |
+|---|---|
+| `spec.zoneID` | The Cloudflare zone. |
+| `spec.apiTokenSecretRef` | The provider's token Secret and key. |
+| `status` | The same status as `EdgeZonePolicy`, which copies it. |
+
 ## `CloudflareLoadBalancer` (separate CRD) — the global geo-LB
 
 Owns a Cloudflare **global Load Balancer** ([operator#73](https://github.com/oramasearch/orama-operator/issues/73)):
@@ -1122,7 +1169,8 @@ store surges with `maxUnavailable: 0`. A single-replica Lake on a ReadWriteOnce 
 default and surges onto the running pod's node only with `spec.rollout.overlapOnSharedStore` (see
 `docs/lake/README.md`, Rollouts). A Lake finalizer starts and waits for Zetta's
 ordered cleanup before releasing the parent. With `spec.ingressEnabled` and `spec.host` it fronts the
-host with an **nginx Ingress** (the whole host → the lake Service), optional origin TLS, and, when
+host with an **nginx Ingress** (the whole host → the lake Service), origin TLS on every host
+([`lake/origin-tls.md`](lake/origin-tls.md), operator#578), and, when
 `spec.dnsSecretRef` is given, an **owned `CloudflareDNSRecord`** (proxied, host → the ingress
 LoadBalancer) — the same contract and child-controller path as `OramaZettaCluster`. Gating off
 tears the Ingress and the record down and leaves the workloads. Sample:
@@ -1152,10 +1200,10 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | _(sealing key — automatic)_ | Secret **`lake-<name>-sealing-key`** holds the current and still-needed prior X25519 private keys. Only the active public key and `kid` are injected into lake. See [`lake/sealed-secrets.md`](lake/sealed-secrets.md). |
 | _(schema — automatic)_ | With Postgres on, the Lake owns a `lake-<name>-controldb-migrations` ConfigMap holding lake's control-plane schema (vendored byte-identical from `oramasearch/lake` `db/schema.sql`) and a `lake-<name>-controldb-schema` **`PostgresSchema`** that applies it in one transaction, guarded on the newest migration table (`workspace_volumes_guard` for `0069_workspace_volumes`) plus every migration the file records being present in `schema_migrations`, and versioned by a hash of SQL plus guard. Schema completion gates Deployment creation and updates. Re-vendor lake `db/schema.sql` unchanged, update the pinned source and guard, and run the checks in [the schema guide](lake/schema.md). Incremental migrations remain #126. |
 | `spec.ingressEnabled` | **Default `false`. The explicit external-exposure gate.** With `spec.host`, provisions the nginx Ingress (+ the DNS record below if `dnsSecretRef` is set). `false` tears both down even if `host` is still set. The Ingress permits `64m` request bodies and disables request/response buffering for Lake's streaming transfers. |
-| `spec.tls.secretName` | Optional `kubernetes.io/tls` Secret in `spec.namespace`. With ingress enabled and a host set, renders the Ingress TLS host and enables nginx HTTPS redirect. Empty is the backward-compatible HTTP-only default. |
+| `spec.tls.secretName` | Optional hand-supplied `kubernetes.io/tls` Secret in `spec.namespace` for `host` and `apexHost`. Empty (the normal case) uses the certificates the operator issues: every Lake Ingress serves HTTPS either way. Without it, a Lake with an Ingress needs `dnsSecretRef`, or its reconcile fails (no HTTP-only fallback). See [`lake/origin-tls.md`](lake/origin-tls.md). |
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
 | `spec.ingressClassName` | `nginx` (default) or `zetta-tunnel`: which ingress serves the Lake's Ingress and its environments'. DNS follows, because it is written from the Ingress's address. The per-cluster cutover sets it in the cluster's set member ([`infrastructure/ingress.md`](infrastructure/ingress.md)). |
-| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. |
+| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. It is also origin TLS's credential: the Lake's Let's Encrypt `Issuer` `lake-<name>-letsencrypt` (DNS-01, key `token`), and its zone policy, an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for `zoneID` ([below](#edgezonepolicy-separate-crd-namespaced--secure-a-dns-zones-edge)). The token needs Zone > DNS > Edit and **Zone > Zone Settings > Edit**. |
 | `spec.region` | `{name, label}`: where the Lake runs, for its region picker (decision 64). Rendered as `LAKE_REGION` and `LAKE_REGION_LABEL`. In a LakeSet, `name` comes from the member's cluster ([`lake/README.md#regions`](lake/README.md#regions)). |
 | `spec.regions` | The deployment's regions as the picker offers them, `[{name, label, host, latitude, longitude}]`, rendered as `LAKE_REGIONS` (JSON). A LakeSet computes it from its members. |
 | `spec.apexHost` | A second host the Lake answers (the region picker, e.g. `lake.live`). With `ingressEnabled` + `host`, adds an Ingress rule (and TLS host) and, with `dnsSecretRef`, an owned proxied `<lake>-apex-dns` record; rendered as `LAKE_APEX_HOST`. Removing it removes both. |
@@ -1251,7 +1299,7 @@ private namespace. See the operational contract in
 | `spec.env[]` | Literal `{name, value}` entries. Operator-managed runtime variables take precedence. |
 | `spec.secretEnv[]` | `{name, secretKeyRef: {name, key}, lakeSecret?: {mount, name, field}}` entries. Each source Secret is read from the Lake namespace, only selected keys are copied into the isolated app namespace, and the Deployment uses `env[].valueFrom.secretKeyRef`. With `lakeSecret` (lake#625) the controller owns a `LakeSealedSecret` with a lake source that produces `secretKeyRef.name`, so the value comes from lake's secret store and follows its new versions ([apps](lake/apps.md#lake-secret-references-lake625)). Operator-managed names take precedence; secret-backed values take precedence over literal `spec.env`. |
 | `spec.secretRefs[]` | One-release legacy input: Lake-namespace whole Secrets copied into the app namespace and exposed through `envFrom`. New apps use `spec.secretEnv`. |
-| `spec.host` | Exact hostname. Empty derives `<app>.<Lake spec.apps.wildcard>`. |
+| `spec.host` | Exact hostname. Empty derives `<app>.<Lake spec.apps.wildcard>`. The Ingress serves it over HTTPS: a host one label under the apps wildcard uses the Lake's wildcard certificate, any other its own `Certificate` in the Lake namespace, copied next to the Ingress ([`lake/origin-tls.md`](lake/origin-tls.md)). |
 | `spec.auth` | `lake` (default) uses Lake's session authorization through nginx `auth-url`; `public` omits that gate. |
 | `spec.bindings.zetta` | `{customerId, scopes}` for scoped read-only workspace access. Synchronized apps use an operator-generated token validated by Lake; standalone apps supply the token through their binding Secret. |
 | `spec.bindings.services[]` | Lake service identifiers whose connection documents are delivered. |
@@ -1286,7 +1334,7 @@ verification. Sample:
 | `spec.env[]` | Literal `{name,value}` workload environment variables: the deployment row's own, then lake's `orama_control.environment_env` values, which win for the same name. |
 | `spec.secretRefs[]` | Names or `secret://<name>` references for `LakeSealedSecret` resources in the Lake namespace. Every reference must belong to the same Lake and have delivered its current generation. The produced Secrets are copied into the isolated workload namespace and imported with `envFrom`; unresolved references report `Degraded` and remove the workload. |
 | `spec.host` | Exact hostname for a named environment. Preview hosts are derived from the Lake's `previewWildcard`. |
-| `spec.domains[]` | Custom domains `{host, tls}` (`tls` `acme` or `provided`), from lake's `orama_control.domains` requests. Each is a rule of the environment's Ingress and, with the Lake's `dnsSecretRef`, a proxied `CloudflareDNSRecord` owned by the environment; removing it removes both. Keyed by `host`. See [the row contract](lake/environments.md#orama_controldomains). |
+| `spec.domains[]` | Custom domains `{host, tls}` (`tls` `acme` or `provided`), from lake's `orama_control.domains` requests. Each is a rule of the environment's Ingress and, with the Lake's `dnsSecretRef`, a proxied `CloudflareDNSRecord` owned by the environment; removing it removes both. Keyed by `host`. See [the row contract](lake/environments.md#orama_controldomains). Every host of the environment's Ingress (its own and each domain) gets origin TLS: a preview host the preview wildcard's certificate, any other its own `Certificate` from the Lake's `Issuer` ([`lake/origin-tls.md`](lake/origin-tls.md)). |
 | `status.phase` | `Progressing \| Ready \| Degraded \| TornDown`, written only on a real transition. |
 | `status.url` / `.readyReplicas` | Public URL when ingress is configured, and observed Deployment readiness. |
 | `status.deploymentId` | Stable deployment-event identity copied from the `orama.cloud/deployment-id` annotation. |
