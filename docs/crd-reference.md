@@ -200,8 +200,8 @@ dashboard's `app.orama.ing`.
 | `reader.host` | engine enabled | `<cr>-reader` | Service `<cr>-reader`:80 (Envoy when `envoy`, else OramaCore) | `allow-reader-ingress-nginx`: reader pods, TCP 80 with Envoy, 8080 without |
 
 Each Ingress routes `/` on its host (Prefix) to its Service on the stack's ingress class, with origin
-TLS as above, and is controlled by the CR. The sandbox rule admits only ingress-nginx and
-zetta-tunnel's ingress gateway, only to this stack's pods; the internal-client rules and every egress
+TLS as above, and is controlled by the CR. The sandbox rule admits only ingress-nginx (never
+zetta-tunnel's ingress gateway, bridge decision 19 of 2026-10-17), only to this stack's pods; the internal-client rules and every egress
 rule are unchanged. A read region never publishes its writer (it runs none). When an endpoint stops
 being published (host cleared, engine disabled, or the writer's region turned `read`), its Ingress and
 rule are removed and its DNS record is deleted, including on the disabled-engine teardown. An object

@@ -634,8 +634,8 @@ func TestPublicReaderIngressBackendIgnoresEnvoy(t *testing.T) {
 	}
 }
 
-// The sandbox admits only the ingress gateway peers, only to this stack's published writer and
-// reader pods, on the port behind each Ingress backend.
+// The sandbox admits ingress-nginx alone, only to this stack's published writer and reader pods, on
+// the port behind each Ingress backend.
 func TestPublicEngineEndpointsSandboxRules(t *testing.T) {
 	ctx := context.Background()
 	policies := func(t *testing.T, oc *oramav1alpha1.OramaCloudV1) map[string]oramav1alpha1.NetworkSandboxPolicy {
@@ -654,7 +654,7 @@ func TestPublicEngineEndpointsSandboxRules(t *testing.T) {
 		}
 		return out
 	}
-	assertGatewayRule := func(t *testing.T, p oramav1alpha1.NetworkSandboxPolicy, component string, port int32) {
+	assertIngressNginxRule := func(t *testing.T, p oramav1alpha1.NetworkSandboxPolicy, component string, port int32) {
 		t.Helper()
 		if got := p.Spec.PodSelector.MatchLabels; got["app.kubernetes.io/component"] != component || got["app.kubernetes.io/instance"] != "v1-dev" {
 			t.Errorf("%s selects %v, want this stack's %s pods", p.Name, got, component)
@@ -674,14 +674,16 @@ func TestPublicEngineEndpointsSandboxRules(t *testing.T) {
 			}
 			namespaces = append(namespaces, peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"])
 		}
-		if strings.Join(namespaces, ",") != "ingress-nginx,"+zettaTunnelIngressNamespace {
-			t.Errorf("%s admits namespaces %v, want the ingress gateways only", p.Name, namespaces)
+		// ingress-nginx alone: the zetta-tunnel gateway never serves Cloud v1 (bridge decision 19 of
+		// 2026-10-17).
+		if strings.Join(namespaces, ",") != "ingress-nginx" {
+			t.Errorf("%s admits namespaces %v, want ingress-nginx only (no zetta-tunnel gateway peer)", p.Name, namespaces)
 		}
 	}
 
 	got := policies(t, publicStack(nil))
-	assertGatewayRule(t, got["allow-writer-ingress-nginx"], "writer", oramacorePort)
-	assertGatewayRule(t, got["allow-reader-ingress-nginx"], "reader", envoyPort)
+	assertIngressNginxRule(t, got["allow-writer-ingress-nginx"], "writer", oramacorePort)
+	assertIngressNginxRule(t, got["allow-reader-ingress-nginx"], "reader", envoyPort)
 	for _, internal := range []string{"allow-writer-ingress", "allow-reader-ingress", "allow-engine-egress"} {
 		if _, ok := got[internal]; !ok {
 			t.Errorf("internal allowance %s is gone", internal)
@@ -689,7 +691,7 @@ func TestPublicEngineEndpointsSandboxRules(t *testing.T) {
 	}
 
 	got = policies(t, publicStack(func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Engine.Envoy = false }))
-	assertGatewayRule(t, got["allow-reader-ingress-nginx"], "reader", oramacorePort)
+	assertIngressNginxRule(t, got["allow-reader-ingress-nginx"], "reader", oramacorePort)
 
 	for name, mut := range map[string]func(*oramav1alpha1.OramaCloudV1){
 		"no hosts": func(o *oramav1alpha1.OramaCloudV1) {

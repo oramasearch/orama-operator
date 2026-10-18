@@ -270,9 +270,11 @@ hooks may call an arbitrary public URL, but both IPv4 and IPv6 blocks exclude pr
 metadata, carrier-grade NAT, API-server, node-address and pod-CIDR destinations. The API, node and
 pod exclusions are discovered from the cluster and retained across transient discovery failure.
 While `engine.writer.host` (primary region) or `engine.reader.host` is published, the sandbox also
-admits ingress-nginx and zetta-tunnel's ingress gateway, and nothing else, to that stack's writer
+admits ingress-nginx, and nothing else, to that stack's writer
 pods on 8080 (`allow-writer-ingress-nginx`) or reader pods on the port behind the reader Service: 80
 with Envoy, 8080 without (`allow-reader-ingress-nginx`). The rule goes away with the endpoint.
+The zetta-tunnel gateway is never admitted: Cloud v1 is not served by it (bridge [decision 19](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-17.md#19-the-public-engine-hosts-admit-ingress-nginx-only-never-the-zetta-tunnel-gateway) of
+2026-10-17); without these rules the public hosts could not be reached at all.
 
 ## Workload hardening — applied to EVERY component ([#18](https://github.com/oramasearch/orama-operator/issues/18))
 
@@ -357,7 +359,7 @@ Driven by `spec.region.role`:
   endpoint is published, for the Ingress, its sandbox rule and its DNS record alike. With
   `writer.jwt` set, `https://<writer.host>` must be an exact audience or the reconcile fails before
   any engine object changes. `/metrics` stays reachable on these hosts until the deny companions of
-  [#314](https://github.com/oramasearch/orama-operator/issues/314) land.
+  [#410](https://github.com/oramasearch/orama-operator/pull/410) land.
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
   **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
@@ -681,7 +683,7 @@ environment and Zetta Ingresses do not request one yet
   (`Degraded`, `ReconcileError`, the message names `spec.cloudflare.apiTokenSecretRef`) and leaves
   any existing Ingress as it is. An empty rule list, an empty host or an empty issuer is an error.
 - **One Secret per host.** The Secret name depends only on the host, so another Ingress serving the
-  same host (the `/metrics` deny companions, [#314](https://github.com/oramasearch/orama-operator/issues/314))
+  same host (the `/metrics` deny companions, [#410](https://github.com/oramasearch/orama-operator/pull/410))
   names the same Secret. Removing a host drops its TLS entry; the other hosts keep their Secrets.
 - **Known gap:** decision 5 gives each stack its own ingress-nginx. The operator does not render one
   yet ([#573](https://github.com/oramasearch/orama-operator/issues/573)), so a stack's Ingresses
