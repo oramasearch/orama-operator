@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -296,6 +297,76 @@ func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) 
 		if strings.Contains(allowance.Name, "external-postgres") {
 			t.Fatalf("stored controlDB.mode external opened %q", allowance.Name)
 		}
+	}
+}
+
+// The writer reaches the dashboard's port 3000 only while its JWT provider fetches the JWKS from this
+// stack's dashboard Service, and readers never do.
+func TestWriterJWKSOpensOnlyWriterToDashboard(t *testing.T) {
+	jwks := func(u string) func(*oramav1alpha1.OramaCloudV1) {
+		return func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Engine.Writer.JWT.JWKSURL = u }
+	}
+	cases := []struct {
+		name string
+		oc   *oramav1alpha1.OramaCloudV1
+		open bool
+	}{
+		{"unset", engineOC(nil), false},
+		{"in-cluster default", jwtOC([]string{"https://writer.example"}, nil), true},
+		{"qualified service", jwtOC([]string{"https://writer.example"}, jwks("http://v1-dashboard.orama-system.svc.cluster.local:3000/api/.well-known/jwks.json")), true},
+		{"external", jwtOC([]string{"https://writer.example"}, jwks("https://app.example.com/api/.well-known/jwks.json")), false},
+		{"other namespace", jwtOC([]string{"https://writer.example"}, jwks("http://v1-dashboard.elsewhere:3000/api/.well-known/jwks.json")), false},
+	}
+	names := []string{"allow-writer-jwks-egress", "allow-dashboard-jwks-ingress"}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := ocv1TestScheme(t)
+			objects := append([]client.Object{tc.oc}, sandboxDiscoveryObjects()...)
+			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+			reconciler := &OramaCloudV1Reconciler{Client: kube, Scheme: scheme, APIReader: kube}
+			if err := reconciler.reconcileNetworkSandbox(ctx, tc.oc); err != nil {
+				t.Fatal(err)
+			}
+			var sandbox oramav1alpha1.NetworkSandbox
+			if err := kube.Get(ctx, client.ObjectKey{Namespace: tc.oc.Namespace, Name: networkSandboxName}, &sandbox); err != nil {
+				t.Fatal(err)
+			}
+			assertJustifiedNarrowAllowances(t, &sandbox)
+			if !tc.open {
+				for _, allowance := range sandbox.Spec.Policies {
+					if slices.Contains(names, allowance.Name) {
+						t.Fatalf("%s rendered for a JWKS outside this stack's dashboard", allowance.Name)
+					}
+				}
+				return
+			}
+			writer, reader, dashboard := labelsFor(tc.oc, "writer"), labelsFor(tc.oc, "reader"), labelsFor(tc.oc, "dashboard")
+
+			egress := allowanceByName(t, &sandbox, names[0])
+			if !selects(t, egress.Spec.PodSelector, writer) || selects(t, egress.Spec.PodSelector, reader) ||
+				len(egress.Spec.Ingress) != 0 || len(egress.Spec.Egress) != 1 || len(egress.Spec.Egress[0].To) != 1 {
+				t.Fatalf("writer JWKS egress = %+v", egress.Spec)
+			}
+			to := egress.Spec.Egress[0]
+			if to.To[0].NamespaceSelector != nil || !selects(t, *to.To[0].PodSelector, dashboard) ||
+				selects(t, *to.To[0].PodSelector, writer) ||
+				!reflect.DeepEqual(policyPorts(t, to.Ports), []int32{3000}) {
+				t.Fatalf("writer JWKS egress rule = %+v", to)
+			}
+
+			ingress := allowanceByName(t, &sandbox, names[1])
+			if !selects(t, ingress.Spec.PodSelector, dashboard) || selects(t, ingress.Spec.PodSelector, writer) ||
+				len(ingress.Spec.Egress) != 0 || len(ingress.Spec.Ingress) != 1 || len(ingress.Spec.Ingress[0].From) != 1 {
+				t.Fatalf("dashboard JWKS ingress = %+v", ingress.Spec)
+			}
+			from := ingress.Spec.Ingress[0]
+			if from.From[0].NamespaceSelector != nil || !selects(t, *from.From[0].PodSelector, writer) ||
+				selects(t, *from.From[0].PodSelector, reader) ||
+				!reflect.DeepEqual(policyPorts(t, from.Ports), []int32{3000}) {
+				t.Fatalf("dashboard JWKS ingress rule = %+v", from)
+			}
+		})
 	}
 }
 

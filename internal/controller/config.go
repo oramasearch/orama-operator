@@ -11,6 +11,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -39,6 +40,16 @@ func llmDefault(oc *oramav1alpha1.OramaCloudV1) string {
 		return oc.Spec.LLM.Default
 	}
 	return "groq"
+}
+
+// jwtIssuer is the one issuer of the stack's write tokens: the shared ConfigMap's JWT_ISSUER, which
+// the dashboard signs with, and the writer's only accepted issuer (writerJWTYAML). spec.jwtIssuer, or
+// orama-cloud when empty, which validateWriterJWT allows only while engine.writer.jwt is unset.
+func jwtIssuer(oc *oramav1alpha1.OramaCloudV1) string {
+	if oc.Spec.JWTIssuer != "" {
+		return oc.Spec.JWTIssuer
+	}
+	return "orama-cloud"
 }
 
 func configMapName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-config" }
@@ -82,7 +93,7 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 			"KC_HTTP_ENABLED":             "true",
 			"KC_PROXY_HEADERS":            "xforwarded",
 			"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
-			"JWT_ISSUER":                  "orama-cloud",
+			"JWT_ISSUER":                  jwtIssuer(oc),
 		}
 		return controllerutil.SetControllerReference(oc, cm, r.Scheme)
 	})
@@ -97,12 +108,13 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 
 // ensureJWTSecrets generates a real RSA-2048 keypair (once, create-if-absent) for the
 // OramaCore writer JWT. Least-privilege: <cr>-jwt holds private+public (the dashboard
-// signs with it); <cr>-jwt-pub holds public only (the engine verifies). Real keypair,
-// not a placeholder.
+// signs with it); <cr>-jwt-pub holds public only (the engine verifies). An existing pair is
+// never rotated; a missing <cr>-jwt-pub is recovered from it (ensureJWTPublicSecret).
 func (r *OramaCloudV1Reconciler) ensureJWTSecrets(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	jwtName := oc.Name + "-jwt"
-	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: jwtName}, &corev1.Secret{}); err == nil {
-		return nil // already generated — never rotate here
+	existing := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: jwtName}, existing); err == nil {
+		return r.ensureJWTPublicSecret(ctx, oc, existing)
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -118,27 +130,56 @@ func (r *OramaCloudV1Reconciler) ensureJWTSecrets(ctx context.Context, oc *orama
 	}
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
 
-	// dashboard: private + public (it signs the writer JWT)
+	// dashboard: private + public (it signs the writer JWT). Data, not StringData, so every reader,
+	// including a fake client, sees the keys under Data.
 	jwt := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: jwtName, Namespace: oc.Namespace, Labels: labelsFor(oc, "jwt")},
-		StringData: map[string]string{"JWT_PRIVATE_KEY": string(privPEM), "JWT_PUBLIC_KEY": string(pubPEM)},
+		Data:       map[string][]byte{"JWT_PRIVATE_KEY": privPEM, "JWT_PUBLIC_KEY": pubPEM},
 	}
 	if err := controllerutil.SetControllerReference(oc, jwt, r.Scheme); err != nil {
 		return err
 	}
-	if err := r.Create(ctx, jwt); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	if err := r.Create(ctx, jwt); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		// Another reconcile created the pair first: derive the public Secret from the winning pair,
+		// not from the one generated here, which is discarded.
+		winner := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(jwt), winner); err != nil {
+			return err
+		}
+		jwt = winner
 	}
+	return r.ensureJWTPublicSecret(ctx, oc, jwt)
+}
 
-	// engine: public only (it verifies)
-	jwtPub := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: jwtName + "-pub", Namespace: oc.Namespace, Labels: labelsFor(oc, "jwt")},
-		StringData: map[string]string{"JWT_PUBLIC_KEY": string(pubPEM)},
-	}
-	if err := controllerutil.SetControllerReference(oc, jwtPub, r.Scheme); err != nil {
+// ensureJWTPublicSecret creates <cr>-jwt-pub from the signing Secret jwt when it is missing, so an
+// interrupted first run or a deleted public Secret heals on the next reconcile. It copies only
+// JWT_PUBLIC_KEY (from Data, or StringData on the just-created object) and leaves an existing public
+// Secret as it is: it neither rotates nor repairs keys.
+func (r *OramaCloudV1Reconciler) ensureJWTPublicSecret(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, jwt *corev1.Secret) error {
+	name := jwt.Name + "-pub"
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, &corev1.Secret{}); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
-	if err := r.Create(ctx, jwtPub); err != nil && !apierrors.IsAlreadyExists(err) {
+	publicKey := jwt.Data["JWT_PUBLIC_KEY"]
+	if len(publicKey) == 0 {
+		publicKey = []byte(jwt.StringData["JWT_PUBLIC_KEY"])
+	}
+	if len(publicKey) == 0 {
+		return fmt.Errorf("secret %s has no JWT_PUBLIC_KEY to recover %s from; restore it, the operator does not rotate the pair", jwt.Name, name)
+	}
+	pub := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace, Labels: labelsFor(oc, "jwt")},
+		Data:       map[string][]byte{"JWT_PUBLIC_KEY": publicKey},
+	}
+	if err := controllerutil.SetControllerReference(oc, pub, r.Scheme); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, pub); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
 	return nil

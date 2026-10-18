@@ -1336,6 +1336,27 @@ spec:
                               embeddings server. (This is the main reason a GPU node is needed at all; the
                               other is an in-cluster vLLM — see spec.llm.gpu.)
                             type: boolean
+                          jwt:
+                            description: |-
+                              JWT makes the writer verify the dashboard's write tokens through OramaCore's JWKS provider.
+                              Unset renders no writer_side.jwt block.
+                            properties:
+                              audiences:
+                                description: |-
+                                  Audiences are the accepted audiences: each exact writer URL the dashboard signs tokens for
+                                  (the writer_url of a control-DB oramacore_clusters row). Required, at least one.
+                                items:
+                                  maxLength: 128
+                                  minLength: 1
+                                  type: string
+                                type: array
+                              jwksURL:
+                                description: |-
+                                  JWKSURL is the dashboard's JWKS endpoint. Unset uses the in-cluster dashboard Service,
+                                  http://<cr>-dashboard:3000/api/.well-known/jwks.json, which requires the dashboard enabled.
+                                pattern: ^https?://
+                                type: string
+                            type: object
                           nodeSelector:
                             additionalProperties:
                               type: string
@@ -2066,6 +2087,14 @@ spec:
                     default: latest
                     type: string
                 type: object
+              jwtIssuer:
+                description: |-
+                  JWTIssuer is the issuer the dashboard signs write tokens with (JWT_ISSUER) and the only one
+                  the writer accepts. It has no CRD default: engine.writer.jwt requires it set, so a production
+                  issuer is chosen on purpose. Without writer JWT verification an empty value falls back to
+                  "orama-cloud" for the dashboard.
+                maxLength: 128
+                type: string
               llm:
                 default:
                   default: groq

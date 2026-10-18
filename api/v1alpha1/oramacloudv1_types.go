@@ -30,6 +30,14 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:default={provider: none}
 	IDP IDPSpec `json:"idp,omitempty"`
 
+	// JWTIssuer is the issuer the dashboard signs write tokens with (JWT_ISSUER) and the only one
+	// the writer accepts. It has no CRD default: engine.writer.jwt requires it set, so a production
+	// issuer is chosen on purpose. Without writer JWT verification an empty value falls back to
+	// "orama-cloud" for the dashboard.
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	JWTIssuer string `json:"jwtIssuer,omitempty"`
+
 	// Images sets the default registry/tag and per-component image overrides.
 	// Defaults reuse the published oramasearch/* images.
 	Images ImagesSpec `json:"images,omitempty"`
@@ -294,6 +302,26 @@ type WriterSpec struct {
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	// JWT makes the writer verify the dashboard's write tokens through OramaCore's JWKS provider.
+	// Unset renders no writer_side.jwt block.
+	// +optional
+	JWT *WriterJWTSpec `json:"jwt,omitempty"`
+}
+
+// WriterJWTSpec is the writer's dashboard JWKS provider. The writer accepts a token whose issuer is
+// spec.jwtIssuer and whose audience is one of Audiences, both by exact match.
+type WriterJWTSpec struct {
+	// JWKSURL is the dashboard's JWKS endpoint. Unset uses the in-cluster dashboard Service,
+	// http://<cr>-dashboard:3000/api/.well-known/jwks.json, which requires the dashboard enabled.
+	// +kubebuilder:validation:Pattern=`^https?://`
+	// +optional
+	JWKSURL string `json:"jwksURL,omitempty"`
+	// Audiences are the accepted audiences: each exact writer URL the dashboard signs tokens for
+	// (the writer_url of a control-DB oramacore_clusters row). Required, at least one.
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=128
+	// +optional
+	Audiences []string `json:"audiences,omitempty"`
 }
 
 type ReaderSpec struct {

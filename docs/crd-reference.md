@@ -16,6 +16,7 @@ pointing at the primary); the full sample list is in
 | `region.role` | enum | `primary` | `primary` (write path + stateful stores) or `read` (regional read tier). |
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
+| `jwtIssuer` | string | — | The issuer of the stack's write tokens: the shared ConfigMap's `JWT_ISSUER`, which the dashboard signs with, and the only issuer the writer accepts ([below](#speccomponentsenginewriterjwt)). At most 128 characters. No CRD default, because a production issuer is chosen on purpose: `engine.writer.jwt` refuses an empty one. With `engine.writer.jwt` unset an empty value gives `JWT_ISSUER: orama-cloud`. A change rolls the dashboard and, with `engine.writer.jwt` set, the writer. |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile while the engine is enabled) run the writer-only and reader-only OramaCore builds with their own `writer.yaml` and `reader.yaml`, and win over `overrides.oramacore`; unset, both pods run the combined image, so every reader also runs a writer ([components.md](components.md#engine-internalcontrollerenginego)). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | Prod 1's four ([below](#specllm)) | **Multiple** LLM providers (`name`: `groq \| openai \| anthropic \| google \| vllm`, `models[]`, `apiKeySecretRef: {name}`, `gpu`) — end users pick per query. The first model is the provider's default model. |
@@ -162,7 +163,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `reader.{replicas,hpa,resources}`, `envoy` | OramaCore writer + readers + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `reader.{replicas,hpa,resources}`, `envoy` | OramaCore writer + readers + Envoy |
 | `dashboard` | `host`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
@@ -183,6 +184,64 @@ and **40 minutes for readers** (`failureThreshold: 240`), both at a 10s period o
 these budgets add no mandatory delay. There are no per-side startup timeout fields.
 Readiness remains every 10s and liveness every 15s, both with a 3s timeout and failure
 threshold 3. See [engine health probes](components.md#engine-internalcontrollerenginego).
+
+### `spec.components.engine.writer.jwt`
+
+Makes the writer verify the write tokens the dashboard signs (`POST /api/user/jwt`: issuer
+`JWT_ISSUER`, audience the project's `oramacore_clusters.writer_url`). It renders one OramaCore JWKS
+provider under `writer_side.jwt` in the combined and writer-only configs; the reader-only config
+never has one. Unset renders no `jwt` block, and a write token gets HTTP 500 from the writer
+(`JwtError::NotConfigured`).
+
+| Field | Default | Purpose |
+|---|---|---|
+| `jwksURL` | in-cluster dashboard | The dashboard's JWKS endpoint, an `http` or `https` URL with a host and no credentials. Unset renders `http://<cr>-dashboard:3000/api/.well-known/jwks.json`, so the writer fetches keys from the dashboard Service in its own namespace, not through public DNS and Cloudflare. |
+| `audiences[]` | — | Required, at least one. Every accepted audience: each exact `oramacore_clusters.writer_url` in the control database. Each entry 1 to 128 characters. Rendered in order with duplicates removed and otherwise as written: a trailing slash, scheme or case change is a different audience. |
+
+The provider's `issuers` is `[jwtIssuer]`, the same value as the dashboard's `JWT_ISSUER`, and
+`refresh_interval` is `1h`. OramaCore matches issuer and audience exactly, so a configuration that
+would reject every write fails the reconcile instead (`phase: Degraded`, `Ready=False`, reason
+`ReconcileError`, the message naming the field) before any engine object changes:
+
+- `spec.jwtIssuer` is empty, or longer than 128 characters;
+- `audiences` is absent or empty, or an entry is empty or longer than 128 characters;
+- `jwksURL` is unset and the dashboard is disabled;
+- `jwksURL` does not parse, is not `http` or `https`, has no host name (`http://:3000/jwks`), or
+  carries a user or password.
+
+The operator checks these strings only: it does not read the control database or fetch the JWKS
+during reconcile. A disabled engine is torn down without the check. A change to the issuer, the JWKS
+URL, the audiences, or setting or unsetting the block rolls the writer through
+`orama.cloud/config-hash`; a reader-only config is unaffected.
+
+Example for a CR named `v1-dev`:
+
+```yaml
+jwtIssuer: https://app-dev.oramadev.net
+components:
+  dashboard:
+    enabled: true
+  engine:
+    enabled: true
+    writer:
+      jwt:
+        audiences:
+          - https://writer.a.example
+          - https://writer.b.example
+```
+
+renders
+
+```yaml
+writer_side:
+  jwt:
+    providers:
+      - name: dashboard
+        jwks_url: "http://v1-dev-dashboard:3000/api/.well-known/jwks.json"
+        issuers: ["https://app-dev.oramadev.net"]
+        audiences: ["https://writer.a.example", "https://writer.b.example"]
+        refresh_interval: 1h
+```
 
 ### Component storage
 

@@ -371,6 +371,19 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		allowances = append(allowances, preserved...)
 		apiErr = errors.Join(apiErr, preserveErr)
 	}
+	if writerJWKSFromDashboard(oc) {
+		allowances = append(
+			allowances,
+			sandboxAllowance(
+				"The OramaCore writer fetches the dashboard's JWKS to verify write tokens.",
+				oramaCloudEgressPolicy("allow-writer-jwks-egress", writer, egressTo(dashboard, 3000)),
+			),
+			sandboxAllowance(
+				"Dashboard serves its JWKS to the OramaCore writer for write-token verification.",
+				oramaCloudIngressPolicy("allow-dashboard-jwks-ingress", dashboard, ingressFrom(writer, 3000)),
+			),
+		)
+	}
 	if r.OperatorNamespace != "" {
 		allowances = append(allowances, sandboxAllowance(
 			"RabbitMQTopology in the Orama operator calls the broker management API to reconcile streams, users and permissions.",

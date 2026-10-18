@@ -95,8 +95,11 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 		return r.holdEngine(ctx, oc)
 	}
 	// Everything the engine templates depend on is checked before the first engine object is
-	// written, so invalid LLM settings or a missing key leave the running engine as it is.
+	// written, so invalid LLM or writer JWT settings or a missing key leave the running engine as it is.
 	if err := validateLLM(oc); err != nil {
+		return err
+	}
+	if err := validateWriterJWT(oc); err != nil {
 		return err
 	}
 	if _, err := r.ensureComponentSecret(ctx, oc, "engine"); err != nil {
@@ -287,7 +290,8 @@ log: {}
 // oramacore-operations on the broker Service :5552 (#41); OramaCore creates the stream on connect and
 // the broker advertises the Service host so reconnect works. Both sides authenticate as the broker
 // admin user from <cr>-broker-admin (#307; per-service users are #99). Its hooks block is hooksYAML,
-// the same as the readers'.
+// the same as the readers'. With engine.writer.jwt set it ends with the dashboard JWKS provider
+// (writerJWTYAML), so the combined and writer-only configs carry it and the reader-only config does not.
 func writerSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	return fmt.Sprintf(`writer_side:
   output:
@@ -308,7 +312,7 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
     commit_interval: 1m
-`, oc.Name+"-broker", hooksYAML(oc))
+`, oc.Name+"-broker", hooksYAML(oc)) + writerJWTYAML(oc)
 }
 
 // readerSideYAML is the reader_side section: the readers consume the writer's stream from the same
