@@ -33,20 +33,34 @@ spec:
       manageLoadBalancers: true
     components:
       analytics:
+        # 30 days kept, starting fresh (bridge decisions 2026-10-16 #4). ClickHouse Cloud's
+        # oramacore_analytics_search_raw is 468.30 GiB for 16,979,167 rows, ~29.6 KB a row
+        # (techops-docs clickhouse.md, 2026-07-07); 8,318,162 searches in 90 days (orama-bridge#138,
+        # 2026-10-08) give ~82 GiB per 30 days. Doubled for headroom and rounded up.
+        storage:
+          size: 200Gi
         enabled: true
         mode: in-cluster
         placement: local
       analyticsProcessor:
         enabled: true
       broker:
+        # The oramacore-operations stream is capped at 5 GB on Prod 1 (techops-docs aws.md) and by the
+        # operator (datastore.go brokerOperationsStreamMaxBytes); four times the cap.
+        storage:
+          size: 20Gi
         enabled: true
         mode: in-cluster
         placement: local
       cache:
+        # 10Gi default. Prod 1's Redis (Upstash) usage is not measured yet; raise this once it is.
         enabled: true
         mode: in-cluster
         placement: local
       controlDB:
+        # PlanetScale holds 531 MB on a 10 GB disk (techops-docs planetscale.md, 2026-07-07).
+        storage:
+          size: 10Gi
         enabled: true
         mode: in-cluster
         placement: local
@@ -63,6 +77,11 @@ spec:
         reader:
           replicas: 1
         writer:
+          # Prod 1's writer root volume is 500 GiB (oramacore-aws terraform/live/prod/main.tf
+          # root_volume_size = 500) with 343 GiB free on 2026-10-12 (techops-docs
+          # incident-2026-10-12-reader-stalls.md, "Host storage"): about 157 GiB used, OS included.
+          storage:
+            size: 512Gi
           gpu: false
       ingestion:
         enabled: true
@@ -73,6 +92,7 @@ spec:
       pgAdmin:
         enabled: true
       search:
+        # 10Gi default. Prod 1's Typesense usage is not measured yet; raise this once it is.
         enabled: true
         mode: in-cluster
         placement: local
