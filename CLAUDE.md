@@ -342,14 +342,15 @@ Production runs no e2e suites because none is created there
   [zetta#799](https://github.com/oramasearch/zetta/issues/799)). The target's image MUST be an auth-capable
   build (post-#799). `spec.requireAuth`/`spec.mcpTokenAuth` are deprecated no-ops. The test's status also
   carries best-effort `pass`/`fail`/`skip` counts parsed from the Job's pod logs (RBAC `pods/log get`).
-- **Lake e2e (`LakeE2ETest`):** runs a lake/liquid-owned runner image as a Job in the target
-  cluster-scoped `Lake` resource's namespace. The controller waits for the Lake Deployment,
-  control-plane Postgres, and schema, then supplies `LAKE_E2E_BASE_URL` and a unique
-  `LAKE_E2E_RUN_ID`. The image entrypoint signs up a fresh user, creates a repository, pushes and
-  pulls it through liquid's sync protocol, and verifies the pulled bytes. The runner image is
-  required and should use an immutable published tag; the operator does not embed a copy of the
-  cross-repository suite. Watch `kubectl get lakee2e`; logs are on Job `<name>-e2e` in the Lake
-  namespace.
+- **Lake e2e (`LakeE2ETest`):** runs the private runner image `oramasearch/lake-e2e` (repo
+  `oramasearch/lake-e2e`, [#537](https://github.com/oramasearch/orama-operator/issues/537)) as a Job
+  in the target Lake's namespace: every Lake feature as a freshly signed-up person (never the admin
+  bearer), through REST, MCP and a headless browser. It targets a LakeSet member (`spec.member`;
+  refused unless the Lake carries that set's label) or a Lake by name, waits for the Lake, Postgres
+  and schema, runs one Job `<name>-e2e-<generation>` per spec generation (`spec.runID` re-runs it),
+  and records pass/fail/skip counts and each failed and skipped step's reason from the runner's
+  termination message. On the `testing` member of `lake-nonprod` it is the testing → staging gate
+  of a substantial lake release; see `docs/lake/README.md#service-e2e`.
 
 ## Branches: work lands on `dev`, `main` is the last release
 
