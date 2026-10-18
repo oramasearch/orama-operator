@@ -304,9 +304,14 @@ Driven by `spec.region.role`:
   `terminationGracePeriodSeconds: 300` (readers: 60) so k8s doesn't SIGKILL the flush
   at the default 30s.
 - **Health probes** — startup / readiness / liveness all hit `GET /health` on `:8080`
-  (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path). The **startup probe**
-  (`failureThreshold: 30 × 10s` ≈ 5 min) gates the others so a slow index-load boot
-  isn't killed; readiness gates Service routing; liveness restarts a hung pod.
+  (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path), including when Envoy
+  is enabled. The **startup probe** allows the writer **20 minutes** (`120 × 10s`)
+  and readers **40 minutes** (`240 × 10s`), matching Prod 1's startup allowances from
+  Steve's review of #406. These fixed budgets gate readiness and liveness during index
+  loading; a successful startup probe releases them immediately, without waiting out the
+  budget. A container that never becomes healthy exhausts its budget and is restarted.
+  Readiness checks every 10s and liveness every 15s, both with a 3s timeout and failure
+  threshold 3. Reconciliation updates existing workload templates to these startup budgets.
 - **Disruption budgets** — the **writer** gets a PDB with `maxUnavailable: 0` (it's a
   singleton — voluntary disruptions like node drains/autoscaler are blocked so it
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**
