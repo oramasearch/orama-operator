@@ -26,7 +26,12 @@ import (
 // The key is crdrollout.Change.Key(): "<crd> <version> <field path> <what>". Clear the list when a
 // release is tagged, in the pull request that merges main back into dev; an entry that no longer
 // differs from the last release fails the test.
-var acknowledgedCRDChanges = map[string]string{}
+var acknowledgedCRDChanges = map[string]string{
+	"oramacloudv1s.orama.cloud v1alpha1 spec.components.engine.reader.hpa removed": "operator#606: readers have a " +
+		"fixed count and no autoscaler since #550, so v0.5.0 accepts reader.hpa and ignores it. No committed set or " +
+		"sample sets it, and on 2026-10-17 no OramaCloudV1 or OramaCloudV1Set on any cluster held it (Steve: \"we " +
+		"don't need hpas\"). Pruning it changes nothing an operator reads.",
+}
 
 // lastRelease is the newest release tag behind HEAD, or "" outside a git checkout. A tag on HEAD
 // itself is skipped: at a release's own tag the changes it carries are measured against the release

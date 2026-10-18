@@ -582,7 +582,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 // reconcileReaders owns the reader StatefulSet, its headless Service, the reader Service and PDB.
 // Each reader keeps its index and stream offset on its own claim, so a replaced pod resumes from
 // its offset instead of replaying the stream from 0 (#382). The replica count is fixed
-// (reader.replicas, default 3); no autoscaler reads reader.hpa. llmSecretHash and credentialsHash
+// (reader.replicas, default 3); there is no autoscaler. llmSecretHash and credentialsHash
 // (engineLLMSecretHash, credentialsHash) are resolved before any engine object is written.
 // envoyBootstrap is the Envoy bootstrap the engine ConfigMap carries (envoyConfig); with Envoy
 // enabled it is part of the readers' config hash, so a new bootstrap rolls them.

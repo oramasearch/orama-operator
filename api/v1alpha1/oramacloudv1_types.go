@@ -352,9 +352,6 @@ type ReaderSpec struct {
 	// every reader's existing claim instead.
 	// +optional
 	Storage *VolumeSpec `json:"storage,omitempty"`
-	// HPA autoscales readers on load when set.
-	// +optional
-	HPA *HPASpec `json:"hpa,omitempty"`
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 	// Host publishes the readers on this public DNS name (for example reader.orama.ing), without a
@@ -375,12 +372,6 @@ type ReaderSpec struct {
 	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	ExtraHosts []string `json:"extraHosts,omitempty"`
-}
-
-type HPASpec struct {
-	MinReplicas          int32 `json:"minReplicas,omitempty"`
-	MaxReplicas          int32 `json:"maxReplicas,omitempty"`
-	TargetCPUUtilization int32 `json:"targetCPUUtilization,omitempty"`
 }
 
 // IngestionSpec configures the ingest path (index-builder as a plain Deployment + HARVEST).

@@ -164,7 +164,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,hpa,resources,storage}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,resources,storage}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
 | `dashboard` | `host`, `extraHosts`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host`, `extraHosts` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
@@ -178,8 +178,8 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `analyticsProcessor` | `resources`, `import.{enabled,suspend}` | analytics-processor (readers' search events → ClickHouse) + its scheduled import |
 
 `engine.reader.replicas` is the fixed number of readers (0 or unset → 3), each with its own data
-volume (`10Gi` unless `engine.reader.storage` says otherwise, [below](#component-storage)); `engine.reader.hpa` is accepted but ignored: no autoscaler is
-created. `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
+volume (`10Gi` unless `engine.reader.storage` says otherwise, [below](#component-storage)). There is no autoscaler and no autoscaling field: `engine.reader.hpa`
+was removed in #606. `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
 
 Engine startup budgets are fixed: **20 minutes for the writer** (`failureThreshold: 120`)

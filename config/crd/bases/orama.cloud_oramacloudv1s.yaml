@@ -1319,19 +1319,6 @@ spec:
                             maxLength: 253
                             pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
                             type: string
-                          hpa:
-                            description: HPA autoscales readers on load when set.
-                            properties:
-                              maxReplicas:
-                                format: int32
-                                type: integer
-                              minReplicas:
-                                format: int32
-                                type: integer
-                              targetCPUUtilization:
-                                format: int32
-                                type: integer
-                            type: object
                           replicas:
                             default: 3
                             format: int32

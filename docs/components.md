@@ -10,7 +10,7 @@ DNS reconciler is implemented but not yet live-tested. Component images are buil
 the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
 tooling and pushed to **private Docker Hub**; set `spec.images.tag` + `spec.images.pullSecretName`
 ([install §4](install.md#4-override-the-dummy-secrets--images-for-real-use)). Remaining `OramaCloudV1`
-work is **hardening**: full config/secrets, HPA, Cloudflare LB, the workers-bundle in-cluster
+work is **hardening**: full config/secrets, Cloudflare LB, the workers-bundle in-cluster
 wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows below.
 
 | Component | Reconciler | Creates | Status |
@@ -436,8 +436,8 @@ Driven by `spec.region.role`:
     reader's existing claim ([Component storage](#component-storage)), and a smaller one is a
     refused shrink.
   - **Fixed count, no autoscaler.** `replicas` is `reader.replicas` (0 or unset → 3), set on every
-    reconcile; `podManagementPolicy: Parallel` starts them together. No HorizontalPodAutoscaler is
-    created and `reader.hpa` is ignored. Claims are kept when the count drops or the StatefulSet is
+    reconcile; `podManagementPolicy: Parallel` starts them together. There is no
+    HorizontalPodAutoscaler and no autoscaling field (#606). Claims are kept when the count drops or the StatefulSet is
     deleted (Kubernetes' default `Retain`; the operator sets no retention policy), and a reader
     that comes back reuses its claim.
   - **Headless Service** `<cr>-reader-headless` (`clusterIP: None`, reader selectors, `http`
