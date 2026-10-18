@@ -32,7 +32,7 @@ Every datastore-state CRD follows the same "external resource as an owned CRD" s
 
 The refinement on #40 first suggested driving the broker via the **RabbitMQ Cluster + Messaging
 Topology operators**. Those were evaluated and **dropped** (principle #3): their bitnami images 404'd
-(`ErrImagePull`, deprecated catalog). So the broker runs as a plain `rabbitmq:3.13-management`
+(`ErrImagePull`, deprecated catalog). So the broker runs as a plain `rabbitmq:3.13.7-management`
 StatefulSet (`reconcileBroker`), and the operator models its topology with **its own** small CRD
 reconciled via the broker's **management HTTP API** (`:15672`) — a purpose-built CRD we control beats
 an unstable vendor dependency ([#41](https://github.com/oramasearch/orama-operator/issues/41)).

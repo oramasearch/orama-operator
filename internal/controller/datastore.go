@@ -223,7 +223,7 @@ func storeRenderConfigInit(files []string, env []corev1.EnvVar) corev1.Container
 	}
 	return corev1.Container{
 		Name:    "render-config",
-		Image:   "busybox:1.37",
+		Image:   "busybox:1.37.0",
 		Command: []string{"sh", "-c", b.String()},
 		Env:     env,
 		VolumeMounts: []corev1.VolumeMount{
@@ -259,7 +259,7 @@ func storeImage(oc *oramav1alpha1.OramaCloudV1, component, def string) string {
 func (r *OramaCloudV1Reconciler) reconcileCache(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Cache, dataStoreDef{
 		component:         "cache",
-		image:             "redis:7-alpine",
+		image:             "redis:7.4.11-alpine",
 		ports:             []corev1.ContainerPort{{Name: "redis", ContainerPort: 6379}},
 		dataPath:          "/data",
 		env:               []corev1.EnvVar{redisPasswordEnvVar(oc)},
@@ -328,7 +328,7 @@ func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav
 	advertised := oc.Name + "-broker." + oc.Namespace + ".svc.cluster.local"
 	if err := r.reconcileDataStore(ctx, oc, oc.Spec.Components.Broker, dataStoreDef{
 		component: "broker",
-		image:     "rabbitmq:3.13-management",
+		image:     "rabbitmq:3.13.7-management",
 		ports: []corev1.ContainerPort{
 			{Name: "amqp", ContainerPort: 5672},
 			{Name: "management", ContainerPort: 15672},
@@ -516,7 +516,7 @@ const clickhouseMemoryXML = `<clickhouse>
 
 // clickhouseImage is the analytics ClickHouse server's default image. The analytics retention Job
 // runs its clickhouse-client (reconcileAnalyticsRetention).
-const clickhouseImage = "clickhouse/clickhouse-server:24.8"
+const clickhouseImage = "clickhouse/clickhouse-server:24.8.14.39"
 
 func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Analytics, dataStoreDef{

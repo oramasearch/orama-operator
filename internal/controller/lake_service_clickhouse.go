@@ -75,7 +75,7 @@ const (
 	clickHousePodTemplateName = "restricted"
 	// The Altinity operator's default is clickhouse/clickhouse-server:latest, which changes under
 	// a running service. A pod template has to name its image, so it is pinned here.
-	clickHouseServerImage = "clickhouse/clickhouse-server:25.3"
+	clickHouseServerImage = "clickhouse/clickhouse-server:25.3.14.14"
 	clickHouseKeeperImage = "clickhouse/clickhouse-keeper:25.3"
 )
 

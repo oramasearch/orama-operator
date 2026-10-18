@@ -164,7 +164,7 @@ func TestControlDBMigrationsApplyInOrder(t *testing.T) {
 		SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: oc.Name + "-controldb-migrations", Key: "schema-0008.sql"},
 		Version:             schemaVersion(mustSQL(controlDBSchema0008SQL())),
 		GuardTable:          "team_migrations",
-		Image:               "postgres:16-alpine",
+		Image:               "postgres:16.15-alpine",
 	}
 	if !reflect.DeepEqual(ps.Spec, want) {
 		t.Fatalf("0008 spec = %+v, want %+v", ps.Spec, want)

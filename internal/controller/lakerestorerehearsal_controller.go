@@ -37,7 +37,7 @@ type LakeRestoreRehearsalReconciler struct {
 
 const (
 	lakeRehearsalRequeue       = 10 * time.Second
-	lakeRehearsalVerifyImage   = "postgres:18-alpine"
+	lakeRehearsalVerifyImage   = "postgres:18.6-alpine"
 	cnpgHealthyPhase           = "Cluster in healthy state"
 	postgresLifecycleGapNote   = "one or more lifecycle procedures have not been tested"
 	postgresSingleInstanceNote = "failover is unavailable for a single-instance cluster"
