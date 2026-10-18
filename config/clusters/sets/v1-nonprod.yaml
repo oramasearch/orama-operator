@@ -25,10 +25,8 @@ spec:
             jwt:
               audiences:
               - https://writer-dev.oramadev.net
-      # The one master key the engine, index-builder, workers, dashboard and analytics processor
-      # share. Without it the engine is held and the stack is not Ready.
-      masterAPIKeySecretRef:
-        name: v1-nonprod-master-api-key
+      # No masterAPIKeySecretRef: v1-dev has no copied data, so the operator generates its master key
+      # (v1-dev-master-api-key, #615). Production names Prod 1's key instead (v1-prod.yaml).
       # The dashboard signs write tokens with this issuer and the writer_url of the c1 row as audience;
       # the writer accepts exactly these.
       jwtIssuer: https://app-dev.oramadev.net
@@ -39,8 +37,6 @@ spec:
   - name: cloudflare-api-token
     namespace: orama-system
   - name: v1-nonprod-llm-keys
-    namespace: orama-system
-  - name: v1-nonprod-master-api-key
     namespace: orama-system
   - name: v1-nonprod-dashboard-env
     namespace: orama-system

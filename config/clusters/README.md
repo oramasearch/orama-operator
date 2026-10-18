@@ -43,9 +43,10 @@ operator only grows volumes, so a size raised in a set file stays raised there.
 
 No file here holds a secret. Secrets are named by reference and live on the managing cluster.
 A set's `secrets` list copies them into each member's namespace before the instance is applied;
-the copy keeps its name, or takes the one `as` gives. A v1 member's engine master key arrives this
-way and is named by `template.masterAPIKeySecretRef` (or a member's `spec`); the operator never
-generates it, and without it the member's writer and readers stay at zero replicas. Changing a
+the copy keeps its name, or takes the one `as` gives. A v1 member that must carry an existing
+engine master key (production carries Prod 1's) receives it this way and names it in
+`template.masterAPIKeySecretRef` (or a member's `spec`). A member that names none gets a generated
+`<cr>-master-api-key` (#615), which is right for a fresh stack such as `v1-dev`. Changing a
 copied Secret's source, or its data on the managing cluster, rolls the member's consumers of it.
 
 An `OramaCloudV1Set` copies `cloudflare-api-token` to each member's namespace the same way;

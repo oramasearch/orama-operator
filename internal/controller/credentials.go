@@ -21,7 +21,8 @@ import (
 
 // Stack-wide credentials (#307): the broker admin user and the Redis password, each in one Secret
 // that every client reads by secretKeyRef, the analytics key the readers and analytics-processor
-// share (#386), and the master API key, which the CR names (spec.masterAPIKeySecretRef). A
+// share (#386), and the master API key: the Secret spec.masterAPIKeySecretRef names, or, when it names
+// none, <cr>-master-api-key, generated once (#615). A
 // workload's template carries credentialsHashKey, the digest of the credential Secrets it reads, so
 // a changed value rolls exactly the workloads that use it.
 //
@@ -57,6 +58,13 @@ const (
 
 func cacheAuthSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-cache-auth" }
 
+// generatedMasterAPIKeySecretName is the master key Secret the operator creates for a stack whose
+// spec.masterAPIKeySecretRef names none (#615). A fresh stack has no copied data and no cluster row,
+// so any random key is right; production names its Secret instead, to carry Prod 1's key.
+func generatedMasterAPIKeySecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-master-api-key"
+}
+
 // analyticsKeySecretName is the generated Secret holding the key readers check on GET /v1/analytics
 // (reader_side.analytics.api_key) and analytics-processor sends. It can read and erase search events
 // and nothing else, so the processor holds no master key.
@@ -73,6 +81,10 @@ func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 		return []string{"password"}
 	case analyticsKeySecretName(oc):
 		return []string{analyticsKeyEnvName}
+	case generatedMasterAPIKeySecretName(oc):
+		if masterAPIKeyGenerated(oc) {
+			return []string{masterAPIKeyEnvName}
+		}
 	}
 	return nil
 }
@@ -83,12 +95,13 @@ func storeLocal(oc *oramav1alpha1.OramaCloudV1, spec oramav1alpha1.DataStoreSpec
 	return spec.Mode != "external" && spec.Enabled && !(spec.Placement == "central" && oc.Spec.Region.Role == "read")
 }
 
-// masterAPIKeyRef is the Secret and key spec.masterAPIKeySecretRef names. The name is empty when
-// the reference is unset or has no name; the key defaults to MASTER_API_KEY.
+// masterAPIKeyRef is the Secret and key every consumer reads the master key from: the ones
+// spec.masterAPIKeySecretRef names, or the generated <cr>-master-api-key when it names none. The key
+// defaults to MASTER_API_KEY.
 func masterAPIKeyRef(oc *oramav1alpha1.OramaCloudV1) (name, key string) {
 	ref := oc.Spec.MasterAPIKeySecretRef
 	if ref == nil || ref.Name == "" {
-		return "", ""
+		return generatedMasterAPIKeySecretName(oc), masterAPIKeyEnvName
 	}
 	if ref.Key == "" {
 		return ref.Name, masterAPIKeyEnvName
@@ -97,7 +110,7 @@ func masterAPIKeyRef(oc *oramav1alpha1.OramaCloudV1) (name, key string) {
 }
 
 // masterAPIKeyEnv is the MASTER_API_KEY entry of every consumer, a required secretKeyRef to the
-// referenced Secret. Call it only with a reference whose name is set. An explicit env entry wins
+// master key Secret (masterAPIKeyRef). An explicit env entry wins
 // over envFrom, so a MASTER_API_KEY left in an older component Secret is ignored.
 func masterAPIKeyEnv(oc *oramav1alpha1.OramaCloudV1) corev1.EnvVar {
 	name, key := masterAPIKeyRef(oc)
@@ -140,8 +153,11 @@ func secretKeyEnv(name, secret, key string) corev1.EnvVar {
 }
 
 // ensureCredentialSecrets creates <cr>-broker-admin and <cr>-cache-auth, with a random 48-character
-// hex password, where the broker and the cache run in this cluster, and <cr>-analytics-api-key, a
-// random 48-character hex ANALYTICS_API_KEY, on every stack. An existing Secret, generated or
+// hex password, where the broker and the cache run in this cluster, <cr>-analytics-api-key, a
+// random 48-character hex ANALYTICS_API_KEY, on every stack, and <cr>-master-api-key, a random
+// 48-character hex MASTER_API_KEY, on a stack that names no master key Secret and has a consumer of
+// it (#615). The generated master key is never replaced: the c1 cluster row keeps the key it was
+// inserted with (#447). An existing Secret, generated or
 // supplied, is never changed. Each one is then read back, so a Secret that won a create race is the
 // one checked: a missing, empty or unsupported value fails the reconcile, naming the Secret and key.
 // Elsewhere a broker or cache client's Secret must come through the set's secrets list.
@@ -162,6 +178,10 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		// re-enabling the processor or ClickHouse finds the same key.
 		{true, analyticsKeySecretName(oc), func(k string) map[string][]byte {
 			return map[string][]byte{analyticsKeyEnvName: []byte(k)}
+		}},
+		// Only when the CR names no master key Secret; a named one is supplied, never created.
+		{masterAPIKeyGenerated(oc), generatedMasterAPIKeySecretName(oc), func(k string) map[string][]byte {
+			return map[string][]byte{masterAPIKeyEnvName: []byte(k)}
 		}},
 	} {
 		if !s.local {
@@ -243,12 +263,18 @@ func checkCredentialValue(sec *corev1.Secret, key string) error {
 	return nil
 }
 
-// masterAPIKeySecret is the master API key Secret a consumer reads, and false while
-// spec.masterAPIKeySecretRef has no name. A consumer then leaves its workload as it is (it cannot
-// build the env entry), and validateMasterAPIKey reports the missing reference in Ready.
+// masterAPIKeySecret is the master API key Secret a consumer reads: the named one, or the generated
+// <cr>-master-api-key (#615), so the second result is always true.
 func masterAPIKeySecret(oc *oramav1alpha1.OramaCloudV1) (string, bool) {
 	name, _ := masterAPIKeyRef(oc)
 	return name, name != ""
+}
+
+// masterAPIKeyGenerated reports whether the operator generates this stack's master key: it names no
+// master key Secret and some enabled component reads the key.
+func masterAPIKeyGenerated(oc *oramav1alpha1.OramaCloudV1) bool {
+	ref := oc.Spec.MasterAPIKeySecretRef
+	return (ref == nil || ref.Name == "") && masterAPIKeyConsumers(oc)
 }
 
 // masterAPIKeyConsumers reports whether any enabled component reads MASTER_API_KEY.
@@ -258,11 +284,11 @@ func masterAPIKeyConsumers(oc *oramav1alpha1.OramaCloudV1) bool {
 	return c.Engine.Enabled || c.Ingestion.Enabled || c.Workers.Enabled || c.Dashboard.Enabled
 }
 
-// validateMasterAPIKey checks spec.masterAPIKeySecretRef. It returns nil when the reference is
-// usable, a Ready=False condition naming the cause when it is not, and an error only when the
-// Secret cannot be read. Every consumer needs the reference's name to build its pod; the Secret's
-// value is checked only while the engine is enabled, since the engine does not start without a
-// real key. Messages name the Secret and key, never a value.
+// validateMasterAPIKey checks the master key Secret, named or generated (masterAPIKeyRef). It returns
+// nil when the key is usable, a Ready=False condition naming the cause when it is not, and an error
+// only when the Secret cannot be read. The Secret's value is checked only while the engine is
+// enabled, since the engine does not start without a real key; a generated key always passes.
+// Messages name the Secret and key, never a value.
 func (r *OramaCloudV1Reconciler) validateMasterAPIKey(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (*metav1.Condition, error) {
 	if !masterAPIKeyConsumers(oc) {
 		return nil, nil
@@ -271,9 +297,6 @@ func (r *OramaCloudV1Reconciler) validateMasterAPIKey(ctx context.Context, oc *o
 		return &metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: reason, Message: msg}
 	}
 	name, key := masterAPIKeyRef(oc)
-	if name == "" {
-		return notReady("MasterAPIKeyRefMissing", "spec.masterAPIKeySecretRef.name is required"), nil
-	}
 	if !oc.Spec.Components.Engine.Enabled {
 		return nil, nil
 	}
@@ -281,6 +304,11 @@ func (r *OramaCloudV1Reconciler) validateMasterAPIKey(ctx context.Context, oc *o
 	sec := &corev1.Secret{}
 	if err := r.secretReader().Get(ctx, types.NamespacedName{Namespace: oc.Namespace, Name: name}, sec); err != nil {
 		if apierrors.IsNotFound(err) {
+			if masterAPIKeyGenerated(oc) {
+				// The bootstrap step creates it in this same reconcile, before any consumer; the
+				// engine step validates again after it.
+				return nil, nil
+			}
 			return notReady("MasterAPIKeySecretMissing", fmt.Sprintf("master API key %s: the Secret does not exist", where)), nil
 		}
 		return nil, fmt.Errorf("read master API key Secret %s/%s: %w", oc.Namespace, name, err)

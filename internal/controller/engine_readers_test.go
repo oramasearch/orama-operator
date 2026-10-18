@@ -276,7 +276,10 @@ func TestOldReaderDeploymentIsDeleted(t *testing.T) {
 // Without a usable master key the engine is held: a reader Deployment from an earlier operator
 // version is scaled to zero like the StatefulSets, and no reader StatefulSet is created.
 func TestEngineHoldScalesOldReaderDeployment(t *testing.T) {
-	oc := engineOC(func(o *oramav1alpha1.OramaCloudV1) { o.Spec.MasterAPIKeySecretRef = nil })
+	// A named key Secret that does not exist holds the engine; an unset one no longer does (#615).
+	oc := engineOC(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.MasterAPIKeySecretRef = &oramav1alpha1.MasterAPIKeySecretRef{Name: "missing-master-key"}
+	})
 	dep := readerDeployment(oc, metav1.NewControllerRef(oc, oramav1alpha1.GroupVersion.WithKind("OramaCloudV1")))
 	h := newEngineHarness(t, dep)
 	if err := h.r.reconcileEngine(context.Background(), oc); err != nil {
