@@ -16,8 +16,8 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
-| **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress`; user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); never runs `db-migrate`. The control DB is always in-cluster (`mode: external` is refused); the operator's `PostgresSchema` owns its schema, avoiding a second Drizzle migration (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
-| **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
+| **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); never runs `db-migrate`. The control DB is always in-cluster (`mode: external` is refused); the operator's `PostgresSchema` owns its schema, avoiding a second Drizzle migration (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
+| **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
 | **controlDB** | `internal/controller/controldb.go` | Always in-cluster CloudNativePG `Cluster` (primary bootstrap; read-tier replica); `mode: external` is refused. Three owned **`PostgresSchema`s**, applied in order, give it the dashboard's Drizzle schema 0000 to 0008 and its reference rows ([#378](https://github.com/oramasearch/orama-operator/issues/378); see [controlDB](#controldb-internalcontrollercontroldbgo)) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
 | **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn, or with `applyEveryVersion` no guard) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data). The stack reports its control-DB schemas as one `controldb-schema` component | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
@@ -692,6 +692,41 @@ host is set)**.
   `spec.masterAPIKeySecretRef`, `POSTGRES_PASSWORD`, `DATABASE_URL`)
   plus what `dashboard.envFrom` and `dashboard.env` take from Secrets and ConfigMaps
   ([below](#the-dashboards-environment)).
+
+### Origin TLS (`ingress_tls.go`, [#457](https://github.com/oramasearch/orama-operator/issues/457))
+
+Every Ingress a Cloud v1 stack renders is encrypted to the origin with a certificate cert-manager
+issues and renews (decision 5 of the 2026-10-16 decisions page in orama-bridge). Lake, Lake app,
+environment and Zetta Ingresses do not request one yet
+([#578](https://github.com/oramasearch/orama-operator/issues/578)).
+
+- **One `Issuer` per stack.** The step `originTLS` keeps a namespaced cert-manager `Issuer`
+  `<cr>-letsencrypt` (Let's Encrypt production, DNS-01 through Cloudflare), owned by the stack. Its
+  solver uses the stack's `spec.cloudflare.apiTokenSecretRef` Secret, key `token`; cert-manager
+  generates the ACME account key into `<cr>-letsencrypt-account`. No token, no `Issuer`. cert-manager
+  itself is the platform release every cluster already runs; no new chart.
+- **One shared function.** Each Ingress builder calls `applyIngressTLS(ing, issuer)` last in its
+  `CreateOrUpdate` mutation, with the issuer from `stackIngressIssuer(oc)`. It adds one TLS entry
+  per distinct rule host, each with its own Secret `ingressTLSSecretName(host)` (`<host>-tls`;
+  `*` becomes `wildcard`; a name over 253 characters is cut to 240 plus 8 hex characters of the
+  host's SHA-256), sets `cert-manager.io/issuer` and `nginx.ingress.kubernetes.io/ssl-redirect:
+  "true"`, keeps every other annotation and removes `cluster-issuer`, `issuer-kind` and
+  `issuer-group`. cert-manager's ingress-shim creates one `Certificate` per entry; the operator never
+  writes the `Certificate` or its Secret.
+- **No HTTP-only fallback.** A stack with a host but no Cloudflare token fails the reconcile
+  (`Degraded`, `ReconcileError`, the message names `spec.cloudflare.apiTokenSecretRef`) and leaves
+  any existing Ingress as it is. An empty rule list, an empty host or an empty issuer is an error.
+- **One Secret per host.** The Secret name depends only on the host, so another Ingress serving the
+  same host (the `/metrics` deny companions, [#314](https://github.com/oramasearch/orama-operator/issues/314))
+  names the same Secret. Removing a host drops its TLS entry; the other hosts keep their Secrets.
+- **Known gap:** decision 5 gives each stack its own ingress-nginx. The operator does not render one
+  yet ([#573](https://github.com/oramasearch/orama-operator/issues/573)), so a stack's Ingresses
+  still use `spec.components.ingressClassName` (default the platform's `nginx`). TLS renders on
+  whichever class the Ingress has.
+- **Cloudflare.** Full (strict) is not turned on; the zones' SSL mode stays as it is (decision 15 of
+  2026-10-17). The HTTP to HTTPS redirect at the edge is declared by the operator
+  ([#527](https://github.com/oramasearch/orama-operator/issues/527),
+  [#528](https://github.com/oramasearch/orama-operator/issues/528)), never set by hand.
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.

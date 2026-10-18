@@ -42,6 +42,14 @@ existed and has no `KubernetesCluster` of its own.
 operator only grows volumes, so a size raised in a set file stays raised there.
 
 No file here holds a secret. Secrets are named by reference and live on the managing cluster.
+An `OramaCloudV1Set` copies `cloudflare-api-token` to each member's namespace through its
+`secrets` list; besides DNS, it is the DNS-01 credential of every stack's Let's Encrypt `Issuer`,
+so a v1 member with a host fails to reconcile without it
+([origin TLS](../../docs/components.md#origin-tls-ingress_tlsgo-457)). Every host in a v1 set must
+be a name in a Cloudflare zone that token can edit, or its certificate is never issued. So each
+member names its own `oramadev.net` dashboard and docs hosts (`app-dev`/`docs-dev`, `app-eu`/`docs-eu`,
+`app-us`/`docs-us`); no enabled component in a v1 set has a `.local` host.
+
 A set's `secrets` list copies them into each member's namespace before the instance is applied;
 the copy keeps its name, or takes the one `as` gives. A v1 member's engine master key arrives this
 way and is named by `template.masterAPIKeySecretRef` (or a member's `spec`); the operator never
