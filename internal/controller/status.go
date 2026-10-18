@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -73,10 +75,113 @@ func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *ora
 			ready, detail = ri >= 1, fmt.Sprintf("%d/%d", ri, inst)
 		}
 		comps = append(comps, oramav1alpha1.ComponentStatus{Name: "controldb", Ready: ready, Detail: detail})
+		// A streaming replica receives the primary's schema and runs no migration of its own.
+		if !(oc.Spec.Region.Role == "read" && oc.Spec.Components.ControlDB.Replicate) {
+			comps = append(comps, r.controlDBSchemaReadiness(ctx, oc))
+		}
 	}
 
+	for i := range comps {
+		if comps[i].Name == "reader" && !comps[i].Ready {
+			if cause := r.readerRefusalCause(ctx, oc); cause != "" {
+				comps[i].Detail += "; " + cause
+			}
+		}
+	}
 	sort.Slice(comps, func(i, j int) bool { return comps[i].Name < comps[j].Name })
 	return comps
+}
+
+// Status text for the reader's replication refusals (oramacore#341), keyed by the code the reader's
+// exit message starts with.
+const (
+	readerHistoryExpiredCause = "replication history expired; the reader cannot be built from the stream (needs a reader seed, #458)"
+	readerStreamBehindCause   = "reader is ahead of this replication stream (wrong stream or restored broker)"
+)
+
+// readerRefusalCause explains why the stack's readers refuse to serve, from the termination message
+// of each reader pod's oramacore container: the current termination, or the last one while the
+// container waits to restart. It returns "" when no reader refused. Only the stable causes enter
+// status, never pod names, restart counts or raw messages. A crash-looping reader still changes the
+// detail on each restart: while its container is Running between crashes there is no termination to
+// read, so the detail flips between the ready count ("0/1") and the count with the cause
+// ("0/1; <cause>") until the reader stops crashing.
+//
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+func (r *OramaCloudV1Reconciler) readerRefusalCause(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) string {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(oc.Namespace), client.MatchingLabels(labelsFor(oc, "reader"))); err != nil {
+		return ""
+	}
+	found := map[string]bool{}
+	for _, pod := range pods.Items {
+		if !pod.DeletionTimestamp.IsZero() {
+			continue
+		}
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.Name != "oramacore" {
+				continue
+			}
+			term := cs.State.Terminated
+			if term == nil && cs.State.Waiting != nil {
+				term = cs.LastTerminationState.Terminated
+			}
+			if term == nil || term.ExitCode == 0 {
+				continue
+			}
+			switch {
+			case strings.Contains(term.Message, "REPLICATION_HISTORY_EXPIRED"):
+				found[readerHistoryExpiredCause] = true
+			case strings.Contains(term.Message, "REPLICATION_STREAM_BEHIND"):
+				found[readerStreamBehindCause] = true
+			}
+		}
+	}
+	causes := make([]string, 0, len(found))
+	for cause := range found {
+		causes = append(causes, cause)
+	}
+	sort.Strings(causes)
+	return strings.Join(causes, "; ")
+}
+
+// controlDBSchemaReadiness is the `controldb-schema` component: ready only when every control-DB
+// PostgresSchema (controlDBSchemas) reports its current version Applied. Otherwise the detail names
+// the first schema that is not, with its phase and message, so a missing, stale, pending or failed
+// schema is visible in the stack's status.
+func (r *OramaCloudV1Reconciler) controlDBSchemaReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) oramav1alpha1.ComponentStatus {
+	schemas, err := controlDBSchemas(oc)
+	if err != nil {
+		return oramav1alpha1.ComponentStatus{Name: "controldb-schema", Detail: err.Error()}
+	}
+	for i, s := range schemas {
+		name := oc.Name + s.suffix
+		var ps oramav1alpha1.PostgresSchema
+		state := ""
+		if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, &ps); err != nil {
+			state = "not readable: " + err.Error()
+			if apierrors.IsNotFound(err) {
+				state = "not created yet"
+			}
+		} else if !postgresSchemaCurrent(&ps) {
+			state = fmt.Sprintf("%s (applied %q, want %q)", ps.Status.Phase, ps.Status.AppliedVersion, ps.Spec.Version)
+			if ps.Status.Phase == "" {
+				state = "Pending"
+			}
+			if ps.Status.Message != "" {
+				state += ": " + ps.Status.Message
+			}
+			if retried := ps.Annotations[schemaJobRetriedAnnotation]; retried != "" {
+				state += "; " + retried
+			}
+		}
+		if state != "" {
+			return oramav1alpha1.ComponentStatus{Name: "controldb-schema",
+				Detail: fmt.Sprintf("%d/%d applied; %s %s", i, len(schemas), name, state)}
+		}
+	}
+	return oramav1alpha1.ComponentStatus{Name: "controldb-schema", Ready: true,
+		Detail: fmt.Sprintf("%d/%d applied", len(schemas), len(schemas))}
 }
 
 func componentName(labels map[string]string, fallback string) string {

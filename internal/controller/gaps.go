@@ -47,11 +47,11 @@ func analyticsProcessorConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 create_tables: true
 oramacores:
 %spostgres:
-  url: 'postgres://%s:__PG_PASSWORD__@%s-controldb-rw:5432/%s'
+  url: '__PG_URI__'
   schema: analytics
   runs_table: runs
   delta: 60m
-`, n, sources.String(), controlDBName, n, controlDBName)
+`, n, sources.String())
 }
 
 // analyticsSource is one oramacores entry: a reader's GET /v1/analytics.
@@ -70,10 +70,10 @@ func analyticsSources(oc *oramav1alpha1.OramaCloudV1) []analyticsSource {
 // connects to ClickHouse + Postgres at startup — so the operator renders that file via an init
 // container and mounts it. The init container takes each value by secretKeyRef: the analytics key
 // from <cr>-analytics-api-key (#386), the ClickHouse password from the component Secret and the
-// CNPG-generated Postgres password from <cr>-controldb-app. Neither container loads the component
-// Secret whole, so a MASTER_API_KEY an older operator seeded there never reaches the pod: the
-// processor holds no master key. (The image is also patched at build to bind 0.0.0.0:8080 instead
-// of its hardcoded 127.0.0.1:8888.)
+// CNPG-generated Postgres URI from <cr>-controldb-app (pgURIEnv). Neither container loads the
+// component Secret whole, so a MASTER_API_KEY an older operator seeded there never reaches the pod:
+// the processor holds no master key. (The image is also patched at build to bind 0.0.0.0:8080
+// instead of its hardcoded 127.0.0.1:8888.)
 func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.AnalyticsProcessor.Enabled {
 		return r.teardownByComponent(ctx, oc, "analytics-processor")
@@ -94,13 +94,13 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 		Name:  "render-config",
 		Image: img,
 		Command: []string{"sh", "-c", renderEscFunc + "sed" +
-			renderSubstitutions([]string{"CLICKHOUSE_PASSWORD", analyticsKeyEnvName, "PG_PASSWORD"}) +
+			renderSubstitutions([]string{"CLICKHOUSE_PASSWORD", analyticsKeyEnvName, "PG_URI"}) +
 			" /tmpl/config.yaml > /etc/analytics-processor/config.yaml"},
 		EnvFrom: envFrom,
 		Env: []corev1.EnvVar{
 			analyticsKeyEnv(oc),
 			secretKeyEnv("CLICKHOUSE_PASSWORD", componentSecret, "CLICKHOUSE_PASSWORD"),
-			pgPasswordEnv(oc, "PG_PASSWORD"),
+			pgURIEnv(oc, "PG_URI"),
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "config-tmpl", MountPath: "/tmpl"},

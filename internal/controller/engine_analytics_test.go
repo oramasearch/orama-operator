@@ -161,14 +161,14 @@ func TestAnalyticsProcessorConfigListsReadersOnly(t *testing.T) {
 }
 
 // The processor's render-config writes the analytics key into every api_key and keeps every byte
-// of the ClickHouse and Postgres passwords; the master key in its environment reaches no output.
+// of the ClickHouse password and the Postgres URI; the master key in its environment reaches no output.
 func TestAnalyticsProcessorRendersAnalyticsKey(t *testing.T) {
 	h := newEngineHarness(t, stackOC(nil), engineSecret())
 	h.mustRun()
 	cm := &corev1.ConfigMap{}
 	h.get("v1-analytics-processor-config", cm)
 	env := map[string]string{"ANALYTICS_API_KEY": "test-analytics-key", "MASTER_API_KEY": "test-master-key",
-		"CLICKHOUSE_PASSWORD": `c'h&#\$(touch pwned)`, "PG_PASSWORD": "pg-pass"}
+		"CLICKHOUSE_PASSWORD": `c'h&#\$(touch pwned)`, "PG_URI": "postgresql://app:pg'pass@v1-controldb-rw:5432/oramacore"}
 	init := containerIn(t, h.templates()["analytics-processor"].Spec, "render-config")
 	out := runRender(t, init, "config.yaml", cm.Data["config.yaml"], "/etc/analytics-processor/", env)
 	doc := parseYAML(t, out)
@@ -183,7 +183,7 @@ func TestAnalyticsProcessorRendersAnalyticsKey(t *testing.T) {
 	if got := doc["clickhouse"].(map[string]any)["password"]; got != env["CLICKHOUSE_PASSWORD"] {
 		t.Errorf("clickhouse.password = %q", got)
 	}
-	if got := doc["postgres"].(map[string]any)["url"].(string); !strings.Contains(got, ":pg-pass@v1-controldb-rw:5432/") {
+	if got := doc["postgres"].(map[string]any)["url"]; got != env["PG_URI"] {
 		t.Errorf("postgres.url = %q", got)
 	}
 }
@@ -227,7 +227,7 @@ func TestAnalyticsProcessorHoldsNoMasterKey(t *testing.T) {
 			init := containerIn(t, tmpl.Spec, "render-config")
 			want := []corev1.EnvVar{secretKeyEnv("ANALYTICS_API_KEY", "v1-analytics-api-key", "ANALYTICS_API_KEY"),
 				secretKeyEnv("CLICKHOUSE_PASSWORD", "v1-analytics-processor-secret", "CLICKHOUSE_PASSWORD"),
-				secretKeyEnv("PG_PASSWORD", "v1-controldb-app", "password")}
+				secretKeyEnv("PG_URI", "v1-controldb-app", "uri")}
 			if !reflect.DeepEqual(init.Env, want) {
 				t.Errorf("render-config env = %+v, want %+v", init.Env, want)
 			}
