@@ -60,6 +60,11 @@ spec:
         envFrom:
         - secretRef:
             name: v1-nonprod-dashboard-env
+        # Prod 1's three dashboard crons, created suspended; CRON_SECRET comes from the envFrom Secret.
+        # Unsuspending is a committed change here, never an edit of the CronJobs.
+        crons:
+          enabled: true
+          suspend: true
       disco:
         enabled: true
       docs:
