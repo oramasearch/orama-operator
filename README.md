@@ -29,7 +29,7 @@ That is 33 resource kinds, all installed by the chart on every cluster. The rele
 them all: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
 [v0.2.0](docs/releases/v0.2.0.md) for the next seven, and
 [v0.3.0](docs/releases/v0.3.0.md) for the nine secure-networking kinds;
-[v0.4.0](docs/releases/v0.4.0.md) adds no kind.
+[v0.4.0](docs/releases/v0.4.0.md) and [v0.5.0](docs/releases/v0.5.0.md) add no kind.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -37,10 +37,13 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.4.0** (2026-10-17);
-[`docs/releases/v0.4.0.md`](docs/releases/v0.4.0.md) says what is new since v0.3.0: every Lake
-runs every feature on operator-defaulted images, Lake's Clerk instance and its deployment control
-plane, and CRDs applied in two steps around a roll.
+The current release is **v0.5.0** (2026-10-17);
+[`docs/releases/v0.5.0.md`](docs/releases/v0.5.0.md) says what is new since v0.4.0: the Orama
+Cloud v1 stack brought to Prod 1's shape for the migration (an in-cluster control database with
+the dashboard's migration 0008, side-only engine images, LLM providers from the spec, the hooks
+deny list, generated credentials, the dashboard's environment and crons, origin TLS, storage the
+operator grows), create-only Cloudflare DNS, node-pool sysctls, and `LakeE2ETest` aimed at a set
+member. No cluster runs it yet.
 
 The operator runs on four AKS clusters. The management cluster, `orama-production-cluster-01`, is
 the development environment whatever its name says; it runs `Lake/prod`, live at
