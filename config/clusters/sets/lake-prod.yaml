@@ -16,7 +16,7 @@ spec:
       - name: LAKE_LOG_MODE
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
-        value: lake-eu.oramadev.net
+        value: eu.lake.live
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
       - name: LAKE_BILLING
@@ -25,7 +25,15 @@ spec:
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
-      host: lake-eu.oramadev.net
+      # Production on lake.live (decision 64, #513): the EU region, and the region picker at the apex.
+      host: eu.lake.live
+      apexHost: lake.live
+      region:
+        label: Europe
+      clerk:
+        secretKeySecretRef: {name: clerk-secret-key}
+    secrets:
+    - {name: clerk-lake-prod, namespace: lake, as: clerk-secret-key}
   - clusterRef: orama-production-cluster-03
     name: shared-us
     spec:
@@ -38,7 +46,7 @@ spec:
       - name: LAKE_LOG_MODE
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
-        value: lake-us.oramadev.net
+        value: us.lake.live
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
       - name: LAKE_BILLING
@@ -47,21 +55,28 @@ spec:
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
-      host: lake-us.oramadev.net
+      host: us.lake.live
+      region:
+        label: United States
+      clerk:
+        secretKeySecretRef: {name: clerk-secret-key}
+    secrets:
+    - {name: clerk-lake-prod, namespace: lake, as: clerk-secret-key}
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
     namespace: lake
-  - name: cloudflare-api-token
+  - name: cloudflare-api-token-lake-live
     namespace: lake
   - name: lake-prod-openai
     namespace: lake
   - name: lake-prod-stripe
     namespace: lake
   template:
+    # lake.live hosts: the token scoped to the lake.live zone only (decision 64).
     dnsSecretRef:
-      name: cloudflare-api-token
-    image: oramasearch/lake:20261012a
+      name: cloudflare-api-token-lake-live
+    image: oramasearch/lake:v0.2.0
     ingressEnabled: true
     postgres:
       enabled: true
