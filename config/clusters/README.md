@@ -75,6 +75,8 @@ A v1 member imports its readers' search events into ClickHouse only with
 turning it on is a one-line change to the set file, applied from that file; the readers keep the
 events logged meanwhile, and the first import takes them
 ([`docs/components.md`](../../docs/components.md#analytics-import)).
+`sets/v1-nonprod.yaml` sets `v1-dev` to two readers with the import enabled and suspended, for the
+analytics import's proof (#421). It reaches the cluster only when Steve consents to apply it.
 
 To check that the files match the cluster:
 
