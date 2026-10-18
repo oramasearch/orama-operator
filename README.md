@@ -28,7 +28,8 @@ into running systems:
 That is 33 resource kinds, all installed by the chart on every cluster. The release notes cover
 them all: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
 [v0.2.0](docs/releases/v0.2.0.md) for the next seven, and
-[v0.3.0](docs/releases/v0.3.0.md) for the nine secure-networking kinds.
+[v0.3.0](docs/releases/v0.3.0.md) for the nine secure-networking kinds;
+[v0.4.0](docs/releases/v0.4.0.md) adds no kind.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -36,9 +37,10 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.3.0** (2026-10-17);
-[`docs/releases/v0.3.0.md`](docs/releases/v0.3.0.md) says what is new since v0.2.0: secure
-networking and regions.
+The current release is **v0.4.0** (2026-10-17);
+[`docs/releases/v0.4.0.md`](docs/releases/v0.4.0.md) says what is new since v0.3.0: every Lake
+runs every feature on operator-defaulted images, Lake's Clerk instance and its deployment control
+plane, and CRDs applied in two steps around a roll.
 
 The operator runs on four AKS clusters. The management cluster, `orama-production-cluster-01`, is
 the development environment whatever its name says; it runs `Lake/prod`, live at
@@ -104,7 +106,7 @@ Existing AKS installations that use the former release name must follow the sche
 - [`docs/releases/README.md`](docs/releases/README.md): what each release contains.
 - [`DESIGN.md`](DESIGN.md): architecture and the decision log.
 - [`docs/crd-reference.md`](docs/crd-reference.md): the field reference for every CRD.
-- [`docs/components.md`](docs/components.md): what each reconciler creates, and its status.
+- [`docs/components.md`](docs/components.md): what each reconciler creates, its status, and DNS ownership and cleanup.
 - [`docs/infrastructure/README.md`](docs/infrastructure/README.md): management and leaf clusters, the
   design the operator's infrastructure work follows.
 - [`docs/install/k0s.md`](docs/install/k0s.md): install one Lake on connected or air-gapped liquid k0s.

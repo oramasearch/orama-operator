@@ -176,7 +176,7 @@ func TestOCV1StorageFreshVolumes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			oc := newOCV1(nil)
 			oc.Spec.Components.Engine.Writer.Storage = tc.spec
-			oc.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Storage: tc.spec}
+			oc.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Storage: tc.spec}}
 			r, _ := storageFake(t, oc)
 			ctx := context.Background()
 			if err := r.reconcileWriter(ctx, oc); err != nil {
@@ -430,7 +430,7 @@ func TestOCV1StorageFailureIsolationRetryAndReady(t *testing.T) {
 func TestOCV1StorageCNPGPreservationAndFailure(t *testing.T) {
 	ctx := context.Background()
 	oc := newOCV1(nil)
-	oc.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true}
+	oc.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true}}
 	r, writes := storageFake(t, oc)
 	if err := r.reconcileControlDB(ctx, oc); err != nil {
 		t.Fatal(err)

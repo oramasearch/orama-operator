@@ -28,7 +28,7 @@ import (
 
 // The Azure Resource Manager calls the AksCluster controller makes (operator#354). Like the
 // Cloudflare and Clerk controllers, this talks to the provider's REST API directly; there is no
-// Azure SDK dependency. Only this file and akscluster_controller.go name Azure.
+// Azure SDK dependency. The AKS controller and azure_*.go helpers own the provider API.
 
 const (
 	azureDefaultARMBase   = "https://management.azure.com"
@@ -36,7 +36,7 @@ const (
 	azureARMScope         = "https://management.azure.com/.default"
 
 	azureAPIResourceGroups  = "2021-04-01"
-	azureAPIManagedClusters = "2024-09-01"
+	azureAPIManagedClusters = "2025-05-01"
 	// The latest-operation resource. From this version its status carries Azure's progress text
 	// ("CreatingAgentPools: 0/1 nodes completed"); 2024-09-01 answers only "InProgress".
 	azureAPIOperations    = "2025-05-01"
@@ -270,21 +270,22 @@ type azureResourceGroup struct {
 }
 
 type azureAgentPool struct {
-	Name              string            `json:"name"`
-	Mode              string            `json:"mode,omitempty"`
-	VMSize            string            `json:"vmSize,omitempty"`
-	Count             int32             `json:"count"`
-	EnableAutoScaling bool              `json:"enableAutoScaling,omitempty"`
-	MinCount          *int32            `json:"minCount,omitempty"`
-	MaxCount          *int32            `json:"maxCount,omitempty"`
-	OSType            string            `json:"osType,omitempty"`
-	OSSKU             string            `json:"osSKU,omitempty"`
-	OSDiskSizeGB      int32             `json:"osDiskSizeGB,omitempty"`
-	Type              string            `json:"type,omitempty"`
-	AvailabilityZones []string          `json:"availabilityZones,omitempty"`
-	NodeLabels        map[string]string `json:"nodeLabels,omitempty"`
-	NodeTaints        []string          `json:"nodeTaints,omitempty"`
-	ProvisioningState string            `json:"provisioningState,omitempty"`
+	Name              string              `json:"name"`
+	Mode              string              `json:"mode,omitempty"`
+	VMSize            string              `json:"vmSize,omitempty"`
+	Count             int32               `json:"count"`
+	EnableAutoScaling bool                `json:"enableAutoScaling,omitempty"`
+	MinCount          *int32              `json:"minCount,omitempty"`
+	MaxCount          *int32              `json:"maxCount,omitempty"`
+	OSType            string              `json:"osType,omitempty"`
+	OSSKU             string              `json:"osSKU,omitempty"`
+	OSDiskSizeGB      int32               `json:"osDiskSizeGB,omitempty"`
+	Type              string              `json:"type,omitempty"`
+	AvailabilityZones []string            `json:"availabilityZones,omitempty"`
+	NodeLabels        map[string]string   `json:"nodeLabels,omitempty"`
+	NodeTaints        []string            `json:"nodeTaints,omitempty"`
+	LinuxOSConfig     *azureLinuxOSConfig `json:"linuxOSConfig,omitempty"`
+	ProvisioningState string              `json:"provisioningState,omitempty"`
 	// Read only: Azure's account of what is wrong with the pool.
 	Status *azureResourceStatus `json:"status,omitempty"`
 }
@@ -415,7 +416,7 @@ type azureAutoUpgrade struct {
 
 // azureManagedClusterBody is the create request for an AksCluster. It is a pure function of the
 // spec, so the same resource always asks Azure for the same cluster.
-func azureManagedClusterBody(cluster *oramav1alpha1.AksCluster) azureManagedCluster {
+func azureManagedClusterBody(cluster *oramav1alpha1.AksCluster) (azureManagedCluster, error) {
 	spec := cluster.Spec
 	name := aksClusterAzureName(cluster)
 	rbac := true
@@ -462,7 +463,12 @@ func azureManagedClusterBody(cluster *oramav1alpha1.AksCluster) azureManagedClus
 		}
 	}
 	for _, pool := range spec.NodePools {
+		linuxOS, err := aksLinuxOSConfig(pool.Sysctls)
+		if err != nil {
+			return azureManagedCluster{}, fmt.Errorf("node pool %s: %w", pool.Name, err)
+		}
 		profile := azureAgentPool{
+			LinuxOSConfig:     linuxOS,
 			Name:              pool.Name,
 			Mode:              pool.Mode,
 			VMSize:            pool.VMSize,
@@ -484,7 +490,7 @@ func azureManagedClusterBody(cluster *oramav1alpha1.AksCluster) azureManagedClus
 		}
 		body.Properties.AgentPoolProfiles = append(body.Properties.AgentPoolProfiles, profile)
 	}
-	return body
+	return body, nil
 }
 
 // aksClusterAzureName is the managed cluster's name in Azure.
