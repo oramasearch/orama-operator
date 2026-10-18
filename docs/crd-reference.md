@@ -164,8 +164,8 @@ no way to turn it off; without the token the reconcile fails rather than serving
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations}`, `writer.jwt`, `writer.host`, `reader.{replicas,hpa,resources}`, `reader.host`, `envoy` | OramaCore writer + readers + Envoy |
-| `dashboard` | `host` | app.orama.com (Next.js) |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.host`, `reader.{replicas,hpa,resources}`, `reader.host`, `envoy` | OramaCore writer + readers + Envoy |
+| `dashboard` | `host`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `stripePrices` | Always in-cluster CloudNativePG |
@@ -321,6 +321,177 @@ writer_side:
         audiences: ["https://writer.a.example", "https://writer.b.example"]
         refresh_interval: 1h
 ```
+
+### Component storage
+
+The shared `VolumeSpec` is available at `spec.components.engine.writer.storage` and at
+`spec.components.{analytics,cache,broker,search,controlDB}.storage`.
+
+| Field | Type | Default | Behavior |
+|---|---|---|---|
+| `storage.size` | positive Kubernetes quantity | `10Gi` | Omitted storage, `{}`, and omitted size all resolve to `10Gi`, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
+| `storage.storageClassName` | nonempty string, optional | cluster default on creation | Selects the new PVC's class, or CNPG's `spec.storage.storageClass`. Omission on existing resources retains their class, including a class populated by default admission. A later cluster-default change does not move existing storage. |
+
+For example, `engine.writer.storage: {size: 50Gi, storageClassName: managed-csi}` and
+`cache.storage: {size: 20Gi}` set independent sizes. These are examples, not production sizing.
+For an `OramaCloudV1Set`, put the component settings under `spec.template.components`.
+Readers use `emptyDir` and expose no storage field here. HARVEST Mongo retains its existing
+`10Gi`/default-class behavior and gains no storage API.
+
+New StatefulSets receive a `data` claim template at the resolved size/class. Existing templates
+remain intact because Kubernetes makes them immutable. The operator grows each matching claim's
+storage request itself, including retained claims and claims created later from an old template.
+The template's old size does not cause a storage mismatch. For controlDB it grows the CNPG
+Cluster's configured size; CNPG owns expansion of its PVCs. Other CNPG storage keys remain intact.
+
+Existing volumes cannot shrink or change class. Removing `storage` after growth requests the
+`10Gi` default and can therefore report an unsupported shrink. Restore the grown request to clear
+that rejection. A larger reported capacity alone is not a shrink: provisioners can round capacity
+above the request. A claim with a class mismatch receives no size update, even if growth was also
+requested. Other claims/components continue reconciling.
+
+`status.conditions[type=StorageApplied]` is independent of `Ready`, phase, and workload readiness:
+
+| Status / reason | Meaning |
+|---|---|
+| `True / Applied` | Every applicable existing PVC request and CNPG storage configuration accepts the desired size/class, or there is no locally managed storage. It does not prove disk or filesystem expansion has completed. |
+| `False / NotApplied` | At least one resource has a problem. The message lists each resource in stable sorted order with one of: `ShrinkNotSupported` (desired size below an existing claim request or CNPG configured size), `StorageClassChangeNotSupported` (an explicit class differs from an existing resource's class, including a classless existing CNPG Cluster), `StorageUpdateFailed` (a storage read or write failed; the API error is included) or `ClaimsPending` (a required claim has not appeared yet; the operator does not create it). |
+
+The condition observes the current generation and recovers after accepted settings or successful
+retries. A rejected setting may coexist with `Ready=True`. The operator polls every 20 seconds
+while locally managed storage exists, even with Ready workloads, and writes status only on change.
+See [component reconciliation](components.md#component-storage) for scope and expansion ownership.
+
+### `spec.components.dashboard`
+
+The dashboard's toggle and host (`enabled`, `host`, `resources`, as for `docs`), plus the rest of its
+environment from Secrets and ConfigMaps in the instance's namespace
+([operator#311](https://github.com/oramasearch/orama-operator/issues/311)).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `envFrom` | `[]EnvFromSource` | Secrets (`secretRef`) and ConfigMaps (`configMapRef`), each with an optional `prefix` and `optional`. Appended after the operator's own sources (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`), so a key here overrides the shared ConfigMap and the seeded dashboard Secret, and a later entry overrides an earlier one. |
+| `env` | `[]EnvVar` | Variables as in a container: a `value`, or `valueFrom` with `secretKeyRef`, `configMapKeyRef`, `fieldRef` or `resourceFieldRef`. Appended after the operator's explicit env; an entry with the same name as an operator variable replaces it, and for a name listed twice the last entry wins, so each name appears once. |
+
+```yaml
+spec:
+  components:
+    dashboard:
+      enabled: true
+      envFrom:
+        - secretRef:
+            name: dashboard-extra
+      env:
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: stripe-test
+              key: api-key
+```
+
+**Precedence**, lowest to highest: the operator's envFrom, `envFrom`, the operator's explicit env
+(`MASTER_API_KEY` from `spec.masterAPIKeySecretRef`, `POSTGRES_PASSWORD`, `DATABASE_URL`), `env`.
+
+**Refused variables.** `DATABASE_URL`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`,
+`POSTGRES_PASSWORD`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`,
+`JWT_ISSUER` and `MASTER_API_KEY` belong to the operator (the control DB, the generated `<cr>-jwt`, the
+operator's JWT issuer, and `spec.masterAPIKeySecretRef`). Naming one in `env`, or carrying one as a key of an `envFrom` source after
+its `prefix` (`prefix: JWT_` with key `PRIVATE_KEY` is `JWT_PRIVATE_KEY`), fails the reconcile, even
+when a later entry would shadow it and even when the source is `optional`.
+
+**References.** Each `envFrom` entry sets exactly one of `secretRef` and `configMapRef`, with a name;
+each key selector in `env` sets a name and a key. References are local to the instance's namespace.
+A missing object, or a missing key behind a `secretKeyRef`/`configMapKeyRef`, fails the reconcile
+unless the reference is `optional: true`; `optional` covers only a missing object or key, never a read
+error or a refused variable. An empty value is a present value. Optional references stay in the
+container as written, so Kubernetes applies its usual semantics. ConfigMap `binaryData` never reaches
+the environment and is neither read nor hashed.
+
+Every failure sets `Ready=False` (`ReconcileError`) with a message such as `dashboard:
+dashboard.envFrom[0] (Secret extra) sets MASTER_API_KEY, which the operator owns (it comes from
+spec.masterAPIKeySecretRef); remove it` or `dashboard:
+dashboard.envFrom[0]: Secret orama-system/extra does not exist`, naming the field index, the object and
+the variable, never a value. The check runs before the dashboard Deployment is written, so the
+running dashboard keeps its last valid template. Fixing the spec or (re)creating the object recovers
+on the next reconcile, which the watch below triggers. A disabled dashboard is torn down without
+reading or checking either field.
+
+**Rolling on change.** The pod template carries `orama.cloud/dashboard-env-hash`: the SHA-256 (64
+lowercase hex characters) of the data of every `envFrom` source and of the selected key behind every
+`env` key selector, with each object's kind, name, order, prefix and selected key, and whether an
+optional object or key is present. The controller watches the referenced Secrets and ConfigMaps,
+owned or not, so a changed value, a created or deleted optional source, or an added or removed
+selected key rolls the dashboard. Metadata changes and unselected keys of a selector-only object do
+not. The annotation holds a hash only; values are written nowhere else. With no Secret or ConfigMap
+reference the annotation is absent, so a dashboard with neither field set keeps the template it had
+before these fields existed.
+
+How the environment Secret reaches each cluster is in
+[components.md](components.md#the-dashboards-environment).
+
+#### `spec.components.dashboard.crons`
+
+Prod 1's scheduled jobs as CronJobs in the stack
+([operator#17](https://github.com/oramasearch/orama-operator/issues/17)): the dashboard's three
+Vercel crons and, optionally, the e2e canary from Prod 1's AWS crons host. Omitted, it creates
+nothing. `dashboard_crons.go`; behaviour and the Prod 1 inventory are in
+[components.md](components.md#the-dashboards-scheduled-jobs).
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | `bool` | `false` | Creates the three dashboard CronJobs; `false` deletes them, and the canary with them. |
+| `suspend` | `*bool` | `true` | Copied to the `spec.suspend` of the three CronJobs and `<cr>-e2e-canary`. Stops new runs; a run in progress finishes. |
+| `e2eCanary.image` | `string` | required | The canary image, pinned to a digest (`name@sha256:<64 hex>`; the CRD refuses anything else). It runs `monitor-test` and provides `/bin/sh`, `curl` and `jq` for the prune. |
+| `e2eCanary.secretRef.name` | `string` | required | A Secret in the instance's namespace with non-empty keys `collectionID`, `indexID` and `apiKey` (the canary project's private API key), delivered through the set's `secrets` list. |
+
+The schedules are Prod 1's and fixed, in UTC:
+
+| CronJob | Calls | Schedule |
+|---|---|---|
+| `<cr>-dashboard-cron-crawler` | `GET http://<cr>-dashboard:3000/api/private/v1/run-crawler-cron` | `*/1 * * * *` |
+| `<cr>-dashboard-cron-index-gc` | `GET http://<cr>-dashboard:3000/api/private/v1/run-index-gc-cron` | `0 * * * *` |
+| `<cr>-dashboard-cron-consumption-sync` | `GET http://<cr>-dashboard:3000/api/billing/queue-consumption-sync` | `0 */6 * * *` |
+| `<cr>-e2e-canary` | `monitor-test`, then the collection prune once a day after 04:30 | `*/5 * * * *` |
+
+```yaml
+spec:
+  components:
+    dashboard:
+      enabled: true
+      envFrom:
+        - secretRef:
+            name: v1-prod-dashboard-env   # holds CRON_SECRET
+      crons:
+        enabled: true
+        suspend: true
+        e2eCanary:
+          image: oramasearch/oramacore-test-e2e@sha256:<digest>
+          secretRef:
+            name: v1-prod-e2e-canary
+```
+
+No set file carries `e2eCanary` yet: the canary image is not built, and the CRD requires it.
+
+**Admission.** `crons.enabled: true` needs `dashboard.enabled: true` (`dashboard.crons requires the
+dashboard enabled`), and `e2eCanary` needs `crons.enabled: true`. To turn a running dashboard off,
+commit `dashboard.enabled: false`, `crons.enabled: false` and no `e2eCanary` together. The reconcile
+repeats the first rule for objects that bypassed admission: it deletes the crons and the dashboard,
+then reports the error.
+
+**`CRON_SECRET`.** Each dashboard CronJob reads `CRON_SECRET` through a `secretKeyRef` to the Secret
+key the dashboard itself reads it from, so the two cannot drift. When `dashboard.env` names
+`CRON_SECRET` (its last entry wins), that entry must be a `secretKeyRef` and the CronJobs use the same
+Secret and key. Otherwise the last `envFrom` source holding `CRON_SECRET` after its `prefix` wins, and it
+must be a Secret: with `prefix: CRON_`, key `SECRET` is selected. A literal, a ConfigMap or a `fieldRef`
+winning is an error, even if an earlier Secret also holds the key. The selected Secret must exist and
+the key must be non-empty, even when the dashboard's reference is `optional`.
+
+**Errors.** A missing source, Secret or key, a canary Secret without its three keys, or a same-name
+CronJob or claim this CR does not control fails the `dashboard` step with `Ready=False`
+(`ReconcileError`) and a message naming the field and the object, never a value. The dashboard crons'
+inputs are checked before the first of them is written; the canary's Secret is checked after the three
+are written, so a canary problem never keeps the dashboard crons from running. A foreign object is
+left unchanged. Run outcomes appear in Job status and logs only.
 
 ## `status`
 

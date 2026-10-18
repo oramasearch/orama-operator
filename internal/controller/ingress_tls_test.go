@@ -184,6 +184,8 @@ func originTLSStack(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaC
 		o.Spec.Cloudflare = oramav1alpha1.CloudflareSpec{
 			Enabled: true, APITokenSecretRef: &corev1.LocalObjectReference{Name: "cloudflare-api-token"},
 		}
+		// The dashboard is built only for a stack that names its master key (#411).
+		o.Spec.MasterAPIKeySecretRef = &oramav1alpha1.MasterAPIKeySecretRef{Name: "v1-dev-master-api-key"}
 		if mut != nil {
 			mut(o)
 		}
@@ -261,7 +263,7 @@ func TestCloudV1IngressesRequestOriginTLS(t *testing.T) {
 	}{
 		"v1-dev-dashboard": {
 			enable: func(o *oramav1alpha1.OramaCloudV1) {
-				o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.oramadev.net"}
+				o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.oramadev.net"}}
 			},
 			run: func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error {
 				return r.reconcileDashboard(ctx, o)
@@ -337,7 +339,7 @@ func TestCloudV1IngressWithoutIssuerCredentialFails(t *testing.T) {
 	r := &OramaCloudV1Reconciler{Client: cl, Scheme: s}
 	oc := originTLSStack(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Spec.Cloudflare.APITokenSecretRef = nil
-		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.oramadev.net"}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.oramadev.net"}}
 	})
 	if err := r.reconcileDashboard(ctx, oc); err == nil || !strings.Contains(err.Error(), "apiTokenSecretRef") {
 		t.Fatalf("err = %v, want the missing DNS-01 credential named", err)
