@@ -401,27 +401,28 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		allowances,
 		sandboxAllowance(
 			"ingress-nginx and zetta-tunnel's ingress gateway need the dashboard HTTP port for its Ingress backend.",
-			oramaCloudIngressPolicy(
-				"allow-dashboard-ingress-nginx",
-				dashboard,
-				networkingv1.NetworkPolicyIngressRule{
-					From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"}), zettaTunnelIngressPeer()},
-					Ports: tcpPorts(3000),
-				},
-			),
+			oramaCloudIngressPolicy("allow-dashboard-ingress-nginx", dashboard, ingressGatewayRule(3000)),
 		),
 		sandboxAllowance(
 			"ingress-nginx and zetta-tunnel's ingress gateway need the docs HTTP port for its Ingress backend.",
-			oramaCloudIngressPolicy(
-				"allow-docs-ingress-nginx",
-				docs,
-				networkingv1.NetworkPolicyIngressRule{
-					From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"}), zettaTunnelIngressPeer()},
-					Ports: tcpPorts(3000),
-				},
-			),
+			oramaCloudIngressPolicy("allow-docs-ingress-nginx", docs, ingressGatewayRule(3000)),
 		),
 	)
+	// The public engine endpoints (cloudv1_networking.go): only while each is published, only to this
+	// stack's writer or reader pods on the port behind its Ingress backend, and only from ingress-nginx:
+	// Cloud v1 is never served by the zetta-tunnel gateway (bridge decisions of 2026-10-17, 19).
+	if writerPublicHost(oc) != "" {
+		allowances = append(allowances, sandboxAllowance(
+			"ingress-nginx needs the writer API port for its public Ingress backend.",
+			oramaCloudIngressPolicy("allow-writer-ingress-nginx", writer, ingressNginxRule(oramacorePort)),
+		))
+	}
+	if readerPublicHost(oc) != "" {
+		allowances = append(allowances, sandboxAllowance(
+			"ingress-nginx needs the reader pod port behind the reader Service for its public Ingress backend.",
+			oramaCloudIngressPolicy("allow-reader-ingress-nginx", readerPods, ingressNginxRule(readerPodPort(oc))),
+		))
+	}
 	if internetErr == nil {
 		allowances = append(allowances, oramaCloudPublicInternetAllowances(
 			publicPeers,
@@ -480,6 +481,23 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		internetErr = nil
 	}
 	return errors.Join(apiErr, internetErr, reconcileErr)
+}
+
+// ingressGatewayRule admits ingress-nginx and zetta-tunnel's ingress gateway, the two controllers
+// an Ingress of this stack can be served by, on the given pod ports.
+func ingressGatewayRule(ports ...int32) networkingv1.NetworkPolicyIngressRule {
+	return networkingv1.NetworkPolicyIngressRule{
+		From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"}), zettaTunnelIngressPeer()},
+		Ports: tcpPorts(ports...),
+	}
+}
+
+// ingressNginxRule admits ingress-nginx alone on the given pod ports: the public engine hosts.
+func ingressNginxRule(ports ...int32) networkingv1.NetworkPolicyIngressRule {
+	return networkingv1.NetworkPolicyIngressRule{
+		From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"})},
+		Ports: tcpPorts(ports...),
+	}
 }
 
 func publicEgressRule(peers []networkingv1.NetworkPolicyPeer, ports ...int32) networkingv1.NetworkPolicyEgressRule {

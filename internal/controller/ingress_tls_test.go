@@ -179,6 +179,8 @@ func TestIngressTLSSecretName(t *testing.T) {
 func originTLSStack(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCloudV1 {
 	return newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Name, o.Namespace = "v1-dev", "v1-dev"
+		// The dashboard renders nothing without a master key reference (#307).
+		o.Spec.MasterAPIKeySecretRef = &oramav1alpha1.MasterAPIKeySecretRef{Name: testMasterSecret}
 		o.Spec.Cloudflare = oramav1alpha1.CloudflareSpec{
 			Enabled: true, APITokenSecretRef: &corev1.LocalObjectReference{Name: "cloudflare-api-token"},
 		}
@@ -274,6 +276,24 @@ func TestCloudV1IngressesRequestOriginTLS(t *testing.T) {
 			},
 			run:  func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error { return r.reconcileDocs(ctx, o) },
 			host: "docs-dev.oramadev.net",
+		},
+		"v1-dev-writer": {
+			enable: func(o *oramav1alpha1.OramaCloudV1) {
+				o.Spec.Components.Engine = oramav1alpha1.EngineSpec{Enabled: true, Writer: oramav1alpha1.WriterSpec{Host: "writer-dev.oramadev.net"}}
+			},
+			run: func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error {
+				return r.reconcileEngineIngresses(ctx, o)
+			},
+			host: "writer-dev.oramadev.net",
+		},
+		"v1-dev-reader": {
+			enable: func(o *oramav1alpha1.OramaCloudV1) {
+				o.Spec.Components.Engine = oramav1alpha1.EngineSpec{Enabled: true, Reader: oramav1alpha1.ReaderSpec{Host: "reader-dev.oramadev.net"}}
+			},
+			run: func(r *OramaCloudV1Reconciler, o *oramav1alpha1.OramaCloudV1) error {
+				return r.reconcileEngineIngresses(ctx, o)
+			},
+			host: "reader-dev.oramadev.net",
 		},
 	}
 	for name, b := range builders {

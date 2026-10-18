@@ -23,7 +23,7 @@ pointing at the primary); the full sample list is in
 | `llm.default` | string | `groq` | Provider used when a request doesn't name one; must be one of the providers. |
 | `llm.automaticEmbeddingsSelector` | `{provider, model}` | unset | Provider and model that choose the properties to embed for collections with automatic embeddings. Unset renders no selector. |
 | `masterAPIKeySecretRef` | `{name, key}` | unset | The Secret, in the CR's namespace, holding the engine master API key under `key` (default `MASTER_API_KEY`). Required while the engine or another master key consumer is enabled; there is no default Secret and no generated key ([below](#specmasterapikeysecretref)). |
-| `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane; `token` is also the DNS-01 credential of the stack's Let's Encrypt `Issuer`, so a stack with any host needs it); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
+| `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane; `token` is also the DNS-01 credential of the stack's Let's Encrypt `Issuer`, so a stack with any host needs it); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). `manageDNS` gives the dashboard, writer and reader hosts their DNS records, all in the zone of the token Secret's `zoneID` ([public hosts](#public-writer-and-reader-hosts-enginewriterhost-enginereaderhost)). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
 
@@ -155,7 +155,7 @@ an add-on price row is seeded only when listed). `id` is the reference row's UUI
 a reference row fails the seed. Empty seeds every plan without Stripe prices and no add-on price.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
-Every host (`dashboard.host`, `docs.host`) gets origin TLS: the stack owns cert-manager `Issuer`
+Every host (`dashboard.host`, `docs.host`, `engine.writer.host`, `engine.reader.host`) gets origin TLS: the stack owns cert-manager `Issuer`
 `<cr>-letsencrypt` (Let's Encrypt, DNS-01 with `cloudflare.apiTokenSecretRef` key `token`), and each
 host's certificate lives in Secret `<host>-tls` beside the Ingress. There is no per-host TLS field and
 no way to turn it off; without the token the reconcile fails rather than serving HTTP
@@ -163,7 +163,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `reader.{replicas,hpa,resources}`, `envoy` | OramaCore writer + readers + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.host`, `reader.{replicas,hpa,resources}`, `reader.host`, `envoy` | OramaCore writer + readers + Envoy |
 | `dashboard` | `host`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
@@ -185,6 +185,81 @@ these budgets add no mandatory delay. There are no per-side startup timeout fiel
 Readiness remains every 10s and liveness every 15s, both with a 3s timeout and failure
 threshold 3. See [engine health probes](components.md#engine-internalcontrollerenginego).
 
+### Public writer and reader hosts (`engine.writer.host`, `engine.reader.host`)
+
+Customers' SDKs and the search worker reach the engine through these names
+([#385](https://github.com/oramasearch/orama-operator/issues/385)). Both are optional bare DNS
+names (lowercase, at least one dot, at most 253 characters; no scheme, path or port) with no
+default: empty keeps the component internal, so an existing CR gets no engine Ingress or record
+until a host is set. Production uses `writer.orama.ing` and `reader.orama.ing`, beside the
+dashboard's `app.orama.ing`.
+
+| Field | Published while | Ingress | Backend | Sandbox rule |
+|---|---|---|---|---|
+| `writer.host` | engine enabled, `region.role: primary` | `<cr>-writer` | Service `<cr>-writer`:8080 | `allow-writer-ingress-nginx`: writer pods, TCP 8080 |
+| `reader.host` | engine enabled | `<cr>-reader` | Service `<cr>-reader`:80 (Envoy when `envoy`, else OramaCore) | `allow-reader-ingress-nginx`: reader pods, TCP 80 with Envoy, 8080 without |
+
+Each Ingress routes `/` on its host (Prefix) to its Service on the stack's ingress class, with origin
+TLS as above, and is controlled by the CR. The sandbox rule admits only ingress-nginx (never
+zetta-tunnel's ingress gateway, bridge decision 19 of 2026-10-17), only to this stack's pods; the internal-client rules and every egress
+rule are unchanged. A read region never publishes its writer (it runs none). When an endpoint stops
+being published (host cleared, engine disabled, or the writer's region turned `read`), its Ingress and
+rule are removed and its DNS record is deleted, including on the disabled-engine teardown. An object
+at `<cr>-writer` or `<cr>-reader` that the CR does not control is never adopted, changed or deleted;
+publishing over it fails the reconcile with a conflict naming the kind, namespace and name.
+
+With `writer.jwt` set, `https://<writer.host>` must be one of `writer.jwt.audiences`
+([below](#speccomponentsenginewriterjwt)).
+
+**DNS.** With `cloudflare.enabled`, `cloudflare.manageDNS` and a non-empty
+`cloudflare.apiTokenSecretRef.name`, each published endpoint (the dashboard with a host, the writer,
+the readers) has one owned, proxied `CloudflareDNSRecord`: `<cr>-dashboard-dns`, `<cr>-writer-dns`,
+`<cr>-reader-dns`. Its `spec.name` is the host, `spec.content` the first load-balancer address of the
+endpoint's own Ingress (hostname before IP), `spec.secretRef` the token Secret, and `spec.type` empty
+(inferred). The record is created only once that Ingress has an address; an existing record keeps its
+content while the address is temporarily empty. Every host must be in the zone of the Secret's
+`zoneID`: there is no per-host zone selection yet. The parent never writes a record's status or calls
+Cloudflare; the [`CloudflareDNSRecord`](#cloudflarednsrecord-separate-crd) controller creates the
+Cloudflare record with its ownership comment and never touches one it did not create.
+
+| Change | What happens to the record |
+|---|---|
+| Ingress address changes | The same child's `spec.content` is updated; its record ID and finalizer stay. |
+| Host or Secret name changes before `status.recordID` is set | The same child is updated. |
+| Host or Secret name changes after `status.recordID` is set | The child is deleted with its old spec; its finalizer removes the old Cloudflare record with the old Secret; a later reconcile creates a fresh child for the new values. Keep the old Secret, with valid credentials, until that child is gone. |
+| Host cleared, component disabled, writer's region turned `read`, `cloudflare.enabled` or `manageDNS` off, token reference removed or emptied | The child is deleted; its finalizer cleans up the Cloudflare record. |
+| Child is being deleted | Left untouched until it is gone, even if the endpoint is enabled again meanwhile. |
+| The Secret's `zoneID` changes | Nothing from the parent: moving a record between zones is the `CloudflareDNSRecord` controller's concern. |
+
+A child at the record's name that the CR does not control is left untouched and reported as a
+conflict. Deleting the CR removes its Ingresses and records through garbage collection.
+
+With the worked example below (CR `v1-dev`, writer Ingress address `192.0.2.10`, reader `192.0.2.11`),
+the writer's Ingress routes `writer-dev.oramadev.net/` to `v1-dev-writer:8080`, the reader's
+`reader-dev.oramadev.net/` to `v1-dev-reader:80`, and `v1-dev-writer-dns` / `v1-dev-reader-dns`
+point the hosts at `192.0.2.10` / `192.0.2.11`, proxied, with `secretRef: cloudflare-api-token`:
+
+```yaml
+spec:
+  region: {name: eu, role: primary}
+  jwtIssuer: https://app-dev.oramadev.net
+  components:
+    engine:
+      enabled: true
+      envoy: true
+      writer:
+        host: writer-dev.oramadev.net
+        jwt:
+          audiences: [https://writer-dev.oramadev.net]
+      reader:
+        host: reader-dev.oramadev.net
+    dashboard: {enabled: true, host: app-dev.oramadev.net}
+  cloudflare:
+    enabled: true
+    manageDNS: true
+    apiTokenSecretRef: {name: cloudflare-api-token}
+```
+
 ### `spec.components.engine.writer.jwt`
 
 Makes the writer verify the write tokens the dashboard signs (`POST /api/user/jwt`: issuer
@@ -205,6 +280,9 @@ would reject every write fails the reconcile instead (`phase: Degraded`, `Ready=
 
 - `spec.jwtIssuer` is empty, or longer than 128 characters;
 - `audiences` is absent or empty, or an entry is empty or longer than 128 characters;
+- `engine.writer.host` is set and `https://<host>` is not exactly one of `audiences` (a trailing
+  slash, `http` scheme or other host does not count), because the dashboard signs for the writer
+  URL and every write would get a 401;
 - `jwksURL` is unset and the dashboard is disabled;
 - `jwksURL` does not parse, is not `http` or `https`, has no host name (`http://:3000/jwks`), or
   carries a user or password.
@@ -600,6 +678,11 @@ finalizer fetches marked records by ID and deletes only if their stored
 comment still matches. Otherwise it releases the finalizer, leaves the record and emits
 Warning `RecordNotOwned`. Legacy IDs retain deletion by ID. A 404 on GET or DELETE
 means cleanup succeeded; other failures retain the finalizer and return the error.
+A changed `spec.name` (or type) is a new record at the new name: once it is created, the
+previous `status.recordID` goes through the same owned delete (marked records only while
+their comment still matches, legacy IDs by ID), so a rename never leaves the old name live
+([#529](https://github.com/oramasearch/orama-operator/issues/529)) and never deletes a record
+the operator did not create. A failed delete keeps the old ID in status and retries.
 No ID means no Cloudflare calls. Missing credentials with an ID retain the finalizer
 and retry in five minutes. Install this CRD update through the approved rollout
 mechanism before the controller, so Kubernetes preserves `ownerComment`.

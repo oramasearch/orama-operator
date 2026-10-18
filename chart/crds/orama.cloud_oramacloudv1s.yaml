@@ -1253,6 +1253,15 @@ spec:
                         type: boolean
                       reader:
                         properties:
+                          host:
+                            description: |-
+                              Host publishes the readers on this public DNS name (for example reader.orama.ing), without a
+                              scheme, path or port: an owned Ingress with origin TLS to the reader Service on 80 (through
+                              Envoy when it is enabled) and, with Cloudflare DNS managed, a proxied DNS record. Empty keeps
+                              the readers internal.
+                            maxLength: 253
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
+                            type: string
                           hpa:
                             description: HPA autoscales readers on load when set.
                             properties:
@@ -1336,6 +1345,15 @@ spec:
                               embeddings server. (This is the main reason a GPU node is needed at all; the
                               other is an in-cluster vLLM — see spec.llm.gpu.)
                             type: boolean
+                          host:
+                            description: |-
+                              Host publishes the writer on this public DNS name (for example writer.orama.ing), without a
+                              scheme, path or port: an owned Ingress with origin TLS to the writer Service on 8080 and, with
+                              Cloudflare DNS managed, a proxied DNS record. Only a primary region publishes its writer.
+                              Empty keeps the writer internal.
+                            maxLength: 253
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
+                            type: string
                           jwt:
                             description: |-
                               JWT makes the writer verify the dashboard's write tokens through OramaCore's JWKS provider.
@@ -1344,7 +1362,8 @@ spec:
                               audiences:
                                 description: |-
                                   Audiences are the accepted audiences: each exact writer URL the dashboard signs tokens for
-                                  (the writer_url of a control-DB oramacore_clusters row). Required, at least one.
+                                  (the writer_url of a control-DB oramacore_clusters row). Required, at least one. With
+                                  engine.writer.host set, https://<host> (no trailing slash) must be one of them.
                                 items:
                                   maxLength: 128
                                   minLength: 1

@@ -71,8 +71,9 @@ func writerJWKSFromDashboard(oc *oramav1alpha1.OramaCloudV1) bool {
 }
 
 // validateWriterJWT refuses a writer JWT configuration that would reject every write: no issuer, no
-// audience or an empty one, a field over its length limit, or no usable JWKS URL. It checks the
-// configured strings only; it neither reads the control database nor fetches the JWKS.
+// audience or an empty one, a field over its length limit, a public writer host whose exact URL
+// (https://<host>) is not an audience, or no usable JWKS URL. It checks the configured strings
+// only; it neither reads the control database nor fetches the JWKS.
 func validateWriterJWT(oc *oramav1alpha1.OramaCloudV1) error {
 	cfg := oc.Spec.Components.Engine.Writer.JWT
 	if cfg == nil {
@@ -90,6 +91,13 @@ func validateWriterJWT(oc *oramav1alpha1.OramaCloudV1) error {
 	for i, a := range cfg.Audiences {
 		if a == "" || len(a) > jwtFieldMaxLength {
 			return fmt.Errorf("%s.audiences[%d] must be 1 to %d characters", field, i, jwtFieldMaxLength)
+		}
+	}
+	// The dashboard signs a write token for the project's writer URL, and OramaCore compares the
+	// audience exactly: a public writer host missing from the audiences would refuse every write.
+	if host := oc.Spec.Components.Engine.Writer.Host; host != "" {
+		if want := "https://" + host; !slices.Contains(writerJWTAudiences(cfg), want) {
+			return fmt.Errorf("%s.audiences must include %q, the URL of spec.components.engine.writer.host, exactly as written (no trailing slash)", field, want)
 		}
 	}
 	if cfg.JWKSURL == "" {
