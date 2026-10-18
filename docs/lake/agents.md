@@ -14,13 +14,13 @@ and reports back, as it does for services and stores.
 
 | Field | Meaning |
 |---|---|
-| `runtimeImage` | `oramasearch/agent-runtime:<tag>`, the one image every launch runs on. Empty: every launch is `Failed` with *agents are not enabled on this Lake* |
-| `library[]` | `{key, image}` per specialized agent: `agent-ask-orama`, `agent-project`, `agent-autosuggest`, `agent-creator` |
+| `runtimeImage` | `oramasearch/agent-runtime:<tag>`, the one image every launch runs on. Empty uses the operator's default (`internal/controller/lake_defaults.go`) |
+| `library[]` | `{key, image}`: replaces the image of one specialized agent. Every Lake runs all nine (`agent-ask-orama`, `agent-project`, `agent-autosuggest`, `agent-creator`, `agent-eval-generator`, `agent-project-corpus`, `agent-autosuggest-corpus`, `agent-application`, `agent-experiments`) on the operator's default images; an entry cannot remove an agent |
 | `openaiSecretName` | a Secret in `spec.namespace` holding `OPENAI_API_KEY`, the general Orama key. **People provide it**; the operator copies it into each launch's workspace and never writes the key to a row or status |
 | `model` | the frontier model agents default to (default `gpt-5.5`) |
 | `jobDeadlineSeconds` | the bound on one job launch (default 3600) |
 
-Agents are on when `runtimeImage` or `library` is set.
+Every Lake runs its agents; there is no switch ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)). The default images are listed in [the Lake README](README.md#default-images).
 
 Every agent pod resolves with `ndots:2` and is handed lake and agent addresses as full Service
 names (`<svc>.<ns>.svc.cluster.local`), so they resolve on the first query; see

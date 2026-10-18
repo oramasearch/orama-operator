@@ -297,7 +297,7 @@ spec:
           enabled: true
         docs:
           enabled: true
-          host: docs.sandbox.local
+          host: docs-us.oramadev.net
         engine:
           enabled: true
           envoy: true

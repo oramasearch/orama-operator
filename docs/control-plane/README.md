@@ -20,6 +20,9 @@ mint-once Lake environment credential stored in `Secret/lake-<lake>-admin`, key 
 namespace. Matching is constant-time. The credential scopes all reads and writes to that Lake; the
 repository and environment in a request cannot select a different Lake.
 
+The Lake must have a public host (`spec.host`, or a literal `LAKE_PUBLIC_HOST` in `spec.env`): every
+row is keyed by it, as lake reads them. A Lake without one answers `unavailable`, naming the fix.
+
 The namespace must contain exactly one `OramaZettaCluster` with
 `spec.provisionOperatorSchema` enabled. The operator uses that cluster's private seeded admin token for
 SQL; it never forwards the caller's credential to Zetta. Missing, ambiguous, or unready control-plane
@@ -39,11 +42,14 @@ Zetta remains the deployment intake and audit store from liquid-bridge decisions
 rollback appends two records:
 
 1. a full immutable response/history row in `orama_control.deployment_records`; and
-2. a desired event in `orama_control.deployments`, consumed by the existing `LakeEnvironment`
-   materializer.
+2. a desired row in `orama_control.deployments`, in lake's row shape (operator#560: `lake` is the
+   Lake's public host, `phase` is `Pending`, `requested_by` is `lake-admin-token/<lake>` because the
+   caller is the Lake's admin token, and every column lake selects is present), consumed by the
+   `LakeEnvironment` materializer and shown by lake's Ship → Deployments. See
+   [the row contract](../lake/environments.md#the-row-contract-lakes-format-the-operator-conforms).
 
-The separate history table adds `result_id`, `rollback_of`, and secret references on existing clusters
-without requiring unsupported `ALTER TABLE`. A create ID is the SHA-256 action identity of Lake,
+The history table carries `result_id`, `rollback_of`, and secret references, which lake does not read.
+Times in both are lake's: UTC with six fractional digits. A create ID is the SHA-256 action identity of Lake,
 repository, environment, change, and image. Repeating that action returns its existing record and does
 not append another desired event. Lists reduce duplicate append retries by ID and return the repository's
 records in reverse creation order.
@@ -56,7 +62,8 @@ observed, status remains `Progressing`; stale Ready status is never returned for
 
 The contract does not carry runtime topology. Contract-created environments use one replica, container
 port `8080`, no host, and `kind: named`. An environment whose name exactly equals its change digest is a
-preview. Public domains and routing are configured separately.
+preview. Environment values and custom domains are lake's (`set_environment_env`, `create_domain`), as
+rows the operator applies to the same environment.
 
 ## Sealed-secret references
 

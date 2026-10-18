@@ -43,6 +43,11 @@ type AksNodePool struct {
 	NodeLabels map[string]string `json:"nodeLabels,omitempty"`
 	// +optional
 	NodeTaints []corev1.Taint `json:"nodeTaints,omitempty"`
+	// Sysctls uses Linux kernel names and maps to linuxOSConfig.sysctls in the AKS API.
+	// Unsupported names or values are refused before any Azure request. Existing pools are
+	// observed only; changes to these settings are reported by InSync.
+	// +optional
+	Sysctls NodeSysctls `json:"sysctls,omitempty"`
 }
 
 // AksClusterSpec is one AKS managed cluster.

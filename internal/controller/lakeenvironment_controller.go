@@ -87,7 +87,8 @@ func (r *LakeEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	var lake oramav1alpha1.Lake
 	if err := r.Get(ctx, client.ObjectKey{Name: environment.Spec.LakeRef}, &lake); err != nil {
 		if apierrors.IsNotFound(err) {
-			return r.finishEnvironmentStatus(ctx, &environment, nil, "", oramav1alpha1.LakeEnvironmentPhaseDegraded, "LakeNotFound", fmt.Sprintf("Lake %q does not exist", environment.Spec.LakeRef))
+			message := fmt.Sprintf("Lake %q does not exist", environment.Spec.LakeRef)
+			return r.finishEnvironmentStatus(ctx, &environment, nil, "", pendingDomainStatuses(&environment, message), oramav1alpha1.LakeEnvironmentPhaseDegraded, "LakeNotFound", message)
 		}
 		return ctrl.Result{}, err
 	}
@@ -96,12 +97,13 @@ func (r *LakeEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		lakeNamespace = "lake-dev"
 	}
 	if environment.Namespace != lakeNamespace {
-		return r.finishEnvironmentStatus(ctx, &environment, nil, "", oramav1alpha1.LakeEnvironmentPhaseDegraded, "WrongNamespace", fmt.Sprintf("LakeEnvironment must be in Lake namespace %q", lakeNamespace))
+		message := fmt.Sprintf("LakeEnvironment must be in Lake namespace %q", lakeNamespace)
+		return r.finishEnvironmentStatus(ctx, &environment, nil, "", pendingDomainStatuses(&environment, message), oramav1alpha1.LakeEnvironmentPhaseDegraded, "WrongNamespace", message)
 	}
 
 	workloadNamespace := lakeEnvironmentNamespace(&environment)
 	if err := r.reconcileEnvironmentNamespace(ctx, &environment, workloadNamespace); err != nil {
-		return r.finishEnvironmentStatus(ctx, &environment, nil, "", oramav1alpha1.LakeEnvironmentPhaseDegraded, "NamespaceConflict", err.Error())
+		return r.finishEnvironmentStatus(ctx, &environment, nil, "", pendingDomainStatuses(&environment, err.Error()), oramav1alpha1.LakeEnvironmentPhaseDegraded, "NamespaceConflict", err.Error())
 	}
 	if err := r.reconcileEnvironmentProfile(ctx, &environment, workloadNamespace); err != nil {
 		return ctrl.Result{}, err
@@ -119,12 +121,13 @@ func (r *LakeEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if err := r.teardownEnvironmentWorkload(ctx, &environment, workloadNamespace); err != nil {
 			return ctrl.Result{}, err
 		}
-		return r.finishEnvironmentStatus(ctx, &environment, nil, host, oramav1alpha1.LakeEnvironmentPhaseDegraded, reason, message)
+		return r.finishEnvironmentStatus(ctx, &environment, nil, host, pendingDomainStatuses(&environment, message), oramav1alpha1.LakeEnvironmentPhaseDegraded, reason, message)
 	}
 	if err := r.reconcileEnvironmentWorkload(ctx, &environment, workloadNamespace, secretNames); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.reconcileEnvironmentIngress(ctx, &lake, &environment, workloadNamespace, host); err != nil {
+	domains, err := r.reconcileEnvironmentIngress(ctx, &lake, &environment, workloadNamespace, host)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -133,10 +136,10 @@ func (r *LakeEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
-		return r.finishEnvironmentStatus(ctx, &environment, nil, host, oramav1alpha1.LakeEnvironmentPhaseProgressing, "DeploymentPending", "waiting for the environment Deployment")
+		return r.finishEnvironmentStatus(ctx, &environment, nil, host, domains, oramav1alpha1.LakeEnvironmentPhaseProgressing, "DeploymentPending", "waiting for the environment Deployment")
 	}
 	phase, reason, message := environmentDeploymentState(&environment, &deployment)
-	return r.finishEnvironmentStatus(ctx, &environment, &deployment, host, phase, reason, message)
+	return r.finishEnvironmentStatus(ctx, &environment, &deployment, host, domains, phase, reason, message)
 }
 
 func (r *LakeEnvironmentReconciler) reader() client.Reader {
@@ -631,20 +634,54 @@ func lakeEnvironmentHost(lake *oramav1alpha1.Lake, environment *oramav1alpha1.La
 	return environment.Spec.Host
 }
 
-func (r *LakeEnvironmentReconciler) reconcileEnvironmentIngress(ctx context.Context, lake *oramav1alpha1.Lake, environment *oramav1alpha1.LakeEnvironment, namespace, host string) error {
+// reconcileEnvironmentIngress serves the environment's host and its custom domains (spec.domains,
+// lake's orama_control.domains) from one Ingress, and keeps one Cloudflare DNS record per named
+// host and per domain when the Lake has a dnsSecretRef. Every record is owned by the environment
+// and labelled with it, so removing a domain or the environment removes its record. It returns
+// each domain's status.
+func (r *LakeEnvironmentReconciler) reconcileEnvironmentIngress(ctx context.Context, lake *oramav1alpha1.Lake, environment *oramav1alpha1.LakeEnvironment, namespace, host string) ([]oramav1alpha1.LakeEnvironmentDomainStatus, error) {
 	name := environmentWorkloadName(environment)
-	dnsName := ""
-	if environment.Spec.Kind == oramav1alpha1.LakeEnvironmentKindNamed && host != "" {
-		dnsName = environmentDNSRecordName(environment, host)
-	}
-	if err := r.deleteEnvironmentDNSRecords(ctx, environment, dnsName); err != nil {
-		return err
-	}
-	if host == "" {
-		if err := deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}); err != nil {
-			return err
+	if !lake.Spec.IngressEnabled {
+		if err := r.deleteEnvironmentDNSRecords(ctx, environment, nil); err != nil {
+			return nil, err
 		}
-		return nil
+		if err := deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}); err != nil {
+			return nil, err
+		}
+		return failedDomainStatuses(environment, fmt.Sprintf("Lake %q does not enable ingress (spec.ingressEnabled)", lake.Name)), nil
+	}
+
+	hosts := make([]string, 0, 1+len(environment.Spec.Domains))
+	if host != "" {
+		hosts = append(hosts, host)
+	}
+	for _, domain := range environment.Spec.Domains {
+		if domain.Host != host {
+			hosts = append(hosts, domain.Host)
+		}
+	}
+	// The DNS records this environment should have: its named host, then each domain.
+	dnsHosts := make([]string, 0, len(hosts))
+	if environment.Spec.Kind == oramav1alpha1.LakeEnvironmentKindNamed && host != "" {
+		dnsHosts = append(dnsHosts, host)
+	}
+	for _, domain := range environment.Spec.Domains {
+		if domain.Host != host {
+			dnsHosts = append(dnsHosts, domain.Host)
+		}
+	}
+	manageDNS := lake.Spec.DNSSecretRef != nil && lake.Spec.DNSSecretRef.Name != ""
+	keep := make(map[string]struct{}, len(dnsHosts))
+	if manageDNS {
+		for _, dnsHost := range dnsHosts {
+			keep[environmentDNSRecordName(environment, dnsHost)] = struct{}{}
+		}
+	}
+	if err := r.deleteEnvironmentDNSRecords(ctx, environment, keep); err != nil {
+		return nil, err
+	}
+	if len(hosts) == 0 {
+		return nil, deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
 	}
 
 	prefix := networkingv1.PathTypePrefix
@@ -653,43 +690,90 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentIngress(ctx context.Cont
 		ingress.Labels = environmentLabels(environment)
 		ingress.Annotations = map[string]string{environmentOwnerAnnotation: environmentOwner(environment)}
 		ingress.Spec.IngressClassName = strPtr(ingressClassOrDefault(lake.Spec.IngressClassName))
-		ingress.Spec.Rules = []networkingv1.IngressRule{{
-			Host: host,
-			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
-				Paths: []networkingv1.HTTPIngressPath{{
-					Path:     "/",
-					PathType: &prefix,
-					Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-						Name: name,
-						Port: networkingv1.ServiceBackendPort{Number: environmentServicePort},
+		rules := make([]networkingv1.IngressRule, 0, len(hosts))
+		for _, ruleHost := range hosts {
+			rules = append(rules, networkingv1.IngressRule{
+				Host: ruleHost,
+				IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{
+					Paths: []networkingv1.HTTPIngressPath{{
+						Path:     "/",
+						PathType: &prefix,
+						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
+							Name: name,
+							Port: networkingv1.ServiceBackendPort{Number: environmentServicePort},
+						}},
 					}},
 				}},
-			}},
-		}}
+			})
+		}
+		ingress.Spec.Rules = rules
 		return nil
 	}); err != nil {
-		return fmt.Errorf("reconcile environment Ingress: %w", err)
+		return nil, fmt.Errorf("reconcile environment Ingress: %w", err)
 	}
 
-	if environment.Spec.Kind != oramav1alpha1.LakeEnvironmentKindNamed || lake.Spec.DNSSecretRef == nil || lake.Spec.DNSSecretRef.Name == "" {
-		return r.deleteEnvironmentDNSRecords(ctx, environment, "")
-	}
 	target := ingressLoadBalancerTarget(ingress)
-	if target == "" {
+	records := make(map[string]*oramav1alpha1.CloudflareDNSRecord, len(dnsHosts))
+	if manageDNS && target != "" {
+		for _, dnsHost := range dnsHosts {
+			dns := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: environmentDNSRecordName(environment, dnsHost), Namespace: environment.Namespace}}
+			if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dns, func() error {
+				dns.Labels = environmentLabels(environment)
+				dns.Spec.SecretRef = lake.Spec.DNSSecretRef.Name
+				dns.Spec.Name = dnsHost
+				dns.Spec.Content = target
+				dns.Spec.Proxied = true
+				return controllerutil.SetControllerReference(environment, dns, r.Scheme)
+			}); err != nil {
+				return nil, fmt.Errorf("reconcile environment DNS for %q: %w", dnsHost, err)
+			}
+			records[dnsHost] = dns
+		}
+	}
+
+	statuses := make([]oramav1alpha1.LakeEnvironmentDomainStatus, 0, len(environment.Spec.Domains))
+	for _, domain := range environment.Spec.Domains {
+		status := oramav1alpha1.LakeEnvironmentDomainStatus{Host: domain.Host, Status: oramav1alpha1.LakeEnvironmentDomainPending}
+		record := records[domain.Host]
+		switch {
+		case domain.Host == host:
+			status.Status = oramav1alpha1.LakeEnvironmentDomainActive
+			status.Message = "the environment's own host"
+		case target == "":
+			status.Message = "waiting for the ingress address"
+		case !manageDNS:
+			status.Message = fmt.Sprintf("Lake %q has no dnsSecretRef, so its DNS is not managed: point %s at %s", lake.Name, domain.Host, target)
+		case record != nil && record.Status.Ready:
+			status.Status = oramav1alpha1.LakeEnvironmentDomainActive
+		case record != nil && record.Status.Message != "":
+			status.Message = "DNS record: " + record.Status.Message
+		default:
+			status.Message = "waiting for the DNS record"
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
+}
+
+// pendingDomainStatuses reports every domain as pending, for a reconcile that stopped before the
+// Ingress.
+func pendingDomainStatuses(environment *oramav1alpha1.LakeEnvironment, message string) []oramav1alpha1.LakeEnvironmentDomainStatus {
+	return domainStatuses(environment, oramav1alpha1.LakeEnvironmentDomainPending, message)
+}
+
+func failedDomainStatuses(environment *oramav1alpha1.LakeEnvironment, message string) []oramav1alpha1.LakeEnvironmentDomainStatus {
+	return domainStatuses(environment, oramav1alpha1.LakeEnvironmentDomainFailed, message)
+}
+
+func domainStatuses(environment *oramav1alpha1.LakeEnvironment, status, message string) []oramav1alpha1.LakeEnvironmentDomainStatus {
+	if len(environment.Spec.Domains) == 0 {
 		return nil
 	}
-	dns := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: dnsName, Namespace: environment.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dns, func() error {
-		dns.Labels = environmentLabels(environment)
-		dns.Spec.SecretRef = lake.Spec.DNSSecretRef.Name
-		dns.Spec.Name = host
-		dns.Spec.Content = target
-		dns.Spec.Proxied = true
-		return controllerutil.SetControllerReference(environment, dns, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("reconcile named environment DNS: %w", err)
+	statuses := make([]oramav1alpha1.LakeEnvironmentDomainStatus, 0, len(environment.Spec.Domains))
+	for _, domain := range environment.Spec.Domains {
+		statuses = append(statuses, oramav1alpha1.LakeEnvironmentDomainStatus{Host: domain.Host, Status: status, Message: message})
 	}
-	return nil
+	return statuses
 }
 
 func environmentDNSRecordName(environment *oramav1alpha1.LakeEnvironment, host string) string {
@@ -702,7 +786,8 @@ func environmentDNSRecordName(environment *oramav1alpha1.LakeEnvironment, host s
 	return prefix + "-dns-" + hash
 }
 
-func (r *LakeEnvironmentReconciler) deleteEnvironmentDNSRecords(ctx context.Context, environment *oramav1alpha1.LakeEnvironment, keepName string) error {
+// deleteEnvironmentDNSRecords deletes the environment's DNS records not named in keep (nil: all).
+func (r *LakeEnvironmentReconciler) deleteEnvironmentDNSRecords(ctx context.Context, environment *oramav1alpha1.LakeEnvironment, keep map[string]struct{}) error {
 	var records oramav1alpha1.CloudflareDNSRecordList
 	if err := r.List(ctx, &records, client.InNamespace(environment.Namespace), client.MatchingLabels{
 		environmentIdentityLabel: environmentLabels(environment)[environmentIdentityLabel],
@@ -710,7 +795,7 @@ func (r *LakeEnvironmentReconciler) deleteEnvironmentDNSRecords(ctx context.Cont
 		return err
 	}
 	for i := range records.Items {
-		if records.Items[i].Name == keepName {
+		if _, found := keep[records.Items[i].Name]; found {
 			continue
 		}
 		if err := r.Delete(ctx, &records.Items[i]); err != nil && !apierrors.IsNotFound(err) {
@@ -751,7 +836,7 @@ func environmentDeploymentState(environment *oramav1alpha1.LakeEnvironment, depl
 	return oramav1alpha1.LakeEnvironmentPhaseProgressing, "DeploymentProgressing", fmt.Sprintf("%d/%d replicas ready", deployment.Status.ReadyReplicas, desired)
 }
 
-func (r *LakeEnvironmentReconciler) finishEnvironmentStatus(ctx context.Context, environment *oramav1alpha1.LakeEnvironment, deployment *appsv1.Deployment, host, phase, reason, message string) (ctrl.Result, error) {
+func (r *LakeEnvironmentReconciler) finishEnvironmentStatus(ctx context.Context, environment *oramav1alpha1.LakeEnvironment, deployment *appsv1.Deployment, host string, domains []oramav1alpha1.LakeEnvironmentDomainStatus, phase, reason, message string) (ctrl.Result, error) {
 	desired := environment.Status.DeepCopy()
 	desired.Phase = phase
 	desired.URL = ""
@@ -763,6 +848,7 @@ func (r *LakeEnvironmentReconciler) finishEnvironmentStatus(ctx context.Context,
 		desired.ReadyReplicas = deployment.Status.ReadyReplicas
 	}
 	desired.DeploymentID = environment.Annotations[deploymentIDAnnotation]
+	desired.Domains = domains
 	conditionStatus := metav1.ConditionFalse
 	if phase == oramav1alpha1.LakeEnvironmentPhaseReady {
 		conditionStatus = metav1.ConditionTrue
@@ -780,10 +866,20 @@ func (r *LakeEnvironmentReconciler) finishEnvironmentStatus(ctx context.Context,
 			return ctrl.Result{}, err
 		}
 	}
-	if phase == oramav1alpha1.LakeEnvironmentPhaseReady {
+	if phase == oramav1alpha1.LakeEnvironmentPhaseReady && domainsSettled(domains) {
 		return ctrl.Result{RequeueAfter: environmentDriftRequeue}, nil
 	}
 	return ctrl.Result{RequeueAfter: environmentStatusRequeue}, nil
+}
+
+// domainsSettled is whether no domain is still pending, so a Ready environment may slow its rechecks.
+func domainsSettled(domains []oramav1alpha1.LakeEnvironmentDomainStatus) bool {
+	for _, domain := range domains {
+		if domain.Status == oramav1alpha1.LakeEnvironmentDomainPending {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *LakeEnvironmentReconciler) teardownEnvironmentWorkload(ctx context.Context, environment *oramav1alpha1.LakeEnvironment, namespace string) error {
@@ -798,7 +894,7 @@ func (r *LakeEnvironmentReconciler) teardownEnvironmentWorkload(ctx context.Cont
 			return err
 		}
 	}
-	return r.deleteEnvironmentDNSRecords(ctx, environment, "")
+	return r.deleteEnvironmentDNSRecords(ctx, environment, nil)
 }
 
 func (r *LakeEnvironmentReconciler) finalizeLakeEnvironment(ctx context.Context, environment *oramav1alpha1.LakeEnvironment) (ctrl.Result, error) {
@@ -913,6 +1009,8 @@ func (r *LakeEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&oramav1alpha1.LakeEnvironment{}).
 		Watches(&oramav1alpha1.Lake{}, handler.EnqueueRequestsFromMapFunc(r.requestsForLake)).
 		Watches(&oramav1alpha1.LakeSealedSecret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForSealedSecret)).
+		// A domain is active once its DNS record is Ready, so a record's status change reports it.
+		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Watches(&appsv1.Deployment{}, mapObject).
 		Watches(&corev1.Service{}, mapObject).
 		Watches(&corev1.Secret{}, mapObject).

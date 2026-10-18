@@ -10,7 +10,6 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -42,8 +41,6 @@ import (
 const (
 	dashboardCronsComponent = "dashboard-crons"
 	e2eCanaryComponent      = "e2e-canary"
-	// e2eCanaryConditionType reports whether the canary CronJob exists; it does not affect the phase.
-	e2eCanaryConditionType = "E2ECanary"
 	// dashboardCronsImage is the curl image when spec.images.overrides["dashboard-crons"] is unset: a
 	// full reference, not resolved against the stack's registry and tag. It runs as curl_user, which
 	// is uid 100, gid 101 in this image; the numbers are set explicitly so runAsNonRoot can check them.
@@ -144,41 +141,20 @@ case "$code" in 2[0-9][0-9]) exit 0 ;; *) exit 1 ;; esac
 `
 }
 
-// e2eCanaryImagePattern is the CRD's pattern for e2eCanary.image: a reference pinned to a digest.
-var e2eCanaryImagePattern = regexp.MustCompile(`^[^@\s]+@sha256:[a-f0-9]{64}$`)
-
-// e2eCanaryActive reports whether oc asks for the canary CronJob and names a pinned image.
+// e2eCanaryActive reports whether oc asks for the canary CronJob.
 func e2eCanaryActive(oc *oramav1alpha1.OramaCloudV1) bool {
 	d := oc.Spec.Components.Dashboard
-	return d.Enabled && d.Crons.Enabled && d.Crons.E2ECanary != nil && e2eCanaryImagePattern.MatchString(d.Crons.E2ECanary.Image)
-}
-
-// e2eCanaryCondition is status.conditions[E2ECanary] while the canary is configured; ok=false drops
-// it. It is derived from the spec alone, so it changes only when the spec does.
-func e2eCanaryCondition(oc *oramav1alpha1.OramaCloudV1) (cond metav1.Condition, ok bool) {
-	d := oc.Spec.Components.Dashboard
-	if !d.Enabled || !d.Crons.Enabled || d.Crons.E2ECanary == nil {
-		return metav1.Condition{}, false
-	}
-	name := oc.Name + "-e2e-canary"
-	switch {
-	case !e2eCanaryActive(oc):
-		return metav1.Condition{Type: e2eCanaryConditionType, Status: metav1.ConditionFalse, Reason: "ImageNotPinned",
-			Message: "dashboard.crons.e2eCanary.image is unset or not pinned to a digest (name@sha256:<64 hex>), so CronJob " + name + " is not created"}, true
-	case suspended(d.Crons.E2ECanary.Suspend):
-		return metav1.Condition{Type: e2eCanaryConditionType, Status: metav1.ConditionTrue, Reason: "Suspended",
-			Message: "CronJob " + name + " exists and is suspended"}, true
-	}
-	return metav1.Condition{Type: e2eCanaryConditionType, Status: metav1.ConditionTrue, Reason: "Scheduled",
-		Message: "CronJob " + name + " runs every five minutes"}, true
+	return d.Enabled && d.Crons.Enabled && d.Crons.E2ECanary != nil
 }
 
 // suspended reads a suspend field the CRD defaults to true; nil (an object built in Go, or one that
 // bypassed defaulting) is suspended too.
 func suspended(s *bool) bool { return s == nil || *s }
 
-// reconcileDashboardCrons writes the three dashboard CronJobs and the canary, after the dashboard's
-// Deployment and Service. Every input is checked before the first CronJob is written.
+// reconcileDashboardCrons writes the three dashboard CronJobs and then the canary, after the
+// dashboard's Deployment and Service. The crons' own inputs are checked before the first CronJob is
+// written; the canary's are checked in reconcileE2ECanary, so a missing canary Secret never keeps
+// the dashboard crons from being written.
 func (r *OramaCloudV1Reconciler) reconcileDashboardCrons(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, sources []dashboardEnvSource) error {
 	c := oc.Spec.Components.Dashboard.Crons
 	secret, err := dashboardCronSecret(oc, sources)
@@ -188,13 +164,6 @@ func (r *OramaCloudV1Reconciler) reconcileDashboardCrons(ctx context.Context, oc
 	if err := r.requireSecretKeys(ctx, oc, "dashboard.crons CRON_SECRET", secret.Name, secret.Key); err != nil {
 		return err
 	}
-	canary := e2eCanaryActive(oc)
-	if canary {
-		if err := r.requireSecretKeys(ctx, oc, "dashboard.crons.e2eCanary.secretRef", c.E2ECanary.SecretRef.Name, "collectionID", "indexID", "apiKey"); err != nil {
-			return err
-		}
-	}
-
 	image := dashboardCronsImage
 	if o := oc.Spec.Images.Overrides[dashboardCronsComponent]; o != "" {
 		image = o
@@ -215,18 +184,23 @@ func (r *OramaCloudV1Reconciler) reconcileDashboardCrons(ctx context.Context, oc
 		}
 	}
 
-	if !canary {
+	if !e2eCanaryActive(oc) {
 		return r.deleteControlled(ctx, oc, e2eCanaryComponent)
 	}
 	return r.reconcileE2ECanary(ctx, oc)
 }
 
-// reconcileE2ECanary writes the canary's state volume and its CronJob. One CronJob runs the canary
+// reconcileE2ECanary checks the canary's Secret, then writes its state volume and its CronJob, which
+// follows crons.suspend like the dashboard crons. One CronJob runs the canary
 // and then, once a day, the prune, so the two never run at once against test-state.json: the prune
 // keeps the titles the canary tracks there, and a prune racing a canary run would delete the probe
 // the canary has written but not yet recorded. ForbidConcurrent keeps runs from overlapping.
 func (r *OramaCloudV1Reconciler) reconcileE2ECanary(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
-	spec := oc.Spec.Components.Dashboard.Crons.E2ECanary
+	crons := oc.Spec.Components.Dashboard.Crons
+	spec := crons.E2ECanary
+	if err := r.requireSecretKeys(ctx, oc, "dashboard.crons.e2eCanary.secretRef", spec.SecretRef.Name, "collectionID", "indexID", "apiKey"); err != nil {
+		return err
+	}
 	pvcName := oc.Name + "-e2e-canary-state"
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: oc.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, pvc, func() error {
@@ -248,7 +222,7 @@ func (r *OramaCloudV1Reconciler) reconcileE2ECanary(ctx context.Context, oc *ora
 			LocalObjectReference: spec.SecretRef, Key: k}}}
 	}
 	// The prune's run can take ten minutes (Prod 1's TimeoutSec=600) on top of the canary's.
-	err := r.upsertCronJob(ctx, oc, oc.Name+"-e2e-canary", e2eCanaryComponent, "*/5 * * * *", suspended(spec.Suspend), 900, func(pod *corev1.PodSpec) {
+	err := r.upsertCronJob(ctx, oc, oc.Name+"-e2e-canary", e2eCanaryComponent, "*/5 * * * *", suspended(crons.Suspend), 900, func(pod *corev1.PodSpec) {
 		pod.SecurityContext = &corev1.PodSecurityContext{
 			FSGroup:             int64Ptr(canaryUID),
 			FSGroupChangePolicy: ptrTo(corev1.FSGroupChangeOnRootMismatch),

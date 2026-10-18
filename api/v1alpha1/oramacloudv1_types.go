@@ -163,8 +163,9 @@ type LLMProvider struct {
 	// restrict the model a request names.
 	// +optional
 	Models []string `json:"models,omitempty"`
-	// APIKeySecretRef takes this provider's key from a Secret in the CR's namespace instead of
-	// <cr>-engine-secret. The operator reads it and never creates or changes it.
+	// APIKeySecretRef takes this provider's key from <PROVIDER>_API_KEY (for example GOOGLE_API_KEY)
+	// in a Secret in the CR's namespace instead of <cr>-engine-secret. The operator reads it and
+	// never creates or changes it.
 	// +optional
 	APIKeySecretRef *LLMKeySecretRef `json:"apiKeySecretRef,omitempty"`
 	// GPU requests a GPU for an in-cluster vLLM provider (name=vllm).
@@ -172,14 +173,12 @@ type LLMProvider struct {
 	GPU bool `json:"gpu,omitempty"`
 }
 
-// LLMKeySecretRef names the Secret key that holds a provider's API key, in the CR's namespace.
+// LLMKeySecretRef names the Secret, in the CR's namespace, that holds a provider's API key under
+// <PROVIDER>_API_KEY.
 type LLMKeySecretRef struct {
 	// Name of the Secret.
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
-	// Key in the Secret. Empty means <PROVIDER>_API_KEY, for example GOOGLE_API_KEY.
-	// +optional
-	Key string `json:"key,omitempty"`
 }
 
 // LLMModelRef is one model of one remote provider.
@@ -240,13 +239,15 @@ type ComponentsSpec struct {
 	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
-	ControlDB DataStoreSpec  `json:"controlDB,omitempty"` // Postgres control plane
-	PgAdmin   Toggle         `json:"pgAdmin,omitempty"`   // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
-	Cache     DataStoreSpec  `json:"cache,omitempty"`     // Redis (+ QStash shim)
-	Broker    DataStoreSpec  `json:"broker,omitempty"`    // RabbitMQ
-	Search    DataStoreSpec  `json:"search,omitempty"`    // Typesense hosted-search clusters
-	Disco     Toggle         `json:"disco,omitempty"`     // DISCO semantic cache
-	Workers   WorkersSpec    `json:"workers,omitempty"`   // the ported CF workers (one bundled image)
+	// ControlDB is the Postgres control plane, always in-cluster.
+	// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode == 'in-cluster'",message="controlDB.mode external is not supported: the control DB is always in-cluster"
+	ControlDB ControlDBSpec `json:"controlDB,omitempty"`
+	PgAdmin   Toggle        `json:"pgAdmin,omitempty"` // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
+	Cache     DataStoreSpec `json:"cache,omitempty"`   // Redis (+ QStash shim)
+	Broker    DataStoreSpec `json:"broker,omitempty"`  // RabbitMQ
+	Search    DataStoreSpec `json:"search,omitempty"`  // Typesense hosted-search clusters
+	Disco     Toggle        `json:"disco,omitempty"`   // DISCO semantic cache
+	Workers   WorkersSpec   `json:"workers,omitempty"` // the ported CF workers (one bundled image)
 
 	// Additional v1 components (gap fill — techops-docs issues #5–#7):
 	AnalyticsProcessor AnalyticsProcessorSpec `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
@@ -255,8 +256,6 @@ type ComponentsSpec struct {
 	// kept for API compatibility; setting it has no effect.
 	OramasearchApp ToggleWithHost `json:"oramasearchApp,omitempty"`
 	SearchWorkers  Toggle         `json:"searchWorkers,omitempty"` // index-manager hosted-search serving workers
-	// Airbyte (#4) is a heavy multi-service platform → installed via its Helm chart (helmfile
-	// platformDeps), not a CR component; the dashboard/index-builder reference its endpoint.
 }
 
 // EngineSpec configures the OramaCore engine.
@@ -323,6 +322,7 @@ type WriterSpec struct {
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	ExtraHosts []string `json:"extraHosts,omitempty"`
 }
@@ -347,6 +347,11 @@ type WriterJWTSpec struct {
 type ReaderSpec struct {
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
+	// Storage configures each reader's data volume (default 512Gi and cluster default class).
+	// The StatefulSet's claim template keeps the values it was created with; the operator grows
+	// every reader's existing claim instead.
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// HPA autoscales readers on load when set.
 	// +optional
 	HPA *HPASpec `json:"hpa,omitempty"`
@@ -367,6 +372,7 @@ type ReaderSpec struct {
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	ExtraHosts []string `json:"extraHosts,omitempty"`
 }
@@ -406,6 +412,59 @@ type WorkersSpec struct {
 	// sensible per-component default (workload hardening, #18).
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// ControlDBSpec is the control-plane Postgres: a DataStoreSpec plus this stack's values for the
+// dashboard reference rows the operator seeds (operator#378).
+type ControlDBSpec struct {
+	DataStoreSpec `json:",inline"`
+	// StripePrices are this stack's Stripe price IDs for the seeded reference rows: test-mode IDs on
+	// a nonprod stack, live-mode IDs on production. They are never part of the operator's committed
+	// rows. Empty leaves every plan's Stripe columns NULL and seeds no add-on price.
+	// +optional
+	StripePrices ControlDBStripePrices `json:"stripePrices,omitempty"`
+}
+
+// ControlDBStripePrices maps seeded reference rows, by their ID, to this stack's Stripe price IDs.
+// An ID that is not one of the operator's reference rows fails the seed, visibly.
+type ControlDBStripePrices struct {
+	// Plans sets subscription_plans.stripe_price_id_monthly and stripe_price_id_yearly. A plan not
+	// listed has both NULL.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	Plans []StripePlanPrice `json:"plans,omitempty"`
+	// Addons sets stripe_addon_prices.stripe_price_id. That column is NOT NULL, so an add-on price row
+	// is seeded only when it is listed here.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	Addons []StripeAddonPrice `json:"addons,omitempty"`
+}
+
+// StripePlanPrice is one subscription plan's Stripe prices.
+type StripePlanPrice struct {
+	// ID is the subscription_plans row ID.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+	ID string `json:"id"`
+	// Monthly is the Stripe price ID for monthly billing.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,255}$`
+	// +optional
+	Monthly string `json:"monthly,omitempty"`
+	// Yearly is the Stripe price ID for yearly billing.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,255}$`
+	// +optional
+	Yearly string `json:"yearly,omitempty"`
+}
+
+// StripeAddonPrice is one add-on price row's Stripe price.
+type StripeAddonPrice struct {
+	// ID is the stripe_addon_prices row ID.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+	ID string `json:"id"`
+	// PriceID is the Stripe price ID.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,255}$`
+	PriceID string `json:"priceID"`
 }
 
 // DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
@@ -488,6 +547,7 @@ type ToggleWithHost struct {
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	ExtraHosts []string `json:"extraHosts,omitempty"`
 	// Resources overrides the component's pod resources. When unset the operator applies a
@@ -499,8 +559,9 @@ type ToggleWithHost struct {
 // DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and
 // ConfigMaps in the instance's namespace (operator#311). Precedence, lowest to highest: the
 // operator's envFrom (<cr>-config, <cr>-dashboard-secret, <cr>-jwt), envFrom, the operator's
-// explicit env, env. DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER
-// and MASTER_API_KEY belong to the operator: supplying one through either field fails the reconcile.
+// explicit env, env. DATABASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_PASSWORD,
+// JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER and MASTER_API_KEY belong to the operator: supplying one
+// through either field fails the reconcile.
 // +kubebuilder:validation:XValidation:rule="!has(self.crons) || !has(self.crons.enabled) || !self.crons.enabled || (has(self.enabled) && self.enabled)",message="dashboard.crons requires the dashboard enabled"
 type DashboardSpec struct {
 	ToggleWithHost `json:",inline"`
@@ -535,37 +596,31 @@ type DashboardCronsSpec struct {
 	// Enabled creates the three CronJobs. Disabling deletes them.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
-	// Suspend is copied to the three CronJobs' spec.suspend. It stops new runs and does not cancel
-	// a run already in progress.
+	// Suspend is copied to the spec.suspend of the three CronJobs and the e2e canary's. It stops new
+	// runs and does not cancel a run already in progress.
 	// +kubebuilder:default=true
 	// +optional
 	Suspend *bool `json:"suspend,omitempty"`
 	// E2ECanary runs Prod 1's e2e canary (every five minutes) and its collection prune (daily at
-	// 04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. Removing it deletes the
-	// CronJob and its state volume.
+	// 04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. It follows crons.suspend.
+	// Removing it deletes the CronJob and its state volume.
 	// +optional
 	E2ECanary *E2ECanarySpec `json:"e2eCanary,omitempty"`
 }
 
-// E2ECanarySpec is the canary's image, target and suspension. The canary signs in through the
-// in-cluster dashboard's /api/user/jwt with the canary project's private API key, writes a probe
-// document and checks it on the readers the dashboard returns and on the in-cluster reader.
+// E2ECanarySpec is the canary's image and target. The canary signs in through the in-cluster
+// dashboard's /api/user/jwt with the canary project's private API key, writes a probe document and
+// checks it on the readers the dashboard returns and on the in-cluster reader.
 // +kubebuilder:validation:XValidation:rule="has(self.secretRef.name) && size(self.secretRef.name) > 0",message="dashboard.crons.e2eCanary.secretRef needs a name"
 type E2ECanarySpec struct {
 	// Image runs monitor-test (oramacore-test-e2e) and provides /bin/sh, curl and jq for the prune.
-	// It must be pinned to a digest (name@sha256:<64 hex>). Without a pinned image the CronJob is
-	// not created and status.conditions[E2ECanary] says why.
+	// It must be pinned to a digest (name@sha256:<64 hex>).
 	// +kubebuilder:validation:Pattern=`^[^@\s]+@sha256:[a-f0-9]{64}$`
-	// +optional
-	Image string `json:"image,omitempty"`
+	Image string `json:"image"`
 	// SecretRef names a Secret in the instance's namespace with the non-empty keys collectionID,
 	// indexID and apiKey: the canary collection, its index, and the project's private API key.
 	// Delivered through the set's secrets list.
 	SecretRef corev1.LocalObjectReference `json:"secretRef"`
-	// Suspend is copied to the CronJob's spec.suspend.
-	// +kubebuilder:default=true
-	// +optional
-	Suspend *bool `json:"suspend,omitempty"`
 }
 
 // PeerSpec identifies another region for cross-cluster wiring (no mesh).

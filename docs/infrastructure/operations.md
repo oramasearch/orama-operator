@@ -102,7 +102,9 @@ Every cluster runs the same operator version (rule 11 in [`CLAUDE.md`](../../CLA
    the tag, `dev-<sha>`. It publishes the chart for the same tag, without which a managed cluster cannot
    install that version.
 2. Set that version on every `OramaOperator`, in `config/clusters/<cluster>/operator.yaml`, and apply.
-   Each managed cluster's operator is upgraded, CRDs first.
+   Each managed cluster's operator is upgraded with its CRDs widened first and applied exactly once
+   the new version runs alone (both paths do this the same way:
+   [`../operations/crd-rollout.md`](../operations/crd-rollout.md#removing-or-changing-a-field-crds-in-two-steps-around-the-roll)).
    The management cluster (step 1) and the leaves (this step) must end on the same version: they
    are two installation paths for the same operator.
 3. Confirm every cluster is on it:
@@ -216,3 +218,13 @@ only after every cluster is cut over.
 - **A hostname that production traffic already uses is never pointed at a new cluster** without an
   explicit decision. Instances created so far use names in `oramadev.net`.
 - **Pull requests target `dev`.**
+
+## Configure node-pool sysctls
+
+Put kernel settings in `KubernetesCluster.spec.nodePools[].sysctls` before creating a
+cluster. Follow [node sysctls](node-sysctls.md) for supported names, evidence and rollout gates.
+For an existing cluster, a changed sysctl is reported by `InSync=False`; it is not applied,
+because AKS sets it only when a pool is created ([node-pool replacement](node-pool-replacement.md)).
+Adding a pool to an existing resource is also drift-only in this controller version.
+A supported update or a recoverable replacement/drain lifecycle needs a separate operator
+design before existing pools can be rolled out. No cluster rollout is qualified by unit tests.

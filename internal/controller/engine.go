@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -534,7 +535,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		sts.Spec.Replicas = int32Ptr(1)
 		sts.Spec.ServiceName = name
 		sts.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
-		c := oramacoreContainer(oc, "writer")
+		c := oramacoreContainer(oc, "writer", writerStartupTimeout)
 		if w.Resources != nil {
 			c.Resources = *w.Resources
 		} else {
@@ -562,7 +563,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		}
 		// Only initialize templates before creation: the API makes them immutable.
 		if sts.ResourceVersion == "" {
-			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(w.Storage)}
+			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(w.Storage, defaultVolumeSize)}
 		}
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
@@ -611,7 +612,14 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		sts.Spec.ServiceName = readerHeadlessServiceName(oc)
 		sts.Spec.PodManagementPolicy = appsv1.ParallelPodManagement
 		sts.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
-		c := oramacoreContainer(oc, "reader")
+		c := oramacoreContainer(oc, "reader", readerStartupTimeout)
+		// A reader is Ready only once it has caught up with the stream head it saw at startup
+		// (oramacore#340). A reader whose replication history has expired exits with
+		// REPLICATION_HISTORY_EXPIRED and never goes Ready; liveness and startup stay on /health so
+		// it is not killed for that. The termination message carries the code into the pod status,
+		// where readerRefusalCause reads it.
+		c.ReadinessProbe.HTTPGet.Path = "/health/ready"
+		c.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError
 		if rd.Resources != nil {
 			c.Resources = *rd.Resources
 		} else {
@@ -641,10 +649,11 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side, envoyBootstrap, llmSecretHash, credentialsHash)},
 			Spec:       podSpec,
 		}
-		// The claim template is immutable, so it is only set before creation. Claims are kept when
-		// the StatefulSet scales down or is deleted (the default Retain policy).
+		// The claim template is immutable, so it is only set before creation; reconcileStorage grows
+		// the claims. Claims are kept when the StatefulSet scales down or is deleted (the default
+		// Retain policy). Each reader's claim, data-<cr>-reader-<n>, is never shared with the writer's.
 		if sts.ResourceVersion == "" {
-			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{readerDataPVC()}
+			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(rd.Storage, readerDataSize)}
 		}
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
@@ -724,18 +733,35 @@ func (r *OramaCloudV1Reconciler) removeReaderDeployment(ctx context.Context, oc 
 
 // ---- shared builders ----
 
+const (
+	// Prod 1's startup allowances, per Steve's review of #406: writer 20 min, readers 40 min.
+	writerStartupTimeout             = 20 * time.Minute
+	readerStartupTimeout             = 40 * time.Minute
+	engineStartupPeriodSeconds int32 = 10
+)
+
+// engineStartupProbe gates readiness/liveness until startup succeeds or exhausts its budget.
+// The budget must be a whole number of periods; the startup tests check the resulting window.
+func engineStartupProbe(timeout time.Duration) *corev1.Probe {
+	threshold := timeout / (time.Duration(engineStartupPeriodSeconds) * time.Second)
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+			Path: "/health", Port: intstr.FromInt32(oramacorePort),
+		}},
+		PeriodSeconds:    engineStartupPeriodSeconds,
+		FailureThreshold: int32(threshold),
+	}
+}
+
 // oramacoreContainer is the OramaCore container of the "writer" or "reader" pod, running that side's
-// image (engineSideFor).
-func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1, side string) corev1.Container {
+// image (engineSideFor), with that side's startup budget.
+func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1, side string, startupTimeout time.Duration) corev1.Container {
 	// OramaCore serves GET /health at root (oramacore/src/web_server/api/mod.rs;
 	// also the prod ALB/Envoy health path).
 	health := func() *corev1.Probe {
 		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 			Path: "/health", Port: intstr.FromInt32(oramacorePort)}}}
 	}
-	// startup gates liveness/readiness so a slow index-load boot isn't killed.
-	startup := health()
-	startup.PeriodSeconds, startup.FailureThreshold = 10, 30 // ~5 min to become live
 	readiness := health()
 	readiness.PeriodSeconds, readiness.TimeoutSeconds, readiness.FailureThreshold = 10, 3, 3
 	liveness := health()
@@ -752,7 +778,7 @@ func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1, side string) corev1.Cont
 			{Name: "CONFIG_PATH", Value: "/etc/oramacore/config.yaml"},
 		},
 		EnvFrom:         envFromFor(oc, "engine"),
-		StartupProbe:    startup,
+		StartupProbe:    engineStartupProbe(startupTimeout),
 		ReadinessProbe:  readiness,
 		LivenessProbe:   liveness,
 		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
@@ -824,32 +850,14 @@ func configVolume(oc *oramav1alpha1.OramaCloudV1) corev1.Volume {
 	}
 }
 
-// readerDataSize is each reader's data claim (the reader's index and read.info under /app/.data).
-// A StatefulSet's claim template cannot change after creation, so a stack's readers get this size
-// once. The EU Prod 1 reader's data directory has not been measured yet (a read-only du on the
-// eu-central-1 reader is due before the first production apply). The evidence so far:
-//   - US Prod 1 reader: ~171 GB at /opt/oramacore/.data (read-only investigation, 2026-05-18,
-//     oramacore-aws docs/architecture/rabbitmq-data-retention.md);
-//   - EU Prod 1 reader: 1,000 GiB gp3 root volume with 777 GiB free on 2026-10-12, so at most
-//     223 GiB used, OS included.
-//
-// 512Gi is over twice that upper bound, as headroom for growth until readers can grow their claims.
-// Chosen by Juan, 2026-10-17.
+// readerDataSize is each reader's data claim (the reader's index and read.info under /app/.data)
+// when reader.storage.size is unset, set by orama-bridge's decision 3 of 2026-10-17. Its source is techops-docs
+// incident-2026-10-12-reader-stalls.md, "Host storage": each Prod 1 reader has a 1,000 GB
+// (931 GiB) gp3 root volume with EU 777, US 659 and Asia 740 GiB free on 2026-10-12, so about 154,
+// 272 and 191 GiB used, OS included. 512Gi is about twice the US figure, rounded up. A
+// StatefulSet's claim template keeps the size it was created with; a larger reader.storage.size
+// grows each reader's existing claim (reconcileStorage).
 const readerDataSize = "512Gi"
-
-// readerDataPVC is the reader StatefulSet's claim template: one ReadWriteOnce data volume per
-// reader, data-<cr>-reader-<n>, never shared with the writer's claim.
-func readerDataPVC() corev1.PersistentVolumeClaim {
-	return corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "data"},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(readerDataSize)},
-			},
-		},
-	}
-}
 
 func (r *OramaCloudV1Reconciler) upsertService(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component string, ports []corev1.ServicePort) error {
 	lbls := labelsFor(oc, component)
