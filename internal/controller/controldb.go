@@ -220,7 +220,7 @@ const postgresClientImageKey = "postgres-client"
 
 // defaultPostgresClientImage is the public upstream image both Jobs ran before the key existed, kept
 // as the default so an unpinned stack does not change. Production pins a private digest in its set.
-const defaultPostgresClientImage = "postgres:16.15-alpine"
+const defaultPostgresClientImage = "postgres:16-alpine"
 
 // postgresClientImage resolves the control DB's psql image like the data stores (storeImage): the
 // postgres-client override wins, else the upstream default.

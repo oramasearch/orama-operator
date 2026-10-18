@@ -96,7 +96,7 @@ spec:
                   or for a file that records none, the guard alone decides.
                 type: string
               image:
-                default: postgres:16.15-alpine
+                default: postgres:16-alpine
                 description: Image is the psql-carrying image used to run the migration
                   Job.
                 type: string

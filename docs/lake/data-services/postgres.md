@@ -39,7 +39,7 @@ spec:
 The controller creates `lake-rehearsal-<name>-<hash>`, copies the object-store and application
 Secrets into it, and creates a one-instance CNPG `Cluster` named `postgres`. Recovery uses the
 Lake's exact object-store destination, the original Barman server name, and the selected backup ID.
-After CNPG is healthy, a `postgres:18.6-alpine` Job queries all schema guard tables and the newest
+After CNPG is healthy, a `postgres:18-alpine` Job queries all schema guard tables and the newest
 `schema_migrations` version in both live and recovered databases, including
 `services_guard` from `0024_services`, `service_catalog_guard` from `0025_service_catalog`,
 `sqlite_services_guard` from `0026_sqlite_services`, `analytics_services_guard` from

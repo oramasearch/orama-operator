@@ -288,7 +288,7 @@ func TestPostgresClientImageOverride(t *testing.T) {
 		image string
 		pull  []corev1.LocalObjectReference
 	}{
-		"default": {image: "postgres:16.15-alpine"},
+		"default": {image: "postgres:16-alpine"},
 		"pinned": {
 			mut: func(o *oramav1alpha1.OramaCloudV1) {
 				o.Spec.Images.Overrides = map[string]string{"postgres-client": pinned}
