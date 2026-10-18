@@ -11,10 +11,18 @@ spec:
       components:
         dashboard:
           host: app-dev.oramadev.net
+        engine:
+          writer:
+            jwt:
+              audiences:
+              - https://writer-dev.oramadev.net
       # The one master key the engine, index-builder, workers, dashboard and analytics processor
       # share. Without it the engine is held and the stack is not Ready.
       masterAPIKeySecretRef:
         name: v1-nonprod-master-api-key
+      # The dashboard signs write tokens with this issuer and the writer_url of the c1 row as audience;
+      # the writer accepts exactly these.
+      jwtIssuer: https://app-dev.oramadev.net
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
