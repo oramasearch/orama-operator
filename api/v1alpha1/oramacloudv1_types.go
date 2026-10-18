@@ -380,8 +380,9 @@ type ToggleWithHost struct {
 // DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and
 // ConfigMaps in the instance's namespace (operator#311). Precedence, lowest to highest: the
 // operator's envFrom (<cr>-config, <cr>-dashboard-secret, <cr>-jwt), envFrom, the operator's
-// explicit env, env. DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER
-// and MASTER_API_KEY belong to the operator: supplying one through either field fails the reconcile.
+// explicit env, env. DATABASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_PASSWORD,
+// JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER and MASTER_API_KEY belong to the operator: supplying one
+// through either field fails the reconcile.
 type DashboardSpec struct {
 	ToggleWithHost `json:",inline"`
 	// EnvFrom adds Secrets and ConfigMaps (in the instance's namespace) after the operator's own

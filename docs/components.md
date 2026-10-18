@@ -503,8 +503,8 @@ ConfigMaps in the instance's namespace. The full field reference is in
 
 - **Precedence**, lowest to highest: the operator's envFrom, `dashboard.envFrom` (a later source wins),
   the operator's explicit env, `dashboard.env` (one entry per name, the last wins).
-- **Refused**: `DATABASE_URL`, `POSTGRES_PASSWORD`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, `JWT_ISSUER` and
-  `MASTER_API_KEY` (the control DB, `<cr>-jwt`, the JWT issuer and `spec.masterAPIKeySecretRef` own
+- **Refused**: `DATABASE_URL`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_PASSWORD`,
+  `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, `JWT_ISSUER` and `MASTER_API_KEY` (the control DB, `<cr>-jwt`, the JWT issuer and `spec.masterAPIKeySecretRef` own
   them), in `env` or as any key of an `envFrom` source after its prefix. The reconcile fails
   with `Ready=False`, naming the field, the object and the variable, never the value.
 - **Missing references** fail the reconcile the same way unless `optional: true`. The check runs before
@@ -568,14 +568,13 @@ variables. This records what the code reads; it does not approve copying every v
 outside service. Per-key sources, and whether each must equal Prod 1, are in the bridge's
 `secrets.md`; production assignments are #445's work.
 
-`PRIVATE_API_KEY`, `AIRBYTE_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY`,
-`AIRBYTE_CLIENT_ID`, `AIRBYTE_CLIENT_SECRET`, `AIRBYTE_ORGANIZATION_ID`, `AIRBYTE_ALLOWED_ORIGINS`,
-`S3_BUCKET`, `S3_BUCKET_REGION`, `S3_BUCKET_PREFIX`, `AWS_ACCESS_KEY_VALUE`,
+`PRIVATE_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY`, `S3_BUCKET`, `S3_BUCKET_REGION`, `S3_BUCKET_PREFIX`, `AWS_ACCESS_KEY_VALUE`,
 `AWS_SECRET_ACCESS_KEY_VALUE`, `REDIS_CACHE_URL`, `REDIS_CACHE_TOKEN`, `RESEND_API_KEY`, `SLACK_TOKEN`,
 `SLACK_CHANNEL_NEW_USERS`, `SLACK_CHANNEL_STRIPE`, `DATA_SOURCE_REQUEST_URL`, `NEXT_PUBLIC_APP_URL`,
 `ORAMACORE_PLACEMENT_CLUSTER_ID`.
 
-- The `AIRBYTE_*` keys go away with Airbyte (bridge decisions of 2026-10-16, 12a) and are not copied.
+- The dashboard's `AIRBYTE_*` keys are left out: they go away with Airbyte (bridge decisions of
+  2026-10-16, 12a) and are not copied.
 - `CRON_SECRET` reaches the dashboard through `dashboard.envFrom`, and the in-cluster CronJobs
   ([operator#17](https://github.com/oramasearch/orama-operator/issues/17)) read it from the same
   Secret. Only the dashboard and those CronJobs share it, so it is generated, not copied from Prod 1.
