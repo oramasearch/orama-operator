@@ -138,8 +138,8 @@ type llmKeySource struct {
 	custom           bool
 }
 
-// llmKeySources resolves every effective provider's key: its apiKeySecretRef (key defaulting to
-// <PROVIDER>_API_KEY), or <cr>-engine-secret under <PROVIDER>_API_KEY.
+// llmKeySources resolves every effective provider's key: <PROVIDER>_API_KEY in its apiKeySecretRef
+// Secret, or in <cr>-engine-secret.
 func llmKeySources(oc *oramav1alpha1.OramaCloudV1) []llmKeySource {
 	var srcs []llmKeySource
 	for _, p := range llmProviders(oc) {
@@ -149,11 +149,7 @@ func llmKeySources(oc *oramav1alpha1.OramaCloudV1) []llmKeySource {
 			srcs = append(srcs, llmKeySource{env: env, secret: componentSecretName(oc, "engine"), key: env})
 			continue
 		}
-		key := ref.Key
-		if key == "" {
-			key = env
-		}
-		srcs = append(srcs, llmKeySource{env: env, secret: ref.Name, key: key, custom: true})
+		srcs = append(srcs, llmKeySource{env: env, secret: ref.Name, key: env, custom: true})
 	}
 	return srcs
 }

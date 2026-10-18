@@ -85,3 +85,14 @@ spec:
   # previewWildcard: preview.lake.live
   # deploySync:
   #   interval: 15s
+  # Every Lake runs every feature (apps, builds, methodologies, agents, services and stores,
+  # workspaces, volume snapshots) with no switch, on the operator's default images
+  # (internal/controller/lake_defaults.go, operator#539). Set an image only to override its default:
+  # apps:
+  #   runtimeImage: oramasearch/app-runtime:<tag>
+  #   wildcard: apps.lake.live   # empty: <app>.<spec.host>
+  # builds:
+  #   builderImage: oramasearch/lake-builder:<tag>
+  # agents:
+  #   library:
+  #     - { key: agent-project, image: oramasearch/agent-project:<tag> }

@@ -172,6 +172,28 @@ func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) 
 		t.Fatal(err)
 	}
 	assertJustifiedNarrowAllowances(t, &sandbox)
+	// Airbyte was removed from Cloud v1 (#563): no allowance may reach its namespace or API port.
+	airbyteNamespace := namespaceNameSelector("airbyte")
+	for _, allowance := range sandbox.Spec.Policies {
+		var peers []networkingv1.NetworkPolicyPeer
+		var ports []networkingv1.NetworkPolicyPort
+		for _, rule := range allowance.Spec.Egress {
+			peers, ports = append(peers, rule.To...), append(ports, rule.Ports...)
+		}
+		for _, rule := range allowance.Spec.Ingress {
+			peers, ports = append(peers, rule.From...), append(ports, rule.Ports...)
+		}
+		for _, peer := range peers {
+			if reflect.DeepEqual(peer.NamespaceSelector, airbyteNamespace) {
+				t.Errorf("%s selects namespace airbyte", allowance.Name)
+			}
+		}
+		for _, port := range ports {
+			if port.Port != nil && port.Port.IntVal == 8001 {
+				t.Errorf("%s allows port 8001", allowance.Name)
+			}
+		}
+	}
 	for _, component := range []string{"writer", "reader"} {
 		engineLabels := labelsFor(stack, component)
 		var enginePolicyNames []string

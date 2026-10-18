@@ -136,11 +136,6 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 	} else {
 		drop = append(drop, engineSidesConditionType)
 	}
-	if cond, ok := e2eCanaryCondition(oc); ok {
-		conds = append(conds, cond)
-	} else {
-		drop = append(drop, e2eCanaryConditionType)
-	}
 	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, drop, conds...)
 	return allReady
 }
