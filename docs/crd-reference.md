@@ -16,7 +16,7 @@ pointing at the primary); the full sample list is in
 | `region.role` | enum | `primary` | `primary` (write path + stateful stores) or `read` (regional read tier). |
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
-| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. |
+| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile while the engine is enabled) run the writer-only and reader-only OramaCore builds with their own `writer.yaml` and `reader.yaml`, and win over `overrides.oramacore`; unset, both pods run the combined image, so every reader also runs a writer ([components.md](components.md#engine-internalcontrollerenginego)). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
 | `llm.default` | enum | `groq` | Provider used when a request doesn't name one. |
@@ -105,6 +105,21 @@ The condition observes the current generation and recovers after accepted settin
 retries. A rejected setting may coexist with `Ready=True`. The operator polls every 20 seconds
 while locally managed storage exists, even with Ready workloads, and writes status only on change.
 See [component reconciliation](components.md#component-storage) for scope and expansion ownership.
+
+## `status`
+
+`phase` (`Progressing | Ready | Degraded`), `componentsReady`, the per-component list and the
+`Ready` condition are described in [components.md](components.md#engine-internalcontrollerenginego).
+
+### `status.conditions[EngineSidesSeparated]`
+
+Present while the engine is enabled and its image selection is valid; removed when the engine is
+disabled. `True` (`SideImages`) when `spec.images.overrides` sets both `oramacore-writer` and
+`oramacore-reader`: the writer renders `writer.yaml` and the readers `reader.yaml`. `False`
+(`CombinedImage`) while both run the combined `oramacore` image with `config.yaml`, so every reader
+also runs a writer. A single side override is reported by `Ready=False` (`ReconcileError`) and
+leaves this condition as it was. It does not change the stack's `phase`, and is written only when
+it changes.
 
 ## `OramaCloudV1E2ETest` (separate CRD)
 

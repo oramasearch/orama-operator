@@ -229,23 +229,51 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 		msg = fmt.Sprintf("%d/%d ready; degraded: %s", ready, total, strings.Join(notReady, ", "))
 	}
 
-	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, metav1.Condition{
-		Type: "Ready", Status: condStatus, Reason: reason, Message: msg,
-	})
+	conds := []metav1.Condition{{Type: "Ready", Status: condStatus, Reason: reason, Message: msg}}
+	var drop []string
+	if oc.Spec.Components.Engine.Enabled {
+		conds = append(conds, engineSidesCondition(oc))
+	} else {
+		drop = append(drop, engineSidesConditionType)
+	}
+	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, drop, conds...)
 	return allReady
 }
 
-// setStatus writes phase + componentsReady + the per-component list + a merged condition — but
-// only when something actually changed, so a steady state produces NO control-plane traffic even
-// though reconcile runs on every child event. This is the anti-flap guard.
-func (r *OramaCloudV1Reconciler) setStatus(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, phase, componentsReady string, comps []oramav1alpha1.ComponentStatus, cond metav1.Condition) {
-	cond.ObservedGeneration = oc.Generation
+// engineSidesConditionType reports whether the writer and readers run side-only OramaCore images.
+const engineSidesConditionType = "EngineSidesSeparated"
+
+// engineSidesCondition is True while the writer and readers run the side-only images with their own
+// configs, and False while both run the combined image, whose readers also start a writer. It is
+// reported only for a valid image selection (validateEngineImages) and does not affect the phase.
+func engineSidesCondition(oc *oramav1alpha1.OramaCloudV1) metav1.Condition {
+	if engineSidesSeparated(oc) {
+		return metav1.Condition{Type: engineSidesConditionType, Status: metav1.ConditionTrue, Reason: "SideImages",
+			Message: "the writer runs the oramacore-writer image with writer.yaml and the readers run the oramacore-reader image with reader.yaml"}
+	}
+	return metav1.Condition{Type: engineSidesConditionType, Status: metav1.ConditionFalse, Reason: "CombinedImage",
+		Message: "the writer and readers run the combined oramacore image, so every reader also runs a writer; set spec.images.overrides oramacore-writer and oramacore-reader to separate them"}
+}
+
+// setStatus writes phase + componentsReady + the per-component list + the merged conditions, and
+// removes the condition types in drop — but only when something actually changed, so a steady state
+// produces NO control-plane traffic even though reconcile runs on every child event. This is the
+// anti-flap guard.
+func (r *OramaCloudV1Reconciler) setStatus(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, phase, componentsReady string, comps []oramav1alpha1.ComponentStatus, drop []string, conds ...metav1.Condition) {
 	changed := oc.Status.Phase != phase ||
 		oc.Status.ComponentsReady != componentsReady ||
 		oc.Status.ObservedGeneration != oc.Generation ||
 		!componentsEqual(oc.Status.Components, comps)
-	if meta.SetStatusCondition(&oc.Status.Conditions, cond) {
-		changed = true
+	for _, cond := range conds {
+		cond.ObservedGeneration = oc.Generation
+		if meta.SetStatusCondition(&oc.Status.Conditions, cond) {
+			changed = true
+		}
+	}
+	for _, t := range drop {
+		if meta.RemoveStatusCondition(&oc.Status.Conditions, t) {
+			changed = true
+		}
 	}
 	if !changed {
 		return

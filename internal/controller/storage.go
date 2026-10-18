@@ -108,7 +108,7 @@ func (r *OramaCloudV1Reconciler) reconcileStorage(ctx context.Context, oc *orama
 	if cond.Message == "" {
 		cond.Message = "No locally managed storage"
 	}
-	r.setStatus(ctx, oc, oc.Status.Phase, oc.Status.ComponentsReady, oc.Status.Components, cond)
+	r.setStatus(ctx, oc, oc.Status.Phase, oc.Status.ComponentsReady, oc.Status.Components, nil, cond)
 	return managed
 }
 

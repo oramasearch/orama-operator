@@ -53,6 +53,10 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	l.Info("reconciling OramaCloudV1", "region", oc.Spec.Region.Name, "role", oc.Spec.Region.Role, "profile", oc.Spec.Profile)
+	// Invalid input changes nothing: check it before the first child resource is written.
+	if err := validateEngineImages(&oc); err != nil {
+		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "engine", err)
+	}
 	if err := r.reconcileNetworkSandbox(ctx, &oc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile network sandbox: %w", err)
 	}
@@ -86,12 +90,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	for _, s := range steps {
 		if err := s.fn(ctx, &oc); err != nil {
-			l.Error(err, "component reconcile failed", "component", s.name)
-			r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, metav1.Condition{
-				Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
-				Message: fmt.Sprintf("%s: %v", s.name, err),
-			})
-			return ctrl.Result{}, err
+			return ctrl.Result{}, r.reconcileFailed(ctx, &oc, s.name, err)
 		}
 	}
 
@@ -104,6 +103,17 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
+}
+
+// reconcileFailed reports a component's reconcile error as Ready=False (ReconcileError) with phase
+// Degraded, leaving the other conditions as they were, and returns the error.
+func (r *OramaCloudV1Reconciler) reconcileFailed(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, component string, err error) error {
+	log.FromContext(ctx).Error(err, "component reconcile failed", "component", component)
+	r.setStatus(ctx, oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, nil, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
+		Message: fmt.Sprintf("%s: %v", component, err),
+	})
+	return err
 }
 
 // SetupWithManager wires the controller and the child resources it owns.

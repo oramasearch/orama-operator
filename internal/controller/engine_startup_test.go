@@ -71,12 +71,12 @@ func TestEngineStartupWorkloads(t *testing.T) {
 
 func TestEngineStartupProbesAreIndependent(t *testing.T) {
 	oc := newOCV1(nil)
-	writer := oramacoreContainer(oc, writerStartupTimeout)
-	reader := oramacoreContainer(oc, readerStartupTimeout)
+	writer := oramacoreContainer(oc, "writer", writerStartupTimeout)
+	reader := oramacoreContainer(oc, "reader", readerStartupTimeout)
 	writer.StartupProbe.FailureThreshold = 1
 	writer.StartupProbe.HTTPGet.Path = "/changed"
 	assertEngineHealthProbes(t, &reader, "/health", 240, 40*time.Minute)
-	nextWriter := oramacoreContainer(oc, writerStartupTimeout)
+	nextWriter := oramacoreContainer(oc, "writer", writerStartupTimeout)
 	assertEngineHealthProbes(t, &nextWriter, "/health", 120, 20*time.Minute)
 }
 
