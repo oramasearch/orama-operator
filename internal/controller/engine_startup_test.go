@@ -47,8 +47,8 @@ func TestEngineStartupWorkloads(t *testing.T) {
 					if err := cl.Get(ctx, types.NamespacedName{Name: "v1-reader", Namespace: "orama-system"}, reader); err != nil {
 						t.Fatalf("get reader Deployment: %v", err)
 					}
-					assertEngineHealthProbes(t, engineContainerForStartupTest(t, &writer.Spec.Template.Spec), 120, 20*time.Minute)
-					assertEngineHealthProbes(t, engineContainerForStartupTest(t, &reader.Spec.Template.Spec), 240, 40*time.Minute)
+					assertEngineHealthProbes(t, engineContainerForStartupTest(t, &writer.Spec.Template.Spec), "/health", 120, 20*time.Minute)
+					assertEngineHealthProbes(t, engineContainerForStartupTest(t, &reader.Spec.Template.Spec), "/health/ready", 240, 40*time.Minute)
 				})
 				if t.Failed() {
 					t.FailNow()
@@ -75,9 +75,9 @@ func TestEngineStartupProbesAreIndependent(t *testing.T) {
 	reader := oramacoreContainer(oc, "reader", readerStartupTimeout)
 	writer.StartupProbe.FailureThreshold = 1
 	writer.StartupProbe.HTTPGet.Path = "/changed"
-	assertEngineHealthProbes(t, &reader, 240, 40*time.Minute)
+	assertEngineHealthProbes(t, &reader, "/health", 240, 40*time.Minute)
 	nextWriter := oramacoreContainer(oc, "writer", writerStartupTimeout)
-	assertEngineHealthProbes(t, &nextWriter, 120, 20*time.Minute)
+	assertEngineHealthProbes(t, &nextWriter, "/health", 120, 20*time.Minute)
 }
 
 func engineContainerForStartupTest(t *testing.T, pod *corev1.PodSpec) *corev1.Container {
@@ -91,20 +91,23 @@ func engineContainerForStartupTest(t *testing.T, pod *corev1.PodSpec) *corev1.Co
 	return nil
 }
 
-func assertEngineHealthProbes(t *testing.T, c *corev1.Container, threshold int32, window time.Duration) {
+// assertEngineHealthProbes checks the engine container's probes: startup and liveness on /health,
+// readiness on readinessPath (the reader's is /health/ready, #506).
+func assertEngineHealthProbes(t *testing.T, c *corev1.Container, readinessPath string, threshold int32, window time.Duration) {
 	t.Helper()
 	for _, tc := range []struct {
 		name                       string
 		probe                      *corev1.Probe
+		path                       string
 		period, timeout, threshold int32
 	}{
-		{"startup", c.StartupProbe, 10, 0, threshold},
-		{"readiness", c.ReadinessProbe, 10, 3, 3},
-		{"liveness", c.LivenessProbe, 15, 3, 3},
+		{"startup", c.StartupProbe, "/health", 10, 0, threshold},
+		{"readiness", c.ReadinessProbe, readinessPath, 10, 3, 3},
+		{"liveness", c.LivenessProbe, "/health", 15, 3, 3},
 	} {
 		want := &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-				Path: "/health", Port: intstr.FromInt32(oramacorePort),
+				Path: tc.path, Port: intstr.FromInt32(oramacorePort),
 			}},
 			PeriodSeconds: tc.period, TimeoutSeconds: tc.timeout, FailureThreshold: tc.threshold,
 		}

@@ -224,7 +224,7 @@ func assertRoutes(t *testing.T, ing *networkingv1.Ingress, service string, port 
 // on 3000, with a certificate for each.
 func TestDashboardIngressAnswersExtraHosts(t *testing.T) {
 	oc := publicStack(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app.orama.ing", ExtraHosts: []string{"app.orama.com"}}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app.orama.ing", ExtraHosts: []string{"app.orama.com"}}}
 	})
 	h := newExtraHostsHarness(t)
 	if err := h.r.reconcileDashboard(context.Background(), oc); err != nil {
@@ -412,10 +412,10 @@ func TestValidateIngressHosts(t *testing.T) {
 	}{
 		"no hosts": {func(*oramav1alpha1.ComponentsSpec) {}, ""},
 		"an extra host that is not a lowercase DNS name": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard = oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"App.Orama.com"}}
+			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"App.Orama.com"}}}
 		}, `spec.components.dashboard.extraHosts[0] "App.Orama.com" must be a lowercase DNS name with at least one dot`},
 		"distinct hosts and extras": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard = oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"app.orama.com"}}
+			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"app.orama.com"}}}
 			c.Docs = oramav1alpha1.ToggleWithHost{Host: "docs.orama.ing", ExtraHosts: []string{"docs.orama.com"}}
 			c.Engine.Writer.Host, c.Engine.Writer.ExtraHosts = "writer.orama.ing", []string{"writer.orama.com"}
 			c.Engine.Reader.Host, c.Engine.Reader.ExtraHosts = "reader.orama.ing", []string{"reader.orama.com"}
@@ -424,13 +424,13 @@ func TestValidateIngressHosts(t *testing.T) {
 			c.Dashboard.Host, c.Docs.Host = "app.orama.ing", "APP.orama.ing"
 		}, `spec.components.dashboard.host and spec.components.docs.host are both "APP.orama.ing"`},
 		"primary and its own extra, case variant": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard = oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"APP.orama.ing"}}
+			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"APP.orama.ing"}}}
 		}, `spec.components.dashboard.host and spec.components.dashboard.extraHosts[0] are both "APP.orama.ing"`},
 		"repeated extra in one list": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard = oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"alias.oramadev.net", "ALIAS.oramadev.net"}}
+			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"alias.oramadev.net", "ALIAS.oramadev.net"}}}
 		}, `spec.components.dashboard.extraHosts[0] and spec.components.dashboard.extraHosts[1] are both "ALIAS.oramadev.net"`},
 		"extra and a disabled component's primary": {func(c *oramav1alpha1.ComponentsSpec) {
-			c.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app.orama.ing", ExtraHosts: []string{"app.orama.com"}}
+			c.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app.orama.ing", ExtraHosts: []string{"app.orama.com"}}}
 			c.Docs = oramav1alpha1.ToggleWithHost{Enabled: false, Host: "app.orama.com"}
 		}, `spec.components.dashboard.extraHosts[0] and spec.components.docs.host are both "app.orama.com"`},
 		"extra and extra across components": {func(c *oramav1alpha1.ComponentsSpec) {
@@ -474,7 +474,7 @@ func TestValidateIngressHosts(t *testing.T) {
 func validHostsStack() *oramav1alpha1.OramaCloudV1 {
 	return originTLSStack(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Generation = 1
-		o.Spec.Components.Dashboard = oramav1alpha1.ToggleWithHost{Enabled: true, Host: publicDashboardHost}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: publicDashboardHost}}
 		o.Spec.Components.Docs = oramav1alpha1.ToggleWithHost{Enabled: true, Host: publicDocsHost}
 	})
 }

@@ -38,6 +38,9 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 The managing cluster, `orama-production-cluster-01`, was created by hand before these kinds
 existed and has no `KubernetesCluster` of its own.
 
+`sets/v1-prod.yaml` states the source of each component storage size next to the setting. The
+operator only grows volumes, so a size raised in a set file stays raised there.
+
 No file here holds a secret. Secrets are named by reference and live on the managing cluster.
 A set's `secrets` list copies them into each member's namespace before the instance is applied;
 the copy keeps its name, or takes the one `as` gives. A v1 member's engine master key arrives this
@@ -57,6 +60,19 @@ host gets no DNS record from the operator
 The DNS records the operator makes for a member's dashboard, writer and reader hosts all go into
 the zone of the Secret's `zoneID`, so every host a member publishes must be in that one zone
 ([public hosts](../../docs/crd-reference.md#public-writer-and-reader-hosts-enginewriterhost-enginereaderhost)).
+
+A set's `spec.secrets` list copies each named Secret from there into every member's namespace (for
+example the dashboard's environment Secret, which the set's template references in
+`components.dashboard.envFrom`); see
+[the dashboard's environment](../../docs/components.md#the-dashboards-environment). The e2e canary's
+Secret (`components.dashboard.crons.e2eCanary.secretRef`) arrives the same way. Creating or
+changing a source Secret is a write on the managing cluster and needs Steve's consent.
+
+The dashboard crons and the e2e canary are created suspended. Their `suspend` fields change only in
+a set file, committed and applied to the managing cluster; production unsuspends them at cutover
+step 5, after Prod 1's crons are off and `app.orama.com` points at Prod 2 (see
+[the dashboard's scheduled jobs](../../docs/components.md#the-dashboards-scheduled-jobs)). Never
+edit, patch or create the CronJobs themselves.
 
 An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
 reference rows the operator seeds into its control database
