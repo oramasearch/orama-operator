@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -165,7 +166,7 @@ func TestControlDBMigrationsApplyInOrder(t *testing.T) {
 		GuardTable:          "team_migrations",
 		Image:               "postgres:16-alpine",
 	}
-	if ps.Spec != want {
+	if !reflect.DeepEqual(ps.Spec, want) {
 		t.Fatalf("0008 spec = %+v, want %+v", ps.Spec, want)
 	}
 	if !metav1.IsControlledBy(ps, oc) || ps.Labels["app.kubernetes.io/component"] != "controldb" || ps.Labels["app.kubernetes.io/instance"] != oc.Name {

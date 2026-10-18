@@ -136,6 +136,8 @@ type engineHarness struct {
 	r            *OramaCloudV1Reconciler
 	deletes      int
 	statusWrites int
+	// updates counts Update calls by object name.
+	updates map[string]int
 }
 
 // testMasterSecret is the master API key Secret engineOC references; newEngineHarness adds it unless
@@ -149,7 +151,7 @@ const testMasterKey = "shared-master-0099"
 func newEngineHarness(t *testing.T, objs ...client.Object) *engineHarness {
 	t.Helper()
 	s := ocv1TestScheme(t)
-	h := &engineHarness{t: t}
+	h := &engineHarness{t: t, updates: map[string]int{}}
 	if !slices.ContainsFunc(objs, func(o client.Object) bool { _, ok := o.(*corev1.Secret); return ok && o.GetName() == testMasterSecret }) {
 		objs = append(objs, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": testMasterKey}))
 	}
@@ -160,6 +162,10 @@ func newEngineHarness(t *testing.T, objs ...client.Object) *engineHarness {
 			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 				h.deletes++
 				return c.Delete(ctx, obj, opts...)
+			},
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				h.updates[obj.GetName()]++
+				return c.Update(ctx, obj, opts...)
 			},
 			SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 				h.statusWrites++
@@ -204,13 +210,13 @@ func (h *engineHarness) writer() *appsv1.StatefulSet {
 	return sts
 }
 
-func (h *engineHarness) reader() *appsv1.Deployment {
+func (h *engineHarness) reader() *appsv1.StatefulSet {
 	h.t.Helper()
-	dep := &appsv1.Deployment{}
-	if !h.get("v1-reader", dep) {
-		h.t.Fatal("reader Deployment v1-reader not found")
+	sts := &appsv1.StatefulSet{}
+	if !h.get("v1-reader", sts) {
+		h.t.Fatal("reader StatefulSet v1-reader not found")
 	}
-	return dep
+	return sts
 }
 
 func (h *engineHarness) engineConfig() *corev1.ConfigMap {
@@ -416,6 +422,13 @@ func TestEngineSideOnlyPodsAndConfigs(t *testing.T) {
 			t.Errorf("%s template must end in a newline and hold no __POD_NAME__", p.key)
 		}
 		parsed := parseYAML(t, tmpl)
+		// The reader-only config alone adds reader_side.analytics (engine_analytics_test.go).
+		if rs, ok := parsed["reader_side"].(map[string]any); ok && p.side == "reader" {
+			if _, ok := rs["analytics"]; !ok {
+				t.Error("reader.yaml has no reader_side.analytics")
+			}
+			delete(rs, "analytics")
+		}
 		if _, ok := parsed[p.absent]; ok {
 			t.Errorf("%s has %s", p.key, p.absent)
 		}
@@ -485,7 +498,7 @@ func TestEngineImagesBothOrNeither(t *testing.T) {
 					withSideImages(oc)
 				}
 				h.reconcile(oc)
-				cm, sts, dep := h.engineConfig(), h.writer(), h.reader()
+				cm, sts, readers := h.engineConfig(), h.writer(), h.reader()
 
 				oc.Spec.Images.Overrides = overrides
 				if err := h.r.reconcileEngine(context.Background(), oc); err == nil || err.Error() != want {
@@ -497,8 +510,8 @@ func TestEngineImagesBothOrNeither(t *testing.T) {
 				if got := h.writer(); got.ResourceVersion != sts.ResourceVersion || !reflect.DeepEqual(got.Spec, sts.Spec) {
 					t.Error("the refused reconcile changed the writer StatefulSet")
 				}
-				if got := h.reader(); got.ResourceVersion != dep.ResourceVersion || !reflect.DeepEqual(got.Spec, dep.Spec) {
-					t.Error("the refused reconcile changed the reader Deployment")
+				if got := h.reader(); got.ResourceVersion != readers.ResourceVersion || !reflect.DeepEqual(got.Spec, readers.Spec) {
+					t.Error("the refused reconcile changed the reader StatefulSet")
 				}
 			})
 		}
@@ -558,7 +571,7 @@ func TestEngineTeardownIgnoresOneSideImage(t *testing.T) {
 		t.Fatalf("validateEngineImages on a disabled engine: %v", err)
 	}
 	h.reconcile(oc)
-	if h.get("v1-writer", &appsv1.StatefulSet{}) || h.get("v1-reader", &appsv1.Deployment{}) || h.get("v1-engine-config", &corev1.ConfigMap{}) {
+	if h.get("v1-writer", &appsv1.StatefulSet{}) || h.get("v1-reader", &appsv1.StatefulSet{}) || h.get("v1-engine-config", &corev1.ConfigMap{}) {
 		t.Error("the disabled engine's writer, readers or ConfigMap survived teardown")
 	}
 }
@@ -574,8 +587,8 @@ func TestEngineSidesConditionPersisted(t *testing.T) {
 			Reason: "SideImages", Message: "older message", ObservedGeneration: 2, LastTransitionTime: old}}
 	})
 	// A reader that is not ready keeps the stack Progressing whatever the images are.
-	notReady := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "v1-reader", Namespace: "orama-system", Labels: labelsFor(stored, "reader")},
-		Spec: appsv1.DeploymentSpec{Replicas: int32Ptr(1)}}
+	notReady := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "v1-reader", Namespace: "orama-system", Labels: labelsFor(stored, "reader")},
+		Spec: appsv1.StatefulSetSpec{Replicas: int32Ptr(1)}}
 	h := newEngineHarness(t, stored, notReady)
 
 	read := func() *oramav1alpha1.OramaCloudV1 {
@@ -660,7 +673,7 @@ func TestEngineSidesConditionPersisted(t *testing.T) {
 func TestEngineConfigHashIsPerSide(t *testing.T) {
 	oc := engineOC(withSideImages)
 	writer, reader := engineSideFor(oc, "writer"), engineSideFor(oc, "reader")
-	hash := func(s engineSide) string { return engineConfigAnnotations(s, "", "")[configHashKey] }
+	hash := func(s engineSide) string { return engineConfigAnnotations(s, "", "", "")[configHashKey] }
 
 	// Edit one side's template the way a side-only setting would; only that side's hash moves.
 	before := map[string]string{"writer": hash(writer), "reader": hash(reader)}
@@ -695,12 +708,12 @@ func TestEngineConfigHashIsPerSide(t *testing.T) {
 	if !reflect.DeepEqual(h.writer().Spec.Template, writerTemplate) {
 		t.Error("a reader-only change changed the writer pod template")
 	}
-	dep := h.reader()
-	if dep.Spec.Template.Annotations[configHashKey] != readerHash {
+	readers := h.reader()
+	if readers.Spec.Template.Annotations[configHashKey] != readerHash {
 		t.Error("a reader image, replica or resource change changed the reader config hash")
 	}
-	if *dep.Spec.Replicas != 5 || container(dep.Spec.Template.Spec, "oramacore").Image != oc.Spec.Images.Overrides["oramacore-reader"] ||
-		!container(dep.Spec.Template.Spec, "oramacore").Resources.Limits.Memory().Equal(resource.MustParse("3Gi")) {
+	if *readers.Spec.Replicas != 5 || container(readers.Spec.Template.Spec, "oramacore").Image != oc.Spec.Images.Overrides["oramacore-reader"] ||
+		!container(readers.Spec.Template.Spec, "oramacore").Resources.Limits.Memory().Equal(resource.MustParse("3Gi")) {
 		t.Error("the reader change was not applied")
 	}
 
@@ -741,8 +754,13 @@ func TestEngineModeTransitionsInPlace(t *testing.T) {
 			if got := renderSource(t, p.spec.Spec); got != p.key {
 				t.Errorf("%s: %s renders %q, want %q", mode, p.side, got, p.key)
 			}
-			if got, want := p.spec.Annotations[configHashKey], templateSHA256(cm.Data[p.key]); got != want {
-				t.Errorf("%s: %s config hash = %q, want SHA-256 of %s", mode, p.side, got, p.key)
+			// The Envoy readers' hash also covers the bootstrap (#314); the writer's is its template's.
+			want := templateSHA256(cm.Data[p.key])
+			if p.side == "reader" {
+				want = sha256Hex([]byte(cm.Data[p.key]), []byte(cm.Data["envoy.yaml"]))
+			}
+			if got := p.spec.Annotations[configHashKey]; got != want {
+				t.Errorf("%s: %s config hash = %q, want the hash of %s", mode, p.side, got, p.key)
 			}
 		}
 		if container(h.reader().Spec.Template.Spec, "envoy") == nil {
@@ -804,7 +822,7 @@ func TestRenderConfigInitRendersSelectedTemplate(t *testing.T) {
 	const master, groq = "synthetic-master-0123abcd", "gsk_synthetic_4567efgh"
 	keys := map[string]string{"__MASTER_API_KEY__": master, "__GROQ_API_KEY__": groq,
 		"__OPENAI_API_KEY__": "sk-synthetic", "__GOOGLE_API_KEY__": "AIza-synthetic", "__ANTHROPIC_API_KEY__": "sk-ant-synthetic",
-		"__BROKER_USERNAME__": "orama", "__BROKER_PASSWORD__": "synthetic-broker-89ab"}
+		"__BROKER_USERNAME__": "orama", "__BROKER_PASSWORD__": "synthetic-broker-89ab", "__ANALYTICS_API_KEY__": "synthetic-analytics-cdef"}
 	for _, oc := range []*oramav1alpha1.OramaCloudV1{engineOC(nil), engineOC(withSideImages)} {
 		h := newEngineHarness(t)
 		h.reconcile(oc)

@@ -7,6 +7,11 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"regexp"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -79,6 +84,8 @@ type appDef struct {
 	env         []corev1.EnvVar
 	args        []string
 	ingressHost string
+	// ingressExtraHosts are further names the Ingress answers, to the same backend (no DNS).
+	ingressExtraHosts []string
 	// Optional config-file rendering: an init container renders a config file (from a
 	// ConfigMap template with secret placeholders) into a shared volume the app reads via
 	// CONFIG_PATH. initContainers/volumes are added to the pod; volumeMounts to the app container.
@@ -95,18 +102,25 @@ type appDef struct {
 	// gracePeriodSeconds is terminationGracePeriodSeconds. 0 → the stateless-app default (30s).
 	// Stateful/slow-draining apps set a larger value. Workload hardening (#18).
 	gracePeriodSeconds int64
-	// credentialSecrets are the credential Secrets the app's containers, init containers included,
-	// read by secretKeyRef (broker admin, cache auth, master API key). Their data hash is on the pod
-	// template, so a changed credential rolls the app (#307).
+	// credentialSecrets are the Secrets the app's containers, init containers included, read by
+	// secretKeyRef (broker admin, cache auth, analytics key, master API key, ...). Their data hash is
+	// on the pod template, so a changed credential rolls the app (#307).
 	credentialSecrets []string
+	// podAnnotations go on the pod template, so a change to one rolls the Deployment. An app whose
+	// envFrom value only takes effect at process start uses a hash of it to roll on change.
+	podAnnotations map[string]string
 	// extraEnvFrom is appended after the operator's envFrom sources (envFromFor), so its keys win
 	// over them; envHash, when set, is the pod-template annotation dashboardEnvHashAnnotation that
 	// rolls the pods when a referenced Secret/ConfigMap changes. The dashboard's user env (#311).
 	extraEnvFrom []corev1.EnvFromSource
-	envHash      string
+	// envFrom replaces the main container's envFromFor default (the shared ConfigMap and the
+	// component Secret) when set, for an app that must not load its component Secret whole.
+	envFrom []corev1.EnvFromSource
+	envHash string
 }
 
-// reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
+// reconcileApp provisions a Deployment + Service (+ Ingress for ingressHost and ingressExtraHosts
+// if ingressHost is set).
 func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, def appDef) error {
 	if _, err := r.ensureComponentSecret(ctx, oc, def.component); err != nil {
 		return err
@@ -130,6 +144,10 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 	// Harden the operator's init/render/wait containers to the same baseline as the main container.
 	initContainers := def.initContainers
 	hardenAll(initContainers)
+	envFrom := def.envFrom
+	if envFrom == nil {
+		envFrom = envFromFor(oc, def.component)
+	}
 	var annotations map[string]string
 	if len(def.credentialSecrets) > 0 {
 		hash, err := r.credentialsHash(ctx, oc, def.credentialSecrets...)
@@ -137,6 +155,12 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			return err
 		}
 		annotations = map[string]string{credentialsHashKey: hash}
+	}
+	for k, v := range def.podAnnotations {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[k] = v
 	}
 	// No env-hash annotation without a hash, so an app with no referenced env keeps its template.
 	if def.envHash != "" {
@@ -167,7 +191,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 				Args:            def.args,
 				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
 				Env:             def.env,
-				EnvFrom:         append(envFromFor(oc, def.component), def.extraEnvFrom...),
+				EnvFrom:         append(envFrom, def.extraEnvFrom...),
 				VolumeMounts:    def.volumeMounts,
 				Resources:       *res,
 				// Startup gates liveness/readiness so a slow boot isn't killed; readiness gates
@@ -207,30 +231,21 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		return err
 	}
 	if def.ingressHost != "" {
-		return r.upsertIngress(ctx, oc, name, def.component, def.ingressHost, def.port)
+		return r.upsertIngress(ctx, oc, name, def.component, ingressSpec(oc, name, def.ingressHost, def.ingressExtraHosts, def.port))
 	}
 	return nil
 }
 
-// upsertIngress renders a component's Ingress for host on the stack's ingress class, with origin
-// TLS from the stack's Issuer. It fails, leaving any existing Ingress as it is, while the stack
-// has no Cloudflare token for the Issuer.
-func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, host string, port int32) error {
-	issuer, err := stackIngressIssuer(oc)
-	if err != nil {
-		return err
-	}
-	lbls := labelsFor(oc, component)
+// ingressSpec is the spec of a component's Ingress named name: the stack's ingress class, one rule
+// for host and then one per extra host in order, each with a Prefix / path to the Service name on
+// port, and origin TLS for every host (originTLS). upsertIngress writes it; the engine's /metrics
+// deny companions narrow the same spec (metricsBlockIngressSpec), so the two cannot drift apart.
+func ingressSpec(oc *oramav1alpha1.OramaCloudV1, name, host string, extraHosts []string, port int32) networkingv1.IngressSpec {
 	pathType := networkingv1.PathTypePrefix
-	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
-		ing.Labels = lbls
-		// Bind to the helmfile-installed ingress-nginx controller. Without an ingressClassName the
-		// controller ignores the Ingress (no ADDRESS assigned → nothing routes). Configurable via
-		// spec.ingressClassName (default "nginx").
-		ing.Spec.IngressClassName = strPtr(ingressClassName(oc))
-		ing.Spec.Rules = []networkingv1.IngressRule{{
-			Host: host,
+	rules := make([]networkingv1.IngressRule, 0, 1+len(extraHosts))
+	for _, h := range append([]string{host}, extraHosts...) {
+		rules = append(rules, networkingv1.IngressRule{
+			Host: h,
 			IngressRuleValue: networkingv1.IngressRuleValue{
 				HTTP: &networkingv1.HTTPIngressRuleValue{
 					Paths: []networkingv1.HTTPIngressPath{{
@@ -245,7 +260,32 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 					}},
 				},
 			},
-		}}
+		})
+	}
+	return networkingv1.IngressSpec{
+		// Bind to the helmfile-installed ingress-nginx controller. Without an ingressClassName the
+		// controller ignores the Ingress (no ADDRESS assigned → nothing routes). Configurable via
+		// spec.components.ingressClassName (default "nginx").
+		IngressClassName: strPtr(ingressClassName(oc)),
+		Rules:            rules,
+		TLS:              originTLS(rules),
+	}
+}
+
+// upsertIngress writes a component's Ingress from spec (ingressSpec). The rules are replaced whole,
+// so a removed extra host loses its route and certificate, and applyIngressTLS requests origin TLS
+// from the stack's Issuer for every host. It fails, leaving any existing Ingress as it is, while the
+// stack has no Cloudflare token for the Issuer.
+func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component string, spec networkingv1.IngressSpec) error {
+	issuer, err := stackIngressIssuer(oc)
+	if err != nil {
+		return err
+	}
+	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
+		ing.Labels = labelsFor(oc, component)
+		ing.Spec.IngressClassName = spec.IngressClassName
+		ing.Spec.Rules = spec.Rules
 		// Origin TLS from the stack's Issuer, after the rules: every host gets a certificate (#457).
 		if err := applyIngressTLS(ing, issuer); err != nil {
 			return err
@@ -253,6 +293,59 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 		return controllerutil.SetControllerReference(oc, ing, r.Scheme)
 	})
 	return err
+}
+
+// validateIngressHosts refuses Ingress host settings that would make two rules claim one name or
+// leave extra hosts without the primary host they alias: an extra host without host, an empty or
+// over-long extra host, and any name (case-insensitive) repeated across the host and extraHosts of
+// dashboard, docs, oramasearchApp, engine.writer and engine.reader, enabled or not. Reconcile calls
+// it before writing any child resource. The error names both conflicting field paths.
+// dnsHostName is the CRD's pattern for host and each extraHosts entry: a lowercase DNS name with at
+// least one dot.
+var dnsHostName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`)
+
+func validateIngressHosts(oc *oramav1alpha1.OramaCloudV1) error {
+	c := oc.Spec.Components
+	claimed := map[string]string{}
+	for _, endpoint := range []struct {
+		path       string
+		host       string
+		extraHosts []string
+	}{
+		{"spec.components.dashboard", c.Dashboard.Host, c.Dashboard.ExtraHosts},
+		{"spec.components.docs", c.Docs.Host, c.Docs.ExtraHosts},
+		{"spec.components.oramasearchApp", c.OramasearchApp.Host, c.OramasearchApp.ExtraHosts},
+		{"spec.components.engine.writer", c.Engine.Writer.Host, c.Engine.Writer.ExtraHosts},
+		{"spec.components.engine.reader", c.Engine.Reader.Host, c.Engine.Reader.ExtraHosts},
+	} {
+		if endpoint.host == "" {
+			if len(endpoint.extraHosts) > 0 {
+				return fmt.Errorf("%s.extraHosts requires %s.host", endpoint.path, endpoint.path)
+			}
+			continue
+		}
+		names := append([]string{endpoint.host}, endpoint.extraHosts...)
+		for i, name := range names {
+			path := endpoint.path + ".host"
+			if i > 0 {
+				path = fmt.Sprintf("%s.extraHosts[%d]", endpoint.path, i-1)
+				if name == "" || len(name) > 253 {
+					return fmt.Errorf("%s must be 1 to 253 characters, got %d", path, len(name))
+				}
+			}
+			key := strings.ToLower(name)
+			if first, ok := claimed[key]; ok {
+				return fmt.Errorf("%s and %s are both %q", first, path, name)
+			}
+			// The CRD refuses this too; checked here for objects that bypassed admission, before any
+			// Ingress or certificate is written for the name.
+			if i > 0 && !dnsHostName.MatchString(name) {
+				return fmt.Errorf("%s %q must be a lowercase DNS name with at least one dot", path, name)
+			}
+			claimed[key] = path
+		}
+	}
+	return nil
 }
 
 // ---- workers + dashboard reconcilers ----
@@ -316,10 +409,11 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	// The dashboard never migrates the control DB: the operator's PostgresSchema owns the
 	// schema (operator#40). A second Drizzle migrate collides with those objects (Postgres 42710).
 	if err := r.reconcileApp(ctx, oc, appDef{
-		component:   "dashboard",
-		image:       img,
-		port:        3000,
-		ingressHost: d.Host,
+		component:         "dashboard",
+		image:             img,
+		port:              3000,
+		ingressHost:       d.Host,
+		ingressExtraHosts: d.ExtraHosts,
 		// The master key (#307), the CNPG-generated credentials for the dashboard's control-DB client,
 		// then the user's dashboard.env (#311).
 		env:               overrideEnv([]corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}, d.Env),
@@ -328,6 +422,9 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		envHash:           envHash,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
+		// The dashboard reads JWT_ISSUER from the shared ConfigMap only at start: roll it when the
+		// effective issuer changes, so it signs with the issuer the writer verifies.
+		podAnnotations: map[string]string{jwtIssuerHashKey: jwtIssuerHash(oc)},
 	}); err != nil {
 		return err
 	}
@@ -338,6 +435,15 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	return r.reconcileDashboardCrons(ctx, oc, sources)
 }
 
+// jwtIssuerHashKey is the dashboard pod-template annotation holding jwtIssuerHash.
+const jwtIssuerHashKey = "orama.cloud/jwt-issuer-hash"
+
+// jwtIssuerHash is the SHA-256 of the effective issuer, jwtIssuer(oc).
+func jwtIssuerHash(oc *oramav1alpha1.OramaCloudV1) string {
+	sum := sha256.Sum256([]byte(jwtIssuer(oc)))
+	return hex.EncodeToString(sum[:])
+}
+
 // reconcileDocs provisions docs.orama.com (Next.js + Fumadocs) as a Deployment + Service
 // (+ Ingress if a host is set). No component secret — the docs site has no env coupling.
 func (r *OramaCloudV1Reconciler) reconcileDocs(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
@@ -346,10 +452,11 @@ func (r *OramaCloudV1Reconciler) reconcileDocs(ctx context.Context, oc *oramav1a
 		return r.teardownByComponent(ctx, oc, "docs")
 	}
 	return r.reconcileApp(ctx, oc, appDef{
-		component:   "docs",
-		image:       componentImage(oc, "docs", "docs"),
-		port:        3000,
-		ingressHost: d.Host,
-		resources:   resourcesOr(d.Resources, resourceReqs("128Mi", "50m", "512Mi")),
+		component:         "docs",
+		image:             componentImage(oc, "docs", "docs"),
+		port:              3000,
+		ingressHost:       d.Host,
+		ingressExtraHosts: d.ExtraHosts,
+		resources:         resourcesOr(d.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }

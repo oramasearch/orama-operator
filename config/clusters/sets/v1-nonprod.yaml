@@ -11,12 +11,27 @@ spec:
       components:
         dashboard:
           host: app-dev.oramadev.net
+          # A second name the dashboard answers, with no DNS record from the operator, as
+          # app.orama.com is for v1-eu at the cutover.
+          extraHosts:
+          - app-alias-dev.oramadev.net
         docs:
           host: docs-dev.oramadev.net
+        engine:
+          reader:
+            host: reader-dev.oramadev.net
+          writer:
+            host: writer-dev.oramadev.net
+            jwt:
+              audiences:
+              - https://writer-dev.oramadev.net
       # The one master key the engine, index-builder, workers, dashboard and analytics processor
       # share. Without it the engine is held and the stack is not Ready.
       masterAPIKeySecretRef:
         name: v1-nonprod-master-api-key
+      # The dashboard signs write tokens with this issuer and the writer_url of the c1 row as audience;
+      # the writer accepts exactly these.
+      jwtIssuer: https://app-dev.oramadev.net
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
@@ -43,6 +58,11 @@ spec:
         placement: local
       analyticsProcessor:
         enabled: true
+        # The #421 proof: the import is created suspended, and a later commit to this file sets
+        # suspend: false. Applied only with Steve's consent.
+        import:
+          enabled: true
+          suspend: true
       broker:
         enabled: true
         mode: in-cluster
@@ -75,7 +95,8 @@ spec:
         enabled: true
         envoy: true
         reader:
-          replicas: 1
+          # Two readers for the #421 proof (each imported once). Applied only with Steve's consent.
+          replicas: 2
         writer:
           gpu: false
       ingestion:

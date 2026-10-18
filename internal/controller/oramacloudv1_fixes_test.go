@@ -275,8 +275,8 @@ func TestAnalyticsProcessorRendersControlDBURIAndEscapesSecrets(t *testing.T) {
 	}
 	render := dep.Spec.Template.Spec.InitContainers[0]
 	assertControlDBSecretEnv(t, render.Env, "PG_URI", "uri")
-	if len(render.Env) != 2 || render.Env[0].Name != masterAPIKeyEnvName {
-		t.Fatal("render must take only the master key (spec.masterAPIKeySecretRef) and PG_URI as env overrides")
+	if len(render.Env) != 3 || render.Env[0].Name != analyticsKeyEnvName || render.Env[1].Name != "CLICKHOUSE_PASSWORD" {
+		t.Fatal("render must take only the analytics key, the ClickHouse password and PG_URI, each by secretKeyRef")
 	}
 	// The independent index-builder client uses the same helper and Secret.
 	assertControlDBSecretEnv(t, r.indexBuilderEnv(ctx, oc), "DATABASE_URL", "uri")
@@ -285,7 +285,7 @@ func TestAnalyticsProcessorRendersControlDBURIAndEscapesSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	template := cm.Data["config.yaml"]
-	for _, placeholder := range []string{"__CLICKHOUSE_PASSWORD__", "__MASTER_API_KEY__", "__PG_URI__"} {
+	for _, placeholder := range []string{"__CLICKHOUSE_PASSWORD__", "__ANALYTICS_API_KEY__", "__PG_URI__"} {
 		if !strings.Contains(template, placeholder) {
 			t.Fatalf("missing template placeholder %s", placeholder)
 		}
@@ -296,14 +296,14 @@ func TestAnalyticsProcessorRendersControlDBURIAndEscapesSecrets(t *testing.T) {
 	if len(render.Command) != 3 || render.Command[0] != "sh" || render.Command[1] != "-c" {
 		t.Fatal("expected sh -c render command")
 	}
-	for _, name := range []string{"CLICKHOUSE_PASSWORD", "MASTER_API_KEY", "PG_URI"} {
+	for _, name := range []string{"CLICKHOUSE_PASSWORD", "ANALYTICS_API_KEY", "PG_URI"} {
 		if !strings.Contains(render.Command[2], `$(esc "${`+name+`}")`) {
 			t.Fatalf("%s bypasses escaping", name)
 		}
 	}
 	values := map[string]string{
 		"CLICKHOUSE_PASSWORD": `ch&pass#slash\end`,
-		"MASTER_API_KEY":      `key&part#slash\end`,
+		"ANALYTICS_API_KEY":   `key&part#slash\end`,
 		"PG_URI":              "postgresql://oramacore:p%23x@v1-controldb-rw:5432/oramacore?sslmode=prefer&application_name=render-proof",
 	}
 	for _, value := range values {
@@ -348,8 +348,14 @@ func TestAnalyticsProcessorRendersControlDBURIAndEscapesSecrets(t *testing.T) {
 	if config.Clickhouse.Password != values["CLICKHOUSE_PASSWORD"] {
 		t.Error("ClickHouse password changed during render")
 	}
-	if len(config.Oramacores) != 1 || config.Oramacores[0].APIKey != values["MASTER_API_KEY"] {
-		t.Error("master API key changed during render")
+	// One source per reader ordinal (analyticsSources), each with the analytics key.
+	if len(config.Oramacores) != int(readerReplicas(oc)) {
+		t.Errorf("rendered %d sources, want one per reader (%d)", len(config.Oramacores), readerReplicas(oc))
+	}
+	for _, src := range config.Oramacores {
+		if src.APIKey != values["ANALYTICS_API_KEY"] {
+			t.Error("analytics key changed during render")
+		}
 	}
 	if config.Postgres.URL != values["PG_URI"] {
 		t.Error("Postgres URI changed during render")

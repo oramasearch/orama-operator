@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -27,8 +28,9 @@ const componentLabel = "app.kubernetes.io/component"
 
 // componentReadiness returns a per-component readiness list for the operator-owned workloads —
 // one entry per DEPLOYABLE component (Deployment / StatefulSet, keyed by its component label) plus
-// the CNPG control DB. Middle granularity: component-level, not per-pod. Sorted by name so the
-// list is stable and never triggers a status write just from map/list ordering.
+// the CNPG control DB and the analytics retention Job. Middle granularity: component-level, not
+// per-pod. Sorted by name so the list is stable and never triggers a status write just from
+// map/list ordering.
 func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) []oramav1alpha1.ComponentStatus {
 	owned := client.MatchingLabels{
 		"app.kubernetes.io/managed-by": "orama-cloud-v1-operator",
@@ -79,6 +81,21 @@ func (r *OramaCloudV1Reconciler) componentReadiness(ctx context.Context, oc *ora
 		if !(oc.Spec.Region.Role == "read" && oc.Spec.Components.ControlDB.Replicate) {
 			comps = append(comps, r.controlDBSchemaReadiness(ctx, oc))
 		}
+	}
+
+	// The analytics retention Job (reconcileAnalyticsRetention): ready once it has set the TTLs.
+	if analyticsRetentionWanted(oc) {
+		job := &batchv1.Job{}
+		ready, detail := false, "pending"
+		if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: analyticsRetentionName(oc)}, job); err == nil {
+			switch {
+			case job.Status.Succeeded > 0:
+				ready, detail = true, "applied"
+			case jobFailed(job):
+				detail = "failed, retrying"
+			}
+		}
+		comps = append(comps, oramav1alpha1.ComponentStatus{Name: "analytics-retention", Ready: ready, Detail: detail})
 	}
 
 	for i := range comps {
@@ -200,10 +217,11 @@ func replicasOf(p *int32) int32 {
 
 // applyReadiness rolls the per-component states up into the CR status: phase (Ready when every
 // component is ready; Degraded when one regressed after having been Ready; else Progressing),
-// componentsReady ("n/total"), the per-component list, and a standard Ready condition. A non-nil
-// blocked (validateMasterAPIKey) is the Ready condition instead, with phase Degraded, whatever the
-// components report. Returns whether the stack is fully ready. Writes the status subresource ONLY on
-// a real transition.
+// componentsReady ("n/total"), the per-component list, a standard Ready condition, and the
+// EngineSidesSeparated and ClusterRowReady conditions. A non-nil blocked (validateMasterAPIKey) is the
+// Ready condition instead, with phase Degraded, whatever the components report. Returns whether the
+// stack is fully ready and its cluster row present, which ends the readiness requeue. Writes the
+// status subresource ONLY on a real transition.
 func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, blocked *metav1.Condition) bool {
 	comps := r.componentReadiness(ctx, oc)
 	ready, notReady := 0, []string(nil)
@@ -240,6 +258,18 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 		conds = append(conds, engineSidesCondition(oc))
 	} else {
 		drop = append(drop, engineSidesConditionType)
+	}
+	// ClusterRowReady (#443) leaves the phase alone, but while it is not True the stack is not settled,
+	// so the readiness requeue keeps running and a failed row Job is replaced after its back-off.
+	switch rowCondition, err := r.controlDBClusterRowCondition(ctx, oc, blocked); {
+	case err != nil:
+		log.FromContext(ctx).Error(err, "read control DB cluster-row Job")
+		allReady = false
+	case rowCondition != nil:
+		conds = append(conds, *rowCondition)
+		allReady = allReady && rowCondition.Status == metav1.ConditionTrue
+	default:
+		drop = append(drop, clusterRowReadyCondition)
 	}
 	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, drop, conds...)
 	return allReady

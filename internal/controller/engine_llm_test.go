@@ -600,12 +600,12 @@ func TestLLMInvalidInputsLeaveEngineUntouched(t *testing.T) {
 					engineSecret(), secretOf("llm-keys", map[string]string{"OPENAI_API_KEY": "custom-openai"}))
 				var cm *corev1.ConfigMap
 				var sts *appsv1.StatefulSet
-				var dep *appsv1.Deployment
+				var readers *appsv1.StatefulSet
 				if existing {
 					if err := h.run(); err != nil {
 						t.Fatal(err)
 					}
-					cm, sts, dep = h.engineConfig(), h.writer(), h.reader()
+					cm, sts, readers = h.engineConfig(), h.writer(), h.reader()
 				}
 				if c.secret != nil {
 					c.secret(h)
@@ -642,8 +642,8 @@ func TestLLMInvalidInputsLeaveEngineUntouched(t *testing.T) {
 				if got := h.writer(); got.ResourceVersion != sts.ResourceVersion {
 					t.Error("the refused reconcile changed the writer StatefulSet")
 				}
-				if got := h.reader(); got.ResourceVersion != dep.ResourceVersion {
-					t.Error("the refused reconcile changed the reader Deployment")
+				if got := h.reader(); got.ResourceVersion != readers.ResourceVersion {
+					t.Error("the refused reconcile changed the reader StatefulSet")
 				}
 			})
 		}
@@ -662,14 +662,14 @@ func TestLLMCustomSecretDeletedThenRecreated(t *testing.T) {
 	if err := h.run(); err != nil {
 		t.Fatal(err)
 	}
-	sts, dep := h.writer(), h.reader()
+	sts, readers := h.writer(), h.reader()
 	if err := h.cl.Delete(context.Background(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "llm-keys", Namespace: "orama-system"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.run(); err == nil {
 		t.Fatal("Reconcile succeeded without the referenced Secret")
 	}
-	if h.writer().ResourceVersion != sts.ResourceVersion || h.reader().ResourceVersion != dep.ResourceVersion {
+	if h.writer().ResourceVersion != sts.ResourceVersion || h.reader().ResourceVersion != readers.ResourceVersion {
 		t.Error("a missing Secret changed the engine workloads")
 	}
 	if ready := meta.FindStatusCondition(h.stored().Status.Conditions, "Ready"); ready == nil || ready.Status != metav1.ConditionFalse {
@@ -707,7 +707,7 @@ func TestLLMDisabledAndReadRegion(t *testing.T) {
 		oc.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "absent"}
 		oc.Spec.LLM.Default = "nobody"
 		h.reconcile(oc)
-		if h.get("v1-writer", &appsv1.StatefulSet{}) || h.get("v1-reader", &appsv1.Deployment{}) || h.get("v1-engine-config", &corev1.ConfigMap{}) {
+		if h.get("v1-writer", &appsv1.StatefulSet{}) || h.get("v1-reader", &appsv1.StatefulSet{}) || h.get("v1-engine-config", &corev1.ConfigMap{}) {
 			t.Error("the disabled engine survived teardown")
 		}
 	})

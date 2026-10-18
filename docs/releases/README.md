@@ -3,6 +3,11 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.6.0](v0.6.0.md) — 2026-10-17. The Cloud v1 engine reachable and kept for the migration:
+  the writer verifies the dashboard's write tokens, public writer and reader hosts with extra names
+  and `/metrics` closed, readers as a StatefulSet with a disk each, a dedicated reader analytics
+  key, a scheduled analytics import with 30 days kept, and the `c1` cluster row on a new control
+  database. `engine.reader.hpa` removed. 33 resource kinds.
 - [v0.5.0](v0.5.0.md) — 2026-10-17. The Orama Cloud v1 stack in Prod 1's shape for the
   migration: an in-cluster control database with the dashboard's migration 0008 and reference rows,
   side-only engine images, LLM providers from the spec, the hooks deny list, Prod 1's startup

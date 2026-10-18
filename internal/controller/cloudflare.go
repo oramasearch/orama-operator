@@ -30,32 +30,19 @@ const cfAPIBase = "https://api.cloudflare.com/client/v4"
 // per operator process (not on every reconcile).
 var cfLBBillingOnce sync.Once
 
-// reconcileCloudflare models this cluster's dashboard DNS record as an OWNED
-// CloudflareDNSRecord CR (epic #31): the child controller makes the CF API call and holds a
-// finalizer for external cleanup, so the operator never mutates Cloudflare from the main loop.
-// SAFE no-op unless fully configured (enabled + manageDNS + a resolvable ingress target); the
-// child is itself a no-op until its Secret (token+zoneID) exists.
+// reconcileCloudflare models this stack's Cloudflare resources as OWNED child CRs (epic #31): the
+// child controllers make the CF API calls and hold finalizers for external cleanup, so the operator
+// never mutates Cloudflare from the main loop. The public endpoints' DNS records are reconciled
+// first, so turning Cloudflare, manageDNS or the token off removes them before the early return.
 func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	if err := r.reconcilePublicDNS(ctx, oc); err != nil {
+		return err
+	}
 	cf := oc.Spec.Cloudflare
 	if !cf.Enabled || cf.APITokenSecretRef == nil {
 		return nil
 	}
 	secretName := cf.APITokenSecretRef.Name
-
-	// Dashboard DNS record (when manageDNS + a resolvable ingress target).
-	if cf.ManageDNS {
-		if host := oc.Spec.Components.Dashboard.Host; host != "" {
-			if target := r.ingressTarget(ctx, oc); target != "" {
-				rec := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-dashboard-dns", Namespace: oc.Namespace}}
-				if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rec, func() error {
-					rec.Spec.SecretRef, rec.Spec.Name, rec.Spec.Content, rec.Spec.Proxied = secretName, host, target, true
-					return controllerutil.SetControllerReference(oc, rec, r.Scheme)
-				}); err != nil {
-					return err
-				}
-			}
-		}
-	}
 
 	// KV namespaces + R2 bucket the ingestion path (index-builder) consumes.
 	if oc.Spec.Components.Ingestion.Enabled {
@@ -104,21 +91,104 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 	return nil
 }
 
-// ingressTarget returns the external address of the dashboard Ingress, if assigned.
-func (r *OramaCloudV1Reconciler) ingressTarget(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) string {
-	ing := &networkingv1.Ingress{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-dashboard"}, ing); err != nil {
+// publicDNSSecret is the token Secret the stack's DNS records name, or "" while the operator manages
+// no DNS: Cloudflare or manageDNS off, or no token reference. The child controller reads the
+// Secret's `token` and `zoneID` itself; the parent never copies credential values into a child.
+func publicDNSSecret(oc *oramav1alpha1.OramaCloudV1) string {
+	cf := oc.Spec.Cloudflare
+	if !cf.Enabled || !cf.ManageDNS || cf.APITokenSecretRef == nil {
 		return ""
+	}
+	return cf.APITokenSecretRef.Name
+}
+
+// reconcilePublicDNS keeps one CloudflareDNSRecord, <cr>-<component>-dns, for each published
+// endpoint: the dashboard, the writer and the readers. Every host is a record in the zone of the
+// token Secret's `zoneID`.
+func (r *OramaCloudV1Reconciler) reconcilePublicDNS(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	dashboardHost := ""
+	if d := oc.Spec.Components.Dashboard; d.Enabled {
+		dashboardHost = d.Host
+	}
+	secret := publicDNSSecret(oc)
+	for _, endpoint := range []struct{ component, host string }{
+		{"dashboard", dashboardHost},
+		{"writer", writerPublicHost(oc)},
+		{"reader", readerPublicHost(oc)},
+	} {
+		if err := r.reconcileEndpointDNS(ctx, oc, endpoint.component, endpoint.host, secret); err != nil {
+			return fmt.Errorf("%s DNS: %w", endpoint.component, err)
+		}
+	}
+	return nil
+}
+
+// reconcileEndpointDNS converges one endpoint's record. host or secret empty means the record should
+// not exist. The external record follows its child under the DNS controller's create-only rules, so
+// a child that already has a Cloudflare record (status.recordID) is never repointed at another host
+// or Secret: it is deleted with its spec intact, its finalizer removes the record with the old
+// credentials, and a later reconcile creates the replacement. A child being deleted is left alone
+// until its deletion event. Without an Ingress address nothing is created and an existing child
+// keeps its content.
+func (r *OramaCloudV1Reconciler) reconcileEndpointDNS(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, component, host, secret string) error {
+	rec := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-" + component + "-dns", Namespace: oc.Namespace}}
+	if host == "" || secret == "" {
+		return r.deletePublicEndpointOwned(ctx, oc, rec)
+	}
+	exists, err := r.refuseForeignPublicEndpoint(ctx, oc, rec)
+	if err != nil {
+		return err
+	}
+	if exists {
+		if !rec.DeletionTimestamp.IsZero() {
+			return nil
+		}
+		if rec.Status.RecordID != "" && (rec.Spec.Name != host || rec.Spec.SecretRef != secret) {
+			return r.deletePublicEndpointOwned(ctx, oc, rec)
+		}
+	}
+	target, err := r.componentIngressTarget(ctx, oc, component)
+	if err != nil || target == "" {
+		return err
+	}
+	desired := oramav1alpha1.CloudflareDNSRecordSpec{SecretRef: secret, Name: host, Content: target, Proxied: true}
+	if !exists {
+		created := &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: rec.Name, Namespace: rec.Namespace}, Spec: desired}
+		if err := controllerutil.SetControllerReference(oc, created, r.Scheme); err != nil {
+			return err
+		}
+		return r.Create(ctx, created)
+	}
+	if rec.Spec == desired {
+		return nil
+	}
+	// Spec only, under optimistic locking: the child's status, record ID and finalizer stay its
+	// controller's.
+	patch := client.MergeFromWithOptions(rec.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	rec.Spec = desired
+	return r.Patch(ctx, rec, patch)
+}
+
+// componentIngressTarget returns the first load-balancer address of Ingress <cr>-<component>
+// (hostname before IP within one entry), or "" while the Ingress is absent, being deleted or has no
+// address yet. Other read errors are returned.
+func (r *OramaCloudV1Reconciler) componentIngressTarget(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, component string) (string, error) {
+	ing := &networkingv1.Ingress{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-" + component}, ing); err != nil {
+		return "", client.IgnoreNotFound(err)
+	}
+	if !ing.DeletionTimestamp.IsZero() {
+		return "", nil
 	}
 	for _, lb := range ing.Status.LoadBalancer.Ingress {
 		if lb.Hostname != "" {
-			return lb.Hostname
+			return lb.Hostname, nil
 		}
 		if lb.IP != "" {
-			return lb.IP
+			return lb.IP, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // cfAPIError is a non-2xx Cloudflare API response. It carries the HTTP status + raw body so callers

@@ -432,7 +432,7 @@ func TestDashboardEnvHash(t *testing.T) {
 		}
 	}
 	for k, v := range h.dashboard().Spec.Template.Annotations {
-		if k != dashboardEnvHashAnnotation && k != credentialsHashKey {
+		if k != dashboardEnvHashAnnotation && k != credentialsHashKey && k != jwtIssuerHashKey {
 			t.Errorf("unexpected template annotation %s=%s", k, v)
 		}
 	}
@@ -554,8 +554,8 @@ func TestDashboardEnvUnconfiguredTemplate(t *testing.T) {
 	base := template(nil)
 	c := base.Spec.Containers[0]
 	oc := dashOC(nil)
-	// The only annotation is #307's credentials hash, for the master key.
-	if !reflect.DeepEqual(slices.Collect(maps.Keys(base.Annotations)), []string{credentialsHashKey}) || !reflect.DeepEqual(c.EnvFrom, operatorDashboardEnvFrom) || !reflect.DeepEqual(c.Env, operatorDashboardEnv(oc)) {
+	// The only annotations are #307's credentials hash, for the master key, and #384's issuer hash.
+	if !reflect.DeepEqual(slices.Sorted(maps.Keys(base.Annotations)), []string{credentialsHashKey, jwtIssuerHashKey}) || !reflect.DeepEqual(c.EnvFrom, operatorDashboardEnvFrom) || !reflect.DeepEqual(c.Env, operatorDashboardEnv(oc)) {
 		t.Fatalf("unconfigured template: annotations %v, envFrom %+v, env %+v", base.Annotations, c.EnvFrom, c.Env)
 	}
 	if got := template(func(d *oramav1alpha1.DashboardSpec) {
