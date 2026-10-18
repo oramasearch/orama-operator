@@ -223,7 +223,7 @@ image outside the distribution:
 <output of: k0s airgap list-images --all>
 ghcr.io/cloudnative-pg/cloudnative-pg:1.30.0
 ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie
-postgres:18.6-alpine
+postgres:18-alpine
 oramasearch/orama-operator:<immutable-tag>
 oramasearch/lake:<immutable-tag>
 oramasearch/lake-e2e:<immutable-tag>  # only when running LakeE2ETest
@@ -231,7 +231,7 @@ oramasearch/lake-e2e:<immutable-tag>  # only when running LakeE2ETest
 
 These CloudNativePG references are the defaults for chart `0.29.0` / operator `1.30.0`. If that
 chart changes, render it and read the matching operator release's `DefaultImageName` before making
-the bundle. `postgres:18.6-alpine` runs the Lake schema Job. Preserve every digest selected while
+the bundle. `postgres:18-alpine` runs the Lake schema Job. Preserve every digest selected while
 building the bundle and record it in the installation change log.
 
 The liquid k0s bundler reads OCI registry authentication from a standard registry configuration.

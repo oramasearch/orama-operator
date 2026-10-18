@@ -212,7 +212,7 @@ func pgMigrationJobSpec(ps *oramav1alpha1.PostgresSchema) batchv1.JobSpec {
 	}
 	image := ps.Spec.Image
 	if image == "" {
-		image = "postgres:16.15-alpine"
+		image = "postgres:16-alpine"
 	}
 	schemaFile := "/migrations/" + ps.Spec.SchemaConfigMapRef.Key
 	guardCheck := `if psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.` + guard + `')" | grep -q ` + guard + `; then

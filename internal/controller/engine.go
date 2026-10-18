@@ -478,7 +478,7 @@ func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	broker := oc.Name + "-broker"
 	return corev1.Container{
 		Name:            "wait-for-broker",
-		Image:           "busybox:1.37.0",
+		Image:           "busybox:1.37",
 		Command:         []string{"sh", "-c", "until nc -z " + broker + " 5552; do echo 'waiting for broker stream :5552'; sleep 2; done"},
 		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
 	}
@@ -503,7 +503,7 @@ func renderConfigInit(oc *oramav1alpha1.OramaCloudV1, side engineSide) corev1.Co
 	}
 	return corev1.Container{
 		Name:    "render-config",
-		Image:   "busybox:1.37.0",
+		Image:   "busybox:1.37",
 		Command: []string{"sh", "-c", renderConfigScript(oc, side)},
 		Env:     append(env, llmKeySecretEnv(oc)...),
 		EnvFrom: envFromFor(oc, "engine"),
