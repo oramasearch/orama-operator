@@ -253,6 +253,25 @@ rule are removed and its DNS record is deleted, including on the disabled-engine
 at `<cr>-writer` or `<cr>-reader` that the CR does not control is never adopted, changed or deleted;
 publishing over it fails the reconcile with a conflict naming the kind, namespace and name.
 
+**`/metrics` is refused on both hosts**
+([#314](https://github.com/oramasearch/orama-operator/issues/314)). OramaCore serves Prometheus
+metrics on `:8080/metrics`. Each public Ingress has a companion, `<cr>-writer-metrics` or
+`<cr>-reader-metrics`, with the same hosts (extra hosts included), class, TLS Secrets, Service and
+port, one `Exact` `/metrics` path per host, and `nginx.ingress.kubernetes.io/denylist-source-range:
+"0.0.0.0/0,::/0"`, so ingress-nginx answers `/metrics` (with any query string) 403 on every host.
+It appears, changes and goes away with the Ingress it shadows, and an object at its name the CR
+does not control blocks publishing that endpoint. Readers with Envoy also answer `/metrics` 404 in
+Envoy. Inside the cluster it stays on each engine pod's `:8080`. The refusal is ingress-nginx
+behaviour: zetta-tunnel's gateway cannot refuse a source and so serves none of these hosts
+([ingress](infrastructure/ingress.md#what-it-serves)). For the worked example below:
+
+| Ingress | Host | Path | Backend |
+|---|---|---|---|
+| `v1-dev-writer` | `writer-dev.oramadev.net` | `/`, Prefix | `v1-dev-writer:8080` |
+| `v1-dev-writer-metrics` | `writer-dev.oramadev.net` | `/metrics`, Exact, deny all | `v1-dev-writer:8080` |
+| `v1-dev-reader` | `reader-dev.oramadev.net` | `/`, Prefix | `v1-dev-reader:80` |
+| `v1-dev-reader-metrics` | `reader-dev.oramadev.net` | `/metrics`, Exact, deny all | `v1-dev-reader:80` |
+
 With `writer.jwt` set, `https://<writer.host>` must be one of `writer.jwt.audiences`
 ([below](#speccomponentsenginewriterjwt)).
 

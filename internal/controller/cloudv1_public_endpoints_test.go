@@ -505,7 +505,7 @@ func TestPublicEngineEndpointsCleanup(t *testing.T) {
 	published := func(t *testing.T, mut func(*oramav1alpha1.OramaCloudV1)) *publicHarness {
 		h := newPublicHarness(t, publicStack(mut))
 		h.mustPublish()
-		if err := h.r.upsertIngress(ctx, h.oc, "v1-dev-dashboard", "dashboard", publicDashboardHost, nil, 3000); err != nil {
+		if err := h.r.upsertIngress(ctx, h.oc, "v1-dev-dashboard", "dashboard", ingressSpec(h.oc, "v1-dev-dashboard", publicDashboardHost, nil, 3000)); err != nil {
 			t.Fatal(err)
 		}
 		h.setAddress("dashboard", ip("192.0.2.9"))
