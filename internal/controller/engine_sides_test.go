@@ -36,8 +36,8 @@ import (
 
 // combinedConfigFixture is config.yaml for a CR named v1 with a CPU writer and no spec.llm, captured
 // from the renderer before it was split into sections, with the LLM section rendered from the default
-// providers (#304) and the master key single-quoted for safe substitution. The combined config must
-// stay byte-for-byte this.
+// providers (#304), the master key single-quoted for safe substitution, and Prod 1's hooks block on
+// both sides (#306). The combined config must stay byte-for-byte this.
 const combinedConfigFixture = `http:
   host: 0.0.0.0
   port: 8080
@@ -55,15 +55,7 @@ writer_side:
     stream_name: oramacore-operations
     client_provided_name: oramacore-writer
     producer_name: write
-  hooks:
-    select_embeddings_properties:
-      check_interval: 60s
-      max_idle_time: 20s
-      instances_count_per_code: 3
-      queue_capacity: 100
-      max_execution_time: 1s
-      max_startup_time: 100ms
-  master_api_key: '__MASTER_API_KEY__'
+` + v1HooksFixture + `  master_api_key: '__MASTER_API_KEY__'
   config:
     data_dir: /app/.data/writer
     embedding_queue_limit: 50000
@@ -82,7 +74,7 @@ reader_side:
     stream_name: oramacore-operations
     client_provided_name: oramacore-reader
     consumer_name: reader
-  config:
+` + v1HooksFixture + `  config:
     data_dir: /app/.data/reader
     insert_batch_commit_size: 50000000
     commit_interval: 1m

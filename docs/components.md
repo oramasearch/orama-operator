@@ -414,6 +414,41 @@ Driven by `spec.region.role`:
   with no restart by hand. The LLM settings and keys are checked before any engine object is
   written: invalid input leaves the running engine untouched with `Ready=False`. All children set
   an owner reference to the CR, so deleting the CR cascade-deletes them.
+- **Hooks deny list** ([#306](https://github.com/oramasearch/orama-operator/issues/306)) —
+  customer JavaScript hooks run inside OramaCore and may `fetch` outbound; with no allow or deny
+  list OramaCore lets them reach any host. `writer_side.hooks` and `reader_side.hooks` are the same
+  block in every config (`hooksYAML` in `engine_hooks.go`, embedded by `writerSideYAML` and
+  `readerSideYAML`), so the combined, writer-only and reader-only templates all carry it and
+  `orama.cloud/config-hash` rolls the pods when it changes. The values are fixed, with no CR field:
+  `evaluation_timeout: 200ms`, `execution_timeout: 1s` (Prod 1's), and `denied_domains` only
+  (OramaCore refuses `allowed_domains` next to it). The list, 66 entries in this order without
+  duplicates:
+  1. Prod 1's 32 entries as written (orama-deploy `655f1a2`, `oramacore/production/config/`
+     `writer.config.yaml` and `reader.config.yaml`): loopback, RFC 1918, link-local and cloud
+     metadata, carrier-grade NAT, multicast and reserved, unspecified and broadcast, TEST-NETs,
+     benchmarking and the listed private IPv6 patterns. These are glob patterns, not a complete
+     CIDR filter.
+  2. A `**` form of each Prod 1 entry ending in `.*` (`10.**`, `169.254.**`, `172.1[6-9].**`, …).
+  3. The cluster's names: `*.svc`, `*.svc.cluster.local`, `*.cluster.local`, `kubernetes*`,
+     `*.internal`, their `**` forms, `::ffff:*` (IPv4-mapped IPv6, which the URL parser keeps in
+     hex, e.g. `::ffff:a00:1`, so no IPv4 pattern sees it), `::`, and Azure's WireServer
+     `168.63.129.16` (Prod 1's list was written for AWS; on AKS that host address is reachable and
+     outside every private range).
+  4. The stack's own Service names, `<cr>-*` and `<cr>-*.**`.
+
+  Matching is `orama-js-pool` 0.4.3's
+  ([`src/permission.rs`](https://docs.rs/crate/orama-js-pool/0.4.3/source/src/permission.rs),
+  `check_net_url` / `glob_match`): it matches the URL's **host string**, never the resolved
+  address, case-insensitively, with and without the port. `.` separates labels, so `*` stays
+  within one label and `**` spans several: Prod 1's `10.*` does not match `10.0.0.1`, which is why
+  step 2 adds `10.**`. A refused call fails in the hook with `Domain not allowed`, so a hook cannot
+  reach `http://169.254.169.254/`, `http://10.0.0.1/`, `http://<cr>-controldb-rw:5432/` or
+  `http://<cr>-controldb-rw.<ns>.svc.cluster.local:5432/`. **Limits:** a public DNS name that
+  resolves to a private address passes this check, and so does another stack's Service addressed
+  as `<svc>.<ns>`. Reachability after resolution is enforced by the engine's network sandbox
+  ([Network sandboxes](#network-sandboxes-internalcontrollernetworksandbox_controllergo)) and the
+  secure networking work in [#437](https://github.com/oramasearch/orama-operator/issues/437), not
+  by this list.
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
   BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets

@@ -218,7 +218,8 @@ log: {}
 
 // writerSideYAML is the writer_side section. The writer publishes to the RabbitMQ stream
 // oramacore-operations on the broker Service :5552 (#41); OramaCore creates the stream on connect and
-// the broker advertises the Service host so reconnect works.
+// the broker advertises the Service host so reconnect works. Its hooks block is hooksYAML, the same as
+// the readers'.
 func writerSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	return fmt.Sprintf(`writer_side:
   output:
@@ -231,15 +232,7 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
     stream_name: oramacore-operations
     client_provided_name: oramacore-writer
     producer_name: write
-  hooks:
-    select_embeddings_properties:
-      check_interval: 60s
-      max_idle_time: 20s
-      instances_count_per_code: 3
-      queue_capacity: 100
-      max_execution_time: 1s
-      max_startup_time: 100ms
-  master_api_key: '__MASTER_API_KEY__'
+%s  master_api_key: '__MASTER_API_KEY__'
   config:
     data_dir: /app/.data/writer
     embedding_queue_limit: 50000
@@ -247,11 +240,11 @@ func writerSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
     default_embedding_model: BGESmall
     javascript_queue_limit: 500000
     commit_interval: 1m
-`, oc.Name+"-broker")
+`, oc.Name+"-broker", hooksYAML(oc))
 }
 
 // readerSideYAML is the reader_side section: the readers consume the writer's stream from the same
-// broker Service.
+// broker Service, and run customer hooks under the same hooksYAML block as the writer.
 func readerSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	return fmt.Sprintf(`reader_side:
   input:
@@ -264,11 +257,11 @@ func readerSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
     stream_name: oramacore-operations
     client_provided_name: oramacore-reader
     consumer_name: reader
-  config:
+%s  config:
     data_dir: /app/.data/reader
     insert_batch_commit_size: 50000000
     commit_interval: 1m
-`, oc.Name+"-broker")
+`, oc.Name+"-broker", hooksYAML(oc))
 }
 
 // aiServerYAML is the ai_server section both sides share. The embeddings ai-server is the SHARED
