@@ -7,6 +7,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -266,7 +267,25 @@ type EngineSpec struct {
 	Envoy bool `json:"envoy,omitempty"`
 }
 
+// VolumeSpec configures a new volume and operator-managed increases to existing storage.
+// StatefulSet claim templates are immutable; existing claims grow independently.
+type VolumeSpec struct {
+	// Size is a positive Kubernetes quantity, compared numerically. Omission resolves
+	// to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))",message="size must be a positive Kubernetes quantity"
+	Size *resource.Quantity `json:"size,omitempty"`
+	// StorageClassName selects a class at creation. Omission uses the cluster default
+	// for new volumes and retains the existing class. Existing classes cannot change.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	StorageClassName *string `json:"storageClassName,omitempty"`
+}
+
 type WriterSpec struct {
+	// Storage configures the writer's data volume (default 10Gi and cluster default class).
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// GPU requests nvidia.com/gpu for the writer's BUILT-IN embeddings generation
 	// (ONNX Runtime + CUDA; prod: L40S). Set false to use CPU embeddings or a remote
 	// embeddings server. (This is the main reason a GPU node is needed at all; the
@@ -388,6 +407,10 @@ type WorkersSpec struct {
 // DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
 // operator/chart), pointed at an external endpoint, or centrally located.
 type DataStoreSpec struct {
+	// Storage configures local data volumes (default 10Gi and cluster default class).
+	// The operator grows PVC requests, or the CNPG Cluster size for controlDB.
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 	// Mode: "in-cluster" (operator provisions it) or "external" (use Endpoint).
@@ -548,7 +571,8 @@ type OramaCloudV1Status struct {
 	// component regressed) | Pending.
 	Phase string `json:"phase,omitempty"`
 	// Conditions follows the standard k8s condition convention (the Ready condition is the
-	// machine-readable roll-up).
+	// machine-readable workload roll-up). StorageApplied independently reports accepted
+	// storage configuration, not completed disk/filesystem expansion.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// ComponentsReady is the ready/total count (e.g. "22/22").
