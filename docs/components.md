@@ -1580,6 +1580,28 @@ instances onto managed clusters from one template, each member in its own namesp
   Azure Resource Manager. Deleting a cluster, and changing one after creation, have not been
   exercised against Azure.
 
+## Paid lake.live orders (`lake_orders.go`, `lake_orders_pgx.go`, [#634](https://github.com/oramasearch/orama-operator/issues/634)) — 🟡 implemented, tested locally, not run on a cluster
+
+`LakeOrderSourceReconciler` provisions the private warehouses and dedicated clusters customers pay
+for on lake.live (lake#831). Like every controller it runs on every cluster; it acts only where a
+`LakeOrderSource` exists, which is the management cluster. Design and open questions:
+[`infrastructure/orders.md`](infrastructure/orders.md).
+
+| Reads | Writes on the management cluster | Writes in lake's control plane |
+|---|---|---|
+| Each member of the named `LakeSet`: its `cloud_orders` rows (`paid`, and the ones this source holds), through the member cluster's kubeconfig, the Lake's `lake-<name>-controldb-app` Secret there and a port-forward to the CNPG primary | Per order: a one-member `LakeSet` (`private_warehouse`, on the set's cluster in the region), or a `KubernetesCluster`, copies of the template cluster's `ClusterHelmRelease`s and `OramaOperator`, and the `LakeSet` on the new cluster (`dedicated_cluster`) | `state` (`provisioning`, `ready`, `failed`), `host`, `failure_reason`, `claimed_by`, `claimed_at`, and one `cloud_order_events` row per change, `actor = 'operator'` |
+
+- **Exactly once.** The claim and every later move are single guarded statements
+  (`WHERE state = 'paid'`; `WHERE state = 'provisioning' AND claimed_by = <source>`). `claimed_by`
+  names the source, so a restart resumes its orders.
+- **How it maps to production.** The management cluster `orama-production-cluster-01` would hold one
+  source per environment (`lake-nonprod`, `lake-prod`); `lake-prod`'s members on
+  `orama-production-cluster-02` and `-03` are where lake.live's orders are recorded.
+- **Nothing deleted.** Ordered `LakeSet`s and `KubernetesCluster`s say `Retain`; `cancelled` orders
+  are not acted on yet.
+- **Proof.** Every scenario runs against the fake client and envtest; the SQL runs on a real Postgres.
+  The port-forward has not run against a real leaf, and no source is applied anywhere.
+
 ## `Lake` — the lake service (liquid project)
 
 Reconciler: `internal/controller/lake_controller.go`. Full page: [`lake/README.md`](lake/README.md);

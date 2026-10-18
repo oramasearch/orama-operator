@@ -496,6 +496,17 @@ Further behavior:
 [`config/samples/lakeset-nonprod.yaml`](../../config/samples/lakeset-nonprod.yaml) is a nonprod set
 with two environments.
 
+## Paid orders: `LakeOrderSource`
+
+A private warehouse or a dedicated cluster bought on lake.live is provisioned from lake's
+control-plane `cloud_orders` table by the management cluster's operator, which reaches each leaf's
+control Postgres through a port-forward over the kubeconfig it already holds
+([operator#634](https://github.com/oramasearch/orama-operator/issues/634)). An order becomes the same
+kinds a person writes: a one-member `LakeSet` on an existing cluster, or a `KubernetesCluster`, its
+platform and `OramaOperator` copied from a template cluster, and the `LakeSet` on it. These come from
+the orders, not from `config/clusters/`. The design, the reasons and the open questions:
+[`orders.md`](orders.md).
+
 ## Left out on purpose
 
 **AKS add-ons are not set on a cluster the operator creates** (Steve, 2026-10-12: *"let's omit them
