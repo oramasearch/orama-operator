@@ -145,6 +145,17 @@ func (r *KubernetesClusterReconciler) reconcileAKS(ctx context.Context, cluster 
 	if problem := azureTagProblem(cluster.Spec.Tags); problem != "" {
 		return fmt.Errorf("spec.tags: %s", problem)
 	}
+	for _, pool := range cluster.Spec.NodePools {
+		if _, err := aksLinuxOSConfig(pool.Sysctls); err != nil {
+			problem := fmt.Errorf("node pool %s: %w", pool.Name, err)
+			cluster.Status.ObservedGeneration = cluster.Generation
+			apimeta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+				Type: clusterConditionInSync, Status: metav1.ConditionFalse, Reason: "InvalidSysctls",
+				Message: problem.Error(), ObservedGeneration: cluster.Generation,
+			})
+			return problem
+		}
+	}
 	desired := aksClusterSpecFor(cluster, provider)
 
 	concrete := &oramav1alpha1.AksCluster{ObjectMeta: metav1.ObjectMeta{Name: cluster.Name}}
@@ -246,6 +257,7 @@ func aksClusterSpecFor(cluster *oramav1alpha1.KubernetesCluster, provider *orama
 			AvailabilityZones: pool.Zones,
 			NodeLabels:        pool.Labels,
 			NodeTaints:        pool.Taints,
+			Sysctls:           pool.Sysctls,
 		}
 		if pool.MaxCount != nil {
 			min := int32(0)

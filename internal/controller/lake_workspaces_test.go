@@ -97,7 +97,6 @@ func testWorkspaceLake() *oramav1alpha1.Lake {
 				ZettaImage: "oramasearch/zetta:service",
 			},
 			Workspaces: oramav1alpha1.LakeWorkspacesSpec{
-				Enabled: true,
 				Image:   "oramasearch/zetta:workspace",
 				Storage: oramav1alpha1.OramaZettaStorage{Size: "20Gi", StorageClassName: "managed-csi"},
 			},
@@ -587,9 +586,9 @@ func TestLakeWorkspacesListenerUsesDedicatedChannel(t *testing.T) {
 	if listener.channel != "lake_workspaces" || listener.enabled == nil || !listener.enabled(lake) {
 		t.Fatal("workspace listener is not scoped to enabled workspace Lakes")
 	}
-	lake.Spec.Workspaces.Enabled = false
+	lake.Spec.Postgres.Enabled = boolPtr(false)
 	if listener.enabled(lake) {
-		t.Fatal("workspace listener stays enabled after workspace synchronization is disabled")
+		t.Fatal("workspace listener stays enabled without the control Postgres")
 	}
 }
 

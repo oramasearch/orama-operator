@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 )
 
@@ -413,7 +414,7 @@ func TestNoClusterDiffersFromAnother(t *testing.T) {
 // CEL; the cluster refused ClusterHelmRelease for an empty-string literal in a validation rule on
 // 2026-10-12 (write size(x) > 0 instead). A validation rule in a shipped CRD is plain ASCII.
 func TestShippedCRDValidationRulesArePlainASCII(t *testing.T) {
-	for _, dir := range []string{"../chart/crds"} {
+	for _, dir := range []string{"../config/crd/bases", "../chart/crds"} {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatalf("read %s: %v", dir, err)
@@ -454,5 +455,69 @@ func TestShippedCRDValidationRulesArePlainASCII(t *testing.T) {
 			}
 			walk(crd)
 		}
+	}
+}
+
+// ControlDB alone restricts the shared DataStoreSpec to in-cluster mode. Check the actual
+// field schema in both artifacts: managed-set raw templates inherit this only when applied
+// as OramaCloudV1 members, and the other stores must retain their independent external mode.
+func TestControlDBModeValidationInGeneratedAndChartCRDs(t *testing.T) {
+	const rule = "!has(self.mode) || self.mode == 'in-cluster'"
+	const message = "controlDB.mode external is not supported: the control DB is always in-cluster"
+	for _, dir := range []string{"../config/crd/bases", "../chart/crds"} {
+		t.Run(dir, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(dir, "orama.cloud_oramacloudv1s.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var crd apiextensionsv1.CustomResourceDefinition
+			if err := yaml.Unmarshal(data, &crd); err != nil {
+				t.Fatal(err)
+			}
+			var root *apiextensionsv1.JSONSchemaProps
+			for _, version := range crd.Spec.Versions {
+				if version.Name == "v1alpha1" && version.Schema != nil {
+					root = version.Schema.OpenAPIV3Schema
+				}
+			}
+			if root == nil {
+				t.Fatal("missing v1alpha1 schema")
+			}
+			spec := root.Properties["spec"]
+			components := spec.Properties["components"]
+			controlDB := components.Properties["controlDB"]
+			if len(controlDB.XValidations) != 1 || controlDB.XValidations[0].Rule != rule || controlDB.XValidations[0].Message != message {
+				t.Fatalf("controlDB field validation = %+v", controlDB.XValidations)
+			}
+			for _, parent := range []apiextensionsv1.JSONSchemaProps{spec, components} {
+				for _, name := range parent.Required {
+					if name == "components" || name == "controlDB" {
+						t.Errorf("%s must remain optional", name)
+					}
+				}
+			}
+			for _, name := range controlDB.Required {
+				if name == "mode" {
+					t.Error("controlDB.mode must remain optional")
+				}
+			}
+			mode := controlDB.Properties["mode"]
+			if mode.Default == nil || string(mode.Default.Raw) != `"in-cluster"` {
+				t.Error("controlDB.mode default must remain in-cluster")
+			}
+			for _, name := range []string{"analytics", "cache", "broker", "search"} {
+				store := components.Properties[name]
+				if len(store.XValidations) != 0 || len(store.Properties["mode"].XValidations) != 0 {
+					t.Errorf("%s must not inherit the controlDB restriction", name)
+				}
+				allowsExternal := false
+				for _, value := range store.Properties["mode"].Enum {
+					allowsExternal = allowsExternal || string(value.Raw) == `"external"`
+				}
+				if !allowsExternal {
+					t.Errorf("%s.mode must still support external", name)
+				}
+			}
+		})
 	}
 }

@@ -22,7 +22,7 @@ import (
 func TestLakeAppsListenerWakesAppsOnlyLakeAndStops(t *testing.T) {
 	scheme := newLakeAppScheme(t)
 	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod"}, Spec: oramav1alpha1.LakeSpec{
-		Namespace: "lake", Apps: oramav1alpha1.LakeAppsSpec{Enabled: true},
+		Namespace: "lake", Apps: oramav1alpha1.LakeAppsSpec{},
 	}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeControlDB("prod") + "-app", Namespace: "lake"}, Data: map[string][]byte{"uri": []byte("postgresql://db/lake")}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake, secret).Build()
@@ -56,7 +56,7 @@ func TestLakeAppsListenerWakesAppsOnlyLakeAndStops(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("notification did not wake the apps-only Lake")
 	}
-	lake.Spec.Apps.Enabled = false
+	lake.Spec.Postgres.Enabled = boolPtr(false)
 	if err := c.Update(ctx, lake); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestLakeAppsSchemaGateAndFallback(t *testing.T) {
 	if err != nil || result.RequeueAfter != 60*time.Second {
 		t.Fatalf("fallback interval: %+v, %v", result, err)
 	}
-	h.lake.Spec.Apps.Enabled = false
+	h.lake.Spec.Postgres.Enabled = boolPtr(false)
 	if err := c.Update(h.ctx, h.lake); err != nil {
 		t.Fatal(err)
 	}

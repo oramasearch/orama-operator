@@ -19,8 +19,9 @@ Provisioned automatically when `spec.provisionOperatorSchema` is `true` (the def
 | `orama_control` | `components` | the operator's registry — one row per observed transition (`operator, name, kind, owner, status, detail, updated_at`). |
 | `orama_control` | `reconcile_events` | an audit of operator actions (`ts, cluster, action, detail`). |
 | `orama_control` | `topology` | the cross-cluster Zetta node topology ([operator#105](https://github.com/oramasearch/orama-operator/issues/105)) — one row per wan-accessible node (`operator, cluster, node, address, reachability, node_type, status, updated_at`). Each operator WRITES its slice's wan endpoints; Zetta CRDT-syncs the table; each operator READS it back to derive cross-cluster peering. See [Cross-cluster topology through Zetta](#cross-cluster-topology-through-zetta). |
-| `orama_control` | `deployments` | append-only desired deployment and observed status events ([operator#124](https://github.com/oramasearch/orama-operator/issues/124)). A desired event becomes a Lake-owned `LakeEnvironment`; status events carry phase, URL and message only on transition. See [Lake deployment environments](lake/environments.md). |
-| `orama_control` | `deployment_records` | immutable records for liquid's public create/list/rollback/status contract, including result, rollback origin and sealed-secret references. Kept separate so existing append-only `deployments` tables need no unsupported column migration. See the [deployment control plane](control-plane/README.md). |
+| `orama_control` | `deployments` | append-only desired deployment and observed status rows ([operator#124](https://github.com/oramasearch/orama-operator/issues/124)), in lake's row shape ([operator#560](https://github.com/oramasearch/orama-operator/issues/560)): keyed by `lake = LAKE_PUBLIC_HOST`, every row with lake's columns (`operator, lake, repository, environment, kind, change, image, deployment_id, requested_by, requested_at, phase, namespace, url, message, updated_at, ordering_token`) and the operator's workload columns. A desired row becomes a Lake-owned `LakeEnvironment`; a status row repeats it with phase, namespace, URL and message, only on transition. See [the row contract](lake/environments.md#the-row-contract-lakes-format-the-operator-conforms). |
+| `orama_control` | `deployment_records` | immutable records for liquid's public create/list/rollback/status contract, including result, rollback origin and sealed-secret references, keyed by the Lake's public host like every other row. lake does not read it. See the [deployment control plane](control-plane/README.md). |
+| `orama_control` | `environment_env`, `domains` | lake's platform requests ([operator#557](https://github.com/oramasearch/orama-operator/issues/557)): an environment's plain values and its custom domains, appended by lake with `lake = LAKE_PUBLIC_HOST` (columns from lake's `include/lake/control/zetta_control.hpp`). lake's platform sync reads both on every pass with `deployments`. The operator applies the values to the environment's `spec.env` and the domains to its Ingress and DNS (`spec.domains`), and appends each domain's status in lake's columns ([operator#560](https://github.com/oramasearch/orama-operator/issues/560)). See [the row contract](lake/environments.md#the-row-contract-lakes-format-the-operator-conforms). |
 | `orama_data` | `documents` | the application-data landing zone (`id, collection, body, updated_at`) — where v1's served data migrates to. |
 
 The definitive list is `operatorZettaSchema` in
@@ -97,9 +98,9 @@ Two different kinds of state, two homes — this is the key design point:
 
 - **Reconciled desired state = the CRs** (`OramaCloudV1`, `OramaZettaCluster`, `LakeEnvironment`, …).
   Kubernetes remains the reconcile API and source of truth after materialization. Deployment intake is
-  the explicit exception from liquid-bridge decision 22: liquid appends an external desired event to
-  `orama_control.deployments`, and the operator deterministically creates or updates the corresponding
-  `LakeEnvironment` CR. All subsequent workload reconciliation derives from that CR.
+  the explicit exception from liquid-bridge decision 22: liquid's deployment request becomes a desired row
+  in `orama_control.deployments` (lake's environment values and domains are rows of `environment_env` and
+  `domains`), and the operator deterministically creates or updates the corresponding `LakeEnvironment` CR. All subsequent workload reconciliation derives from that CR.
 - **Observed / derived state** — what is actually running, per-component status, reconcile history,
   config snapshots. **This is what belongs in Zetta and should stay in sync**, giving a durable,
   SQL-queryable, replicated record independent of etcd. That is the real symbiosis.
@@ -273,5 +274,7 @@ but **leaves the databases intact**.
   `spec.requireAuth` / `spec.mcpTokenAuth` fields are **deprecated no-ops** (there is no unauthenticated
   or `--mcp-token` mode anymore).
 - **One deployment store per Lake namespace** — the public deployment control plane refuses an ambiguous
-  namespace containing more than one operator-schema Zetta cluster. Other operator state-sync paths still
+  namespace containing more than one operator-schema Zetta cluster. The Lake's own Zetta
+  (`lake-<name>-zetta`) is that store on every Lake; service and workspace Zettas set
+  `provisionOperatorSchema: false` ([operator#557](https://github.com/oramasearch/orama-operator/issues/557)). Other operator state-sync paths still
   run per enabled cluster.
