@@ -268,10 +268,9 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-dashboard-public-https`, `allow-workers-public-https`, `allow-index-builder-public-https`, `allow-harvest-public-https`, `allow-embeddings-public-https`, `allow-search-workers-public-https` | Selected application components reach public HTTPS for their configured providers and downloads. |
 | `allow-selenium-public-internet` | Selenium reaches public TCP 80/443 for customer-requested crawls. |
 | `allow-controldb-primary-replication` | A read-region CNPG cluster reaches its configured primary on public TCP 5432. |
-| `allow-control-clients-external-postgres` | In external control-DB mode, dashboard, index builder, analytics processor and pgAdmin reach public TCP 5432. |
 
 Workers' public APIs, embeddings and hosted-search model/provider downloads, dashboard vendor
-list, public primary-Postgres route, and external control-DB address are **inferred** from component
+list and public primary-Postgres route are **inferred** from component
 contracts, configuration fields and the Secret-held Postgres URI. They are documented as such
 because the reconciled workload code does not contain a complete stable destination list. Every
 inferred public rule still excludes private and cluster ranges.

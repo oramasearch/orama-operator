@@ -19,6 +19,11 @@ spec:
     name: us-east
     role: primary
   profile: light
+  # The engine master key, supplied as a Secret in this namespace (the operator never generates
+  # one). It must equal the control database's oramacore_clusters.master_api_key; without it the
+  # writer and readers stay at zero replicas and Ready names the cause.
+  masterAPIKeySecretRef:
+    name: v1-master-api-key   # key defaults to MASTER_API_KEY
   idp:
     provider: none
   images:
@@ -41,8 +46,10 @@ spec:
       writer: { gpu: false }           # no GPU node on the sandbox -> CPU embeddings
       reader: { replicas: 1 }
       envoy: true
-    dashboard: { enabled: true, host: app.sandbox.local }
-    docs:      { enabled: true, host: docs.sandbox.local }
+    # No hosts, so no Ingresses: every Ingress gets a Let's Encrypt certificate (DNS-01), so a host
+    # must be in a Cloudflare zone and needs cloudflare.apiTokenSecretRef (origin TLS, #457).
+    dashboard: { enabled: true }
+    docs:      { enabled: true }
     disco:     { enabled: true }
     workers:   { enabled: true, replicas: 1 }
     ingestion: { enabled: true, harvest: true }

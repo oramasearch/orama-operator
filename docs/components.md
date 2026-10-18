@@ -16,11 +16,11 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap` | ✅ **done** (validated on AKS) |
-| **dashboard** | `internal/controller/app.go` | `Deployment` + Service + `Ingress`; `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
-| **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
+| **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); never runs `db-migrate`. The control DB is always in-cluster (`mode: external` is refused); the operator's `PostgresSchema` owns its schema, avoiding a second Drizzle migration (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
+| **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
-| **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica); + an owned **`PostgresSchema`** applying the dashboard's Drizzle schema | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
-| **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data) | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
+| **controlDB** | `internal/controller/controldb.go` | Always in-cluster CloudNativePG `Cluster` (primary bootstrap; read-tier replica); `mode: external` is refused. Three owned **`PostgresSchema`s**, applied in order, give it the dashboard's Drizzle schema 0000 to 0008 and its reference rows ([#378](https://github.com/oramasearch/orama-operator/issues/378); see [controlDB](#controldb-internalcontrollercontroldbgo)) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
+| **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn, or with `applyEveryVersion` no guard) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data). The stack reports its control-DB schemas as one `controldb-schema` component | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
 | **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
 | **broker** | `internal/controller/datastore.go` | RabbitMQ `StatefulSet` + Service (5672/15672/5552), central placement; + an owned **`RabbitMQTopology`** (vhost/users/permissions/`oramacore-operations` stream) reconciled via the management API | ✅ **done** (validated on AKS); topology CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40)/[#41](https://github.com/oramasearch/orama-operator/issues/41)) — see [`datastore-crds.md`](datastore-crds.md) |
@@ -31,14 +31,14 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — pulls `/v1/analytics` → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
-| **cloudflare** | `internal/controller/cloudflare.go` | CF DNS record via the CF API (safe no-op until configured) | 🟡 **implemented** (not live-tested) |
+| **cloudflare** | `internal/controller/cloudflare.go`, `cloudflarednsrecord_controller.go` | owned DNS child CRs; create marked records, reconcile only owned or legacy-ID records, and check ownership before cleanup | 🟡 **implemented**; HTTP/fake-client and local API-server tests pass; Lake and `oramadev.net` live proof pending approval |
 | **cloudflare-lb** | `internal/controller/cloudflareloadbalancer_controller.go` | global **Load Balancer** + **Origin Pool(s)** + **Health Monitor** via the CF Load Balancing API, from an owned `CloudflareLoadBalancer` CRD (finalizer teardown) | 🟡 **implemented** ([#73](https://github.com/oramasearch/orama-operator/issues/73); not live-tested — needs LB enabled on the account; live-node origins are [#74](https://github.com/oramasearch/orama-operator/issues/74)) |
 | **idp** (keycloak) | `internal/controller/idp.go` | Keycloak `Deployment` + Service (when `idp.provider=keycloak`) | ✅ **done** (validated on AKS) |
 | **demoSeed** | `internal/controller/idp.go` | one-shot seed `Job` (placeholder) | ✅ **done** (validated on AKS) |
 | **zetta-capacity** | `internal/controller/zetta_capacity.go` | Karpenter `NodePool` (unstructured, cluster-scoped) + a `PodDisruptionBudget`; pins the Zetta pods onto the pool (taint/toleration + nodeSelector + `do-not-disrupt`) | 🟡 **implemented** (opt-in, [#69](https://github.com/oramasearch/orama-operator/issues/69) first slice; not yet live-tested — needs an EKS/AKS-NAP cluster) |
 | **zetta-capacity-install** | `internal/controller/zetta_capacity_install.go` | Operator-owned **Karpenter install** (cloud-gated): server-side-applies the pinned upstream controller (Deployment + ServiceAccount + RBAC) + Karpenter CRDs, as `unstructured` | 🟡 **implemented** (opt-in `install: true`, [#75](https://github.com/oramasearch/orama-operator/issues/75); EKS self-install, no-op on AKS-NAP/bare-metal; not yet live-tested) |
 | **lake** (liquid project) | `internal/controller/lake_controller.go` | from one cluster-scoped `Lake` CR: Namespace, owned or referenced store PVC, hardened RWO-safe `Recreate` Deployment (pod `ndots:2`, as on agent and app pods, so full Service names resolve on the first query) + conditional PDB + Service, admin-token, instance-KEK and sealing-key Secrets, CNPG control-plane `Cluster` + owned `PostgresSchema` (lake's schema), owned `OramaZettaCluster` data plane, opt-in Barman R2/S3 `ScheduledBackup`, opt-in TLS Ingress + `CloudflareDNSRecord`, with `spec.clerk` a Clerk instance kept configured through the Backend API, its keys in an owned Secret and a production instance's DNS records ([`lake/clerk.md`](lake/clerk.md)), Lake-owned environments, and per-data-service lifecycle evidence | ✅ **done** (`Lake/prod` live on AKS; issue #122's rolling proof is superseded by the RWO-safe restart check; issue #125 live Zetta proof is deferred until this controller is deployed; data services remain unmanaged until their required rehearsals pass) — see [`lake/README.md`](lake/README.md), [`lake/backups.md`](lake/backups.md), [`lake/data-services/README.md`](lake/data-services/README.md), and [`lake/sealed-secrets.md`](lake/sealed-secrets.md) |
-| **lake e2e** | `internal/controller/lakee2etest_controller.go` | from one cluster-scoped `LakeE2ETest`: waits for the target Lake, Postgres, and schema, then owns a runner Job in the Lake namespace with the in-cluster URL and unique run identity | 🟡 **implemented** ([#123](https://github.com/oramasearch/orama-operator/issues/123)); fake-client verified, real k0s run deferred — see [`lake/README.md`](lake/README.md#service-e2e) |
+| **lake e2e** | `internal/controller/lakee2etest_controller.go` | from one cluster-scoped `LakeE2ETest`: targets a LakeSet member (or a Lake by name), waits for the Lake, Postgres and schema, then owns one runner Job (`oramasearch/lake-e2e`) per spec generation in the Lake namespace and records each run's pass/fail/skip counts and reasons | 🟡 **implemented** ([#123](https://github.com/oramasearch/orama-operator/issues/123), [#537](https://github.com/oramasearch/orama-operator/issues/537)); fake-client verified, the runner proven against `lake-testing` from a workstation, no in-cluster run yet — see [`lake/README.md`](lake/README.md#service-e2e) |
 | **lake-environment** | `internal/controller/lakeenvironment_controller.go`, `internal/controller/zetta_deployments.go` | materializes lake-shaped `orama_control` rows (deployments, environment values, custom domains; operator#560) into stable Lake-owned `LakeEnvironment` CRs and answers them with status rows; each creates a PSS-restricted Namespace, default-deny and access NetworkPolicies, ResourceQuota, LimitRange, `untrusted` runtime Deployment, Service, sealed-secret copies with local LakeSealedSecret owners and derived Pod annotations, admission-selecting namespace labels, optional Ingress, named-environment DNS, and per custom domain an Ingress rule and owned DNS record | 🟡 **implemented** ([#124](https://github.com/oramasearch/orama-operator/issues/124), [#142](https://github.com/oramasearch/orama-operator/issues/142)); fake-client, envtest and Zetta-double verified, real liquid→k0s change-page proof deferred — see [`lake/environments.md`](lake/environments.md) |
 | **lake-app** | `internal/controller/lakeapp_controller.go`, `lakeapp_tokens.go` | isolated restricted workload, quota, limits, Deployment, Service and authenticated ingress; synchronized apps keep binding-derived network paths only before their workspace activates declared connections, then retain DNS and owning-Lake egress while `Connection` supplies workload paths; generated source/Zetta/event/registry-pull tokens, rollout gated on hash registration, a merged Docker config for Lake registry pulls, selected Secret keys copied and rendered as `secretKeyRef` environment entries, optional app.toml entrypoint, accurate stopped state and best-effort Lake events; one-release legacy whole-Secret `envFrom` delivery remains supported | 🟡 **implemented** (#193, #194, #221, #241, #468); native envtest covers lifecycle, bindings, secret environment delivery, token and pull-Secret rotation, pod references and namespace/DNS finalization; live app-runtime proof deferred — see [`lake/apps.md`](lake/apps.md) |
 | **lake-apps-sync** | `internal/controller/lake_apps*.go`, `lake_services_notify.go` | on every Lake, control-Postgres apps rows to Lake-owned CRs in their workspace namespace, including the object-form `secret_env_refs` contract; generation-guarded status/hash writes, `lake_apps` listener and 60-second fallback, orphan removal, one proxied wildcard DNS record; the Lake pod receives `spec.apps.wildcard` (empty: the Lake's `spec.host`) as `LAKE_APPS_WILDCARD`; same-workspace Service connections use ID aliases alongside existing slug keys | 🟡 **implemented** (#194, #204, #221); fake Lake store with native envtest, native SQL contract fixture and DNS/listener tests; requires lake#293's migration and API at deployment — see [`lake/apps.md`](lake/apps.md) |
@@ -57,6 +57,117 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **lake sealed-secret delivery** | `internal/controller/lakesealedsecret_controller.go` | from one namespaced `LakeSealedSecret`: an owned, cluster-bound Kubernetes Secret labelled `lake.orama.cloud/sealed: "true"`; literal ciphertext opens locally, while lake and dynamic references call lake's mint capability with projected service-account attestation | 🟡 **implemented**; literal delivery and LakeEnvironment consumption with local delivery owners are complete and tested against both k0s admission policies, while lake/dynamic delivery awaits lake's `mint_sealed_secret` leaf |
 | **deployment control plane** | `internal/controller/deployment_controlplane.go` | authenticated liquid REST `/v1` and MCP server; appends immutable Zetta history, desired rows in lake's shape and audit entries, validates sealed-secret references, and reads reconciled `LakeEnvironment` status | ✅ **implemented** ([#142](https://github.com/oramasearch/orama-operator/issues/142)); REST/MCP, drift, Zetta-double and envtest coverage — see [`control-plane/README.md`](control-plane/README.md) |
 
+## Component storage
+
+`internal/controller/storage.go` runs after ordinary component provisioning. It manages the
+primary's enabled writer and the enabled analytics/cache/broker/search stores selected by their
+existing in-cluster mode and placement checks. External stores, disabled components, a read
+region's absent writer, and central stores skipped in a read region contribute no mismatch.
+ControlDB is always in-cluster (decision 61) and follows its enabled policy. Reader Deployments keep `emptyDir`; HARVEST Mongo keeps the shared helper's
+`10Gi`/default-class output and has no new storage setting.
+
+Writer and store `storage.size` default to `10Gi`; `storage.storageClassName` is optional. Omitted
+storage, `{}`, or a missing size resolves to that default even before API admission. Explicit sizes
+must be positive Kubernetes quantities, compared with `Cmp` (`10240Mi` equals `10Gi`), and explicit
+class names must be nonempty. The [field reference](crd-reference.md#component-storage) lists every
+path. Set templates use `spec.template.components`, with the same component fields.
+
+The StatefulSet creation callback initializes the `data` claim template once. Later reconciliations
+preserve its full fetched contents, including admission fields and its original size/class, while
+Services, PDBs, pod templates and ordinary settings continue to reconcile. The storage pass checks
+the controlled StatefulSet's `data` claims in the same namespace, using complete names of the form
+`data-<statefulset>-<numeric ordinal>`. Retained matching claims are included; direct umbrella
+ownership on a PVC is unnecessary under StatefulSet's default retention policy. Similar prefixes,
+other namespaces and claims controlled by unrelated workloads are never adopted or resized.
+
+For each compatible claim the operator patches only a larger `spec.resources.requests.storage`,
+with optimistic concurrency. Equal numeric quantities do nothing. It never changes PV capacity.
+A shrink compares against the requested size; capacity is extra evidence because a provisioner
+can round it upward. An explicit class mismatch blocks the entire write to that claim, including
+an otherwise valid increase, and all applicable differences remain in status. A missing required
+claim remains pending; when it appears from the unchanged old template, a later pass grows it.
+Read/write failures identify the resource and API error and do not block other storage updates.
+
+CNPG creation renders the resolved size and optional `storageClass`. Ordinary reconciliation
+preserves an existing Cluster's whole `spec.storage`, so rejected storage settings cannot block
+unrelated spec or schema reconciliation. The storage pass increases only `spec.storage.size`,
+preserving all other storage keys and retaining the class when omitted. Changing the class,
+including adding an explicit class to an existing classless Cluster, or reducing size leaves its
+storage unchanged. The operator never resizes CNPG-owned PVCs itself.
+
+`StorageApplied` is one merged condition with the current `ObservedGeneration`. It preserves
+`Ready`, phase, component readiness and other conditions. `True / Applied` means desired
+configuration was accepted, including the no-local-storage case; it does not mean physical
+expansion completed. Otherwise it is `False / NotApplied`, and the message lists, in stable sorted
+order, each resource with its problem: `ShrinkNotSupported`, `StorageClassChangeNotSupported`,
+`StorageUpdateFailed` or `ClaimsPending`. It is a condition of its own, not part of `Ready`, so a
+refused shrink or a resize in progress never marks a serving stack not Ready. One success cannot erase another resource's failure. Accepted
+settings and successful retries recover the condition; unchanged results cause no status write.
+Removing storage settings after growth resolves to `10Gi`, so recovery requires restoring the
+current grown request rather than relying on the old default.
+
+A 20-second bounded poll continues whenever managed storage exists, including with Ready
+workloads. CSI/kubelet perform disk/filesystem expansion after accepting PVC requests; CNPG
+performs its own expansion after accepting the Cluster size. The StorageClass must allow expansion
+and its CSI driver must support the disk/filesystem operation. See
+[Kubernetes expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)
+and [CNPG expansion](https://cloudnative-pg.io/docs/1.27/storage/#volume-expansion).
+A grown size stays in the set file that set it: a smaller value afterwards is a refused shrink.
+
+## Cloudflare DNS ownership
+
+`CloudflareDNSRecord` creates new records with comment
+`orama-operator:<namespace>/<name>` and saves the ID and exact comment in status. A record
+several resources keep (a Clerk production instance's records, which every Lake sharing the
+instance writes) names one owner in `spec.sharedOwner`, and is created with comment
+`orama-operator:<sharedOwner>` (`clerk/<instance ID>` for Clerk). Every resource with that
+`sharedOwner` recognises the record as the operator's own; a record without the comment is
+still refused. `sharedOwner` requires `deletionPolicy: Retain`, so no single resource deletes it.
+The comment must fit Cloudflare's 100-character limit: namespace/name has at most
+85 characters. Longer markers prevent creation, without blocking legacy reads or cleanup.
+Records use the same-namespace Secret's `token` and `zoneID`, the requested proxy setting
+and automatic TTL (`1`). Empty type retains the existing IP → A, hostname → CNAME inference.
+
+Before writing, the controller reads every page of records at the desired name.
+Any foreign A, AAAA or CNAME blocks all writes, even alongside an owned record; a
+foreign TXT blocks a TXT resource (Cloudflare would reject the duplicate on every pass).
+Other TXT/MX records do not block creation. Matching markers recover ownership after a
+failed Kubernetes status write. Multiple owned candidates are an error. Conflicts,
+invalid marker lengths and missing credentials set `ready: false` and retry after
+five minutes, preserving ownership fields. Missing credentials never trigger API calls.
+
+Pre-upgrade `status.recordID` without `status.ownerComment` retains legacy ownership
+by ID. Matching records receive only reads; changes to type, content, proxying or TTL
+receive one update preserving the existing comment. Legacy records never gain an
+ownership comment. Marked records never fall back to legacy ownership if their
+comment is removed or changed. Steady reconciliation does not rewrite DNS or status.
+
+A changed name (or type) is a different record (#529). Once the new record exists, the one
+in `status.recordID` is deleted through the same ownership check as cleanup: a marked record
+only while its comment matches, a legacy record by ID, a 404 counted as deleted. One that
+lost its comment is left, reported with `RecordNotOwned` and no longer tracked. If the delete
+fails, the old ID stays in status and the next pass retries it. `deletionPolicy: Retain`
+never deletes the old record; the resource only stops tracking it.
+
+`deletionPolicy: Retain` makes no Cloudflare call on deletion: the finalizer is released
+and the record stays. Otherwise, deletion fetches a marked record by ID and deletes it only while its comment matches
+`status.ownerComment`. Lost ownership leaves the record intact, releases the finalizer
+and emits Warning `RecordNotOwned`. Legacy records retain deletion by ID. A 404 means
+cleanup succeeded; other API failures retain the finalizer. Missing credentials with
+an ID to clean up retain the finalizer and retry after five minutes. A resource without
+an ID releases its finalizer without Cloudflare calls. Lake, Zetta and Cloud v1 parents
+continue to create the same child CRs.
+
+The operator never takes over Prod 1's live `app.orama.com`. Its cutover repoint remains
+a reviewed Cloudflare change in the bridge
+[cutover runbook](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md),
+listed in [production changes](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/production-changes.md).
+Install the updated DNS CRD through the approved rollout mechanism before running the
+new controller, so `ownerComment` persists. Lake's unchanged-ID/comment/`modified_on`
+proof and the `oramadev.net` conflict, owned cleanup and lost-comment tests remain
+pending Steve's explicit approval for each rollout and test-resource change; rehearse
+on `v1-dev` first. The HTTP/fake-client and local API-server tests do not claim a live rollout.
+
 ## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 
 Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creation):
@@ -66,9 +177,12 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
   Keycloak non-secret config. Reconciled every pass.
 - **Per-component secrets** `<cr>-<component>-secret` — each holds **only the dummy
   credentials that component needs** (`componentSecretData`). e.g. `search-secret` =
-  `TYPESENSE_API_KEY`; `cache-secret` = empty (Redis is passwordless, #32); `engine-secret`
-  = master key + JWT keys + LLM keys; `dashboard-secret` = ClickHouse/JWT/Stripe (its **Postgres
-  password comes from the CNPG `<cr>-controldb-app` secret**, not here — #32). **No shared blob** —
+  `TYPESENSE_API_KEY`; `cache-secret` and `broker-secret` = empty (their passwords are generated,
+  see [Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo));
+  `engine-secret` = the LLM keys (`GROQ_`, `OPENAI_`, `ANTHROPIC_`, `GOOGLE_API_KEY`) + `HF_TOKEN`;
+  `dashboard-secret` = ClickHouse/JWT/Stripe (its **Postgres
+  password comes from the CNPG `<cr>-controldb-app` secret**, not here — #32). No component Secret
+  holds `MASTER_API_KEY`: every consumer reads `spec.masterAPIKeySecretRef`. **No shared blob** —
   a pod never sees a credential it doesn't use. **Create-if-absent** — the operator
   never overwrites an existing secret, so real / rotated values are
   preserved. Components with no secret needs (selenium, mongo) get none.
@@ -98,6 +212,59 @@ cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boo
 > **Follow-ups:** edit the remaining dummy secret values in place for production
 > (they're plain in-cluster K8s Secrets; the operator won't overwrite them). (The JWT
 > keypair is already real + generated.)
+
+## Credentials — broker and Redis passwords and the master key (`credentials.go`)
+
+[#307](https://github.com/oramasearch/orama-operator/issues/307). Every client reads a stack-wide
+credential from one Secret by `secretKeyRef`, so a value in that Secret is the value every component
+connects with, and no value is in a ConfigMap, pod spec, annotation, status or log.
+
+| Secret | Keys | Created by | Read by |
+|---|---|---|---|
+| `<cr>-broker-admin` | `username` (`orama`), `password` | the bootstrap step, where the broker runs locally | broker `rabbitmq.conf` and boot definitions, writer and reader transport config, harvest-master `AMQP_HOST`, `RabbitMQTopology` (`adminSecretRef`) |
+| `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL` |
+| `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`; the reader-only config has none), analytics-processor render-config, index-builder, workers, dashboard, the e2e runner |
+
+- **Generated once.** Where the store runs in this cluster (enabled, not `mode: external`, not
+  `placement: central` on a read region) the operator creates the Secret with a random 48-character
+  hex password, owner-referenced to the CR and labelled component `credentials`, which no teardown
+  removes: disabling the broker or cache keeps its password for the retained volume. An existing
+  Secret, generated or supplied, is never changed, adopted or filled in. A member whose store runs
+  elsewhere receives the Secret through its set's `secrets` list.
+- **Checked.** A broker or cache Secret missing a key, or holding an empty value or a character
+  outside `A-Z a-z 0-9 - . _ ~` (the clients take it inside URLs and config files), fails the
+  reconcile with `Ready=False` naming the Secret and key, and is left as it is.
+- **Wiring.** Clients get `BROKER_USERNAME`, `BROKER_PASSWORD` and `REDIS_PASSWORD` as `secretKeyRef`
+  entries placed before the URLs that reference them (`amqp://$(BROKER_USERNAME):$(BROKER_PASSWORD)@<cr>-broker:5672`,
+  `redis://:$(REDIS_PASSWORD)@<cr>-cache:6379`), and Redis runs
+  `redis-server --appendonly yes --requirepass $(REDIS_PASSWORD)`. Config files hold
+  `__BROKER_USERNAME__`, `__BROKER_PASSWORD__` and `__MASTER_API_KEY__` placeholders that a
+  `render-config` init container fills into an `emptyDir`.
+- **Broker password on a retained volume.** RabbitMQ applies `default_user`/`default_pass` only to
+  an empty data directory, so the broker also imports `/etc/rabbitmq/credentials.json` on every
+  boot (`definitions.import_backend = local_filesystem`): the admin user, the `/` vhost and its
+  permissions. Importing an existing user sets its password, so a changed `<cr>-broker-admin`
+  takes effect when the broker rolls, without a reset or a volume deletion. Streams and per-service
+  users stay with `RabbitMQTopology`.
+- **The master key is required.** While the engine is enabled and the reference, its Secret or its
+  key is missing, or the value is empty, starts with `dev-` or holds a line break, the writer and
+  readers are not created, or are scaled to zero with their volumes kept, and `Ready=False` with
+  phase `Degraded` names the cause (`MasterAPIKeyRefMissing`, `MasterAPIKeySecretMissing`,
+  `MasterAPIKeyKeyMissing`, `MasterAPIKeyEmpty`, `MasterAPIKeyPlaceholder`, `MasterAPIKeyInvalid`)
+  by namespace, Secret and key. The CR is checked again every 20 seconds and on every event of that
+  Secret, and the configured replicas return once it is valid. The other consumers need only the
+  reference's name to build their pods; without one they are not created or changed, and Ready
+  reports `MasterAPIKeyRefMissing`. The value must equal the target control database's
+  `oramacore_clusters.master_api_key`, which the dashboard reads; the operator does not write that
+  row.
+- **Automatic rolls.** Each workload that reads one of these Secrets carries
+  `orama.cloud/credentials-hash`, the data hash of exactly the Secrets it reads (`secretDataHash`,
+  shared with the LLM key hash). The controller maps every Secret event, owned or copied, to each CR
+  in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
+  `<cr>-broker-admin` the broker, writer, readers and harvest-master; `<cr>-cache-auth` the cache,
+  harvest-master and index-builder; the master key the writer (and readers on the combined image),
+  analytics-processor, index-builder, workers and dashboard. Metadata changes roll nothing. An
+  existing e2e Job is immutable and keeps the reference it was created with.
 
 ## Network sandboxes (`internal/controller/networksandbox_controller.go`)
 
@@ -210,14 +377,37 @@ caught the two capability exceptions above before merge (drop-ALL had crash-loop
 
 Driven by `spec.region.role`:
 
-- **Writer** (primary only) — a `StatefulSet` (1 replica) running `oramasearch/oramacore`,
+- **Writer** (primary only) — a `StatefulSet` (1 replica) running `oramasearch/oramacore` (or the
+  writer-only image, see **Side-only images** below),
   a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
 - **Readers** (primary + read tiers) — a `Deployment` (`reader.replicas`) with the
-  `oramacore` container **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
+  `oramacore` container (the combined or the reader-only image) **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
   127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set.
   Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
+
+  A reader starts empty and replays the writer's `oramacore-operations` stream from offset 0. The
+  stream keeps 5 GB, so once more than that has been written, a new reader can no longer build a
+  complete index from it. The reader then refuses to serve rather than serve a partial index
+  ([oramacore#341](https://github.com/oramasearch/oramacore/pull/341)): it exits non-zero with a
+  message starting with one of two codes, and it never goes Ready. The reader container sets
+  `terminationMessagePolicy: FallbackToLogsOnError` so that message reaches the pod's
+  `lastState.terminated.message`, and while the `reader` component is not Ready the operator
+  appends the cause to its `OramaCloudV1` status detail (`readerRefusalCause` in
+  `internal/controller/status.go`):
+
+  | Code in the reader's exit message | Appended to the `reader` detail |
+  |---|---|
+  | `REPLICATION_HISTORY_EXPIRED` (the offset it needs is gone from the stream) | `replication history expired; the reader cannot be built from the stream (needs a reader seed, #458)` |
+  | `REPLICATION_STREAM_BEHIND` (it needs an offset ahead of the stream: wrong stream, or a restored broker) | `reader is ahead of this replication stream (wrong stream or restored broker)` |
+
+  For example, `0/1; replication history expired; the reader cannot be built from the stream (needs a
+  reader seed, #458)`. Pods being deleted, exits with code 0 and other messages add nothing; one
+  cause is listed once however many readers report it. Seeding a reader from another source is not
+  available yet ([#458](https://github.com/oramasearch/orama-operator/issues/458)). Until readers
+  have persistent disks ([#382](https://github.com/oramasearch/orama-operator/issues/382)) they use
+  `emptyDir`, so any reader restart after the stream has passed 5 GB refuses.
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
   **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
@@ -234,25 +424,110 @@ Driven by `spec.region.role`:
   > **in-process** per pod ("Building Python service" → "src.embeddings.models: Models loaded"), so
   > each writer/reader still carries a model copy independent of this shared ai-server. Whether to
   > offload those to the shared ai-server (or drop the redundant one) is tracked in #39.
-- **Config** — a `ConfigMap` with `envoy.yaml` + a **full, valid** `config.yaml`
-  (`http` / `writer_side` / `reader_side` / `ai_server` / `log`, matching
-  `oramacore/config-docker.yaml`; `execution_providers: CUDA|CPU` from `writer.gpu`).
-  The `config.yaml` is a **template** — `master_api_key` is a `__MASTER_API_KEY__`
-  placeholder, so **no credential lives in the ConfigMap**. A `render-config` **init
-  container** substitutes the real value from `<cr>-engine-secret` (via `envFrom`) into
-  a shared `emptyDir`, and OramaCore reads it via `CONFIG_PATH=/etc/oramacore/config.yaml`
+- **Side-only images** ([#308](https://github.com/oramasearch/orama-operator/issues/308)) — the
+  published `oramasearch/oramacore` image starts both OramaCore sides in every pod: without the
+  overrides below, **every reader also runs a writer** that accepts writes sent to the reader's host
+  and publishes them to the stream, and the writer builds a second, reader-side index on its own
+  disk. Prod 1 runs side-only v1.2.39 builds instead. Set `spec.images.overrides.oramacore-writer`
+  **and** `.oramacore-reader` (by digest) to run them: the writer pod runs the writer image and
+  renders `writer.yaml`, and the reader pods run the reader image and render `reader.yaml`. Both or
+  neither: one without the other (an empty value counts as unset) fails the reconcile with
+  `Ready=False` (`ReconcileError`) before any resource changes; a disabled engine skips the check,
+  so it can still be torn down. With both set they win over `overrides.oramacore`; with neither,
+  both pods keep the combined image (`overrides.oramacore`, else `<registry>/oramacore:latest`) and
+  `config.yaml`, unchanged. `status.conditions[EngineSidesSeparated]` reports which mode runs.
+- **Config** — a `ConfigMap` `<cr>-engine-config` with `envoy.yaml` + **full, valid** OramaCore
+  configs, matching `oramacore/config-docker.yaml` (`execution_providers: CUDA|CPU` from
+  `writer.gpu`). Without side-only images it holds the combined `config.yaml` (`http` / `log` /
+  `writer_side` / `reader_side` / `ai_server`), which both pods render. With them it holds
+  `writer.yaml` (`http` / `log` / `writer_side` / `ai_server`), rendered by the writer, and
+  `reader.yaml` (`http` / `log` / `reader_side` / `ai_server`), rendered by the readers; switching
+  modes replaces the data, so the other mode's keys disappear. All three are assembled from the
+  same section builders in `engine.go` (`engineCommonYAML`, `writerSideYAML`, `readerSideYAML`,
+  `aiServerYAML`), so the sections and stream names are identical in every mode (writer
+  `oramacore-writer`/`write`, readers `oramacore-reader`/`reader`).
+  The `ai_server` LLM settings come from `spec.llm` (`engine_llm.go`): `ai_server.llm` is the
+  default provider's built-in URL, first model and key, `ai_server.remote_llms` one entry per
+  provider, and `ai_server.embeddings.automatic_embeddings_selector` the optional selector. Without
+  `spec.llm` they are Prod 1's four providers with no selector
+  ([crd-reference.md](crd-reference.md#specllm)).
+  Every config is a **template** — `master_api_key` is a `'__MASTER_API_KEY__'`, the broker `user`
+  and `password` are `'__BROKER_USERNAME__'` and `'__BROKER_PASSWORD__'`, and each provider's
+  key a `'__<PROVIDER>_API_KEY__'` placeholder (single-quoted scalars), so **no credential lives in
+  the ConfigMap**. A `render-config` **init container** substitutes the real values into the pod's
+  template and writes it to a shared `emptyDir`, and OramaCore reads it via
+  `CONFIG_PATH=/etc/oramacore/config.yaml`
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
-  `ORAMACORE_` provider splits on `_`). All children set an owner reference to the CR, so
-  deleting the CR cascade-deletes them.
+  `ORAMACORE_` provider splits on `_`). Explicit `secretKeyRef` env entries carry `MASTER_API_KEY`
+  from `spec.masterAPIKeySecretRef` (only where the side's template holds it), the broker
+  credentials from `<cr>-broker-admin`, and a provider's key from its `apiKeySecretRef`; the other
+  provider keys come from `<cr>-engine-secret` (via `envFrom`).
+  The script reads each value from its environment variable and escapes it for `sed` and the
+  single-quoted scalar, so no value is evaluated, logged or written into the script.
+  Each pod template carries `orama.cloud/config-hash`, the SHA-256 of its own unrendered template
+  (with side-only images a change to one side's config rolls only that side, a change to a shared
+  section such as the LLM settings rolls both; the combined config rolls both), and
+  `orama.cloud/llm-secret-hash`, the SHA-256 of the data of `<cr>-engine-secret` and every
+  `apiKeySecretRef` Secret, identical on both sides, and `orama.cloud/credentials-hash`, the side's
+  broker admin and master key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
+  The controller watches Secrets and maps a change to every CR that reads it, so a rotated key rolls
+  the writer and readers with no restart by hand. Without a usable master key the writer and
+  readers are held at zero replicas. The LLM settings and keys are checked before any engine object is
+  written: invalid input leaves the running engine untouched with `Ready=False`. All children set
+  an owner reference to the CR, so deleting the CR cascade-deletes them.
+- **Hooks deny list** ([#306](https://github.com/oramasearch/orama-operator/issues/306)) —
+  customer JavaScript hooks run inside OramaCore and may `fetch` outbound; with no allow or deny
+  list OramaCore lets them reach any host. `writer_side.hooks` and `reader_side.hooks` are the same
+  block in every config (`hooksYAML` in `engine_hooks.go`, embedded by `writerSideYAML` and
+  `readerSideYAML`), so the combined, writer-only and reader-only templates all carry it and
+  `orama.cloud/config-hash` rolls the pods when it changes. The values are fixed, with no CR field:
+  `evaluation_timeout: 200ms`, `execution_timeout: 1s` (Prod 1's), and `denied_domains` only
+  (OramaCore refuses `allowed_domains` next to it). The list, 66 entries in this order without
+  duplicates:
+  1. Prod 1's 32 entries as written (orama-deploy `655f1a2`, `oramacore/production/config/`
+     `writer.config.yaml` and `reader.config.yaml`): loopback, RFC 1918, link-local and cloud
+     metadata, carrier-grade NAT, multicast and reserved, unspecified and broadcast, TEST-NETs,
+     benchmarking and the listed private IPv6 patterns. These are glob patterns, not a complete
+     CIDR filter.
+  2. A `**` form of each Prod 1 entry ending in `.*` (`10.**`, `169.254.**`, `172.1[6-9].**`, …).
+  3. The cluster's names: `*.svc`, `*.svc.cluster.local`, `*.cluster.local`, `kubernetes*`,
+     `*.internal`, their `**` forms, `::ffff:*` (IPv4-mapped IPv6, which the URL parser keeps in
+     hex, e.g. `::ffff:a00:1`, so no IPv4 pattern sees it), `::`, and Azure's WireServer
+     `168.63.129.16` (Prod 1's list was written for AWS; on AKS that host address is reachable and
+     outside every private range).
+  4. The stack's own Service names, `<cr>-*` and `<cr>-*.**`.
+
+  Matching is `orama-js-pool` 0.4.3's
+  ([`src/permission.rs`](https://docs.rs/crate/orama-js-pool/0.4.3/source/src/permission.rs),
+  `check_net_url` / `glob_match`): it matches the URL's **host string**, never the resolved
+  address, case-insensitively, with and without the port. `.` separates labels, so `*` stays
+  within one label and `**` spans several: Prod 1's `10.*` does not match `10.0.0.1`, which is why
+  step 2 adds `10.**`. A refused call fails in the hook with `Domain not allowed`, so a hook cannot
+  reach `http://169.254.169.254/`, `http://10.0.0.1/`, `http://<cr>-controldb-rw:5432/` or
+  `http://<cr>-controldb-rw.<ns>.svc.cluster.local:5432/`. **Limits:** a public DNS name that
+  resolves to a private address passes this check, and so does another stack's Service addressed
+  as `<svc>.<ns>`. Reachability after resolution is enforced by the engine's network sandbox
+  ([Network sandboxes](#network-sandboxes-internalcontrollernetworksandbox_controllergo)) and the
+  secure networking work in [#437](https://github.com/oramasearch/orama-operator/issues/437), not
+  by this list.
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
   BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets
   `terminationGracePeriodSeconds: 300` (readers: 60) so k8s doesn't SIGKILL the flush
   at the default 30s.
-- **Health probes** — startup / readiness / liveness all hit `GET /health` on `:8080`
-  (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path). The **startup probe**
-  (`failureThreshold: 30 × 10s` ≈ 5 min) gates the others so a slow index-load boot
-  isn't killed; readiness gates Service routing; liveness restarts a hung pod.
+- **Health probes** — startup / readiness / liveness hit `GET /health` on `:8080`
+  (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path), including when Envoy
+  is enabled, except the **reader's readiness**, which hits `GET /health/ready`: it reports ready
+  only once the reader has caught up with the stream head it observed at startup
+  ([oramacore#340](https://github.com/oramasearch/oramacore/pull/340)). The reader's liveness and
+  startup stay on `/health`, so a refusing reader is not restarted by liveness; it is simply never
+  Ready. The Core image must serve `/health/ready`, or every reader stays not-Ready. The **startup
+  probe** allows the writer **20 minutes** (`120 × 10s`) and readers **40 minutes** (`240 × 10s`),
+  matching Prod 1's startup allowances from Steve's review of #406. These fixed budgets gate
+  readiness and liveness during index loading; a successful startup probe releases them
+  immediately, without waiting out the budget. A container that never becomes healthy exhausts its
+  budget and is restarted. Readiness checks every 10s and liveness every 15s, both with a 3s timeout
+  and failure threshold 3. Reconciliation updates existing workload templates to these startup budgets.
 - **Disruption budgets** — the **writer** gets a PDB with `maxUnavailable: 0` (it's a
   singleton — voluntary disruptions like node drains/autoscaler are blocked so it
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**
@@ -271,7 +546,7 @@ transition** (deep-compared first), so a steady stack generates no control-plane
 the CR GC'd everything. The
 `render-config` init container renders the config, and **OramaCore 1.2.28 parses it and
 boots** (`Configuration loaded successfully` → `Starting web server on
-http://0.0.0.0:8080`); the ConfigMap shows only `master_api_key: "__MASTER_API_KEY__"`
+http://0.0.0.0:8080`); the ConfigMap shows only `master_api_key: '__MASTER_API_KEY__'`
 while the rendered file in the pod holds the real value.
 
 > **Follow-ups:** the `embeddings` ai-server image is built by the bridge's
@@ -283,7 +558,7 @@ while the rendered file in the pod holds the real value.
 
 ## controlDB (`internal/controller/controldb.go`)
 
-The control-plane Postgres (PlanetScale in prod) as a **CloudNativePG `Cluster`**,
+The control-plane Postgres is always an in-cluster **CloudNativePG `Cluster`**,
 provisioned as an **unstructured** object so the operator stays decoupled from CNPG's
 Go types/version. Requires the CNPG operator (installed via the helmfile).
 
@@ -291,8 +566,74 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   2 / heavy 3), `10Gi` storage, `bootstrap.initdb` creating the `oramacore` database.
 - **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** streaming
   from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
-- `mode: external` skips creation (the app uses the external endpoint). Owner ref on
-  the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs).
+- `mode: in-cluster` is the only supported mode and the default. Admission refuses
+  `external`, even when disabled or supplied an endpoint and credentials. The reconcile
+  also refuses pre-existing external-mode CRs before any control-DB client operation,
+  preserving their Cluster, schema, migration resources, Secrets and storage. The stack
+  reports `Degraded` with `Ready=False`, reason `ReconcileError`. Managed-set templates
+  are raw JSON: their merged members are refused by member-cluster admission and the
+  set reports those members as `Degraded`.
+- The dashboard never runs `db-migrate`; the operator's `PostgresSchema`s own the schema.
+  Dashboard and index-builder `DATABASE_URL` and analytics-processor render `PG_URI`
+  use `pgURIEnv` to read the CNPG-generated `<cr>-controldb-app` Secret's `uri` key.
+  Dashboard `POSTGRES_PASSWORD` uses `pgPasswordEnv` for its `password` key.
+  The analytics template contains only placeholders; its init container escapes every
+  value for sed replacement, preserving `&`, `\` and `#` in credentials and URIs.
+- The `Cluster` owner reference means deleting the CR cascade-deletes it (CNPG then
+  removes the pods/PVCs). Disabling a supported in-cluster control DB still tears it down.
+
+### The control DB's schema
+
+On a writable control DB (the primary, or any stack without `replicate: true` on a read tier) the
+operator owns three `PostgresSchema`s, one per file in the ConfigMap `<cr>-controldb-migrations`.
+Each file and its `PostgresSchema` are written only once the one before reports `phase: Applied`
+for its **current** `spec.version` and `metadata.generation`; a stale `Applied` does not release
+the next. A streaming replica receives the primary's schema and owns none.
+
+| Order | `PostgresSchema` | ConfigMap key | Guard | What it applies |
+|---|---|---|---|---|
+| 1 | `<cr>-controldb-schema` | `schema.sql` | `crawler_configs` | Drizzle migrations 0000 to 0007, `assets/dashboard-schema.sql` (version `sha256:461cc9d132ba`, unchanged) |
+| 2 | `<cr>-controldb-schema-0008` | `schema-0008.sql` | `team_migrations` | Migration 0008 (`assets/dashboard-schema-0008.sql`, vendored from `oramasearch/dashboard` branch `cloud-migration` at `8e8f9a6`), with the reference rows seeded between 0008's tables and its `teams` columns and constraints |
+| 3 | `<cr>-controldb-reference-data` | `reference-data.sql` | none (`applyEveryVersion`) | The reference rows again, with this stack's Stripe prices, re-applied whenever the rows or the prices change |
+
+- **Why a second schema for 0008.** A database built from the 0000 to 0007 file already has
+  `crawler_configs`, so the first schema's Job skips it; 0008 appended there would never reach
+  `v1-dev`, `v1-eu` or `v1-us`. Its own `PostgresSchema`, guarded on a table 0008 creates, reaches
+  every existing database on the operator's next roll and every new one after 0007. 0008 guards its
+  statements (`IF NOT EXISTS`, `duplicate_object`), so a compatible partial 0008 without
+  `team_migrations` re-applies cleanly. The guard does not prove the other 0008 objects exist: a
+  database with `team_migrations` but missing objects is drift, to be reported, not repaired.
+- **Who creates the reference rows.** The operator does
+  ([decision 7](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-16.md)).
+  `assets/dashboard-reference-rows.sql` holds Prod 1's `subscription_plans`, `stripe_addon_prices`
+  and `llms` rows, with their IDs and every column, exported read-only by
+  `hack/export-dashboard-reference-rows.sh`, without Stripe price IDs.
+  `assets/dashboard-reference-data.sql` upserts them by ID (`ON CONFLICT (id) DO UPDATE`, never a
+  delete) and fails unless the default plan `0d735744-e58e-4438-b618-97523e407cdc` exists. Inside
+  0008 it runs before `teams.subscription_plan_id` and its foreign key, so existing teams validate
+  against the default plan in the same transaction and a new team can be created; without the
+  rows, 0008 rolls back as a whole. The tenant copy tool does not copy these rows.
+- **Stripe prices are per stack**: `spec.components.controlDB.stripePrices` (test-mode IDs on
+  nonprod, live-mode IDs on `v1-prod`). They reach only `<cr>-controldb-reference-data`, so 0008's
+  SQL and version are the same on every stack. Empty leaves plans' Stripe columns NULL and seeds no
+  add-on price (`stripe_addon_prices.stripe_price_id` is NOT NULL). An ID that is not a reference
+  row fails the seed, visibly, and changes nothing.
+- **Readiness.** The stack's `controldb-schema` component is ready only when all three report their
+  current version `Applied`; otherwise its detail names the first that is not, with its phase and
+  message.
+- **A failed migration Job is retried by the operator.** The `PostgresSchema` controller never
+  recreates a failed Job of the same version, so the stack's reconciler foreground-deletes its own
+  schema's terminally failed, current-version Job (UID and resourceVersion preconditions), records
+  `orama.cloud/retried-failed-job` on the `PostgresSchema` until it applies, and the controller
+  creates a fresh Job once the pods are gone. Each Job keeps its 20-attempt backoff. Active,
+  obsolete and unowned Jobs are never touched; Lake's schemas do not pass through this path.
+- **Disabling the control DB** deletes the three `PostgresSchema`s this stack controls (their Jobs
+  go with them) and the migrations ConfigMap, with the CNPG `Cluster`.
+- **Later dashboard migrations** follow 0008: each is vendored unchanged into its own file and its
+  own `PostgresSchema` after the last, guarded on a table it creates, and applied to Prod 2 on the
+  operator's next roll, with a short planned outage when it needs one
+  ([decision 8](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-16.md)).
+  Prod 1 never receives them.
 
 **Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
@@ -312,8 +653,8 @@ and reference the primary's endpoint). Images are overridable via
 
 | Store | Component | Image | Ports |
 |---|---|---|---|
-| Redis | `cache` | `redis:7-alpine` | 6379 |
-| RabbitMQ | `broker` | `rabbitmq:3.13-management` | 5672, 15672 |
+| Redis (`--requirepass` from `<cr>-cache-auth`) | `cache` | `redis:7-alpine` | 6379 |
+| RabbitMQ (admin from `<cr>-broker-admin`) | `broker` | `rabbitmq:3.13-management` | 5672, 15672, 5552 |
 | ClickHouse | `analytics` | `clickhouse/clickhouse-server:24.8` | 8123, 9000 |
 | Typesense | `search` | `typesense/typesense:0.25.2` | 8108 |
 
@@ -332,7 +673,8 @@ and a `maxUnavailable: 0` PDB) — see [Workload hardening](#workload-hardening-
 > **Follow-ups:** these are single-node for light/medium. **Heavy/production** should
 > swap in the dedicated operators (Altinity ClickHouse, RabbitMQ cluster-operator) and
 > a clustered Typesense; wire credentials via the component secret (the Typesense API key
-> is a dev placeholder today). Binary-side right-sizing derived from the memory limits (Redis
+> is a dev placeholder today; the broker and Redis passwords are generated, see
+> [Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)). Binary-side right-sizing derived from the memory limits (Redis
 > `maxmemory`, etc.) is [#42](https://github.com/oramasearch/orama-operator/issues/42).
 
 ## App compute — ingestion / workers / dashboard / docs (`app.go`, `ingestion.go`)
@@ -345,7 +687,46 @@ host is set)**.
   **Selenium** grid Deployment.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
-- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`.
+- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`. Its environment is the
+  operator's (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`, `MASTER_API_KEY` from
+  `spec.masterAPIKeySecretRef`, `POSTGRES_PASSWORD`, `DATABASE_URL`)
+  plus what `dashboard.envFrom` and `dashboard.env` take from Secrets and ConfigMaps
+  ([below](#the-dashboards-environment)).
+
+### Origin TLS (`ingress_tls.go`, [#457](https://github.com/oramasearch/orama-operator/issues/457))
+
+Every Ingress a Cloud v1 stack renders is encrypted to the origin with a certificate cert-manager
+issues and renews (decision 5 of the 2026-10-16 decisions page in orama-bridge). Lake, Lake app,
+environment and Zetta Ingresses do not request one yet
+([#578](https://github.com/oramasearch/orama-operator/issues/578)).
+
+- **One `Issuer` per stack.** The step `originTLS` keeps a namespaced cert-manager `Issuer`
+  `<cr>-letsencrypt` (Let's Encrypt production, DNS-01 through Cloudflare), owned by the stack. Its
+  solver uses the stack's `spec.cloudflare.apiTokenSecretRef` Secret, key `token`; cert-manager
+  generates the ACME account key into `<cr>-letsencrypt-account`. No token, no `Issuer`. cert-manager
+  itself is the platform release every cluster already runs; no new chart.
+- **One shared function.** Each Ingress builder calls `applyIngressTLS(ing, issuer)` last in its
+  `CreateOrUpdate` mutation, with the issuer from `stackIngressIssuer(oc)`. It adds one TLS entry
+  per distinct rule host, each with its own Secret `ingressTLSSecretName(host)` (`<host>-tls`;
+  `*` becomes `wildcard`; a name over 253 characters is cut to 240 plus 8 hex characters of the
+  host's SHA-256), sets `cert-manager.io/issuer` and `nginx.ingress.kubernetes.io/ssl-redirect:
+  "true"`, keeps every other annotation and removes `cluster-issuer`, `issuer-kind` and
+  `issuer-group`. cert-manager's ingress-shim creates one `Certificate` per entry; the operator never
+  writes the `Certificate` or its Secret.
+- **No HTTP-only fallback.** A stack with a host but no Cloudflare token fails the reconcile
+  (`Degraded`, `ReconcileError`, the message names `spec.cloudflare.apiTokenSecretRef`) and leaves
+  any existing Ingress as it is. An empty rule list, an empty host or an empty issuer is an error.
+- **One Secret per host.** The Secret name depends only on the host, so another Ingress serving the
+  same host (the `/metrics` deny companions, [#314](https://github.com/oramasearch/orama-operator/issues/314))
+  names the same Secret. Removing a host drops its TLS entry; the other hosts keep their Secrets.
+- **Known gap:** decision 5 gives each stack its own ingress-nginx. The operator does not render one
+  yet ([#573](https://github.com/oramasearch/orama-operator/issues/573)), so a stack's Ingresses
+  still use `spec.components.ingressClassName` (default the platform's `nginx`). TLS renders on
+  whichever class the Ingress has.
+- **Cloudflare.** Full (strict) is not turned on; the zones' SSL mode stays as it is (decision 15 of
+  2026-10-17). The HTTP to HTTPS redirect at the edge is declared by the operator
+  ([#527](https://github.com/oramasearch/orama-operator/issues/527),
+  [#528](https://github.com/oramasearch/orama-operator/issues/528)), never set by hand.
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.
@@ -354,8 +735,186 @@ the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd the
 > bundle are **placeholders** (`oramasearch/<name>:latest`) pending published/built
 > images — override via `spec.images.overrides`. HARVEST's Podman-per-job worker model
 > needs porting to k8s Jobs (the master + Mongo + Selenium are here; the job spawner
-> is a follow-up). Dashboard/index-builder need their env + secret wiring
-> (control-plane DB URL, API keys) via the component secret.
+> is a follow-up). index-builder needs its env + secret wiring (control-plane DB URL, API keys)
+> via the component secret.
+
+### The dashboard's environment
+
+Prod 1's dashboard runs with Vercel variables the operator does not own: Stripe, S3, Slack, Resend,
+the cron and private-API secrets and others. `spec.components.dashboard.envFrom` and `.env`
+([operator#311](https://github.com/oramasearch/orama-operator/issues/311)) take them from Secrets and
+ConfigMaps in the instance's namespace. The full field reference is in
+[crd-reference.md](crd-reference.md#speccomponentsdashboard); in short (`dashboard_env.go`):
+
+- **Precedence**, lowest to highest: the operator's envFrom, `dashboard.envFrom` (a later source wins),
+  the operator's explicit env, `dashboard.env` (one entry per name, the last wins).
+- **Refused**: `DATABASE_URL`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_PASSWORD`,
+  `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, `JWT_ISSUER` and `MASTER_API_KEY` (the control DB, `<cr>-jwt`, the JWT issuer and `spec.masterAPIKeySecretRef` own
+  them), in `env` or as any key of an `envFrom` source after its prefix. The reconcile fails
+  with `Ready=False`, naming the field, the object and the variable, never the value.
+- **Missing references** fail the reconcile the same way unless `optional: true`. The check runs before
+  the Deployment is written, so the running dashboard keeps its last valid template.
+- **Rolling**: the controller watches every referenced Secret and ConfigMap, owned or not, and the pod
+  template carries `orama.cloud/dashboard-env-hash` over the referenced data, so a changed key rolls
+  the dashboard with no restart by hand. Without a Secret or ConfigMap reference there is no
+  `dashboard-env-hash` annotation and the template is unchanged; the master key's
+  `orama.cloud/credentials-hash` ([#307](https://github.com/oramasearch/orama-operator/issues/307)) is
+  there either way.
+
+**How the Secret reaches the clusters.** Nothing is created by hand in a member namespace.
+
+- The dashboard's environment Secret (`v1-prod-dashboard-env` for `v1-prod`) exists **once, on the
+  managing cluster** (`orama-production-cluster-01`, namespace `orama-system`, beside the set's other
+  sources).
+- Each member receives it through the `OramaCloudV1Set`'s `spec.secrets` list, which copies each named
+  Secret into every member's namespace before the instance, and again on every reconcile of the set.
+  The set's template references it in `components.dashboard.envFrom`. A `spec.secrets` entry has
+  `name`, `namespace` and an optional `as` (its name on the member); it is not a `secretRef`. A
+  member's own `spec.clusters[].secrets` entry replaces a set entry with the same destination name.
+  Recommendation and per-key detail: orama-bridge
+  [`docs/projects/orama-cloud-v1/secrets.md`](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/secrets.md).
+- The set does not watch its source Secrets. A change on the managing cluster reaches the members at
+  the set's next reconcile (every 15 seconds while settling, five minutes when steady); the member's
+  dashboard watch then sees the copied Secret and rolls the dashboard. ConfigMaps work as local
+  references, but the set's `secrets` list copies only Secrets.
+- These are **Orama's own platform secrets** (Stripe, Resend, Slack and the rest). They never go into
+  a customer's store or a workspace secret store.
+- Creating or changing that Secret on the managing cluster is a write there, so it is **asked of Steve
+  first**, each time, the test Secret for a proof included. A `kubectl create secret` in `v1-dev`,
+  `v1-eu` or `v1-us` is forbidden by the cluster rules.
+- Only third-party keys and values that must equal Prod 1's are copied this way. A key that only has
+  to agree inside the stack is generated by the operator, not copied; stack-local URLs and IDs go in
+  the set's `dashboard.env`. Never list the generated Secrets (`<cr>-jwt`, the database, broker and
+  cache credentials) in the set's `secrets`.
+
+`config/clusters/sets/v1-nonprod.yaml` carries the delivery (`spec.template` is the instance spec
+itself). The source Secret `orama-system/v1-nonprod-dashboard-env` must exist on the managing cluster,
+created with Steve's consent, before the file is applied:
+
+```yaml
+spec:
+  secrets:
+    - name: v1-nonprod-dashboard-env
+      namespace: orama-system
+  template:
+    components:
+      dashboard:
+        envFrom:
+          - secretRef:
+              name: v1-nonprod-dashboard-env
+```
+
+The copy is then Secret `v1-dev/v1-nonprod-dashboard-env` on `orama-nonprod-cluster-01`. The
+`v1-prod` entry and reference land with
+[operator#445](https://github.com/oramasearch/orama-operator/issues/445).
+
+**Environment inventory.** What the dashboard (`cloud-migration`) reads beyond the operator's own
+variables. This records what the code reads; it does not approve copying every value or keeping every
+outside service. Per-key sources, and whether each must equal Prod 1, are in the bridge's
+`secrets.md`; production assignments are #445's work.
+
+`PRIVATE_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY`, `S3_BUCKET`, `S3_BUCKET_REGION`, `S3_BUCKET_PREFIX`, `AWS_ACCESS_KEY_VALUE`,
+`AWS_SECRET_ACCESS_KEY_VALUE`, `REDIS_CACHE_URL`, `REDIS_CACHE_TOKEN`, `RESEND_API_KEY`, `SLACK_TOKEN`,
+`SLACK_CHANNEL_NEW_USERS`, `SLACK_CHANNEL_STRIPE`, `DATA_SOURCE_REQUEST_URL`, `NEXT_PUBLIC_APP_URL`,
+`ORAMACORE_PLACEMENT_CLUSTER_ID`.
+
+- The dashboard's `AIRBYTE_*` keys are left out: they go away with Airbyte (bridge decisions of
+  2026-10-16, 12a) and are not copied.
+- `CRON_SECRET` reaches the dashboard through `dashboard.envFrom`, and the in-cluster CronJobs
+  ([operator#17](https://github.com/oramasearch/orama-operator/issues/17)) read it from the same
+  Secret key, resolved from the dashboard's own `envFrom` and `env`, so there is no second reference
+  to keep in step. Only the dashboard and those CronJobs share it, so its value is new for Prod 2, not
+  copied from Prod 1, and it lives in the environment Secret the set delivers.
+- No Firebase keys: sign-in moves to Clerk before the cutover and Prod 2 needs no Firebase server
+  keys (bridge decisions of 2026-10-16, 1 and 2). Clerk's keys are added with orama-bridge#180.
+- `NEXT_PUBLIC_APP_URL` is inlined by `next build`, so a runtime value is not a reliable override;
+  the image's URL is checked separately. `SLACK_SIGNUP_APP_URL`, `INTERNAL_APP_URL` and
+  `CRON_FORWARD_ORIGIN` are optional settings the dashboard also reads.
+- **Prerequisites recorded, not solved here.** Analytics use the in-cluster ClickHouse, with no copied
+  `CLICKHOUSE_*` key. The dashboard's `runClickhouse` (`src/lib/clickhouse/index.ts`) posts JSON
+  `{sql, queryVariables}` with Basic auth to a URL, while the operator gives it a bare service name in
+  `CLICKHOUSE_HOST` and a placeholder `CLICKHOUSE_PASSWORD`; nothing here makes that connection work.
+  Likewise `REDIS_CACHE_URL`/`REDIS_CACHE_TOKEN` feed `@upstash/redis` over HTTP (`src/lib/redis/redis.ts`),
+  not the in-cluster Redis TCP service; the bridge decisions plan an in-stack `serverless-redis-http`
+  shim (12a). Rendering these variables does not prove either integration works.
+
+### The dashboard's scheduled jobs
+
+`spec.components.dashboard.crons` ([operator#17](https://github.com/oramasearch/orama-operator/issues/17),
+`dashboard_crons.go`) runs Prod 1's scheduled jobs as CronJobs owned by the `OramaCloudV1`. Without
+the dashboard's three, the crawler that drives ingestion, the index GC and the Stripe usage sync never
+run on Prod 2. Running them on both stacks at once would crawl and bill twice, so every one is created
+suspended. Field reference: [crd-reference.md](crd-reference.md#speccomponentsdashboardcrons).
+
+- **Dashboard crons.** `<cr>-dashboard-cron-crawler` (`*/1 * * * *`), `-index-gc` (`0 * * * *`) and
+  `-consumption-sync` (`0 */6 * * *`), Prod 1's schedules from the dashboard's `vercel.json`, fixed.
+  Each Job runs `curlimages/curl:8.10.1` (or `spec.images.overrides["dashboard-crons"]`, used as
+  written) and sends `GET http://<cr>-dashboard:3000<path>` with `Authorization: Bearer $CRON_SECRET`.
+  The in-cluster Service means a run cannot reach Prod 1 while DNS moves. The header reaches curl on
+  stdin, so the value is in no argument, and only the HTTP status is logged, never the body. Any status
+  outside 200–299 fails the Job, a redirect included (it is never followed), as do connection errors
+  and the 300-second timeout. `consumption-sync` only queues per-team usage syncs: its 2xx proves the
+  call, not every queued payment update.
+- **E2E canary.** `<cr>-e2e-canary` (`*/5 * * * *`) runs `monitor-test` from the digest-pinned
+  `e2eCanary.image`: it signs in through `http://<cr>-dashboard:3000/api/user/jwt` with the canary
+  project's private API key, inserts a probe document, checks it through the readers the dashboard
+  returns and the in-cluster `<cr>-reader`, and deletes the oldest tracked probe. In the same pod, once
+  a day (the first run at or after 04:30 UTC, or after a missed day), the prune deletes leaked
+  `monitor <hex>` probes once the collection holds more than 200 documents, keeping the titles the
+  canary tracks; with no tracked titles it refuses to prune. The script is
+  `internal/controller/assets/e2e-canary.sh`, a port of Prod 1's `collection_prune-crons.sh`. Canary
+  and prune share the canary's state file, `test-state.json`, on the owned claim
+  `<cr>-e2e-canary-state` (1 GiB, `ReadWriteOnce`). They run as one CronJob so that a prune can never
+  delete a probe the canary has written but not yet recorded. The prune stays until the canary's leak is
+  fixed in `oramacore-test-e2e` (bridge decision 11), then goes.
+- **Metrics and alerts.** The canary and prune write Prometheus textfile metrics
+  (`oramacore_monitor_*`, `oramacore_collection_prune_*`, the names Prod 1's alerts use) to
+  `metrics/` on the state claim. Nothing scrapes them yet: collecting them and the alert rules are
+  in-cluster observability's work ([#15](https://github.com/oramasearch/orama-operator/issues/15)).
+  A failed run also fails its Job, which `kube_job_status_failed` reports.
+- **Run policy, all four.** `timeZone: Etc/UTC`, `concurrencyPolicy: Forbid` (per CronJob; the
+  dashboard's three routes can run at once), `startingDeadlineSeconds: 60` so a long suspension leaves
+  no backlog, one successful and three failed Jobs kept, `backoffLimit: 0` (no retry of calls with paid
+  side effects), `ttlSecondsAfterFinished: 3600`, and `activeDeadlineSeconds` 330 for the dashboard
+  crons and 900 for the canary (Prod 1's prune allowed 600 seconds). Pods use the stack's pull
+  secret, no service account token, the hardening baseline plus `runAsNonRoot` (uid 100, curl's
+  `curl_user`, for the dashboard crons; 65532 for the canary, whose image runs as root) and a read-only
+  root filesystem.
+- **Ownership.** Each CronJob and the claim carry `labelsFor(cr, "dashboard-crons" | "e2e-canary")` and
+  the CR as controller. A same-name object the CR does not control is a reconcile error and is left
+  unchanged. Disabling the crons or the dashboard, or removing `e2eCanary`, deletes only objects the
+  CR controls, before the environment is checked, so missing credentials never keep disabled crons
+  alive. Deleting a CronJob removes its Jobs.
+
+**Cutover.** `suspend` changes only through a committed change to the set file
+`config/clusters/sets/v1-prod.yaml` (member `v1-eu`; `v1-us` never runs the crons), applied to the
+managing cluster `orama-production-cluster-01`, never by editing, patching or creating the CronJobs.
+The cutover runbook turns Prod 1's Vercel crons off at step 1 and stops Prod 1's crons host timers at
+step 2 (they call `app.orama.com/api/user/jwt` and would write to Prod 2), and resumes Prod 2's
+CronJobs at step 5, after `app.orama.com` points at Prod 2 (step 4): the crawler reports to
+`${NEXT_PUBLIC_APP_URL}/api/private/v1/update-crawl-status`, which is `app.orama.com`, so started
+earlier its results would reach Prod 1. No crawl runs between steps 1 and 5; that gap is accepted.
+The canary follows the same `suspend`, so it resumes with the dashboard crons. Rollback commits `suspend: true`
+first and waits for active Jobs to finish. The runbook is orama-bridge
+[`docs/projects/orama-cloud-v1/cutover-runbook.md`](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md)
+(preconditions P6 and P7, branch `cutover/v1-eu-crons`).
+
+**Prod 1's AWS crons host.** Every job known to run on `prod-oramacore-crons-us-east-2`
+(`i-0bc49126a30b3a699`, `t3.medium`, us-east-2; oramacore-aws `terraform/live/prod/main.tf:620-630`),
+from read-only sources: oramacore-aws `addcf3c` (2026-10-13), orama-deploy `655f1a2` (2026-06-09), the
+techops-docs fleet evidence of 2026-07-07 and bridge decision 11 (2026-10-16). The host itself has not
+been read; the live listing (`systemctl list-timers --all`, `systemctl list-units --all --type=service`,
+each user's `crontab -l`, `/etc/crontab`, `/etc/cron.d`, `/etc/cron.*`) is still to be taken over SSM.
+
+| Job | Schedule on Prod 1 | Source | What it does | Prod 2 |
+|---|---|---|---|---|
+| `oramacore.test-e2e.timer` → `.service` (user `test-e2e`, binary `monitor-e2e` from the `monitor-test` release asset) | `OnBootSec=1min`, `OnUnitActiveSec=5min`, `Persistent=false` | orama-deploy `oramacore-test-e2e/production/`, `oramacore-test-e2e.production.json` | The canary above, against collection `790cea05`, with the CF worker, the AWS load balancer and the three regional readers as extra readers; state in `test-state.json`, metrics through node_exporter | Moved: `<cr>-e2e-canary`, `*/5 * * * *` (decision 11) |
+| `collection-prune.timer` → `.service` (root) | `OnCalendar=*-*-* 04:30:00 UTC`, `Persistent=true`, `OnBootSec=10min`, `TimeoutSec=600` | oramacore-aws `terraform/scripts/oramacore-custom-metrics/collection_prune-crons.sh` | The prune above | Moved into `<cr>-e2e-canary`'s daily run until the canary's leak is fixed, then dropped (decision 11) |
+| `collection-doc-count.timer` → `.service` | `OnBootSec=3min`, `OnUnitActiveSec=30min` | `collection_doc_count-crons.sh` | Exports the canary collection's document count, which warns at 400 of the 500-document cap | Dropped: the prune keeps the collection under the cap (decision 11) |
+| `analytics-processor.check-env.timer` | `OnUnitActiveSec=4min` | orama-deploy `analytics.production.json`, `analytics/prod/systemd/` | Analytics processor environment check | Not in this change: analytics processing maps to the combined import ([#421](https://github.com/oramasearch/orama-operator/pull/421) with #419, #422, #448). Decision 11 names only the canary's three timers, so Steve's confirmation for these rows is pending |
+| `analytics-processor.importer.timer` | `OnUnitActiveSec=5min` | as above | Analytics import | As above |
+| `analytics-processor.aggregator.timer` | `OnUnitActiveSec=5min` | as above | Analytics aggregation | As above |
+| CloudWatch agent, SSM agent (from `user_data`), Grafana Alloy and node_exporter | daemons, not schedules | oramacore-aws `terraform/modules/orama-crons/main.tf`, the scripts' headers | Host metrics and shipping, remote shell | Dropped with the host: Prod 2's monitoring is in-cluster ([#15](https://github.com/oramasearch/orama-operator/issues/15)) |
 
 ## DISCO (`disco.go`)
 
@@ -671,11 +1230,17 @@ instances onto managed clusters from one template, each member in its own namesp
 | `KubernetesClusterProviderReconciler` | `KubernetesClusterProvider` | Nothing; it checks the credentials and holds the provider while a cluster uses it |
 | `AksClusterReconciler` | `AksCluster` (concrete) | In Azure: a resource group and a managed cluster. In the cluster: the owned kubeconfig Secret |
 
-- **Only `azure_resource_manager.go` and `akscluster_controller.go` name Azure.** The abstract
+- **The AKS controller and its `azure_*.go` helpers own Azure API behavior.** The abstract
   controller maps the neutral fields and the provider's settings onto an `AksCluster` with a pure
   function, so the same pair always produces the same concrete resource.
 - **Create, observe and delete only.** A cluster is not changed after it exists; the `InSync`
-  condition reports what differs.
+  condition reports what differs. Node-pool `sysctls` pass from `KubernetesCluster` to
+  `AksCluster`, are validated before any Azure call, and map to typed
+  `linuxOSConfig.sysctls` fields using AKS API `2025-05-01`. Drift compares only explicit
+  settings and reports unknown values when Azure omits them. It does not probe node kernels.
+  AKS cannot change an existing pool's `linuxOSConfig`; how an existing cluster gets the setting
+  is designed, not implemented, in [node-pool replacement](infrastructure/node-pool-replacement.md).
+  See [node sysctls](infrastructure/node-sysctls.md) for the supported names.
 - **What goes on a new cluster** is installed by `ClusterHelmRelease` and `OramaOperator`, and
   its instances by `LakeSet` and `OramaCloudV1Set`
   ([`infrastructure/README.md`](infrastructure/README.md)).
@@ -708,7 +1273,7 @@ and reuses this operator's CNPG, PostgresSchema and Cloudflare DNS paths.
 | CNPG `ScheduledBackup` | `lake-<name>-controldb-backup` | yes (unstructured) | opt-in Barman R2/S3 backup; CNPG `Backup` resources are observed by `cnpg.io/cluster` label |
 | `LakeRestoreRehearsal` scratch resources | `lake-rehearsal-<name>-<hash>` | yes | temporary Namespace containing a recovered CNPG Cluster, copied credentials, and a verification Job; all are deleted after a terminal result |
 | Ingress + `CloudflareDNSRecord` | `lake-<name>`, `-dns` | yes | opt-in via `ingressEnabled` + `host` + `dnsSecretRef`, optional `tls.secretName`, and Lake streaming annotations |
-| `LakeE2ETest` Job | `<test-name>-e2e` in the Lake namespace | yes, by the cluster-scoped test | starts only after Lake, Postgres, and schema readiness; the required image owns signup and liquid push/pull assertions |
+| `LakeE2ETest` Job | `<test-name>-e2e-<generation>` in the Lake namespace | yes, by the cluster-scoped test | one per spec generation; starts only after Lake, Postgres, and schema readiness; `BackoffLimit` 0; older runs' Jobs deleted once a newer run finishes; the runner image owns every assertion |
 
 Lake creates or updates its Deployment and disruption budget only after the desired schema
 version is Applied. An existing Deployment stays unchanged while migration is pending or failed.
@@ -735,5 +1300,7 @@ Production: `Lake/prod` in namespace `lake` on AKS; R2 backup credentials must e
 
 `LakeE2ETest` watches the cluster-scoped Lake independently of normal reconciliation. Target changes
 and a 15-second pending requeue release the test once the Deployment, Postgres, and schema are ready.
-The immutable Job then drives `http://lake-<name>.<namespace>.svc.cluster.local` from its runner image
-and reports `Running`, `Succeeded`, or `Failed` without rewriting an unchanged status.
+The Job then drives `http://lake-<name>.<namespace>.svc.cluster.local` (and the browser
+`https://<host>`) from its runner image; the controller reads the runner's termination message for
+the counts and failed and skipped steps, and reports `Running`, `Succeeded`, or `Failed` without
+rewriting an unchanged status. A new spec generation (`spec.runID`) starts a new run.

@@ -111,7 +111,7 @@ All are pinned and cluster-scoped:
 
 | Release | Chart | Version | Namespace | Runs |
 |---|---|---|---|---|
-| `cert-manager` | `jetstack/cert-manager` | v1.21.2 | `cert-manager` | K8ssandra's webhook certificates |
+| `cert-manager` | `jetstack/cert-manager` | v1.21.2 | `cert-manager` | K8ssandra's webhook certificates; origin TLS for each Cloud v1 stack's Ingresses, from the namespaced Let's Encrypt `Issuer` the operator renders per stack (#457). Nothing else is installed for it. |
 | `strimzi` | `strimzi/strimzi-kafka-operator` | 1.2.0 | `strimzi-system` | Kafka (`STRIMZI_POD_SECURITY_PROVIDER_CLASS=restricted`, so its pods are admitted to a workspace namespace) |
 | `clickhouse-operator` | `altinity/altinity-clickhouse-operator` | 0.27.4 | `clickhouse-system` | ClickHouse (`watch.namespaces.include: [".*"]`: empty means its own namespace only) |
 | `tidb-operator` | `pingcap/tidb-operator` | v1.6.6 | `tidb-admin` | TiDB (CRDs from the release's `crd.yaml`, applied server-side by a presync hook) |
@@ -203,6 +203,8 @@ spec:
     name: local
     role: primary
   profile: light
+  masterAPIKeySecretRef:
+    name: v1-master-api-key   # a supplied Secret in orama-system; key MASTER_API_KEY
   idp:
     provider: none
   images:
@@ -263,7 +265,10 @@ Image selection is independent of the manager chart values:
 
 Component Secrets are named `v1-<component>-secret` (for example, `v1-engine-secret`). The
 operator seeds missing keys with development values while preserving existing values. Supply
-real values for enabled integrations and restart their consumers when required. The external
+real values for enabled integrations; the operator rolls the consumers of a Secret it watches when
+a value changes. The broker and Redis passwords are generated (`v1-broker-admin`, `v1-cache-auth`),
+and the engine master key is never generated: name a supplied Secret in
+`spec.masterAPIKeySecretRef`, or the writer and readers stay at zero replicas. The external
 Cloudflare and SaaS prerequisites are detailed in [provisioning-runbook.md](provisioning-runbook.md);
 the field reference is [crd-reference.md](crd-reference.md). These credentials do not grant
 registry access.

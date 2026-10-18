@@ -189,17 +189,23 @@ cloud load balancer or automatic public DNS on this path.
 
 ## 5. Run the Lake service test
 
-Use a published runner image whose entrypoint implements the contract in
-[`../crd-reference.md`](../crd-reference.md#lakee2etest-separate-crd-cluster-scoped). It must sign up
-a fresh user, create a repository, push with the real liquid client, pull into an empty checkout,
-and compare the file bytes.
+Use the runner image `oramasearch/lake-e2e` at an immutable tag, mirrored into the private
+registry ([`../crd-reference.md`](../crd-reference.md#lakee2etest-separate-crd-cluster-scoped)). It
+signs up a fresh person, pushes and pulls a repository with the real liquid client, and runs the
+rest of the suite. This Lake belongs to no set, so the test names it with `targetRef`:
 
 ```sh
-sed 's|registry.example.com/oramasearch/lake-e2e:replace-me|<mirrored-runner-image>|' \
-  /absolute/path/to/orama-operator/config/samples/lake-e2e-test.yaml | \
-  sudo k0s kubectl apply -f -
+cat <<'YAML' | sudo k0s kubectl apply -f -
+apiVersion: orama.cloud/v1alpha1
+kind: LakeE2ETest
+metadata:
+  name: hello
+spec:
+  targetRef: hello
+  image: <mirrored-runner-image>
+YAML
 sudo k0s kubectl get lakee2e hello --watch
-sudo k0s kubectl logs -n lake-dev job/hello-e2e
+sudo k0s kubectl logs -n lake-dev job/hello-e2e-1
 ```
 
 The controller does not create the Job until the target Lake, Postgres, and schema are ready.
