@@ -290,10 +290,10 @@ func lakeE2EJobFinished(job *batchv1.Job) (finished, succeeded bool) {
 
 // lakeE2EResult is the runner's summary: its termination message.
 type lakeE2EResult struct {
-	Pass     int32                            `json:"pass"`
-	Fail     int32                            `json:"fail"`
-	Skip     int32                            `json:"skip"`
-	Revision string                           `json:"revision"`
+	Pass     int32                           `json:"pass"`
+	Fail     int32                           `json:"fail"`
+	Skip     int32                           `json:"skip"`
+	Revision string                          `json:"revision"`
 	Failed   []oramav1alpha1.LakeE2ETestStep `json:"failed"`
 	Skipped  []oramav1alpha1.LakeE2ETestStep `json:"skipped"`
 }
