@@ -28,6 +28,17 @@ pointing at the primary); the full sample list is in
 
 Every component has `enabled`. Data stores also have `mode: in-cluster|external`,
 `placement: local|central`, `replicate`, and `endpoint`/`credentialsSecretRef`.
+The control DB is always in-cluster: `controlDB.mode` supports only `in-cluster`
+(the existing default when omitted). Admission refuses `external` even when
+`enabled: false`; the reconcile also refuses resources stored before this rule.
+`controlDB.endpoint` and `controlDB.credentialsSecretRef` do not select a different
+control database. Other data stores, including the broker, still support external mode.
+`controlDB.stripePrices` holds this stack's Stripe price IDs for the dashboard reference rows the
+operator seeds ([`components.md`](components.md#the-control-dbs-schema)): `plans[]` is
+`{ id, monthly, yearly }` (sets `subscription_plans.stripe_price_id_monthly`/`_yearly`; a plan not
+listed has both NULL) and `addons[]` is `{ id, priceID }` (sets `stripe_addon_prices.stripe_price_id`;
+an add-on price row is seeded only when listed). `id` is the reference row's UUID; an ID that is not
+a reference row fails the seed. Empty seeds every plan without Stripe prices and no add-on price.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
 
@@ -37,7 +48,7 @@ serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrast
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
-| `controlDB` | data-store | PlanetScale → CloudNativePG |
+| `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `stripePrices` | Always in-cluster CloudNativePG |
 | `analytics` | data-store | ClickHouse |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
@@ -307,8 +318,10 @@ apply-in-one-transaction) and reflects `phase` + `appliedVersion` (read back fro
 desired version never misreports). It carries **no finalizer** — deleting the CR never drops the
 schema/data, it only stops managing the migration.
 
-`OramaCloudV1` creates + owns a `<cr>-controldb-schema` instance (`reconcileControlDBMigrations`)
-applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
+`OramaCloudV1` creates + owns three instances, in order (`reconcileControlDBMigrations`):
+`<cr>-controldb-schema` (dashboard migrations 0000 to 0007), `<cr>-controldb-schema-0008` (0008 with
+the reference rows) and `<cr>-controldb-reference-data` (the reference rows with the stack's Stripe
+prices, `applyEveryVersion`); see [`components.md`](components.md#the-control-dbs-schema). See
 [`datastore-crds.md`](datastore-crds.md) for the full design. Sample:
 [`../config/samples/postgresschema.yaml`](../config/samples/postgresschema.yaml).
 
@@ -318,6 +331,7 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.schemaConfigMapRef` | `{ name, key }` — ConfigMap + key holding the schema SQL (applied all-or-nothing in one transaction). |
 | `spec.version` | Schema version recorded in `.status.appliedVersion` once applied. A change automatically replaces the prior Job with foreground deletion, waiting for its pods before starting the guarded apply. Lake hashes SQL plus guard; the dashboard hashes SQL. |
 | `spec.guardTable` | A `public` table that must exist for the Job to skip the apply. Default `crawler_configs`. When the schema file records migrations (`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`), the Job also requires every one of them in the database's `schema_migrations`, and otherwise applies the whole idempotent file ([#271](https://github.com/oramasearch/orama-operator/issues/271)). With no `schema_migrations` table, or a file that records none, the guard alone decides. |
+| `spec.applyEveryVersion` | Default `false`. When `true` the Job has no guard: each new `spec.version` applies the file once, for SQL that is safe to apply again (the control DB's reference-row upsert). `guardTable` is then ignored. |
 | `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `ReplacingMigrationJob` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
@@ -788,7 +802,8 @@ manages others by holding these resources.
 | `spec.providerRef` | Name of the `KubernetesClusterProvider`. Immutable. |
 | `spec.region` | The provider's name for the region, such as `westus2`. Immutable. |
 | `spec.kubernetesVersion` | `1.35` or `1.35.8`. |
-| `spec.nodePools[]` | `name`, `role` (`system` or `user`), `machineSize` (the provider's word, such as `Standard_D8as_v7`), and either `count` or `minCount` with `maxCount` (which turns on the provider's autoscaling between the two; `count` is then the starting size). Optional `zones`, `labels`, `taints`. At least one pool must be `system`, with at least one node. |
+| `spec.nodePools[]` | `name`, `role` (`system` or `user`), `machineSize` (the provider's word, such as `Standard_D8as_v7`), and either `count` or `minCount` with `maxCount` (which turns on the provider's autoscaling between the two; `count` is then the starting size). Optional `zones`, `labels`, `taints`, `sysctls`. At least one pool must be `system`, with at least one node. |
+| `spec.nodePools[].sysctls` | Optional map of Linux kernel names to integer values or string ranges, for example `{vm.max_map_count: 4194304}`. Boolean settings use integer `0` or `1`. The provider validates names, types and values; AKS refuses unsupported settings before provisioning. Only explicitly configured settings are checked for drift. See [node sysctls](infrastructure/node-sysctls.md) for supported settings and rollout limits. |
 | `spec.deletionPolicy` | **Required, no default.** `Delete` destroys the real cluster when the resource is deleted; `Retain` leaves it running. Clusters are ephemeral, so whoever writes the resource chooses. |
 | `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written (key `kubeconfig`). Default: `<name>-kubeconfig` in the namespace of the provider's credentials Secret. |
 | `spec.tags` | Attached to the cluster where the provider supports them. **For an AKS provider a tag name cannot contain `<`, `>`, `%`, `&`, `\`, `?` or `/`**, so a Kubernetes-style name such as `orama.cloud/role` is refused: the cluster is `Degraded` with the tag named, and Azure is never called. At most 50 tags, names up to 512 characters, values up to 256. |
@@ -837,7 +852,7 @@ directly, as the Cloudflare and Clerk controllers call theirs: there is no Azure
 | `spec.clusterName` | The managed cluster's name in Azure. Default: the resource's name. |
 | `spec.credentialsSecretRef` | The Azure credentials Secret, as on the provider. |
 | `spec.kubernetesVersion`, `.skuTier`, `.network`, `.upgradeChannel`, `.nodeOSUpgradeChannel`, `.workloadIdentity` | As on the provider and the abstract kind. |
-| `spec.nodePools[]` | `name`, `mode` (`System` or `User`), `vmSize`, `count`, `enableAutoScaling` with `minCount` and `maxCount`, `osDiskSizeGB`, `availabilityZones`, `nodeLabels`, `nodeTaints`. |
+| `spec.nodePools[]` | `name`, `mode` (`System` or `User`), `vmSize`, `count`, `enableAutoScaling` with `minCount` and `maxCount`, `osDiskSizeGB`, `availabilityZones`, `nodeLabels`, `nodeTaints`, `sysctls`. Sysctls use the same Linux names and value types as `KubernetesCluster`; they map to Azure `linuxOSConfig.sysctls` on creation. Unsupported settings produce `Degraded` / `InvalidSysctls` and `InSync=False` before any Azure request. |
 | `spec.deletionPolicy` | Required. `Delete` deletes the managed cluster, then the resource group **if the operator created it**; `Retain` deletes nothing. |
 | `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written. The Secret is owned by the `AksCluster`. |
 | `status.phase` / `.provisioningState` / `.powerState` | The operator's phase, and Azure's own words. `kubectl get aks`. |
@@ -847,7 +862,7 @@ directly, as the Cloudflare and Clerk controllers call theirs: there is no Azure
 | `status.message` | Why the cluster is not `Ready`, in Azure's words: the provisioning state, the operation's progress, and every error Azure reports on the operation, the cluster and each pool. The same text is the `Ready` condition's message and is copied to the `KubernetesCluster`. `kubectl get aks -o wide`, `kubectl get kcluster`. A failure is also logged by the operator as an error, once per distinct failure. |
 | `status.createdResourceGroup` | True when the operator created the resource group, and so may delete it. |
 | `status.kubeconfigWritten` | True once the kubeconfig Secret holds a credential. |
-| `InSync` condition | False when the spec asks for something the cluster does not have. **This version reports the difference and does not act on it**: a cluster is not changed after it is created. |
+| `InSync` condition | False when the spec asks for something the cluster does not have. **This version reports the difference and does not act on it**: a cluster is not changed after it is created. Configured sysctls report the pool, kernel name and desired/reported values; an omitted Azure value is reported as unknown, without guessing an OS default. `Ready` still describes provisioning. Removing a sysctl from the resource stops managing it and does not reset the live setting. |
 
 What a reconcile does: register the finalizer; ensure the resource group; create the managed
 cluster if it is absent; poll every 30 seconds until Azure reports `Succeeded`; fetch the admin
