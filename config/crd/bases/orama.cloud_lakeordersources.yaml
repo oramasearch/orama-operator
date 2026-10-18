@@ -1,0 +1,285 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: lakeordersources.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: LakeOrderSource
+    listKind: LakeOrderSourceList
+    plural: lakeordersources
+    shortNames:
+    - lorders
+    singular: lakeordersource
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.lakeSetRef
+      name: Set
+      type: string
+    - jsonPath: .status.provisioning
+      name: Provisioning
+      type: integer
+    - jsonPath: .status.readyOrders
+      name: Ready
+      type: integer
+    - jsonPath: .status.failed
+      name: Failed
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.message
+      name: Message
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          LakeOrderSource provisions the paid orders that a LakeSet's Lakes record in their control-plane
+          Postgres (lake#831, operator#634): a private warehouse is a new Lake on an existing cluster of
+          the set, in the ordered region; a dedicated cluster is a new KubernetesCluster, its platform,
+          its OramaOperator and the Lake on it. The orders are the source of truth for what it creates.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: LakeOrderSourceSpec names where the orders are read and how
+              each offer is provisioned.
+            properties:
+              dedicatedCluster:
+                description: |-
+                  DedicatedCluster says how `dedicated_cluster` orders are provisioned. Without it, every
+                  such order is marked failed with that reason.
+                properties:
+                  providerRef:
+                    description: |-
+                      ProviderRef names the KubernetesClusterProvider that creates the cluster. It is the cloud
+                      identity: on a cluster where it does not exist, or exists and is refused, a
+                      `dedicated_cluster` order is marked failed with that reason.
+                    minLength: 1
+                    type: string
+                  templateClusterRef:
+                    description: |-
+                      TemplateClusterRef names the KubernetesCluster a dedicated cluster is made like: its
+                      Kubernetes version, node pools and tags, every ClusterHelmRelease installed on it (the
+                      platform layer) and its OramaOperator. Only the region and the name differ. So an ordered
+                      cluster has the same platform and operator as every other leaf (principle 11).
+                    minLength: 1
+                    type: string
+                required:
+                - providerRef
+                - templateClusterRef
+                type: object
+              hostDomain:
+                description: |-
+                  HostDomain is the DNS zone ordered Lakes are served in: each at `<lake name>.<hostDomain>`.
+                  It must be in the zone of the template's `dnsSecretRef`.
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
+                type: string
+              lakeSetRef:
+                description: |-
+                  LakeSetRef names the LakeSet whose Lakes take orders (lake.live: `lake-prod`). The orders
+                  are read from every member's control-plane Postgres, in the `cloud_orders` table, through
+                  the member's cluster's kubeconfig. Every ordered Lake starts from this set's template and
+                  secrets, and runs on clusters of the same purpose.
+                minLength: 1
+                type: string
+              member:
+                description: |-
+                  Member is every ordered Lake's own settings over the set's template, as a set member's
+                  `spec` (Clerk, environment). The operator sets `host` and `args` itself; a Member that sets
+                  either, or LAKE_PUBLIC_HOST in `env`, is refused.
+                x-kubernetes-preserve-unknown-fields: true
+              memberSecrets:
+                description: MemberSecrets are copied into every ordered Lake's namespace,
+                  as a set member's `secrets`.
+                items:
+                  description: |-
+                    SetSecret names a Secret on this cluster that is copied into a member's namespace on its
+                    cluster before the instance is applied.
+                  properties:
+                    as:
+                      description: |-
+                        As is the Secret's name on the member's cluster. Default: Name. A member's secret replaces
+                        the set's secret that has the same name there.
+                      type: string
+                    name:
+                      minLength: 1
+                      type: string
+                    namespace:
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  - namespace
+                  type: object
+                type: array
+              pollInterval:
+                description: PollInterval is how often the orders are read. Default
+                  30s.
+                type: string
+            required:
+            - hostDomain
+            - lakeSetRef
+            type: object
+          status:
+            description: LakeOrderSourceStatus is what the orders are doing.
+            properties:
+              conditions:
+                description: 'Conditions: Ready.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              failed:
+                format: int32
+                type: integer
+              members:
+                description: Members reports each member read.
+                items:
+                  description: LakeOrderSourceMemberStatus is one member of the set,
+                    as an order source.
+                  properties:
+                    cluster:
+                      type: string
+                    message:
+                      description: Message says why it was not read.
+                      type: string
+                    name:
+                      type: string
+                    reachable:
+                      description: Reachable is true when the member's `cloud_orders`
+                        table was read on the last pass.
+                      type: boolean
+                  required:
+                  - cluster
+                  - name
+                  - reachable
+                  type: object
+                type: array
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              orders:
+                description: Orders lists the orders being provisioned.
+                items:
+                  description: LakeOrderStatus is one order this source is provisioning.
+                  properties:
+                    host:
+                      type: string
+                    id:
+                      type: string
+                    lakeSet:
+                      description: LakeSet is the LakeSet made for the order.
+                      type: string
+                    member:
+                      description: Member is the set member whose control plane holds
+                        the order.
+                      type: string
+                    message:
+                      description: Message says what the order is waiting for.
+                      type: string
+                    offer:
+                      type: string
+                    region:
+                      type: string
+                  required:
+                  - id
+                  - member
+                  - offer
+                  type: object
+                type: array
+              phase:
+                description: |-
+                  Phase is Ready (every member read, no order waiting on a fix), Progressing (orders being
+                  provisioned), Pending (the set or its clusters are not there yet) or Degraded.
+                type: string
+              provisioning:
+                description: Provisioning, ReadyOrders and Failed count this source's
+                  orders in each state.
+                format: int32
+                type: integer
+              readyOrders:
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
