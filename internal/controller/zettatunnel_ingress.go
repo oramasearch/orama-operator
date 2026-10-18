@@ -163,10 +163,13 @@ func validIngressHost(host string) bool {
 }
 
 // sourceDeniedHosts is every host (lower case) of an operator Ingress that carries nginx's
-// denylist-source-range, such as Cloud v1's /metrics deny companions (#314). The gateway cannot
+// denylist-source-range, such as Cloud v1's /metrics deny companions (#410). The gateway cannot
 // refuse a source, so it serves none of these hosts on any Ingress: the host's other routes would
 // otherwise forward the denied path too (a Prefix / reaches /metrics). An Ingress being deleted
 // still counts, so a companion on its way out never opens its host here before its main Ingress goes.
+// This is an interim guard until #575 keeps the gateway from serving Cloud v1 at all; for the engine
+// hosts, which the sandbox already admits from ingress-nginx only (bridge decision 19), it is a
+// second safeguard.
 func sourceDeniedHosts(ingresses []networkingv1.Ingress) map[string]bool {
 	denied := map[string]bool{}
 	for i := range ingresses {

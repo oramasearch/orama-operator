@@ -53,7 +53,9 @@ besides DNS, it is the DNS-01 credential of every stack's Let's Encrypt `Issuer`
 so a v1 member with a host fails to reconcile without it
 ([origin TLS](../../docs/components.md#origin-tls-ingress_tlsgo-457)). Every host in a v1 set,
 `extraHosts` included, must be a name in a Cloudflare zone that token can edit, or its certificate is
-never issued. An extra host gets no DNS record from the operator
+never issued. So each member names its own `oramadev.net` dashboard and docs hosts (`app-dev`/`docs-dev`,
+`app-eu`/`docs-eu`, `app-us`/`docs-us`); no enabled component in a v1 set has a `.local` host. An extra
+host gets no DNS record from the operator
 ([extra hosts](../../docs/crd-reference.md#extra-hosts-extrahosts)).
 The DNS records the operator makes for a member's dashboard, writer and reader hosts all go into
 the zone of the Secret's `zoneID`, so every host a member publishes must be in that one zone
@@ -71,6 +73,12 @@ a set file, committed and applied to the managing cluster; production unsuspends
 step that stops Prod 1's crons (see
 [the dashboard's scheduled jobs](../../docs/components.md#the-dashboards-scheduled-jobs)). Never
 edit, patch or create the CronJobs themselves.
+
+An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
+reference rows the operator seeds into its control database
+([`docs/components.md`](../../docs/components.md#the-control-dbs-schema)). `v1-nonprod` leaves it
+empty: no test-mode prices exist yet, so its plans carry no Stripe prices and it has no add-on
+prices. `v1-prod` needs its live-mode IDs before billing works on it.
 
 To check that the files match the cluster:
 

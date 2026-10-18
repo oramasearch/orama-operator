@@ -16,11 +16,11 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
 | **engine** | `internal/controller/engine.go`, `cloudv1_networking.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap`; with `writer.host` / `reader.host`, the `<cr>-writer` / `<cr>-reader` Ingresses with origin TLS | ✅ **done** (validated on AKS); public hosts 🟡 **implemented** ([#385](https://github.com/oramasearch/orama-operator/issues/385)), fake-client coverage, not yet proven on `v1-dev` |
-| **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); `db-migrate` init (Drizzle, [#34](https://github.com/oramasearch/orama-operator/issues/34)) runs **only for an external control DB** — when controlDB is in-cluster the operator's owned `PostgresSchema` applies the schema, and running both double-applies (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
+| **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); never runs `db-migrate`. The control DB is always in-cluster (`mode: external` is refused); the operator's `PostgresSchema` owns its schema, avoiding a second Drizzle migration (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
-| **controlDB** | `internal/controller/controldb.go` | CloudNativePG `Cluster` (primary bootstrap; read-tier replica); + an owned **`PostgresSchema`** applying the dashboard's Drizzle schema | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
-| **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data) | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
+| **controlDB** | `internal/controller/controldb.go` | Always in-cluster CloudNativePG `Cluster` (primary bootstrap; read-tier replica); `mode: external` is refused. Three owned **`PostgresSchema`s**, applied in order, give it the dashboard's Drizzle schema 0000 to 0008 and its reference rows ([#378](https://github.com/oramasearch/orama-operator/issues/378); see [controlDB](#controldb-internalcontrollercontroldbgo)) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
+| **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn, or with `applyEveryVersion` no guard) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data). The stack reports its control-DB schemas as one `controldb-schema` component | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
 | **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
 | **broker** | `internal/controller/datastore.go` | RabbitMQ `StatefulSet` + Service (5672/15672/5552), central placement; + an owned **`RabbitMQTopology`** (vhost/users/permissions/`oramacore-operations` stream) reconciled via the management API | ✅ **done** (validated on AKS); topology CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40)/[#41](https://github.com/oramasearch/orama-operator/issues/41)) — see [`datastore-crds.md`](datastore-crds.md) |
@@ -60,15 +60,21 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 ## Cloudflare DNS ownership
 
 `CloudflareDNSRecord` creates new records with comment
-`orama-operator:<namespace>/<name>` and saves the ID and exact comment in status.
+`orama-operator:<namespace>/<name>` and saves the ID and exact comment in status. A record
+several resources keep (a Clerk production instance's records, which every Lake sharing the
+instance writes) names one owner in `spec.sharedOwner`, and is created with comment
+`orama-operator:<sharedOwner>` (`clerk/<instance ID>` for Clerk). Every resource with that
+`sharedOwner` recognises the record as the operator's own; a record without the comment is
+still refused. `sharedOwner` requires `deletionPolicy: Retain`, so no single resource deletes it.
 The comment must fit Cloudflare's 100-character limit: namespace/name has at most
 85 characters. Longer markers prevent creation, without blocking legacy reads or cleanup.
 Records use the same-namespace Secret's `token` and `zoneID`, the requested proxy setting
 and automatic TTL (`1`). Empty type retains the existing IP → A, hostname → CNAME inference.
 
 Before writing, the controller reads every page of records at the desired name.
-Any foreign A, AAAA or CNAME blocks all writes, even alongside an owned record;
-TXT/MX records do not block creation. Matching markers recover ownership after a
+Any foreign A, AAAA or CNAME blocks all writes, even alongside an owned record; a
+foreign TXT blocks a TXT resource (Cloudflare would reject the duplicate on every pass).
+Other TXT/MX records do not block creation. Matching markers recover ownership after a
 failed Kubernetes status write. Multiple owned candidates are an error. Conflicts,
 invalid marker lengths and missing credentials set `ready: false` and retry after
 five minutes, preserving ownership fields. Missing credentials never trigger API calls.
@@ -79,7 +85,15 @@ receive one update preserving the existing comment. Legacy records never gain an
 ownership comment. Marked records never fall back to legacy ownership if their
 comment is removed or changed. Steady reconciliation does not rewrite DNS or status.
 
-Deletion fetches a marked record by ID and deletes it only while its comment matches
+A changed name (or type) is a different record (#529). Once the new record exists, the one
+in `status.recordID` is deleted through the same ownership check as cleanup: a marked record
+only while its comment matches, a legacy record by ID, a 404 counted as deleted. One that
+lost its comment is left, reported with `RecordNotOwned` and no longer tracked. If the delete
+fails, the old ID stays in status and the next pass retries it. `deletionPolicy: Retain`
+never deletes the old record; the resource only stops tracking it.
+
+`deletionPolicy: Retain` makes no Cloudflare call on deletion: the finalizer is released
+and the record stays. Otherwise, deletion fetches a marked record by ID and deletes it only while its comment matches
 `status.ownerComment`. Lost ownership leaves the record intact, releases the finalizer
 and emits Warning `RecordNotOwned`. Legacy records retain deletion by ID. A 404 means
 cleanup succeeded; other API failures retain the finalizer. Missing credentials with
@@ -317,9 +331,11 @@ hooks may call an arbitrary public URL, but both IPv4 and IPv6 blocks exclude pr
 metadata, carrier-grade NAT, API-server, node-address and pod-CIDR destinations. The API, node and
 pod exclusions are discovered from the cluster and retained across transient discovery failure.
 While `engine.writer.host` (primary region) or `engine.reader.host` is published, the sandbox also
-admits ingress-nginx and zetta-tunnel's ingress gateway, and nothing else, to that stack's writer
+admits ingress-nginx, and nothing else, to that stack's writer
 pods on 8080 (`allow-writer-ingress-nginx`) or reader pods on the port behind the reader Service: 80
 with Envoy, 8080 without (`allow-reader-ingress-nginx`). The rule goes away with the endpoint.
+The zetta-tunnel gateway is never admitted: Cloud v1 is not served by it (bridge [decision 19](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-17.md#19-the-public-engine-hosts-admit-ingress-nginx-only-never-the-zetta-tunnel-gateway) of
+2026-10-17); without these rules the public hosts could not be reached at all.
 
 ## Workload hardening — applied to EVERY component ([#18](https://github.com/oramasearch/orama-operator/issues/18))
 
@@ -440,7 +456,7 @@ Driven by `spec.region.role`:
   any engine object changes. Each Ingress also answers its endpoint's `extraHosts` (below), which get
   no DNS record and do not widen the audiences.
 - **`/metrics` closed on the public hosts** (`engine_metrics.go`,
-  [#314](https://github.com/oramasearch/orama-operator/issues/314)) — OramaCore serves Prometheus
+  [#410](https://github.com/oramasearch/orama-operator/pull/410)) — OramaCore serves Prometheus
   metrics on `:8080/metrics` (`http.with_prometheus: true`). Every public engine Ingress has a
   companion, `<cr>-writer-metrics` or `<cr>-reader-metrics`, that `metricsBlockIngressSpec` narrows
   from the same spec (`ingressSpec`): the same class, hosts (extra hosts included), TLS Secrets,
@@ -453,8 +469,10 @@ Driven by `spec.region.role`:
   conflict refusal, so a published host never serves `/` without its `/metrics` refused; the
   disabled-engine teardown removes it by its writer or reader label. The readers keep Envoy's 404
   as well, so they stay closed if a companion is missing. zetta-tunnel's ingress gateway cannot
-  refuse a source, so it serves no host that a companion covers
-  ([ingress](infrastructure/ingress.md#what-it-serves)): Cloud v1's engine hosts stay on ingress-nginx
+  refuse a source, so, as an interim guard until
+  [#575](https://github.com/oramasearch/orama-operator/issues/575), it serves no host that a companion
+  covers ([ingress](infrastructure/ingress.md#what-it-serves)); for the engine hosts, whose sandbox
+  rules already admit ingress-nginx only (bridge decision 19 of 2026-10-17), it is a second safeguard: Cloud v1's engine hosts stay on ingress-nginx
   (decision 5b of the 2026-10-16 decisions page), and a stack set to `ingressClassName:
   zetta-tunnel` gets no gateway address for them. Inside the cluster `/metrics` stays on each pod's
   `:8080` (`<cr>-writer:8080`, each reader at `<cr>-reader-<n>.<cr>-reader-headless:8080`; the reader Service's port 80 is the public
@@ -589,9 +607,14 @@ Driven by `spec.region.role`:
   `terminationGracePeriodSeconds: 300` (readers: 60) so k8s doesn't SIGKILL the flush
   at the default 30s.
 - **Health probes** — startup / readiness / liveness all hit `GET /health` on `:8080`
-  (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path). The **startup probe**
-  (`failureThreshold: 30 × 10s` ≈ 5 min) gates the others so a slow index-load boot
-  isn't killed; readiness gates Service routing; liveness restarts a hung pod.
+  (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path), including when Envoy
+  is enabled. The **startup probe** allows the writer **20 minutes** (`120 × 10s`)
+  and readers **40 minutes** (`240 × 10s`), matching Prod 1's startup allowances from
+  Steve's review of #406. These fixed budgets gate readiness and liveness during index
+  loading; a successful startup probe releases them immediately, without waiting out the
+  budget. A container that never becomes healthy exhausts its budget and is restarted.
+  Readiness checks every 10s and liveness every 15s, both with a 3s timeout and failure
+  threshold 3. Reconciliation updates existing workload templates to these startup budgets.
 - **Disruption budgets** — the **writer** gets a PDB with `maxUnavailable: 0` (it's a
   singleton — voluntary disruptions like node drains/autoscaler are blocked so it
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**
@@ -622,7 +645,7 @@ while the rendered file in the pod holds the real value.
 
 ## controlDB (`internal/controller/controldb.go`)
 
-The control-plane Postgres (PlanetScale in prod) as a **CloudNativePG `Cluster`**,
+The control-plane Postgres is always an in-cluster **CloudNativePG `Cluster`**,
 provisioned as an **unstructured** object so the operator stays decoupled from CNPG's
 Go types/version. Requires the CNPG operator (installed via the helmfile).
 
@@ -630,8 +653,74 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   2 / heavy 3), `10Gi` storage, `bootstrap.initdb` creating the `oramacore` database.
 - **Read tier** (`role: read`, `replicate: true`) — a **replica cluster** streaming
   from the primary region's `postgresEndpoint` (`spec.replica` + `externalClusters`).
-- `mode: external` skips creation (the app uses the external endpoint). Owner ref on
-  the `Cluster` → deleting the CR cascade-deletes it (CNPG then removes the pods/PVCs).
+- `mode: in-cluster` is the only supported mode and the default. Admission refuses
+  `external`, even when disabled or supplied an endpoint and credentials. The reconcile
+  also refuses pre-existing external-mode CRs before any control-DB client operation,
+  preserving their Cluster, schema, migration resources, Secrets and storage. The stack
+  reports `Degraded` with `Ready=False`, reason `ReconcileError`. Managed-set templates
+  are raw JSON: their merged members are refused by member-cluster admission and the
+  set reports those members as `Degraded`.
+- The dashboard never runs `db-migrate`; the operator's `PostgresSchema`s own the schema.
+  Dashboard and index-builder `DATABASE_URL` and analytics-processor render `PG_URI`
+  use `pgURIEnv` to read the CNPG-generated `<cr>-controldb-app` Secret's `uri` key.
+  Dashboard `POSTGRES_PASSWORD` uses `pgPasswordEnv` for its `password` key.
+  The analytics template contains only placeholders; its init container escapes every
+  value for sed replacement, preserving `&`, `\` and `#` in credentials and URIs.
+- The `Cluster` owner reference means deleting the CR cascade-deletes it (CNPG then
+  removes the pods/PVCs). Disabling a supported in-cluster control DB still tears it down.
+
+### The control DB's schema
+
+On a writable control DB (the primary, or any stack without `replicate: true` on a read tier) the
+operator owns three `PostgresSchema`s, one per file in the ConfigMap `<cr>-controldb-migrations`.
+Each file and its `PostgresSchema` are written only once the one before reports `phase: Applied`
+for its **current** `spec.version` and `metadata.generation`; a stale `Applied` does not release
+the next. A streaming replica receives the primary's schema and owns none.
+
+| Order | `PostgresSchema` | ConfigMap key | Guard | What it applies |
+|---|---|---|---|---|
+| 1 | `<cr>-controldb-schema` | `schema.sql` | `crawler_configs` | Drizzle migrations 0000 to 0007, `assets/dashboard-schema.sql` (version `sha256:461cc9d132ba`, unchanged) |
+| 2 | `<cr>-controldb-schema-0008` | `schema-0008.sql` | `team_migrations` | Migration 0008 (`assets/dashboard-schema-0008.sql`, vendored from `oramasearch/dashboard` branch `cloud-migration` at `8e8f9a6`), with the reference rows seeded between 0008's tables and its `teams` columns and constraints |
+| 3 | `<cr>-controldb-reference-data` | `reference-data.sql` | none (`applyEveryVersion`) | The reference rows again, with this stack's Stripe prices, re-applied whenever the rows or the prices change |
+
+- **Why a second schema for 0008.** A database built from the 0000 to 0007 file already has
+  `crawler_configs`, so the first schema's Job skips it; 0008 appended there would never reach
+  `v1-dev`, `v1-eu` or `v1-us`. Its own `PostgresSchema`, guarded on a table 0008 creates, reaches
+  every existing database on the operator's next roll and every new one after 0007. 0008 guards its
+  statements (`IF NOT EXISTS`, `duplicate_object`), so a compatible partial 0008 without
+  `team_migrations` re-applies cleanly. The guard does not prove the other 0008 objects exist: a
+  database with `team_migrations` but missing objects is drift, to be reported, not repaired.
+- **Who creates the reference rows.** The operator does
+  ([decision 7](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-16.md)).
+  `assets/dashboard-reference-rows.sql` holds Prod 1's `subscription_plans`, `stripe_addon_prices`
+  and `llms` rows, with their IDs and every column, exported read-only by
+  `hack/export-dashboard-reference-rows.sh`, without Stripe price IDs.
+  `assets/dashboard-reference-data.sql` upserts them by ID (`ON CONFLICT (id) DO UPDATE`, never a
+  delete) and fails unless the default plan `0d735744-e58e-4438-b618-97523e407cdc` exists. Inside
+  0008 it runs before `teams.subscription_plan_id` and its foreign key, so existing teams validate
+  against the default plan in the same transaction and a new team can be created; without the
+  rows, 0008 rolls back as a whole. The tenant copy tool does not copy these rows.
+- **Stripe prices are per stack**: `spec.components.controlDB.stripePrices` (test-mode IDs on
+  nonprod, live-mode IDs on `v1-prod`). They reach only `<cr>-controldb-reference-data`, so 0008's
+  SQL and version are the same on every stack. Empty leaves plans' Stripe columns NULL and seeds no
+  add-on price (`stripe_addon_prices.stripe_price_id` is NOT NULL). An ID that is not a reference
+  row fails the seed, visibly, and changes nothing.
+- **Readiness.** The stack's `controldb-schema` component is ready only when all three report their
+  current version `Applied`; otherwise its detail names the first that is not, with its phase and
+  message.
+- **A failed migration Job is retried by the operator.** The `PostgresSchema` controller never
+  recreates a failed Job of the same version, so the stack's reconciler foreground-deletes its own
+  schema's terminally failed, current-version Job (UID and resourceVersion preconditions), records
+  `orama.cloud/retried-failed-job` on the `PostgresSchema` until it applies, and the controller
+  creates a fresh Job once the pods are gone. Each Job keeps its 20-attempt backoff. Active,
+  obsolete and unowned Jobs are never touched; Lake's schemas do not pass through this path.
+- **Disabling the control DB** deletes the three `PostgresSchema`s this stack controls (their Jobs
+  go with them) and the migrations ConfigMap, with the CNPG `Cluster`.
+- **Later dashboard migrations** follow 0008: each is vendored unchanged into its own file and its
+  own `PostgresSchema` after the last, guarded on a table it creates, and applied to Prod 2 on the
+  operator's next roll, with a short planned outage when it needs one
+  ([decision 8](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-16.md)).
+  Prod 1 never receives them.
 
 **Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
@@ -719,8 +808,10 @@ never reach an Ingress. Field reference: [`crd-reference.md`](crd-reference.md#e
 
 ### Origin TLS (`ingress_tls.go`, [#457](https://github.com/oramasearch/orama-operator/issues/457))
 
-Every Ingress a stack renders is encrypted to the origin with a certificate cert-manager issues and
-renews (decision 5 of the 2026-10-16 decisions page in orama-bridge):
+Every Ingress a Cloud v1 stack renders is encrypted to the origin with a certificate cert-manager
+issues and renews (decision 5 of the 2026-10-16 decisions page in orama-bridge). Lake, Lake app,
+environment and Zetta Ingresses do not request one yet
+([#578](https://github.com/oramasearch/orama-operator/issues/578)).
 
 - **One `Issuer` per stack.** The step `originTLS` keeps a namespaced cert-manager `Issuer`
   `<cr>-letsencrypt` (Let's Encrypt production, DNS-01 through Cloudflare), owned by the stack. Its
@@ -739,13 +830,18 @@ renews (decision 5 of the 2026-10-16 decisions page in orama-bridge):
   (`Degraded`, `ReconcileError`, the message names `spec.cloudflare.apiTokenSecretRef`) and leaves
   any existing Ingress as it is. An empty rule list, an empty host or an empty issuer is an error.
 - **One Secret per host.** The Secret name depends only on the host, so another Ingress serving the
-  same host (the `/metrics` deny companions, [#314](https://github.com/oramasearch/orama-operator/issues/314))
+  same host (the `/metrics` deny companions, [#410](https://github.com/oramasearch/orama-operator/pull/410))
   names the same Secret. The companions copy their main Ingress's TLS entries (`originTLS`) without
   `applyIngressTLS`'s annotations, so cert-manager issues one certificate per host, for the main
   Ingress only. Removing a host drops its TLS entry; the other hosts keep their Secrets.
 - **Known gap:** decision 5 gives each stack its own ingress-nginx. The operator does not render one
-  yet, so a stack's Ingresses still use `spec.components.ingressClassName` (default the platform's
-  `nginx`). TLS renders on whichever class the Ingress has.
+  yet ([#573](https://github.com/oramasearch/orama-operator/issues/573)), so a stack's Ingresses
+  still use `spec.components.ingressClassName` (default the platform's `nginx`). TLS renders on
+  whichever class the Ingress has.
+- **Cloudflare.** Full (strict) is not turned on; the zones' SSL mode stays as it is (decision 15 of
+  2026-10-17). The HTTP to HTTPS redirect at the edge is declared by the operator
+  ([#527](https://github.com/oramasearch/orama-operator/issues/527),
+  [#528](https://github.com/oramasearch/orama-operator/issues/528)), never set by hand.
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.
@@ -1269,11 +1365,17 @@ instances onto managed clusters from one template, each member in its own namesp
 | `KubernetesClusterProviderReconciler` | `KubernetesClusterProvider` | Nothing; it checks the credentials and holds the provider while a cluster uses it |
 | `AksClusterReconciler` | `AksCluster` (concrete) | In Azure: a resource group and a managed cluster. In the cluster: the owned kubeconfig Secret |
 
-- **Only `azure_resource_manager.go` and `akscluster_controller.go` name Azure.** The abstract
+- **The AKS controller and its `azure_*.go` helpers own Azure API behavior.** The abstract
   controller maps the neutral fields and the provider's settings onto an `AksCluster` with a pure
   function, so the same pair always produces the same concrete resource.
 - **Create, observe and delete only.** A cluster is not changed after it exists; the `InSync`
-  condition reports what differs.
+  condition reports what differs. Node-pool `sysctls` pass from `KubernetesCluster` to
+  `AksCluster`, are validated before any Azure call, and map to typed
+  `linuxOSConfig.sysctls` fields using AKS API `2025-05-01`. Drift compares only explicit
+  settings and reports unknown values when Azure omits them. It does not probe node kernels.
+  AKS cannot change an existing pool's `linuxOSConfig`; how an existing cluster gets the setting
+  is designed, not implemented, in [node-pool replacement](infrastructure/node-pool-replacement.md).
+  See [node sysctls](infrastructure/node-sysctls.md) for the supported names.
 - **What goes on a new cluster** is installed by `ClusterHelmRelease` and `OramaOperator`, and
   its instances by `LakeSet` and `OramaCloudV1Set`
   ([`infrastructure/README.md`](infrastructure/README.md)).

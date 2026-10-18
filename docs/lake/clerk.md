@@ -84,6 +84,10 @@ Each target in the domain's `dns_targets` becomes a CloudflareDNSRecord owned by
   - the `oramadev.net` zone for testing.
 - **Set to `deletionPolicy: Retain`.** Every Lake sharing the instance writes the same records, so
   deleting one Lake must not take them from the others.
+- **Owned by the instance, with `sharedOwner: clerk/<instance ID>`.** The first Lake's resource
+  creates each record with the comment `orama-operator:clerk/<instance ID>`, and every other
+  Lake's resource recognises that comment as the operator's own. A record made by hand at one
+  of these names is never taken over: the resource reports the conflict and stays not ready.
 
 A target Clerk marks `manual_resolution_required` is not written. The pass reports it in
 `ClerkReady`.
