@@ -307,7 +307,7 @@ func (r *LakeReconciler) configureLakeClerk(
 	if instance.EnvironmentType != "production" {
 		return summary, r.pruneLakeClerkDNS(ctx, lake, ns, nil)
 	}
-	written, manual, err := r.reconcileLakeClerkDNS(ctx, lake, ns, labels, primary.targets())
+	written, manual, err := r.reconcileLakeClerkDNS(ctx, lake, ns, labels, instance.ID, primary.targets())
 	if err != nil {
 		return "", err
 	}
@@ -328,15 +328,21 @@ func lakeClerkDNSRecordName(lake *oramav1alpha1.Lake, target clerkDNSTarget) str
 // reconcileLakeClerkDNS writes each DNS record Clerk asks for as a CloudflareDNSRecord with the
 // Lake's dnsSecretRef: not proxied (Clerk must see its own targets) and Retain, because every
 // Lake sharing the instance writes the same records and deleting one Lake must not take them
-// from the others. It returns how many it wrote and those Clerk says a person must resolve.
+// from the others. The records' sharedOwner is the instance (`clerk/<instance ID>`), so the first
+// Lake's resource creates each record with that comment and every other Lake's resource
+// recognises it as the operator's own; a record made by hand is still refused (#312). It returns
+// how many it wrote and those Clerk says a person must resolve.
 func (r *LakeReconciler) reconcileLakeClerkDNS(
-	ctx context.Context, lake *oramav1alpha1.Lake, ns string, labels map[string]string, targets []clerkDNSTarget,
+	ctx context.Context, lake *oramav1alpha1.Lake, ns string, labels map[string]string, instanceID string, targets []clerkDNSTarget,
 ) (int, []string, error) {
 	if lake.Spec.DNSSecretRef == nil || lake.Spec.DNSSecretRef.Name == "" {
 		if len(targets) == 0 {
 			return 0, nil, nil
 		}
 		return 0, nil, errors.New("the production instance needs DNS records and spec.dnsSecretRef is not set")
+	}
+	if instanceID == "" && len(targets) > 0 {
+		return 0, nil, errors.New("the production instance reports no ID to mark its DNS records with")
 	}
 	keep := map[string]bool{}
 	var manual []string
@@ -356,6 +362,7 @@ func (r *LakeReconciler) reconcileLakeClerkDNS(
 			record.Spec.Content = target.Value
 			record.Spec.Proxied = false
 			record.Spec.DeletionPolicy = "Retain"
+			record.Spec.SharedOwner = "clerk/" + instanceID
 			return controllerutil.SetControllerReference(lake, record, r.Scheme)
 		}); err != nil {
 			return 0, nil, err

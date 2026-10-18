@@ -529,3 +529,11 @@ provides the address space; and how the existing cluster's workloads move.
 Every statement on this page is from Steve, 2026-10-12, recorded verbatim in
 [#351](https://github.com/oramasearch/orama-operator/issues/351). `DESIGN.md` carries it as
 decision 46.
+
+## Node-pool kernel settings
+
+`KubernetesCluster.spec.nodePools[].sysctls` commits the Linux settings a pool needs.
+`AksCluster` validates and maps them to Azure on creation, then reports configuration drift
+through `InSync`. [Node sysctls](node-sysctls.md) lists supported values, why AKS cannot
+change an existing pool, and the rollout checks; [node-pool replacement](node-pool-replacement.md)
+is the design, awaiting approval, for giving an existing cluster the setting.
