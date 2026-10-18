@@ -93,6 +93,12 @@ reconcilers: an empty database, 0000 to 0007 with an existing team, missing refe
 back and then recover, a partial 0008 without its guard, and per-stack Stripe prices. The cases check
 the committed Prod 1 reference rows and a team insert with defaults, rolled back.
 
+The control DB's cluster-row script (`TestControlDBClusterRowAgainstPostgres`, operator#443) runs
+against local Postgres with `CONTROLDB_TEST_POSTGRES=1` (connection
+`CONTROLDB_TEST_POSTGRES_URI`, default `postgres://postgres@127.0.0.1:5432/postgres`, a role that may
+create databases). It needs `psql` on `PATH`, creates a fresh `controldb_cluster_row_<hex>` database
+with the vendored dashboard schema, and drops only that database.
+
 The Lake managed-services store runs its pgx SQL against the vendored schema with
 `LAKE_SERVICES_TEST_POSTGRES=1` (connection `LAKE_SERVICES_TEST_POSTGRES_URI`, default
 `postgres://127.0.0.1:5432/postgres`). It works in a scratch schema inside one transaction that is

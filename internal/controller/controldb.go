@@ -137,6 +137,8 @@ func pgURIEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
 // reconcileControlDB provisions the always in-cluster control-plane Postgres as a
 // CloudNativePG Cluster. On the primary it bootstraps a fresh cluster; on a read tier
 // with replicate=true it stands up a replica cluster streaming from the primary peer.
+// On the primary it applies the dashboard schema, then inserts the stack's oramacore_clusters row
+// when the table is empty (controldb_cluster_row.go).
 // Requires the CloudNativePG operator to be installed (see helmfile).
 func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	db := oc.Spec.Components.ControlDB
@@ -205,7 +207,25 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 	if oc.Spec.Region.Role == "read" && db.Replicate {
 		return nil
 	}
-	return r.reconcileControlDBMigrations(ctx, oc)
+	if err := r.reconcileControlDBMigrations(ctx, oc); err != nil {
+		return err
+	}
+	// Once the schema is applied, insert the stack's c1 oramacore_clusters row into an empty table (#443).
+	return r.reconcileControlDBClusterRow(ctx, oc)
+}
+
+// postgresClientImageKey is the spec.images.overrides key of the psql-carrying image that the control
+// DB's PostgresSchema Job and the cluster-row Job run. Unset, both run defaultPostgresClientImage.
+const postgresClientImageKey = "postgres-client"
+
+// defaultPostgresClientImage is the public upstream image both Jobs ran before the key existed, kept
+// as the default so an unpinned stack does not change. Production pins a private digest in its set.
+const defaultPostgresClientImage = "postgres:16-alpine"
+
+// postgresClientImage resolves the control DB's psql image like the data stores (storeImage): the
+// postgres-client override wins, else the upstream default.
+func postgresClientImage(oc *oramav1alpha1.OramaCloudV1) string {
+	return storeImage(oc, postgresClientImageKey, defaultPostgresClientImage)
 }
 
 // controlDBSchema is one of the control DB's ordered PostgresSchemas: its name suffix, its key in
@@ -289,7 +309,8 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBMigrations(ctx context.Contex
 				Version:             schemaVersion(s.sql),
 				GuardTable:          s.guard,
 				ApplyEveryVersion:   s.everyVersion,
-				Image:               "postgres:16-alpine",
+				Image:               postgresClientImage(oc),
+				ImagePullSecrets:    imagePullSecrets(oc),
 			}
 			return controllerutil.SetControllerReference(oc, ps, r.Scheme)
 		}); err != nil {

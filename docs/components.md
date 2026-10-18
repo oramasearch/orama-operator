@@ -19,7 +19,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); never runs `db-migrate`. The control DB is always in-cluster (`mode: external` is refused); the operator's `PostgresSchema` owns its schema, avoiding a second Drizzle migration (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
-| **controlDB** | `internal/controller/controldb.go` | Always in-cluster CloudNativePG `Cluster` (primary bootstrap; read-tier replica); `mode: external` is refused. Three owned **`PostgresSchema`s**, applied in order, give it the dashboard's Drizzle schema 0000 to 0008 and its reference rows ([#378](https://github.com/oramasearch/orama-operator/issues/378); see [controlDB](#controldb-internalcontrollercontroldbgo)) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
+| **controlDB** | `internal/controller/controldb.go` | Always in-cluster CloudNativePG `Cluster` (primary bootstrap; read-tier replica); `mode: external` is refused. Three owned **`PostgresSchema`s**, applied in order, give it the dashboard's Drizzle schema 0000 to 0008 and its reference rows; + a Job inserting the `c1` `oramacore_clusters` row into an empty table ([#443](https://github.com/oramasearch/orama-operator/issues/443)) ([#378](https://github.com/oramasearch/orama-operator/issues/378); see [controlDB](#controldb-internalcontrollercontroldbgo)) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
 | **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn, or with `applyEveryVersion` no guard) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data). The stack reports its control-DB schemas as one `controldb-schema` component | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
 | **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
@@ -274,8 +274,9 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   Secret, and the configured replicas return once it is valid. The other consumers need only the
   reference's name to build their pods; without one they are not created or changed, and Ready
   reports `MasterAPIKeyRefMissing`. The value must equal the target control database's
-  `oramacore_clusters.master_api_key`, which the dashboard reads; the operator does not write that
-  row.
+  `oramacore_clusters.master_api_key`, which the dashboard reads. On a control DB with no row the
+  operator inserts the `c1` row with this key and never changes it afterwards
+  ([controlDB](#controldb-internalcontrollercontroldbgo)).
 - **Automatic rolls.** Each workload that reads one of these Secrets carries
   `orama.cloud/credentials-hash`, the data hash of exactly the Secrets it reads (`secretDataHash`,
   shared with the LLM key hash). The controller maps every Secret event, owned or copied, to each CR
@@ -715,6 +716,45 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   value for sed replacement, preserving `&`, `\` and `#` in credentials and URIs.
 - The `Cluster` owner reference means deleting the CR cascade-deletes it (CNPG then
   removes the pods/PVCs). Disabling a supported in-cluster control DB still tears it down.
+
+- **psql image** — the schema Jobs (`PostgresSchema` `spec.image`) and the cluster-row Job run
+  `spec.images.overrides.postgres-client`, else `postgres:16-alpine` from Docker Hub's public
+  library, with the stack's `spec.images.pullSecretName`. Production pins the key to a private
+  `oramasearch/*` digest in its set file. The other helper images get their keys in
+  [#569](https://github.com/oramasearch/orama-operator/issues/569).
+- **Cluster row** ([#443](https://github.com/oramasearch/orama-operator/issues/443),
+  `controldb_cluster_row.go`) — the dashboard places a project on an `oramacore_clusters` row, so a
+  control DB without one cannot create projects. Cluster rows are never copied from Prod 1: each
+  stack's only row is the operator's `c1` (orama-bridge `docs/projects/orama-cloud-v1/decisions-2026-10-16.md`,
+  decision 9). Once both public hosts (`engine.writer.host`, `engine.reader.host`) are set, every control-DB `PostgresSchema` (0000 to 0007, 0008 and the reference rows) is current and the master key is valid, the operator
+  runs the Job `<cr>-controldb-cluster-row`, which inserts one row **only when the table has no row
+  at all**, soft-deleted rows included: `name` = the CR name, `cluster_prefix` = `c1` (the only
+  prefix the `collections.orama.com` worker routes, so customers' read keys keep working),
+  `writer_url` = `https://<engine.writer.host>`, `reader_url` = `https://<engine.reader.host>` (never
+  an in-cluster URL: without both hosts the operator waits, `WaitingForPublicHosts`, because the row is
+  written once), `master_api_key` from `spec.masterAPIKeySecretRef` at the time of the insert (a
+  rotated key does not update it), `cluster_reader_replica_count` =
+  `engine.reader.replicas`, `cluster_writer_count` = 1, and both region columns
+  `["<spec.region.name>"]`. The dashboard mints the writer's JWT audience from `writer_url`, so with
+  `writer.orama.ing` the writer's only audience is `https://writer.orama.ing`, which
+  `engine.writer.jwt.audiences` already has to contain. The check and the insert run in one
+  transaction under a table lock; a run cut off mid-transaction rolls back whole. A table that has a
+  row is never updated or deleted; the Job only logs `already has a row; left unchanged`. No row is
+  inserted for a disabled control DB, a read region, or a stack without the engine.
+  Values reach `psql` from the environment, so the key is in no argv, log or status. The row's `id`
+  is generated: with one row, a dashboard with `ORAMACORE_PLACEMENT_CLUSTER_ID` unset places projects
+  on it.
+  - **Retries.** Inside the Job the pod is retried 6 times with the Job controller's exponential
+    back-off, within a 30-minute deadline. A Job that still fails is deleted by the operator 5
+    minutes after its failure (foreground, so two runs never overlap) and created again on the next
+    reconcile, which the 20-second readiness requeue drives while `ClusterRowReady` is not `True`.
+    An unfinished Job built from an older template (another image, host or key Secret) is replaced
+    at once. A succeeded Job is kept as the record and never re-run. No Job is ever deleted by hand.
+  - **Status.** The CR's `ClusterRowReady` condition reports the Job (`WaitingForPublicHosts`,
+    `WaitingForSchema`, `WaitingForMasterAPIKey`, `Inserting`, `JobFailed` with the retry time,
+    `RowPresent`). It does not change the phase. `RowPresent` reports the Job, not a live read of the
+    table: the Job is not re-run, so a control DB emptied later (a restore) still shows it, and its
+    message says so.
 
 ### The control DB's schema
 

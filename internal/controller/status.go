@@ -217,10 +217,11 @@ func replicasOf(p *int32) int32 {
 
 // applyReadiness rolls the per-component states up into the CR status: phase (Ready when every
 // component is ready; Degraded when one regressed after having been Ready; else Progressing),
-// componentsReady ("n/total"), the per-component list, and a standard Ready condition. A non-nil
-// blocked (validateMasterAPIKey) is the Ready condition instead, with phase Degraded, whatever the
-// components report. Returns whether the stack is fully ready. Writes the status subresource ONLY on
-// a real transition.
+// componentsReady ("n/total"), the per-component list, a standard Ready condition, and the
+// EngineSidesSeparated and ClusterRowReady conditions. A non-nil blocked (validateMasterAPIKey) is the
+// Ready condition instead, with phase Degraded, whatever the components report. Returns whether the
+// stack is fully ready and its cluster row present, which ends the readiness requeue. Writes the
+// status subresource ONLY on a real transition.
 func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, blocked *metav1.Condition) bool {
 	comps := r.componentReadiness(ctx, oc)
 	ready, notReady := 0, []string(nil)
@@ -257,6 +258,18 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 		conds = append(conds, engineSidesCondition(oc))
 	} else {
 		drop = append(drop, engineSidesConditionType)
+	}
+	// ClusterRowReady (#443) leaves the phase alone, but while it is not True the stack is not settled,
+	// so the readiness requeue keeps running and a failed row Job is replaced after its back-off.
+	switch rowCondition, err := r.controlDBClusterRowCondition(ctx, oc, blocked); {
+	case err != nil:
+		log.FromContext(ctx).Error(err, "read control DB cluster-row Job")
+		allReady = false
+	case rowCondition != nil:
+		conds = append(conds, *rowCondition)
+		allReady = allReady && rowCondition.Status == metav1.ConditionTrue
+	default:
+		drop = append(drop, clusterRowReadyCondition)
 	}
 	r.setStatus(ctx, oc, phase, fmt.Sprintf("%d/%d", ready, total), comps, drop, conds...)
 	return allReady
