@@ -129,9 +129,14 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		"telemetry-worker",
 	)
 	openAIDecrypter := oramaCloudComponentSelector(oc, "openai-decrypter")
-	postgresSchema := metav1.LabelSelector{MatchLabels: map[string]string{
-		"orama.cloud/postgresschema": oc.Name + "-controldb-schema",
-	}}
+	// Every control-DB schema's migration Job, not only the first (#628).
+	schemaNames := make([]string, 0, len(controlDBSchemaSuffixes))
+	for _, suffix := range controlDBSchemaSuffixes {
+		schemaNames = append(schemaNames, oc.Name+suffix)
+	}
+	postgresSchema := metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+		Key: "orama.cloud/postgresschema", Operator: metav1.LabelSelectorOpIn, Values: schemaNames,
+	}}}
 	cnpgPods := metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 		{
 			Key:      "cnpg.io/cluster",

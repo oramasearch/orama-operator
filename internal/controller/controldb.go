@@ -236,6 +236,11 @@ type controlDBSchema struct {
 	everyVersion            bool
 }
 
+// controlDBSchemaSuffixes are the control DB's PostgresSchema name suffixes, in apply order. The
+// network sandbox admits each one's migration Job to Postgres, so a schema added here is reachable
+// (#628); controlDBSchemas must list the same suffixes, which TestControlDBSchemaSuffixesMatch holds.
+var controlDBSchemaSuffixes = []string{"-controldb-schema", "-controldb-schema-0008", "-controldb-reference-data"}
+
 // controlDBSchemas lists the control DB's schemas in apply order. Each is created only after every
 // one before it reports its current version Applied, because each builds on the tables of the last.
 func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error) {

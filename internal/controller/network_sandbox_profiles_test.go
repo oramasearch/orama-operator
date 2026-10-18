@@ -472,3 +472,74 @@ func TestOramaCloudAnalyticsJobsReachTheirTargets(t *testing.T) {
 		}
 	}
 }
+
+// TestControlDBSchemaSuffixesMatch holds controlDBSchemaSuffixes to the schemas controlDBSchemas
+// creates, so the sandbox admits every one's migration Job (#628).
+func TestControlDBSchemaSuffixesMatch(t *testing.T) {
+	schemas, err := controlDBSchemas(newOCV1(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range schemas {
+		got = append(got, s.suffix)
+	}
+	if !reflect.DeepEqual(got, controlDBSchemaSuffixes) {
+		t.Fatalf("controlDBSchemas suffixes = %v, controlDBSchemaSuffixes = %v", got, controlDBSchemaSuffixes)
+	}
+}
+
+// TestEveryControlDBSchemaJobReachesPostgres checks each control-DB schema's migration Job has both
+// its egress to the CNPG pods and the control DB's ingress from it (#628: 0008 waited for the
+// database for hours because only the first schema was admitted).
+func TestEveryControlDBSchemaJobReachesPostgres(t *testing.T) {
+	ctx := context.Background()
+	scheme := ocv1TestScheme(t)
+	stack := newOCV1(nil)
+	objects := append([]client.Object{stack}, sandboxDiscoveryObjects()...)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	reconciler := &OramaCloudV1Reconciler{Client: kube, Scheme: scheme, APIReader: kube, OperatorNamespace: "orama-system"}
+	if err := reconciler.reconcileNetworkSandbox(ctx, stack); err != nil {
+		t.Fatal(err)
+	}
+	var sandbox oramav1alpha1.NetworkSandbox
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: stack.Namespace, Name: networkSandboxName}, &sandbox); err != nil {
+		t.Fatal(err)
+	}
+	cnpg := labels.Set{"cnpg.io/cluster": stack.Name + "-controldb"}
+	matches := func(sel *metav1.LabelSelector, set labels.Set) bool {
+		if sel == nil {
+			return false
+		}
+		s, err := metav1.LabelSelectorAsSelector(sel)
+		return err == nil && s.Matches(set)
+	}
+	for _, suffix := range controlDBSchemaSuffixes {
+		job := labels.Set{"app.kubernetes.io/instance": stack.Name, "app.kubernetes.io/managed-by": "orama-cloud-v1-operator",
+			"orama.cloud/postgresschema": stack.Name + suffix}
+		var egress, ingress bool
+		for _, a := range sandbox.Spec.Policies {
+			if matches(&a.Spec.PodSelector, job) {
+				for _, r := range a.Spec.Egress {
+					for _, p := range r.To {
+						if matches(p.PodSelector, cnpg) {
+							egress = true
+						}
+					}
+				}
+			}
+			if matches(&a.Spec.PodSelector, cnpg) {
+				for _, r := range a.Spec.Ingress {
+					for _, p := range r.From {
+						if matches(p.PodSelector, job) {
+							ingress = true
+						}
+					}
+				}
+			}
+		}
+		if !egress || !ingress {
+			t.Errorf("schema %s: egress to Postgres %t, Postgres ingress from it %t", stack.Name+suffix, egress, ingress)
+		}
+	}
+}
