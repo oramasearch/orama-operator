@@ -68,39 +68,19 @@
 #                                  <- v1-eu-config ConfigMap (config.go reconcileBootstrap)
 #   index-builder service URLs and Cloudflare KV namespace IDs <- ingestion.go indexBuilderEnv, owned KV CRs
 #
-# Blocked (#569 helper image overrides, #570 generated credentials, #571 per-key third-party Secrets,
+# Blocked (#570 generated credentials, #571 per-key third-party Secrets,
 # #572 derived dashboard values, #573 the stack's own ingress-nginx, #574 HPES, #575 no tunnel ingress,
 # #562 the Redis HTTP shim): required values this file cannot carry yet. Each needs its prerequisite first; none is
 # worked around here, and no internal password is copied to bypass a missing generator.
-#   Images: no image is pinned yet. Every image comes from our private registry (oramasearch/*),
-#     pinned by digest, so the stack can run air-gapped; nothing is pulled from a public registry.
-#     Steve builds and pushes them as part of his review (bridge decisions 2026-10-17 #20).
-#     - oramacore-writer, oramacore-reader: the v1.2.39 side-only images (#308, orama-cloud-v1-bridge#5).
-#       Without both overrides the engine runs the combined image.
+#   Images: not pinned by digest and not mirrored privately (Steve, 2026-10-17). Our own images run by
+#     their release tags (main-<sha> or vX.Y.Z), which never move. Upstream images run on exact version
+#     tags, which the operator's defaults now carry (orama-operator#609). Still to build before an apply:
+#     - oramacore-writer, oramacore-reader: the v1.2.39 side-only images (#308, orama-cloud-v1-bridge#5),
+#       and the reader with oramacore#340/#341 (#597). Without both overrides the engine runs the combined
+#       image.
 #     - dashboard: the Clerk build (orama-bridge#180, #187).
 #     - analytics-processor: the build with the 0.0.0.0:8080 listener patch (#421).
-#     - docs, index-builder, harvest-master, harvest, workers, index-shared-worker, large-index-worker,
-#       openai-decrypter, telemetry-worker: production builds, published privately.
 #     - HPES: the component and its image (decisions 2026-10-16 #3, 2026-10-17 #5; #574).
-#     - Upstream images, to mirror into private oramasearch/* repositories and then pin by their private
-#       digest. Upstream index digests read 2026-10-17:
-#         analytics        clickhouse/clickhouse-server:24.8       sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b
-#         cache            redis:7-alpine                          sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-#         broker           rabbitmq:3.13-management                sha256:e582c0bc7766f3342496d8485efb5a1df782b5ce3886ad017e2eaae442311f69
-#         search           typesense/typesense:0.25.2              sha256:1ddbb28a52b0b8be31237ec718df1c9bc895c5626b26c10fa3f340f684e81488
-#         harvest-mongo    mongo:7                                 sha256:c53852c00c23ca9f23fc39690350ffa9a80e3642fe8f96879726d8da0abe80a7
-#         dashboard-crons  curlimages/curl:8.10.1                  sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
-#         analytics-import curlimages/curl:8.10.1 (the analytics import CronJob, #421)
-#                                                                  sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
-#         embeddings       oramasearch/oramacore-ai-server:v1.1.108 (public) sha256:fd6926935520463c5fc3c2d3893a7f1967155a5a38e49056b17ecbf8a016c3a8
-#       These also need an override key, which the operator does not read yet (#569):
-#         busybox:1.37 (engine wait-for-broker and render-config, store render-config)
-#                                                                  sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
-#         envoyproxy/envoy:v1.31.2 (reader sidecar)                sha256:c56804e9fc8d5184c45862ad851173a925ff383151cb94156f86bed047da29bc
-#         selenium/standalone-chromium:latest                      sha256:c7c17cd79c62819a8329df00e610dbc4073c279da034a6f37135d454eb0d8870
-#         postgres:16-alpine (PostgresSchema Job, `c1` row Job #447) sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
-#         ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie (CNPG 1.30.0's default; the Cluster names no image)
-#                                                                  sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
 #   Credentials the operator does not generate yet, all of which only have to agree inside the stack:
 #     the one ClickHouse password (analytics, analytics processor, dashboard, workers), TYPESENSE_API_KEY
 #     (search and index-builder), HARVEST_SIGN (index-builder, harvest-master, harvest workers),
