@@ -40,10 +40,8 @@
 #                                                        dashboard, through components.dashboard.envFrom (#311).
 #                                                        It never holds DATABASE_URL, POSTGRES_PASSWORD, JWT_*,
 #                                                        or MASTER_API_KEY: the operator owns them and refuses them.
-# Copied, v1-us member only:
-#   v1-us-master-api-key    MASTER_API_KEY               masterAPIKeySecretRef -> v1-us's engine and its consumers.
-#                                                        Holds the key v1-us runs today; creating it on the
-#                                                        managing cluster needs Steve's consent.
+# v1-us: nothing copied. Its master key is generated (#615) until the US migration names Prod 1's.
+#
 #   Not copied: AIRBYTE_WEBHOOK_SECRET and every AIRBYTE_* (Airbyte removed, bridge decisions 2026-10-16
 #   #12a); Firebase keys (sign-in is Clerk before the cutover, decisions #1, #2).
 #   Sign-in comes from the Clerk keys in v1-prod-dashboard-env (#311, decisions 2026-10-16 #1, #2).
@@ -241,14 +239,10 @@ spec:
   - clusterRef: orama-production-cluster-03
     name: v1-us
     namespace: v1-us
-    # v1-us's own current engine master key. Since #411 a stack without masterAPIKeySecretRef holds
-    # its writer and readers at zero replicas, so the member names a copy of the key it runs today.
-    secrets:
-    - name: v1-us-master-api-key
-      namespace: orama-system
+    # No masterAPIKeySecretRef: v1-us has no copied data, so the operator generates its master key
+    # (v1-us-master-api-key in its own namespace, #615). It names Prod 1's key when the US migration
+    # copies tenants into it.
     spec:
-      masterAPIKeySecretRef:
-        name: v1-us-master-api-key
       cloudflare:
         manageLoadBalancers: true
       components:

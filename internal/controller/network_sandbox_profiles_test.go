@@ -16,6 +16,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -399,5 +400,75 @@ func TestNetworkSandboxPreservesDiscoveredPathsDuringReadFailure(t *testing.T) {
 		"allow-controldb-backup-public-https",
 	} {
 		allowanceByName(t, &sandbox, name)
+	}
+}
+
+// TestOramaCloudAnalyticsJobsReachTheirTargets checks every path #419 and #421 added has both its
+// egress and its ingress allowance (#616): the retention Job to ClickHouse's native port, the import
+// CronJob to the analytics processor, and the processor to every reader.
+func TestOramaCloudAnalyticsJobsReachTheirTargets(t *testing.T) {
+	ctx := context.Background()
+	scheme := ocv1TestScheme(t)
+	stack := newOCV1(nil)
+	objects := append([]client.Object{stack}, sandboxDiscoveryObjects()...)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	reconciler := &OramaCloudV1Reconciler{Client: kube, Scheme: scheme, APIReader: kube, OperatorNamespace: "orama-system"}
+	if err := reconciler.reconcileNetworkSandbox(ctx, stack); err != nil {
+		t.Fatalf("reconcile Cloud v1 NetworkSandbox: %v", err)
+	}
+	var sandbox oramav1alpha1.NetworkSandbox
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: stack.Namespace, Name: networkSandboxName}, &sandbox); err != nil {
+		t.Fatal(err)
+	}
+	selects := func(sel *metav1.LabelSelector, component string) bool {
+		if sel == nil {
+			return false
+		}
+		s, err := metav1.LabelSelectorAsSelector(sel)
+		return err == nil && s.Matches(labels.Set(labelsFor(stack, component)))
+	}
+	hasPort := func(ports []networkingv1.NetworkPolicyPort, port int32) bool {
+		for _, p := range ports {
+			if p.Port != nil && p.Port.IntVal == port {
+				return true
+			}
+		}
+		return false
+	}
+	for _, path := range []struct {
+		from, to string
+		port     int32
+	}{
+		{"analytics-retention", "analytics", 9000},
+		{analyticsImportComponent, "analytics-processor", 8080},
+		{"analytics-processor", "reader", 8080},
+	} {
+		var egress, ingress bool
+		for _, allowance := range sandbox.Spec.Policies {
+			if selects(&allowance.Spec.PodSelector, path.from) {
+				for _, rule := range allowance.Spec.Egress {
+					for _, peer := range rule.To {
+						if selects(peer.PodSelector, path.to) && hasPort(rule.Ports, path.port) {
+							egress = true
+						}
+					}
+				}
+			}
+			if selects(&allowance.Spec.PodSelector, path.to) {
+				for _, rule := range allowance.Spec.Ingress {
+					for _, peer := range rule.From {
+						if selects(peer.PodSelector, path.from) && hasPort(rule.Ports, path.port) {
+							ingress = true
+						}
+					}
+				}
+			}
+		}
+		if !egress {
+			t.Errorf("no egress allowance from %s to %s:%d", path.from, path.to, path.port)
+		}
+		if !ingress {
+			t.Errorf("no ingress allowance to %s:%d from %s", path.to, path.port, path.from)
+		}
 	}
 }

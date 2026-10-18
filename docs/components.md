@@ -265,15 +265,16 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   permissions. Importing an existing user sets its password, so a changed `<cr>-broker-admin`
   takes effect when the broker rolls, without a reset or a volume deletion. Streams and per-service
   users stay with `RabbitMQTopology`.
-- **The master key is required.** While the engine is enabled and the reference, its Secret or its
-  key is missing, or the value is empty, starts with `dev-` or holds a line break, the writer and
+- **The master key: named, or generated.** A stack that names no `spec.masterAPIKeySecretRef` gets
+  `<cr>-master-api-key`, a random 48-character hex `MASTER_API_KEY` created once and never replaced
+  (#615); a fresh stack has no copied data, so any random key is right. Production names its Secret to
+  carry Prod 1's key. While the engine is enabled and a named Secret or its key is missing, or the value is empty, starts with `dev-` or holds a line break, the writer and
   readers are not created, or are scaled to zero with their volumes kept, and `Ready=False` with
-  phase `Degraded` names the cause (`MasterAPIKeyRefMissing`, `MasterAPIKeySecretMissing`,
+  phase `Degraded` names the cause (`MasterAPIKeySecretMissing`,
   `MasterAPIKeyKeyMissing`, `MasterAPIKeyEmpty`, `MasterAPIKeyPlaceholder`, `MasterAPIKeyInvalid`)
   by namespace, Secret and key. The CR is checked again every 20 seconds and on every event of that
-  Secret, and the configured replicas return once it is valid. The other consumers need only the
-  reference's name to build their pods; without one they are not created or changed, and Ready
-  reports `MasterAPIKeyRefMissing`. The value must equal the target control database's
+  Secret, and the configured replicas return once it is valid. The other consumers read the same
+  Secret, named or generated. The value must equal the target control database's
   `oramacore_clusters.master_api_key`, which the dashboard reads. On a control DB with no row the
   operator inserts the `c1` row with this key and never changes it afterwards
   ([controlDB](#controldb-internalcontrollercontroldbgo)).
