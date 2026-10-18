@@ -169,7 +169,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"The dashboard uses control Postgres, cache, analytics, search, OramaCore, Keycloak and the Airbyte API.",
+			"The dashboard uses control Postgres, cache, analytics, search, OramaCore and Keycloak.",
 			oramaCloudEgressPolicy(
 				"allow-dashboard-egress",
 				dashboard,
@@ -180,7 +180,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 				egressTo(writer, 8080),
 				egressTo(readerPods, 80, 8080),
 				egressTo(keycloak, 8080),
-				airbyteEgressRule(),
 			),
 		),
 		sandboxAllowance(
@@ -205,7 +204,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"Index builder uses dashboard, cache, control Postgres, DISCO, search, decrypter, HARVEST and Airbyte APIs.",
+			"Index builder uses dashboard, cache, control Postgres, DISCO, search, decrypter and HARVEST APIs.",
 			oramaCloudEgressPolicy(
 				"allow-index-builder-egress",
 				indexBuilder,
@@ -216,7 +215,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 				egressTo(search, 8108),
 				egressTo(openAIDecrypter, 8080),
 				egressTo(harvestMaster, 8080),
-				airbyteEgressRule(),
 			),
 		),
 		sandboxAllowance(
@@ -424,23 +422,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			searchWorkers,
 			cnpgPods,
 		)...)
-		if oc.Spec.Components.ControlDB.Mode == "external" {
-			externalDBClients := oramaCloudComponentSelector(
-				oc,
-				"dashboard",
-				"index-builder",
-				"analytics-processor",
-				"pgadmin",
-			)
-			allowances = append(allowances, sandboxAllowance(
-				"Control database clients reach a configured external Postgres endpoint on public TCP 5432; the destination is inferred because the URI is stored in a Secret.",
-				oramaCloudEgressPolicy(
-					"allow-control-clients-external-postgres",
-					externalDBClients,
-					publicEgressRule(publicPeers, 5432),
-				),
-			))
-		}
 	} else {
 		publicPolicyNames := []string{
 			"allow-engine-public-internet",
@@ -452,9 +433,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			"allow-embeddings-public-https",
 			"allow-search-workers-public-https",
 			"allow-controldb-primary-replication",
-		}
-		if oc.Spec.Components.ControlDB.Mode == "external" {
-			publicPolicyNames = append(publicPolicyNames, "allow-control-clients-external-postgres")
 		}
 		preserved, preserveErr := existingSandboxAllowances(
 			ctx,
@@ -489,16 +467,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		internetErr = nil
 	}
 	return errors.Join(apiErr, internetErr, reconcileErr)
-}
-
-func airbyteEgressRule() networkingv1.NetworkPolicyEgressRule {
-	return networkingv1.NetworkPolicyEgressRule{
-		To: []networkingv1.NetworkPolicyPeer{{
-			NamespaceSelector: namespaceNameSelector("airbyte"),
-			PodSelector:       &metav1.LabelSelector{},
-		}},
-		Ports: tcpPorts(8001),
-	}
 }
 
 func publicEgressRule(peers []networkingv1.NetworkPolicyPeer, ports ...int32) networkingv1.NetworkPolicyEgressRule {

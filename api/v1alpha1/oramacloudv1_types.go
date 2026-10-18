@@ -7,6 +7,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -37,6 +38,16 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:default={default: groq}
 	LLM LLMSpec `json:"llm,omitempty"`
 
+	// MasterAPIKeySecretRef names the Secret, in this resource's namespace, that holds the engine
+	// master API key. Every component that reads MASTER_API_KEY takes it from here: the writer's
+	// config, analytics-processor, index-builder, workers, the dashboard and the e2e runner. The
+	// operator never creates or changes it. While the engine is enabled and this reference, its
+	// Secret or its key is missing, empty or a dev-* value, the writer and readers are held at zero
+	// replicas and Ready names the cause. The value must equal the target control database's
+	// oramacore_clusters.master_api_key.
+	// +optional
+	MasterAPIKeySecretRef *MasterAPIKeySecretRef `json:"masterAPIKeySecretRef,omitempty"`
+
 	// Cloudflare keeps Cloudflare as the edge / geo load-balancer; the operator
 	// reconciles CF resources (DNS records, worker routes) via the CF API based on
 	// this config — provisioning/deprovisioning as components change.
@@ -56,6 +67,16 @@ type OramaCloudV1Spec struct {
 	// fresh install answers queries out of the box.
 	// +optional
 	DemoSeed bool `json:"demoSeed,omitempty"`
+}
+
+// MasterAPIKeySecretRef is a key of a Secret in the OramaCloudV1's namespace.
+type MasterAPIKeySecretRef struct {
+	// Name is the Secret's name.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Key is the Secret key that holds the master API key. Default: MASTER_API_KEY.
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 // RegionSpec selects the cluster role.
@@ -105,32 +126,61 @@ type ImagesSpec struct {
 }
 
 // LLMSpec configures the answer/RAG language-model providers. v1 offers MULTIPLE
-// providers at once (Groq/OpenAI/Anthropic in prod) and end users/customers pick per
-// query — so this is a list, not a single choice. Keys come from the engine/workers/
-// dashboard scoped secrets (or a per-provider apiKeySecretRef).
+// providers at once (Prod 1 runs OpenAI, Google, Groq and Anthropic) and end users/customers pick
+// per query, so this is a list, not a single choice. Keys come from <cr>-engine-secret under
+// <PROVIDER>_API_KEY, or from a provider's apiKeySecretRef.
 type LLMSpec struct {
-	// Providers available for selection. If empty, defaults to groq + openai + anthropic.
+	// Providers available for selection. Each renders one ai_server.remote_llms entry whose default
+	// model is the provider's first model. If empty, defaults to Prod 1's set: openai (gpt-5.2),
+	// google (gemini-2.0-flash-001), groq (openai/gpt-oss-120b), anthropic (claude-sonnet-4-5).
 	// +optional
 	Providers []LLMProvider `json:"providers,omitempty"`
-	// Default provider used when a request doesn't name one.
+	// Default provider used when a request doesn't name one. It must be one of the providers; the
+	// engine sends such requests to its built-in URL with its first model and key. Empty means groq.
 	// +kubebuilder:default=groq
 	Default string `json:"default,omitempty"`
+	// AutomaticEmbeddingsSelector is the provider and model the engine asks to choose which document
+	// properties to embed for collections with automatic embeddings. Its provider must be one of the
+	// providers. Unset renders no selector, including on a CR without spec.llm.
+	// +optional
+	AutomaticEmbeddingsSelector *LLMModelRef `json:"automaticEmbeddingsSelector,omitempty"`
 }
 
 // LLMProvider is one selectable LLM backend.
 type LLMProvider struct {
 	// Name of the provider.
-	// +kubebuilder:validation:Enum=groq;openai;anthropic;vllm
+	// +kubebuilder:validation:Enum=groq;openai;anthropic;google;vllm
 	Name string `json:"name"`
-	// Models this provider offers (the catalog the end user can pick from).
+	// Models this provider offers. The first is the provider's default model; the list does not
+	// restrict the model a request names.
 	// +optional
 	Models []string `json:"models,omitempty"`
-	// APIKeySecretRef overrides the default per-component key for this provider.
+	// APIKeySecretRef takes this provider's key from <PROVIDER>_API_KEY (for example GOOGLE_API_KEY)
+	// in a Secret in the CR's namespace instead of <cr>-engine-secret. The operator reads it and
+	// never creates or changes it.
 	// +optional
-	APIKeySecretRef *corev1.LocalObjectReference `json:"apiKeySecretRef,omitempty"`
+	APIKeySecretRef *LLMKeySecretRef `json:"apiKeySecretRef,omitempty"`
 	// GPU requests a GPU for an in-cluster vLLM provider (name=vllm).
 	// +optional
 	GPU bool `json:"gpu,omitempty"`
+}
+
+// LLMKeySecretRef names the Secret, in the CR's namespace, that holds a provider's API key under
+// <PROVIDER>_API_KEY.
+type LLMKeySecretRef struct {
+	// Name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
+// LLMModelRef is one model of one remote provider.
+type LLMModelRef struct {
+	// Provider of the model.
+	// +kubebuilder:validation:Enum=groq;openai;anthropic;google
+	Provider string `json:"provider"`
+	// Model name, sent to the provider as is.
+	// +kubebuilder:validation:MinLength=1
+	Model string `json:"model"`
 }
 
 // CloudflareSpec configures the operator's Cloudflare API reconciler. DNS + load
@@ -177,17 +227,19 @@ type ComponentsSpec struct {
 	// +optional
 	IngressClassName string `json:"ingressClassName,omitempty"`
 
-	Dashboard ToggleWithHost `json:"dashboard,omitempty"` // app.orama.com (Next.js)
+	Dashboard DashboardSpec  `json:"dashboard,omitempty"` // app.orama.com (Next.js)
 	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
-	ControlDB DataStoreSpec  `json:"controlDB,omitempty"` // Postgres control plane
-	PgAdmin   Toggle         `json:"pgAdmin,omitempty"`   // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
-	Cache     DataStoreSpec  `json:"cache,omitempty"`     // Redis (+ QStash shim)
-	Broker    DataStoreSpec  `json:"broker,omitempty"`    // RabbitMQ
-	Search    DataStoreSpec  `json:"search,omitempty"`    // Typesense hosted-search clusters
-	Disco     Toggle         `json:"disco,omitempty"`     // DISCO semantic cache
-	Workers   WorkersSpec    `json:"workers,omitempty"`   // the ported CF workers (one bundled image)
+	// ControlDB is the Postgres control plane, always in-cluster.
+	// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode == 'in-cluster'",message="controlDB.mode external is not supported: the control DB is always in-cluster"
+	ControlDB ControlDBSpec `json:"controlDB,omitempty"`
+	PgAdmin   Toggle        `json:"pgAdmin,omitempty"` // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
+	Cache     DataStoreSpec `json:"cache,omitempty"`   // Redis (+ QStash shim)
+	Broker    DataStoreSpec `json:"broker,omitempty"`  // RabbitMQ
+	Search    DataStoreSpec `json:"search,omitempty"`  // Typesense hosted-search clusters
+	Disco     Toggle        `json:"disco,omitempty"`   // DISCO semantic cache
+	Workers   WorkersSpec   `json:"workers,omitempty"` // the ported CF workers (one bundled image)
 
 	// Additional v1 components (gap fill — techops-docs issues #5–#7):
 	AnalyticsProcessor Toggle `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
@@ -196,8 +248,6 @@ type ComponentsSpec struct {
 	// kept for API compatibility; setting it has no effect.
 	OramasearchApp ToggleWithHost `json:"oramasearchApp,omitempty"`
 	SearchWorkers  Toggle         `json:"searchWorkers,omitempty"` // index-manager hosted-search serving workers
-	// Airbyte (#4) is a heavy multi-service platform → installed via its Helm chart (helmfile
-	// platformDeps), not a CR component; the dashboard/index-builder reference its endpoint.
 }
 
 // EngineSpec configures the OramaCore engine.
@@ -211,7 +261,25 @@ type EngineSpec struct {
 	Envoy bool `json:"envoy,omitempty"`
 }
 
+// VolumeSpec configures a new volume and operator-managed increases to existing storage.
+// StatefulSet claim templates are immutable; existing claims grow independently.
+type VolumeSpec struct {
+	// Size is a positive Kubernetes quantity, compared numerically. Omission resolves
+	// to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))",message="size must be a positive Kubernetes quantity"
+	Size *resource.Quantity `json:"size,omitempty"`
+	// StorageClassName selects a class at creation. Omission uses the cluster default
+	// for new volumes and retains the existing class. Existing classes cannot change.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	StorageClassName *string `json:"storageClassName,omitempty"`
+}
+
 type WriterSpec struct {
+	// Storage configures the writer's data volume (default 10Gi and cluster default class).
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// GPU requests nvidia.com/gpu for the writer's BUILT-IN embeddings generation
 	// (ONNX Runtime + CUDA; prod: L40S). Set false to use CPU embeddings or a remote
 	// embeddings server. (This is the main reason a GPU node is needed at all; the
@@ -275,9 +343,66 @@ type WorkersSpec struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// ControlDBSpec is the control-plane Postgres: a DataStoreSpec plus this stack's values for the
+// dashboard reference rows the operator seeds (operator#378).
+type ControlDBSpec struct {
+	DataStoreSpec `json:",inline"`
+	// StripePrices are this stack's Stripe price IDs for the seeded reference rows: test-mode IDs on
+	// a nonprod stack, live-mode IDs on production. They are never part of the operator's committed
+	// rows. Empty leaves every plan's Stripe columns NULL and seeds no add-on price.
+	// +optional
+	StripePrices ControlDBStripePrices `json:"stripePrices,omitempty"`
+}
+
+// ControlDBStripePrices maps seeded reference rows, by their ID, to this stack's Stripe price IDs.
+// An ID that is not one of the operator's reference rows fails the seed, visibly.
+type ControlDBStripePrices struct {
+	// Plans sets subscription_plans.stripe_price_id_monthly and stripe_price_id_yearly. A plan not
+	// listed has both NULL.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	Plans []StripePlanPrice `json:"plans,omitempty"`
+	// Addons sets stripe_addon_prices.stripe_price_id. That column is NOT NULL, so an add-on price row
+	// is seeded only when it is listed here.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	Addons []StripeAddonPrice `json:"addons,omitempty"`
+}
+
+// StripePlanPrice is one subscription plan's Stripe prices.
+type StripePlanPrice struct {
+	// ID is the subscription_plans row ID.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+	ID string `json:"id"`
+	// Monthly is the Stripe price ID for monthly billing.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,255}$`
+	// +optional
+	Monthly string `json:"monthly,omitempty"`
+	// Yearly is the Stripe price ID for yearly billing.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,255}$`
+	// +optional
+	Yearly string `json:"yearly,omitempty"`
+}
+
+// StripeAddonPrice is one add-on price row's Stripe price.
+type StripeAddonPrice struct {
+	// ID is the stripe_addon_prices row ID.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+	ID string `json:"id"`
+	// PriceID is the Stripe price ID.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,255}$`
+	PriceID string `json:"priceID"`
+}
+
 // DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
 // operator/chart), pointed at an external endpoint, or centrally located.
 type DataStoreSpec struct {
+	// Storage configures local data volumes (default 10Gi and cluster default class).
+	// The operator grows PVC requests, or the CNPG Cluster size for controlDB.
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 	// Mode: "in-cluster" (operator provisions it) or "external" (use Endpoint).
@@ -330,6 +455,73 @@ type ToggleWithHost struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and
+// ConfigMaps in the instance's namespace (operator#311). Precedence, lowest to highest: the
+// operator's envFrom (<cr>-config, <cr>-dashboard-secret, <cr>-jwt), envFrom, the operator's
+// explicit env, env. DATABASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_PASSWORD,
+// JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER and MASTER_API_KEY belong to the operator: supplying one
+// through either field fails the reconcile.
+// +kubebuilder:validation:XValidation:rule="!has(self.crons) || !has(self.crons.enabled) || !self.crons.enabled || (has(self.enabled) && self.enabled)",message="dashboard.crons requires the dashboard enabled"
+type DashboardSpec struct {
+	ToggleWithHost `json:",inline"`
+	// EnvFrom adds Secrets and ConfigMaps (in the instance's namespace) after the operator's own
+	// envFrom sources, so a key here overrides the shared ConfigMap and the seeded dashboard Secret,
+	// and a later entry overrides an earlier one. It never overrides the operator's explicit env.
+	// Each entry sets exactly one of secretRef and configMapRef. A missing object fails the
+	// reconcile unless the reference is optional. A change to a referenced object rolls the
+	// dashboard (pod-template annotation orama.cloud/dashboard-env-hash).
+	// +optional
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
+	// Env adds variables after the operator's explicit env (e.g. STRIPE_SECRET_KEY from a
+	// secretKeyRef). An entry with the same name as an operator variable replaces it; for a name
+	// listed twice the last entry wins. A non-optional secretKeyRef or configMapKeyRef whose object
+	// or key is missing fails the reconcile; a change to the selected key rolls the dashboard.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+	// Crons runs the dashboard's scheduled calls (Prod 1's Vercel crons) as CronJobs, and optionally
+	// the e2e canary (operator#17). Off unless enabled; requires the dashboard enabled.
+	// +optional
+	Crons DashboardCronsSpec `json:"crons,omitempty"`
+}
+
+// DashboardCronsSpec turns on the dashboard's three scheduled calls, with Prod 1's fixed schedules:
+// <cr>-dashboard-cron-crawler (every minute), -index-gc (hourly) and -consumption-sync (every six
+// hours, UTC). Each GETs the in-cluster dashboard Service with Authorization: Bearer $CRON_SECRET,
+// where CRON_SECRET is read from the Secret key the dashboard itself takes it from (envFrom or env).
+// Running them on Prod 1 and Prod 2 at once would crawl and bill twice, so they are created
+// suspended; the cutover unsuspends them through the set file.
+// +kubebuilder:validation:XValidation:rule="!has(self.e2eCanary) || (has(self.enabled) && self.enabled)",message="dashboard.crons.e2eCanary requires dashboard.crons enabled"
+type DashboardCronsSpec struct {
+	// Enabled creates the three CronJobs. Disabling deletes them.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Suspend is copied to the spec.suspend of the three CronJobs and the e2e canary's. It stops new
+	// runs and does not cancel a run already in progress.
+	// +kubebuilder:default=true
+	// +optional
+	Suspend *bool `json:"suspend,omitempty"`
+	// E2ECanary runs Prod 1's e2e canary (every five minutes) and its collection prune (daily at
+	// 04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. It follows crons.suspend.
+	// Removing it deletes the CronJob and its state volume.
+	// +optional
+	E2ECanary *E2ECanarySpec `json:"e2eCanary,omitempty"`
+}
+
+// E2ECanarySpec is the canary's image and target. The canary signs in through the in-cluster
+// dashboard's /api/user/jwt with the canary project's private API key, writes a probe document and
+// checks it on the readers the dashboard returns and on the in-cluster reader.
+// +kubebuilder:validation:XValidation:rule="has(self.secretRef.name) && size(self.secretRef.name) > 0",message="dashboard.crons.e2eCanary.secretRef needs a name"
+type E2ECanarySpec struct {
+	// Image runs monitor-test (oramacore-test-e2e) and provides /bin/sh, curl and jq for the prune.
+	// It must be pinned to a digest (name@sha256:<64 hex>).
+	// +kubebuilder:validation:Pattern=`^[^@\s]+@sha256:[a-f0-9]{64}$`
+	Image string `json:"image"`
+	// SecretRef names a Secret in the instance's namespace with the non-empty keys collectionID,
+	// indexID and apiKey: the canary collection, its index, and the project's private API key.
+	// Delivered through the set's secrets list.
+	SecretRef corev1.LocalObjectReference `json:"secretRef"`
+}
+
 // PeerSpec identifies another region for cross-cluster wiring (no mesh).
 type PeerSpec struct {
 	Name   string `json:"name"`
@@ -362,7 +554,8 @@ type OramaCloudV1Status struct {
 	// component regressed) | Pending.
 	Phase string `json:"phase,omitempty"`
 	// Conditions follows the standard k8s condition convention (the Ready condition is the
-	// machine-readable roll-up).
+	// machine-readable workload roll-up). StorageApplied independently reports accepted
+	// storage configuration, not completed disk/filesystem expansion.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// ComponentsReady is the ready/total count (e.g. "22/22").

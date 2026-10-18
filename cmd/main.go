@@ -182,8 +182,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.CloudflareDNSRecordReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("cloudflarednsrecord-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareDNSRecord")
 		os.Exit(1)

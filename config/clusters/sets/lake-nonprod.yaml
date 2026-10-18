@@ -26,7 +26,11 @@ spec:
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-dev.oramadev.net
-      image: oramasearch/lake:dev-51fe838b
+      image: oramasearch/lake:dev-34718173
+      clerk:
+        secretKeySecretRef: {name: clerk-secret-key}
+    secrets:
+    - {name: clerk-lake-dev, namespace: lake, as: clerk-secret-key}
   - clusterRef: orama-nonprod-cluster-01
     name: staging
     spec:
@@ -84,7 +88,7 @@ spec:
   template:
     dnsSecretRef:
       name: cloudflare-api-token
-    image: oramasearch/lake:20261012a
+    image: oramasearch/lake:dev-51fe838b
     ingressEnabled: true
     postgres:
       enabled: true

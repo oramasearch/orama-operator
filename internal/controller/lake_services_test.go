@@ -1100,13 +1100,14 @@ func TestLakeServicesDeploymentMountAndEnv(t *testing.T) {
 			} else if _, found := env["LAKE_SERVICE_DIR"]; found || mounted || volume {
 				t.Fatal("services wired into a lake without its control Postgres")
 			}
-			// The data plane no longer provisions the operator schema for workspace intake.
+			// The data plane carries the operator schema for deployments (operator#557), with or
+			// without services; service intake stays in the control Postgres.
 			var dataPlane oramav1alpha1.OramaZettaCluster
 			if err := c.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: lakeZettaName("prod")}, &dataPlane); err != nil {
 				t.Fatal(err)
 			}
-			if dataPlane.Spec.ProvisionOperatorSchema == nil || *dataPlane.Spec.ProvisionOperatorSchema {
-				t.Fatalf("data plane provisions the operator schema: %v", dataPlane.Spec.ProvisionOperatorSchema)
+			if dataPlane.Spec.ProvisionOperatorSchema == nil || !*dataPlane.Spec.ProvisionOperatorSchema {
+				t.Fatalf("data plane does not provision the operator schema: %v", dataPlane.Spec.ProvisionOperatorSchema)
 			}
 		})
 	}

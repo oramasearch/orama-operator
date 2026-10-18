@@ -94,7 +94,7 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 	rwo := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
 	if _, err := reconciler.reconcileLakeDeployment(
 		ctx, lake, "lake-dev", "lake-pod-template", lake.Spec.Image, "lake-pod-template-store",
-		rwo, labels, 1, lakeDefaultPort, sealing,
+		rwo, labels, 1, lakeDefaultPort, sealing, lakeClerkState{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 	}
 	if _, err := reconciler.reconcileLakeDeployment(
 		ctx, lake, "lake-dev", "lake-pod-template", lake.Spec.Image, "lake-pod-template-store",
-		rwo, labels, 1, lakeDefaultPort, sealing,
+		rwo, labels, 1, lakeDefaultPort, sealing, lakeClerkState{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 	}
 	if _, err := reconciler.reconcileLakeDeployment(
 		ctx, lake, "lake-dev", "lake-pod-template", lake.Spec.Image, "lake-pod-template-store",
-		rwo, labels, 1, lakeDefaultPort, sealing,
+		rwo, labels, 1, lakeDefaultPort, sealing, lakeClerkState{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func lakeSpecChangeRollsOnce(t *testing.T, kubeClient client.Client, name string
 		}
 		if _, err := reconciler.reconcileLakeDeployment(
 			ctx, current, "lake-dev", key.Name, current.Spec.Image, claimName,
-			accessModes, labels, 1, lakeDefaultPort, sealing,
+			accessModes, labels, 1, lakeDefaultPort, sealing, lakeClerkState{},
 		); err != nil {
 			t.Fatal(err)
 		}

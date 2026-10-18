@@ -78,6 +78,14 @@ pods the operator builds (apps and the sqlite, duckdb and polars services), a bu
 `STORE_<NAME>_*` variables, and the operator reports each volume's used space —
 [stores.md](stores.md).
 
+## Clerk sign-in
+
+With `spec.clerk` (a Clerk instance's secret key), the operator keeps that instance configured for
+lake through Clerk's Backend API, writes a production instance's DNS records, and gives the Lake
+`LAKE_CLERK_PUBLISHABLE_KEY` and `LAKE_CLERK_WEBHOOK_SECRET`. Two Clerk applications serve the four
+environments. See [`clerk.md`](clerk.md) (operator#541), which also lists the one-time dashboard
+steps and the Secrets to create.
+
 ## Every Lake runs every feature
 
 Steve, 2026-10-17: *"all features should be enabled on all environments"* ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)).
@@ -93,7 +101,10 @@ a default is a change to one file, rolled through the pipeline dev, testing, sta
 
 The one prerequisite is the control Postgres (`spec.postgres.enabled`, default `true`). Without it
 the features cannot run, and the Lake's `FeaturesReady` condition is `False` with reason
-`PostgresDisabled`, naming them; a feature is never skipped silently. `ingressEnabled` stays: it
+`PostgresDisabled`, naming them; a feature is never skipped silently. Deployments also need the
+Lake's Zetta (`spec.zetta.enabled`, default `true`; otherwise reason `ZettaDisabled`) and a public
+host (`spec.host` or `LAKE_PUBLIC_HOST` in `spec.env`; otherwise reason `NoPublicHost`), see
+[environments](environments.md#every-lakes-control-plane-is-its-own-zetta). `ingressEnabled` stays: it
 decides whether the Lake is exposed outside the cluster, not which features it runs.
 
 ### Default images
@@ -108,17 +119,17 @@ decides whether the Lake is exposed outside the cluster, not which features it r
 | Runtime-mode apps (`LAKE_APPS_RUNTIME_IMAGE`) | `spec.apps.runtimeImage` | `oramasearch/app-runtime:976e6a8` |
 | Image builds | `spec.builds.builderImage` | `oramasearch/lake-builder:31a48d9` |
 | Methodologies (`LAKE_METHODOLOGY_RUNTIME_IMAGE`) | `spec.methodologies.runtimeImage` | `oramasearch/methodology-runtime:ac58062` |
-| User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:f8feb14` |
+| User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:v0.1.0` |
 | MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a` |
-| `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:6baa70d` |
-| `agent-project` | `spec.agents.library[key]` | `oramasearch/agent-project:16e17d0` |
-| `agent-autosuggest` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest:3d9acf7` |
-| `agent-creator` | `spec.agents.library[key]` | `oramasearch/agent-creator:6b1cc36-f8feb14` |
-| `agent-eval-generator` | `spec.agents.library[key]` | `oramasearch/agent-eval-generator:e2a683c` |
-| `agent-project-corpus` | `spec.agents.library[key]` | `oramasearch/agent-project-corpus:4537bcb` |
-| `agent-autosuggest-corpus` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest-corpus:a882954` |
-| `agent-application` | `spec.agents.library[key]` | `oramasearch/agent-application:3a38da8` |
-| `agent-experiments` | `spec.agents.library[key]` | `oramasearch/agent-experiments:62a4d64` |
+| `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:v0.1.0` |
+| `agent-project` | `spec.agents.library[key]` | `oramasearch/agent-project:v0.1.0` |
+| `agent-autosuggest` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest:v0.1.0` |
+| `agent-creator` | `spec.agents.library[key]` | `oramasearch/agent-creator:v0.1.0` |
+| `agent-eval-generator` | `spec.agents.library[key]` | `oramasearch/agent-eval-generator:v0.1.0` |
+| `agent-project-corpus` | `spec.agents.library[key]` | `oramasearch/agent-project-corpus:v0.1.0` |
+| `agent-autosuggest-corpus` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest-corpus:v0.1.0` |
+| `agent-application` | `spec.agents.library[key]` | `oramasearch/agent-application:v0.1.0` |
+| `agent-experiments` | `spec.agents.library[key]` | `oramasearch/agent-experiments:v0.1.0` |
 
 Every Zetta a Lake owns also gets `ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864` and
 `MALLOC_ARENA_MAX=2` unless its env (`spec.zetta.env`, `spec.services.zettaEnv`) names the
@@ -161,8 +172,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    `spec.pullSecretName`, and operator env including `LAKE_STORE_ROOT=/var/lib/lake/store`,
    `LAKE_APPS_WILDCARD`, `LAKE_APPS_RUNTIME_IMAGE`, `LAKE_METHODOLOGY_RUNTIME_IMAGE`,
    `LAKE_MCP_RUNNER_IMAGE` and the agents' variables (including `LAKE_INTERNAL_URL`, lake's
-   in-cluster address) on every Lake, plus `spec.env` entries whose names do not conflict with
-   operator-owned variables. Pods run as
+   in-cluster address) on every Lake, `LAKE_OPERATOR_ZETTA_URL` and `LAKE_OPERATOR_ZETTA_TOKEN` (item 8),
+   `LAKE_PUBLIC_HOST` from `spec.host` when `spec.env` does not state it, plus `spec.env` entries whose
+   names do not conflict with operator-owned variables. Pods run as
    uid/gid 10001 with the restricted container baseline. A spec change rolls the Deployment once;
    how the pods are replaced depends on the store's access modes, see [Rollouts](#rollouts). Replicated Deployments get a
    `maxUnavailable: 1` PodDisruptionBudget and the default soft hostname spread, or
@@ -170,9 +182,13 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 7. **Service** `lake-<name>` — ClusterIP 80 → `spec.port`.
 8. **Zetta data plane** — owned `OramaZettaCluster` `lake-<name>-zetta` in the Lake namespace,
    configured from `spec.zetta` (enabled, image, replicas, per-node storage, env, and reachability).
-   It inherits `spec.pullSecretName` and has operator-schema provisioning disabled because it is
-   Lake's data store, not the operator's control store. Its client Service and seeded admin-token
-   Secret reach the lake pod as `LAKE_DATA_PLANE_URL` and `LAKE_DATA_PLANE_TOKEN`. Deleting the
+   It inherits `spec.pullSecretName` and has operator-schema provisioning **on**: it is also the
+   Lake's deployment control plane, the one operator-schema Zetta in the Lake namespace
+   ([operator#557](https://github.com/oramasearch/orama-operator/issues/557),
+   [environments](environments.md#every-lakes-control-plane-is-its-own-zetta)). Its client Service and
+   seeded admin-token Secret reach the lake pod as `LAKE_DATA_PLANE_URL` and `LAKE_DATA_PLANE_TOKEN`,
+   and again as `LAKE_OPERATOR_ZETTA_URL` and `LAKE_OPERATOR_ZETTA_TOKEN`, which turn lake's
+   Deployments on. Deleting the
    Lake starts deletion of this child and waits for its finalizers before releasing the Lake
    finalizer; disabling `spec.zetta` tears the child down with its per-node volumes.
 9. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
@@ -205,7 +221,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    and an owned `<lake>-apex-dns` record, for the region picker in front of a deployment's
    regions ([regions](#regions)); removing it removes both.
 13. **Deployment environments** — desired rows in the operator's Zetta
-   `orama_control.deployments` table become Lake-owned `LakeEnvironment` CRs in this namespace.
+   `orama_control.deployments` table, with lake's environment values and custom domains, become
+   Lake-owned `LakeEnvironment` CRs in this namespace; every row is in lake's shape, keyed by the
+   Lake's public host ([the row contract](environments.md#the-row-contract-lakes-format-the-operator-conforms)).
    Each CR owns its profiled workload Namespace through a verified finalizer. Referenced
    `LakeSealedSecret` resources must be current and Ready; their produced Secrets are copied into the
    isolated Namespace before the workload starts. See

@@ -197,9 +197,6 @@ releases:
   # topology is driven by our own CRDs (operator#41), and its analytics is a plain
   # clickhouse-server StatefulSet, like Redis/Typesense/Mongo. The ClickHouse operator above serves
   # lake customer services only.
-  #
-  # NOTE — Airbyte (structured connectors, operator#4) is a heavy multi-service platform installed
-  # from its OWN chart into the `airbyte` namespace — NOT installed here.
 
   # ---- the Orama Cloud v1 operator (this repo) ----
   # Carries the CRDs in chart/crds/ (OramaCloudV1 + OramaCloudV1E2ETest + the Cloudflare

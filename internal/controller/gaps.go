@@ -17,19 +17,19 @@ import (
 )
 
 // Gap-fill components surfaced by the techops-docs gap analysis (operator issues #5–#7).
-// Airbyte (#4) is a platform dependency installed via its Helm chart (helmfile), and the
-// QStash-equivalent queue (#8) is config wiring (workers → the in-cluster RabbitMQ) — neither
-// is a reconciled component here.
+// The QStash-equivalent queue (#8) is config wiring (workers → the in-cluster RabbitMQ), not a
+// reconciled component here.
 
 // analyticsProcessorConfigYAML renders the config the `server` binary reads (config.rs). It
 // connects to ClickHouse + Postgres at startup, so these are the real in-cluster endpoints.
-// Secret values are __PLACEHOLDER__s the render init container substitutes — never in the CM.
+// Secret values are __PLACEHOLDER__s the render init container substitutes — never in the CM —
+// inside single-quoted scalars, so renderEscFunc keeps every character of a value.
 func analyticsProcessorConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	n := oc.Name
 	return fmt.Sprintf(`clickhouse:
   url: http://%s-analytics:8123
   user: default
-  password: __CLICKHOUSE_PASSWORD__
+  password: '__CLICKHOUSE_PASSWORD__'
   database: default
   search_table: oramacore_analytics_search_raw
   interaction_table: oramacore_analytics_interaction_raw
@@ -38,25 +38,30 @@ create_tables: true
 oramacores:
   - name: oramacore_1
     api_url: http://%s-writer:8080/v1/analytics
-    api_key: __MASTER_API_KEY__
+    api_key: '__MASTER_API_KEY__'
     enabled: true
 postgres:
-  url: postgres://%s:__PG_PASSWORD__@%s-controldb-rw:5432/%s
+  url: '__PG_URI__'
   schema: analytics
   runs_table: runs
   delta: 60m
-`, n, n, controlDBName, n, controlDBName)
+`, n, n)
 }
 
 // reconcileAnalyticsProcessor deploys analytics-processor (#5): the worker that pulls
 // /v1/analytics into ClickHouse. Its `server` binary reads a YAML config FILE (CONFIG_PATH) and
 // connects to ClickHouse + Postgres at startup — so the operator renders that file via an init
-// container (ClickHouse password + master key from the component Secret; the CNPG-generated
-// Postgres password from the <cr>-controldb-app Secret) and mounts it. (The image is also
-// patched at build to bind 0.0.0.0:8080 instead of its hardcoded 127.0.0.1:8888.)
+// container (ClickHouse password from the component Secret; the master key from
+// spec.masterAPIKeySecretRef, until its own analytics key replaces it (#419/#421); the
+// CNPG-generated Postgres URI from pgURIEnv) and mounts it. (The image is also patched at build to
+// bind 0.0.0.0:8080 instead of its hardcoded 127.0.0.1:8888.)
 func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	if !oc.Spec.Components.AnalyticsProcessor.Enabled {
 		return r.teardownByComponent(ctx, oc, "analytics-processor")
+	}
+	masterKey, ok := masterAPIKeySecret(oc)
+	if !ok {
+		return nil
 	}
 	img := componentImage(oc, "analytics-processor", "analytics-processor")
 	cmName := oc.Name + "-analytics-processor-config"
@@ -70,11 +75,11 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 	render := corev1.Container{
 		Name:  "render-config",
 		Image: img,
-		Command: []string{"sh", "-c",
-			`sed -e "s#__CLICKHOUSE_PASSWORD__#${CLICKHOUSE_PASSWORD}#g" -e "s#__MASTER_API_KEY__#${MASTER_API_KEY}#g" -e "s#__PG_PASSWORD__#${PG_PASSWORD}#g" /tmpl/config.yaml > /etc/analytics-processor/config.yaml`},
+		Command: []string{"sh", "-c", renderEscFunc + "sed" +
+			renderSubstitutions([]string{"CLICKHOUSE_PASSWORD", masterAPIKeyEnvName, "PG_URI"}) +
+			" /tmpl/config.yaml > /etc/analytics-processor/config.yaml"},
 		EnvFrom: envFromFor(oc, "analytics-processor"),
-		Env: []corev1.EnvVar{{Name: "PG_PASSWORD", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: oc.Name + "-controldb-app"}, Key: "password"}}}},
+		Env:     []corev1.EnvVar{masterAPIKeyEnv(oc), pgURIEnv(oc, "PG_URI")},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "config-tmpl", MountPath: "/tmpl"},
 			{Name: "rendered-config", MountPath: "/etc/analytics-processor"},
@@ -87,6 +92,8 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsProcessor(ctx context.Context
 		env:            []corev1.EnvVar{{Name: "CONFIG_PATH", Value: "/etc/analytics-processor/config.yaml"}},
 		resources:      resourcesOr(oc.Spec.Components.AnalyticsProcessor.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 		initContainers: []corev1.Container{render},
+		// The render init reads the master key (#307).
+		credentialSecrets: []string{masterKey},
 		volumes: []corev1.Volume{
 			{Name: "config-tmpl", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{Name: cmName}}}},

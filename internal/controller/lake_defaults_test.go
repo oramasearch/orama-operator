@@ -25,15 +25,15 @@ import (
 // The images Lake/prod ran on 2026-10-17 (operator#539). The test repeats them on purpose: moving
 // a default is a deliberate change to both lake_defaults.go and this table.
 var wantLakeDefaultLibrary = map[string]string{
-	"agent-ask-orama":          "oramasearch/agent-ask-orama:6baa70d",
-	"agent-project":            "oramasearch/agent-project:16e17d0",
-	"agent-autosuggest":        "oramasearch/agent-autosuggest:3d9acf7",
-	"agent-creator":            "oramasearch/agent-creator:6b1cc36-f8feb14",
-	"agent-eval-generator":     "oramasearch/agent-eval-generator:e2a683c",
-	"agent-project-corpus":     "oramasearch/agent-project-corpus:4537bcb",
-	"agent-autosuggest-corpus": "oramasearch/agent-autosuggest-corpus:a882954",
-	"agent-application":        "oramasearch/agent-application:3a38da8",
-	"agent-experiments":        "oramasearch/agent-experiments:62a4d64",
+	"agent-ask-orama":          "oramasearch/agent-ask-orama:v0.1.0",
+	"agent-project":            "oramasearch/agent-project:v0.1.0",
+	"agent-autosuggest":        "oramasearch/agent-autosuggest:v0.1.0",
+	"agent-creator":            "oramasearch/agent-creator:v0.1.0",
+	"agent-eval-generator":     "oramasearch/agent-eval-generator:v0.1.0",
+	"agent-project-corpus":     "oramasearch/agent-project-corpus:v0.1.0",
+	"agent-autosuggest-corpus": "oramasearch/agent-autosuggest-corpus:v0.1.0",
+	"agent-application":        "oramasearch/agent-application:v0.1.0",
+	"agent-experiments":        "oramasearch/agent-experiments:v0.1.0",
 }
 
 // bareLake states only what differs per environment: no feature field at all.
@@ -106,7 +106,7 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 		t.Fatalf("library = %v", library)
 	}
 	for _, image := range [][2]string{
-		{lakeAgentRuntimeImage(lake), "oramasearch/agent-runtime:f8feb14"},
+		{lakeAgentRuntimeImage(lake), "oramasearch/agent-runtime:v0.1.0"},
 		{lakeBuilderImage(lake), "oramasearch/lake-builder:31a48d9"},
 		{serviceZettaImage(lake), "oramasearch/zetta:main-4015ef76"},
 		{lakeDataPlaneZettaImage(lake), "oramasearch/zetta:main-4015ef76"},
@@ -320,7 +320,9 @@ func envNamesOf(env []corev1.EnvVar) []string {
 
 // wantLakeOperatorEnv is the operator's own env on a Lake that states no feature field, in order:
 // the same on every Lake, plus the control Postgres's variables when it has one.
-func wantLakeOperatorEnv(postgres bool) []string {
+// wantLakeOperatorEnv is the operator's variables in order. deployments is whether the Lake has a
+// public host, which gives it the operator Zetta pair (operator#557).
+func wantLakeOperatorEnv(postgres, deployments bool) []string {
 	names := []string{
 		"LAKE_ADMIN_TOKEN", "LAKE_STORE_ROOT", "LAKE_SEALING_PUBLIC_KEY", "LAKE_SEALING_KID",
 		"LAKE_APPS_WILDCARD", "LAKE_APPS_RUNTIME_IMAGE", "LAKE_METHODOLOGY_RUNTIME_IMAGE", "LAKE_MCP_RUNNER_IMAGE",
@@ -329,6 +331,9 @@ func wantLakeOperatorEnv(postgres bool) []string {
 		names = append(names, "LAKE_INSTANCE_KEK", "LAKE_CONTROL_DB_URI", "LAKE_CONTROL_DB_PASSWORD")
 	}
 	names = append(names, "LAKE_DATA_PLANE_URL", "LAKE_DATA_PLANE_TOKEN")
+	if deployments {
+		names = append(names, "LAKE_OPERATOR_ZETTA_URL", "LAKE_OPERATOR_ZETTA_TOKEN")
+	}
 	if postgres {
 		names = append(names, "LAKE_SERVICE_DIR")
 	}
