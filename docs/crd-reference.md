@@ -152,7 +152,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,hpa,resources,storage}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,hpa,resources}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
 | `dashboard` | `host`, `extraHosts`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host`, `extraHosts` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
@@ -537,19 +537,18 @@ it changes.
 
 ### Component storage
 
-The shared `VolumeSpec` is available at `spec.components.engine.{writer,reader}.storage` and at
+The shared `VolumeSpec` is available at `spec.components.engine.writer.storage` and at
 `spec.components.{analytics,cache,broker,search,controlDB}.storage`.
 
 | Field | Type | Default | Behavior |
 |---|---|---|---|
-| `storage.size` | positive Kubernetes quantity | `10Gi`; `512Gi` for `engine.reader` | Omitted storage, `{}`, and omitted size all resolve to the default, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
+| `storage.size` | positive Kubernetes quantity | `10Gi` | Omitted storage, `{}`, and omitted size all resolve to the default, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
 | `storage.storageClassName` | nonempty string, optional | cluster default on creation | Selects the new PVC's class, or CNPG's `spec.storage.storageClass`. Omission on existing resources retains their class, including a class populated by default admission. A later cluster-default change does not move existing storage. |
 
 For example, `engine.writer.storage: {size: 50Gi, storageClassName: managed-csi}` and
 `cache.storage: {size: 20Gi}` set independent sizes. These are examples, not production sizing.
 For an `OramaCloudV1Set`, put the component settings under `spec.template.components`, or a
-member's `spec.components`. `engine.reader.storage` applies to every reader: each gets its own claim
-`data-<cr>-reader-<n>` at that size and class. HARVEST Mongo retains its existing
+member's `spec.components`. Readers have no storage setting (each gets 512Gi). HARVEST Mongo retains its existing
 `10Gi`/default-class behavior and gains no storage API.
 
 New StatefulSets receive a `data` claim template at the resolved size/class. Existing templates

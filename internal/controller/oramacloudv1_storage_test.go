@@ -141,7 +141,7 @@ func storageCondition(t *testing.T, r *OramaCloudV1Reconciler, oc *oramav1alpha1
 
 func storageClaim(t *testing.T, r *OramaCloudV1Reconciler, oc *oramav1alpha1.OramaCloudV1, name, size, class string) *corev1.PersistentVolumeClaim {
 	t.Helper()
-	claim := dataPVC(storageSpec(size, class), defaultVolumeSize)
+	claim := dataPVC(storageSpec(size, class))
 	claim.Name, claim.Namespace = name, oc.Namespace
 	claim.Labels = map[string]string{"keep": "unchanged"}
 	claim.Annotations = map[string]string{"retain": "me"}
@@ -176,19 +176,11 @@ func TestOCV1StorageFreshVolumes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			oc := newOCV1(nil)
 			oc.Spec.Components.Engine.Writer.Storage = tc.spec
-			oc.Spec.Components.Engine.Reader.Storage = tc.spec
 			oc.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Storage: tc.spec}
 			r, _ := storageFake(t, oc)
 			ctx := context.Background()
 			if err := r.reconcileWriter(ctx, oc, "", ""); err != nil {
 				t.Fatal(err)
-			}
-			if err := r.reconcileReaders(ctx, oc, "", "", ""); err != nil {
-				t.Fatal(err)
-			}
-			reader := storageGet(t, r, &appsv1.StatefulSet{}, oc.Namespace, oc.Name+"-reader")
-			if !reflect.DeepEqual(reader.Spec.VolumeClaimTemplates, []corev1.PersistentVolumeClaim{dataPVC(tc.spec, readerDataSize)}) {
-				t.Fatalf("reader template: %+v", reader.Spec.VolumeClaimTemplates)
 			}
 			for _, comp := range []string{"analytics", "cache", "broker", "search"} {
 				if err := r.reconcileDataStore(ctx, oc, oramav1alpha1.DataStoreSpec{Enabled: true, Storage: tc.spec}, dataStoreDef{component: comp, image: "store:test", dataPath: "/data"}); err != nil {
@@ -204,7 +196,7 @@ func TestOCV1StorageFreshVolumes(t *testing.T) {
 				if comp == "harvest-mongo" {
 					want = nil
 				}
-				if !reflect.DeepEqual(sts.Spec.VolumeClaimTemplates, []corev1.PersistentVolumeClaim{dataPVC(want, defaultVolumeSize)}) {
+				if !reflect.DeepEqual(sts.Spec.VolumeClaimTemplates, []corev1.PersistentVolumeClaim{dataPVC(want)}) {
 					t.Fatalf("%s template: %+v", comp, sts.Spec.VolumeClaimTemplates)
 				}
 			}
@@ -224,19 +216,16 @@ func TestOCV1StorageFreshVolumes(t *testing.T) {
 
 func TestOCV1StoragePreservesStatefulTemplates(t *testing.T) {
 	ctx := context.Background()
-	for _, component := range []string{"writer", "reader", "cache"} {
+	for _, component := range []string{"writer", "cache"} {
 		t.Run(component, func(t *testing.T) {
 			oc := newOCV1(nil)
 			r, writes := storageFake(t, oc)
 			provision := func() {
 				t.Helper()
 				var err error
-				switch component {
-				case "writer":
+				if component == "writer" {
 					err = r.reconcileWriter(ctx, oc, "", "")
-				case "reader":
-					err = r.reconcileReaders(ctx, oc, "", "", "")
-				default:
+				} else {
 					err = r.reconcileCache(ctx, oc)
 				}
 				if err != nil {
@@ -259,7 +248,6 @@ func TestOCV1StoragePreservesStatefulTemplates(t *testing.T) {
 			original := sts.DeepCopy()
 			for _, spec := range []*oramav1alpha1.VolumeSpec{nil, storageSpec("10240Mi", ""), storageSpec("20Gi", ""), storageSpec("5Gi", ""), storageSpec("20Gi", "new-class")} {
 				oc.Spec.Components.Engine.Writer.Storage = spec
-				oc.Spec.Components.Engine.Reader.Storage = spec
 				oc.Spec.Components.Cache.Storage = spec
 				oc.Spec.Images.Overrides = map[string]string{"oramacore": "engine:changed", "cache": "cache:changed"}
 				provision()
@@ -283,15 +271,10 @@ func TestOCV1StorageGrowthMatchingClaimsAndPending(t *testing.T) {
 	oc := newOCV1(nil)
 	oc.Spec.Components.Engine.Enabled = true
 	oc.Spec.Components.Engine.Writer.Storage = storageSpec("20Gi", "")
-	oc.Spec.Components.Engine.Reader.Replicas = 1
 	r, writes := storageFake(t, oc)
 	if err := r.reconcileWriter(ctx, oc, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.reconcileReaders(ctx, oc, "", "", ""); err != nil {
-		t.Fatal(err)
-	}
-	storageClaim(t, r, oc, "data-v1-reader-0", readerDataSize, "managed-csi")
 	for _, name := range []string{"data-v1-writer-0", "data-v1-writer-4", "data-v1-writer-00", "data-v1-writer-1-extra", "data-v1-writer-other-0", "data-v1-controldb-0"} {
 		storageClaim(t, r, oc, name, "10Gi", "managed-csi")
 	}
@@ -531,19 +514,11 @@ func TestOCV1StorageMultipleIssuesAndSkippedComponents(t *testing.T) {
 	oc.Spec.Components.Cache = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "external", Storage: storageSpec("1Gi", "premium")}
 	oc.Spec.Components.Broker = oramav1alpha1.DataStoreSpec{Enabled: true, Placement: "central", Storage: storageSpec("1Gi", "premium")}
 	oc.Spec.Components.Analytics.Storage = storageSpec("1Gi", "premium")
-	oc.Spec.Components.Engine.Reader.Replicas = 1
 	r, writes := storageFake(t, oc)
-	// A read region still runs readers, so their claims are the only managed storage.
-	if err := r.reconcileReaders(ctx, oc, "", "", ""); err != nil {
-		t.Fatal(err)
+	if r.reconcileStorage(ctx, oc) {
+		t.Fatal("skipped storage must not be managed")
 	}
-	storageClaim(t, r, oc, "data-v1-reader-0", readerDataSize, "managed-csi")
-	if !r.reconcileStorage(ctx, oc) {
-		t.Fatal("reader storage must be managed")
-	}
-	if c := storageCondition(t, r, oc, "Applied"); strings.Contains(c.Message, "writer") {
-		t.Fatalf("a read region managed writer storage: %s", c.Message)
-	}
+	storageCondition(t, r, oc, "Applied")
 	oc.Spec.Components.Cache.Mode = "in-cluster"
 	oc.Spec.Components.Cache.Storage = storageSpec("5Gi", "premium")
 	oc.Spec.Components.Search.Enabled = true
@@ -620,39 +595,5 @@ func TestOCV1StorageRefusesForeignOwnership(t *testing.T) {
 	storageCondition(t, r, oc, "StorageUpdateFailed")
 	if len(writes.patches) != 0 {
 		t.Fatal("foreign StatefulSet's claim was patched")
-	}
-}
-
-// A reader's claims start at readerDataSize, not the 10Gi fallback, and grow like any other.
-func TestOCV1StorageGrowsReaderClaimsFromTheReaderDefault(t *testing.T) {
-	ctx := context.Background()
-	oc := newOCV1(nil)
-	oc.Spec.Region.Role = "read"
-	oc.Spec.Components.Engine.Enabled = true
-	oc.Spec.Components.Engine.Reader.Replicas = 2
-	r, writes := storageFake(t, oc)
-	if err := r.reconcileReaders(ctx, oc, "", "", ""); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"data-v1-reader-0", "data-v1-reader-1"} {
-		storageClaim(t, r, oc, name, readerDataSize, "managed-csi")
-	}
-	r.reconcileStorage(ctx, oc)
-	storageCondition(t, r, oc, "Applied")
-	if len(writes.patches) != 0 {
-		t.Fatalf("unset reader storage patched claims: %v", writes.patches)
-	}
-	template := storageGet(t, r, &appsv1.StatefulSet{}, oc.Namespace, "v1-reader").Spec.VolumeClaimTemplates
-	oc.Spec.Components.Engine.Reader.Storage = storageSpec("600Gi", "")
-	if err := r.reconcileReaders(ctx, oc, "", "", ""); err != nil {
-		t.Fatal(err)
-	}
-	r.reconcileStorage(ctx, oc)
-	storageCondition(t, r, oc, "Applied")
-	for _, name := range []string{"data-v1-reader-0", "data-v1-reader-1"} {
-		assertClaimSize(t, r, oc, name, "600Gi")
-	}
-	if got := storageGet(t, r, &appsv1.StatefulSet{}, oc.Namespace, "v1-reader").Spec.VolumeClaimTemplates; !reflect.DeepEqual(got, template) {
-		t.Fatalf("reader claim template changed: %+v", got)
 	}
 }

@@ -114,9 +114,9 @@ ControlDB follows its existing enabled/in-cluster policy; this change does not a
 mode behavior. HARVEST Mongo keeps the shared helper's `10Gi`/default-class output and has no
 storage setting.
 
-Writer and store `storage.size` default to `10Gi`, and `engine.reader.storage.size` to `512Gi`
-(`readerDataSize`, the reader size #382 chose); `storage.storageClassName` is optional. Omitted
-storage, `{}`, or a missing size resolves to that default even before API admission. Explicit sizes
+Writer and store `storage.size` default to `10Gi`; `storage.storageClassName` is optional. Readers
+have no storage setting: each gets `readerDataSize` (512Gi) on the cluster's default class. Omitted
+storage, `{}`, or a missing size resolves to `10Gi` even before API admission. Explicit sizes
 must be positive Kubernetes quantities, compared with `Cmp` (`10240Mi` equals `10Gi`), and explicit
 class names must be nonempty. The [field reference](crd-reference.md#component-storage) lists every
 path. Set templates use `spec.template.components`, with the same component fields.
@@ -405,17 +405,15 @@ Driven by `spec.region.role`:
   never served through the reader Service ([#314](https://github.com/oramasearch/orama-operator/issues/314)).
   Service `<cr>-reader` on `:80` (→ Envoy, or → `:8080` if Envoy is off)
   ([#382](https://github.com/oramasearch/orama-operator/issues/382)):
-  - **One disk per reader.** A `data` claim template (`ReadWriteOnce`, `reader.storage`, 512Gi by
-    default) mounted at
+  - **One disk per reader.** A `data` claim template (`ReadWriteOnce`, 512Gi) mounted at
     `/app/.data`, so reader `n` has its own claim `data-<cr>-reader-<n>`, never the writer's. The
     reader keeps its index and its last applied stream offset (`/app/.data/reader/read.info`)
     there, so a replaced pod resumes from that offset instead of replaying the stream from 0. It
     still needs the operations after its offset to be in the stream (5 GB, see broker-topology);
     a reader on a new, empty claim builds from the stream and is partial once the stream has
     passed 5 GB (seeding is [#458](https://github.com/oramasearch/orama-operator/issues/458)).
-  - **Size.** The template cannot change after the StatefulSet exists, so it keeps the size and
-    class it was created with; a larger `reader.storage.size` grows every reader's claim instead
-    ([component storage](#component-storage)). The EU Prod 1 reader's data directory still has to be measured (a read-only `du` on
+  - **Size.** The template cannot change after the StatefulSet exists, so a stack's readers get
+    512Gi once. The EU Prod 1 reader's data directory still has to be measured (a read-only `du` on
     the eu-central-1 reader) before the first production apply; the evidence so far is the US
     reader's ~171 GB index (2026-05-18) and the EU reader's root volume, at most 223 GiB used with
     the OS on 2026-10-12. The reasoning is above `readerDataSize` in `engine.go`.

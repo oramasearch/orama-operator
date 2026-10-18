@@ -74,7 +74,7 @@
 # worked around here, and no internal password is copied to bypass a missing generator.
 #   Images: no image is pinned yet. Every image comes from our private registry (oramasearch/*),
 #     pinned by digest, so the stack can run air-gapped; nothing is pulled from a public registry.
-#     Every item below also waits on a Docker Hub push credential readable by `op`.
+#     Steve builds and pushes them as part of his review (bridge decisions 2026-10-17 #20).
 #     - oramacore-writer, oramacore-reader: the v1.2.39 side-only images (#308, orama-cloud-v1-bridge#5).
 #       Without both overrides the engine runs the combined image.
 #     - dashboard: the Clerk build (orama-bridge#180, #187).
@@ -223,9 +223,10 @@ spec:
         cache:
           enabled: true
           mode: in-cluster
-          # Unmeasured: the 10Gi default. No Prod 1 source records how much data Upstash Redis holds
-          # (techops-docs has only its billing, evidence/upstash-billing-2026-07-08.md). The class is
-          # set now because it cannot change later; the size can grow once Prod 1 is measured.
+          # 10Gi, the default, on purpose: measuring Prod 1's Upstash Redis is deferred (bridge decisions
+          # 2026-10-17 #22), and no source records its data size (techops-docs has only its billing,
+          # evidence/upstash-billing-2026-07-08.md). The class is set now because it cannot change
+          # later; the size can grow once Prod 1 is measured.
           storage: { size: 10Gi, storageClassName: managed-csi-premium }
         broker:
           enabled: true
@@ -236,8 +237,9 @@ spec:
         search:
           enabled: true
           mode: in-cluster
-          # Unmeasured: the 10Gi default. No Prod 1 source records the Typesense data size. The class
-          # is set now because it cannot change later; the size can grow once Prod 1 is measured.
+          # 10Gi, the default, on purpose: measuring Prod 1's Typesense is deferred (bridge decisions
+          # 2026-10-17 #22), and no source records its data size. The class is set now because it
+          # cannot change later; the size can grow once Prod 1 is measured.
           storage: { size: 10Gi, storageClassName: managed-csi-premium }
         ingestion:
           enabled: true

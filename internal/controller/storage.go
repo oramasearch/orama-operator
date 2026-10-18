@@ -23,27 +23,19 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// defaultVolumeSize is the data volume of a component whose storage.size is unset; the reader's
-// default is readerDataSize.
-const defaultVolumeSize = "10Gi"
-
-// volumeSize is storage.size, or fallback when it is unset.
-func volumeSize(storage *oramav1alpha1.VolumeSpec, fallback string) resource.Quantity {
+func volumeSize(storage *oramav1alpha1.VolumeSpec) resource.Quantity {
 	if storage != nil && storage.Size != nil {
 		return storage.Size.DeepCopy()
 	}
-	return resource.MustParse(fallback)
+	return resource.MustParse("10Gi")
 }
 
-// dataPVC is a StatefulSet's "data" claim template: ReadWriteOnce, storage.size (fallback when
-// unset) and storage.storageClassName when set. The API makes templates immutable, so callers set
-// it only before creation; reconcileStatefulStorage grows the claims made from it.
-func dataPVC(storage *oramav1alpha1.VolumeSpec, fallback string) corev1.PersistentVolumeClaim {
+func dataPVC(storage *oramav1alpha1.VolumeSpec) corev1.PersistentVolumeClaim {
 	claim := corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "data"},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: volumeSize(storage, fallback)}},
+			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: volumeSize(storage)}},
 		},
 	}
 	if storage != nil && storage.StorageClassName != nil {
@@ -54,7 +46,7 @@ func dataPVC(storage *oramav1alpha1.VolumeSpec, fallback string) corev1.Persiste
 }
 
 func controlDBStorage(storage *oramav1alpha1.VolumeSpec) map[string]interface{} {
-	size := volumeSize(storage, defaultVolumeSize)
+	size := volumeSize(storage)
 	result := map[string]interface{}{"size": size.String()}
 	if storage != nil && storage.StorageClassName != nil {
 		result["storageClass"] = *storage.StorageClassName
@@ -87,11 +79,7 @@ func (r *OramaCloudV1Reconciler) reconcileStorage(ctx context.Context, oc *orama
 	managed := false
 	if oc.Spec.Components.Engine.Enabled && oc.Spec.Region.Role == "primary" {
 		managed = true
-		r.reconcileStatefulStorage(ctx, oc, "writer", oc.Spec.Components.Engine.Writer.Storage, defaultVolumeSize, result)
-	}
-	if oc.Spec.Components.Engine.Enabled {
-		managed = true
-		r.reconcileStatefulStorage(ctx, oc, "reader", oc.Spec.Components.Engine.Reader.Storage, readerDataSize, result)
+		r.reconcileStatefulStorage(ctx, oc, "writer", oc.Spec.Components.Engine.Writer.Storage, result)
 	}
 	for _, store := range []struct {
 		name string
@@ -104,7 +92,7 @@ func (r *OramaCloudV1Reconciler) reconcileStorage(ctx context.Context, oc *orama
 			continue
 		}
 		managed = true
-		r.reconcileStatefulStorage(ctx, oc, store.name, store.spec.Storage, defaultVolumeSize, result)
+		r.reconcileStatefulStorage(ctx, oc, store.name, store.spec.Storage, result)
 	}
 	db := oc.Spec.Components.ControlDB
 	if db.Enabled && db.Mode != "external" {
@@ -149,9 +137,7 @@ func claimOrdinal(name, prefix string) (int64, bool) {
 	return ordinal, err == nil && ordinal >= 0 && strconv.FormatInt(ordinal, 10) == suffix
 }
 
-// reconcileStatefulStorage grows every data claim of <cr>-<component> to storage.size (fallback
-// when unset) and reports each claim, and each one it cannot grow, in result.
-func (r *OramaCloudV1Reconciler) reconcileStatefulStorage(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, component string, storage *oramav1alpha1.VolumeSpec, fallback string, result *storageResult) {
+func (r *OramaCloudV1Reconciler) reconcileStatefulStorage(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, component string, storage *oramav1alpha1.VolumeSpec, result *storageResult) {
 	key := client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-" + component}
 	sts := &appsv1.StatefulSet{}
 	if err := r.Get(ctx, key, sts); err != nil {
@@ -183,7 +169,7 @@ func (r *OramaCloudV1Reconciler) reconcileStatefulStorage(ctx context.Context, o
 	}
 	prefix := "data-" + sts.Name + "-"
 	found := map[int64]bool{}
-	desired := volumeSize(storage, fallback)
+	desired := volumeSize(storage)
 	for i := range claims.Items {
 		claim := &claims.Items[i]
 		ordinal, matches := claimOrdinal(claim.Name, prefix)
@@ -275,7 +261,7 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBStorage(ctx context.Context, 
 		result.add("controlDB", "StorageUpdateFailed", fmt.Sprintf("%s storage class: %v", target, err))
 		return
 	}
-	desired := volumeSize(storage, defaultVolumeSize)
+	desired := volumeSize(storage)
 	if storageDifferences("controlDB", target, desired, storage, current, class, "", result) {
 		return
 	}

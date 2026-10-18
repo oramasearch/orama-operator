@@ -347,11 +347,6 @@ type WriterJWTSpec struct {
 type ReaderSpec struct {
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
-	// Storage configures each reader's data volume (default 512Gi and cluster default class).
-	// The StatefulSet's claim template keeps the values it was created with; the operator grows
-	// every reader's existing claim instead.
-	// +optional
-	Storage *VolumeSpec `json:"storage,omitempty"`
 	// HPA autoscales readers on load when set.
 	// +optional
 	HPA *HPASpec `json:"hpa,omitempty"`
