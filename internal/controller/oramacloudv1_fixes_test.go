@@ -98,6 +98,7 @@ func TestDashboardNeverMigratesControlDB(t *testing.T) {
 					oc := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 						o.Name = "v1-dev"
 						o.Spec.Components.Dashboard.Enabled = true
+						o.Spec.MasterAPIKeySecretRef = &oramav1alpha1.MasterAPIKeySecretRef{Name: testMasterSecret}
 						o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: enabled, Mode: mode}}
 					})
 					scheme := ocv1TestScheme(t)
@@ -257,6 +258,7 @@ func TestAnalyticsProcessorRendersControlDBURIAndEscapesSecrets(t *testing.T) {
 	oc := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
 		o.Name = "v1-dev"
 		o.Spec.Components.AnalyticsProcessor.Enabled = true
+		o.Spec.MasterAPIKeySecretRef = &oramav1alpha1.MasterAPIKeySecretRef{Name: testMasterSecret}
 	})
 	scheme := ocv1TestScheme(t)
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -273,8 +275,8 @@ func TestAnalyticsProcessorRendersControlDBURIAndEscapesSecrets(t *testing.T) {
 	}
 	render := dep.Spec.Template.Spec.InitContainers[0]
 	assertControlDBSecretEnv(t, render.Env, "PG_URI", "uri")
-	if len(render.Env) != 1 {
-		t.Fatal("render must use only the PG_URI env override")
+	if len(render.Env) != 2 || render.Env[0].Name != masterAPIKeyEnvName {
+		t.Fatal("render must take only the master key (spec.masterAPIKeySecretRef) and PG_URI as env overrides")
 	}
 	// The independent index-builder client uses the same helper and Secret.
 	assertControlDBSecretEnv(t, r.indexBuilderEnv(ctx, oc), "DATABASE_URL", "uri")
