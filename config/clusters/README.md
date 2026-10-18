@@ -69,8 +69,8 @@ Secret (`components.dashboard.crons.e2eCanary.secretRef`) arrives the same way. 
 changing a source Secret is a write on the managing cluster and needs Steve's consent.
 
 The dashboard crons and the e2e canary are created suspended. Their `suspend` fields change only in
-a set file, committed and applied to the managing cluster; production unsuspends them in the cutover
-step that stops Prod 1's crons (see
+a set file, committed and applied to the managing cluster; production unsuspends them at cutover
+step 5, after Prod 1's crons are off and `app.orama.com` points at Prod 2 (see
 [the dashboard's scheduled jobs](../../docs/components.md#the-dashboards-scheduled-jobs)). Never
 edit, patch or create the CronJobs themselves.
 

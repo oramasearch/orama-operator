@@ -57,65 +57,6 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **lake sealed-secret delivery** | `internal/controller/lakesealedsecret_controller.go` | from one namespaced `LakeSealedSecret`: an owned, cluster-bound Kubernetes Secret labelled `lake.orama.cloud/sealed: "true"`; literal ciphertext opens locally, while lake and dynamic references call lake's mint capability with projected service-account attestation | 🟡 **implemented**; literal delivery and LakeEnvironment consumption with local delivery owners are complete and tested against both k0s admission policies, while lake/dynamic delivery awaits lake's `mint_sealed_secret` leaf |
 | **deployment control plane** | `internal/controller/deployment_controlplane.go` | authenticated liquid REST `/v1` and MCP server; appends immutable Zetta history, desired rows in lake's shape and audit entries, validates sealed-secret references, and reads reconciled `LakeEnvironment` status | ✅ **implemented** ([#142](https://github.com/oramasearch/orama-operator/issues/142)); REST/MCP, drift, Zetta-double and envtest coverage — see [`control-plane/README.md`](control-plane/README.md) |
 
-## Cloudflare DNS ownership
-
-`CloudflareDNSRecord` creates new records with comment
-`orama-operator:<namespace>/<name>` and saves the ID and exact comment in status. A record
-several resources keep (a Clerk production instance's records, which every Lake sharing the
-instance writes) names one owner in `spec.sharedOwner`, and is created with comment
-`orama-operator:<sharedOwner>` (`clerk/<instance ID>` for Clerk). Every resource with that
-`sharedOwner` recognises the record as the operator's own; a record without the comment is
-still refused. `sharedOwner` requires `deletionPolicy: Retain`, so no single resource deletes it.
-The comment must fit Cloudflare's 100-character limit: namespace/name has at most
-85 characters. Longer markers prevent creation, without blocking legacy reads or cleanup.
-Records use the same-namespace Secret's `token` and `zoneID`, the requested proxy setting
-and automatic TTL (`1`). Empty type retains the existing IP → A, hostname → CNAME inference.
-
-Before writing, the controller reads every page of records at the desired name.
-Any foreign A, AAAA or CNAME blocks all writes, even alongside an owned record; a
-foreign TXT blocks a TXT resource (Cloudflare would reject the duplicate on every pass).
-Other TXT/MX records do not block creation. Matching markers recover ownership after a
-failed Kubernetes status write. Multiple owned candidates are an error. Conflicts,
-invalid marker lengths and missing credentials set `ready: false` and retry after
-five minutes, preserving ownership fields. Missing credentials never trigger API calls.
-
-Pre-upgrade `status.recordID` without `status.ownerComment` retains legacy ownership
-by ID. Matching records receive only reads; changes to type, content, proxying or TTL
-receive one update preserving the existing comment. Legacy records never gain an
-ownership comment. Marked records never fall back to legacy ownership if their
-comment is removed or changed. Steady reconciliation does not rewrite DNS or status.
-
-A changed name (or type) is a different record (#529). Once the new record exists, the one
-in `status.recordID` is deleted through the same ownership check as cleanup: a marked record
-only while its comment matches, a legacy record by ID, a 404 counted as deleted. One that
-lost its comment is left, reported with `RecordNotOwned` and no longer tracked. If the delete
-fails, the old ID stays in status and the next pass retries it. `deletionPolicy: Retain`
-never deletes the old record; the resource only stops tracking it.
-
-`deletionPolicy: Retain` makes no Cloudflare call on deletion: the finalizer is released
-and the record stays. Otherwise, deletion fetches a marked record by ID and deletes it only while its comment matches
-`status.ownerComment`. Lost ownership leaves the record intact, releases the finalizer
-and emits Warning `RecordNotOwned`. Legacy records retain deletion by ID. A 404 means
-cleanup succeeded; other API failures retain the finalizer. Missing credentials with
-an ID to clean up retain the finalizer and retry after five minutes. A resource without
-an ID releases its finalizer without Cloudflare calls. Lake, Zetta and Cloud v1 parents
-continue to create the same child CRs.
-
-A changed `spec.name` (or type) creates the record at the new name first; then the record
-in `status.recordID` goes through the same owned delete, so a rename never leaves the old
-name live ([#529](https://github.com/oramasearch/orama-operator/issues/529)) and never
-deletes a record the operator did not create. A failed delete keeps the old ID and retries.
-
-The operator never takes over Prod 1's live `app.orama.com`. Its cutover repoint remains
-a reviewed Cloudflare change in the bridge
-[cutover runbook](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md),
-listed in [production changes](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/production-changes.md).
-Install the updated DNS CRD through the approved rollout mechanism before running the
-new controller, so `ownerComment` persists. Lake's unchanged-ID/comment/`modified_on`
-proof and the `oramadev.net` conflict, owned cleanup and lost-comment tests remain
-pending Steve's explicit approval for each rollout and test-resource change; rehearse
-on `v1-dev` first. The HTTP/fake-client and local API-server tests do not claim a live rollout.
-
 ## Component storage
 
 `internal/controller/storage.go` runs after ordinary component provisioning. It manages the
@@ -123,9 +64,8 @@ primary's enabled writer, the readers of an enabled engine (in a primary or read
 enabled analytics/cache/broker/search stores selected by their
 existing in-cluster mode and placement checks. External stores, disabled components, a read
 region's absent writer, and central stores skipped in a read region contribute no mismatch.
-ControlDB follows its existing enabled/in-cluster policy; this change does not alter its external
-mode behavior. HARVEST Mongo keeps the shared helper's `10Gi`/default-class output and has no new
-storage setting.
+ControlDB is always in-cluster (decision 61) and follows its enabled policy. HARVEST Mongo keeps the
+shared helper's `10Gi`/default-class output and has no new storage setting.
 
 Writer and store `storage.size` default to `10Gi`, and `reader.storage.size` to `512Gi`
 ([engine](#engine-internalcontrollerenginego)); every reader's claim `data-<cr>-reader-<n>` grows
@@ -176,6 +116,60 @@ and its CSI driver must support the disk/filesystem operation. See
 [Kubernetes expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)
 and [CNPG expansion](https://cloudnative-pg.io/docs/1.27/storage/#volume-expansion).
 A grown size stays in the set file that set it: a smaller value afterwards is a refused shrink.
+
+## Cloudflare DNS ownership
+
+`CloudflareDNSRecord` creates new records with comment
+`orama-operator:<namespace>/<name>` and saves the ID and exact comment in status. A record
+several resources keep (a Clerk production instance's records, which every Lake sharing the
+instance writes) names one owner in `spec.sharedOwner`, and is created with comment
+`orama-operator:<sharedOwner>` (`clerk/<instance ID>` for Clerk). Every resource with that
+`sharedOwner` recognises the record as the operator's own; a record without the comment is
+still refused. `sharedOwner` requires `deletionPolicy: Retain`, so no single resource deletes it.
+The comment must fit Cloudflare's 100-character limit: namespace/name has at most
+85 characters. Longer markers prevent creation, without blocking legacy reads or cleanup.
+Records use the same-namespace Secret's `token` and `zoneID`, the requested proxy setting
+and automatic TTL (`1`). Empty type retains the existing IP → A, hostname → CNAME inference.
+
+Before writing, the controller reads every page of records at the desired name.
+Any foreign A, AAAA or CNAME blocks all writes, even alongside an owned record; a
+foreign TXT blocks a TXT resource (Cloudflare would reject the duplicate on every pass).
+Other TXT/MX records do not block creation. Matching markers recover ownership after a
+failed Kubernetes status write. Multiple owned candidates are an error. Conflicts,
+invalid marker lengths and missing credentials set `ready: false` and retry after
+five minutes, preserving ownership fields. Missing credentials never trigger API calls.
+
+Pre-upgrade `status.recordID` without `status.ownerComment` retains legacy ownership
+by ID. Matching records receive only reads; changes to type, content, proxying or TTL
+receive one update preserving the existing comment. Legacy records never gain an
+ownership comment. Marked records never fall back to legacy ownership if their
+comment is removed or changed. Steady reconciliation does not rewrite DNS or status.
+
+A changed name (or type) is a different record (#529). Once the new record exists, the one
+in `status.recordID` is deleted through the same ownership check as cleanup: a marked record
+only while its comment matches, a legacy record by ID, a 404 counted as deleted. One that
+lost its comment is left, reported with `RecordNotOwned` and no longer tracked. If the delete
+fails, the old ID stays in status and the next pass retries it. `deletionPolicy: Retain`
+never deletes the old record; the resource only stops tracking it.
+
+`deletionPolicy: Retain` makes no Cloudflare call on deletion: the finalizer is released
+and the record stays. Otherwise, deletion fetches a marked record by ID and deletes it only while its comment matches
+`status.ownerComment`. Lost ownership leaves the record intact, releases the finalizer
+and emits Warning `RecordNotOwned`. Legacy records retain deletion by ID. A 404 means
+cleanup succeeded; other API failures retain the finalizer. Missing credentials with
+an ID to clean up retain the finalizer and retry after five minutes. A resource without
+an ID releases its finalizer without Cloudflare calls. Lake, Zetta and Cloud v1 parents
+continue to create the same child CRs.
+
+The operator never takes over Prod 1's live `app.orama.com`. Its cutover repoint remains
+a reviewed Cloudflare change in the bridge
+[cutover runbook](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md),
+listed in [production changes](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/production-changes.md).
+Install the updated DNS CRD through the approved rollout mechanism before running the
+new controller, so `ownerComment` persists. Lake's unchanged-ID/comment/`modified_on`
+proof and the `oramadev.net` conflict, owned cleanup and lost-comment tests remain
+pending Steve's explicit approval for each rollout and test-resource change; rehearse
+on `v1-dev` first. The HTTP/fake-client and local API-server tests do not claim a live rollout.
 
 ## Bootstrap — config + per-component secrets (`internal/controller/config.go`)
 
@@ -442,6 +436,26 @@ Driven by `spec.region.role`:
     `emptyDir`. A Deployment of that name the CR does not control is left alone and blocks the
     readers with a conflict error. Disabling the engine removes the StatefulSet, both reader
     Services and the PDB, and keeps the claims, as for the writer.
+
+  A reader on a new, empty claim replays the writer's `oramacore-operations` stream from offset 0.
+  The stream keeps 5 GB, so once more than that has been written, it can no longer build a complete
+  index from it. The reader then refuses to serve rather than serve a partial index
+  ([oramacore#341](https://github.com/oramasearch/oramacore/pull/341)): it exits non-zero with a
+  message starting with one of two codes, and it never goes Ready. The reader container sets
+  `terminationMessagePolicy: FallbackToLogsOnError` so that message reaches the pod's
+  `lastState.terminated.message`, and while the `reader` component is not Ready the operator
+  appends the cause to its `OramaCloudV1` status detail (`readerRefusalCause` in
+  `internal/controller/status.go`):
+
+  | Code in the reader's exit message | Appended to the `reader` detail |
+  |---|---|
+  | `REPLICATION_HISTORY_EXPIRED` (the offset it needs is gone from the stream) | `replication history expired; the reader cannot be built from the stream (needs a reader seed, #458)` |
+  | `REPLICATION_STREAM_BEHIND` (it needs an offset ahead of the stream: wrong stream, or a restored broker) | `reader is ahead of this replication stream (wrong stream or restored broker)` |
+
+  For example, `0/1; replication history expired; the reader cannot be built from the stream (needs a
+  reader seed, #458)`. Pods being deleted, exits with code 0 and other messages add nothing; one
+  cause is listed once however many readers report it. Seeding a reader from another source is not
+  available yet ([#458](https://github.com/oramasearch/orama-operator/issues/458)).
 - **Public hosts** (`cloudv1_networking.go`, [#385](https://github.com/oramasearch/orama-operator/issues/385))
   — `reconcileEngineIngresses` runs at the end of the enabled path and before the teardown on the
   disabled path. `writer.host` (primary region only) renders Ingress `<cr>-writer` → Service
@@ -477,6 +491,7 @@ Driven by `spec.region.role`:
   zetta-tunnel` gets no gateway address for them. Inside the cluster `/metrics` stays on each pod's
   `:8080` (`<cr>-writer:8080`, each reader at `<cr>-reader-<n>.<cr>-reader-headless:8080`; the reader Service's port 80 is the public
   path). How Prometheus scrapes it is [#15](https://github.com/oramasearch/orama-operator/issues/15).
+
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
   **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
@@ -555,7 +570,7 @@ Driven by `spec.region.role`:
   `readerSideYAML`), so the combined, writer-only and reader-only templates all carry it and
   `orama.cloud/config-hash` rolls the pods when it changes. The values are fixed, with no CR field:
   `evaluation_timeout: 200ms`, `execution_timeout: 1s` (Prod 1's), and `denied_domains` only
-  (OramaCore refuses `allowed_domains` next to it). The list, 65 entries in this order without
+  (OramaCore refuses `allowed_domains` next to it). The list, 66 entries in this order without
   duplicates:
   1. Prod 1's 32 entries as written (orama-deploy `655f1a2`, `oramacore/production/config/`
      `writer.config.yaml` and `reader.config.yaml`): loopback, RFC 1918, link-local and cloud
@@ -565,7 +580,9 @@ Driven by `spec.region.role`:
   2. A `**` form of each Prod 1 entry ending in `.*` (`10.**`, `169.254.**`, `172.1[6-9].**`, …).
   3. The cluster's names: `*.svc`, `*.svc.cluster.local`, `*.cluster.local`, `kubernetes*`,
      `*.internal`, their `**` forms, `::ffff:*` (IPv4-mapped IPv6, which the URL parser keeps in
-     hex, e.g. `::ffff:a00:1`, so no IPv4 pattern sees it) and `::`.
+     hex, e.g. `::ffff:a00:1`, so no IPv4 pattern sees it), `::`, and Azure's WireServer
+     `168.63.129.16` (Prod 1's list was written for AWS; on AKS that host address is reachable and
+     outside every private range).
   4. The stack's own Service names, `<cr>-*` and `<cr>-*.**`.
 
   Matching is `orama-js-pool` 0.4.3's
@@ -606,15 +623,19 @@ Driven by `spec.region.role`:
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets
   `terminationGracePeriodSeconds: 300` (readers: 60) so k8s doesn't SIGKILL the flush
   at the default 30s.
-- **Health probes** — startup / readiness / liveness all hit `GET /health` on `:8080`
+- **Health probes** — startup / readiness / liveness hit `GET /health` on `:8080`
   (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path), including when Envoy
-  is enabled. The **startup probe** allows the writer **20 minutes** (`120 × 10s`)
-  and readers **40 minutes** (`240 × 10s`), matching Prod 1's startup allowances from
-  Steve's review of #406. These fixed budgets gate readiness and liveness during index
-  loading; a successful startup probe releases them immediately, without waiting out the
-  budget. A container that never becomes healthy exhausts its budget and is restarted.
-  Readiness checks every 10s and liveness every 15s, both with a 3s timeout and failure
-  threshold 3. Reconciliation updates existing workload templates to these startup budgets.
+  is enabled, except the **reader's readiness**, which hits `GET /health/ready`: it reports ready
+  only once the reader has caught up with the stream head it observed at startup
+  ([oramacore#340](https://github.com/oramasearch/oramacore/pull/340)). The reader's liveness and
+  startup stay on `/health`, so a refusing reader is not restarted by liveness; it is simply never
+  Ready. The Core image must serve `/health/ready`, or every reader stays not-Ready. The **startup
+  probe** allows the writer **20 minutes** (`120 × 10s`) and readers **40 minutes** (`240 × 10s`),
+  matching Prod 1's startup allowances from Steve's review of #406. These fixed budgets gate
+  readiness and liveness during index loading; a successful startup probe releases them
+  immediately, without waiting out the budget. A container that never becomes healthy exhausts its
+  budget and is restarted. Readiness checks every 10s and liveness every 15s, both with a 3s timeout
+  and failure threshold 3. Reconciliation updates existing workload templates to these startup budgets.
 - **Disruption budgets** — the **writer** gets a PDB with `maxUnavailable: 0` (it's a
   singleton — voluntary disruptions like node drains/autoscaler are blocked so it
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**
