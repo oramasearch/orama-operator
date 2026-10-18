@@ -212,7 +212,7 @@ func pgMigrationJobSpec(ps *oramav1alpha1.PostgresSchema) batchv1.JobSpec {
 	}
 	image := ps.Spec.Image
 	if image == "" {
-		image = "postgres:16-alpine"
+		image = "postgres:16.15-alpine"
 	}
 	schemaFile := "/migrations/" + ps.Spec.SchemaConfigMapRef.Key
 	guardCheck := `if psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.` + guard + `')" | grep -q ` + guard + `; then
@@ -247,7 +247,8 @@ echo "postgres-schema: done"`
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
-				RestartPolicy: corev1.RestartPolicyNever,
+				RestartPolicy:    corev1.RestartPolicyNever,
+				ImagePullSecrets: ps.Spec.ImagePullSecrets,
 				Containers: []corev1.Container{{
 					Name:            "migrate",
 					Image:           image, // ships psql

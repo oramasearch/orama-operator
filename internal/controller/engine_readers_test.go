@@ -165,7 +165,6 @@ func TestReaderReplicaCountIsFixedAndNoAutoscalerIsCreated(t *testing.T) {
 	}
 
 	oc.Spec.Components.Engine.Reader.Replicas = 2
-	oc.Spec.Components.Engine.Reader.HPA = &oramav1alpha1.HPASpec{MinReplicas: 2, MaxReplicas: 6, TargetCPUUtilization: 70}
 	h.reconcile(oc)
 	if got := *h.reader().Spec.Replicas; got != 2 {
 		t.Errorf("replicas = %d, want reader.replicas 2", got)
@@ -175,7 +174,7 @@ func TestReaderReplicaCountIsFixedAndNoAutoscalerIsCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(hpas.Items) != 0 {
-		t.Errorf("found %d HorizontalPodAutoscalers, want none even with reader.hpa set", len(hpas.Items))
+		t.Errorf("found %d HorizontalPodAutoscalers, want none", len(hpas.Items))
 	}
 }
 

@@ -30,7 +30,7 @@ spec:
     engine:
       enabled: true
       writer: { gpu: true }   # built-in embeddings on GPU; set false for CPU on a non-GPU node
-      reader: { replicas: 3, hpa: { minReplicas: 3, maxReplicas: 8, targetCPUUtilization: 70 } }
+      reader: { replicas: 3 }
       envoy: true
     dashboard: { enabled: true, host: app.example.com }
     docs: { enabled: true, host: docs.example.com }   # docs.orama.com (Next.js + Fumadocs)
