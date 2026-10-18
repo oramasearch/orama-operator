@@ -26,12 +26,11 @@ operator credential or lake's instance administrator only (lake `docs/api/volume
 
 ## What the operator does
 
-Turn it on per Lake:
+Every Lake runs it; there is no switch ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)). Both fields are optional:
 
 ```yaml
 spec:
   snapshots:
-    enabled: true
     className: lake-retain        # default
     driver: disk.csi.azure.com    # default
 ```
@@ -219,7 +218,7 @@ The envtests (`TestVolumeSnapshots*` in `internal/controller/lake_volume_snapsho
 run against the upstream snapshot CRDs (external-snapshotter v8.2.0, the version on the dev
 cluster). They cover class creation, scheduled creation, pruning to `keep`, one-off requests, status
 reporting, a refused `Delete` class and snapshots outliving their workspace. On dev, after the
-operator and lake `0069` are deployed and `spec.snapshots.enabled` is set on `Lake/prod`:
+operator and lake `0069` are deployed on `Lake/prod`:
 
 1. `request_volume_snapshot` for `store` and for one workspace; `volume_snapshots` until both are
    `ready_to_use` (`kubectl get volumesnapshot -A -l app.kubernetes.io/managed-by=orama-operator`).

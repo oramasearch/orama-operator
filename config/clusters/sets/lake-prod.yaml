@@ -17,6 +17,14 @@ spec:
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
         value: lake-eu.oramadev.net
+      - name: LAKE_OPENAI_API_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
+      - name: LAKE_BILLING
+        value: "on"
+      - name: LAKE_STRIPE_SECRET_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
+      - name: LAKE_STRIPE_WEBHOOK_SECRET
+        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-eu.oramadev.net
   - clusterRef: orama-production-cluster-03
     name: shared-us
@@ -31,12 +39,24 @@ spec:
         value: air-gapped
       - name: LAKE_PUBLIC_HOST
         value: lake-us.oramadev.net
+      - name: LAKE_OPENAI_API_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
+      - name: LAKE_BILLING
+        value: "on"
+      - name: LAKE_STRIPE_SECRET_KEY
+        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
+      - name: LAKE_STRIPE_WEBHOOK_SECRET
+        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-us.oramadev.net
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
     namespace: lake
   - name: cloudflare-api-token
+    namespace: lake
+  - name: lake-prod-openai
+    namespace: lake
+  - name: lake-prod-stripe
     namespace: lake
   template:
     dnsSecretRef:

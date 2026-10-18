@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -280,6 +281,10 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 // over-long extra host, and any name (case-insensitive) repeated across the host and extraHosts of
 // dashboard, docs, oramasearchApp, engine.writer and engine.reader, enabled or not. Reconcile calls
 // it before writing any child resource. The error names both conflicting field paths.
+// dnsHostName is the CRD's pattern for host and each extraHosts entry: a lowercase DNS name with at
+// least one dot.
+var dnsHostName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`)
+
 func validateIngressHosts(oc *oramav1alpha1.OramaCloudV1) error {
 	c := oc.Spec.Components
 	claimed := map[string]string{}
@@ -312,6 +317,11 @@ func validateIngressHosts(oc *oramav1alpha1.OramaCloudV1) error {
 			key := strings.ToLower(name)
 			if first, ok := claimed[key]; ok {
 				return fmt.Errorf("%s and %s are both %q", first, path, name)
+			}
+			// The CRD refuses this too; checked here for objects that bypassed admission, before any
+			// Ingress or certificate is written for the name.
+			if i > 0 && !dnsHostName.MatchString(name) {
+				return fmt.Errorf("%s %q must be a lowercase DNS name with at least one dot", path, name)
 			}
 			claimed[key] = path
 		}
@@ -352,38 +362,17 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		return nil
 	}
 	img := componentImage(oc, "dashboard", "dashboard")
-	// Schema ownership: when the operator manages the control DB in-cluster it also owns the schema —
-	// reconcileControlDBMigrations applies the SAME Drizzle schema via an owned PostgresSchema Job
-	// (operator#40, supersedes the #34 dashboard init). Running BOTH double-applies the schema and the
-	// dashboard's drizzle-kit migrate then dies on the objects PostgresSchema already created (Postgres
-	// 42710, "type already exists") — it can't tell, because PostgresSchema applies raw SQL and doesn't
-	// touch `__drizzle_migrations`. So only run the dashboard's own db-migrate when the operator does
-	// NOT own the schema: an EXTERNAL control DB (no operator-managed PostgresSchema).
-	cdb := oc.Spec.Components.ControlDB
-	operatorOwnsSchema := cdb.Enabled && cdb.Mode != "external"
-	var initContainers []corev1.Container
-	if !operatorOwnsSchema {
-		// External control DB — the operator applies no PostgresSchema, so the dashboard applies its
-		// own Drizzle migrations before it serves (#34). GUARDED as a safe no-op on an image that
-		// doesn't ship the migrations (`.drizzle` + `drizzle.config.ts`).
-		initContainers = []corev1.Container{{
-			Name:    "db-migrate",
-			Image:   img,
-			Command: []string{"sh", "-c", `if [ -f drizzle.config.ts ] && [ -d .drizzle ]; then npm run db:migrate; else echo "dashboard image ships no migrations yet (operator#34) — skipping"; fi`},
-			Env:     []corev1.EnvVar{pgURIEnv(oc, "DATABASE_URL")},
-		}}
-	}
+	// The dashboard never migrates the control DB: the operator's PostgresSchema owns the
+	// schema (operator#40). A second Drizzle migrate collides with those objects (Postgres 42710).
 	return r.reconcileApp(ctx, oc, appDef{
 		component:         "dashboard",
 		image:             img,
 		port:              3000,
 		ingressHost:       d.Host,
 		ingressExtraHosts: d.ExtraHosts,
-		// The master key (#307), and the real control-DB password from the CNPG secret (#32) +
-		// DATABASE_URL for Drizzle (#34).
+		// The master key (#307), and the CNPG-generated credentials for the dashboard's control-DB client.
 		env:               []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
 		credentialSecrets: []string{masterKey},
-		initContainers:    initContainers,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
 		// The dashboard reads JWT_ISSUER from the shared ConfigMap only at start: roll it when the

@@ -322,14 +322,14 @@ func TestLLMRenderScriptSubstitutesSafely(t *testing.T) {
 func TestLLMCustomKeySecretWiring(t *testing.T) {
 	oc := engineOC(func(o *oramav1alpha1.OramaCloudV1) {
 		prod1LLM(o)
-		o.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys", Key: "openai"}
+		o.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys"}
 		o.Spec.LLM.Providers[3].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys"}
 	})
-	h := newEngineHarness(t, engineSecret(), secretOf("llm-keys", map[string]string{"openai": "custom-openai", "ANTHROPIC_API_KEY": "custom-anthropic"}))
+	h := newEngineHarness(t, engineSecret(), secretOf("llm-keys", map[string]string{"OPENAI_API_KEY": "custom-openai", "ANTHROPIC_API_KEY": "custom-anthropic"}))
 	h.reconcile(oc)
 	want := []corev1.EnvVar{
 		{Name: "OPENAI_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: "llm-keys"}, Key: "openai"}}},
+			LocalObjectReference: corev1.LocalObjectReference{Name: "llm-keys"}, Key: "OPENAI_API_KEY"}}},
 		{Name: "ANTHROPIC_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: "llm-keys"}, Key: "ANTHROPIC_API_KEY"}}},
 	}
@@ -384,12 +384,12 @@ func TestLLMModelChangeRollsBothSides(t *testing.T) {
 // A rotated key in the engine Secret or an apiKeySecretRef Secret rolls both sides; an unrelated
 // Secret, a metadata-only edit or an unchanged reconcile does not.
 func TestLLMSecretChangeRollsBothSides(t *testing.T) {
-	h := newEngineHarness(t, engineSecret(), secretOf("llm-keys", map[string]string{"openai": "custom-openai"}),
+	h := newEngineHarness(t, engineSecret(), secretOf("llm-keys", map[string]string{"OPENAI_API_KEY": "custom-openai"}),
 		secretOf("unrelated", map[string]string{"X": "1"}))
 	oc := engineOC(func(o *oramav1alpha1.OramaCloudV1) {
 		prod1LLM(o)
 		withSideImages(o)
-		o.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys", Key: "openai"}
+		o.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys"}
 	})
 	h.reconcile(oc)
 	snapshot := func() (string, map[string]string) {
@@ -438,7 +438,7 @@ func TestLLMSecretChangeRollsBothSides(t *testing.T) {
 
 	h.setSecret("v1-engine-secret", "GROQ_API_KEY", "groq-rotated")
 	rolled("rotating GROQ_API_KEY in the engine Secret")
-	h.setSecret("llm-keys", "openai", "custom-openai-rotated")
+	h.setSecret("llm-keys", "OPENAI_API_KEY", "custom-openai-rotated")
 	rolled("rotating the apiKeySecretRef key")
 	steady("a second unchanged reconcile")
 }
@@ -571,22 +571,19 @@ func TestLLMInvalidInputsLeaveEngineUntouched(t *testing.T) {
 		"missing Secret": {spec: func(o *oramav1alpha1.OramaCloudV1) {
 			o.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "absent"}
 		}, want: "LLM key Secret orama-system/absent does not exist"},
-		"absent custom key": {spec: func(o *oramav1alpha1.OramaCloudV1) {
-			o.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys", Key: "nope"}
-		}, want: "LLM key Secret orama-system/llm-keys has no key nope (for OPENAI_API_KEY)"},
-		// The engine Secret's provider keys are seeded when absent, so an absent key is a custom
-		// Secret's: here the omitted key, GOOGLE_API_KEY.
-		"absent omitted key": {spec: func(o *oramav1alpha1.OramaCloudV1) {
+		// The engine Secret's provider keys are seeded when absent, so an absent key is a referenced
+		// Secret's: here GOOGLE_API_KEY.
+		"absent key": {spec: func(o *oramav1alpha1.OramaCloudV1) {
 			o.Spec.LLM.Providers[1].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys"}
 		}, want: "LLM key Secret orama-system/llm-keys has no key GOOGLE_API_KEY (for GOOGLE_API_KEY)"},
 		"empty fallback key": {secret: func(h *engineHarness) { h.setSecret("v1-engine-secret", "GROQ_API_KEY", "") },
 			want: "LLM key Secret orama-system/v1-engine-secret key GROQ_API_KEY (for GROQ_API_KEY) is empty"},
 		"line break in a fallback key": {secret: func(h *engineHarness) { h.setSecret("v1-engine-secret", "GROQ_API_KEY", "groq-line\nbreak") },
 			want: "LLM key Secret orama-system/v1-engine-secret key GROQ_API_KEY (for GROQ_API_KEY) contains a line break"},
-		"carriage return in a custom key": {secret: func(h *engineHarness) { h.setSecret("llm-keys", "openai", "custom\rvalue") },
+		"carriage return in a custom key": {secret: func(h *engineHarness) { h.setSecret("llm-keys", "OPENAI_API_KEY", "custom\rvalue") },
 			spec: func(o *oramav1alpha1.OramaCloudV1) {
-				o.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys", Key: "openai"}
-			}, want: "LLM key Secret orama-system/llm-keys key openai (for OPENAI_API_KEY) contains a line break"},
+				o.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys"}
+			}, want: "LLM key Secret orama-system/llm-keys key OPENAI_API_KEY (for OPENAI_API_KEY) contains a line break"},
 	}
 	secretValues := []string{"custom-openai", "custom\rvalue", "groq-line\nbreak"}
 	for _, v := range engineKeys {
@@ -600,7 +597,7 @@ func TestLLMInvalidInputsLeaveEngineUntouched(t *testing.T) {
 			}
 			t.Run(label, func(t *testing.T) {
 				h := newEngineHarness(t, engineOC(func(o *oramav1alpha1.OramaCloudV1) { prod1LLM(o); withSideImages(o) }),
-					engineSecret(), secretOf("llm-keys", map[string]string{"openai": "custom-openai"}))
+					engineSecret(), secretOf("llm-keys", map[string]string{"OPENAI_API_KEY": "custom-openai"}))
 				var cm *corev1.ConfigMap
 				var sts *appsv1.StatefulSet
 				var dep *appsv1.Deployment
@@ -658,9 +655,9 @@ func TestLLMInvalidInputsLeaveEngineUntouched(t *testing.T) {
 func TestLLMCustomSecretDeletedThenRecreated(t *testing.T) {
 	oc := engineOC(func(o *oramav1alpha1.OramaCloudV1) {
 		prod1LLM(o)
-		o.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys", Key: "openai"}
+		o.Spec.LLM.Providers[0].APIKeySecretRef = &oramav1alpha1.LLMKeySecretRef{Name: "llm-keys"}
 	})
-	keys := secretOf("llm-keys", map[string]string{"openai": "custom-openai"})
+	keys := secretOf("llm-keys", map[string]string{"OPENAI_API_KEY": "custom-openai"})
 	h := newEngineHarness(t, oc, engineSecret(), keys.DeepCopy())
 	if err := h.run(); err != nil {
 		t.Fatal(err)
@@ -680,7 +677,7 @@ func TestLLMCustomSecretDeletedThenRecreated(t *testing.T) {
 	}
 
 	recreated := keys.DeepCopy()
-	recreated.Data["openai"] = []byte("custom-openai-new")
+	recreated.Data["OPENAI_API_KEY"] = []byte("custom-openai-new")
 	if err := h.cl.Create(context.Background(), recreated); err != nil {
 		t.Fatal(err)
 	}

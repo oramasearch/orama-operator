@@ -132,11 +132,12 @@ type buildEvent struct {
 }
 
 func lakeBuildsEnabled(lake *oramav1alpha1.Lake) bool {
-	return lake.Spec.Builds.Enabled && lakePostgresEnabled(lake)
+	return lakePostgresEnabled(lake)
 }
 
+// lakeControlRowsEnabled: every Lake reads its control rows; they need the control Postgres.
 func lakeControlRowsEnabled(lake *oramav1alpha1.Lake) bool {
-	return lakeServicesEnabled(lake) || lakeBuildsEnabled(lake) || lakeWorkspacesEnabled(lake)
+	return lakePostgresEnabled(lake)
 }
 
 func buildCacheEnabled(lake *oramav1alpha1.Lake) bool {
@@ -473,7 +474,7 @@ func buildPod(lake *oramav1alpha1.Lake, build *LakeBuild, target buildTarget, la
 		},
 		Containers: []corev1.Container{{
 			Name:      "builder",
-			Image:     lake.Spec.Builds.BuilderImage,
+			Image:     lakeBuilderImage(lake),
 			Env:       buildEnv(lake, build, target),
 			Resources: buildResources(lake),
 			SecurityContext: &corev1.SecurityContext{
@@ -674,10 +675,6 @@ func (r *LakeReconciler) reconcileLakeBuild(ctx context.Context, lake *oramav1al
 	target, err := parseBuildTarget(build.Target)
 	if err != nil {
 		status.Phase, status.Message, status.TokenHashes = BuildPhaseFailed, err.Error(), "{}"
-		return status, false, true, nil
-	}
-	if lake.Spec.Builds.BuilderImage == "" {
-		status.Phase, status.Message, status.TokenHashes = BuildPhaseFailed, "builds are enabled but spec.builds.builderImage is empty", "{}"
 		return status, false, true, nil
 	}
 	namespace, err := r.reconcileBuildNamespace(ctx, lake, target)

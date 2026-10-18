@@ -72,6 +72,10 @@ func (r *OramaCloudV1Reconciler) reconcileOriginIssuer(ctx context.Context, oc *
 	issuer.SetName(originIssuerName(oc))
 	issuer.SetNamespace(oc.Namespace)
 	if _, err := stackIngressIssuer(oc); err != nil {
+		// Removing the token removes the Issuer, but existing Ingresses keep their
+		// cert-manager.io/issuer annotation: their certificates stay served until expiry and renewal
+		// fails until the token returns. Meanwhile every Ingress builder fails on the same missing
+		// token, so the stack reports Degraded and says why.
 		return deleteIfExists(ctx, r.Client, issuer)
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, issuer, func() error {

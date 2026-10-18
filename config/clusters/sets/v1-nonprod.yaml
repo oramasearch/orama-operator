@@ -11,11 +11,36 @@ spec:
       components:
         dashboard:
           host: app-dev.oramadev.net
+          # A second name the dashboard answers, with no DNS record from the operator, as
+          # app.orama.com is for v1-eu at the cutover.
+          extraHosts:
+          - app-alias-dev.oramadev.net
+        docs:
+          host: docs-dev.oramadev.net
+        engine:
+          reader:
+            host: reader-dev.oramadev.net
+          writer:
+            host: writer-dev.oramadev.net
+            jwt:
+              audiences:
+              - https://writer-dev.oramadev.net
+      # The one master key the engine, index-builder, workers, dashboard and analytics processor
+      # share. Without it the engine is held and the stack is not Ready.
+      masterAPIKeySecretRef:
+        name: v1-nonprod-master-api-key
+      # The dashboard signs write tokens with this issuer and the writer_url of the c1 row as audience;
+      # the writer accepts exactly these.
+      jwtIssuer: https://app-dev.oramadev.net
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
     namespace: orama-system
   - name: cloudflare-api-token
+    namespace: orama-system
+  - name: v1-nonprod-llm-keys
+    namespace: orama-system
+  - name: v1-nonprod-master-api-key
     namespace: orama-system
   template:
     cloudflare:
@@ -49,7 +74,6 @@ spec:
         enabled: true
       docs:
         enabled: true
-        host: docs.sandbox.local
       engine:
         enabled: true
         envoy: true
@@ -81,12 +105,33 @@ spec:
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
       tag: v1-sandbox
+    # Prod 1's providers, models and selector, as in v1-prod. Keys come from v1-nonprod-llm-keys.
     llm:
+      automaticEmbeddingsSelector:
+        model: gpt-5.2
+        provider: openai
       default: groq
       providers:
-      - models:
-        - llama-3.3-70b-versatile
+      - apiKeySecretRef:
+          name: v1-nonprod-llm-keys
+        models:
+        - gpt-5.2
+        name: openai
+      - apiKeySecretRef:
+          name: v1-nonprod-llm-keys
+        models:
+        - gemini-2.0-flash-001
+        name: google
+      - apiKeySecretRef:
+          name: v1-nonprod-llm-keys
+        models:
+        - openai/gpt-oss-120b
         name: groq
+      - apiKeySecretRef:
+          name: v1-nonprod-llm-keys
+        models:
+        - claude-sonnet-4-5
+        name: anthropic
     profile: light
     region:
       role: primary

@@ -219,6 +219,17 @@ spec:
                       format: int32
                       minimum: 30
                       type: integer
+                    sysctls:
+                      additionalProperties:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        x-kubernetes-int-or-string: true
+                      description: |-
+                        Sysctls uses Linux kernel names and maps to linuxOSConfig.sysctls in the AKS API.
+                        Unsupported names or values are refused before any Azure request. Existing pools are
+                        observed only; changes to these settings are reported by InSync.
+                      type: object
                     vmSize:
                       minLength: 1
                       type: string
