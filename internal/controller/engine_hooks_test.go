@@ -82,6 +82,7 @@ const v1HooksFixture = `  hooks:
       - "**.internal"
       - "::ffff:*"
       - "::"
+      - "168.63.129.16"
       - "v1-*"
       - "v1-*.**"
     evaluation_timeout: 200ms
@@ -110,6 +111,7 @@ var (
 		"*.svc", "*.svc.cluster.local", "*.cluster.local", "kubernetes*", "*.internal",
 		"**.svc", "**.cluster.local", "kubernetes*.**", "**.internal",
 		"::ffff:*", "::",
+		"168.63.129.16",
 	}
 )
 
@@ -141,8 +143,8 @@ func sideHooks(t *testing.T, doc, side string) (map[string]any, bool) {
 }
 
 func TestHookDeniedDomains(t *testing.T) {
-	if n := len(wantProd1Domains) + len(wantDerivedDomains) + len(wantClusterDomains) + 2; n != 65 {
-		t.Fatalf("expected list has %d entries, want 65", n)
+	if n := len(wantProd1Domains) + len(wantDerivedDomains) + len(wantClusterDomains) + 2; n != 66 {
+		t.Fatalf("expected list has %d entries, want 66", n)
 	}
 	got := hookDeniedDomains(namedOC("v1-dev", nil))
 	if want := wantHookDomains("v1-dev"); !reflect.DeepEqual(got, want) {
@@ -315,5 +317,12 @@ func TestHooksCoveredByConfigHash(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// On AKS a hook must not reach Azure's WireServer, which Prod 1's AWS list does not name.
+func TestHookDeniedDomainsIncludeAzureWireServer(t *testing.T) {
+	if !slices.Contains(hookDeniedDomains(newOCV1(nil)), "168.63.129.16") {
+		t.Fatal("hook deny list does not include Azure's WireServer 168.63.129.16")
 	}
 }

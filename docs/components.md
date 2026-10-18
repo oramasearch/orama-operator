@@ -421,7 +421,7 @@ Driven by `spec.region.role`:
   `readerSideYAML`), so the combined, writer-only and reader-only templates all carry it and
   `orama.cloud/config-hash` rolls the pods when it changes. The values are fixed, with no CR field:
   `evaluation_timeout: 200ms`, `execution_timeout: 1s` (Prod 1's), and `denied_domains` only
-  (OramaCore refuses `allowed_domains` next to it). The list, 65 entries in this order without
+  (OramaCore refuses `allowed_domains` next to it). The list, 66 entries in this order without
   duplicates:
   1. Prod 1's 32 entries as written (orama-deploy `655f1a2`, `oramacore/production/config/`
      `writer.config.yaml` and `reader.config.yaml`): loopback, RFC 1918, link-local and cloud
@@ -431,7 +431,9 @@ Driven by `spec.region.role`:
   2. A `**` form of each Prod 1 entry ending in `.*` (`10.**`, `169.254.**`, `172.1[6-9].**`, …).
   3. The cluster's names: `*.svc`, `*.svc.cluster.local`, `*.cluster.local`, `kubernetes*`,
      `*.internal`, their `**` forms, `::ffff:*` (IPv4-mapped IPv6, which the URL parser keeps in
-     hex, e.g. `::ffff:a00:1`, so no IPv4 pattern sees it) and `::`.
+     hex, e.g. `::ffff:a00:1`, so no IPv4 pattern sees it), `::`, and Azure's WireServer
+     `168.63.129.16` (Prod 1's list was written for AWS; on AKS that host address is reachable and
+     outside every private range).
   4. The stack's own Service names, `<cr>-*` and `<cr>-*.**`.
 
   Matching is `orama-js-pool` 0.4.3's

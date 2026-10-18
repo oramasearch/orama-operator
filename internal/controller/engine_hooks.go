@@ -28,12 +28,15 @@ var prod1HookDeniedDomains = []string{
 }
 
 // clusterHookDeniedDomains are the in-cluster names a hook could reach a Service or the API server
-// by, plus IPv4-mapped and unspecified IPv6. The URL parser leaves an IPv4-mapped address in hex
-// form ("[::ffff:10.0.0.1]" becomes "::ffff:a00:1"), so no IPv4 pattern sees it.
+// by, plus IPv4-mapped and unspecified IPv6, plus Azure's WireServer. The URL parser leaves an
+// IPv4-mapped address in hex form ("[::ffff:10.0.0.1]" becomes "::ffff:a00:1"), so no IPv4 pattern
+// sees it. Prod 1's list was written for AWS; on AKS, 168.63.129.16 (the host's WireServer and DNS
+// address) is reachable from a node and lies outside every private range.
 var clusterHookDeniedDomains = []string{
 	"localhost", "*.svc", "*.svc.cluster.local", "*.cluster.local", "kubernetes*", "*.internal",
 	"**.svc", "**.cluster.local", "kubernetes*.**", "**.internal",
 	"::ffff:*", "::",
+	"168.63.129.16",
 }
 
 // Prod 1's hooks runtime timeouts, rendered as is on both sides.
