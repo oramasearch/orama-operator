@@ -238,13 +238,15 @@ type ComponentsSpec struct {
 	Docs      ToggleWithHost `json:"docs,omitempty"`      // docs.orama.com (Next.js + Fumadocs)
 	Ingestion IngestionSpec  `json:"ingestion,omitempty"` // index-builder (Deployment) + HARVEST
 	Analytics DataStoreSpec  `json:"analytics,omitempty"` // ClickHouse
-	ControlDB DataStoreSpec  `json:"controlDB,omitempty"` // Postgres control plane
-	PgAdmin   Toggle         `json:"pgAdmin,omitempty"`   // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
-	Cache     DataStoreSpec  `json:"cache,omitempty"`     // Redis (+ QStash shim)
-	Broker    DataStoreSpec  `json:"broker,omitempty"`    // RabbitMQ
-	Search    DataStoreSpec  `json:"search,omitempty"`    // Typesense hosted-search clusters
-	Disco     Toggle         `json:"disco,omitempty"`     // DISCO semantic cache
-	Workers   WorkersSpec    `json:"workers,omitempty"`   // the ported CF workers (one bundled image)
+	// ControlDB is the Postgres control plane, always in-cluster.
+	// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode == 'in-cluster'",message="controlDB.mode external is not supported: the control DB is always in-cluster"
+	ControlDB ControlDBSpec `json:"controlDB,omitempty"`
+	PgAdmin   Toggle        `json:"pgAdmin,omitempty"` // pgAdmin4 web — admin UI for the control-DB (ClusterIP, no ingress)
+	Cache     DataStoreSpec `json:"cache,omitempty"`   // Redis (+ QStash shim)
+	Broker    DataStoreSpec `json:"broker,omitempty"`  // RabbitMQ
+	Search    DataStoreSpec `json:"search,omitempty"`  // Typesense hosted-search clusters
+	Disco     Toggle        `json:"disco,omitempty"`   // DISCO semantic cache
+	Workers   WorkersSpec   `json:"workers,omitempty"` // the ported CF workers (one bundled image)
 
 	// Additional v1 components (gap fill — techops-docs issues #5–#7):
 	AnalyticsProcessor Toggle `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
@@ -348,6 +350,59 @@ type WorkersSpec struct {
 	// sensible per-component default (workload hardening, #18).
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// ControlDBSpec is the control-plane Postgres: a DataStoreSpec plus this stack's values for the
+// dashboard reference rows the operator seeds (operator#378).
+type ControlDBSpec struct {
+	DataStoreSpec `json:",inline"`
+	// StripePrices are this stack's Stripe price IDs for the seeded reference rows: test-mode IDs on
+	// a nonprod stack, live-mode IDs on production. They are never part of the operator's committed
+	// rows. Empty leaves every plan's Stripe columns NULL and seeds no add-on price.
+	// +optional
+	StripePrices ControlDBStripePrices `json:"stripePrices,omitempty"`
+}
+
+// ControlDBStripePrices maps seeded reference rows, by their ID, to this stack's Stripe price IDs.
+// An ID that is not one of the operator's reference rows fails the seed, visibly.
+type ControlDBStripePrices struct {
+	// Plans sets subscription_plans.stripe_price_id_monthly and stripe_price_id_yearly. A plan not
+	// listed has both NULL.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	Plans []StripePlanPrice `json:"plans,omitempty"`
+	// Addons sets stripe_addon_prices.stripe_price_id. That column is NOT NULL, so an add-on price row
+	// is seeded only when it is listed here.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	Addons []StripeAddonPrice `json:"addons,omitempty"`
+}
+
+// StripePlanPrice is one subscription plan's Stripe prices.
+type StripePlanPrice struct {
+	// ID is the subscription_plans row ID.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+	ID string `json:"id"`
+	// Monthly is the Stripe price ID for monthly billing.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,255}$`
+	// +optional
+	Monthly string `json:"monthly,omitempty"`
+	// Yearly is the Stripe price ID for yearly billing.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,255}$`
+	// +optional
+	Yearly string `json:"yearly,omitempty"`
+}
+
+// StripeAddonPrice is one add-on price row's Stripe price.
+type StripeAddonPrice struct {
+	// ID is the stripe_addon_prices row ID.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+	ID string `json:"id"`
+	// PriceID is the Stripe price ID.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,255}$`
+	PriceID string `json:"priceID"`
 }
 
 // DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream

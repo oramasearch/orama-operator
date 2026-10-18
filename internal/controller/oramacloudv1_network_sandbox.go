@@ -435,23 +435,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			searchWorkers,
 			cnpgPods,
 		)...)
-		if oc.Spec.Components.ControlDB.Mode == "external" {
-			externalDBClients := oramaCloudComponentSelector(
-				oc,
-				"dashboard",
-				"index-builder",
-				"analytics-processor",
-				"pgadmin",
-			)
-			allowances = append(allowances, sandboxAllowance(
-				"Control database clients reach a configured external Postgres endpoint on public TCP 5432; the destination is inferred because the URI is stored in a Secret.",
-				oramaCloudEgressPolicy(
-					"allow-control-clients-external-postgres",
-					externalDBClients,
-					publicEgressRule(publicPeers, 5432),
-				),
-			))
-		}
 	} else {
 		publicPolicyNames := []string{
 			"allow-engine-public-internet",
@@ -463,9 +446,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			"allow-embeddings-public-https",
 			"allow-search-workers-public-https",
 			"allow-controldb-primary-replication",
-		}
-		if oc.Spec.Components.ControlDB.Mode == "external" {
-			publicPolicyNames = append(publicPolicyNames, "allow-control-clients-external-postgres")
 		}
 		preserved, preserveErr := existingSandboxAllowances(
 			ctx,

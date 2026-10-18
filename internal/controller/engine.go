@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -482,7 +483,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		sts.Spec.Replicas = int32Ptr(1)
 		sts.Spec.ServiceName = name
 		sts.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
-		c := oramacoreContainer(oc, "writer")
+		c := oramacoreContainer(oc, "writer", writerStartupTimeout)
 		if w.Resources != nil {
 			c.Resources = *w.Resources
 		} else {
@@ -541,7 +542,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		dep.Labels = lbls
 		dep.Spec.Replicas = int32Ptr(replicas)
 		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
-		c := oramacoreContainer(oc, "reader")
+		c := oramacoreContainer(oc, "reader", readerStartupTimeout)
 		if rd.Resources != nil {
 			c.Resources = *rd.Resources
 		} else {
@@ -589,18 +590,35 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 
 // ---- shared builders ----
 
+const (
+	// Prod 1's startup allowances, per Steve's review of #406: writer 20 min, readers 40 min.
+	writerStartupTimeout             = 20 * time.Minute
+	readerStartupTimeout             = 40 * time.Minute
+	engineStartupPeriodSeconds int32 = 10
+)
+
+// engineStartupProbe gates readiness/liveness until startup succeeds or exhausts its budget.
+// The budget must be a whole number of periods; the startup tests check the resulting window.
+func engineStartupProbe(timeout time.Duration) *corev1.Probe {
+	threshold := timeout / (time.Duration(engineStartupPeriodSeconds) * time.Second)
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+			Path: "/health", Port: intstr.FromInt32(oramacorePort),
+		}},
+		PeriodSeconds:    engineStartupPeriodSeconds,
+		FailureThreshold: int32(threshold),
+	}
+}
+
 // oramacoreContainer is the OramaCore container of the "writer" or "reader" pod, running that side's
-// image (engineSideFor).
-func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1, side string) corev1.Container {
+// image (engineSideFor), with that side's startup budget.
+func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1, side string, startupTimeout time.Duration) corev1.Container {
 	// OramaCore serves GET /health at root (oramacore/src/web_server/api/mod.rs;
 	// also the prod ALB/Envoy health path).
 	health := func() *corev1.Probe {
 		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 			Path: "/health", Port: intstr.FromInt32(oramacorePort)}}}
 	}
-	// startup gates liveness/readiness so a slow index-load boot isn't killed.
-	startup := health()
-	startup.PeriodSeconds, startup.FailureThreshold = 10, 30 // ~5 min to become live
 	readiness := health()
 	readiness.PeriodSeconds, readiness.TimeoutSeconds, readiness.FailureThreshold = 10, 3, 3
 	liveness := health()
@@ -617,7 +635,7 @@ func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1, side string) corev1.Cont
 			{Name: "CONFIG_PATH", Value: "/etc/oramacore/config.yaml"},
 		},
 		EnvFrom:         envFromFor(oc, "engine"),
-		StartupProbe:    startup,
+		StartupProbe:    engineStartupProbe(startupTimeout),
 		ReadinessProbe:  readiness,
 		LivenessProbe:   liveness,
 		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
