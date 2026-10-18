@@ -155,6 +155,11 @@ rules:
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters/status"]
     verbs: ["get", "update", "patch"]
+  # Each Cloud v1 stack's Let's Encrypt Issuer for origin TLS (#457). ingress-shim, not the
+  # operator, creates the Certificates, so no certificates grant is needed.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["issuers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["clickhouse.altinity.com"]
     resources: ["clickhouseinstallations"]
     verbs: ["*"]

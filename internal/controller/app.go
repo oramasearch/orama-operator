@@ -104,6 +104,11 @@ type appDef struct {
 	// podAnnotations go on the pod template, so a change to one rolls the Deployment. An app whose
 	// envFrom value only takes effect at process start uses a hash of it to roll on change.
 	podAnnotations map[string]string
+	// extraEnvFrom is appended after the operator's envFrom sources (envFromFor), so its keys win
+	// over them; envHash, when set, is the pod-template annotation dashboardEnvHashAnnotation that
+	// rolls the pods when a referenced Secret/ConfigMap changes. The dashboard's user env (#311).
+	extraEnvFrom []corev1.EnvFromSource
+	envHash      string
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress if ingressHost set).
@@ -144,6 +149,13 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		}
 		annotations[k] = v
 	}
+	// No env-hash annotation without a hash, so an app with no referenced env keeps its template.
+	if def.envHash != "" {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[dashboardEnvHashAnnotation] = def.envHash
+	}
 
 	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
@@ -166,7 +178,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 				Args:            def.args,
 				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
 				Env:             def.env,
-				EnvFrom:         envFromFor(oc, def.component),
+				EnvFrom:         append(envFromFor(oc, def.component), def.extraEnvFrom...),
 				VolumeMounts:    def.volumeMounts,
 				Resources:       *res,
 				// Startup gates liveness/readiness so a slow boot isn't killed; readiness gates
@@ -211,11 +223,18 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 	return nil
 }
 
+// upsertIngress renders a component's Ingress for host on the stack's ingress class, with origin
+// TLS from the stack's Issuer. It fails, leaving any existing Ingress as it is, while the stack
+// has no Cloudflare token for the Issuer.
 func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component, host string, port int32) error {
+	issuer, err := stackIngressIssuer(oc)
+	if err != nil {
+		return err
+	}
 	lbls := labelsFor(oc, component)
 	pathType := networkingv1.PathTypePrefix
 	ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
 		ing.Labels = lbls
 		// Bind to the helmfile-installed ingress-nginx controller. Without an ingressClassName the
 		// controller ignores the Ingress (no ADDRESS assigned → nothing routes). Configurable via
@@ -238,6 +257,10 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 				},
 			},
 		}}
+		// Origin TLS from the stack's Issuer, after the rules: every host gets a certificate (#457).
+		if err := applyIngressTLS(ing, issuer); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(oc, ing, r.Scheme)
 	})
 	return err
@@ -268,30 +291,65 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 
 func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	d := oc.Spec.Components.Dashboard
+	// Cron cleanup comes first, so a missing or invalid environment never keeps disabled crons running.
+	if !d.Enabled || !d.Crons.Enabled {
+		if err := r.teardownDashboardCrons(ctx, oc); err != nil {
+			return err
+		}
+	}
 	if !d.Enabled {
-		return r.teardownByComponent(ctx, oc, "dashboard")
+		if err := r.teardownByComponent(ctx, oc, "dashboard"); err != nil {
+			return err
+		}
+		if d.Crons.Enabled { // admission refuses this; an object that bypassed it is reported
+			return errCronsNeedDashboard
+		}
+		return nil
 	}
 	masterKey, ok := masterAPIKeySecret(oc)
 	if !ok {
 		return nil
 	}
+	// The user's env (dashboard_env.go) is validated, read and hashed before the Deployment is
+	// touched, so a refused variable or a missing reference leaves the last valid template running.
+	if err := validateDashboardEnv(oc); err != nil {
+		return err
+	}
+	sources, err := r.dashboardEnvSources(ctx, oc)
+	if err != nil {
+		return err
+	}
+	envHash, err := r.dashboardEnvHash(ctx, oc, sources)
+	if err != nil {
+		return err
+	}
 	img := componentImage(oc, "dashboard", "dashboard")
 	// The dashboard never migrates the control DB: the operator's PostgresSchema owns the
 	// schema (operator#40). A second Drizzle migrate collides with those objects (Postgres 42710).
-	return r.reconcileApp(ctx, oc, appDef{
+	if err := r.reconcileApp(ctx, oc, appDef{
 		component:   "dashboard",
 		image:       img,
 		port:        3000,
 		ingressHost: d.Host,
-		// The master key (#307), and the CNPG-generated credentials for the dashboard's control-DB client.
-		env:               []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")},
+		// The master key (#307), the CNPG-generated credentials for the dashboard's control-DB client,
+		// then the user's dashboard.env (#311).
+		env:               overrideEnv([]corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}, d.Env),
 		credentialSecrets: []string{masterKey},
+		extraEnvFrom:      d.EnvFrom,
+		envHash:           envHash,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
 		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
 		// The dashboard reads JWT_ISSUER from the shared ConfigMap only at start: roll it when the
 		// effective issuer changes, so it signs with the issuer the writer verifies.
 		podAnnotations: map[string]string{jwtIssuerHashKey: jwtIssuerHash(oc)},
-	})
+	}); err != nil {
+		return err
+	}
+	// The crons call the dashboard Service written above (dashboard_crons.go).
+	if !d.Crons.Enabled {
+		return nil
+	}
+	return r.reconcileDashboardCrons(ctx, oc, sources)
 }
 
 // jwtIssuerHashKey is the dashboard pod-template annotation holding jwtIssuerHash.
