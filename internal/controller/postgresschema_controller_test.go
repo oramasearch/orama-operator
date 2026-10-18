@@ -27,7 +27,7 @@ func pgSchemaCR() *oramav1alpha1.PostgresSchema {
 			SchemaConfigMapRef:  oramav1alpha1.PostgresConfigMapKeyRef{Name: "cr-controldb-migrations", Key: "schema.sql"},
 			Version:             "sha256:abc123",
 			GuardTable:          "crawler_configs",
-			Image:               "postgres:16-alpine",
+			Image:               "postgres:16.15-alpine",
 		},
 	}
 }

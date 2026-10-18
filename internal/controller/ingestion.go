@@ -74,7 +74,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 	// cgroup memory limit for its WiredTiger cache sizing, so this limit is binary-aware (#18).
 	if err := r.provisionStatefulSet(ctx, oc, dataStoreDef{
 		component: "harvest-mongo",
-		image:     "mongo:7",
+		image:     "mongo:7.0.45",
 		ports:     []corev1.ContainerPort{{Name: "mongo", ContainerPort: 27017}},
 		dataPath:  "/data/db",
 		resources: resourceReqs("256Mi", "50m", "1Gi"),
@@ -85,7 +85,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 	// Selenium grid for JS-rendered crawls. Chromium is memory-heavy → a roomier limit than an app.
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "selenium",
-		image:     "selenium/standalone-chromium:latest",
+		image:     "selenium/standalone-chromium:155.0-20261010",
 		port:      4444,
 		resources: resourceReqs("512Mi", "100m", "1536Mi"),
 	})
