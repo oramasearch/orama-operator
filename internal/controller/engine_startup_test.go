@@ -35,10 +35,10 @@ func TestEngineStartupWorkloads(t *testing.T) {
 			reader := &appsv1.Deployment{}
 			for _, stage := range []string{"create", "upgrade"} {
 				t.Run(stage, func(t *testing.T) {
-					if err := r.reconcileWriter(ctx, oc, ""); err != nil {
+					if err := r.reconcileWriter(ctx, oc, "", ""); err != nil {
 						t.Fatalf("reconcileWriter: %v", err)
 					}
-					if err := r.reconcileReaders(ctx, oc, ""); err != nil {
+					if err := r.reconcileReaders(ctx, oc, "", ""); err != nil {
 						t.Fatalf("reconcileReaders: %v", err)
 					}
 					if err := cl.Get(ctx, types.NamespacedName{Name: "v1-writer", Namespace: "orama-system"}, writer); err != nil {

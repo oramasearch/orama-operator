@@ -11,6 +11,10 @@ spec:
       components:
         dashboard:
           host: app-dev.oramadev.net
+      # The one master key the engine, index-builder, workers, dashboard and analytics processor
+      # share. Without it the engine is held and the stack is not Ready.
+      masterAPIKeySecretRef:
+        name: v1-nonprod-master-api-key
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
@@ -18,6 +22,8 @@ spec:
   - name: cloudflare-api-token
     namespace: orama-system
   - name: v1-nonprod-llm-keys
+    namespace: orama-system
+  - name: v1-nonprod-master-api-key
     namespace: orama-system
   template:
     cloudflare:

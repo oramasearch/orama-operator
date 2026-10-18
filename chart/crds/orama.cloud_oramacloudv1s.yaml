@@ -1900,6 +1900,27 @@ spec:
                       type: object
                     type: array
                 type: object
+              masterAPIKeySecretRef:
+                description: |-
+                  MasterAPIKeySecretRef names the Secret, in this resource's namespace, that holds the engine
+                  master API key. Every component that reads MASTER_API_KEY takes it from here: the writer's
+                  config, analytics-processor, index-builder, workers, the dashboard and the e2e runner. The
+                  operator never creates or changes it. While the engine is enabled and this reference, its
+                  Secret or its key is missing, empty or a dev-* value, the writer and readers are held at zero
+                  replicas and Ready names the cause. The value must equal the target control database's
+                  oramacore_clusters.master_api_key.
+                properties:
+                  key:
+                    description: 'Key is the Secret key that holds the master API
+                      key. Default: MASTER_API_KEY.'
+                    type: string
+                  name:
+                    description: Name is the Secret's name.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               peers:
                 description: |-
                   Peers lists the other regions (used by read tiers to reach the primary's

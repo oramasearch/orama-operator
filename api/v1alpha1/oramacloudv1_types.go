@@ -38,6 +38,16 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:default={default: groq}
 	LLM LLMSpec `json:"llm,omitempty"`
 
+	// MasterAPIKeySecretRef names the Secret, in this resource's namespace, that holds the engine
+	// master API key. Every component that reads MASTER_API_KEY takes it from here: the writer's
+	// config, analytics-processor, index-builder, workers, the dashboard and the e2e runner. The
+	// operator never creates or changes it. While the engine is enabled and this reference, its
+	// Secret or its key is missing, empty or a dev-* value, the writer and readers are held at zero
+	// replicas and Ready names the cause. The value must equal the target control database's
+	// oramacore_clusters.master_api_key.
+	// +optional
+	MasterAPIKeySecretRef *MasterAPIKeySecretRef `json:"masterAPIKeySecretRef,omitempty"`
+
 	// Cloudflare keeps Cloudflare as the edge / geo load-balancer; the operator
 	// reconciles CF resources (DNS records, worker routes) via the CF API based on
 	// this config — provisioning/deprovisioning as components change.
@@ -57,6 +67,16 @@ type OramaCloudV1Spec struct {
 	// fresh install answers queries out of the box.
 	// +optional
 	DemoSeed bool `json:"demoSeed,omitempty"`
+}
+
+// MasterAPIKeySecretRef is a key of a Secret in the OramaCloudV1's namespace.
+type MasterAPIKeySecretRef struct {
+	// Name is the Secret's name.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Key is the Secret key that holds the master API key. Default: MASTER_API_KEY.
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 // RegionSpec selects the cluster role.

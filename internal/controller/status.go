@@ -200,9 +200,11 @@ func replicasOf(p *int32) int32 {
 
 // applyReadiness rolls the per-component states up into the CR status: phase (Ready when every
 // component is ready; Degraded when one regressed after having been Ready; else Progressing),
-// componentsReady ("n/total"), the per-component list, and a standard Ready condition. Returns
-// whether the stack is fully ready. Writes the status subresource ONLY on a real transition.
-func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) bool {
+// componentsReady ("n/total"), the per-component list, and a standard Ready condition. A non-nil
+// blocked (validateMasterAPIKey) is the Ready condition instead, with phase Degraded, whatever the
+// components report. Returns whether the stack is fully ready. Writes the status subresource ONLY on
+// a real transition.
+func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, blocked *metav1.Condition) bool {
 	comps := r.componentReadiness(ctx, oc)
 	ready, notReady := 0, []string(nil)
 	for _, c := range comps {
@@ -230,6 +232,9 @@ func (r *OramaCloudV1Reconciler) applyReadiness(ctx context.Context, oc *oramav1
 	}
 
 	conds := []metav1.Condition{{Type: "Ready", Status: condStatus, Reason: reason, Message: msg}}
+	if blocked != nil {
+		phase, allReady, conds[0] = "Degraded", false, *blocked
+	}
 	var drop []string
 	if oc.Spec.Components.Engine.Enabled {
 		conds = append(conds, engineSidesCondition(oc))

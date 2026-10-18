@@ -168,22 +168,40 @@ func llmKeySecretEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 	return env
 }
 
-// renderConfigScript is the render-config init container's shell script: one sed expression per
-// key placeholder (the master key and each provider's key), reading each value from its quoted
-// environment variable. esc makes a value safe as a sed replacement (backslash, ampersand and the #
-// delimiter) and inside the template's single-quoted YAML (it doubles a single quote). The script
-// never holds a key value, and nothing in it evaluates or logs one.
+// renderConfigScript is the engine render-config init container's shell script: one sed expression
+// per key placeholder the side's template holds (renderEnvs), reading each value from its quoted
+// environment variable. The script never holds a key value, and nothing in it evaluates or logs one.
 func renderConfigScript(oc *oramav1alpha1.OramaCloudV1, side engineSide) string {
-	envs := []string{"MASTER_API_KEY"}
+	return renderEscFunc + "sed" + renderSubstitutions(renderEnvs(oc, side)) + " /tmpl/" + side.configKey + " > /etc/oramacore/config.yaml"
+}
+
+// renderEnvs is the variables an engine side's render-config fills: the master key where the
+// side's template holds writer_side.master_api_key, the broker admin user and password, and each
+// provider's key.
+func renderEnvs(oc *oramav1alpha1.OramaCloudV1, side engineSide) []string {
+	var envs []string
+	if side.readsMasterAPIKey() {
+		envs = append(envs, masterAPIKeyEnvName)
+	}
+	envs = append(envs, brokerUserEnv, brokerPasswordEnv)
 	for _, p := range llmProviders(oc) {
 		envs = append(envs, llmKeyEnv(p.Name))
 	}
+	return envs
+}
+
+// renderEscFunc defines the shell function esc, which makes a value safe as a sed replacement
+// (backslash, ampersand and the # delimiter) and inside a single-quoted YAML scalar (it doubles a
+// single quote). Every render-config script starts with it.
+const renderEscFunc = `esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e 's/[\\&#]/\\&/g'; }; `
+
+// renderSubstitutions is the sed arguments that replace each __VAR__ placeholder with the escaped
+// value of VAR.
+func renderSubstitutions(envs []string) string {
 	var b strings.Builder
-	b.WriteString(`esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e 's/[\\&#]/\\&/g'; }; sed`)
 	for _, env := range envs {
 		fmt.Fprintf(&b, ` -e "s#%s#$(esc "${%s}")#g"`, keyPlaceholder(env), env)
 	}
-	b.WriteString(" /tmpl/" + side.configKey + " > /etc/oramacore/config.yaml")
 	return b.String()
 }
 
@@ -281,25 +299,35 @@ func secretDataHash(secrets ...*corev1.Secret) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// requestsForEngineLLMSecret maps a Secret event to the OramaCloudV1 resources in its namespace
-// whose enabled engine reads LLM keys from it: <cr>-engine-secret, or a Secret an effective
-// provider's apiKeySecretRef names. Externally supplied Secrets carry no owner reference, so Owns
-// alone would miss them.
-func (r *OramaCloudV1Reconciler) requestsForEngineLLMSecret(ctx context.Context, object client.Object) []reconcile.Request {
+// requestsForSecret maps a Secret event to the OramaCloudV1 resources in its namespace that read
+// it: an enabled engine's LLM key Secrets (<cr>-engine-secret, or an apiKeySecretRef), the Secret
+// spec.masterAPIKeySecretRef names, and <cr>-broker-admin and <cr>-cache-auth. Supplied and copied
+// Secrets carry no owner reference, so Owns alone would miss them; a Secret several CRs share
+// enqueues each of them.
+func (r *OramaCloudV1Reconciler) requestsForSecret(ctx context.Context, object client.Object) []reconcile.Request {
 	var list oramav1alpha1.OramaCloudV1List
 	if err := r.List(ctx, &list, client.InNamespace(object.GetNamespace())); err != nil {
-		log.FromContext(ctx).Error(err, "list OramaCloudV1 for an LLM key Secret", "secret", object.GetName())
+		log.FromContext(ctx).Error(err, "list OramaCloudV1 for a referenced Secret", "secret", object.GetName())
 		return nil
 	}
 	var reqs []reconcile.Request
 	for i := range list.Items {
-		oc := &list.Items[i]
-		if !oc.Spec.Components.Engine.Enabled {
-			continue
-		}
-		if object.GetName() == componentSecretName(oc, "engine") || slices.Contains(llmCustomSecretNames(oc), object.GetName()) {
-			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: oc.Namespace, Name: oc.Name}})
+		if slices.Contains(secretsReadBy(&list.Items[i]), object.GetName()) {
+			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: list.Items[i].Namespace, Name: list.Items[i].Name}})
 		}
 	}
 	return reqs
+}
+
+// secretsReadBy is the Secrets a CR's workloads read that requestsForSecret maps back to it.
+func secretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
+	names := []string{brokerAdminSecretName(oc), cacheAuthSecretName(oc)}
+	if name, _ := masterAPIKeyRef(oc); name != "" {
+		names = append(names, name)
+	}
+	if oc.Spec.Components.Engine.Enabled {
+		names = append(names, componentSecretName(oc, "engine"))
+		names = append(names, llmCustomSecretNames(oc)...)
+	}
+	return names
 }

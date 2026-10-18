@@ -58,6 +58,13 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := validateEngineImages(&oc); err != nil {
 		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "engine", err)
 	}
+	// A missing or placeholder master key is configuration, not a failure: the rest of the stack
+	// reconciles, the engine is held at zero (reconcileEngine), and Ready names the cause until a
+	// Secret event or the readiness requeue finds it fixed.
+	masterKey, err := r.validateMasterAPIKey(ctx, &oc)
+	if err != nil {
+		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "master API key", err)
+	}
 	if err := r.reconcileNetworkSandbox(ctx, &oc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile network sandbox: %w", err)
 	}
@@ -67,7 +74,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		name string
 		fn   func(context.Context, *oramav1alpha1.OramaCloudV1) error
 	}{
-		{"bootstrap", r.reconcileBootstrap}, // shared config + dummy secrets first
+		{"bootstrap", r.reconcileBootstrap}, // shared config + generated credentials first
 		{"engine", r.reconcileEngine},
 		{"controlDB", r.reconcileControlDB},
 		{"pgadmin", r.reconcilePgAdmin}, // pgAdmin4 web (admin UI for the control-DB)
@@ -100,7 +107,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Owns() events cover most transitions; the requeue is also the backstop for CNPG readiness,
 	// PVC creation and storage retries even after workloads become Ready.
 	managedStorage := r.reconcileStorage(ctx, &oc)
-	if r.applyReadiness(ctx, &oc) && !managedStorage {
+	if r.applyReadiness(ctx, &oc, masterKey) && !managedStorage {
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
@@ -135,8 +142,9 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&oramav1alpha1.NetworkSandbox{}).
 		Owns(&oramav1alpha1.RabbitMQTopology{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
-		// LLM key Secrets supplied outside the operator have no owner reference: map them to the CRs
-		// whose engine reads them, so a rotated key rolls the engine (engine_llm.go).
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForEngineLLMSecret)).
+		// Secrets supplied or copied from outside the operator (LLM keys, the master API key, a
+		// broker or cache credential) have no owner reference: map them to the CRs that read them,
+		// so a changed value rolls their consumers (requestsForSecret).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForSecret)).
 		Complete(r)
 }

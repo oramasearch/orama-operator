@@ -25,10 +25,10 @@ func TestReaderProbesWaitForCatchUp(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).Build()
 	r := &OramaCloudV1Reconciler{Client: cl, Scheme: s}
 	oc := newOCV1(nil)
-	if err := r.reconcileReaders(ctx, oc, ""); err != nil {
+	if err := r.reconcileReaders(ctx, oc, "", ""); err != nil {
 		t.Fatalf("reconcileReaders: %v", err)
 	}
-	if err := r.reconcileWriter(ctx, oc, ""); err != nil {
+	if err := r.reconcileWriter(ctx, oc, "", ""); err != nil {
 		t.Fatalf("reconcileWriter: %v", err)
 	}
 
