@@ -70,20 +70,30 @@ func controlDBClusterRowApplies(oc *oramav1alpha1.OramaCloudV1) bool {
 	return db.Enabled && db.Mode != "external" && oc.Spec.Region.Role != "read" && oc.Spec.Components.Engine.Enabled
 }
 
+// controlDBClusterRowMissingHosts names the public hosts the row needs and the stack does not
+// publish, or "" when both are published. The row is written once and never updated, so it waits for
+// both instead of recording an in-cluster URL that would stay in the control DB: the dashboard mints
+// the writer's JWT audience from writer_url, and an in-cluster one is never an audience the writer
+// accepts.
+func controlDBClusterRowMissingHosts(oc *oramav1alpha1.OramaCloudV1) string {
+	var missing []string
+	if writerPublicHost(oc) == "" {
+		missing = append(missing, "spec.components.engine.writer.host")
+	}
+	if readerPublicHost(oc) == "" {
+		missing = append(missing, "spec.components.engine.reader.host")
+	}
+	return strings.Join(missing, " and ")
+}
+
 // controlDBClusterRowEnv is the row's non-secret columns, derived from the spec, as the Job's env.
-// URLs use the public hosts (writerPublicHost, readerPublicHost) and fall back to the in-cluster
-// Services when a host is unset. writer_url is https://<engine.writer.host>, the audience the writer
-// already requires in engine.writer.jwt.audiences (validateWriterJWT). The replica count and regions
-// are NOT NULL columns the dashboard does not read; they describe the stack.
+// URLs are the public hosts (writerPublicHost, readerPublicHost); the Job is created only once both
+// are published (controlDBClusterRowMissingHosts). writer_url is https://<engine.writer.host>, the
+// audience the writer already requires in engine.writer.jwt.audiences (validateWriterJWT). The
+// replica count and regions are NOT NULL columns the dashboard does not read; they describe the stack.
 func controlDBClusterRowEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
-	writerURL := "http://" + oc.Name + "-writer:8080"
-	if host := writerPublicHost(oc); host != "" {
-		writerURL = "https://" + host
-	}
-	readerURL := "http://" + oc.Name + "-reader"
-	if host := readerPublicHost(oc); host != "" {
-		readerURL = "https://" + host
-	}
+	writerURL := "https://" + writerPublicHost(oc)
+	readerURL := "https://" + readerPublicHost(oc)
 	replicas := oc.Spec.Components.Engine.Reader.Replicas
 	if replicas == 0 {
 		replicas = 3 // the CRD default
@@ -224,11 +234,14 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBClusterRow(ctx context.Contex
 	return nil
 }
 
-// controlDBClusterRowPrerequisites reports whether the Job may be created: every owned
-// PostgresSchema of the control DB (0000-0007, 0008, the reference rows) is current, so the row goes
-// into the dashboard's final schema (their status changes requeue this CR), and the master key is
-// valid.
+// controlDBClusterRowPrerequisites reports whether the Job may be created: both public hosts are
+// published, every owned PostgresSchema of the control DB (0000-0007, 0008, the reference rows) is
+// current, so the row goes into the dashboard's final schema (their status changes requeue this CR),
+// and the master key is valid.
 func (r *OramaCloudV1Reconciler) controlDBClusterRowPrerequisites(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (bool, error) {
+	if controlDBClusterRowMissingHosts(oc) != "" {
+		return false, nil
+	}
 	schemas, err := controlDBSchemas(oc)
 	if err != nil {
 		return false, err
@@ -247,9 +260,15 @@ func (r *OramaCloudV1Reconciler) controlDBClusterRowPrerequisites(ctx context.Co
 }
 
 // controlDBClusterRowCondition is the ClusterRowReady condition: True once the Job succeeded (the
-// control DB has a row, inserted by the Job or already there; its log says which), False while it
-// waits for the schema or the master key, runs, or failed and waits to be retried. nil when the stack
-// inserts no row, so the condition is dropped. blocked is validateMasterAPIKey's result.
+// control DB had a row when it ran, inserted by the Job or already there; its log says which), False
+// while it waits for the public hosts, the schema or the master key, runs, or failed and waits to be
+// retried. nil when the stack inserts no row, so the condition is dropped. blocked is
+// validateMasterAPIKey's result.
+//
+// True reports the Job, not a live read of the table: a succeeded Job is kept and never re-run, so a
+// control DB emptied afterwards (a restore) still shows True with no row. The row also keeps the
+// master_api_key it was inserted with; rotating spec.masterAPIKeySecretRef does not update it. The
+// message says both.
 func (r *OramaCloudV1Reconciler) controlDBClusterRowCondition(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, blocked *metav1.Condition) (*metav1.Condition, error) {
 	if !controlDBClusterRowApplies(oc) {
 		return nil, nil
@@ -259,7 +278,11 @@ func (r *OramaCloudV1Reconciler) controlDBClusterRowCondition(ctx context.Contex
 	cond := metav1.Condition{Type: clusterRowReadyCondition, Status: metav1.ConditionFalse}
 	job := &batchv1.Job{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, job)
+	missingHosts := controlDBClusterRowMissingHosts(oc)
 	switch {
+	case apierrors.IsNotFound(err) && missingHosts != "":
+		cond.Reason, cond.Message = "WaitingForPublicHosts", "waiting for "+missingHosts+" before inserting "+row+
+			": the row is written once and never updated, so it records only the public URLs"
 	case apierrors.IsNotFound(err) && blocked != nil:
 		cond.Reason, cond.Message = "WaitingForMasterAPIKey", "waiting for a valid master API key before inserting "+row
 	case apierrors.IsNotFound(err):
@@ -268,7 +291,10 @@ func (r *OramaCloudV1Reconciler) controlDBClusterRowCondition(ctx context.Contex
 		return nil, err
 	case job.Status.Succeeded > 0:
 		cond.Status, cond.Reason = metav1.ConditionTrue, "RowPresent"
-		cond.Message = "the control DB has an oramacore_clusters row; Job " + name + " inserts " + row + " only into an empty table (its log says which)"
+		cond.Message = "Job " + name + " succeeded: the control DB had an oramacore_clusters row when it ran (it inserts " + row +
+			" only into an empty table; its log says which). This reports the Job, not the table: it is not re-run," +
+			" so a control DB emptied later (a restore) still shows True, and the row keeps the master key it was" +
+			" inserted with; a rotated spec.masterAPIKeySecretRef does not update it"
 	case jobFailed(job):
 		cond.Reason = "JobFailed"
 		cond.Message = "Job " + name + " failed; inspect its pod logs. The operator replaces it at " +

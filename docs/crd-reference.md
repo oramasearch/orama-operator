@@ -598,9 +598,13 @@ Present while the stack inserts its own `oramacore_clusters` row: an enabled in-
 outside a read region, with the engine enabled. `True` (`RowPresent`) once the Job
 `<cr>-controldb-cluster-row` succeeded, meaning the control DB has a row: the Job inserted the `c1`
 row into an empty table, or found a row and left it unchanged (its log says which). `False` with
-`WaitingForSchema` (the control DB schema is not applied yet), `WaitingForMasterAPIKey` (the master
-key is missing or a placeholder; the row is written once, so it waits), `Inserting` (the Job is
-running) or `JobFailed` (the message gives the time the operator replaces the Job). It does not
+`WaitingForPublicHosts` (`engine.writer.host` or `engine.reader.host` is unset; the row records only
+public URLs, so it waits), `WaitingForSchema` (the control DB schema is not applied yet),
+`WaitingForMasterAPIKey` (the master key is missing or a placeholder; the row is written once, so it
+waits), `Inserting` (the Job is running) or `JobFailed` (the message gives the time the operator
+replaces the Job). `True` reports the Job, not the table: a succeeded Job is never re-run, so a
+control DB emptied later (a restore) still shows `True`, and the row keeps the master key it was
+inserted with even after `spec.masterAPIKeySecretRef` changes. It does not
 change the stack's `phase`; while it is not `True` the CR keeps its 20-second readiness requeue. See
 [components.md](components.md#controldb-internalcontrollercontroldbgo).
 

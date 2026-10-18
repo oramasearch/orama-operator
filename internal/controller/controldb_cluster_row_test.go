@@ -144,13 +144,42 @@ func TestControlDBClusterRowJobWaitsForSchemaAndKey(t *testing.T) {
 		t.Fatalf("reason while the Job runs = %s", got)
 	}
 
-	// Without public hosts the row points at the in-cluster Services.
-	env = map[string]string{}
-	for _, e := range controlDBClusterRowEnv(engineOC(nil)) {
-		env[e.Name] = e.Value
-	}
-	if env["CLUSTER_WRITER_URL"] != "http://v1-writer:8080" || env["CLUSTER_READER_URL"] != "http://v1-reader" {
-		t.Errorf("in-cluster URLs = %q, %q", env["CLUSTER_WRITER_URL"], env["CLUSTER_READER_URL"])
+	// The row is written once, so it never records an in-cluster URL: without both public hosts the
+	// operator creates no Job and says which host it waits for.
+	for name, tc := range map[string]struct {
+		mut     func(*oramav1alpha1.OramaCloudV1)
+		missing []string
+	}{
+		"no writer host": {func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Engine.Writer.Host = "" },
+			[]string{"spec.components.engine.writer.host"}},
+		"no reader host": {func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Engine.Reader.Host = "" },
+			[]string{"spec.components.engine.reader.host"}},
+		"no hosts": {func(o *oramav1alpha1.OramaCloudV1) {
+			o.Spec.Components.Engine.Writer.Host, o.Spec.Components.Engine.Reader.Host = "", ""
+		}, []string{"spec.components.engine.writer.host", "spec.components.engine.reader.host"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			noHosts := clusterRowStack(tc.mut)
+			r, cl := clusterRowHarness(t, noHosts, testMasterKey, "Applied")
+			if err := r.reconcileControlDBClusterRow(ctx, noHosts); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := getClusterRowJob(t, cl, noHosts); !apierrors.IsNotFound(err) {
+				t.Fatalf("Job without the public hosts: %v", err)
+			}
+			cond, err := r.controlDBClusterRowCondition(ctx, noHosts, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cond.Reason != "WaitingForPublicHosts" {
+				t.Fatalf("reason = %s, want WaitingForPublicHosts", cond.Reason)
+			}
+			for _, field := range tc.missing {
+				if !strings.Contains(cond.Message, field) {
+					t.Errorf("message %q does not name %s", cond.Message, field)
+				}
+			}
+		})
 	}
 
 	// An external or disabled control DB, a read region, or a stack without the engine inserts no row.
@@ -234,6 +263,17 @@ func TestControlDBClusterRowRetriesAFailedJob(t *testing.T) {
 	}
 	if got := clusterRowReason(t, r, oc); got != "RowPresent" {
 		t.Fatalf("reason after success = %s", got)
+	}
+	// True reports the Job, not the table: the message says it is not re-run after a restore, and
+	// that a rotated master key does not reach the row.
+	cond, err := r.controlDBClusterRowCondition(ctx, oc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"reports the Job, not the table", "restore", "rotated spec.masterAPIKeySecretRef does not update it"} {
+		if !strings.Contains(cond.Message, want) {
+			t.Errorf("RowPresent message %q does not say %q", cond.Message, want)
+		}
 	}
 }
 

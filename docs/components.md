@@ -726,13 +726,14 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   `controldb_cluster_row.go`) — the dashboard places a project on an `oramacore_clusters` row, so a
   control DB without one cannot create projects. Cluster rows are never copied from Prod 1: each
   stack's only row is the operator's `c1` (orama-bridge `docs/projects/orama-cloud-v1/decisions-2026-10-16.md`,
-  decision 9). Once every control-DB `PostgresSchema` (0000 to 0007, 0008 and the reference rows) is current and the master key is valid, the operator
+  decision 9). Once both public hosts (`engine.writer.host`, `engine.reader.host`) are set, every control-DB `PostgresSchema` (0000 to 0007, 0008 and the reference rows) is current and the master key is valid, the operator
   runs the Job `<cr>-controldb-cluster-row`, which inserts one row **only when the table has no row
   at all**, soft-deleted rows included: `name` = the CR name, `cluster_prefix` = `c1` (the only
   prefix the `collections.orama.com` worker routes, so customers' read keys keep working),
-  `writer_url` = `https://<engine.writer.host>`, `reader_url` = `https://<engine.reader.host>` (each
-  falling back to the in-cluster `http://<cr>-writer:8080` / `http://<cr>-reader` when the host is
-  unset), `master_api_key` from `spec.masterAPIKeySecretRef`, `cluster_reader_replica_count` =
+  `writer_url` = `https://<engine.writer.host>`, `reader_url` = `https://<engine.reader.host>` (never
+  an in-cluster URL: without both hosts the operator waits, `WaitingForPublicHosts`, because the row is
+  written once), `master_api_key` from `spec.masterAPIKeySecretRef` at the time of the insert (a
+  rotated key does not update it), `cluster_reader_replica_count` =
   `engine.reader.replicas`, `cluster_writer_count` = 1, and both region columns
   `["<spec.region.name>"]`. The dashboard mints the writer's JWT audience from `writer_url`, so with
   `writer.orama.ing` the writer's only audience is `https://writer.orama.ing`, which
@@ -749,9 +750,11 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
     reconcile, which the 20-second readiness requeue drives while `ClusterRowReady` is not `True`.
     An unfinished Job built from an older template (another image, host or key Secret) is replaced
     at once. A succeeded Job is kept as the record and never re-run. No Job is ever deleted by hand.
-  - **Status.** The CR's `ClusterRowReady` condition reports the Job (`WaitingForSchema`,
-    `WaitingForMasterAPIKey`, `Inserting`, `JobFailed` with the retry time, `RowPresent`). It does not
-    change the phase.
+  - **Status.** The CR's `ClusterRowReady` condition reports the Job (`WaitingForPublicHosts`,
+    `WaitingForSchema`, `WaitingForMasterAPIKey`, `Inserting`, `JobFailed` with the retry time,
+    `RowPresent`). It does not change the phase. `RowPresent` reports the Job, not a live read of the
+    table: the Job is not re-run, so a control DB emptied later (a restore) still shows it, and its
+    message says so.
 
 ### The control DB's schema
 
