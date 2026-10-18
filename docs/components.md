@@ -57,6 +57,63 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **lake sealed-secret delivery** | `internal/controller/lakesealedsecret_controller.go` | from one namespaced `LakeSealedSecret`: an owned, cluster-bound Kubernetes Secret labelled `lake.orama.cloud/sealed: "true"`; literal ciphertext opens locally, while lake and dynamic references call lake's mint capability with projected service-account attestation | 🟡 **implemented**; literal delivery and LakeEnvironment consumption with local delivery owners are complete and tested against both k0s admission policies, while lake/dynamic delivery awaits lake's `mint_sealed_secret` leaf |
 | **deployment control plane** | `internal/controller/deployment_controlplane.go` | authenticated liquid REST `/v1` and MCP server; appends immutable Zetta history, desired rows in lake's shape and audit entries, validates sealed-secret references, and reads reconciled `LakeEnvironment` status | ✅ **implemented** ([#142](https://github.com/oramasearch/orama-operator/issues/142)); REST/MCP, drift, Zetta-double and envtest coverage — see [`control-plane/README.md`](control-plane/README.md) |
 
+## Component storage
+
+`internal/controller/storage.go` runs after ordinary component provisioning. It manages the
+primary's enabled writer and the enabled analytics/cache/broker/search stores selected by their
+existing in-cluster mode and placement checks. External stores, disabled components, a read
+region's absent writer, and central stores skipped in a read region contribute no mismatch.
+ControlDB is always in-cluster (decision 61) and follows its enabled policy. Reader Deployments keep `emptyDir`; HARVEST Mongo keeps the shared helper's
+`10Gi`/default-class output and has no new storage setting.
+
+Writer and store `storage.size` default to `10Gi`; `storage.storageClassName` is optional. Omitted
+storage, `{}`, or a missing size resolves to that default even before API admission. Explicit sizes
+must be positive Kubernetes quantities, compared with `Cmp` (`10240Mi` equals `10Gi`), and explicit
+class names must be nonempty. The [field reference](crd-reference.md#component-storage) lists every
+path. Set templates use `spec.template.components`, with the same component fields.
+
+The StatefulSet creation callback initializes the `data` claim template once. Later reconciliations
+preserve its full fetched contents, including admission fields and its original size/class, while
+Services, PDBs, pod templates and ordinary settings continue to reconcile. The storage pass checks
+the controlled StatefulSet's `data` claims in the same namespace, using complete names of the form
+`data-<statefulset>-<numeric ordinal>`. Retained matching claims are included; direct umbrella
+ownership on a PVC is unnecessary under StatefulSet's default retention policy. Similar prefixes,
+other namespaces and claims controlled by unrelated workloads are never adopted or resized.
+
+For each compatible claim the operator patches only a larger `spec.resources.requests.storage`,
+with optimistic concurrency. Equal numeric quantities do nothing. It never changes PV capacity.
+A shrink compares against the requested size; capacity is extra evidence because a provisioner
+can round it upward. An explicit class mismatch blocks the entire write to that claim, including
+an otherwise valid increase, and all applicable differences remain in status. A missing required
+claim remains pending; when it appears from the unchanged old template, a later pass grows it.
+Read/write failures identify the resource and API error and do not block other storage updates.
+
+CNPG creation renders the resolved size and optional `storageClass`. Ordinary reconciliation
+preserves an existing Cluster's whole `spec.storage`, so rejected storage settings cannot block
+unrelated spec or schema reconciliation. The storage pass increases only `spec.storage.size`,
+preserving all other storage keys and retaining the class when omitted. Changing the class,
+including adding an explicit class to an existing classless Cluster, or reducing size leaves its
+storage unchanged. The operator never resizes CNPG-owned PVCs itself.
+
+`StorageApplied` is one merged condition with the current `ObservedGeneration`. It preserves
+`Ready`, phase, component readiness and other conditions. `True / Applied` means desired
+configuration was accepted, including the no-local-storage case; it does not mean physical
+expansion completed. Otherwise it is `False / NotApplied`, and the message lists, in stable sorted
+order, each resource with its problem: `ShrinkNotSupported`, `StorageClassChangeNotSupported`,
+`StorageUpdateFailed` or `ClaimsPending`. It is a condition of its own, not part of `Ready`, so a
+refused shrink or a resize in progress never marks a serving stack not Ready. One success cannot erase another resource's failure. Accepted
+settings and successful retries recover the condition; unchanged results cause no status write.
+Removing storage settings after growth resolves to `10Gi`, so recovery requires restoring the
+current grown request rather than relying on the old default.
+
+A 20-second bounded poll continues whenever managed storage exists, including with Ready
+workloads. CSI/kubelet perform disk/filesystem expansion after accepting PVC requests; CNPG
+performs its own expansion after accepting the Cluster size. The StorageClass must allow expansion
+and its CSI driver must support the disk/filesystem operation. See
+[Kubernetes expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)
+and [CNPG expansion](https://cloudnative-pg.io/docs/1.27/storage/#volume-expansion).
+A grown size stays in the set file that set it: a smaller value afterwards is a refused shrink.
+
 ## Cloudflare DNS ownership
 
 `CloudflareDNSRecord` creates new records with comment

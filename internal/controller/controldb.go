@@ -156,7 +156,19 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 		cluster.SetLabels(labelsFor(oc, "controldb"))
 		spec := map[string]interface{}{
 			"instances": int64(profileInstances(oc)),
-			"storage":   map[string]interface{}{"size": "10Gi"},
+			"storage":   controlDBStorage(db.Storage),
+		}
+		// The storage pass owns changes to existing storage; ordinary spec rendering
+		// must retain the class, grown size, and any other CNPG storage keys.
+		if cluster.GetResourceVersion() != "" {
+			storage, found, err := unstructured.NestedMap(cluster.Object, "spec", "storage")
+			if err != nil {
+				return err
+			}
+			delete(spec, "storage")
+			if found {
+				spec["storage"] = storage
+			}
 		}
 		if oc.Spec.Region.Role == "read" && db.Replicate {
 			// Replica cluster: stream from the primary region's Postgres endpoint.
