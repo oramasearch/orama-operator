@@ -64,6 +64,12 @@ spec:
               owns the migration Job; the applied version is read back from the Job so it stays honest even if
               the desired `version` changes while an obsolete Job is being replaced.
             properties:
+              applyEveryVersion:
+                description: |-
+                  ApplyEveryVersion applies the file once for every new Version, with no guard check, for a
+                  file that is safe to apply again, such as an upsert of reference rows (operator#378).
+                  GuardTable is then ignored. Off by default: the guarded behavior above.
+                type: boolean
               connectionSecretRef:
                 description: |-
                   ConnectionSecretRef names the Secret + key holding the Postgres connection URI

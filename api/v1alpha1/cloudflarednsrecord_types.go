@@ -11,20 +11,37 @@ import (
 
 // CloudflareDNSRecordSpec is the desired state of a Cloudflare DNS record. The zone + API
 // token come from the referenced Secret (keys `token` + `zoneID`), so no credential is in spec.
+// +kubebuilder:validation:XValidation:rule="!has(self.sharedOwner) || size(self.sharedOwner) == 0 || (has(self.deletionPolicy) && self.deletionPolicy == 'Retain')",message="sharedOwner requires deletionPolicy Retain"
 type CloudflareDNSRecordSpec struct {
 	// SecretRef names the Secret holding the Cloudflare credentials (`token`, `zoneID`,
 	// `accountID`) — normally the CR's `spec.cloudflare.apiTokenSecretRef`.
 	SecretRef string `json:"secretRef"`
 	// Name is the record FQDN (e.g. app.orama.com).
 	Name string `json:"name"`
-	// Type is A or CNAME; empty = inferred from Content (IP → A, hostname → CNAME).
+	// Type is A, CNAME or TXT; empty = inferred from Content (IP → A, hostname → CNAME).
 	// +optional
 	Type string `json:"type,omitempty"`
-	// Content is the record target (an IP for A, a hostname for CNAME).
+	// Content is the record target (an IP for A, a hostname for CNAME, the text for TXT).
 	Content string `json:"content"`
-	// Proxied routes the record through Cloudflare's proxy (orange-cloud).
+	// Proxied routes the record through Cloudflare's proxy (orange-cloud). Always written, so a
+	// controller's false is kept rather than replaced by the default (a Clerk record must not be
+	// proxied); a resource that leaves it out gets true.
 	// +kubebuilder:default=true
-	Proxied bool `json:"proxied,omitempty"`
+	// +optional
+	Proxied bool `json:"proxied"`
+	// DeletionPolicy decides what deleting this resource does to the Cloudflare record. Delete (the
+	// default) removes it. Retain leaves it: for a record another resource may also keep, such as a
+	// Clerk production instance's records, which every Lake sharing that instance writes.
+	// +kubebuilder:validation:Enum=Delete;Retain
+	// +optional
+	DeletionPolicy string `json:"deletionPolicy,omitempty"`
+	// SharedOwner names the one owner of a record several resources keep, such as `clerk/<instance
+	// ID>` for a Clerk production instance's records. The record is created with the comment
+	// `orama-operator:<sharedOwner>` instead of `orama-operator:<namespace>/<name>`, so every
+	// resource with the same sharedOwner recognises it as the operator's own; a record without that
+	// comment is still refused. It requires deletionPolicy Retain: no single resource deletes it.
+	// +optional
+	SharedOwner string `json:"sharedOwner,omitempty"`
 }
 
 // CloudflareDNSRecordStatus is the observed state — the provisioned Cloudflare record.

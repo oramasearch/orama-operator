@@ -38,7 +38,7 @@ traffic. No sidecar, log shipping or proxy goes in front of the apps. Until it i
 ## The pass
 
 On the Lake's control-rows poll, with the workload resources pass (at most once every 30 seconds per
-Lake, so with `spec.services.enabled` or `spec.builds.enabled`), when `spec.apps.enabled`:
+Lake, which every Lake with its control Postgres runs):
 
 1. List the Lake's `LakeApp`s with a `spec.sync` (the apps sync's). Each app's Ingress is
    `lakeAppWorkloadObjectName(app)` in `lakeAppNamespace(app)`, as `reconcileLakeAppIngress` creates

@@ -17,7 +17,7 @@ lake's
 operator's side of it. Field definitions are in the
 [`Lake` CRD reference](../crd-reference.md#lake-separate-crd-cluster-scoped--the-lake-service)
 (`spec.services`). Workspace namespaces are reconciled separately from the
-[`workspaces` table](workspaces.md); `spec.services.enabled` controls only this services poll. A
+[`workspaces` table](workspaces.md). Every Lake runs this services poll; there is no switch ([operator#539](https://github.com/oramasearch/orama-operator/issues/539)). A
 customer's **stores** (volumes, the customer's own buckets, and Lake-run buckets and filesystems;
 lake#196, lake#664) ride the same poll, connection and Secret: see [Stores](#stores-lake196).
 
@@ -63,15 +63,19 @@ last Warning about the service's objects (a pod the API server refused under Pod
 quota, an image that cannot be pulled, a container that keeps exiting); a Kafka's carries what
 Strimzi itself is stuck on first.
 
-## Turning it on
+## Configuration
+
+Every Lake runs managed services. Every field is optional; empty images use the operator's defaults
+(`internal/controller/lake_defaults.go`):
 
 ```yaml
 spec:
   services:
-    enabled: true
     maxServices: 20          # 0 = no limit
     zettaImage: oramasearch/zetta:<tag>
-    zettaEnv:                # copied to every Zetta service, including the workspace-owned cluster
+    zettaEnv:                # copied to every Zetta service, including the workspace-owned cluster; the
+                             # operator adds ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864 and
+                             # MALLOC_ARENA_MAX=2 for each name the list does not set
       - { name: ZETTA_MALLOC_TRIM_THRESHOLD_BYTES, value: "134217728" }
       - { name: MALLOC_ARENA_MAX, value: "2" }
     sqliteImage: oramasearch/lake-sqlite:<tag>   # optional; the chart's lakeServices.sqliteImage otherwise
@@ -79,9 +83,9 @@ spec:
     polarsImage: oramasearch/lake-polars:<tag>   # optional; the chart's lakeServices.polarsImage otherwise
 ```
 
-Services need the control-plane Postgres (`spec.postgres.enabled`, the default); they do not need
-the Zetta data plane. `spec.workspaces.enabled` no longer enables services and
-`spec.workspaces.maxWorkspaces` no longer caps them. For compatibility, `workspaces.image`,
+Services need the control-plane Postgres (`spec.postgres.enabled`, the default; without it the
+Lake's `FeaturesReady` condition says so); they do not need the Zetta data plane.
+`spec.workspaces.maxWorkspaces` does not cap them. For compatibility, `workspaces.image`,
 `workspaces.resources` and `workspaces.storage.storageClassName` remain the shared fallbacks for
 managed Zetta service pods; set `services.zettaImage` when the images differ.
 

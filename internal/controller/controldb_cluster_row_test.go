@@ -29,7 +29,7 @@ import (
 // clusterRowStack is a primary stack with the engine on public hosts and an in-cluster control DB.
 func clusterRowStack(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaCloudV1 {
 	return engineOC(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.Components.ControlDB = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
+		o.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}}
 		o.Spec.Components.Engine.Writer.Host = "writer.orama.ing"
 		o.Spec.Components.Engine.Reader.Host = "reader.orama.ing"
 		if mut != nil {
@@ -39,14 +39,22 @@ func clusterRowStack(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.Orama
 }
 
 // clusterRowHarness is a reconciler over a fake client holding oc, its master key Secret and its
-// control DB PostgresSchema in the given phase, plus objs.
+// control DB PostgresSchemas, every one at its current version in the given phase, plus objs.
 func clusterRowHarness(t *testing.T, oc *oramav1alpha1.OramaCloudV1, masterKey, schemaPhase string, objs ...client.Object) (*OramaCloudV1Reconciler, client.Client) {
 	t.Helper()
-	ps := &oramav1alpha1.PostgresSchema{
-		ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-controldb-schema", Namespace: oc.Namespace},
-		Status:     oramav1alpha1.PostgresSchemaStatus{Phase: schemaPhase},
+	schemas, err := controlDBSchemas(oc)
+	if err != nil {
+		t.Fatal(err)
 	}
-	objs = append(objs, oc, ps, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": masterKey}))
+	for _, sc := range schemas {
+		v := schemaVersion(sc.sql)
+		objs = append(objs, &oramav1alpha1.PostgresSchema{
+			ObjectMeta: metav1.ObjectMeta{Name: oc.Name + sc.suffix, Namespace: oc.Namespace, Generation: 1},
+			Spec:       oramav1alpha1.PostgresSchemaSpec{Version: v},
+			Status:     oramav1alpha1.PostgresSchemaStatus{Phase: schemaPhase, AppliedVersion: v, ObservedGeneration: 1},
+		})
+	}
+	objs = append(objs, oc, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": masterKey}))
 	s := ocv1TestScheme(t)
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
 	return &OramaCloudV1Reconciler{Client: cl, Scheme: s}, cl

@@ -224,15 +224,23 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBClusterRow(ctx context.Contex
 	return nil
 }
 
-// controlDBClusterRowPrerequisites reports whether the Job may be created: the owned PostgresSchema
-// reports Applied (its status change requeues this CR) and the master key is valid.
+// controlDBClusterRowPrerequisites reports whether the Job may be created: every owned
+// PostgresSchema of the control DB (0000-0007, 0008, the reference rows) is current, so the row goes
+// into the dashboard's final schema (their status changes requeue this CR), and the master key is
+// valid.
 func (r *OramaCloudV1Reconciler) controlDBClusterRowPrerequisites(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (bool, error) {
-	ps := &oramav1alpha1.PostgresSchema{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-controldb-schema"}, ps); err != nil {
-		return false, client.IgnoreNotFound(err)
+	schemas, err := controlDBSchemas(oc)
+	if err != nil {
+		return false, err
 	}
-	if ps.Status.Phase != "Applied" {
-		return false, nil
+	for _, s := range schemas {
+		ps := &oramav1alpha1.PostgresSchema{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + s.suffix}, ps); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+		if !postgresSchemaCurrent(ps) {
+			return false, nil
+		}
 	}
 	blocked, err := r.validateMasterAPIKey(ctx, oc)
 	return blocked == nil, err
@@ -255,7 +263,7 @@ func (r *OramaCloudV1Reconciler) controlDBClusterRowCondition(ctx context.Contex
 	case apierrors.IsNotFound(err) && blocked != nil:
 		cond.Reason, cond.Message = "WaitingForMasterAPIKey", "waiting for a valid master API key before inserting "+row
 	case apierrors.IsNotFound(err):
-		cond.Reason, cond.Message = "WaitingForSchema", "waiting for the control DB schema before inserting "+row
+		cond.Reason, cond.Message = "WaitingForSchema", "waiting for the control DB schemas (0000 to 0008 and the reference rows) before inserting "+row
 	case err != nil:
 		return nil, err
 	case job.Status.Succeeded > 0:

@@ -203,7 +203,8 @@ func schemaMigrationVersions(sql string) []string {
 // apply the whole schema in one transaction (all-or-nothing). The guard alone is not enough: a
 // migration numbered before the guard's can merge after it (#271), and the guard then hides it.
 // A database with the guard but no schema_migrations table, and a schema file that records no
-// migrations, keep the guard-only behavior.
+// migrations, keep the guard-only behavior. With spec.applyEveryVersion there is no guard: the Job
+// of each version applies the file.
 func pgMigrationJobSpec(ps *oramav1alpha1.PostgresSchema) batchv1.JobSpec {
 	guard := ps.Spec.GuardTable
 	if guard == "" {
@@ -214,10 +215,7 @@ func pgMigrationJobSpec(ps *oramav1alpha1.PostgresSchema) batchv1.JobSpec {
 		image = "postgres:16-alpine"
 	}
 	schemaFile := "/migrations/" + ps.Spec.SchemaConfigMapRef.Key
-	script := `set -eu
-echo "postgres-schema: waiting for the database..."
-until psql "$DATABASE_URL" -c 'SELECT 1' >/dev/null 2>&1; do sleep 3; done
-if psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.` + guard + `')" | grep -q ` + guard + `; then
+	guardCheck := `if psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.` + guard + `')" | grep -q ` + guard + `; then
   expected=$(` + pgSchemaMigrationSed + ` ` + schemaFile + `)
   if [ -z "$expected" ]; then
     echo "schema already applied (` + guard + ` present) — nothing to do"; exit 0
@@ -232,7 +230,14 @@ if psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.` + guard + `')" | grep
   fi
   echo "` + guard + ` present but schema_migrations lacks: $missing"
 fi
-echo "applying schema (version ` + ps.Spec.Version + `)..."
+`
+	if ps.Spec.ApplyEveryVersion {
+		guardCheck = ""
+	}
+	script := `set -eu
+echo "postgres-schema: waiting for the database..."
+until psql "$DATABASE_URL" -c 'SELECT 1' >/dev/null 2>&1; do sleep 3; done
+` + guardCheck + `echo "applying schema (version ` + ps.Spec.Version + `)..."
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f ` + schemaFile + `
 echo "postgres-schema: done"`
 

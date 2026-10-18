@@ -41,6 +41,11 @@ type PostgresSchemaSpec struct {
 	// +optional
 	GuardTable string `json:"guardTable,omitempty"`
 
+	// ApplyEveryVersion applies the file once for every new Version, with no guard check, for a
+	// file that is safe to apply again, such as an upsert of reference rows (operator#378).
+	// GuardTable is then ignored. Off by default: the guarded behavior above.
+	// +optional
+	ApplyEveryVersion bool `json:"applyEveryVersion,omitempty"`
 	// Image is the psql-carrying image used to run the migration Job.
 	// +kubebuilder:default="postgres:16-alpine"
 	// +optional

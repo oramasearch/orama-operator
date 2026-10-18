@@ -155,6 +155,8 @@ func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) 
 	ctx := context.Background()
 	scheme := ocv1TestScheme(t)
 	stack := newOCV1(nil)
+	// A resource stored before admission refused controlDB.mode external must still get no
+	// path to a database outside the cluster.
 	stack.Spec.Components.ControlDB.Mode = "external"
 	objects := append([]client.Object{stack}, sandboxDiscoveryObjects()...)
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
@@ -172,6 +174,28 @@ func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) 
 		t.Fatal(err)
 	}
 	assertJustifiedNarrowAllowances(t, &sandbox)
+	// Airbyte was removed from Cloud v1 (#563): no allowance may reach its namespace or API port.
+	airbyteNamespace := namespaceNameSelector("airbyte")
+	for _, allowance := range sandbox.Spec.Policies {
+		var peers []networkingv1.NetworkPolicyPeer
+		var ports []networkingv1.NetworkPolicyPort
+		for _, rule := range allowance.Spec.Egress {
+			peers, ports = append(peers, rule.To...), append(ports, rule.Ports...)
+		}
+		for _, rule := range allowance.Spec.Ingress {
+			peers, ports = append(peers, rule.From...), append(ports, rule.Ports...)
+		}
+		for _, peer := range peers {
+			if reflect.DeepEqual(peer.NamespaceSelector, airbyteNamespace) {
+				t.Errorf("%s selects namespace airbyte", allowance.Name)
+			}
+		}
+		for _, port := range ports {
+			if port.Port != nil && port.Port.IntVal == 8001 {
+				t.Errorf("%s allows port 8001", allowance.Name)
+			}
+		}
+	}
 	for _, component := range []string{"writer", "reader"} {
 		engineLabels := labelsFor(stack, component)
 		var enginePolicyNames []string
@@ -266,9 +290,13 @@ func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) 
 		"allow-cnpg-apiserver-egress",
 		"allow-dashboard-ingress-nginx",
 		"allow-docs-ingress-nginx",
-		"allow-control-clients-external-postgres",
 	} {
 		allowanceByName(t, &sandbox, name)
+	}
+	for _, allowance := range sandbox.Spec.Policies {
+		if strings.Contains(allowance.Name, "external-postgres") {
+			t.Fatalf("stored controlDB.mode external opened %q", allowance.Name)
+		}
 	}
 }
 
