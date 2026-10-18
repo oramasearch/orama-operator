@@ -116,6 +116,11 @@ spec:
     idp:
       provider: none
     images:
+      # The combined OramaCore engine: v1.2.39 plus oramacore#340 and #341, which serve
+      # GET /health/ready, the readers' readiness probe since #506 (#597). Built from
+      # oramacore 9d8ed373 into the private oramasearch/oramacore-cloud-v1.
+      overrides:
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-9d8ed373
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
       tag: v1-sandbox
