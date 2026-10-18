@@ -752,7 +752,8 @@ manages others by holding these resources.
 | `spec.providerRef` | Name of the `KubernetesClusterProvider`. Immutable. |
 | `spec.region` | The provider's name for the region, such as `westus2`. Immutable. |
 | `spec.kubernetesVersion` | `1.35` or `1.35.8`. |
-| `spec.nodePools[]` | `name`, `role` (`system` or `user`), `machineSize` (the provider's word, such as `Standard_D8as_v7`), and either `count` or `minCount` with `maxCount` (which turns on the provider's autoscaling between the two; `count` is then the starting size). Optional `zones`, `labels`, `taints`. At least one pool must be `system`, with at least one node. |
+| `spec.nodePools[]` | `name`, `role` (`system` or `user`), `machineSize` (the provider's word, such as `Standard_D8as_v7`), and either `count` or `minCount` with `maxCount` (which turns on the provider's autoscaling between the two; `count` is then the starting size). Optional `zones`, `labels`, `taints`, `sysctls`. At least one pool must be `system`, with at least one node. |
+| `spec.nodePools[].sysctls` | Optional map of Linux kernel names to integer values or string ranges, for example `{vm.max_map_count: 4194304}`. Boolean settings use integer `0` or `1`. The provider validates names, types and values; AKS refuses unsupported settings before provisioning. Only explicitly configured settings are checked for drift. See [node sysctls](infrastructure/node-sysctls.md) for supported settings and rollout limits. |
 | `spec.deletionPolicy` | **Required, no default.** `Delete` destroys the real cluster when the resource is deleted; `Retain` leaves it running. Clusters are ephemeral, so whoever writes the resource chooses. |
 | `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written (key `kubeconfig`). Default: `<name>-kubeconfig` in the namespace of the provider's credentials Secret. |
 | `spec.tags` | Attached to the cluster where the provider supports them. **For an AKS provider a tag name cannot contain `<`, `>`, `%`, `&`, `\`, `?` or `/`**, so a Kubernetes-style name such as `orama.cloud/role` is refused: the cluster is `Degraded` with the tag named, and Azure is never called. At most 50 tags, names up to 512 characters, values up to 256. |
@@ -801,7 +802,7 @@ directly, as the Cloudflare and Clerk controllers call theirs: there is no Azure
 | `spec.clusterName` | The managed cluster's name in Azure. Default: the resource's name. |
 | `spec.credentialsSecretRef` | The Azure credentials Secret, as on the provider. |
 | `spec.kubernetesVersion`, `.skuTier`, `.network`, `.upgradeChannel`, `.nodeOSUpgradeChannel`, `.workloadIdentity` | As on the provider and the abstract kind. |
-| `spec.nodePools[]` | `name`, `mode` (`System` or `User`), `vmSize`, `count`, `enableAutoScaling` with `minCount` and `maxCount`, `osDiskSizeGB`, `availabilityZones`, `nodeLabels`, `nodeTaints`. |
+| `spec.nodePools[]` | `name`, `mode` (`System` or `User`), `vmSize`, `count`, `enableAutoScaling` with `minCount` and `maxCount`, `osDiskSizeGB`, `availabilityZones`, `nodeLabels`, `nodeTaints`, `sysctls`. Sysctls use the same Linux names and value types as `KubernetesCluster`; they map to Azure `linuxOSConfig.sysctls` on creation. Unsupported settings produce `Degraded` / `InvalidSysctls` and `InSync=False` before any Azure request. |
 | `spec.deletionPolicy` | Required. `Delete` deletes the managed cluster, then the resource group **if the operator created it**; `Retain` deletes nothing. |
 | `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written. The Secret is owned by the `AksCluster`. |
 | `status.phase` / `.provisioningState` / `.powerState` | The operator's phase, and Azure's own words. `kubectl get aks`. |
@@ -811,7 +812,7 @@ directly, as the Cloudflare and Clerk controllers call theirs: there is no Azure
 | `status.message` | Why the cluster is not `Ready`, in Azure's words: the provisioning state, the operation's progress, and every error Azure reports on the operation, the cluster and each pool. The same text is the `Ready` condition's message and is copied to the `KubernetesCluster`. `kubectl get aks -o wide`, `kubectl get kcluster`. A failure is also logged by the operator as an error, once per distinct failure. |
 | `status.createdResourceGroup` | True when the operator created the resource group, and so may delete it. |
 | `status.kubeconfigWritten` | True once the kubeconfig Secret holds a credential. |
-| `InSync` condition | False when the spec asks for something the cluster does not have. **This version reports the difference and does not act on it**: a cluster is not changed after it is created. |
+| `InSync` condition | False when the spec asks for something the cluster does not have. **This version reports the difference and does not act on it**: a cluster is not changed after it is created. Configured sysctls report the pool, kernel name and desired/reported values; an omitted Azure value is reported as unknown, without guessing an OS default. `Ready` still describes provisioning. Removing a sysctl from the resource stops managing it and does not reset the live setting. |
 
 What a reconcile does: register the finalizer; ensure the resource group; create the managed
 cluster if it is absent; poll every 30 seconds until Azure reports `Succeeded`; fetch the admin

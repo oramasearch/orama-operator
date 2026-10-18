@@ -112,6 +112,19 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return settle(ctrl.Result{}, r.writeStatus(ctx, &cluster, observed))
 	}
 
+	body, err := azureManagedClusterBody(&cluster)
+	if err != nil {
+		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
+			cluster.Generation, clusterPhaseDegraded, "InvalidSysctls", err.Error())
+		// Do not leave an old InSync=True condition behind after an invalid edit.
+		apimeta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type: clusterConditionInSync, Status: metav1.ConditionFalse, Reason: "InvalidSysctls",
+			Message: err.Error(), ObservedGeneration: cluster.Generation,
+		})
+		cluster.Status.ObservedGeneration = cluster.Generation
+		return settle(ctrl.Result{}, r.writeStatus(ctx, &cluster, observed))
+	}
+
 	created, err := az.ensureResourceGroup(ctx, creds, spec.SubscriptionID, spec.ResourceGroup, spec.Location, spec.Tags)
 	if err != nil {
 		return r.fail(ctx, &cluster, observed, "ResourceGroupFailed", err)
@@ -130,7 +143,7 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.fail(ctx, &cluster, observed, "ReadFailed", err)
 	}
 	if found == nil {
-		if err := az.createManagedCluster(ctx, creds, spec.SubscriptionID, spec.ResourceGroup, name, azureManagedClusterBody(&cluster)); err != nil {
+		if err := az.createManagedCluster(ctx, creds, spec.SubscriptionID, spec.ResourceGroup, name, body); err != nil {
 			return r.fail(ctx, &cluster, observed, "CreateFailed", err)
 		}
 		cluster.Status.ProvisioningState = "Creating"
@@ -331,6 +344,7 @@ func aksDrift(cluster *oramav1alpha1.AksCluster, found *azureManagedCluster) []s
 			continue
 		}
 		delete(existing, pool.Name)
+		drift = append(drift, aksSysctlDrift(pool, have.LinuxOSConfig)...)
 		if !strings.EqualFold(have.VMSize, pool.VMSize) {
 			drift = append(drift, fmt.Sprintf("node pool %s: want vmSize %s, cluster has %s", pool.Name, pool.VMSize, have.VMSize))
 		}
