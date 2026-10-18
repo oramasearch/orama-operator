@@ -2,8 +2,8 @@ apiVersion: v2
 name: orama-operator
 description: Installs the Orama Cloud v1 operator (+ CRDs, RBAC). The operator then reconciles one OramaCloudV1 CR into the full in-cluster v1 stack. CloudNativePG and ingress-nginx are composed via the repo's helmfile.yaml, not as subchart dependencies.
 type: application
-version: 0.4.0
-appVersion: "0.4.0"
+version: 0.5.0
+appVersion: "0.5.0"
 annotations:
   # CRDs that must exist on a cluster before this version of the operator can start: it watches
   # their kinds, and a missing CRD is fatal by design (docs/operations/crd-rollout.md). An
