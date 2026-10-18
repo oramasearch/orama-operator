@@ -3,6 +3,10 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.6.1](v0.6.1.md) — 2026-10-18. A patch: the Cloud v1 network sandbox allows the analytics
+  retention Job (to ClickHouse), the analytics import CronJob (to the processor) and the processor's
+  pulls from the readers, which v0.6.0 needed (#616); a stack naming no master key gets a generated
+  one (#615). No CRD change. 33 resource kinds.
 - [v0.6.0](v0.6.0.md) — 2026-10-17. The Cloud v1 engine reachable and kept for the migration:
   the writer verifies the dashboard's write tokens, public writer and reader hosts with extra names
   and `/metrics` closed, readers as a StatefulSet with a disk each, a dedicated reader analytics
