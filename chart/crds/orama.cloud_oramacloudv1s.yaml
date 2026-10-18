@@ -531,9 +531,7 @@ spec:
                     - enabled
                     type: object
                   controlDB:
-                    description: |-
-                      DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
-                      operator/chart), pointed at an external endpoint, or centrally located.
+                    description: ControlDB is the Postgres control plane, always in-cluster.
                     properties:
                       credentialsSecretRef:
                         description: CredentialsSecretRef (ExternalSecret-materialized)
@@ -637,9 +635,73 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      stripePrices:
+                        description: |-
+                          StripePrices are this stack's Stripe price IDs for the seeded reference rows: test-mode IDs on
+                          a nonprod stack, live-mode IDs on production. They are never part of the operator's committed
+                          rows. Empty leaves every plan's Stripe columns NULL and seeds no add-on price.
+                        properties:
+                          addons:
+                            description: |-
+                              Addons sets stripe_addon_prices.stripe_price_id. That column is NOT NULL, so an add-on price row
+                              is seeded only when it is listed here.
+                            items:
+                              description: StripeAddonPrice is one add-on price row's
+                                Stripe price.
+                              properties:
+                                id:
+                                  description: ID is the stripe_addon_prices row ID.
+                                  pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+                                  type: string
+                                priceID:
+                                  description: PriceID is the Stripe price ID.
+                                  pattern: ^[A-Za-z0-9_-]{1,255}$
+                                  type: string
+                              required:
+                              - id
+                              - priceID
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - id
+                            x-kubernetes-list-type: map
+                          plans:
+                            description: |-
+                              Plans sets subscription_plans.stripe_price_id_monthly and stripe_price_id_yearly. A plan not
+                              listed has both NULL.
+                            items:
+                              description: StripePlanPrice is one subscription plan's
+                                Stripe prices.
+                              properties:
+                                id:
+                                  description: ID is the subscription_plans row ID.
+                                  pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+                                  type: string
+                                monthly:
+                                  description: Monthly is the Stripe price ID for
+                                    monthly billing.
+                                  pattern: ^[A-Za-z0-9_-]{1,255}$
+                                  type: string
+                                yearly:
+                                  description: Yearly is the Stripe price ID for yearly
+                                    billing.
+                                  pattern: ^[A-Za-z0-9_-]{1,255}$
+                                  type: string
+                              required:
+                              - id
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - id
+                            x-kubernetes-list-type: map
+                        type: object
                     required:
                     - enabled
                     type: object
+                    x-kubernetes-validations:
+                    - message: 'controlDB.mode external is not supported: the control
+                        DB is always in-cluster'
+                      rule: '!has(self.mode) || self.mode == ''in-cluster'''
                   dashboard:
                     description: |-
                       DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and

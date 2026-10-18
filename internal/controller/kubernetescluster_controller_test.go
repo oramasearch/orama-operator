@@ -149,6 +149,9 @@ func (f *fakeAzure) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		respond(http.StatusOK, operation)
 	case strings.Contains(path, "/managedClusters/"):
+		if version := r.URL.Query().Get("api-version"); version != "2025-05-01" {
+			f.t.Errorf("managed cluster request uses API %s, want 2025-05-01", version)
+		}
 		name := path[strings.LastIndex(path, "/")+1:]
 		switch r.Method {
 		case http.MethodGet:
