@@ -18,11 +18,72 @@ pointing at the primary); the full sample list is in
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile while the engine is enabled) run the writer-only and reader-only OramaCore builds with their own `writer.yaml` and `reader.yaml`, and win over `overrides.oramacore`; unset, both pods run the combined image, so every reader also runs a writer ([components.md](components.md#engine-internalcontrollerenginego)). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
-| `llm.providers[]` | list | groq+openai+anthropic | **Multiple** LLM providers (`name`, `models[]`, `apiKeySecretRef`, `gpu`) — end users pick per query. Empty ⇒ the prod set. |
-| `llm.default` | enum | `groq` | Provider used when a request doesn't name one. |
+| `llm.providers[]` | list | Prod 1's four ([below](#specllm)) | **Multiple** LLM providers (`name`: `groq \| openai \| anthropic \| google \| vllm`, `models[]`, `apiKeySecretRef: {name}`, `gpu`) — end users pick per query. The first model is the provider's default model. |
+| `llm.default` | string | `groq` | Provider used when a request doesn't name one; must be one of the providers. |
+| `llm.automaticEmbeddingsSelector` | `{provider, model}` | unset | Provider and model that choose the properties to embed for collections with automatic embeddings. Unset renders no selector. |
 | `cloudflare.*` | object | enabled | Operator manages CF **DNS + Load Balancing + R2/KV** via the CF API. **Two Secrets:** `apiTokenSecretRef` → `token`+`zoneID`+`accountID` (control plane); `r2SecretRef` → `s3ApiEndpoint`+`accessKeyId`+`secretAccessKey` (R2 S3 data plane). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
+
+## `spec.llm`
+
+The engine's LLM settings, rendered into the `ai_server` section of every engine config (the
+combined `config.yaml`, or both `writer.yaml` and `reader.yaml`):
+
+- `ai_server.llm` is the `default` provider as an OpenAI-compatible remote (`local: false`): its
+  built-in base URL, its first model and its key. A request that names no provider goes there.
+- `ai_server.remote_llms` has one entry per provider: `provider`, its key and `default_model` (the
+  first model). No `url` is rendered, so OramaCore uses its built-in URL. The model list does not
+  restrict the model a request names.
+- `ai_server.embeddings.automatic_embeddings_selector` is `automaticEmbeddingsSelector`, only when
+  it is set.
+
+| Provider | Base URL (OramaCore v1.2.39 `src/ai/llms.rs`) |
+|---|---|
+| `groq` | `https://api.groq.com/openai/v1` |
+| `openai` | `https://api.openai.com/v1` |
+| `google` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| `anthropic` | `https://api.anthropic.com/v1` |
+
+**Defaults.** An omitted or empty `providers` list is Prod 1's set, and an empty `default` is
+`groq`; the shared `LLM_PROVIDERS` value lists the same names. The CR's spec is not filled in.
+
+```yaml
+llm:
+  default: groq
+  providers:
+    - { name: openai,    models: [gpt-5.2] }
+    - { name: google,    models: [gemini-2.0-flash-001] }
+    - { name: groq,      models: [openai/gpt-oss-120b] }
+    - { name: anthropic, models: [claude-sonnet-4-5] }
+  automaticEmbeddingsSelector: { provider: openai, model: gpt-5.2 }
+```
+
+`automaticEmbeddingsSelector` has no default: without it no selector is rendered, even on a CR
+with no `spec.llm`, so the defaults are Prod 1's providers and models but not its whole block.
+Production sets the block above explicitly (`config/clusters/sets/v1-prod.yaml`).
+
+**Keys.** A provider's key comes from `<cr>-engine-secret` under `<PROVIDER>_API_KEY`
+(`GROQ_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`; the operator seeds missing
+ones with `dev-*` placeholders and never replaces a value), or, with `apiKeySecretRef`, from that
+Secret in the CR's namespace under the same `<PROVIDER>_API_KEY`. The operator only reads
+a referenced Secret. The ConfigMap holds `__<PROVIDER>_API_KEY__` placeholders; the
+`render-config` init container fills them at pod start.
+
+**Rotation rolls the engine.** The writer and reader pod templates carry
+`orama.cloud/config-hash` (the side's template, so an LLM setting change rolls them) and
+`orama.cloud/llm-secret-hash`, a SHA-256 of the data of `<cr>-engine-secret` and every referenced
+key Secret. The operator watches those Secrets, including ones it does not own, so changing a key
+value rolls the writer and readers with no restart by hand; a metadata-only edit does not. A read
+region has no writer and rolls its readers.
+
+**Validation.** Before any engine object is written, the reconcile fails with `Ready=False`
+(`ReconcileError`) and leaves the running engine as it is when: the default or selector provider
+is not one of the providers; a provider is listed twice, is `vllm` (in-cluster vLLM is not
+implemented), is unsupported, or has no first model; the selector's model is empty; an
+`apiKeySecretRef.name` is empty; or a key Secret or key is missing, empty or holds a line break.
+Messages name the field or Secret and key, never a value. Fixing the spec or (re)creating the
+Secret recovers on the next reconcile, which the Secret watch triggers.
 
 ## `spec.components`
 

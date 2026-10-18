@@ -92,15 +92,18 @@ namespace ID by hand. Inspect:
 
 ## Step 2 — External SaaS (the only manual tokens)
 
-For each, mint the token at the provider, then drop it into the component's Secret. The
-Secret name is `v1-<component>` (create-if-absent — the operator never overwrites a Secret
-that already exists, so **set these before first reconcile or delete+recreate to update**).
+For each, mint the token at the provider and put it in a Secret on the managing cluster. Nothing
+is created or edited by hand on the stack's own cluster: the `OramaCloudV1Set` copies each Secret
+in its `secrets` list into the member's namespace and keeps it in step, and the stack's spec
+references it (for the LLM providers, `spec.llm.providers[].apiKeySecretRef`). Creating a Secret
+on the managing cluster is a cluster write and needs Steve's consent.
 
 | Service | Component(s) | Env key | Get it from |
 |---|---|---|---|
 | **OpenAI** | engine, workers, openai-decrypter | `OPENAI_API_KEY` | platform.openai.com → API keys |
 | **Groq** | engine, workers | `GROQ_API_KEY` | console.groq.com |
 | **Anthropic** | engine, workers | `ANTHROPIC_API_KEY` | console.anthropic.com |
+| **Google (Gemini)** | engine | `GOOGLE_API_KEY` | aistudio.google.com → API keys |
 | **HuggingFace** | engine (model pulls) | `HF_TOKEN` | huggingface.co → settings → tokens |
 | **Apify** | index-builder (crawler) | `APIFY_TOKEN` | console.apify.com → integrations |
 | **Ably** | harvest, index-builder (live progress) | `ABLY_API_KEY` | ably.com → app → API keys |
@@ -111,18 +114,28 @@ that already exists, so **set these before first reconcile or delete+recreate to
 | **Slack** | dashboard (ops alerts) | `SLACK_TOKEN` | api.slack.com → your app |
 | **Sentry** | dashboard, oramasearch-app, index-builder, workers (error/APM) | `SENTRY_DSN` | sentry.io → project → Client Keys (DSN). **Optional** — an empty DSN disables it. |
 
-Example — set a real key on a component secret (delete+recreate to override the dummy):
-```bash
-kubectl delete secret v1-engine -n orama-system --ignore-not-found
-kubectl create secret generic v1-engine -n orama-system \
-  --from-literal=MASTER_API_KEY='<gen-or-real>' \
-  --from-literal=OPENAI_API_KEY='sk-...' \
-  --from-literal=GROQ_API_KEY='gsk_...' \
-  --from-literal=ANTHROPIC_API_KEY='sk-ant-...' \
-  --from-literal=HF_TOKEN='hf_...'
-# then bounce the consumer so it re-reads:
-kubectl rollout restart statefulset/v1-writer deploy/v1-reader -n orama-system
+Example: the engine's LLM keys. One Secret on the managing cluster, `orama-system/v1-nonprod-llm-keys`
+for `v1-nonprod` (`v1-prod-llm-keys` for `v1-prod`), holds `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
+`GROQ_API_KEY` and `ANTHROPIC_API_KEY`. The set file lists it and every provider points at it:
+
+```yaml
+spec:
+  secrets:
+  - name: v1-nonprod-llm-keys
+    namespace: orama-system
+  template:
+    llm:
+      providers:
+      - name: openai
+        models: [gpt-5.2]
+        apiKeySecretRef: { name: v1-nonprod-llm-keys }
+      # google, groq and anthropic the same way
 ```
+
+To rotate a key, change the value in the managing cluster's Secret. The set copies it to the
+member, the operator watches the engine Secret and every `apiKeySecretRef` Secret, and it rolls the
+writer and readers when a value changes; no restart is needed
+([crd-reference.md](crd-reference.md#specllm)).
 
 > **QStash / Upstash:** the operator points `QSTASH_URL` at the **in-cluster RabbitMQ**
 > (`v1-broker:5672`) as a shim, so no Upstash account is needed for the sandbox. Supply a

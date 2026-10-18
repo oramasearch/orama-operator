@@ -22,13 +22,10 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// llmProviderNames returns the enabled LLM provider names (defaults to the prod set —
-// v1 offers all three and end users pick per query).
+// llmProviderNames is the shared LLM_PROVIDERS value: the names of the effective provider list
+// (llmProviders), the same list the engine config renders. End users pick one per query.
 func llmProviderNames(oc *oramav1alpha1.OramaCloudV1) string {
-	provs := oc.Spec.LLM.Providers
-	if len(provs) == 0 {
-		return "groq,openai,anthropic"
-	}
+	provs := llmProviders(oc)
 	names := make([]string, 0, len(provs))
 	for _, p := range provs {
 		names = append(names, p.Name)
@@ -36,6 +33,7 @@ func llmProviderNames(oc *oramav1alpha1.OramaCloudV1) string {
 	return strings.Join(names, ",")
 }
 
+// llmDefault is spec.llm.default, or groq when it is empty.
 func llmDefault(oc *oramav1alpha1.OramaCloudV1) string {
 	if oc.Spec.LLM.Default != "" {
 		return oc.Spec.LLM.Default
@@ -160,6 +158,7 @@ func componentSecretData(component string) map[string]string {
 			"GROQ_API_KEY":      "dev-groq-api-key",
 			"OPENAI_API_KEY":    "dev-openai-api-key",
 			"ANTHROPIC_API_KEY": "dev-anthropic-api-key",
+			"GOOGLE_API_KEY":    "dev-google-api-key",
 			"HF_TOKEN":          "dev-huggingface-token",
 		}
 	case "search":
@@ -280,9 +279,14 @@ func (r *OramaCloudV1Reconciler) ensureComponentSecret(ctx context.Context, oc *
 	} else if !apierrors.IsNotFound(err) {
 		return false, err
 	}
+	// Data, not StringData: the reconcile reads the values back (engineLLMSecretHash) and every
+	// reader, including a fake client, sees the same bytes.
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace, Labels: labelsFor(oc, component)},
-		StringData: data,
+		Data:       map[string][]byte{},
+	}
+	for k, v := range data {
+		sec.Data[k] = []byte(v)
 	}
 	if err := controllerutil.SetControllerReference(oc, sec, r.Scheme); err != nil {
 		return false, err

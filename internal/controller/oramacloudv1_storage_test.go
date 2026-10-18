@@ -179,7 +179,7 @@ func TestOCV1StorageFreshVolumes(t *testing.T) {
 			oc.Spec.Components.ControlDB = oramav1alpha1.ControlDBSpec{DataStoreSpec: oramav1alpha1.DataStoreSpec{Enabled: true, Storage: tc.spec}}
 			r, _ := storageFake(t, oc)
 			ctx := context.Background()
-			if err := r.reconcileWriter(ctx, oc); err != nil {
+			if err := r.reconcileWriter(ctx, oc, ""); err != nil {
 				t.Fatal(err)
 			}
 			for _, comp := range []string{"analytics", "cache", "broker", "search"} {
@@ -224,7 +224,7 @@ func TestOCV1StoragePreservesStatefulTemplates(t *testing.T) {
 				t.Helper()
 				var err error
 				if component == "writer" {
-					err = r.reconcileWriter(ctx, oc)
+					err = r.reconcileWriter(ctx, oc, "")
 				} else {
 					err = r.reconcileCache(ctx, oc)
 				}
@@ -272,7 +272,7 @@ func TestOCV1StorageGrowthMatchingClaimsAndPending(t *testing.T) {
 	oc.Spec.Components.Engine.Enabled = true
 	oc.Spec.Components.Engine.Writer.Storage = storageSpec("20Gi", "")
 	r, writes := storageFake(t, oc)
-	if err := r.reconcileWriter(ctx, oc); err != nil {
+	if err := r.reconcileWriter(ctx, oc, ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"data-v1-writer-0", "data-v1-writer-4", "data-v1-writer-00", "data-v1-writer-1-extra", "data-v1-writer-other-0", "data-v1-controldb-0"} {

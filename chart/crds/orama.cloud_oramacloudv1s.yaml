@@ -1826,39 +1826,63 @@ spec:
                 description: LLM configures the available answer/RAG language-model
                   providers (multiple).
                 properties:
+                  automaticEmbeddingsSelector:
+                    description: |-
+                      AutomaticEmbeddingsSelector is the provider and model the engine asks to choose which document
+                      properties to embed for collections with automatic embeddings. Its provider must be one of the
+                      providers. Unset renders no selector, including on a CR without spec.llm.
+                    properties:
+                      model:
+                        description: Model name, sent to the provider as is.
+                        minLength: 1
+                        type: string
+                      provider:
+                        description: Provider of the model.
+                        enum:
+                        - groq
+                        - openai
+                        - anthropic
+                        - google
+                        type: string
+                    required:
+                    - model
+                    - provider
+                    type: object
                   default:
                     default: groq
-                    description: Default provider used when a request doesn't name
-                      one.
+                    description: |-
+                      Default provider used when a request doesn't name one. It must be one of the providers; the
+                      engine sends such requests to its built-in URL with its first model and key. Empty means groq.
                     type: string
                   providers:
-                    description: Providers available for selection. If empty, defaults
-                      to groq + openai + anthropic.
+                    description: |-
+                      Providers available for selection. Each renders one ai_server.remote_llms entry whose default
+                      model is the provider's first model. If empty, defaults to Prod 1's set: openai (gpt-5.2),
+                      google (gemini-2.0-flash-001), groq (openai/gpt-oss-120b), anthropic (claude-sonnet-4-5).
                     items:
                       description: LLMProvider is one selectable LLM backend.
                       properties:
                         apiKeySecretRef:
-                          description: APIKeySecretRef overrides the default per-component
-                            key for this provider.
+                          description: |-
+                            APIKeySecretRef takes this provider's key from <PROVIDER>_API_KEY (for example GOOGLE_API_KEY)
+                            in a Secret in the CR's namespace instead of <cr>-engine-secret. The operator reads it and
+                            never creates or changes it.
                           properties:
                             name:
-                              default: ""
-                              description: |-
-                                Name of the referent.
-                                This field is effectively required, but due to backwards compatibility is
-                                allowed to be empty. Instances of this type with an empty value here are
-                                almost certainly wrong.
-                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              description: Name of the Secret.
+                              minLength: 1
                               type: string
+                          required:
+                          - name
                           type: object
-                          x-kubernetes-map-type: atomic
                         gpu:
                           description: GPU requests a GPU for an in-cluster vLLM provider
                             (name=vllm).
                           type: boolean
                         models:
-                          description: Models this provider offers (the catalog the
-                            end user can pick from).
+                          description: |-
+                            Models this provider offers. The first is the provider's default model; the list does not
+                            restrict the model a request names.
                           items:
                             type: string
                           type: array
@@ -1868,6 +1892,7 @@ spec:
                           - groq
                           - openai
                           - anthropic
+                          - google
                           - vllm
                           type: string
                       required:

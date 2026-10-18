@@ -105,7 +105,7 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 				t.Helper()
 				var err error
 				if component == "writer" {
-					err = r.reconcileWriter(ctx, oc)
+					err = r.reconcileWriter(ctx, oc, "")
 				} else {
 					err = r.reconcileCache(ctx, oc)
 				}

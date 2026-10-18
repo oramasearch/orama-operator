@@ -178,7 +178,7 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
 - **Per-component secrets** `<cr>-<component>-secret` — each holds **only the dummy
   credentials that component needs** (`componentSecretData`). e.g. `search-secret` =
   `TYPESENSE_API_KEY`; `cache-secret` = empty (Redis is passwordless, #32); `engine-secret`
-  = master key + JWT keys + LLM keys; `dashboard-secret` = ClickHouse/JWT/Stripe (its **Postgres
+  = master key + the LLM keys (`GROQ_`, `OPENAI_`, `ANTHROPIC_`, `GOOGLE_API_KEY`) + `HF_TOKEN`; `dashboard-secret` = ClickHouse/JWT/Stripe (its **Postgres
   password comes from the CNPG `<cr>-controldb-app` secret**, not here — #32). **No shared blob** —
   a pod never sees a credential it doesn't use. **Create-if-absent** — the operator
   never overwrites an existing secret, so real / rotated values are
@@ -390,17 +390,30 @@ Driven by `spec.region.role`:
   same section builders in `engine.go` (`engineCommonYAML`, `writerSideYAML`, `readerSideYAML`,
   `aiServerYAML`), so the sections and stream names are identical in every mode (writer
   `oramacore-writer`/`write`, readers `oramacore-reader`/`reader`).
-  Every config is a **template** — `master_api_key` is a `__MASTER_API_KEY__` and the Groq key a
-  `__GROQ_API_KEY__` placeholder, so **no credential lives in the ConfigMap**. A `render-config`
-  **init container** substitutes the real values from `<cr>-engine-secret` (via `envFrom`) into
-  the pod's template and writes it to a shared `emptyDir`, and OramaCore reads it via
+  The `ai_server` LLM settings come from `spec.llm` (`engine_llm.go`): `ai_server.llm` is the
+  default provider's built-in URL, first model and key, `ai_server.remote_llms` one entry per
+  provider, and `ai_server.embeddings.automatic_embeddings_selector` the optional selector. Without
+  `spec.llm` they are Prod 1's four providers with no selector
+  ([crd-reference.md](crd-reference.md#specllm)).
+  Every config is a **template** — `master_api_key` is a `'__MASTER_API_KEY__'` and each provider's
+  key a `'__<PROVIDER>_API_KEY__'` placeholder (single-quoted scalars), so **no credential lives in
+  the ConfigMap**. A `render-config` **init container** substitutes the real values into the pod's
+  template and writes it to a shared `emptyDir`, and OramaCore reads it via
   `CONFIG_PATH=/etc/oramacore/config.yaml`
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
-  `ORAMACORE_` provider splits on `_`). With side-only images each pod template carries
-  `orama.cloud/config-hash`, the SHA-256 of its own unrendered template, so a change to one side's
-  config rolls only that side (a change to a shared section rolls both); the combined config is
-  not hashed. All children set an owner reference to the CR, so
-  deleting the CR cascade-deletes them.
+  `ORAMACORE_` provider splits on `_`). Values come from `<cr>-engine-secret` (via `envFrom`), and a
+  provider with `apiKeySecretRef` from that Secret through an explicit `secretKeyRef` env entry.
+  The script reads each value from its environment variable and escapes it for `sed` and the
+  single-quoted scalar, so no value is evaluated, logged or written into the script.
+  Each pod template carries `orama.cloud/config-hash`, the SHA-256 of its own unrendered template
+  (with side-only images a change to one side's config rolls only that side, a change to a shared
+  section such as the LLM settings rolls both; the combined config rolls both), and
+  `orama.cloud/llm-secret-hash`, the SHA-256 of the data of `<cr>-engine-secret` and every
+  `apiKeySecretRef` Secret, identical on both sides. The controller watches Secrets and maps a
+  change to every CR whose enabled engine reads it, so a rotated key rolls the writer and readers
+  with no restart by hand. The LLM settings and keys are checked before any engine object is
+  written: invalid input leaves the running engine untouched with `Ready=False`. All children set
+  an owner reference to the CR, so deleting the CR cascade-deletes them.
 - **Graceful shutdown** — OramaCore handles SIGTERM (drains HTTP, then force-commits
   BOTH sides to disk — `oramacore/src/lib.rs`, `web_server/mod.rs`; `CMD ["./oramacore"]`
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets
