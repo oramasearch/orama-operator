@@ -89,6 +89,17 @@ Secret recovers on the next reconcile, which the Secret watch triggers.
 
 Every component has `enabled`. Data stores also have `mode: in-cluster|external`,
 `placement: local|central`, `replicate`, and `endpoint`/`credentialsSecretRef`.
+The control DB is always in-cluster: `controlDB.mode` supports only `in-cluster`
+(the existing default when omitted). Admission refuses `external` even when
+`enabled: false`; the reconcile also refuses resources stored before this rule.
+`controlDB.endpoint` and `controlDB.credentialsSecretRef` do not select a different
+control database. Other data stores, including the broker, still support external mode.
+`controlDB.stripePrices` holds this stack's Stripe price IDs for the dashboard reference rows the
+operator seeds ([`components.md`](components.md#the-control-dbs-schema)): `plans[]` is
+`{ id, monthly, yearly }` (sets `subscription_plans.stripe_price_id_monthly`/`_yearly`; a plan not
+listed has both NULL) and `addons[]` is `{ id, priceID }` (sets `stripe_addon_prices.stripe_price_id`;
+an add-on price row is seeded only when listed). `id` is the reference row's UUID; an ID that is not
+a reference row fails the seed. Empty seeds every plan without Stripe prices and no add-on price.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
 
@@ -98,7 +109,7 @@ serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrast
 | `dashboard` | `host` | app.orama.com (Next.js) |
 | `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
-| `controlDB` | data-store | PlanetScale → CloudNativePG |
+| `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `stripePrices` | Always in-cluster CloudNativePG |
 | `analytics` | data-store | ClickHouse |
 | `cache` | data-store | Upstash Redis |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
@@ -108,6 +119,13 @@ serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrast
 
 `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
+
+Engine startup budgets are fixed: **20 minutes for the writer** (`failureThreshold: 120`)
+and **40 minutes for readers** (`failureThreshold: 240`), both at a 10s period on
+`GET /health`, numeric port 8080. Startup gates readiness and liveness until it succeeds;
+these budgets add no mandatory delay. There are no per-side startup timeout fields.
+Readiness remains every 10s and liveness every 15s, both with a 3s timeout and failure
+threshold 3. See [engine health probes](components.md#engine-internalcontrollerenginego).
 
 ## `status`
 
@@ -156,7 +174,8 @@ it). With `spec.host` set it also fronts the host with an **nginx Ingress** and 
 is given — an **owned `CloudflareDNSRecord`** (a proxied A/CNAME record → the ingress LoadBalancer),
 reusing the same Cloudflare child-controller path as the dashboard DNS. A `CloudflareDNSRecord` whose
 name (or type) changes deletes the record it made before (`status.recordID`) once the new one exists,
-so a host change never leaves the old name live (#529); a record already gone counts as deleted.
+so a host change never leaves the old name live (#529), only while that record is still its own (see
+below); a record already gone counts as deleted.
 A `CloudflareDNSRecord` takes `type` `A`, `CNAME` or `TXT`; `proxied` is always written (default
 `true` only when left out), so a controller's `false` is kept; and `deletionPolicy: Retain` leaves the
 Cloudflare record when the resource is deleted (`Delete`, the default, removes it), which a Lake's Clerk
@@ -254,6 +273,55 @@ End-to-end sample (a 3-replica target + its test): [`../config/samples/zetta-req
 | `spec.levels` | Which test levels to run (`ZETTA_E2E_LEVELS`, default `2,3`). |
 | `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
 | `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ozce2e`; `kubectl logs job/<name>-e2e`. |
+
+## `CloudflareDNSRecord` (separate CRD)
+
+Creates new DNS records and reconciles only records it owns. Foreign A, AAAA or
+CNAME records at the desired name are conflicts, including records with identical
+settings, and so is a foreign TXT record when `spec.type` is `TXT`. The controller lists
+every result page before any mutation; other TXT/MX records are ignored. Conflicts and ambiguous ownership set `ready: false` and retry in five
+minutes without changing ownership status or external records.
+
+| Field | Meaning |
+|---|---|
+| `spec.secretRef` | Same-namespace Secret with `token` and `zoneID`. Missing either reports waiting and retries in five minutes without an API call. |
+| `spec.name` | Record FQDN. |
+| `spec.type` | Explicit record type wins. Empty infers A for an IP (including the existing IPv6 inference), CNAME otherwise. |
+| `spec.content` | Record target. |
+| `spec.proxied` | Proxy setting, default `true`; explicit `false` is preserved. TTL is automatic (`1`). |
+| `spec.deletionPolicy` | `Delete` (default) deletes the owned record with the resource. `Retain` makes no Cloudflare call on deletion or rename; the record stays. |
+| `spec.sharedOwner` | Optional owner of a record several resources keep, e.g. `clerk/<instance ID>`. The record is created with comment `orama-operator:<sharedOwner>`, and every resource with the same value recognises it as its own. Requires `deletionPolicy: Retain` (the API server refuses it otherwise). |
+| `status.recordID` | Created or recovered record ID, or a pre-upgrade legacy ID. |
+| `status.ownerComment` | Optional exact comment `orama-operator:<namespace>/<name>` (or `orama-operator:<sharedOwner>`), saved on creation or marker recovery. Empty with a populated ID means legacy compatibility. |
+| `status.ready` | True after a successful create or confirmed owned reconciliation. |
+| `status.message` | `reconciled` on success; otherwise the waiting/API diagnostic, conflicting record's name, type, content and ID, or ownership ambiguity. |
+
+Creation rejects comments over 100 characters (namespace/name over 85) with a
+five-minute retry and no mutation; it never truncates or hashes them. This limit
+never blocks legacy reads or deletion. Exact markers recover a record after a
+failed status update, without a second create. Owned records matching type, content,
+proxying and TTL receive only GETs; changed settings receive one PUT preserving the
+current comment. Legacy IDs never gain a comment. A previously marked record whose
+comment changes remains marked in status and cannot become legacy.
+
+A changed name or type creates the new record, then deletes the previous ID through the
+cleanup check below; a previous record that lost its comment is left, reported with
+`RecordNotOwned` and no longer tracked. With `Retain` the previous record is left.
+
+With `Retain`, the finalizer is released without a Cloudflare call. Otherwise the cleanup
+finalizer fetches marked records by ID and deletes only if their stored
+comment still matches. Otherwise it releases the finalizer, leaves the record and emits
+Warning `RecordNotOwned`. Legacy IDs retain deletion by ID. A 404 on GET or DELETE
+means cleanup succeeded; other failures retain the finalizer and return the error.
+No ID means no Cloudflare calls. Missing credentials with an ID retain the finalizer
+and retry in five minutes. Install this CRD update through the approved rollout
+mechanism before the controller, so Kubernetes preserves `ownerComment`.
+
+The `app.orama.com` cutover repoint is a reviewed Cloudflare change in the bridge
+[cutover runbook](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md),
+listed in [production changes](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/production-changes.md).
+The operator cannot adopt that existing record.
+
 ## `CloudflareLoadBalancer` (separate CRD) — the global geo-LB
 
 Owns a Cloudflare **global Load Balancer** ([operator#73](https://github.com/oramasearch/orama-operator/issues/73)):
@@ -333,8 +401,10 @@ apply-in-one-transaction) and reflects `phase` + `appliedVersion` (read back fro
 desired version never misreports). It carries **no finalizer** — deleting the CR never drops the
 schema/data, it only stops managing the migration.
 
-`OramaCloudV1` creates + owns a `<cr>-controldb-schema` instance (`reconcileControlDBMigrations`)
-applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
+`OramaCloudV1` creates + owns three instances, in order (`reconcileControlDBMigrations`):
+`<cr>-controldb-schema` (dashboard migrations 0000 to 0007), `<cr>-controldb-schema-0008` (0008 with
+the reference rows) and `<cr>-controldb-reference-data` (the reference rows with the stack's Stripe
+prices, `applyEveryVersion`); see [`components.md`](components.md#the-control-dbs-schema). See
 [`datastore-crds.md`](datastore-crds.md) for the full design. Sample:
 [`../config/samples/postgresschema.yaml`](../config/samples/postgresschema.yaml).
 
@@ -344,6 +414,7 @@ applying the dashboard's vendored Drizzle schema to the CNPG control DB. See
 | `spec.schemaConfigMapRef` | `{ name, key }` — ConfigMap + key holding the schema SQL (applied all-or-nothing in one transaction). |
 | `spec.version` | Schema version recorded in `.status.appliedVersion` once applied. A change automatically replaces the prior Job with foreground deletion, waiting for its pods before starting the guarded apply. Lake hashes SQL plus guard; the dashboard hashes SQL. |
 | `spec.guardTable` | A `public` table that must exist for the Job to skip the apply. Default `crawler_configs`. When the schema file records migrations (`INSERT INTO schema_migrations (version) VALUES ('NNNN_…')`), the Job also requires every one of them in the database's `schema_migrations`, and otherwise applies the whole idempotent file ([#271](https://github.com/oramasearch/orama-operator/issues/271)). With no `schema_migrations` table, or a file that records none, the guard alone decides. |
+| `spec.applyEveryVersion` | Default `false`. When `true` the Job has no guard: each new `spec.version` applies the file once, for SQL that is safe to apply again (the control DB's reference-row upsert). `guardTable` is then ignored. |
 | `spec.image` | psql-carrying image for the migration Job. Default `postgres:16-alpine`. |
 | `status.phase` / `.appliedVersion` | `Pending \| Applying \| Applied \| Failed` + the version actually applied. `kubectl get pgschema`. |
 | `status.conditions[Applied]` | `Applied` \| `Applying` \| `ReplacingMigrationJob` \| `WaitingForDatabase` \| `MigrationFailed`. Written only on a real transition (anti-flap). |
@@ -814,7 +885,8 @@ manages others by holding these resources.
 | `spec.providerRef` | Name of the `KubernetesClusterProvider`. Immutable. |
 | `spec.region` | The provider's name for the region, such as `westus2`. Immutable. |
 | `spec.kubernetesVersion` | `1.35` or `1.35.8`. |
-| `spec.nodePools[]` | `name`, `role` (`system` or `user`), `machineSize` (the provider's word, such as `Standard_D8as_v7`), and either `count` or `minCount` with `maxCount` (which turns on the provider's autoscaling between the two; `count` is then the starting size). Optional `zones`, `labels`, `taints`. At least one pool must be `system`, with at least one node. |
+| `spec.nodePools[]` | `name`, `role` (`system` or `user`), `machineSize` (the provider's word, such as `Standard_D8as_v7`), and either `count` or `minCount` with `maxCount` (which turns on the provider's autoscaling between the two; `count` is then the starting size). Optional `zones`, `labels`, `taints`, `sysctls`. At least one pool must be `system`, with at least one node. |
+| `spec.nodePools[].sysctls` | Optional map of Linux kernel names to integer values or string ranges, for example `{vm.max_map_count: 4194304}`. Boolean settings use integer `0` or `1`. The provider validates names, types and values; AKS refuses unsupported settings before provisioning. Only explicitly configured settings are checked for drift. See [node sysctls](infrastructure/node-sysctls.md) for supported settings and rollout limits. |
 | `spec.deletionPolicy` | **Required, no default.** `Delete` destroys the real cluster when the resource is deleted; `Retain` leaves it running. Clusters are ephemeral, so whoever writes the resource chooses. |
 | `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written (key `kubeconfig`). Default: `<name>-kubeconfig` in the namespace of the provider's credentials Secret. |
 | `spec.tags` | Attached to the cluster where the provider supports them. **For an AKS provider a tag name cannot contain `<`, `>`, `%`, `&`, `\`, `?` or `/`**, so a Kubernetes-style name such as `orama.cloud/role` is refused: the cluster is `Degraded` with the tag named, and Azure is never called. At most 50 tags, names up to 512 characters, values up to 256. |
@@ -863,7 +935,7 @@ directly, as the Cloudflare and Clerk controllers call theirs: there is no Azure
 | `spec.clusterName` | The managed cluster's name in Azure. Default: the resource's name. |
 | `spec.credentialsSecretRef` | The Azure credentials Secret, as on the provider. |
 | `spec.kubernetesVersion`, `.skuTier`, `.network`, `.upgradeChannel`, `.nodeOSUpgradeChannel`, `.workloadIdentity` | As on the provider and the abstract kind. |
-| `spec.nodePools[]` | `name`, `mode` (`System` or `User`), `vmSize`, `count`, `enableAutoScaling` with `minCount` and `maxCount`, `osDiskSizeGB`, `availabilityZones`, `nodeLabels`, `nodeTaints`. |
+| `spec.nodePools[]` | `name`, `mode` (`System` or `User`), `vmSize`, `count`, `enableAutoScaling` with `minCount` and `maxCount`, `osDiskSizeGB`, `availabilityZones`, `nodeLabels`, `nodeTaints`, `sysctls`. Sysctls use the same Linux names and value types as `KubernetesCluster`; they map to Azure `linuxOSConfig.sysctls` on creation. Unsupported settings produce `Degraded` / `InvalidSysctls` and `InSync=False` before any Azure request. |
 | `spec.deletionPolicy` | Required. `Delete` deletes the managed cluster, then the resource group **if the operator created it**; `Retain` deletes nothing. |
 | `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written. The Secret is owned by the `AksCluster`. |
 | `status.phase` / `.provisioningState` / `.powerState` | The operator's phase, and Azure's own words. `kubectl get aks`. |
@@ -873,7 +945,7 @@ directly, as the Cloudflare and Clerk controllers call theirs: there is no Azure
 | `status.message` | Why the cluster is not `Ready`, in Azure's words: the provisioning state, the operation's progress, and every error Azure reports on the operation, the cluster and each pool. The same text is the `Ready` condition's message and is copied to the `KubernetesCluster`. `kubectl get aks -o wide`, `kubectl get kcluster`. A failure is also logged by the operator as an error, once per distinct failure. |
 | `status.createdResourceGroup` | True when the operator created the resource group, and so may delete it. |
 | `status.kubeconfigWritten` | True once the kubeconfig Secret holds a credential. |
-| `InSync` condition | False when the spec asks for something the cluster does not have. **This version reports the difference and does not act on it**: a cluster is not changed after it is created. |
+| `InSync` condition | False when the spec asks for something the cluster does not have. **This version reports the difference and does not act on it**: a cluster is not changed after it is created. Configured sysctls report the pool, kernel name and desired/reported values; an omitted Azure value is reported as unknown, without guessing an OS default. `Ready` still describes provisioning. Removing a sysctl from the resource stops managing it and does not reset the live setting. |
 
 What a reconcile does: register the finalizer; ensure the resource group; create the managed
 cluster if it is absent; poll every 30 seconds until Azure reports `Succeeded`; fetch the admin
