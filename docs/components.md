@@ -659,8 +659,10 @@ host is set)**.
 
 ### Origin TLS (`ingress_tls.go`, [#457](https://github.com/oramasearch/orama-operator/issues/457))
 
-Every Ingress a stack renders is encrypted to the origin with a certificate cert-manager issues and
-renews (decision 5 of the 2026-10-16 decisions page in orama-bridge):
+Every Ingress a Cloud v1 stack renders is encrypted to the origin with a certificate cert-manager
+issues and renews (decision 5 of the 2026-10-16 decisions page in orama-bridge). Lake, Lake app,
+environment and Zetta Ingresses do not request one yet
+([#578](https://github.com/oramasearch/orama-operator/issues/578)).
 
 - **One `Issuer` per stack.** The step `originTLS` keeps a namespaced cert-manager `Issuer`
   `<cr>-letsencrypt` (Let's Encrypt production, DNS-01 through Cloudflare), owned by the stack. Its
@@ -682,8 +684,13 @@ renews (decision 5 of the 2026-10-16 decisions page in orama-bridge):
   same host (the `/metrics` deny companions, [#314](https://github.com/oramasearch/orama-operator/issues/314))
   names the same Secret. Removing a host drops its TLS entry; the other hosts keep their Secrets.
 - **Known gap:** decision 5 gives each stack its own ingress-nginx. The operator does not render one
-  yet, so a stack's Ingresses still use `spec.components.ingressClassName` (default the platform's
-  `nginx`). TLS renders on whichever class the Ingress has.
+  yet ([#573](https://github.com/oramasearch/orama-operator/issues/573)), so a stack's Ingresses
+  still use `spec.components.ingressClassName` (default the platform's `nginx`). TLS renders on
+  whichever class the Ingress has.
+- **Cloudflare.** Full (strict) is not turned on; the zones' SSL mode stays as it is (decision 15 of
+  2026-10-17). The HTTP to HTTPS redirect at the edge is declared by the operator
+  ([#527](https://github.com/oramasearch/orama-operator/issues/527),
+  [#528](https://github.com/oramasearch/orama-operator/issues/528)), never set by hand.
 
 **Validated on AKS (2026-07-08):** a CR with these enabled produced the 5 Deployments,
 the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd them.

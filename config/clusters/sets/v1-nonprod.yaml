@@ -11,6 +11,8 @@ spec:
       components:
         dashboard:
           host: app-dev.oramadev.net
+        docs:
+          host: docs-dev.oramadev.net
         engine:
           writer:
             jwt:
@@ -65,7 +67,6 @@ spec:
         enabled: true
       docs:
         enabled: true
-        host: docs.sandbox.local
       engine:
         enabled: true
         envoy: true
