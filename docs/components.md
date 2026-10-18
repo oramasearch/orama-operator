@@ -329,6 +329,28 @@ Driven by `spec.region.role`:
   `oramacore` container **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
   127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set.
   Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
+
+  A reader starts empty and replays the writer's `oramacore-operations` stream from offset 0. The
+  stream keeps 5 GB, so once more than that has been written, a new reader can no longer build a
+  complete index from it. The reader then refuses to serve rather than serve a partial index
+  ([oramacore#341](https://github.com/oramasearch/oramacore/pull/341)): it exits non-zero with a
+  message starting with one of two codes, and it never goes Ready. The reader container sets
+  `terminationMessagePolicy: FallbackToLogsOnError` so that message reaches the pod's
+  `lastState.terminated.message`, and while the `reader` component is not Ready the operator
+  appends the cause to its `OramaCloudV1` status detail (`readerRefusalCause` in
+  `internal/controller/status.go`):
+
+  | Code in the reader's exit message | Appended to the `reader` detail |
+  |---|---|
+  | `REPLICATION_HISTORY_EXPIRED` (the offset it needs is gone from the stream) | `replication history expired; the reader cannot be built from the stream (needs a reader seed, #458)` |
+  | `REPLICATION_STREAM_BEHIND` (it needs an offset ahead of the stream: wrong stream, or a restored broker) | `reader is ahead of this replication stream (wrong stream or restored broker)` |
+
+  For example, `0/1; replication history expired; the reader cannot be built from the stream (needs a
+  reader seed, #458)`. Pods being deleted, exits with code 0 and other messages add nothing; one
+  cause is listed once however many readers report it. Seeding a reader from another source is not
+  available yet ([#458](https://github.com/oramasearch/orama-operator/issues/458)). Until readers
+  have persistent disks ([#382](https://github.com/oramasearch/orama-operator/issues/382)) they use
+  `emptyDir`, so any reader restart after the stream has passed 5 GB refuses.
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
   **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
@@ -360,15 +382,19 @@ Driven by `spec.region.role`:
   = PID 1). Because the writer's commit flushes indexes, the writer pod gets
   `terminationGracePeriodSeconds: 300` (readers: 60) so k8s doesn't SIGKILL the flush
   at the default 30s.
-- **Health probes** — startup / readiness / liveness all hit `GET /health` on `:8080`
+- **Health probes** — startup / readiness / liveness hit `GET /health` on `:8080`
   (`oramacore/src/web_server/api/mod.rs`; also the prod ALB path), including when Envoy
-  is enabled. The **startup probe** allows the writer **20 minutes** (`120 × 10s`)
-  and readers **40 minutes** (`240 × 10s`), matching Prod 1's startup allowances from
-  Steve's review of #406. These fixed budgets gate readiness and liveness during index
-  loading; a successful startup probe releases them immediately, without waiting out the
-  budget. A container that never becomes healthy exhausts its budget and is restarted.
-  Readiness checks every 10s and liveness every 15s, both with a 3s timeout and failure
-  threshold 3. Reconciliation updates existing workload templates to these startup budgets.
+  is enabled, except the **reader's readiness**, which hits `GET /health/ready`: it reports ready
+  only once the reader has caught up with the stream head it observed at startup
+  ([oramacore#340](https://github.com/oramasearch/oramacore/pull/340)). The reader's liveness and
+  startup stay on `/health`, so a refusing reader is not restarted by liveness; it is simply never
+  Ready. The Core image must serve `/health/ready`, or every reader stays not-Ready. The **startup
+  probe** allows the writer **20 minutes** (`120 × 10s`) and readers **40 minutes** (`240 × 10s`),
+  matching Prod 1's startup allowances from Steve's review of #406. These fixed budgets gate
+  readiness and liveness during index loading; a successful startup probe releases them
+  immediately, without waiting out the budget. A container that never becomes healthy exhausts its
+  budget and is restarted. Readiness checks every 10s and liveness every 15s, both with a 3s timeout
+  and failure threshold 3. Reconciliation updates existing workload templates to these startup budgets.
 - **Disruption budgets** — the **writer** gets a PDB with `maxUnavailable: 0` (it's a
   singleton — voluntary disruptions like node drains/autoscaler are blocked so it
   isn't casually evicted; **node maintenance must consciously handle it**). **Readers**
