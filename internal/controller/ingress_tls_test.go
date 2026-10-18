@@ -184,8 +184,6 @@ func originTLSStack(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.OramaC
 		o.Spec.Cloudflare = oramav1alpha1.CloudflareSpec{
 			Enabled: true, APITokenSecretRef: &corev1.LocalObjectReference{Name: "cloudflare-api-token"},
 		}
-		// The dashboard is built only for a stack that names its master key (#411).
-		o.Spec.MasterAPIKeySecretRef = &oramav1alpha1.MasterAPIKeySecretRef{Name: "v1-dev-master-api-key"}
 		if mut != nil {
 			mut(o)
 		}
