@@ -253,7 +253,7 @@ spec:
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                              component's default (10Gi) even without API defaulting. Shrinking
                               existing storage is unsupported.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
@@ -467,7 +467,7 @@ spec:
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                              component's default (10Gi) even without API defaulting. Shrinking
                               existing storage is unsupported.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
@@ -602,7 +602,7 @@ spec:
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                              component's default (10Gi) even without API defaulting. Shrinking
                               existing storage is unsupported.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
@@ -735,7 +735,7 @@ spec:
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                              component's default (10Gi) even without API defaulting. Shrinking
                               existing storage is unsupported.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
@@ -1393,7 +1393,7 @@ spec:
                             type: object
                           storage:
                             description: |-
-                              Storage configures each reader's data volume (default 512Gi and cluster default class).
+                              Storage configures each reader's data volume (default 10Gi and cluster default class).
                               The StatefulSet's claim template keeps the values it was created with; the operator grows
                               every reader's existing claim instead.
                             properties:
@@ -1403,7 +1403,7 @@ spec:
                                 - type: string
                                 description: |-
                                   Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                                  component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                                  component's default (10Gi) even without API defaulting. Shrinking
                                   existing storage is unsupported.
                                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                                 x-kubernetes-int-or-string: true
@@ -1541,7 +1541,7 @@ spec:
                                 - type: string
                                 description: |-
                                   Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                                  component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                                  component's default (10Gi) even without API defaulting. Shrinking
                                   existing storage is unsupported.
                                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                                 x-kubernetes-int-or-string: true
@@ -1942,7 +1942,7 @@ spec:
                             - type: string
                             description: |-
                               Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
-                              component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                              component's default (10Gi) even without API defaulting. Shrinking
                               existing storage is unsupported.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
