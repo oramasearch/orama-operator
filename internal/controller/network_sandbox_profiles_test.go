@@ -154,6 +154,8 @@ func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) 
 	ctx := context.Background()
 	scheme := ocv1TestScheme(t)
 	stack := newOCV1(nil)
+	// A resource stored before admission refused controlDB.mode external must still get no
+	// path to a database outside the cluster.
 	stack.Spec.Components.ControlDB.Mode = "external"
 	objects := append([]client.Object{stack}, sandboxDiscoveryObjects()...)
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
@@ -287,9 +289,13 @@ func TestOramaCloudEngineEgressIsRestrictedToRequiredDestinations(t *testing.T) 
 		"allow-cnpg-apiserver-egress",
 		"allow-dashboard-ingress-nginx",
 		"allow-docs-ingress-nginx",
-		"allow-control-clients-external-postgres",
 	} {
 		allowanceByName(t, &sandbox, name)
+	}
+	for _, allowance := range sandbox.Spec.Policies {
+		if strings.Contains(allowance.Name, "external-postgres") {
+			t.Fatalf("stored controlDB.mode external opened %q", allowance.Name)
+		}
 	}
 }
 

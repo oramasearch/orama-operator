@@ -24,24 +24,27 @@ import (
 // the reason it is safe, before it ships. docs/operations/crd-rollout.md has the rule.
 //
 // The key is crdrollout.Change.Key(): "<crd> <version> <field path> <what>". Clear the list when a
-// release is tagged; an entry that no longer differs from the last release fails the test.
-var acknowledgedCRDChanges = map[string]string{
-	// operator#539/#542: every Lake runs every feature, so the per-feature switches went. No
-	// controller read them after #542, and config/clusters stopped setting them in the same change.
-	"lakes.orama.cloud v1alpha1 spec.apps.enabled removed":       "operator#542, every Lake syncs apps",
-	"lakes.orama.cloud v1alpha1 spec.services.enabled removed":   "operator#542, every Lake runs services",
-	"lakes.orama.cloud v1alpha1 spec.builds.enabled removed":     "operator#542, every Lake runs builds",
-	"lakes.orama.cloud v1alpha1 spec.workspaces.enabled removed": "operator#542, every Lake runs workspaces",
-	"lakes.orama.cloud v1alpha1 spec.snapshots.enabled removed":  "operator#542, every Lake takes volume snapshots",
-}
+// release is tagged, in the pull request that merges main back into dev; an entry that no longer
+// differs from the last release fails the test.
+var acknowledgedCRDChanges = map[string]string{}
 
-// lastRelease is the newest release tag behind HEAD, or "" outside a git checkout.
+// lastRelease is the newest release tag behind HEAD, or "" outside a git checkout. A tag on HEAD
+// itself is skipped: at a release's own tag the changes it carries are measured against the release
+// before it, so the tagged commit passes with the list that release shipped with.
 func lastRelease(t *testing.T) string {
 	t.Helper()
 	if err := exec.Command("git", "rev-parse", "--git-dir").Run(); err != nil {
 		return ""
 	}
-	out, err := exec.Command("git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD").Output()
+	args := []string{"describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"}
+	own, err := exec.Command("git", "tag", "--points-at", "HEAD", "--list", "v[0-9]*").Output()
+	if err != nil {
+		t.Fatalf("git tag --points-at HEAD: %v", err)
+	}
+	for _, tag := range strings.Fields(string(own)) {
+		args = append(args, "--exclude", tag)
+	}
+	out, err := exec.Command("git", append(args, "HEAD")...).Output()
 	if err != nil {
 		t.Fatalf("no release tag behind HEAD (fetch the tags: git fetch --tags): %v", err)
 	}
