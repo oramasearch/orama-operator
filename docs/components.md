@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go`, `cloudv1_networking.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap`; with `writer.host` / `reader.host`, the `<cr>-writer` / `<cr>-reader` Ingresses with origin TLS | ✅ **done** (validated on AKS); public hosts 🟡 **implemented** ([#385](https://github.com/oramasearch/orama-operator/issues/385)), fake-client coverage, not yet proven on `v1-dev` |
+| **engine** | `internal/controller/engine.go`, `cloudv1_networking.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap`; with `writer.host` / `reader.host`, the `<cr>-writer` / `<cr>-reader` Ingresses with origin TLS | ✅ **done** (validated on AKS); public hosts 🟡 **implemented** ([#385](https://github.com/oramasearch/orama-operator/issues/385)), fake-client coverage, not yet proven on `v1-dev` |
 | **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); never runs `db-migrate`. The control DB is always in-cluster (`mode: external` is refused); the operator's `PostgresSchema` owns its schema, avoiding a second Drizzle migration (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -38,7 +38,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **zetta-capacity** | `internal/controller/zetta_capacity.go` | Karpenter `NodePool` (unstructured, cluster-scoped) + a `PodDisruptionBudget`; pins the Zetta pods onto the pool (taint/toleration + nodeSelector + `do-not-disrupt`) | 🟡 **implemented** (opt-in, [#69](https://github.com/oramasearch/orama-operator/issues/69) first slice; not yet live-tested — needs an EKS/AKS-NAP cluster) |
 | **zetta-capacity-install** | `internal/controller/zetta_capacity_install.go` | Operator-owned **Karpenter install** (cloud-gated): server-side-applies the pinned upstream controller (Deployment + ServiceAccount + RBAC) + Karpenter CRDs, as `unstructured` | 🟡 **implemented** (opt-in `install: true`, [#75](https://github.com/oramasearch/orama-operator/issues/75); EKS self-install, no-op on AKS-NAP/bare-metal; not yet live-tested) |
 | **lake** (liquid project) | `internal/controller/lake_controller.go` | from one cluster-scoped `Lake` CR: Namespace, owned or referenced store PVC, hardened RWO-safe `Recreate` Deployment (pod `ndots:2`, as on agent and app pods, so full Service names resolve on the first query) + conditional PDB + Service, admin-token, instance-KEK and sealing-key Secrets, CNPG control-plane `Cluster` + owned `PostgresSchema` (lake's schema), owned `OramaZettaCluster` data plane, opt-in Barman R2/S3 `ScheduledBackup`, opt-in TLS Ingress + `CloudflareDNSRecord`, with `spec.clerk` a Clerk instance kept configured through the Backend API, its keys in an owned Secret and a production instance's DNS records ([`lake/clerk.md`](lake/clerk.md)), Lake-owned environments, and per-data-service lifecycle evidence | ✅ **done** (`Lake/prod` live on AKS; issue #122's rolling proof is superseded by the RWO-safe restart check; issue #125 live Zetta proof is deferred until this controller is deployed; data services remain unmanaged until their required rehearsals pass) — see [`lake/README.md`](lake/README.md), [`lake/backups.md`](lake/backups.md), [`lake/data-services/README.md`](lake/data-services/README.md), and [`lake/sealed-secrets.md`](lake/sealed-secrets.md) |
-| **lake e2e** | `internal/controller/lakee2etest_controller.go` | from one cluster-scoped `LakeE2ETest`: targets a LakeSet member (or a Lake by name), waits for the Lake, Postgres and schema, then owns one runner Job (`oramasearch/lake-e2e`) per spec generation in the Lake namespace and records each run's pass/fail/skip counts and reasons | 🟡 **implemented** ([#123](https://github.com/oramasearch/orama-operator/issues/123), [#537](https://github.com/oramasearch/orama-operator/issues/537)); fake-client verified, the runner proven against `lake-testing` from a workstation, no in-cluster run yet — see [`lake/README.md`](lake/README.md#service-e2e) |
+| **lake e2e** | `internal/controller/lakee2etest_controller.go` | from one cluster-scoped `LakeE2ETest`: waits for the target Lake, Postgres, and schema, then owns a runner Job in the Lake namespace with the in-cluster URL and unique run identity | 🟡 **implemented** ([#123](https://github.com/oramasearch/orama-operator/issues/123)); fake-client verified, real k0s run deferred — see [`lake/README.md`](lake/README.md#service-e2e) |
 | **lake-environment** | `internal/controller/lakeenvironment_controller.go`, `internal/controller/zetta_deployments.go` | materializes lake-shaped `orama_control` rows (deployments, environment values, custom domains; operator#560) into stable Lake-owned `LakeEnvironment` CRs and answers them with status rows; each creates a PSS-restricted Namespace, default-deny and access NetworkPolicies, ResourceQuota, LimitRange, `untrusted` runtime Deployment, Service, sealed-secret copies with local LakeSealedSecret owners and derived Pod annotations, admission-selecting namespace labels, optional Ingress, named-environment DNS, and per custom domain an Ingress rule and owned DNS record | 🟡 **implemented** ([#124](https://github.com/oramasearch/orama-operator/issues/124), [#142](https://github.com/oramasearch/orama-operator/issues/142)); fake-client, envtest and Zetta-double verified, real liquid→k0s change-page proof deferred — see [`lake/environments.md`](lake/environments.md) |
 | **lake-app** | `internal/controller/lakeapp_controller.go`, `lakeapp_tokens.go` | isolated restricted workload, quota, limits, Deployment, Service and authenticated ingress; synchronized apps keep binding-derived network paths only before their workspace activates declared connections, then retain DNS and owning-Lake egress while `Connection` supplies workload paths; generated source/Zetta/event/registry-pull tokens, rollout gated on hash registration, a merged Docker config for Lake registry pulls, selected Secret keys copied and rendered as `secretKeyRef` environment entries, optional app.toml entrypoint, accurate stopped state and best-effort Lake events; one-release legacy whole-Secret `envFrom` delivery remains supported | 🟡 **implemented** (#193, #194, #221, #241, #468); native envtest covers lifecycle, bindings, secret environment delivery, token and pull-Secret rotation, pod references and namespace/DNS finalization; live app-runtime proof deferred — see [`lake/apps.md`](lake/apps.md) |
 | **lake-apps-sync** | `internal/controller/lake_apps*.go`, `lake_services_notify.go` | on every Lake, control-Postgres apps rows to Lake-owned CRs in their workspace namespace, including the object-form `secret_env_refs` contract; generation-guarded status/hash writes, `lake_apps` listener and 60-second fallback, orphan removal, one proxied wildcard DNS record; the Lake pod receives `spec.apps.wildcard` (empty: the Lake's `spec.host`) as `LAKE_APPS_WILDCARD`; same-workspace Service connections use ID aliases alongside existing slug keys | 🟡 **implemented** (#194, #204, #221); fake Lake store with native envtest, native SQL contract fixture and DNS/listener tests; requires lake#293's migration and API at deployment — see [`lake/apps.md`](lake/apps.md) |
@@ -60,13 +60,16 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 ## Component storage
 
 `internal/controller/storage.go` runs after ordinary component provisioning. It manages the
-primary's enabled writer and the enabled analytics/cache/broker/search stores selected by their
+primary's enabled writer, the readers of an enabled engine (in a primary or read region), and the
+enabled analytics/cache/broker/search stores selected by their
 existing in-cluster mode and placement checks. External stores, disabled components, a read
 region's absent writer, and central stores skipped in a read region contribute no mismatch.
-ControlDB is always in-cluster (decision 61) and follows its enabled policy. Reader Deployments keep `emptyDir`; HARVEST Mongo keeps the shared helper's
-`10Gi`/default-class output and has no new storage setting.
+ControlDB is always in-cluster (decision 61) and follows its enabled policy. HARVEST Mongo keeps the
+shared helper's `10Gi`/default-class output and has no new storage setting.
 
-Writer and store `storage.size` default to `10Gi`; `storage.storageClassName` is optional. Omitted
+Writer, reader and store `storage.size` default to `10Gi`
+([engine](#engine-internalcontrollerenginego)); every reader's claim `data-<cr>-reader-<n>` grows
+like the writer's; `storage.storageClassName` is optional. Omitted
 storage, `{}`, or a missing size resolves to that default even before API admission. Explicit sizes
 must be positive Kubernetes quantities, compared with `Cmp` (`10240Mi` equals `10Gi`), and explicit
 class names must be nonempty. The [field reference](crd-reference.md#component-storage) lists every
@@ -157,11 +160,6 @@ cleanup succeeded; other API failures retain the finalizer. Missing credentials 
 an ID to clean up retain the finalizer and retry after five minutes. A resource without
 an ID releases its finalizer without Cloudflare calls. Lake, Zetta and Cloud v1 parents
 continue to create the same child CRs.
-
-A changed `spec.name` (or type) creates the record at the new name first; then the record
-in `status.recordID` goes through the same owned delete, so a rename never leaves the old
-name live ([#529](https://github.com/oramasearch/orama-operator/issues/529)) and never
-deletes a record the operator did not create. A failed delete keeps the old ID and retries.
 
 The operator never takes over Prod 1's live `app.orama.com`. Its cutover repoint remains
 a reviewed Cloudflare change in the bridge
@@ -400,12 +398,66 @@ Driven by `spec.region.role`:
   a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
-- **Readers** (primary + read tiers) — a `Deployment` (`reader.replicas`) with the
+- **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` with the
   `oramacore` container (the combined or the reader-only image) **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
   127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set. Envoy answers
   `/metrics` with 404 itself, by a route before its catch-all, so OramaCore's Prometheus endpoint is
   never served through the reader Service ([#314](https://github.com/oramasearch/orama-operator/issues/314)).
-  Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
+  Service `<cr>-reader` on `:80` (→ Envoy, or → `:8080` if Envoy is off)
+  ([#382](https://github.com/oramasearch/orama-operator/issues/382)):
+  - **One disk per reader.** A `data` claim template (`ReadWriteOnce`, 10Gi by default) mounted at
+    `/app/.data`, so reader `n` has its own claim `data-<cr>-reader-<n>`, never the writer's. The
+    reader keeps its index and its last applied stream offset (`/app/.data/reader/read.info`)
+    there, so a replaced pod resumes from that offset instead of replaying the stream from 0. It
+    still needs the operations after its offset to be in the stream (5 GB, see broker-topology);
+    a reader on a new, empty claim builds from the stream and is partial once the stream has
+    passed 5 GB (seeding is [#458](https://github.com/oramasearch/orama-operator/issues/458)).
+  - **Size.** 10Gi by default, as for every other volume, so non-production stacks stay small.
+    Production sets `reader.storage.size: 512Gi` in `config/clusters/sets/v1-prod.yaml`, from
+    orama-bridge's decision 3 of 2026-10-17. Its source is techops-docs
+    `incident-2026-10-12-reader-stalls.md`, "Host storage": each Prod 1 reader has a 1,000 GB
+    (931 GiB) gp3 root volume, with EU 777, US 659 and Asia 740 GiB free on 2026-10-12, so about
+    154, 272 and 191 GiB used, OS included. 512Gi is about twice the US figure, rounded up, and an
+    upper bound since the used figures include the OS.
+    The template keeps the size it was created with; a larger `reader.storage.size` grows every
+    reader's existing claim ([Component storage](#component-storage)), and a smaller one is a
+    refused shrink.
+  - **Fixed count, no autoscaler.** `replicas` is `reader.replicas` (0 or unset → 3), set on every
+    reconcile; `podManagementPolicy: Parallel` starts them together. No HorizontalPodAutoscaler is
+    created and `reader.hpa` is ignored. Claims are kept when the count drops or the StatefulSet is
+    deleted (Kubernetes' default `Retain`; the operator sets no retention policy), and a reader
+    that comes back reuses its claim.
+  - **Headless Service** `<cr>-reader-headless` (`clusterIP: None`, reader selectors, `http`
+    `:8080` straight to OramaCore with Envoy on or off, Ready pods only) is the StatefulSet's
+    `serviceName` from creation, with analytics on or off, so each Ready reader is addressable as
+    `<cr>-reader-<n>.<cr>-reader-headless.<ns>.svc:8080`.
+  - **From a reader Deployment.** Earlier operator versions ran `<cr>-reader` as a Deployment on an
+    `emptyDir`. The operator deletes that Deployment (only when the CR controls it) with foreground
+    propagation and creates the StatefulSet once it and its pods are gone; the reconcile reports
+    `ReconcileError` until then and readers are down meanwhile. Nothing is copied from the
+    `emptyDir`. A Deployment of that name the CR does not control is left alone and blocks the
+    readers with a conflict error. Disabling the engine removes the StatefulSet, both reader
+    Services and the PDB, and keeps the claims, as for the writer.
+
+  A reader on a new, empty claim replays the writer's `oramacore-operations` stream from offset 0.
+  The stream keeps 5 GB, so once more than that has been written, it can no longer build a complete
+  index from it. The reader then refuses to serve rather than serve a partial index
+  ([oramacore#341](https://github.com/oramasearch/oramacore/pull/341)): it exits non-zero with a
+  message starting with one of two codes, and it never goes Ready. The reader container sets
+  `terminationMessagePolicy: FallbackToLogsOnError` so that message reaches the pod's
+  `lastState.terminated.message`, and while the `reader` component is not Ready the operator
+  appends the cause to its `OramaCloudV1` status detail (`readerRefusalCause` in
+  `internal/controller/status.go`):
+
+  | Code in the reader's exit message | Appended to the `reader` detail |
+  |---|---|
+  | `REPLICATION_HISTORY_EXPIRED` (the offset it needs is gone from the stream) | `replication history expired; the reader cannot be built from the stream (needs a reader seed, #458)` |
+  | `REPLICATION_STREAM_BEHIND` (it needs an offset ahead of the stream: wrong stream, or a restored broker) | `reader is ahead of this replication stream (wrong stream or restored broker)` |
+
+  For example, `0/1; replication history expired; the reader cannot be built from the stream (needs a
+  reader seed, #458)`. Pods being deleted, exits with code 0 and other messages add nothing; one
+  cause is listed once however many readers report it. Seeding a reader from another source is not
+  available yet ([#458](https://github.com/oramasearch/orama-operator/issues/458)).
 - **Public hosts** (`cloudv1_networking.go`, [#385](https://github.com/oramasearch/orama-operator/issues/385))
   — `reconcileEngineIngresses` runs at the end of the enabled path and before the teardown on the
   disabled path. `writer.host` (primary region only) renders Ingress `<cr>-writer` → Service
@@ -439,30 +491,9 @@ Driven by `spec.region.role`:
   rules already admit ingress-nginx only (bridge decision 19 of 2026-10-17), it is a second safeguard: Cloud v1's engine hosts stay on ingress-nginx
   (decision 5b of the 2026-10-16 decisions page), and a stack set to `ingressClassName:
   zetta-tunnel` gets no gateway address for them. Inside the cluster `/metrics` stays on each pod's
-  `:8080` (`<cr>-writer:8080`, a reader pod's IP on 8080; the reader Service's port 80 is the public
+  `:8080` (`<cr>-writer:8080`, each reader at `<cr>-reader-<n>.<cr>-reader-headless:8080`; the reader Service's port 80 is the public
   path). How Prometheus scrapes it is [#15](https://github.com/oramasearch/orama-operator/issues/15).
 
-  A reader starts empty and replays the writer's `oramacore-operations` stream from offset 0. The
-  stream keeps 5 GB, so once more than that has been written, a new reader can no longer build a
-  complete index from it. The reader then refuses to serve rather than serve a partial index
-  ([oramacore#341](https://github.com/oramasearch/oramacore/pull/341)): it exits non-zero with a
-  message starting with one of two codes, and it never goes Ready. The reader container sets
-  `terminationMessagePolicy: FallbackToLogsOnError` so that message reaches the pod's
-  `lastState.terminated.message`, and while the `reader` component is not Ready the operator
-  appends the cause to its `OramaCloudV1` status detail (`readerRefusalCause` in
-  `internal/controller/status.go`):
-
-  | Code in the reader's exit message | Appended to the `reader` detail |
-  |---|---|
-  | `REPLICATION_HISTORY_EXPIRED` (the offset it needs is gone from the stream) | `replication history expired; the reader cannot be built from the stream (needs a reader seed, #458)` |
-  | `REPLICATION_STREAM_BEHIND` (it needs an offset ahead of the stream: wrong stream, or a restored broker) | `reader is ahead of this replication stream (wrong stream or restored broker)` |
-
-  For example, `0/1; replication history expired; the reader cannot be built from the stream (needs a
-  reader seed, #458)`. Pods being deleted, exits with code 0 and other messages add nothing; one
-  cause is listed once however many readers report it. Seeding a reader from another source is not
-  available yet ([#458](https://github.com/oramasearch/orama-operator/issues/458)). Until readers
-  have persistent disks ([#382](https://github.com/oramasearch/orama-operator/issues/382)) they use
-  `emptyDir`, so any reader restart after the stream has passed 5 GB refuses.
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
   **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
@@ -530,7 +561,8 @@ Driven by `spec.region.role`:
   broker admin and master key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
   The controller watches Secrets and maps a change to every CR that reads it, so a rotated key rolls
   the writer and readers with no restart by hand. Without a usable master key the writer and
-  readers are held at zero replicas. The LLM settings and keys are checked before any engine object is
+  reader StatefulSets are held at zero replicas, and so is a reader Deployment left by an earlier
+  operator version. The LLM settings and keys are checked before any engine object is
   written: invalid input leaves the running engine untouched with `Ready=False`. All children set
   an owner reference to the CR, so deleting the CR cascade-deletes them.
 - **Hooks deny list** ([#306](https://github.com/oramasearch/orama-operator/issues/306)) —
@@ -631,7 +663,7 @@ while the rendered file in the pod holds the real value.
 > [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
 > tooling (`oramasearch/embeddings-server-py:{cpu,gpu}-latest`, private Docker Hub — the tag
 > is auto-picked from `writer.gpu`; just set `spec.images.pullSecretName`); RabbitMQ
-> writer→reader replication (currently in-memory transport, single-node); HPA + the
+> writer→reader replication (currently in-memory transport, single-node); the
 > reader→primary-writer endpoint on read tiers.
 
 ## controlDB (`internal/controller/controldb.go`)
@@ -766,15 +798,15 @@ host is set)**.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
 - **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host` and
-  `dashboard.extraHosts`. Its environment is the
+  `dashboard.extraHosts`. It reads
+  `JWT_ISSUER` from the shared ConfigMap through `envFrom`, which a running process does not
+  re-read, so its pod template carries `orama.cloud/jwt-issuer-hash`, the SHA-256 of
+  `jwtIssuer(oc)`: a change to the effective issuer rolls it. Audience and JWKS URL changes do not.
+  The upgrade that adds the annotation rolls the dashboard once. Its environment is the
   operator's (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`, `MASTER_API_KEY` from
   `spec.masterAPIKeySecretRef`, `POSTGRES_PASSWORD`, `DATABASE_URL`)
   plus what `dashboard.envFrom` and `dashboard.env` take from Secrets and ConfigMaps
-  ([below](#the-dashboards-environment)). `JWT_ISSUER` comes from the shared ConfigMap through
-  `envFrom`, which a running process does not re-read, so the pod template carries
-  `orama.cloud/jwt-issuer-hash`, the SHA-256 of `jwtIssuer(oc)`: a change to the effective issuer
-  rolls it. Audience and JWKS URL changes do not. The upgrade that adds the annotation rolls the
-  dashboard once.
+  ([below](#the-dashboards-environment)).
 
 ### Ingress hosts (`upsertIngress`, [#313](https://github.com/oramasearch/orama-operator/issues/313))
 
@@ -1399,7 +1431,7 @@ and reuses this operator's CNPG, PostgresSchema and Cloudflare DNS paths.
 | CNPG `ScheduledBackup` | `lake-<name>-controldb-backup` | yes (unstructured) | opt-in Barman R2/S3 backup; CNPG `Backup` resources are observed by `cnpg.io/cluster` label |
 | `LakeRestoreRehearsal` scratch resources | `lake-rehearsal-<name>-<hash>` | yes | temporary Namespace containing a recovered CNPG Cluster, copied credentials, and a verification Job; all are deleted after a terminal result |
 | Ingress + `CloudflareDNSRecord` | `lake-<name>`, `-dns` | yes | opt-in via `ingressEnabled` + `host` + `dnsSecretRef`, optional `tls.secretName`, and Lake streaming annotations |
-| `LakeE2ETest` Job | `<test-name>-e2e-<generation>` in the Lake namespace | yes, by the cluster-scoped test | one per spec generation; starts only after Lake, Postgres, and schema readiness; `BackoffLimit` 0; older runs' Jobs deleted once a newer run finishes; the runner image owns every assertion |
+| `LakeE2ETest` Job | `<test-name>-e2e` in the Lake namespace | yes, by the cluster-scoped test | starts only after Lake, Postgres, and schema readiness; the required image owns signup and liquid push/pull assertions |
 
 Lake creates or updates its Deployment and disruption budget only after the desired schema
 version is Applied. An existing Deployment stays unchanged while migration is pending or failed.
@@ -1426,7 +1458,5 @@ Production: `Lake/prod` in namespace `lake` on AKS; R2 backup credentials must e
 
 `LakeE2ETest` watches the cluster-scoped Lake independently of normal reconciliation. Target changes
 and a 15-second pending requeue release the test once the Deployment, Postgres, and schema are ready.
-The Job then drives `http://lake-<name>.<namespace>.svc.cluster.local` (and the browser
-`https://<host>`) from its runner image; the controller reads the runner's termination message for
-the counts and failed and skipped steps, and reports `Running`, `Succeeded`, or `Failed` without
-rewriting an unchanged status. A new spec generation (`spec.runID`) starts a new run.
+The immutable Job then drives `http://lake-<name>.<namespace>.svc.cluster.local` from its runner image
+and reports `Running`, `Succeeded`, or `Failed` without rewriting an unchanged status.

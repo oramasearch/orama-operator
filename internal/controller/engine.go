@@ -142,11 +142,12 @@ func (r *OramaCloudV1Reconciler) reconcileEngine(ctx context.Context, oc *oramav
 	return r.reconcileEngineIngresses(ctx, oc)
 }
 
-// holdEngine scales the writer StatefulSet and reader Deployment that exist to zero replicas,
-// changing nothing else, so their volumes stay and the next valid reconcile restores the configured
-// counts. A fresh stack gets no writer or readers.
+// holdEngine scales the writer and reader StatefulSets that exist to zero replicas, changing nothing
+// else, so their claims stay and the next valid reconcile restores the configured counts. A reader
+// Deployment from an earlier operator version is held too, since only reconcileReaders removes it. A
+// fresh stack gets no writer or readers.
 func (r *OramaCloudV1Reconciler) holdEngine(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
-	writer, reader := &appsv1.StatefulSet{}, &appsv1.Deployment{}
+	writer, reader, oldReader := &appsv1.StatefulSet{}, &appsv1.StatefulSet{}, &appsv1.Deployment{}
 	for _, w := range []struct {
 		obj      client.Object
 		name     string
@@ -154,6 +155,7 @@ func (r *OramaCloudV1Reconciler) holdEngine(ctx context.Context, oc *oramav1alph
 	}{
 		{writer, oc.Name + "-writer", &writer.Spec.Replicas},
 		{reader, oc.Name + "-reader", &reader.Spec.Replicas},
+		{oldReader, oc.Name + "-reader", &oldReader.Spec.Replicas},
 	} {
 		if err := r.Get(ctx, types.NamespacedName{Namespace: oc.Namespace, Name: w.name}, w.obj); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -521,7 +523,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		}
 		// Only initialize templates before creation: the API makes them immutable.
 		if sts.ResourceVersion == "" {
-			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(w.Storage)}
+			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(w.Storage, defaultVolumeSize)}
 		}
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
@@ -537,7 +539,10 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 	return r.upsertPDB(ctx, oc, name, "writer", 0)
 }
 
-// reconcileReaders owns the reader Deployment, Service and PDB. llmSecretHash and credentialsHash
+// reconcileReaders owns the reader StatefulSet, its headless Service, the reader Service and PDB.
+// Each reader keeps its index and stream offset on its own claim, so a replaced pod resumes from
+// its offset instead of replaying the stream from 0 (#382). The replica count is fixed
+// (reader.replicas, default 3); no autoscaler reads reader.hpa. llmSecretHash and credentialsHash
 // (engineLLMSecretHash, credentialsHash) are resolved before any engine object is written.
 // envoyBootstrap is the Envoy bootstrap the engine ConfigMap carries (envoyConfig); with Envoy
 // enabled it is part of the readers' config hash, so a new bootstrap rolls them.
@@ -555,11 +560,21 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		envoyBootstrap = ""
 	}
 
-	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
-		dep.Labels = lbls
-		dep.Spec.Replicas = int32Ptr(replicas)
-		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
+	if err := r.removeReaderDeployment(ctx, oc); err != nil {
+		return err
+	}
+	if err := r.reconcileReaderHeadlessService(ctx, oc); err != nil {
+		return err
+	}
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
+		sts.Labels = lbls
+		sts.Spec.Replicas = int32Ptr(replicas)
+		// ServiceName and PodManagementPolicy are immutable: both are constants, never derived from
+		// analytics or import settings, so the first reconcile sets the final values.
+		sts.Spec.ServiceName = readerHeadlessServiceName(oc)
+		sts.Spec.PodManagementPolicy = appsv1.ParallelPodManagement
+		sts.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 		c := oramacoreContainer(oc, "reader", readerStartupTimeout)
 		// A reader is Ready only once it has caught up with the stream head it saw at startup
 		// (oramacore#340). A reader whose replication history has expired exits with
@@ -585,7 +600,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			ImagePullSecrets:              imagePullSecrets(oc),
 			InitContainers:                []corev1.Container{waitForBrokerInit(oc), renderConfigInit(oc, side)},
 			Containers:                    containers,
-			Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume(), dataEmptyDir()},
+			Volumes:                       []corev1.Volume{configVolume(oc), renderedConfigVolume()},
 			TerminationGracePeriodSeconds: int64Ptr(readerGracePeriodSeconds),
 		}
 		// Spread readers across nodes when there's more than one (soft — a single-node sandbox still
@@ -593,11 +608,17 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		if replicas > 1 {
 			podSpec.TopologySpreadConstraints = spreadConstraints(lbls)
 		}
-		dep.Spec.Template = corev1.PodTemplateSpec{
+		sts.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: engineConfigAnnotations(side, envoyBootstrap, llmSecretHash, credentialsHash)},
 			Spec:       podSpec,
 		}
-		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
+		// The claim template is immutable, so it is only set before creation; reconcileStorage grows
+		// the claims. Claims are kept when the StatefulSet scales down or is deleted (the default
+		// Retain policy). Each reader's claim, data-<cr>-reader-<n>, is never shared with the writer's.
+		if sts.ResourceVersion == "" {
+			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(rd.Storage, readerDataSize)}
+		}
+		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err
 	}
@@ -611,6 +632,57 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 	}
 	// Readers can lose one at a time during disruptions (keeps the rest serving).
 	return r.upsertPDB(ctx, oc, name, "reader", 1)
+}
+
+func readerHeadlessServiceName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-reader-headless"
+}
+
+// reconcileReaderHeadlessService owns <cr>-reader-headless, the reader StatefulSet's governing
+// Service, which gives each Ready reader its own DNS name
+// (<cr>-reader-<n>.<cr>-reader-headless.<ns>.svc). Port 8080 goes straight to OramaCore whether or
+// not Envoy runs. It exists whenever readers are reconciled, with analytics on or off.
+func (r *OramaCloudV1Reconciler) reconcileReaderHeadlessService(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	lbls := labelsFor(oc, "reader")
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: readerHeadlessServiceName(oc), Namespace: oc.Namespace}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		svc.Labels = lbls
+		svc.Spec.ClusterIP = corev1.ClusterIPNone
+		svc.Spec.Selector = lbls
+		svc.Spec.PublishNotReadyAddresses = false
+		svc.Spec.Ports = []corev1.ServicePort{{Name: "http", Protocol: corev1.ProtocolTCP,
+			Port: oramacorePort, TargetPort: intstr.FromInt32(oramacorePort)}}
+		return controllerutil.SetControllerReference(oc, svc, r.Scheme)
+	})
+	return err
+}
+
+// removeReaderDeployment removes the reader Deployment that earlier operator versions ran under the
+// same name and labels, so it and the StatefulSet never serve behind one Service together. It
+// returns nil only once no Deployment <cr>-reader exists. A controlled one is deleted with
+// foreground propagation, which keeps it until its ReplicaSets and pods are gone; until then the
+// returned error retries the reconcile. Its emptyDir data is not carried over: each reader starts on
+// a new claim. A Deployment of that name the CR does not control is left alone and blocks readers.
+func (r *OramaCloudV1Reconciler) removeReaderDeployment(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	dep := &appsv1.Deployment{}
+	key := client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-reader"}
+	if err := r.Get(ctx, key, dep); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("get reader Deployment %s: %w", key, err)
+	}
+	if !metav1.IsControlledBy(dep, oc) {
+		return apierrors.NewConflict(appsv1.Resource("deployments"), key.String(),
+			fmt.Errorf("a Deployment of this name that %s does not control exists; the reader StatefulSet is not created while it does", oc.Name))
+	}
+	if dep.DeletionTimestamp.IsZero() {
+		err := r.Delete(ctx, dep, client.PropagationPolicy(metav1.DeletePropagationForeground))
+		if err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete reader Deployment %s: %w", key, err)
+		}
+	}
+	return fmt.Errorf("waiting for reader Deployment %s and its pods to be deleted before the reader StatefulSet is created", key)
 }
 
 // ---- shared builders ----
@@ -732,9 +804,13 @@ func configVolume(oc *oramav1alpha1.OramaCloudV1) corev1.Volume {
 	}
 }
 
-func dataEmptyDir() corev1.Volume {
-	return corev1.Volume{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
-}
+// readerDataSize is each reader's data claim (the reader's index and read.info under /app/.data)
+// when reader.storage.size is unset: 10Gi, the same small default as every other volume (Steve,
+// 2026-10-17: "default MUCH lower for all envs and we can boost it for prod"). Production sets its
+// size in config/clusters/sets/v1-prod.yaml from Prod 1's measured use. A StatefulSet's claim
+// template keeps the size it was created with; a larger reader.storage.size grows each reader's
+// existing claim (reconcileStorage).
+const readerDataSize = "10Gi"
 
 func (r *OramaCloudV1Reconciler) upsertService(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component string, ports []corev1.ServicePort) error {
 	lbls := labelsFor(oc, component)

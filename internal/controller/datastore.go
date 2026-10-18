@@ -185,7 +185,7 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 		}
 		// Preserve the fetched template in full, including admission-populated fields.
 		if sts.ResourceVersion == "" {
-			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(def.storage)}
+			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(def.storage, defaultVolumeSize)}
 		}
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {

@@ -252,8 +252,9 @@ spec:
                             - type: integer
                             - type: string
                             description: |-
-                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves
-                              to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi) even without API defaulting. Shrinking
+                              existing storage is unsupported.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:
@@ -451,8 +452,9 @@ spec:
                             - type: integer
                             - type: string
                             description: |-
-                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves
-                              to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi) even without API defaulting. Shrinking
+                              existing storage is unsupported.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:
@@ -585,8 +587,9 @@ spec:
                             - type: integer
                             - type: string
                             description: |-
-                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves
-                              to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi) even without API defaulting. Shrinking
+                              existing storage is unsupported.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:
@@ -717,8 +720,9 @@ spec:
                             - type: integer
                             - type: string
                             description: |-
-                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves
-                              to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi) even without API defaulting. Shrinking
+                              existing storage is unsupported.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:
@@ -1373,6 +1377,32 @@ spec:
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
                             type: object
+                          storage:
+                            description: |-
+                              Storage configures each reader's data volume (default 10Gi and cluster default class).
+                              The StatefulSet's claim template keeps the values it was created with; the operator grows
+                              every reader's existing claim instead.
+                            properties:
+                              size:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: |-
+                                  Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                                  component's default (10Gi) even without API defaulting. Shrinking
+                                  existing storage is unsupported.
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                                x-kubernetes-validations:
+                                - message: size must be a positive Kubernetes quantity
+                                  rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
+                              storageClassName:
+                                description: |-
+                                  StorageClassName selects a class at creation. Omission uses the cluster default
+                                  for new volumes and retains the existing class. Existing classes cannot change.
+                                minLength: 1
+                                type: string
+                            type: object
                         type: object
                       writer:
                         properties:
@@ -1496,8 +1526,9 @@ spec:
                                 - type: integer
                                 - type: string
                                 description: |-
-                                  Size is a positive Kubernetes quantity, compared numerically. Omission resolves
-                                  to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+                                  Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                                  component's default (10Gi) even without API defaulting. Shrinking
+                                  existing storage is unsupported.
                                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                                 x-kubernetes-int-or-string: true
                                 x-kubernetes-validations:
@@ -1896,8 +1927,9 @@ spec:
                             - type: integer
                             - type: string
                             description: |-
-                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves
-                              to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi) even without API defaulting. Shrinking
+                              existing storage is unsupported.
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                             x-kubernetes-validations:

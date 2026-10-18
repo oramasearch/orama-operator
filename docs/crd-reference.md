@@ -164,7 +164,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,hpa,resources}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,hpa,resources,storage}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
 | `dashboard` | `host`, `extraHosts`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host`, `extraHosts` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
@@ -176,7 +176,9 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
 
-`engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
+`engine.reader.replicas` is the fixed number of readers (0 or unset → 3), each with its own data
+volume (`10Gi` unless `engine.reader.storage` says otherwise, [below](#component-storage)); `engine.reader.hpa` is accepted but ignored: no autoscaler is
+created. `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
 
 Engine startup budgets are fixed: **20 minutes for the writer** (`failureThreshold: 120`)
@@ -386,50 +388,10 @@ writer_side:
         refresh_interval: 1h
 ```
 
-### Component storage
-
-The shared `VolumeSpec` is available at `spec.components.engine.writer.storage` and at
-`spec.components.{analytics,cache,broker,search,controlDB}.storage`.
-
-| Field | Type | Default | Behavior |
-|---|---|---|---|
-| `storage.size` | positive Kubernetes quantity | `10Gi` | Omitted storage, `{}`, and omitted size all resolve to `10Gi`, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
-| `storage.storageClassName` | nonempty string, optional | cluster default on creation | Selects the new PVC's class, or CNPG's `spec.storage.storageClass`. Omission on existing resources retains their class, including a class populated by default admission. A later cluster-default change does not move existing storage. |
-
-For example, `engine.writer.storage: {size: 50Gi, storageClassName: managed-csi}` and
-`cache.storage: {size: 20Gi}` set independent sizes. These are examples, not production sizing.
-For an `OramaCloudV1Set`, put the component settings under `spec.template.components`.
-Readers use `emptyDir` and expose no storage field here. HARVEST Mongo retains its existing
-`10Gi`/default-class behavior and gains no storage API.
-
-New StatefulSets receive a `data` claim template at the resolved size/class. Existing templates
-remain intact because Kubernetes makes them immutable. The operator grows each matching claim's
-storage request itself, including retained claims and claims created later from an old template.
-The template's old size does not cause a storage mismatch. For controlDB it grows the CNPG
-Cluster's configured size; CNPG owns expansion of its PVCs. Other CNPG storage keys remain intact.
-
-Existing volumes cannot shrink or change class. Removing `storage` after growth requests the
-`10Gi` default and can therefore report an unsupported shrink. Restore the grown request to clear
-that rejection. A larger reported capacity alone is not a shrink: provisioners can round capacity
-above the request. A claim with a class mismatch receives no size update, even if growth was also
-requested. Other claims/components continue reconciling.
-
-`status.conditions[type=StorageApplied]` is independent of `Ready`, phase, and workload readiness:
-
-| Status / reason | Meaning |
-|---|---|
-| `True / Applied` | Every applicable existing PVC request and CNPG storage configuration accepts the desired size/class, or there is no locally managed storage. It does not prove disk or filesystem expansion has completed. |
-| `False / NotApplied` | At least one resource has a problem. The message lists each resource in stable sorted order with one of: `ShrinkNotSupported` (desired size below an existing claim request or CNPG configured size), `StorageClassChangeNotSupported` (an explicit class differs from an existing resource's class, including a classless existing CNPG Cluster), `StorageUpdateFailed` (a storage read or write failed; the API error is included) or `ClaimsPending` (a required claim has not appeared yet; the operator does not create it). |
-
-The condition observes the current generation and recovers after accepted settings or successful
-retries. A rejected setting may coexist with `Ready=True`. The operator polls every 20 seconds
-while locally managed storage exists, even with Ready workloads, and writes status only on change.
-See [component reconciliation](components.md#component-storage) for scope and expansion ownership.
-
 ### `spec.components.dashboard`
 
-The dashboard's toggle and host (`enabled`, `host`, `resources`, as for `docs`), plus the rest of its
-environment from Secrets and ConfigMaps in the instance's namespace
+The dashboard's toggle and hosts (`enabled`, `host`, `extraHosts`, `resources`, as for `docs`), plus
+the rest of its environment from Secrets and ConfigMaps in the instance's namespace
 ([operator#311](https://github.com/oramasearch/orama-operator/issues/311)).
 
 | Field | Type | Meaning |
@@ -572,6 +534,47 @@ also runs a writer. A single side override is reported by `Ready=False` (`Reconc
 leaves this condition as it was. It does not change the stack's `phase`, and is written only when
 it changes.
 
+### Component storage
+
+The shared `VolumeSpec` is available at `spec.components.engine.writer.storage`, `spec.components.engine.reader.storage` and at
+`spec.components.{analytics,cache,broker,search,controlDB}.storage`.
+
+| Field | Type | Default | Behavior |
+|---|---|---|---|
+| `storage.size` | positive Kubernetes quantity | `10Gi` | Omitted storage, `{}`, and omitted size all resolve to the default, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
+| `storage.storageClassName` | nonempty string, optional | cluster default on creation | Selects the new PVC's class, or CNPG's `spec.storage.storageClass`. Omission on existing resources retains their class, including a class populated by default admission. A later cluster-default change does not move existing storage. |
+
+For example, `engine.writer.storage: {size: 50Gi, storageClassName: managed-csi}` and
+`cache.storage: {size: 20Gi}` set independent sizes. These are examples, not production sizing.
+For an `OramaCloudV1Set`, put the component settings under `spec.template.components`.
+`reader.storage` applies to every reader's claim, `data-<cr>-reader-<n>`; it defaults to `10Gi`, and production's
+size is explained in [components.md](components.md#engine-internalcontrollerenginego). HARVEST Mongo retains its existing
+`10Gi`/default-class behavior and gains no storage API.
+
+New StatefulSets receive a `data` claim template at the resolved size/class. Existing templates
+remain intact because Kubernetes makes them immutable. The operator grows each matching claim's
+storage request itself, including retained claims and claims created later from an old template.
+The template's old size does not cause a storage mismatch. For controlDB it grows the CNPG
+Cluster's configured size; CNPG owns expansion of its PVCs. Other CNPG storage keys remain intact.
+
+Existing volumes cannot shrink or change class. Removing `storage` after growth requests the
+`10Gi` default and can therefore report an unsupported shrink. Restore the grown request to clear
+that rejection. A larger reported capacity alone is not a shrink: provisioners can round capacity
+above the request. A claim with a class mismatch receives no size update, even if growth was also
+requested. Other claims/components continue reconciling.
+
+`status.conditions[type=StorageApplied]` is independent of `Ready`, phase, and workload readiness:
+
+| Status / reason | Meaning |
+|---|---|
+| `True / Applied` | Every applicable existing PVC request and CNPG storage configuration accepts the desired size/class, or there is no locally managed storage. It does not prove disk or filesystem expansion has completed. |
+| `False / NotApplied` | At least one resource has a problem. The message lists each resource in stable sorted order with one of: `ShrinkNotSupported` (desired size below an existing claim request or CNPG configured size), `StorageClassChangeNotSupported` (an explicit class differs from an existing resource's class, including a classless existing CNPG Cluster), `StorageUpdateFailed` (a storage read or write failed; the API error is included) or `ClaimsPending` (a required claim has not appeared yet; the operator does not create it). |
+
+The condition observes the current generation and recovers after accepted settings or successful
+retries. A rejected setting may coexist with `Ready=True`. The operator polls every 20 seconds
+while locally managed storage exists, even with Ready workloads, and writes status only on change.
+See [component reconciliation](components.md#component-storage) for scope and expansion ownership.
+
 ## `OramaCloudV1E2ETest` (separate CRD)
 
 Runs the **comprehensive functional e2e suite** as a Job against a deployed stack — a test is a
@@ -604,8 +607,8 @@ it). With `spec.host` set it also fronts the host with an **nginx Ingress** and 
 is given — an **owned `CloudflareDNSRecord`** (a proxied A/CNAME record → the ingress LoadBalancer),
 reusing the same Cloudflare child-controller path as the dashboard DNS. A `CloudflareDNSRecord` whose
 name (or type) changes deletes the record it made before (`status.recordID`) once the new one exists,
-so a host change never leaves the old name live (#529), only while that record is still its own (see
-below); a record already gone counts as deleted.
+so a host change never leaves the old name live (#529), but only while that record is still its own
+(see the `CloudflareDNSRecord` section); a record already gone counts as deleted.
 A `CloudflareDNSRecord` takes `type` `A`, `CNAME` or `TXT`; `proxied` is always written (default
 `true` only when left out), so a controller's `false` is kept; and `deletionPolicy: Retain` leaves the
 Cloudflare record when the resource is deleted (`Delete`, the default, removes it), which a Lake's Clerk
@@ -1162,42 +1165,25 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 
 ## `LakeE2ETest` (separate CRD, cluster-scoped)
 
-Runs lake's end-to-end suite, the runner image `oramasearch/lake-e2e`
-([oramasearch/lake-e2e](https://github.com/oramasearch/lake-e2e), [#537](https://github.com/oramasearch/orama-operator/issues/537)),
-as a Job against a Lake, usually a `LakeSet` member: on the `testing` member it is the testing →
-staging gate of a substantial lake release ([`lake/README.md`](lake/README.md#service-e2e)). The
-suite does every Lake feature as a freshly signed-up person, through REST, MCP and a headless
-browser; the operator schedules it, never gives it the admin bearer, and reports each run's
-counts and reasons. The controller waits until the Lake reports a ready replica, ready
-control-plane Postgres and an applied schema, then creates one Job per spec generation,
-`<name>-e2e-<generation>`, in the Lake's namespace. Sample:
+Runs the lake service exit suite as a Job against a cluster-scoped `Lake`. The suite remains in a
+dedicated image so its signup and liquid protocol coverage evolves with lake and liquid; the
+operator schedules it and reports the Job result. The controller waits until the target reports a
+ready replica, ready control-plane Postgres, and an applied schema. It then creates `<name>-e2e` in
+the Lake namespace with service-account token mounting disabled. Sample:
 [`../config/samples/lake-e2e-test.yaml`](../config/samples/lake-e2e-test.yaml).
 
 | Field | Purpose |
 |---|---|
-| `spec.member` | `{lakeSet, name}`: the LakeSet member to test. On the member's cluster its Lake is the cluster-scoped `Lake` named after the member; the controller refuses (stays `Pending`) a Lake of that name whose `orama.cloud/managed-by-set` label is not `LakeSet.<lakeSet>`. Exactly one of `member` and `targetRef`. |
-| `spec.targetRef` | Name of a cluster-scoped `Lake` no set manages. Exactly one of `member` and `targetRef`. The Job runs in the Lake's `spec.namespace` (`lake-dev` when empty). |
-| `spec.image` | Required runner image, `oramasearch/lake-e2e:<immutable tag>`. |
-| `spec.pullSecretName` | Runner image pull Secret in the Lake namespace. Empty reuses the Lake's `spec.pullSecretName`. |
-| `spec.runID` | Any string. Changing it, or anything else in `spec`, raises the generation and starts a new run in a new Job; the test is never deleted to re-run. A run that finished is never started again for the same generation, even when its Job is gone. |
-| `spec.env[]` | Extra runner environment, e.g. `LAKE_E2E_CLERK_SECRET_KEY` from a Secret for a Lake that signs people in with Clerk ([#541](https://github.com/oramasearch/orama-operator/issues/541)), or `LAKE_E2E_GROUPS` to run part of the suite. |
-| `spec.timeoutSeconds` | The Job's `activeDeadlineSeconds`; default 10800 (3 hours), minimum 60. |
-| `status.phase` | `Pending` (no Job: the Lake is absent, not ready, or not the set's member) `\| Running \| Succeeded \| Failed`. `Failed` when any step failed or the runner ended without a result. |
-| `status.pass` / `.fail` / `.skip` | The latest run's step counts. |
-| `status.failed[]` / `.skipped[]` | `{step, reason}` for each failed and skipped step (at most 50 each). |
-| `status.message` | The counts and the first failure, or why the run has not started. |
-| `status.target` / `.jobName` / `.runID` / `.observedGeneration` / `.lakeRevision` / `.startedAt` / `.completedAt` | Which Lake and Job, the run id, the generation it ran for, the revision the Lake reported, and when. |
+| `spec.targetRef` | Name of the cluster-scoped `Lake`. Required. The Job runs in that Lake's `spec.namespace`, or `lake-dev` when omitted. |
+| `spec.image` | Required runner image. Its entrypoint signs up a fresh user, creates a repository, uses the real liquid client to push and pull through the Lake sync routes, and verifies the pulled file bytes. Use an immutable published tag. |
+| `spec.pullSecretName` | Optional runner image pull Secret in the Lake namespace. Empty reuses the target Lake's `spec.pullSecretName`. |
+| `status.phase` | `Pending \| Running \| Succeeded \| Failed`, written only when the phase, message, or Job name changes. `Pending` creates no Job while the target is absent or not ready. |
+| `status.message` / `.jobName` | Current explanation and the retained Job name. Logs are available with `kubectl logs -n <lake-namespace> job/<name>-e2e`. |
 
-The Job's runner receives `LAKE_E2E_BASE_URL` (`http://lake-<lake>.<namespace>.svc.cluster.local`,
-for REST, MCP and liquid sync), `LAKE_E2E_PUBLIC_URL` (`https://<spec.host>` when the Lake has an
-Ingress: the browser needs https because Lake's session cookie is `Secure`), `LAKE_E2E_RUN_ID`
-(eight characters that differ per run, then the test's UID) and `spec.env`. `BackoffLimit` is 0 (a
-failed run is a result, not a crash to retry), the service-account token is not mounted, and the
-container requests 500m CPU and 1 GiB and is limited to 2 GiB (Chromium and Node; `NODE_OPTIONS`
-caps Node's heap at 1 GiB). The controller reads the result from the container's termination
-message, a JSON summary the runner writes, or from the log's last `Lake e2e: pass=N fail=N skip=N`
-line when there is none (RBAC `pods` get/list, `pods/log` get). When a newer run finishes, the
-test's older Jobs are deleted. Status is written only when it changes.
+The runner receives exactly two values from the controller: `LAKE_E2E_BASE_URL` is
+`http://lake-<target>.<namespace>.svc.cluster.local`, and `LAKE_E2E_RUN_ID` is the test resource UID
+for collision-free account and repository names. Authentication begins with the suite's public
+signup path; the operator does not inject the Lake admin bearer.
 
 ## `LakeApp` (separate CRD, namespaced) — one deployed app
 

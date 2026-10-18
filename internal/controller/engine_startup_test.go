@@ -32,7 +32,7 @@ func TestEngineStartupWorkloads(t *testing.T) {
 				o.Spec.Components.Engine.Envoy = envoy
 			})
 			writer := &appsv1.StatefulSet{}
-			reader := &appsv1.Deployment{}
+			reader := &appsv1.StatefulSet{}
 			for _, stage := range []string{"create", "upgrade"} {
 				t.Run(stage, func(t *testing.T) {
 					if err := r.reconcileWriter(ctx, oc, "", ""); err != nil {
@@ -45,7 +45,7 @@ func TestEngineStartupWorkloads(t *testing.T) {
 						t.Fatalf("get writer StatefulSet: %v", err)
 					}
 					if err := cl.Get(ctx, types.NamespacedName{Name: "v1-reader", Namespace: "orama-system"}, reader); err != nil {
-						t.Fatalf("get reader Deployment: %v", err)
+						t.Fatalf("get reader StatefulSet: %v", err)
 					}
 					assertEngineHealthProbes(t, engineContainerForStartupTest(t, &writer.Spec.Template.Spec), "/health", 120, 20*time.Minute)
 					assertEngineHealthProbes(t, engineContainerForStartupTest(t, &reader.Spec.Template.Spec), "/health/ready", 240, 40*time.Minute)

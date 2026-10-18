@@ -32,7 +32,7 @@ func TestReaderProbesWaitForCatchUp(t *testing.T) {
 		t.Fatalf("reconcileWriter: %v", err)
 	}
 
-	var reader appsv1.Deployment
+	var reader appsv1.StatefulSet
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: oc.Namespace, Name: "v1-reader"}, &reader); err != nil {
 		t.Fatalf("get reader: %v", err)
 	}

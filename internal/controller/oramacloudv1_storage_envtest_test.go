@@ -89,24 +89,35 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 	})
 
 	r := &OramaCloudV1Reconciler{Client: kube, Scheme: scheme}
-	for _, component := range []string{"writer", "cache"} {
+	for _, tc := range []struct{ component, created, grown string }{
+		{"writer", "10Gi", "20Gi"}, {"reader", readerDataSize, "600Gi"}, {"cache", "10Gi", "20Gi"},
+	} {
+		component := tc.component
 		t.Run(component+" immutable templates and late claims", func(t *testing.T) {
 			oc := newOCV1(nil)
 			oc.Name = "env-" + component
 			oc.Namespace = ns.Name
 			oc.UID = ""
 			oc.Spec.IDP.Provider = "none"
-			oc.Spec.Components.Engine.Enabled = component == "writer"
+			oc.Spec.Components.Engine.Enabled = component != "cache"
+			oc.Spec.Components.Engine.Reader.Replicas = 1
 			oc.Spec.Components.Cache.Enabled = component == "cache"
+			if component == "reader" {
+				// A read region runs readers and no writer, so only the reader's claims are managed.
+				oc.Spec.Region.Role = "read"
+			}
 			if err := kube.Create(ctx, oc); err != nil {
 				t.Fatal(err)
 			}
 			provision := func() {
 				t.Helper()
 				var err error
-				if component == "writer" {
+				switch component {
+				case "writer":
 					err = r.reconcileWriter(ctx, oc, "", "")
-				} else {
+				case "reader":
+					err = r.reconcileReaders(ctx, oc, "", "", "")
+				default:
 					err = r.reconcileCache(ctx, oc)
 				}
 				if err != nil {
@@ -121,7 +132,7 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 			}
 			// Confirm the real API enforces immutability, so fake-client permissiveness cannot hide it.
 			forbidden := original.DeepCopy()
-			forbidden.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("20Gi")
+			forbidden.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse(tc.grown)
 			if err := kube.Update(ctx, forbidden); !apierrors.IsInvalid(err) {
 				t.Fatalf("template mutation should be forbidden: %v", err)
 			}
@@ -132,12 +143,18 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 				t.Fatal(err)
 			}
 			claimName := "data-" + key.Name + "-0"
-			for _, desired := range []*oramav1alpha1.VolumeSpec{storageSpec("20Gi", ""), storageSpec("5Gi", ""), storageSpec("20Gi", "other-class")} {
-				if component == "writer" {
+			setStorage := func(desired *oramav1alpha1.VolumeSpec) {
+				switch component {
+				case "writer":
 					oc.Spec.Components.Engine.Writer.Storage = desired
-				} else {
+				case "reader":
+					oc.Spec.Components.Engine.Reader.Storage = desired
+				default:
 					oc.Spec.Components.Cache.Storage = desired
 				}
+			}
+			for _, desired := range []*oramav1alpha1.VolumeSpec{storageSpec(tc.grown, ""), storageSpec("5Gi", ""), storageSpec(tc.grown, "other-class")} {
+				setStorage(desired)
 				oc.Spec.Images.Overrides = map[string]string{"oramacore": "example.com/engine:changed", "cache": "example.com/cache:changed"}
 				if err := kube.Update(ctx, oc); err != nil {
 					t.Fatal(err)
@@ -157,22 +174,33 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 			// An empty PVC list is pending; the operator must not manufacture the missing claim.
 			r.reconcileStorage(ctx, oc)
 			storageCondition(t, r, oc, "ClaimsPending")
-			claim := dataPVC(storageSpec("10Gi", class))
-			claim.Name = claimName
-			claim.Namespace = ns.Name
-			if err := kube.Create(ctx, &claim); err != nil {
-				t.Fatal(err)
-			}
-			claim.Status.Phase = corev1.ClaimBound
-			claim.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")}
-			if err := kube.Status().Update(ctx, &claim); err != nil {
-				t.Fatal(err)
-			}
+			claims := []string{claimName}
 			if component == "writer" {
-				oc.Spec.Components.Engine.Writer.Storage = storageSpec("20Gi", "")
-			} else {
-				oc.Spec.Components.Cache.Storage = storageSpec("20Gi", "")
+				// The primary's readers are managed too: give them their claim at the reader default.
+				if err := r.reconcileReaders(ctx, oc, "", "", ""); err != nil {
+					t.Fatal(err)
+				}
+				claims = append(claims, "data-"+oc.Name+"-reader-0")
 			}
+			for _, name := range claims {
+				size := tc.created
+				if name != claimName {
+					size = readerDataSize
+				}
+				claim := dataPVC(storageSpec(size, class), defaultVolumeSize)
+				claim.Name = name
+				claim.Namespace = ns.Name
+				if err := kube.Create(ctx, &claim); err != nil {
+					t.Fatal(err)
+				}
+				claim.Status.Phase = corev1.ClaimBound
+				claim.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(size)}
+				if err := kube.Status().Update(ctx, &claim); err != nil {
+					t.Fatal(err)
+				}
+			}
+			claim := corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: ns.Name}}
+			setStorage(storageSpec(tc.grown, ""))
 			if err := kube.Update(ctx, oc); err != nil {
 				t.Fatal(err)
 			}
@@ -182,7 +210,7 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := claim.Spec.Resources.Requests[corev1.ResourceStorage]
-			if request.Cmp(resource.MustParse("20Gi")) != 0 {
+			if request.Cmp(resource.MustParse(tc.grown)) != 0 {
 				t.Fatalf("request = %s", request.String())
 			}
 			rv := claim.ResourceVersion
@@ -195,7 +223,7 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 			}
 			// Accepted request differs from physical completion: capacity stays at the explicit fixture.
 			capacity := claim.Status.Capacity[corev1.ResourceStorage]
-			if capacity.Cmp(resource.MustParse("10Gi")) != 0 {
+			if capacity.Cmp(resource.MustParse(tc.created)) != 0 {
 				t.Fatal("operator modified capacity")
 			}
 		})
