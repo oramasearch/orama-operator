@@ -8,6 +8,7 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // The kinds in this file are the abstract half of the operator's infrastructure work
@@ -55,6 +56,10 @@ type ClusterSecretReference struct {
 	Namespace string `json:"namespace"`
 }
 
+// NodeSysctls maps Linux kernel parameter names to integer values or string ranges.
+// Providers validate their supported names and values. Boolean kernel settings use 0 or 1.
+type NodeSysctls map[string]intstr.IntOrString
+
 // ClusterNodePool is one pool of nodes, in provider-neutral terms.
 type ClusterNodePool struct {
 	// Name of the pool. AKS allows 1 to 12 lowercase letters and digits, starting with a letter.
@@ -87,6 +92,10 @@ type ClusterNodePool struct {
 	// Taints are added to every node of the pool.
 	// +optional
 	Taints []corev1.Taint `json:"taints,omitempty"`
+	// Sysctls configures Linux kernel settings on every node of this pool, using names such as
+	// vm.max_map_count. Omitted settings use provider defaults and are not checked for drift.
+	// +optional
+	Sysctls NodeSysctls `json:"sysctls,omitempty"`
 }
 
 // KubernetesClusterSpec is the cluster that is wanted.
