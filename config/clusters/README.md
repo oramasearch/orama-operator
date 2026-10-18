@@ -38,6 +38,9 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 The managing cluster, `orama-production-cluster-01`, was created by hand before these kinds
 existed and has no `KubernetesCluster` of its own.
 
+`sets/v1-prod.yaml` states the source of each component storage size next to the setting. The
+operator only grows volumes, so a size raised in a set file stays raised there.
+
 No file here holds a secret. Secrets are named by reference and live on the managing cluster.
 An `OramaCloudV1Set` copies `cloudflare-api-token` to each member's namespace through its
 `secrets` list; besides DNS, it is the DNS-01 credential of every stack's Let's Encrypt `Issuer`,
@@ -46,6 +49,31 @@ so a v1 member with a host fails to reconcile without it
 be a name in a Cloudflare zone that token can edit, or its certificate is never issued. So each
 member names its own `oramadev.net` dashboard and docs hosts (`app-dev`/`docs-dev`, `app-eu`/`docs-eu`,
 `app-us`/`docs-us`); no enabled component in a v1 set has a `.local` host.
+
+A set's `secrets` list copies them into each member's namespace before the instance is applied;
+the copy keeps its name, or takes the one `as` gives. A v1 member's engine master key arrives this
+way and is named by `template.masterAPIKeySecretRef` (or a member's `spec`); the operator never
+generates it, and without it the member's writer and readers stay at zero replicas. Changing a
+copied Secret's source, or its data on the managing cluster, rolls the member's consumers of it.
+
+A set's `spec.secrets` list copies each named Secret from there into every member's namespace (for
+example the dashboard's environment Secret, which the set's template references in
+`components.dashboard.envFrom`); see
+[the dashboard's environment](../../docs/components.md#the-dashboards-environment). The e2e canary's
+Secret (`components.dashboard.crons.e2eCanary.secretRef`) arrives the same way. Creating or
+changing a source Secret is a write on the managing cluster and needs Steve's consent.
+
+The dashboard crons and the e2e canary are created suspended. Their `suspend` fields change only in
+a set file, committed and applied to the managing cluster; production unsuspends them at cutover
+step 5, after Prod 1's crons are off and `app.orama.com` points at Prod 2 (see
+[the dashboard's scheduled jobs](../../docs/components.md#the-dashboards-scheduled-jobs)). Never
+edit, patch or create the CronJobs themselves.
+
+An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
+reference rows the operator seeds into its control database
+([`docs/components.md`](../../docs/components.md#the-control-dbs-schema)). `v1-nonprod` leaves it
+empty: no test-mode prices exist yet, so its plans carry no Stripe prices and it has no add-on
+prices. `v1-prod` needs its live-mode IDs before billing works on it.
 
 To check that the files match the cluster:
 

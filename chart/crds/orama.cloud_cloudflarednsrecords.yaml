@@ -31,8 +31,8 @@ spec:
       openAPIV3Schema:
         description: |-
           CloudflareDNSRecord is a Cloudflare DNS record the operator provisions via the CF API,
-          owned by an OramaCloudV1 CR. A finalizer deletes the record from Cloudflare on delete, so
-          tearing down the CR cascades to real external cleanup.
+          optionally owned by a parent CR. It never adopts foreign records. Its finalizer deletes
+          only records still carrying its ownership comment, or pre-comment legacy status IDs.
         properties:
           apiVersion:
             description: |-
@@ -84,6 +84,14 @@ spec:
                   SecretRef names the Secret holding the Cloudflare credentials (`token`, `zoneID`,
                   `accountID`) — normally the CR's `spec.cloudflare.apiTokenSecretRef`.
                 type: string
+              sharedOwner:
+                description: |-
+                  SharedOwner names the one owner of a record several resources keep, such as `clerk/<instance
+                  ID>` for a Clerk production instance's records. The record is created with the comment
+                  `orama-operator:<sharedOwner>` instead of `orama-operator:<namespace>/<name>`, so every
+                  resource with the same sharedOwner recognises it as the operator's own; a record without that
+                  comment is still refused. It requires deletionPolicy Retain: no single resource deletes it.
+                type: string
               type:
                 description: Type is A, CNAME or TXT; empty = inferred from Content
                   (IP → A, hostname → CNAME).
@@ -93,18 +101,27 @@ spec:
             - name
             - secretRef
             type: object
+            x-kubernetes-validations:
+            - message: sharedOwner requires deletionPolicy Retain
+              rule: '!has(self.sharedOwner) || size(self.sharedOwner) == 0 || (has(self.deletionPolicy)
+                && self.deletionPolicy == ''Retain'')'
           status:
             description: CloudflareDNSRecordStatus is the observed state — the provisioned
               Cloudflare record.
             properties:
               message:
                 type: string
+              ownerComment:
+                description: |-
+                  OwnerComment is the exact ownership comment written on creation. Empty with a
+                  RecordID identifies a legacy record; reconciliation never adds a comment to it.
+                type: string
               ready:
                 description: Ready is true once the record is reconciled in Cloudflare.
                 type: boolean
               recordID:
-                description: RecordID is the Cloudflare-assigned DNS record ID (set
-                  once created).
+                description: RecordID is the Cloudflare ID created by this resource
+                  or tracked before comments.
                 type: string
             type: object
         type: object

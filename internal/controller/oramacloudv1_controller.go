@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -39,14 +40,12 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile is the control loop. It reconciles each enabled component in turn,
-// driven by .spec.region.role. Components still TODO: control-plane Postgres (CNPG),
-// ClickHouse, RabbitMQ, Redis, Typesense, HARVEST+Mongo, index-builder + workers,
-// DISCO, dashboard, IdP shim, Cloudflare (DNS+LB via API), demo seed. See docs/.
+// Reconcile provisions enabled components in dependency order, applies storage intent, and
+// rolls up workload readiness independently of storage configuration acceptance.
 func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 
@@ -56,6 +55,17 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	l.Info("reconciling OramaCloudV1", "region", oc.Spec.Region.Name, "role", oc.Spec.Region.Role, "profile", oc.Spec.Profile)
+	// Invalid input changes nothing: check it before the first child resource is written.
+	if err := validateEngineImages(&oc); err != nil {
+		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "engine", err)
+	}
+	// A missing or placeholder master key is configuration, not a failure: the rest of the stack
+	// reconciles, the engine is held at zero (reconcileEngine), and Ready names the cause until a
+	// Secret event or the readiness requeue finds it fixed.
+	masterKey, err := r.validateMasterAPIKey(ctx, &oc)
+	if err != nil {
+		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "master API key", err)
+	}
 	if err := r.reconcileNetworkSandbox(ctx, &oc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile network sandbox: %w", err)
 	}
@@ -65,7 +75,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		name string
 		fn   func(context.Context, *oramav1alpha1.OramaCloudV1) error
 	}{
-		{"bootstrap", r.reconcileBootstrap},    // shared config + dummy secrets first
+		{"bootstrap", r.reconcileBootstrap},    // shared config + generated credentials first
 		{"originTLS", r.reconcileOriginIssuer}, // the Issuer every Ingress below requests from (#457)
 		{"engine", r.reconcileEngine},
 		{"controlDB", r.reconcileControlDB},
@@ -90,23 +100,30 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	for _, s := range steps {
 		if err := s.fn(ctx, &oc); err != nil {
-			l.Error(err, "component reconcile failed", "component", s.name)
-			r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, metav1.Condition{
-				Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
-				Message: fmt.Sprintf("%s: %v", s.name, err),
-			})
-			return ctrl.Result{}, err
+			return ctrl.Result{}, r.reconcileFailed(ctx, &oc, s.name, err)
 		}
 	}
 
 	// Roll child readiness up into the phase (#37): Ready once every owned workload is ready,
 	// else Provisioning. Requeue while still coming up so the phase advances as pods go ready —
-	// Owns() events cover most transitions; the requeue is the backstop (e.g. the polled CNPG
-	// cluster readiness).
-	if r.applyReadiness(ctx, &oc) {
+	// Owns() events cover most transitions; the requeue is also the backstop for CNPG readiness,
+	// PVC creation and storage retries even after workloads become Ready.
+	managedStorage := r.reconcileStorage(ctx, &oc)
+	if r.applyReadiness(ctx, &oc, masterKey) && !managedStorage {
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
+}
+
+// reconcileFailed reports a component's reconcile error as Ready=False (ReconcileError) with phase
+// Degraded, leaving the other conditions as they were, and returns the error.
+func (r *OramaCloudV1Reconciler) reconcileFailed(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, component string, err error) error {
+	log.FromContext(ctx).Error(err, "component reconcile failed", "component", component)
+	r.setStatus(ctx, oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, nil, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionFalse, Reason: "ReconcileError",
+		Message: fmt.Sprintf("%s: %v", component, err),
+	})
+	return err
 }
 
 // SetupWithManager wires the controller and the child resources it owns.
@@ -121,11 +138,23 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&networkingv1.Ingress{}).
 		Owns(&batchv1.Job{}).
+		Owns(&batchv1.CronJob{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Owns(&oramav1alpha1.CloudflareKVNamespace{}).
 		Owns(&oramav1alpha1.CloudflareR2Bucket{}).
 		Owns(&oramav1alpha1.NetworkSandbox{}).
 		Owns(&oramav1alpha1.RabbitMQTopology{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
+		// Secrets supplied or copied from outside the operator (LLM keys, the master API key, a
+		// broker or cache credential) have no owner reference: map them to the CRs that read them,
+		// so a changed value rolls their consumers (requestsForSecret).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForSecret)).
+		// Likewise the Secrets and ConfigMaps the dashboard takes its environment from, so a changed,
+		// created or deleted one re-hashes and rolls the dashboard (dashboard_env.go).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
+		// And the e2e canary's target Secret, so creating or fixing it retries at once (dashboard_crons.go).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForE2ECanarySecret)).
 		Complete(r)
 }

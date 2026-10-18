@@ -22,13 +22,10 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// llmProviderNames returns the enabled LLM provider names (defaults to the prod set —
-// v1 offers all three and end users pick per query).
+// llmProviderNames is the shared LLM_PROVIDERS value: the names of the effective provider list
+// (llmProviders), the same list the engine config renders. End users pick one per query.
 func llmProviderNames(oc *oramav1alpha1.OramaCloudV1) string {
-	provs := oc.Spec.LLM.Providers
-	if len(provs) == 0 {
-		return "groq,openai,anthropic"
-	}
+	provs := llmProviders(oc)
 	names := make([]string, 0, len(provs))
 	for _, p := range provs {
 		names = append(names, p.Name)
@@ -36,6 +33,7 @@ func llmProviderNames(oc *oramav1alpha1.OramaCloudV1) string {
 	return strings.Join(names, ",")
 }
 
+// llmDefault is spec.llm.default, or groq when it is empty.
 func llmDefault(oc *oramav1alpha1.OramaCloudV1) string {
 	if oc.Spec.LLM.Default != "" {
 		return oc.Spec.LLM.Default
@@ -89,6 +87,9 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 		return controllerutil.SetControllerReference(oc, cm, r.Scheme)
 	})
 	if err != nil {
+		return err
+	}
+	if err := r.ensureCredentialSecrets(ctx, oc); err != nil {
 		return err
 	}
 	return r.ensureJWTSecrets(ctx, oc)
@@ -148,37 +149,37 @@ func (r *OramaCloudV1Reconciler) ensureJWTSecrets(ctx context.Context, oc *orama
 // maps in techops-docs). Returns nil for components that need no secret. Real
 // deployments override these (edit in place, or source from ExternalSecrets).
 //
+// MASTER_API_KEY is not seeded here: every consumer takes it from spec.masterAPIKeySecretRef through
+// an explicit env entry (masterAPIKeyEnv), which wins over a value an older Secret still holds. The
+// broker and Redis passwords are generated into <cr>-broker-admin and <cr>-cache-auth (#307).
+//
 // NOTE: the Cloudflare API token is intentionally NOT here — it's needed only by the
 // operator (the CF DNS reconciler), read from spec.cloudflare.apiTokenSecretRef, and
 // a dummy value would be useless (the CF API would reject it).
 func componentSecretData(component string) map[string]string {
 	switch component {
-	case "engine": // OramaCore: master key, LLM providers, model downloads, JWT verify (public only)
+	case "engine": // OramaCore: LLM providers, model downloads, JWT verify (public only)
 		return map[string]string{
 			// JWT_PUBLIC_KEY comes from the generated <cr>-jwt-pub secret (verify only).
-			"MASTER_API_KEY":    "dev-master-api-key",
 			"GROQ_API_KEY":      "dev-groq-api-key",
 			"OPENAI_API_KEY":    "dev-openai-api-key",
 			"ANTHROPIC_API_KEY": "dev-anthropic-api-key",
+			"GOOGLE_API_KEY":    "dev-google-api-key",
 			"HF_TOKEN":          "dev-huggingface-token",
 		}
 	case "search":
 		return map[string]string{"TYPESENSE_API_KEY": "dev-typesense-api-key"}
 	case "cache":
-		// In-cluster Redis runs WITHOUT requirepass (the redis image ignores REDIS_PASSWORD;
-		// it needs --requirepass), and every client uses a passwordless URL — so advertising a
-		// password here only causes AUTH failures. Passwordless everywhere (#32); enforcing
-		// requirepass is a hardening follow-up (#18).
+		// The Redis password is generated into <cr>-cache-auth (credentials.go), not seeded here.
 		return map[string]string{}
 	case "broker":
-		// Creds live in the mounted rabbitmq.conf (default_user/pass) — the RABBITMQ_DEFAULT_USER
-		// env conflicts with a mounted config, so keep the broker secret empty (#41). (Prod: render
-		// the password from a Secret via an init container instead of the config dummy.)
+		// The admin credentials are generated into <cr>-broker-admin and rendered into the broker's
+		// config by an init container (reconcileBroker), not seeded here.
 		return map[string]string{}
 	case "analytics":
 		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "analytics-processor": // pulls /v1/analytics -> ClickHouse
-		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password", "MASTER_API_KEY": "dev-master-api-key"}
+		return map[string]string{"CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "disco":
 		return map[string]string{"DISCO_SECRET": "dev-disco-secret", "CLICKHOUSE_PASSWORD": "dev-clickhouse-password"}
 	case "keycloak":
@@ -193,7 +194,6 @@ func componentSecretData(component string) map[string]string {
 		// as plain env in reconcileIngestion.
 		return map[string]string{
 			"TYPESENSE_API_KEY":           "dev-typesense-api-key",
-			"MASTER_API_KEY":              "dev-master-api-key",
 			"ORAMA_EMBEDDINGS_BEARER":     "dev-hpes-bearer",
 			"ABLY_API_KEY":                "sandbox.dummy:sandboxdummyablysecret000000",
 			"API_SECRET":                  "dev-index-builder-api-secret",
@@ -223,8 +223,7 @@ func componentSecretData(component string) map[string]string {
 			// JWT_PRIVATE_KEY + JWT_PUBLIC_KEY come from the generated <cr>-jwt secret
 			// (the dashboard signs the OramaCore writer JWT); JWT_ISSUER is in the config.
 			// POSTGRES_PASSWORD is sourced from the CNPG-generated <cr>-controldb-app Secret via
-			// an explicit env in reconcileDashboard (#32) — not the dummy. Redis is passwordless.
-			"MASTER_API_KEY":           "dev-master-api-key",
+			// an explicit env in reconcileDashboard (#32) — not the dummy.
 			"CLICKHOUSE_PASSWORD":      "dev-clickhouse-password",
 			"FIREBASE_SERVICE_ACCOUNT": "dev-firebase-service-account-json",
 			"STRIPE_SECRET_KEY":        "dev-stripe-secret-key",
@@ -234,7 +233,6 @@ func componentSecretData(component string) map[string]string {
 		}
 	case "workers": // the CF workers bundle — RAG answer path + telemetry
 		return map[string]string{
-			"MASTER_API_KEY":      "dev-master-api-key",
 			"OPENAI_API_KEY":      "dev-openai-api-key",
 			"GROQ_API_KEY":        "dev-groq-api-key",
 			"ANTHROPIC_API_KEY":   "dev-anthropic-api-key",
@@ -280,9 +278,14 @@ func (r *OramaCloudV1Reconciler) ensureComponentSecret(ctx context.Context, oc *
 	} else if !apierrors.IsNotFound(err) {
 		return false, err
 	}
+	// Data, not StringData: the reconcile reads the values back (engineLLMSecretHash) and every
+	// reader, including a fake client, sees the same bytes.
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace, Labels: labelsFor(oc, component)},
-		StringData: data,
+		Data:       map[string][]byte{},
+	}
+	for k, v := range data {
+		sec.Data[k] = []byte(v)
 	}
 	if err := controllerutil.SetControllerReference(oc, sec, r.Scheme); err != nil {
 		return false, err
