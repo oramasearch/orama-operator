@@ -28,7 +28,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
 | **disco** | `internal/controller/disco.go` | `Deployment` (DISCO + embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
-| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — pulls `/v1/analytics` → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
+| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — polls the readers' `/v1/analytics` with the analytics key (`<cr>-analytics-api-key`, no master key) → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy); unwired, so its `host` and `extraHosts` are API-only (checked for duplicates, never served) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
 | **cloudflare** | `internal/controller/cloudflare.go`, `cloudflarednsrecord_controller.go` | owned DNS child CRs; create marked records, reconcile only owned or legacy-ID records, and check ownership before cleanup | 🟡 **implemented**; HTTP/fake-client and local API-server tests pass; Lake and `oramadev.net` live proof pending approval |
@@ -225,7 +225,8 @@ cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boo
 
 ## Credentials — broker and Redis passwords and the master key (`credentials.go`)
 
-[#307](https://github.com/oramasearch/orama-operator/issues/307). Every client reads a stack-wide
+[#307](https://github.com/oramasearch/orama-operator/issues/307),
+[#386](https://github.com/oramasearch/orama-operator/issues/386). Every client reads a stack-wide
 credential from one Secret by `secretKeyRef`, so a value in that Secret is the value every component
 connects with, and no value is in a ConfigMap, pod spec, annotation, status or log.
 
@@ -233,23 +234,29 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 |---|---|---|---|
 | `<cr>-broker-admin` | `username` (`orama`), `password` | the bootstrap step, where the broker runs locally | broker `rabbitmq.conf` and boot definitions, writer and reader transport config, harvest-master `AMQP_HOST`, `RabbitMQTopology` (`adminSecretRef`) |
 | `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL` |
-| `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`; the reader-only config has none), analytics-processor render-config, index-builder, workers, dashboard, the e2e runner |
+| `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, reader-only config only), analytics-processor render-config (every `oramacores` entry's `api_key`) |
+| `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`; the reader-only config has none), index-builder, workers, dashboard, the e2e runner |
 
 - **Generated once.** Where the store runs in this cluster (enabled, not `mode: external`, not
   `placement: central` on a read region) the operator creates the Secret with a random 48-character
   hex password, owner-referenced to the CR and labelled component `credentials`, which no teardown
   removes: disabling the broker or cache keeps its password for the retained volume. An existing
   Secret, generated or supplied, is never changed, adopted or filled in. A member whose store runs
-  elsewhere receives the Secret through its set's `secrets` list.
-- **Checked.** A broker or cache Secret missing a key, or holding an empty value or a character
-  outside `A-Z a-z 0-9 - . _ ~` (the clients take it inside URLs and config files), fails the
-  reconcile with `Ready=False` naming the Secret and key, and is left as it is.
+  elsewhere receives the Secret through its set's `secrets` list. `<cr>-analytics-api-key` is
+  created the same way on every stack, whatever analytics-processor and ClickHouse are set to, so
+  re-enabling either finds the same key. It is internal to the readers and the processor, so it is
+  generated, never copied from the managing cluster, and it can only read and erase search events.
+- **Checked.** A broker, cache or analytics key Secret missing a key, or holding an empty value or a
+  character outside `A-Z a-z 0-9 - . _ ~` (the clients take it inside URLs and config files), fails
+  the reconcile with `Ready=False` naming the Secret and key, and is left as it is. The bootstrap
+  step reads each generated Secret back after creating it, so a Secret another writer created first
+  is the one checked and used; no consumer starts with another key.
 - **Wiring.** Clients get `BROKER_USERNAME`, `BROKER_PASSWORD` and `REDIS_PASSWORD` as `secretKeyRef`
   entries placed before the URLs that reference them (`amqp://$(BROKER_USERNAME):$(BROKER_PASSWORD)@<cr>-broker:5672`,
   `redis://:$(REDIS_PASSWORD)@<cr>-cache:6379`), and Redis runs
   `redis-server --appendonly yes --requirepass $(REDIS_PASSWORD)`. Config files hold
-  `__BROKER_USERNAME__`, `__BROKER_PASSWORD__` and `__MASTER_API_KEY__` placeholders that a
-  `render-config` init container fills into an `emptyDir`.
+  `__BROKER_USERNAME__`, `__BROKER_PASSWORD__`, `__MASTER_API_KEY__` and `__ANALYTICS_API_KEY__`
+  placeholders that a `render-config` init container fills into an `emptyDir`.
 - **Broker password on a retained volume.** RabbitMQ applies `default_user`/`default_pass` only to
   an empty data directory, so the broker also imports `/etc/rabbitmq/credentials.json` on every
   boot (`definitions.import_backend = local_filesystem`): the admin user, the `/` vhost and its
@@ -272,8 +279,11 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   shared with the LLM key hash). The controller maps every Secret event, owned or copied, to each CR
   in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
   `<cr>-broker-admin` the broker, writer, readers and harvest-master; `<cr>-cache-auth` the cache,
-  harvest-master and index-builder; the master key the writer (and readers on the combined image),
-  analytics-processor, index-builder, workers and dashboard. Metadata changes roll nothing. An
+  harvest-master and index-builder; `<cr>-analytics-api-key` the readers on the reader-only config
+  and analytics-processor, never the writer; the master key the writer (and readers on the combined
+  image), index-builder, workers and dashboard. analytics-processor's hash also covers its component
+  Secret (ClickHouse password) and `<cr>-controldb-app` (the Postgres URI). Metadata changes roll
+  nothing. An
   existing e2e Job is immutable and keeps the reference it was created with.
 
 ## Network sandboxes (`internal/controller/networksandbox_controller.go`)
@@ -532,6 +542,16 @@ Driven by `spec.region.role`:
   same section builders in `engine.go` (`engineCommonYAML`, `writerSideYAML`, `readerSideYAML`,
   `aiServerYAML`), so the sections and stream names are identical in every mode (writer
   `oramacore-writer`/`write`, readers `oramacore-reader`/`reader`).
+- **Reader analytics** ([#386](https://github.com/oramasearch/orama-operator/issues/386)) — only
+  `reader.yaml` carries `reader_side.analytics` (`readerAnalyticsYAML`), as on Prod 1's readers:
+  `api_key: '__ANALYTICS_API_KEY__'`, filled from `<cr>-analytics-api-key`, and Prod 1's
+  `metadata_from_headers` (`user-agent`→`ua`, `CF-Connecting-IP`→`ip`, `CF-IPCountry`→`country`,
+  `continent`, `colo`, `latitude`, `longitude`), which OramaCore requires; a request without these
+  headers is still served. With it each reader logs search events under its `data_dir` and serves
+  them once on `GET /v1/analytics`, which erases what it returns; analytics-processor polls it with
+  the analytics key. The writer config has no reader side and no analytics block, and the combined
+  `config.yaml` has none either, so on the combined image readers record no search events. Only the
+  readers' render-config reads the analytics key.
   The `ai_server` LLM settings come from `spec.llm` (`engine_llm.go`): `ai_server.llm` is the
   default provider's built-in URL, first model and key, `ai_server.remote_llms` one entry per
   provider, and `ai_server.embeddings.automatic_embeddings_selector` the optional selector. Without
@@ -546,8 +566,9 @@ Driven by `spec.region.role`:
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
   `ORAMACORE_` provider splits on `_`). Explicit `secretKeyRef` env entries carry `MASTER_API_KEY`
   from `spec.masterAPIKeySecretRef` (only where the side's template holds it), the broker
-  credentials from `<cr>-broker-admin`, and a provider's key from its `apiKeySecretRef`; the other
-  provider keys come from `<cr>-engine-secret` (via `envFrom`).
+  credentials from `<cr>-broker-admin`, `ANALYTICS_API_KEY` from `<cr>-analytics-api-key` (the
+  reader-only config only), and a provider's key from its `apiKeySecretRef`; the other provider
+  keys come from `<cr>-engine-secret` (via `envFrom`).
   The script reads each value from its environment variable and escapes it for `sed` and the
   single-quoted scalar, so no value is evaluated, logged or written into the script.
   Each pod template carries `orama.cloud/config-hash`, the SHA-256 of its own unrendered template
@@ -558,7 +579,7 @@ Driven by `spec.region.role`:
   hash stays their template's alone, as they were. The pod template also carries
   `orama.cloud/llm-secret-hash`, the SHA-256 of the data of `<cr>-engine-secret` and every
   `apiKeySecretRef` Secret, identical on both sides, and `orama.cloud/credentials-hash`, the side's
-  broker admin and master key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
+  broker admin, master key and (reader-only config) analytics key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
   The controller watches Secrets and maps a change to every CR that reads it, so a rotated key rolls
   the writer and readers with no restart by hand. Without a usable master key the writer and
   reader StatefulSets are held at zero replicas, and so is a reader Deployment left by an earlier

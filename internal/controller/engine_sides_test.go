@@ -416,6 +416,13 @@ func TestEngineSideOnlyPodsAndConfigs(t *testing.T) {
 			t.Errorf("%s template must end in a newline and hold no __POD_NAME__", p.key)
 		}
 		parsed := parseYAML(t, tmpl)
+		// The reader-only config alone adds reader_side.analytics (engine_analytics_test.go).
+		if rs, ok := parsed["reader_side"].(map[string]any); ok && p.side == "reader" {
+			if _, ok := rs["analytics"]; !ok {
+				t.Error("reader.yaml has no reader_side.analytics")
+			}
+			delete(rs, "analytics")
+		}
 		if _, ok := parsed[p.absent]; ok {
 			t.Errorf("%s has %s", p.key, p.absent)
 		}
@@ -809,7 +816,7 @@ func TestRenderConfigInitRendersSelectedTemplate(t *testing.T) {
 	const master, groq = "synthetic-master-0123abcd", "gsk_synthetic_4567efgh"
 	keys := map[string]string{"__MASTER_API_KEY__": master, "__GROQ_API_KEY__": groq,
 		"__OPENAI_API_KEY__": "sk-synthetic", "__GOOGLE_API_KEY__": "AIza-synthetic", "__ANTHROPIC_API_KEY__": "sk-ant-synthetic",
-		"__BROKER_USERNAME__": "orama", "__BROKER_PASSWORD__": "synthetic-broker-89ab"}
+		"__BROKER_USERNAME__": "orama", "__BROKER_PASSWORD__": "synthetic-broker-89ab", "__ANALYTICS_API_KEY__": "synthetic-analytics-cdef"}
 	for _, oc := range []*oramav1alpha1.OramaCloudV1{engineOC(nil), engineOC(withSideImages)} {
 		h := newEngineHarness(t)
 		h.reconcile(oc)

@@ -102,9 +102,9 @@ type appDef struct {
 	// gracePeriodSeconds is terminationGracePeriodSeconds. 0 → the stateless-app default (30s).
 	// Stateful/slow-draining apps set a larger value. Workload hardening (#18).
 	gracePeriodSeconds int64
-	// credentialSecrets are the credential Secrets the app's containers, init containers included,
-	// read by secretKeyRef (broker admin, cache auth, master API key). Their data hash is on the pod
-	// template, so a changed credential rolls the app (#307).
+	// credentialSecrets are the Secrets the app's containers, init containers included, read by
+	// secretKeyRef (broker admin, cache auth, analytics key, master API key, ...). Their data hash is
+	// on the pod template, so a changed credential rolls the app (#307).
 	credentialSecrets []string
 	// podAnnotations go on the pod template, so a change to one rolls the Deployment. An app whose
 	// envFrom value only takes effect at process start uses a hash of it to roll on change.
@@ -113,7 +113,10 @@ type appDef struct {
 	// over them; envHash, when set, is the pod-template annotation dashboardEnvHashAnnotation that
 	// rolls the pods when a referenced Secret/ConfigMap changes. The dashboard's user env (#311).
 	extraEnvFrom []corev1.EnvFromSource
-	envHash      string
+	// envFrom replaces the main container's envFromFor default (the shared ConfigMap and the
+	// component Secret) when set, for an app that must not load its component Secret whole.
+	envFrom []corev1.EnvFromSource
+	envHash string
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress for ingressHost and ingressExtraHosts
@@ -141,6 +144,10 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 	// Harden the operator's init/render/wait containers to the same baseline as the main container.
 	initContainers := def.initContainers
 	hardenAll(initContainers)
+	envFrom := def.envFrom
+	if envFrom == nil {
+		envFrom = envFromFor(oc, def.component)
+	}
 	var annotations map[string]string
 	if len(def.credentialSecrets) > 0 {
 		hash, err := r.credentialsHash(ctx, oc, def.credentialSecrets...)
@@ -184,7 +191,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 				Args:            def.args,
 				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: def.port}},
 				Env:             def.env,
-				EnvFrom:         append(envFromFor(oc, def.component), def.extraEnvFrom...),
+				EnvFrom:         append(envFrom, def.extraEnvFrom...),
 				VolumeMounts:    def.volumeMounts,
 				Resources:       *res,
 				// Startup gates liveness/readiness so a slow boot isn't killed; readiness gates

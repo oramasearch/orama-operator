@@ -20,19 +20,20 @@ import (
 )
 
 // Stack-wide credentials (#307): the broker admin user and the Redis password, each in one Secret
-// that every client reads by secretKeyRef, and the master API key, which the CR names
-// (spec.masterAPIKeySecretRef). A workload's template carries credentialsHashKey, the digest of the
-// credential Secrets it reads, so a changed value rolls exactly the workloads that use it.
+// that every client reads by secretKeyRef, the analytics key the readers and analytics-processor
+// share (#386), and the master API key, which the CR names (spec.masterAPIKeySecretRef). A
+// workload's template carries credentialsHashKey, the digest of the credential Secrets it reads, so
+// a changed value rolls exactly the workloads that use it.
 //
 // The generated Secrets carry the component label "credentials", which no teardown removes:
 // disabling the broker or cache keeps its password, so a retained data volume still matches it on
-// re-enable.
+// re-enable, and disabling analytics-processor or ClickHouse keeps the analytics key.
 
 const (
 	credentialsComponent = "credentials"
 
 	// credentialsHashKey is the pod-template annotation holding secretDataHash of the credential
-	// Secrets a workload reads (broker admin, cache auth, master API key).
+	// Secrets a workload reads (broker admin, cache auth, analytics key, master API key).
 	credentialsHashKey = "orama.cloud/credentials-hash"
 
 	// masterAPIKeyEnvName is the variable every consumer receives the master key in, and the key
@@ -47,9 +48,21 @@ const (
 	brokerUserEnv     = "BROKER_USERNAME"
 	brokerPasswordEnv = "BROKER_PASSWORD"
 	redisPasswordEnv  = "REDIS_PASSWORD"
+
+	// analyticsKeyEnvName is the key of <cr>-analytics-api-key, and the variable that carries it into
+	// the readers' and analytics-processor's render-config; it also names the __ANALYTICS_API_KEY__
+	// placeholder.
+	analyticsKeyEnvName = "ANALYTICS_API_KEY"
 )
 
 func cacheAuthSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-cache-auth" }
+
+// analyticsKeySecretName is the generated Secret holding the key readers check on GET /v1/analytics
+// (reader_side.analytics.api_key) and analytics-processor sends. It can read and erase search events
+// and nothing else, so the processor holds no master key.
+func analyticsKeySecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-analytics-api-key"
+}
 
 // credentialKeys are the keys each generated credential Secret must hold, nonempty.
 func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
@@ -58,6 +71,8 @@ func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 		return []string{"username", "password"}
 	case cacheAuthSecretName(oc):
 		return []string{"password"}
+	case analyticsKeySecretName(oc):
+		return []string{analyticsKeyEnvName}
 	}
 	return nil
 }
@@ -97,6 +112,11 @@ func brokerCredentialEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 	}
 }
 
+// analyticsKeyEnv carries the analytics key from <cr>-analytics-api-key.
+func analyticsKeyEnv(oc *oramav1alpha1.OramaCloudV1) corev1.EnvVar {
+	return secretKeyEnv(analyticsKeyEnvName, analyticsKeySecretName(oc), analyticsKeyEnvName)
+}
+
 // redisPasswordEnvVar carries the Redis password from <cr>-cache-auth.
 func redisPasswordEnvVar(oc *oramav1alpha1.OramaCloudV1) corev1.EnvVar {
 	return secretKeyEnv(redisPasswordEnv, cacheAuthSecretName(oc), "password")
@@ -120,9 +140,11 @@ func secretKeyEnv(name, secret, key string) corev1.EnvVar {
 }
 
 // ensureCredentialSecrets creates <cr>-broker-admin and <cr>-cache-auth, with a random 48-character
-// hex password, where the broker and the cache run in this cluster. An existing Secret, generated
-// or supplied, is never changed. Elsewhere a client's Secret must come through the set's secrets
-// list.
+// hex password, where the broker and the cache run in this cluster, and <cr>-analytics-api-key, a
+// random 48-character hex ANALYTICS_API_KEY, on every stack. An existing Secret, generated or
+// supplied, is never changed. Each one is then read back, so a Secret that won a create race is the
+// one checked: a missing, empty or unsupported value fails the reconcile, naming the Secret and key.
+// Elsewhere a broker or cache client's Secret must come through the set's secrets list.
 func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	c := oc.Spec.Components
 	for _, s := range []struct {
@@ -136,6 +158,11 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		{storeLocal(oc, c.Cache), cacheAuthSecretName(oc), func(p string) map[string][]byte {
 			return map[string][]byte{"password": []byte(p)}
 		}},
+		// The readers and analytics-processor are its only consumers, but it does not follow either:
+		// re-enabling the processor or ClickHouse finds the same key.
+		{true, analyticsKeySecretName(oc), func(k string) map[string][]byte {
+			return map[string][]byte{analyticsKeyEnvName: []byte(k)}
+		}},
 	} {
 		if !s.local {
 			continue
@@ -146,9 +173,19 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		}
 		if err := r.createSecretIfAbsent(ctx, oc, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: s.name, Namespace: oc.Namespace, Labels: labelsFor(oc, credentialsComponent)},
+			Type:       corev1.SecretTypeOpaque,
 			Data:       s.values(pass),
 		}); err != nil {
 			return fmt.Errorf("credential Secret %s/%s: %w", oc.Namespace, s.name, err)
+		}
+		stored := &corev1.Secret{}
+		if err := r.secretReader().Get(ctx, types.NamespacedName{Namespace: oc.Namespace, Name: s.name}, stored); err != nil {
+			return fmt.Errorf("read credential Secret %s/%s: %w", oc.Namespace, s.name, err)
+		}
+		for _, key := range credentialKeys(oc, s.name) {
+			if err := checkCredentialValue(stored, key); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -165,8 +202,8 @@ func (r *OramaCloudV1Reconciler) secretReader() client.Reader {
 
 // credentialsHash reads the named Secrets a workload takes credentials from and returns their
 // secretDataHash. A Secret that does not exist yet is left out, so the pod waits on its
-// secretKeyRef and the template rolls once it appears. An existing broker-admin or cache-auth Secret
-// must hold its keys, nonempty and in credentialCharset: a broken one fails the reconcile, naming
+// secretKeyRef and the template rolls once it appears. An existing broker-admin, cache-auth or
+// analytics key Secret must hold its keys, nonempty and in credentialCharset: a broken one fails the reconcile, naming
 // the Secret and key, and is left as it is.
 func (r *OramaCloudV1Reconciler) credentialsHash(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, names ...string) (string, error) {
 	var secrets []*corev1.Secret
@@ -188,9 +225,9 @@ func (r *OramaCloudV1Reconciler) credentialsHash(ctx context.Context, oc *oramav
 	return secretDataHash(secrets...), nil
 }
 
-// credentialCharset is what a broker or Redis credential may hold: RFC 3986 unreserved characters.
-// Clients receive it inside URLs and rabbitmq.conf/credentials.json, so anything else would need
-// escaping the clients do not do. Generated hex passwords always qualify.
+// credentialCharset is what a broker, Redis or analytics credential may hold: RFC 3986 unreserved
+// characters. Clients receive it inside URLs and rabbitmq.conf/credentials.json, so anything else
+// would need escaping the clients do not do. Generated hex values always qualify.
 const credentialCharset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
 
 func checkCredentialValue(sec *corev1.Secret, key string) error {
@@ -215,9 +252,10 @@ func masterAPIKeySecret(oc *oramav1alpha1.OramaCloudV1) (string, bool) {
 }
 
 // masterAPIKeyConsumers reports whether any enabled component reads MASTER_API_KEY.
+// analytics-processor does not: it holds the analytics key (#386).
 func masterAPIKeyConsumers(oc *oramav1alpha1.OramaCloudV1) bool {
 	c := oc.Spec.Components
-	return c.Engine.Enabled || c.AnalyticsProcessor.Enabled || c.Ingestion.Enabled || c.Workers.Enabled || c.Dashboard.Enabled
+	return c.Engine.Enabled || c.Ingestion.Enabled || c.Workers.Enabled || c.Dashboard.Enabled
 }
 
 // validateMasterAPIKey checks spec.masterAPIKeySecretRef. It returns nil when the reference is

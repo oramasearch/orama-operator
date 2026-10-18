@@ -154,8 +154,9 @@ The operator generates these and points components at in-cluster service DNS. Ov
 for a prod-grade deployment.
 
 - **Generated secrets:** the RSA **JWT keypair** (dashboard signs, engine verifies), the broker
-  admin password (`<cr>-broker-admin`) and the Redis password (`<cr>-cache-auth`), generated once
-  with random values and read by every client by reference
+  admin password (`<cr>-broker-admin`), the Redis password (`<cr>-cache-auth`) and the analytics key
+  the readers and analytics-processor share (`<cr>-analytics-api-key`), generated once with random
+  values and read by every client by reference
   ([components.md](components.md#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
   `DISCO_SECRET`, `HARVEST_SIGN` (job signing, shared master↔worker↔index-builder),
   `DECRYPTER_API_SECRET_BASE64` and the ClickHouse/Typesense passwords are still seeded `dev-*`
@@ -182,14 +183,14 @@ Per component: its external deps and the tier. `[CF]` operator-provisions on Clo
 
 | Component | Dependencies |
 |---|---|
-| **engine** (OramaCore) | `[EXT]` OpenAI, Groq, Anthropic, HuggingFace, MASTER_API_KEY · `[GEN]` JWT-pub, broker admin |
+| **engine** (OramaCore) | `[EXT]` OpenAI, Groq, Anthropic, HuggingFace, MASTER_API_KEY · `[GEN]` JWT-pub, broker admin, analytics key (readers) |
 | **workers** (RAG bundle) | `[EXT]` OpenAI, Groq, Anthropic, Sentry(opt), MASTER_API_KEY · `[GEN]` ClickHouse, DISCO_SECRET, QStash→broker |
 | **dashboard** | `[EXT]` Firebase, Stripe, Resend, Slack · `[GEN]` Postgres/ClickHouse/Redis, JWT |
 | **oramasearch-app** | `[EXT]` Firebase · `[GEN]` DB/JWT |
 | **index-builder** | `[CF]` KV namespaces, CF token/account · `[EXT]` Apify, Ably, MASTER_API_KEY · `[GEN]` Typesense, embeddings-bearer, decrypter, HARVEST_MASTER_ENDPOINT+SIGN, DISCO_SECRET_KEY, Redis |
 | **harvest** (master+worker) | `[EXT]` AWS S3, Ably · `[GEN]` HARVEST_SIGN, Mongo(in-cluster), RabbitMQ |
 | **disco** | `[GEN]` DISCO_SECRET, ClickHouse |
-| **analytics-processor** | `[EXT]` MASTER_API_KEY · `[GEN]` ClickHouse |
+| **analytics-processor** | `[GEN]` analytics key (`<cr>-analytics-api-key`), ClickHouse |
 | **search** (Typesense) | `[GEN]` Typesense key |
 | **search-workers** (index-shared, large-index, openai-decrypter, telemetry) | `[EXT]` OpenAI (decrypter) · `[GEN]` decrypter secret, ClickHouse (telemetry) |
 

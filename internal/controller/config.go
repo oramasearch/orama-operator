@@ -336,9 +336,7 @@ func (r *OramaCloudV1Reconciler) ensureComponentSecret(ctx context.Context, oc *
 
 // envFromFor feeds the shared ConfigMap and (if present) the component's own secret.
 func envFromFor(oc *oramav1alpha1.OramaCloudV1, component string) []corev1.EnvFromSource {
-	src := []corev1.EnvFromSource{
-		{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: configMapName(oc)}}},
-	}
+	src := []corev1.EnvFromSource{sharedConfigEnvFrom(oc)}
 	if componentSecretData(component) != nil {
 		src = append(src, corev1.EnvFromSource{
 			SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: componentSecretName(oc, component)}},
@@ -352,6 +350,11 @@ func envFromFor(oc *oramav1alpha1.OramaCloudV1, component string) []corev1.EnvFr
 		src = append(src, secretEnvFrom(oc.Name+"-jwt"))
 	}
 	return src
+}
+
+// sharedConfigEnvFrom is the shared, non-secret <cr>-config ConfigMap as an env source.
+func sharedConfigEnvFrom(oc *oramav1alpha1.OramaCloudV1) corev1.EnvFromSource {
+	return corev1.EnvFromSource{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: configMapName(oc)}}}
 }
 
 func secretEnvFrom(name string) corev1.EnvFromSource {
