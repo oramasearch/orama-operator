@@ -67,7 +67,7 @@ region's absent writer, and central stores skipped in a read region contribute n
 ControlDB is always in-cluster (decision 61) and follows its enabled policy. HARVEST Mongo keeps the
 shared helper's `10Gi`/default-class output and has no new storage setting.
 
-Writer and store `storage.size` default to `10Gi`, and `reader.storage.size` to `512Gi`
+Writer, reader and store `storage.size` default to `10Gi`
 ([engine](#engine-internalcontrollerenginego)); every reader's claim `data-<cr>-reader-<n>` grows
 like the writer's; `storage.storageClassName` is optional. Omitted
 storage, `{}`, or a missing size resolves to that default even before API admission. Explicit sizes
@@ -415,18 +415,20 @@ Driven by `spec.region.role`:
   never served through the reader Service ([#314](https://github.com/oramasearch/orama-operator/issues/314)).
   Service `<cr>-reader` on `:80` (→ Envoy, or → `:8080` if Envoy is off)
   ([#382](https://github.com/oramasearch/orama-operator/issues/382)):
-  - **One disk per reader.** A `data` claim template (`ReadWriteOnce`, 512Gi) mounted at
+  - **One disk per reader.** A `data` claim template (`ReadWriteOnce`, 10Gi by default) mounted at
     `/app/.data`, so reader `n` has its own claim `data-<cr>-reader-<n>`, never the writer's. The
     reader keeps its index and its last applied stream offset (`/app/.data/reader/read.info`)
     there, so a replaced pod resumes from that offset instead of replaying the stream from 0. It
     still needs the operations after its offset to be in the stream (5 GB, see broker-topology);
     a reader on a new, empty claim builds from the stream and is partial once the stream has
     passed 5 GB (seeding is [#458](https://github.com/oramasearch/orama-operator/issues/458)).
-  - **Size.** 512Gi, from orama-bridge's decision 3 of 2026-10-17. Its source is techops-docs
+  - **Size.** 10Gi by default, as for every other volume, so non-production stacks stay small.
+    Production sets `reader.storage.size: 512Gi` in `config/clusters/sets/v1-prod.yaml`, from
+    orama-bridge's decision 3 of 2026-10-17. Its source is techops-docs
     `incident-2026-10-12-reader-stalls.md`, "Host storage": each Prod 1 reader has a 1,000 GB
     (931 GiB) gp3 root volume, with EU 777, US 659 and Asia 740 GiB free on 2026-10-12, so about
     154, 272 and 191 GiB used, OS included. 512Gi is about twice the US figure, rounded up, and an
-    upper bound since the used figures include the OS. It is the default of `reader.storage.size`.
+    upper bound since the used figures include the OS.
     The template keeps the size it was created with; a larger `reader.storage.size` grows every
     reader's existing claim ([Component storage](#component-storage)), and a smaller one is a
     refused shrink.

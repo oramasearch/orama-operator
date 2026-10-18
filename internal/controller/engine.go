@@ -845,13 +845,12 @@ func configVolume(oc *oramav1alpha1.OramaCloudV1) corev1.Volume {
 }
 
 // readerDataSize is each reader's data claim (the reader's index and read.info under /app/.data)
-// when reader.storage.size is unset, set by orama-bridge's decision 3 of 2026-10-17. Its source is techops-docs
-// incident-2026-10-12-reader-stalls.md, "Host storage": each Prod 1 reader has a 1,000 GB
-// (931 GiB) gp3 root volume with EU 777, US 659 and Asia 740 GiB free on 2026-10-12, so about 154,
-// 272 and 191 GiB used, OS included. 512Gi is about twice the US figure, rounded up. A
-// StatefulSet's claim template keeps the size it was created with; a larger reader.storage.size
-// grows each reader's existing claim (reconcileStorage).
-const readerDataSize = "512Gi"
+// when reader.storage.size is unset: 10Gi, the same small default as every other volume (Steve,
+// 2026-10-17: "default MUCH lower for all envs and we can boost it for prod"). Production sets its
+// size in config/clusters/sets/v1-prod.yaml from Prod 1's measured use. A StatefulSet's claim
+// template keeps the size it was created with; a larger reader.storage.size grows each reader's
+// existing claim (reconcileStorage).
+const readerDataSize = "10Gi"
 
 func (r *OramaCloudV1Reconciler) upsertService(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component string, ports []corev1.ServicePort) error {
 	lbls := labelsFor(oc, component)

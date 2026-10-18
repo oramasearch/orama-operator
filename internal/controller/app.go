@@ -110,11 +110,13 @@ type appDef struct {
 	// envFrom value only takes effect at process start uses a hash of it to roll on change.
 	podAnnotations map[string]string
 	// extraEnvFrom is appended after the operator's envFrom sources (envFromFor), so its keys win
-	// over them. The dashboard's user env (#311).
+	// over them; envHash, when set, is the pod-template annotation dashboardEnvHashAnnotation that
+	// rolls the pods when a referenced Secret/ConfigMap changes. The dashboard's user env (#311).
 	extraEnvFrom []corev1.EnvFromSource
 	// envFrom replaces the main container's envFromFor default (the shared ConfigMap and the
 	// component Secret) when set, for an app that must not load its component Secret whole.
 	envFrom []corev1.EnvFromSource
+	envHash string
 }
 
 // reconcileApp provisions a Deployment + Service (+ Ingress for ingressHost and ingressExtraHosts
@@ -159,6 +161,13 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			annotations = map[string]string{}
 		}
 		annotations[k] = v
+	}
+	// No env-hash annotation without a hash, so an app with no referenced env keeps its template.
+	if def.envHash != "" {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[dashboardEnvHashAnnotation] = def.envHash
 	}
 
 	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}}
@@ -399,28 +408,23 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	img := componentImage(oc, "dashboard", "dashboard")
 	// The dashboard never migrates the control DB: the operator's PostgresSchema owns the
 	// schema (operator#40). A second Drizzle migrate collides with those objects (Postgres 42710).
-	// The dashboard reads JWT_ISSUER from the shared ConfigMap only at start: roll it when the
-	// effective issuer changes, so it signs with the issuer the writer verifies.
-	podAnnotations := map[string]string{jwtIssuerHashKey: jwtIssuerHash(oc)}
-	// No env-hash annotation without a hash, so a dashboard with no referenced env keeps its
-	// template; with one, a changed Secret/ConfigMap rolls the pods (#311).
-	if envHash != "" {
-		podAnnotations[dashboardEnvHashAnnotation] = envHash
-	}
 	if err := r.reconcileApp(ctx, oc, appDef{
 		component:         "dashboard",
 		image:             img,
 		port:              3000,
 		ingressHost:       d.Host,
 		ingressExtraHosts: d.ExtraHosts,
-		// The master key (#307), the CNPG-generated credentials for the dashboard's
-		// control-DB client, then the user's dashboard.env (#311).
+		// The master key (#307), the CNPG-generated credentials for the dashboard's control-DB client,
+		// then the user's dashboard.env (#311).
 		env:               overrideEnv([]corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}, d.Env),
 		credentialSecrets: []string{masterKey},
 		extraEnvFrom:      d.EnvFrom,
+		envHash:           envHash,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
-		resources:      resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
-		podAnnotations: podAnnotations,
+		resources: resourcesOr(d.Resources, resourceReqs("256Mi", "100m", "1Gi")),
+		// The dashboard reads JWT_ISSUER from the shared ConfigMap only at start: roll it when the
+		// effective issuer changes, so it signs with the issuer the writer verifies.
+		podAnnotations: map[string]string{jwtIssuerHashKey: jwtIssuerHash(oc)},
 	}); err != nil {
 		return err
 	}

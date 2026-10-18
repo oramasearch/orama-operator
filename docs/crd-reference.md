@@ -176,7 +176,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
 
 `engine.reader.replicas` is the fixed number of readers (0 or unset → 3), each with its own data
-volume (`512Gi` unless `engine.reader.storage` says otherwise, [below](#component-storage)); `engine.reader.hpa` is accepted but ignored: no autoscaler is
+volume (`10Gi` unless `engine.reader.storage` says otherwise, [below](#component-storage)); `engine.reader.hpa` is accepted but ignored: no autoscaler is
 created. `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
 
@@ -540,14 +540,14 @@ The shared `VolumeSpec` is available at `spec.components.engine.writer.storage`,
 
 | Field | Type | Default | Behavior |
 |---|---|---|---|
-| `storage.size` | positive Kubernetes quantity | `10Gi`; `512Gi` for `reader` | Omitted storage, `{}`, and omitted size all resolve to the default, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
+| `storage.size` | positive Kubernetes quantity | `10Gi` | Omitted storage, `{}`, and omitted size all resolve to the default, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
 | `storage.storageClassName` | nonempty string, optional | cluster default on creation | Selects the new PVC's class, or CNPG's `spec.storage.storageClass`. Omission on existing resources retains their class, including a class populated by default admission. A later cluster-default change does not move existing storage. |
 
 For example, `engine.writer.storage: {size: 50Gi, storageClassName: managed-csi}` and
 `cache.storage: {size: 20Gi}` set independent sizes. These are examples, not production sizing.
 For an `OramaCloudV1Set`, put the component settings under `spec.template.components`.
-`reader.storage` applies to every reader's claim, `data-<cr>-reader-<n>`; its `512Gi` default is
-explained in [components.md](components.md#engine-internalcontrollerenginego). HARVEST Mongo retains its existing
+`reader.storage` applies to every reader's claim, `data-<cr>-reader-<n>`; it defaults to `10Gi`, and production's
+size is explained in [components.md](components.md#engine-internalcontrollerenginego). HARVEST Mongo retains its existing
 `10Gi`/default-class behavior and gains no storage API.
 
 New StatefulSets receive a `data` claim template at the resolved size/class. Existing templates
