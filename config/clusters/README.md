@@ -53,10 +53,16 @@ Secret (`components.dashboard.crons.e2eCanary.secretRef`) arrives the same way. 
 changing a source Secret is a write on the managing cluster and needs Steve's consent.
 
 The dashboard crons and the e2e canary are created suspended. Their `suspend` fields change only in
-a set file, committed and applied to the managing cluster; production unsuspends them in the cutover
-step that stops Prod 1's crons (see
+a set file, committed and applied to the managing cluster; production unsuspends them at cutover
+step 5, after Prod 1's crons are off and `app.orama.com` points at Prod 2 (see
 [the dashboard's scheduled jobs](../../docs/components.md#the-dashboards-scheduled-jobs)). Never
 edit, patch or create the CronJobs themselves.
+
+An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
+reference rows the operator seeds into its control database
+([`docs/components.md`](../../docs/components.md#the-control-dbs-schema)). `v1-nonprod` leaves it
+empty: no test-mode prices exist yet, so its plans carry no Stripe prices and it has no add-on
+prices. `v1-prod` needs its live-mode IDs before billing works on it.
 
 To check that the files match the cluster:
 

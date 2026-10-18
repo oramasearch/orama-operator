@@ -138,6 +138,16 @@ spec:
                       - system
                       - user
                       type: string
+                    sysctls:
+                      additionalProperties:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        x-kubernetes-int-or-string: true
+                      description: |-
+                        Sysctls configures Linux kernel settings on every node of this pool, using names such as
+                        vm.max_map_count. Omitted settings use provider defaults and are not checked for drift.
+                      type: object
                     taints:
                       description: Taints are added to every node of the pool.
                       items:
