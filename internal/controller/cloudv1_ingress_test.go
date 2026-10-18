@@ -7,6 +7,8 @@ package controller
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,14 +16,17 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -406,6 +411,9 @@ func TestValidateIngressHosts(t *testing.T) {
 		want string
 	}{
 		"no hosts": {func(*oramav1alpha1.ComponentsSpec) {}, ""},
+		"an extra host that is not a lowercase DNS name": {func(c *oramav1alpha1.ComponentsSpec) {
+			c.Dashboard = oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"App.Orama.com"}}
+		}, `spec.components.dashboard.extraHosts[0] "App.Orama.com" must be a lowercase DNS name with at least one dot`},
 		"distinct hosts and extras": {func(c *oramav1alpha1.ComponentsSpec) {
 			c.Dashboard = oramav1alpha1.ToggleWithHost{Host: "app.orama.ing", ExtraHosts: []string{"app.orama.com"}}
 			c.Docs = oramav1alpha1.ToggleWithHost{Host: "docs.orama.ing", ExtraHosts: []string{"docs.orama.com"}}
@@ -585,5 +593,65 @@ func TestReconcileInvalidHostsKeepChildrenThenRecover(t *testing.T) {
 	ready := meta.FindStatusCondition(h.stored().Status.Conditions, "Ready")
 	if ready == nil || ready.Reason == "InvalidIngressHosts" {
 		t.Errorf("Ready = %+v, want the refusal replaced", ready)
+	}
+}
+
+// The CRD refuses an extraHosts entry that is not a lowercase DNS name, for every component that
+// has the field, so a name such as App.Orama.com never reaches the reconcile.
+func TestExtraHostsAdmission(t *testing.T) {
+	assets := os.Getenv("KUBEBUILDER_ASSETS")
+	if assets == "" {
+		t.Skip("KUBEBUILDER_ASSETS is required for the extraHosts admission envtest")
+	}
+	server := &envtest.Environment{
+		BinaryAssetsDirectory: assets,
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases", "orama.cloud_oramacloudv1s.yaml")},
+		ErrorIfCRDPathMissing: true,
+	}
+	config, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Stop() })
+	kube, err := client.New(config, client.Options{Scheme: ocv1TestScheme(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const namespace = "extrahosts-admission"
+	if err := kube.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
+		t.Fatal(err)
+	}
+	components := map[string][]string{
+		"dashboard":     {"dashboard"},
+		"docs":          {"docs"},
+		"engine.writer": {"engine", "writer"},
+		"engine.reader": {"engine", "reader"},
+	}
+	for name, path := range components {
+		for extra, reject := range map[string]bool{"app.orama.com": false, "App.Orama.com": true, "localhost": true, "app.orama.com:443": true} {
+			t.Run(name+"/"+extra, func(t *testing.T) {
+				leaf := map[string]interface{}{"host": "primary.orama.ing", "extraHosts": []interface{}{extra}}
+				var node interface{} = leaf
+				for i := len(path) - 1; i >= 0; i-- {
+					node = map[string]interface{}{path[i]: node}
+				}
+				fixture := &unstructured.Unstructured{Object: map[string]interface{}{
+					"apiVersion": "orama.cloud/v1alpha1", "kind": "OramaCloudV1",
+					"metadata": map[string]interface{}{"name": "proof-extra-hosts", "namespace": namespace},
+					"spec": map[string]interface{}{
+						"region":     map[string]interface{}{"name": "proof", "role": "primary"},
+						"components": node,
+					},
+				}}
+				err := kube.Create(ctx, fixture, client.DryRunAll)
+				switch {
+				case reject && (!apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "extraHosts[0]")):
+					t.Fatalf("%q accepted or refused for another reason: %v", extra, err)
+				case !reject && err != nil:
+					t.Fatalf("%q refused: %v", extra, err)
+				}
+			})
+		}
 	}
 }

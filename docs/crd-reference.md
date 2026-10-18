@@ -219,7 +219,9 @@ to `<cr>-writer`:8080 and the readers' to `<cr>-reader`:80.
   `writer.jwt.audiences`; a caller using a writer alias still needs a token with an accepted audience.
 - **`oramasearchApp`** shares the type, so it accepts the field and its names take part in the
   checks below, but the component stays unwired: no Ingress is created for it.
-- **Checks.** Each entry is 1 to 253 characters (`listType: set`). Before writing any child
+- **Checks.** Each entry is 1 to 253 characters and a lowercase DNS name with at least one dot,
+  the same pattern as `engine.writer.host` (`listType: set`); the CRD refuses anything else, so
+  `App.Orama.com` or `app.orama.com:443` never reaches the reconcile, which checks the pattern again. Before writing any child
   resource the reconcile refuses, with phase `Degraded` and `Ready=False` reason
   `InvalidIngressHosts`: `extraHosts` without `host`; an empty or over-long entry; and any name,
   compared case-insensitively, that appears twice across the `host` and `extraHosts` of all five

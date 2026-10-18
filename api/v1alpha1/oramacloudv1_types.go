@@ -302,6 +302,7 @@ type WriterSpec struct {
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	ExtraHosts []string `json:"extraHosts,omitempty"`
 }
@@ -346,6 +347,7 @@ type ReaderSpec struct {
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	ExtraHosts []string `json:"extraHosts,omitempty"`
 }
@@ -496,6 +498,7 @@ type ToggleWithHost struct {
 	// +listType=set
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	ExtraHosts []string `json:"extraHosts,omitempty"`
 	// Resources overrides the component's pod resources. When unset the operator applies a

@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -270,6 +271,10 @@ func (r *OramaCloudV1Reconciler) upsertIngress(ctx context.Context, oc *oramav1a
 // over-long extra host, and any name (case-insensitive) repeated across the host and extraHosts of
 // dashboard, docs, oramasearchApp, engine.writer and engine.reader, enabled or not. Reconcile calls
 // it before writing any child resource. The error names both conflicting field paths.
+// dnsHostName is the CRD's pattern for host and each extraHosts entry: a lowercase DNS name with at
+// least one dot.
+var dnsHostName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`)
+
 func validateIngressHosts(oc *oramav1alpha1.OramaCloudV1) error {
 	c := oc.Spec.Components
 	claimed := map[string]string{}
@@ -302,6 +307,11 @@ func validateIngressHosts(oc *oramav1alpha1.OramaCloudV1) error {
 			key := strings.ToLower(name)
 			if first, ok := claimed[key]; ok {
 				return fmt.Errorf("%s and %s are both %q", first, path, name)
+			}
+			// The CRD refuses this too; checked here for objects that bypassed admission, before any
+			// Ingress or certificate is written for the name.
+			if i > 0 && !dnsHostName.MatchString(name) {
+				return fmt.Errorf("%s %q must be a lowercase DNS name with at least one dot", path, name)
 			}
 			claimed[key] = path
 		}
