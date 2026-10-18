@@ -56,6 +56,13 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	l.Info("reconciling OramaCloudV1", "region", oc.Spec.Region.Name, "role", oc.Spec.Region.Role, "profile", oc.Spec.Profile)
 	// Invalid input changes nothing: check it before the first child resource is written.
+	if err := validateIngressHosts(&oc); err != nil {
+		// Only a spec change can fix it, and that triggers a reconcile: report it, don't requeue.
+		r.setStatus(ctx, &oc, "Degraded", oc.Status.ComponentsReady, oc.Status.Components, nil, metav1.Condition{
+			Type: "Ready", Status: metav1.ConditionFalse, Reason: "InvalidIngressHosts", Message: err.Error(),
+		})
+		return ctrl.Result{}, nil
+	}
 	if err := validateEngineImages(&oc); err != nil {
 		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "engine", err)
 	}

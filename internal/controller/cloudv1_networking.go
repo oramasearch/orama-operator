@@ -54,17 +54,20 @@ func readerPodPort(oc *oramav1alpha1.OramaCloudV1) int32 {
 	return oramacorePort
 }
 
-// reconcileEngineIngresses keeps the writer and reader Ingresses for their public hosts and deletes
+// reconcileEngineIngresses keeps the writer and reader Ingresses for their public hosts (plus each
+// endpoint's extraHosts, which get no DNS record) and deletes
 // an Ingress this CR controls once its endpoint is no longer published. reconcileEngine calls it on
 // both its enabled and disabled paths. An object at either name that this CR does not control is
 // never adopted, changed or deleted; publishing over it fails with a conflict.
 func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	engine := oc.Spec.Components.Engine
 	for _, endpoint := range []struct {
 		component, host string
+		extraHosts      []string
 		port            int32
 	}{
-		{"writer", writerPublicHost(oc), oramacorePort},
-		{"reader", readerPublicHost(oc), envoyPort},
+		{"writer", writerPublicHost(oc), engine.Writer.ExtraHosts, oramacorePort},
+		{"reader", readerPublicHost(oc), engine.Reader.ExtraHosts, envoyPort},
 	} {
 		ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-" + endpoint.component, Namespace: oc.Namespace}}
 		if endpoint.host == "" {
@@ -76,7 +79,7 @@ func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, o
 		if _, err := r.refuseForeignPublicEndpoint(ctx, oc, ing); err != nil {
 			return err
 		}
-		if err := r.upsertIngress(ctx, oc, ing.Name, endpoint.component, endpoint.host, endpoint.port); err != nil {
+		if err := r.upsertIngress(ctx, oc, ing.Name, endpoint.component, endpoint.host, endpoint.extraHosts, endpoint.port); err != nil {
 			return fmt.Errorf("%s ingress: %w", endpoint.component, err)
 		}
 	}
