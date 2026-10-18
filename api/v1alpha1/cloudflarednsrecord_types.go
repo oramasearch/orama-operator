@@ -11,6 +11,7 @@ import (
 
 // CloudflareDNSRecordSpec is the desired state of a Cloudflare DNS record. The zone + API
 // token come from the referenced Secret (keys `token` + `zoneID`), so no credential is in spec.
+// +kubebuilder:validation:XValidation:rule="!has(self.sharedOwner) || size(self.sharedOwner) == 0 || (has(self.deletionPolicy) && self.deletionPolicy == 'Retain')",message="sharedOwner requires deletionPolicy Retain"
 type CloudflareDNSRecordSpec struct {
 	// SecretRef names the Secret holding the Cloudflare credentials (`token`, `zoneID`,
 	// `accountID`) — normally the CR's `spec.cloudflare.apiTokenSecretRef`.
@@ -34,13 +35,24 @@ type CloudflareDNSRecordSpec struct {
 	// +kubebuilder:validation:Enum=Delete;Retain
 	// +optional
 	DeletionPolicy string `json:"deletionPolicy,omitempty"`
+	// SharedOwner names the one owner of a record several resources keep, such as `clerk/<instance
+	// ID>` for a Clerk production instance's records. The record is created with the comment
+	// `orama-operator:<sharedOwner>` instead of `orama-operator:<namespace>/<name>`, so every
+	// resource with the same sharedOwner recognises it as the operator's own; a record without that
+	// comment is still refused. It requires deletionPolicy Retain: no single resource deletes it.
+	// +optional
+	SharedOwner string `json:"sharedOwner,omitempty"`
 }
 
 // CloudflareDNSRecordStatus is the observed state — the provisioned Cloudflare record.
 type CloudflareDNSRecordStatus struct {
-	// RecordID is the Cloudflare-assigned DNS record ID (set once created).
+	// RecordID is the Cloudflare ID created by this resource or tracked before comments.
 	// +optional
 	RecordID string `json:"recordID,omitempty"`
+	// OwnerComment is the exact ownership comment written on creation. Empty with a
+	// RecordID identifies a legacy record; reconciliation never adds a comment to it.
+	// +optional
+	OwnerComment string `json:"ownerComment,omitempty"`
 	// Ready is true once the record is reconciled in Cloudflare.
 	// +optional
 	Ready bool `json:"ready,omitempty"`
@@ -56,8 +68,8 @@ type CloudflareDNSRecordStatus struct {
 //+kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
 
 // CloudflareDNSRecord is a Cloudflare DNS record the operator provisions via the CF API,
-// owned by an OramaCloudV1 CR. A finalizer deletes the record from Cloudflare on delete, so
-// tearing down the CR cascades to real external cleanup.
+// optionally owned by a parent CR. It never adopts foreign records. Its finalizer deletes
+// only records still carrying its ownership comment, or pre-comment legacy status IDs.
 type CloudflareDNSRecord struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

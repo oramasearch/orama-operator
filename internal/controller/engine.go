@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -317,7 +318,7 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 		sts.Spec.Replicas = int32Ptr(1)
 		sts.Spec.ServiceName = name
 		sts.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
-		c := oramacoreContainer(oc)
+		c := oramacoreContainer(oc, writerStartupTimeout)
 		if w.Resources != nil {
 			c.Resources = *w.Resources
 		} else {
@@ -343,7 +344,10 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 				TerminationGracePeriodSeconds: int64Ptr(writerGracePeriodSeconds),
 			},
 		}
-		sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC()}
+		// Only initialize templates before creation: the API makes them immutable.
+		if sts.ResourceVersion == "" {
+			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(w.Storage)}
+		}
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err
@@ -373,7 +377,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		dep.Labels = lbls
 		dep.Spec.Replicas = int32Ptr(replicas)
 		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
-		c := oramacoreContainer(oc)
+		c := oramacoreContainer(oc, readerStartupTimeout)
 		// A reader is Ready only once it has caught up with the stream head it saw at startup
 		// (oramacore#340). A reader whose replication history has expired exits with
 		// REPLICATION_HISTORY_EXPIRED and never goes Ready; liveness and startup stay on /health so
@@ -428,16 +432,33 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 
 // ---- shared builders ----
 
-func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
+const (
+	// Prod 1's startup allowances, per Steve's review of #406: writer 20 min, readers 40 min.
+	writerStartupTimeout             = 20 * time.Minute
+	readerStartupTimeout             = 40 * time.Minute
+	engineStartupPeriodSeconds int32 = 10
+)
+
+// engineStartupProbe gates readiness/liveness until startup succeeds or exhausts its budget.
+// The budget must be a whole number of periods; the startup tests check the resulting window.
+func engineStartupProbe(timeout time.Duration) *corev1.Probe {
+	threshold := timeout / (time.Duration(engineStartupPeriodSeconds) * time.Second)
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+			Path: "/health", Port: intstr.FromInt32(oramacorePort),
+		}},
+		PeriodSeconds:    engineStartupPeriodSeconds,
+		FailureThreshold: int32(threshold),
+	}
+}
+
+func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1, startupTimeout time.Duration) corev1.Container {
 	// OramaCore serves GET /health at root (oramacore/src/web_server/api/mod.rs;
 	// also the prod ALB/Envoy health path).
 	health := func() *corev1.Probe {
 		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 			Path: "/health", Port: intstr.FromInt32(oramacorePort)}}}
 	}
-	// startup gates liveness/readiness so a slow index-load boot isn't killed.
-	startup := health()
-	startup.PeriodSeconds, startup.FailureThreshold = 10, 30 // ~5 min to become live
 	readiness := health()
 	readiness.PeriodSeconds, readiness.TimeoutSeconds, readiness.FailureThreshold = 10, 3, 3
 	liveness := health()
@@ -454,7 +475,7 @@ func oramacoreContainer(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 			{Name: "CONFIG_PATH", Value: "/etc/oramacore/config.yaml"},
 		},
 		EnvFrom:         envFromFor(oc, "engine"),
-		StartupProbe:    startup,
+		StartupProbe:    engineStartupProbe(startupTimeout),
 		ReadinessProbe:  readiness,
 		LivenessProbe:   liveness,
 		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
@@ -499,18 +520,6 @@ func configVolume(oc *oramav1alpha1.OramaCloudV1) corev1.Volume {
 
 func dataEmptyDir() corev1.Volume {
 	return corev1.Volume{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
-}
-
-func dataPVC() corev1.PersistentVolumeClaim {
-	return corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "data"},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
-			},
-		},
-	}
 }
 
 func (r *OramaCloudV1Reconciler) upsertService(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, name, component string, ports []corev1.ServicePort) error {
