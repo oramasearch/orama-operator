@@ -25,6 +25,8 @@ spec:
     namespace: orama-system
   - name: v1-nonprod-master-api-key
     namespace: orama-system
+  - name: v1-nonprod-dashboard-env
+    namespace: orama-system
   template:
     cloudflare:
       apiTokenSecretRef:
@@ -53,6 +55,11 @@ spec:
         placement: local
       dashboard:
         enabled: true
+        # Orama's platform keys for the dashboard (Stripe test mode, Resend, Slack, PRIVATE_API_KEY,
+        # CRON_SECRET), from one Secret on the managing cluster that the set copies.
+        envFrom:
+        - secretRef:
+            name: v1-nonprod-dashboard-env
       disco:
         enabled: true
       docs:

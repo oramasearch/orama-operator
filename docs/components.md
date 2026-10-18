@@ -542,13 +542,13 @@ ConfigMaps in the instance's namespace. The full field reference is in
   the set's `dashboard.env`. Never list the generated Secrets (`<cr>-jwt`, the database, broker and
   cache credentials) in the set's `secrets`.
 
-For `v1-nonprod` the delivery looks like this (merged into the existing set file, keeping its other
-entries, once Steve has approved the source Secret; `spec.template` is the instance spec itself):
+`config/clusters/sets/v1-nonprod.yaml` carries the delivery (`spec.template` is the instance spec
+itself). The source Secret `orama-system/v1-nonprod-dashboard-env` must exist on the managing cluster,
+created with Steve's consent, before the file is applied:
 
 ```yaml
 spec:
   secrets:
-    # Keep the existing registry and Cloudflare entries too.
     - name: v1-nonprod-dashboard-env
       namespace: orama-system
   template:
