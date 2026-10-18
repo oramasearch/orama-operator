@@ -236,6 +236,15 @@ type controlDBSchema struct {
 	everyVersion            bool
 }
 
+// controlDBSchemaSuffixes names every control DB PostgresSchema, in apply order. controlDBSchemas
+// declares exactly these, and the network sandbox admits each one's migration Job to the control DB
+// (operator#625), so a schema added here is reachable from its first run.
+var controlDBSchemaSuffixes = []string{
+	"-controldb-schema",
+	"-controldb-schema-0008",
+	"-controldb-reference-data",
+}
+
 // controlDBSchemas lists the control DB's schemas in apply order. Each is created only after every
 // one before it reports its current version Applied, because each builds on the tables of the last.
 func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error) {
@@ -250,14 +259,14 @@ func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error)
 	return []controlDBSchema{
 		// crawler_configs is created by migration 0000; with --single-transaction it exists iff the
 		// whole file applied.
-		{suffix: "-controldb-schema", key: "schema.sql", sql: dashboardSchemaSQL, guard: "crawler_configs"},
+		{suffix: controlDBSchemaSuffixes[0], key: "schema.sql", sql: dashboardSchemaSQL, guard: "crawler_configs"},
 		// team_migrations is created by 0008, in the same transaction as the rest of 0008 and the
 		// reference rows seeded inside it.
-		{suffix: "-controldb-schema-0008", key: "schema-0008.sql", sql: schema0008, guard: "team_migrations"},
+		{suffix: controlDBSchemaSuffixes[1], key: "schema-0008.sql", sql: schema0008, guard: "team_migrations"},
 		// The same upsert with this stack's Stripe prices, applied again whenever the committed rows
 		// or the prices change. Its guard is ignored (everyVersion); it names the table the upsert
 		// needs, and is set so the API default never differs from what the operator writes.
-		{suffix: "-controldb-reference-data", key: "reference-data.sql", guard: "subscription_plans", everyVersion: true,
+		{suffix: controlDBSchemaSuffixes[2], key: "reference-data.sql", guard: "subscription_plans", everyVersion: true,
 			sql: reference},
 	}, nil
 }
