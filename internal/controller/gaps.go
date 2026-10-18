@@ -89,11 +89,31 @@ func analyticsSources(oc *oramav1alpha1.OramaCloudV1) []analyticsSource {
 }
 
 // The analytics import's fixed schedule and its helper image. There is no per-stack schedule.
+// spec.images.overrides["analytics-import"] replaces the image, so a set can pin it by digest; the
+// default is a full reference, not resolved against the stack's registry and tag.
 const (
-	analyticsImportSchedule = "*/5 * * * *"
-	analyticsImportTimeZone = "Etc/UTC"
-	analyticsImportImage    = "curlimages/curl:8.10.1"
+	analyticsImportSchedule  = "*/5 * * * *"
+	analyticsImportTimeZone  = "Etc/UTC"
+	analyticsImportComponent = "analytics-import"
+	analyticsImportImage     = "curlimages/curl:8.10.1"
 )
+
+// analyticsImportScript is what each import Job runs: POST /import, then POST /aggregate2, the
+// processor route that runs the same aggregation as Prod 1's aggregator binary
+// (analytics-processor.aggregator.timer, every five minutes beside the importer). The aggregation
+// fills oramacore_analytics_search_aggregated, which the dashboard's top terms, no-results and totals
+// read. It runs even when the import fails, as Prod 1's two independent timers do, so readers an
+// earlier failed run did import are still aggregated; the Job fails when either call fails. Each
+// call has its own request deadline, together inside the Job's 300 s, and neither retries.
+func analyticsImportScript(oc *oramav1alpha1.OramaCloudV1) string {
+	const curl = "curl --fail --silent --show-error --connect-timeout 10 --request POST --write-out '\\n'"
+	base := fmt.Sprintf("http://%s-analytics-processor:8080", oc.Name)
+	return fmt.Sprintf(`rc=0
+%[1]s --max-time 180 %[2]s/import || rc=1
+%[1]s --max-time 110 %[2]s/aggregate2 || rc=1
+exit $rc
+`, curl, base)
+}
 
 // analyticsImportName is the import CronJob, <cr>-analytics-import.
 func analyticsImportName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-analytics-import" }
@@ -254,20 +274,21 @@ func (r *OramaCloudV1Reconciler) removeUnlabeledProcessorConfig(ctx context.Cont
 	return nil
 }
 
-// reconcileAnalyticsImport owns <cr>-analytics-import, the CronJob that sends POST /import to the
-// processor every five minutes (UTC). Each import drains the readers' logs, so nothing may overlap
-// or repeat one: Forbid keeps scheduled Jobs from running together, and there are no Job retries
-// (backoffLimit 0) and no request retries (curl without --retry). A failed run stays visible in the
-// Job's status and the processor's logs; the next scheduled run is the next attempt. The processor
-// visits its sources in order and stops at the first error, so a failed run may have drained only
-// some readers. The pod has no credentials: the processor's /import takes none, and no
-// service-account token is mounted. import.suspend is copied to spec.suspend, which stops new Jobs
+// reconcileAnalyticsImport owns <cr>-analytics-import, the CronJob that sends POST /import and then
+// POST /aggregate2 to the processor every five minutes (UTC) (analyticsImportScript). Each import
+// drains the readers' logs, so nothing may overlap or repeat one: Forbid keeps scheduled Jobs from
+// running together, and there are no Job retries (backoffLimit 0) and no request retries (curl
+// without --retry). A failed run stays visible in the Job's status and the processor's logs; the
+// next scheduled run is the next attempt. The processor visits its sources in order and stops at the
+// first error, so a failed run may have drained only some readers, and a reader that is not Ready
+// (the headless Service publishes no address for it) blocks every reader after it until it is. The
+// pod has no credentials: neither route takes any, and no service-account token is mounted. import.suspend is copied to spec.suspend, which stops new Jobs
 // but not one already running. Only the fields set here are managed, so a steady reconcile, with
 // the API's defaults in place, makes no write.
 func (r *OramaCloudV1Reconciler) reconcileAnalyticsImport(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	cron := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Name: analyticsImportName(oc), Namespace: oc.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cron, func() error {
-		lbls := labelsFor(oc, "analytics-import")
+		lbls := labelsFor(oc, analyticsImportComponent)
 		cron.Labels = lbls
 		cron.Spec.Schedule = analyticsImportSchedule
 		cron.Spec.TimeZone = strPtr(analyticsImportTimeZone)
@@ -287,10 +308,9 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsImport(ctx context.Context, o
 		pod.ImagePullSecrets = imagePullSecrets(oc)
 		pod.Containers = []corev1.Container{{
 			Name:            "import",
-			Image:           analyticsImportImage,
+			Image:           storeImage(oc, analyticsImportComponent, analyticsImportImage),
 			ImagePullPolicy: corev1.PullIfNotPresent,
-			Args: []string{"--fail", "--silent", "--show-error", "--connect-timeout", "10", "--max-time", "240",
-				"--request", "POST", fmt.Sprintf("http://%s-analytics-processor:8080/import", oc.Name)},
+			Command:         []string{"sh", "-c", analyticsImportScript(oc)},
 			Resources:       *resourceReqs("32Mi", "10m", "64Mi"),
 			SecurityContext: hardenedSecurityContext(),
 			// The API's defaults, set so a steady reconcile compares equal.
@@ -302,8 +322,9 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsImport(ctx context.Context, o
 	return err
 }
 
-// analyticsRetentionDays is how long the in-cluster ClickHouse keeps analytics rows (decision 4 of
-// the Cloud v1 migration: analytics start fresh at the cutover and keep 30 days).
+// analyticsRetentionDays is how long the in-cluster ClickHouse keeps analytics rows: decision 4 of
+// the Cloud v1 migration (orama-bridge docs/projects/orama-cloud-v1/decisions-2026-10-16.md, 16 Oct),
+// analytics start fresh at the cutover and keep 30 days.
 const analyticsRetentionDays = 30
 
 // analyticsRetentionTables is each processor table with the column its TTL counts from.

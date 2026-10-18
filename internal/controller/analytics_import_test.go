@@ -175,14 +175,12 @@ func TestAnalyticsImportCronJobIsHardened(t *testing.T) {
 		t.Fatalf("pod spec = %+v", pod)
 	}
 	c := pod.Containers[0]
-	wantArgs := []string{"--fail", "--silent", "--show-error", "--connect-timeout", "10", "--max-time", "240",
-		"--request", "POST", "http://v1-analytics-processor:8080/import"}
 	if c.Name != "import" || c.Image != "curlimages/curl:8.10.1" || c.ImagePullPolicy != corev1.PullIfNotPresent ||
-		!reflect.DeepEqual(c.Args, wantArgs) || len(c.Command) != 0 {
+		!reflect.DeepEqual(c.Command, []string{"sh", "-c", analyticsImportScript(stored)}) || len(c.Args) != 0 {
 		t.Errorf("import container = %+v", c)
 	}
-	if slices.ContainsFunc(c.Args, func(a string) bool { return strings.HasPrefix(a, "--retry") }) {
-		t.Error("the import retries its request")
+	if strings.Contains(analyticsImportScript(stored), "--retry") {
+		t.Error("the import retries its requests")
 	}
 	if len(c.Env) != 0 || len(c.EnvFrom) != 0 || len(c.VolumeMounts) != 0 {
 		t.Errorf("the import container reads credentials: env %v, envFrom %v, mounts %v", c.Env, c.EnvFrom, c.VolumeMounts)
@@ -190,6 +188,63 @@ func TestAnalyticsImportCronJobIsHardened(t *testing.T) {
 	if !reflect.DeepEqual(c.SecurityContext, hardenedSecurityContext()) || !reflect.DeepEqual(c.Resources, *resourceReqs("32Mi", "10m", "64Mi")) ||
 		c.TerminationMessagePath != corev1.TerminationMessagePathDefault || c.TerminationMessagePolicy != corev1.TerminationMessageReadFile {
 		t.Errorf("import container hardening = %+v", c)
+	}
+}
+
+// spec.images.overrides["analytics-import"] replaces the import's curl image, so a set can pin it.
+func TestAnalyticsImportImageOverride(t *testing.T) {
+	const pinned = "oramasearch/curl@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	h := newImportHarness(t, importOC(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Images.Overrides = map[string]string{"analytics-import": pinned}
+	}))
+	cron, ok := h.cronJob()
+	if !ok {
+		t.Fatal("CronJob v1-analytics-import not found")
+	}
+	if got := cron.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image; got != pinned {
+		t.Errorf("import image = %q, want %q", got, pinned)
+	}
+}
+
+// The Job imports, then aggregates (Prod 1's aggregator timer), with the same curl hardening on both
+// calls; the aggregation runs even when the import fails, and the Job fails when either call does.
+// The script runs under sh with a curl stub that records its arguments.
+func TestAnalyticsImportScriptImportsThenAggregates(t *testing.T) {
+	dir := t.TempDir()
+	stub := `#!/bin/sh
+for a in "$@"; do last=$a; done
+printf '%s\n' "$*" >> "$CALLS"
+case "$last" in */import) exit "$IMPORT_RC" ;; */aggregate2) exit "$AGGREGATE_RC" ;; esac
+exit 99
+`
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	flags := "--fail --silent --show-error --connect-timeout 10 --request POST --write-out \\n"
+	wantCalls := []string{
+		flags + " --max-time 180 http://v1-analytics-processor:8080/import",
+		flags + " --max-time 110 http://v1-analytics-processor:8080/aggregate2",
+	}
+	script := analyticsImportScript(importOC(nil))
+	for _, tc := range []struct {
+		importRC, aggregateRC string
+		wantFail              bool
+	}{{"0", "0", false}, {"22", "0", true}, {"0", "22", true}, {"7", "28", true}} {
+		calls := filepath.Join(dir, "calls-"+tc.importRC+"-"+tc.aggregateRC)
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "CALLS="+calls,
+			"IMPORT_RC="+tc.importRC, "AGGREGATE_RC="+tc.aggregateRC)
+		err := cmd.Run()
+		if (err != nil) != tc.wantFail {
+			t.Errorf("import %s, aggregate %s: error %v, want failure %v", tc.importRC, tc.aggregateRC, err, tc.wantFail)
+		}
+		got, readErr := os.ReadFile(calls)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if lines := strings.Split(strings.TrimSpace(string(got)), "\n"); !reflect.DeepEqual(lines, wantCalls) {
+			t.Errorf("import %s, aggregate %s: calls %q, want %q", tc.importRC, tc.aggregateRC, lines, wantCalls)
+		}
 	}
 }
 
