@@ -14,7 +14,10 @@ spec:
         docs:
           host: docs-dev.oramadev.net
         engine:
+          reader:
+            host: reader-dev.oramadev.net
           writer:
+            host: writer-dev.oramadev.net
             jwt:
               audiences:
               - https://writer-dev.oramadev.net
