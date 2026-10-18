@@ -718,7 +718,7 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   removes the pods/PVCs). Disabling a supported in-cluster control DB still tears it down.
 
 - **psql image** — the schema Jobs (`PostgresSchema` `spec.image`) and the cluster-row Job run
-  `spec.images.overrides.postgres-client`, else `postgres:16.15-alpine` from Docker Hub's public
+  `spec.images.overrides.postgres-client`, else `postgres:16-alpine` from Docker Hub's public
   library, with the stack's `spec.images.pullSecretName`. Production pins the key to a private
   `oramasearch/*` digest in its set file. The other helper images get their keys in
   [#569](https://github.com/oramasearch/orama-operator/issues/569).
@@ -827,8 +827,8 @@ and reference the primary's endpoint). Images are overridable via
 
 | Store | Component | Image | Ports |
 |---|---|---|---|
-| Redis (`--requirepass` from `<cr>-cache-auth`) | `cache` | `redis:7.4.11-alpine` | 6379 |
-| RabbitMQ (admin from `<cr>-broker-admin`) | `broker` | `rabbitmq:3.13.7-management` | 5672, 15672, 5552 |
+| Redis (`--requirepass` from `<cr>-cache-auth`) | `cache` | `redis:7-alpine` | 6379 |
+| RabbitMQ (admin from `<cr>-broker-admin`) | `broker` | `rabbitmq:3.13-management` | 5672, 15672, 5552 |
 | ClickHouse | `analytics` | `clickhouse/clickhouse-server:24.8` | 8123, 9000 |
 | Typesense | `search` | `typesense/typesense:0.25.2` | 8108 |
 
