@@ -399,11 +399,12 @@ Driven by `spec.region.role`:
     still needs the operations after its offset to be in the stream (5 GB, see broker-topology);
     a reader on a new, empty claim builds from the stream and is partial once the stream has
     passed 5 GB (seeding is [#458](https://github.com/oramasearch/orama-operator/issues/458)).
-  - **Size.** The template cannot change after the StatefulSet exists, so a stack's readers get
-    512Gi once. The EU Prod 1 reader's data directory still has to be measured (a read-only `du` on
-    the eu-central-1 reader) before the first production apply; the evidence so far is the US
-    reader's ~171 GB index (2026-05-18) and the EU reader's root volume, at most 223 GiB used with
-    the OS on 2026-10-12. The reasoning is above `readerDataSize` in `engine.go`.
+  - **Size.** 512Gi, from orama-bridge's decision 3 of 2026-10-17. Its source is techops-docs
+    `incident-2026-10-12-reader-stalls.md`, "Host storage": each Prod 1 reader has a 1,000 GB
+    (931 GiB) gp3 root volume, with EU 777, US 659 and Asia 740 GiB free on 2026-10-12, so about
+    154, 272 and 191 GiB used, OS included. 512Gi is about twice the US figure, rounded up, and an
+    upper bound since the used figures include the OS. The template cannot change after the
+    StatefulSet exists, so a stack's readers get 512Gi once.
   - **Fixed count, no autoscaler.** `replicas` is `reader.replicas` (0 or unset → 3), set on every
     reconcile; `podManagementPolicy: Parallel` starts them together. No HorizontalPodAutoscaler is
     created and `reader.hpa` is ignored. Claims are kept when the count drops or the StatefulSet is

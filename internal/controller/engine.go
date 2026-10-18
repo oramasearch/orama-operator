@@ -778,17 +778,12 @@ func configVolume(oc *oramav1alpha1.OramaCloudV1) corev1.Volume {
 	}
 }
 
-// readerDataSize is each reader's data claim (the reader's index and read.info under /app/.data).
-// A StatefulSet's claim template cannot change after creation, so a stack's readers get this size
-// once. The EU Prod 1 reader's data directory has not been measured yet (a read-only du on the
-// eu-central-1 reader is due before the first production apply). The evidence so far:
-//   - US Prod 1 reader: ~171 GB at /opt/oramacore/.data (read-only investigation, 2026-05-18,
-//     oramacore-aws docs/architecture/rabbitmq-data-retention.md);
-//   - EU Prod 1 reader: 1,000 GiB gp3 root volume with 777 GiB free on 2026-10-12, so at most
-//     223 GiB used, OS included.
-//
-// 512Gi is over twice that upper bound, as headroom for growth until readers can grow their claims.
-// Chosen by Juan, 2026-10-17.
+// readerDataSize is each reader's data claim (the reader's index and read.info under /app/.data),
+// set by orama-bridge's decision 3 of 2026-10-17. Its source is techops-docs
+// incident-2026-10-12-reader-stalls.md, "Host storage": each Prod 1 reader has a 1,000 GB
+// (931 GiB) gp3 root volume with EU 777, US 659 and Asia 740 GiB free on 2026-10-12, so about 154,
+// 272 and 191 GiB used, OS included. 512Gi is about twice the US figure, rounded up. A
+// StatefulSet's claim template cannot change after creation, so a stack's readers get this size once.
 const readerDataSize = "512Gi"
 
 // readerDataPVC is the reader StatefulSet's claim template: one ReadWriteOnce data volume per
