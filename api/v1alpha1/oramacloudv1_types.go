@@ -250,7 +250,7 @@ type ComponentsSpec struct {
 	Workers   WorkersSpec   `json:"workers,omitempty"` // the ported CF workers (one bundled image)
 
 	// Additional v1 components (gap fill — techops-docs issues #5–#7):
-	AnalyticsProcessor Toggle `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
+	AnalyticsProcessor AnalyticsProcessorSpec `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
 	// Deprecated: oramasearch-app (api.askorama.ai, the legacy "old dashboard") just redirects to
 	// the new app, so it is NOT run in-cluster — the reconciler is unwired (operator#35). Field
 	// kept for API compatibility; setting it has no effect.
@@ -272,8 +272,9 @@ type EngineSpec struct {
 // VolumeSpec configures a new volume and operator-managed increases to existing storage.
 // StatefulSet claim templates are immutable; existing claims grow independently.
 type VolumeSpec struct {
-	// Size is a positive Kubernetes quantity, compared numerically. Omission resolves
-	// to 10Gi even without API defaulting. Shrinking existing storage is unsupported.
+	// Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+	// component's default (10Gi) even without API defaulting. Shrinking
+	// existing storage is unsupported.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))",message="size must be a positive Kubernetes quantity"
 	Size *resource.Quantity `json:"size,omitempty"`
@@ -314,6 +315,16 @@ type WriterSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	Host string `json:"host,omitempty"`
+	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
+	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// host; no name may repeat across the hosts and extra hosts of every component.
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
+	// +optional
+	ExtraHosts []string `json:"extraHosts,omitempty"`
 }
 
 // WriterJWTSpec is the writer's dashboard JWKS provider. The writer accepts a token whose issuer is
@@ -336,6 +347,11 @@ type WriterJWTSpec struct {
 type ReaderSpec struct {
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
+	// Storage configures each reader's data volume (default 10Gi and cluster default class).
+	// The StatefulSet's claim template keeps the values it was created with; the operator grows
+	// every reader's existing claim instead.
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// HPA autoscales readers on load when set.
 	// +optional
 	HPA *HPASpec `json:"hpa,omitempty"`
@@ -349,6 +365,16 @@ type ReaderSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	// +optional
 	Host string `json:"host,omitempty"`
+	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
+	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// host; no name may repeat across the hosts and extra hosts of every component.
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
+	// +optional
+	ExtraHosts []string `json:"extraHosts,omitempty"`
 }
 
 type HPASpec struct {
@@ -488,12 +514,42 @@ type Toggle struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// AnalyticsProcessorSpec is the analytics processor's toggle plus its scheduled import.
+type AnalyticsProcessorSpec struct {
+	Toggle `json:",inline"`
+	// Import schedules the processor's POST /import, which pulls every reader once.
+	// +optional
+	Import AnalyticsImportSpec `json:"import,omitempty"`
+}
+
+// AnalyticsImportSpec controls the <cr>-analytics-import CronJob. Its schedule is fixed (every five
+// minutes, UTC).
+type AnalyticsImportSpec struct {
+	// Enabled creates the CronJob. It requires the engine, analytics and controlDB components.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Suspend keeps the CronJob, the processor and its sources in place but starts no new Job. It is
+	// copied to the CronJob's spec.suspend.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
+}
+
 // ToggleWithHost is a toggle plus an ingress host.
 type ToggleWithHost struct {
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 	// +optional
 	Host string `json:"host,omitempty"`
+	// ExtraHosts are further names the component's Ingress answers, each routed to the same backend
+	// as host and covered by the origin certificate. The operator creates no DNS record for them: a
+	// name such as app.orama.com is pointed at the cluster by a reviewed Cloudflare change. Requires
+	// host; no name may repeat across the hosts and extra hosts of every component.
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
+	// +optional
+	ExtraHosts []string `json:"extraHosts,omitempty"`
 	// Resources overrides the component's pod resources. When unset the operator applies a
 	// sensible per-component default (workload hardening, #18).
 	// +optional

@@ -1,20 +1,32 @@
-# Run lake's service e2e suite against the cluster-scoped Lake/hello. The required runner image
-# owns the cross-repository workflow: sign up a fresh user, create a repository, use the real liquid
-# client to push and pull it through Lake's sync routes, and verify the pulled file bytes.
+# The testing -> staging release gate: run lake's end-to-end suite (oramasearch/lake-e2e,
+# orama-operator#537) against the `testing` member of LakeSet lake-nonprod. Create it on the cluster
+# that runs that member (orama-nonprod-cluster-01), where the member's Lake is the cluster-scoped
+# Lake `testing` labelled orama.cloud/managed-by-set=LakeSet.lake-nonprod.
 #
-# The controller waits for the Lake Deployment, Postgres, and schema, then creates Job
-# hello-e2e in the Lake's spec.namespace. It passes:
-#   LAKE_E2E_BASE_URL  http://lake-hello.<namespace>.svc.cluster.local
-#   LAKE_E2E_RUN_ID    the LakeE2ETest UID, for collision-free account and repository names
+# The controller waits for the Lake, its Postgres and its schema, then runs Job gate-e2e-<generation>
+# in the Lake's namespace with:
+#   LAKE_E2E_BASE_URL    http://lake-testing.lake-testing.svc.cluster.local (REST, MCP, liquid sync)
+#   LAKE_E2E_PUBLIC_URL  https://lake-testing.oramadev.net (the browser; Lake's cookie is Secure)
+#   LAKE_E2E_RUN_ID      unique per run; names the test person and everything it creates
+# The suite signs a fresh person up (never the admin bearer) and changes data only in that Lake.
 #
-# Watch:  kubectl get lakee2e hello
-# Logs:   kubectl logs -n lake-dev job/hello-e2e
-# Re-run: kubectl delete lakee2e hello && kubectl apply -f config/samples/lake-e2e-test.yaml
+# Watch:   kubectl get lakee2e testing-gate      (Phase, Pass, Fail, Skip)
+# Reasons: kubectl get lakee2e testing-gate -o jsonpath='{.status.failed}'
+# Logs:    kubectl logs -n lake-testing job/testing-gate-e2e-<generation>
+# Re-run:  change spec.runID (e.g. to the release being gated) and apply; no delete needed.
 apiVersion: orama.cloud/v1alpha1
 kind: LakeE2ETest
 metadata:
-  name: hello
+  name: testing-gate
 spec:
-  targetRef: hello
-  image: registry.example.com/oramasearch/lake-e2e:replace-me
-  # pullSecretName: oramasearch-dockerhub  # optional; defaults to Lake.spec.pullSecretName
+  member:
+    lakeSet: lake-nonprod
+    name: testing
+  image: oramasearch/lake-e2e:<tag>
+  pullSecretName: oramasearch-dockerhub
+  runID: "1"
+  # For a Lake that signs people in with Clerk (orama-operator#541), give the runner the Clerk
+  # instance's secret key so it can mint a one-time sign-in ticket for its test person:
+  # env:
+  # - name: LAKE_E2E_CLERK_SECRET_KEY
+  #   valueFrom: {secretKeyRef: {name: lake-testing-clerk, key: secret_key}}

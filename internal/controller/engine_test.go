@@ -25,14 +25,14 @@ func TestReaderProbesWaitForCatchUp(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(s).Build()
 	r := &OramaCloudV1Reconciler{Client: cl, Scheme: s}
 	oc := newOCV1(nil)
-	if err := r.reconcileReaders(ctx, oc, "", ""); err != nil {
+	if err := r.reconcileReaders(ctx, oc, "", "", envoyConfig); err != nil {
 		t.Fatalf("reconcileReaders: %v", err)
 	}
 	if err := r.reconcileWriter(ctx, oc, "", ""); err != nil {
 		t.Fatalf("reconcileWriter: %v", err)
 	}
 
-	var reader appsv1.Deployment
+	var reader appsv1.StatefulSet
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: oc.Namespace, Name: "v1-reader"}, &reader); err != nil {
 		t.Fatalf("get reader: %v", err)
 	}

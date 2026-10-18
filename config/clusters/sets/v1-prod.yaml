@@ -79,6 +79,12 @@ spec:
         envoy: true
         reader:
           replicas: 1
+          # Each Prod 1 reader has a 1,000 GB (931 GiB) gp3 root volume with EU 777, US 659 and Asia
+          # 740 GiB free on 2026-10-12 (techops-docs incident-2026-10-12-reader-stalls.md, "Host
+          # storage"): about 154, 272 and 191 GiB used, OS included. About twice the US figure, rounded
+          # up (bridge decision 3, 2026-10-17). Non-production stacks keep the 10Gi default.
+          storage:
+            size: 512Gi
         writer:
           # Prod 1's writer root volume is 500 GiB (oramacore-aws terraform/live/prod/main.tf
           # root_volume_size = 500) with 343 GiB free on 2026-10-12 (techops-docs

@@ -3,6 +3,13 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.5.0](v0.5.0.md) — 2026-10-17. The Orama Cloud v1 stack in Prod 1's shape for the
+  migration: an in-cluster control database with the dashboard's migration 0008 and reference rows,
+  side-only engine images, LLM providers from the spec, the hooks deny list, Prod 1's startup
+  budgets, reader readiness on `/health/ready`, generated broker and Redis passwords with one
+  required master key, the dashboard's environment and crons, origin TLS, and storage the operator
+  grows. Create-only Cloudflare DNS, node-pool sysctls, and `LakeE2ETest` aimed at a set member.
+  33 resource kinds.
 - [v0.4.0](v0.4.0.md) — 2026-10-17. Every Lake runs every feature, with the operator defaulting
   every image (the library agents and agent-runtime at their `v0.1.0` releases); a Lake's Clerk
   instance kept configured from its secret key; a Lake's own Zetta as its deployment control plane

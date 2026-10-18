@@ -51,10 +51,12 @@ copied Secret's source, or its data on the managing cluster, rolls the member's 
 An `OramaCloudV1Set` copies `cloudflare-api-token` to each member's namespace the same way;
 besides DNS, it is the DNS-01 credential of every stack's Let's Encrypt `Issuer`,
 so a v1 member with a host fails to reconcile without it
-([origin TLS](../../docs/components.md#origin-tls-ingress_tlsgo-457)). Every host in a v1 set must
-be a name in a Cloudflare zone that token can edit, or its certificate is never issued. So each
-member names its own `oramadev.net` dashboard and docs hosts (`app-dev`/`docs-dev`, `app-eu`/`docs-eu`,
-`app-us`/`docs-us`); no enabled component in a v1 set has a `.local` host.
+([origin TLS](../../docs/components.md#origin-tls-ingress_tlsgo-457)). Every host in a v1 set,
+`extraHosts` included, must be a name in a Cloudflare zone that token can edit, or its certificate is
+never issued. So each member names its own `oramadev.net` dashboard and docs hosts (`app-dev`/`docs-dev`,
+`app-eu`/`docs-eu`, `app-us`/`docs-us`); no enabled component in a v1 set has a `.local` host. An extra
+host gets no DNS record from the operator
+([extra hosts](../../docs/crd-reference.md#extra-hosts-extrahosts)).
 The DNS records the operator makes for a member's dashboard, writer and reader hosts all go into
 the zone of the Secret's `zoneID`, so every host a member publishes must be in that one zone
 ([public hosts](../../docs/crd-reference.md#public-writer-and-reader-hosts-enginewriterhost-enginereaderhost)).
@@ -71,6 +73,15 @@ a set file, committed and applied to the managing cluster; production unsuspends
 step 5, after Prod 1's crons are off and `app.orama.com` points at Prod 2 (see
 [the dashboard's scheduled jobs](../../docs/components.md#the-dashboards-scheduled-jobs)). Never
 edit, patch or create the CronJobs themselves.
+
+A v1 member imports its readers' search events into ClickHouse only with
+`components.analyticsProcessor.import.enabled: true`, which needs `engine`, `analytics` and
+`controlDB` enabled. `import.suspend: true` keeps the schedule in place but starts no import, so
+turning it on is a one-line change to the set file, applied from that file; the readers keep the
+events logged meanwhile, and the first import takes them
+([`docs/components.md`](../../docs/components.md#analytics-import)).
+`sets/v1-nonprod.yaml` sets `v1-dev` to two readers with the import enabled and suspended, for the
+analytics import's proof (#421). It reaches the cluster only when Steve consents to apply it.
 
 An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
 reference rows the operator seeds into its control database

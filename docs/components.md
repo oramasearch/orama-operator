@@ -15,7 +15,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 
 | Component | Reconciler | Creates | Status |
 |---|---|---|---|
-| **engine** | `internal/controller/engine.go`, `cloudv1_networking.go` | writer `StatefulSet` (PVC) on the primary; readers `Deployment` (+Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap`; with `writer.host` / `reader.host`, the `<cr>-writer` / `<cr>-reader` Ingresses with origin TLS | ✅ **done** (validated on AKS); public hosts 🟡 **implemented** ([#385](https://github.com/oramasearch/orama-operator/issues/385)), fake-client coverage, not yet proven on `v1-dev` |
+| **engine** | `internal/controller/engine.go`, `cloudv1_networking.go` | writer `StatefulSet` (PVC) on the primary; readers `StatefulSet` (PVC each, +Envoy sidecar); **shared `embeddings` Deployment** (ai-server :50051, +GPU when `writer.gpu`); Services; engine `ConfigMap`; with `writer.host` / `reader.host`, the `<cr>-writer` / `<cr>-reader` Ingresses with origin TLS | ✅ **done** (validated on AKS); public hosts 🟡 **implemented** ([#385](https://github.com/oramasearch/orama-operator/issues/385)), fake-client coverage, not yet proven on `v1-dev` |
 | **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); never runs `db-migrate`. The control DB is always in-cluster (`mode: external` is refused); the operator's `PostgresSchema` owns its schema, avoiding a second Drizzle migration (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
@@ -28,8 +28,10 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
 | **disco** | `internal/controller/disco.go` | `Deployment` (DISCO + embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
-| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — pulls `/v1/analytics` → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
-| **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
+| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service + labelled config `ConfigMap` — pulls each reader's `/v1/analytics` once per import, by its own address through `<cr>-reader-headless`, with the analytics key (`<cr>-analytics-api-key`, no master key) → ClickHouse. The image must carry the bridge's `0.0.0.0:8080` listener patch ([Analytics import](#analytics-import)) | 🟡 **implemented**, unit-tested; import on `v1-dev` pending ([#5](https://github.com/oramasearch/orama-operator/issues/5), [#388](https://github.com/oramasearch/orama-operator/issues/388)) |
+| **analytics-import** | `internal/controller/gaps.go` | opt-in `CronJob` `<cr>-analytics-import`: `POST /import`, then `POST /aggregate2`, to the processor every five minutes (UTC), `Forbid`, no retries, no credentials; `import.suspend` → `spec.suspend` | 🟡 **implemented**, unit-tested; scheduled run on `v1-dev` pending ([#388](https://github.com/oramasearch/orama-operator/issues/388)) |
+| **analytics-retention** | `internal/controller/gaps.go` | `Job` `<cr>-analytics-retention`: sets a 30-day TTL on the processor's three ClickHouse tables, once per script version; `status.components[analytics-retention]` reads `applied`, `pending` or `failed, retrying` | 🟡 **implemented**, unit-tested; not live-tested ([#388](https://github.com/oramasearch/orama-operator/issues/388)) |
+| **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy); unwired, so its `host` and `extraHosts` are API-only (checked for duplicates, never served) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
 | **cloudflare** | `internal/controller/cloudflare.go`, `cloudflarednsrecord_controller.go` | owned DNS child CRs; create marked records, reconcile only owned or legacy-ID records, and check ownership before cleanup | 🟡 **implemented**; HTTP/fake-client and local API-server tests pass; Lake and `oramadev.net` live proof pending approval |
 | **cloudflare-lb** | `internal/controller/cloudflareloadbalancer_controller.go` | global **Load Balancer** + **Origin Pool(s)** + **Health Monitor** via the CF Load Balancing API, from an owned `CloudflareLoadBalancer` CRD (finalizer teardown) | 🟡 **implemented** ([#73](https://github.com/oramasearch/orama-operator/issues/73); not live-tested — needs LB enabled on the account; live-node origins are [#74](https://github.com/oramasearch/orama-operator/issues/74)) |
@@ -60,13 +62,16 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 ## Component storage
 
 `internal/controller/storage.go` runs after ordinary component provisioning. It manages the
-primary's enabled writer and the enabled analytics/cache/broker/search stores selected by their
+primary's enabled writer, the readers of an enabled engine (in a primary or read region), and the
+enabled analytics/cache/broker/search stores selected by their
 existing in-cluster mode and placement checks. External stores, disabled components, a read
 region's absent writer, and central stores skipped in a read region contribute no mismatch.
-ControlDB is always in-cluster (decision 61) and follows its enabled policy. Reader Deployments keep `emptyDir`; HARVEST Mongo keeps the shared helper's
-`10Gi`/default-class output and has no new storage setting.
+ControlDB is always in-cluster (decision 61) and follows its enabled policy. HARVEST Mongo keeps the
+shared helper's `10Gi`/default-class output and has no new storage setting.
 
-Writer and store `storage.size` default to `10Gi`; `storage.storageClassName` is optional. Omitted
+Writer, reader and store `storage.size` default to `10Gi`
+([engine](#engine-internalcontrollerenginego)); every reader's claim `data-<cr>-reader-<n>` grows
+like the writer's; `storage.storageClassName` is optional. Omitted
 storage, `{}`, or a missing size resolves to that default even before API admission. Explicit sizes
 must be positive Kubernetes quantities, compared with `Cmp` (`10240Mi` equals `10Gi`), and explicit
 class names must be nonempty. The [field reference](crd-reference.md#component-storage) lists every
@@ -158,11 +163,6 @@ an ID to clean up retain the finalizer and retry after five minutes. A resource 
 an ID releases its finalizer without Cloudflare calls. Lake, Zetta and Cloud v1 parents
 continue to create the same child CRs.
 
-A changed `spec.name` (or type) creates the record at the new name first; then the record
-in `status.recordID` goes through the same owned delete, so a rename never leaves the old
-name live ([#529](https://github.com/oramasearch/orama-operator/issues/529)) and never
-deletes a record the operator did not create. A failed delete keeps the old ID and retries.
-
 The operator never takes over Prod 1's live `app.orama.com`. Its cutover repoint remains
 a reviewed Cloudflare change in the bridge
 [cutover runbook](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md),
@@ -227,7 +227,8 @@ cache pod's `envFrom` is `[config, cache-secret]` only; Typesense + Keycloak boo
 
 ## Credentials — broker and Redis passwords and the master key (`credentials.go`)
 
-[#307](https://github.com/oramasearch/orama-operator/issues/307). Every client reads a stack-wide
+[#307](https://github.com/oramasearch/orama-operator/issues/307),
+[#386](https://github.com/oramasearch/orama-operator/issues/386). Every client reads a stack-wide
 credential from one Secret by `secretKeyRef`, so a value in that Secret is the value every component
 connects with, and no value is in a ConfigMap, pod spec, annotation, status or log.
 
@@ -235,23 +236,29 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 |---|---|---|---|
 | `<cr>-broker-admin` | `username` (`orama`), `password` | the bootstrap step, where the broker runs locally | broker `rabbitmq.conf` and boot definitions, writer and reader transport config, harvest-master `AMQP_HOST`, `RabbitMQTopology` (`adminSecretRef`) |
 | `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL` |
-| `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`; the reader-only config has none), analytics-processor render-config, index-builder, workers, dashboard, the e2e runner |
+| `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, reader-only config only), analytics-processor render-config (every `oramacores` entry's `api_key`) |
+| `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`; the reader-only config has none), index-builder, workers, dashboard, the e2e runner |
 
 - **Generated once.** Where the store runs in this cluster (enabled, not `mode: external`, not
   `placement: central` on a read region) the operator creates the Secret with a random 48-character
   hex password, owner-referenced to the CR and labelled component `credentials`, which no teardown
   removes: disabling the broker or cache keeps its password for the retained volume. An existing
   Secret, generated or supplied, is never changed, adopted or filled in. A member whose store runs
-  elsewhere receives the Secret through its set's `secrets` list.
-- **Checked.** A broker or cache Secret missing a key, or holding an empty value or a character
-  outside `A-Z a-z 0-9 - . _ ~` (the clients take it inside URLs and config files), fails the
-  reconcile with `Ready=False` naming the Secret and key, and is left as it is.
+  elsewhere receives the Secret through its set's `secrets` list. `<cr>-analytics-api-key` is
+  created the same way on every stack, whatever analytics-processor and ClickHouse are set to, so
+  re-enabling either finds the same key. It is internal to the readers and the processor, so it is
+  generated, never copied from the managing cluster, and it can only read and erase search events.
+- **Checked.** A broker, cache or analytics key Secret missing a key, or holding an empty value or a
+  character outside `A-Z a-z 0-9 - . _ ~` (the clients take it inside URLs and config files), fails
+  the reconcile with `Ready=False` naming the Secret and key, and is left as it is. The bootstrap
+  step reads each generated Secret back after creating it, so a Secret another writer created first
+  is the one checked and used; no consumer starts with another key.
 - **Wiring.** Clients get `BROKER_USERNAME`, `BROKER_PASSWORD` and `REDIS_PASSWORD` as `secretKeyRef`
   entries placed before the URLs that reference them (`amqp://$(BROKER_USERNAME):$(BROKER_PASSWORD)@<cr>-broker:5672`,
   `redis://:$(REDIS_PASSWORD)@<cr>-cache:6379`), and Redis runs
   `redis-server --appendonly yes --requirepass $(REDIS_PASSWORD)`. Config files hold
-  `__BROKER_USERNAME__`, `__BROKER_PASSWORD__` and `__MASTER_API_KEY__` placeholders that a
-  `render-config` init container fills into an `emptyDir`.
+  `__BROKER_USERNAME__`, `__BROKER_PASSWORD__`, `__MASTER_API_KEY__` and `__ANALYTICS_API_KEY__`
+  placeholders that a `render-config` init container fills into an `emptyDir`.
 - **Broker password on a retained volume.** RabbitMQ applies `default_user`/`default_pass` only to
   an empty data directory, so the broker also imports `/etc/rabbitmq/credentials.json` on every
   boot (`definitions.import_backend = local_filesystem`): the admin user, the `/` vhost and its
@@ -275,8 +282,11 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   shared with the LLM key hash). The controller maps every Secret event, owned or copied, to each CR
   in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
   `<cr>-broker-admin` the broker, writer, readers and harvest-master; `<cr>-cache-auth` the cache,
-  harvest-master and index-builder; the master key the writer (and readers on the combined image),
-  analytics-processor, index-builder, workers and dashboard. Metadata changes roll nothing. An
+  harvest-master and index-builder; `<cr>-analytics-api-key` the readers on the reader-only config
+  and analytics-processor, never the writer; the master key the writer (and readers on the combined
+  image), index-builder, workers and dashboard. analytics-processor's hash also covers its component
+  Secret (ClickHouse password) and `<cr>-controldb-app` (the Postgres URI). Metadata changes roll
+  nothing. An
   existing e2e Job is immutable and keeps the reference it was created with.
 
 ## Network sandboxes (`internal/controller/networksandbox_controller.go`)
@@ -401,27 +411,51 @@ Driven by `spec.region.role`:
   a `volumeClaimTemplate` for `/app/.data`, and the CR's nodeSelector/tolerations. Service on
   `:8080`. OramaCore itself is CPU; when `writer.gpu` is set the `nvidia.com/gpu: 1` limit goes
   on the **shared embeddings Deployment** (the model inference is the GPU consumer), not here.
-- **Readers** (primary + read tiers) — a `Deployment` (`reader.replicas`) with the
+- **Readers** (primary + read tiers) — a `StatefulSet` `<cr>-reader` with the
   `oramacore` container (the combined or the reader-only image) **+ an Envoy sidecar** (`envoyproxy/envoy:v1.31.2`, `:80 →
-  127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set.
-  Service on `:80` (→ Envoy, or → `:8080` if Envoy is off).
-- **Public hosts** (`cloudv1_networking.go`, [#385](https://github.com/oramasearch/orama-operator/issues/385))
-  — `reconcileEngineIngresses` runs at the end of the enabled path and before the teardown on the
-  disabled path. `writer.host` (primary region only) renders Ingress `<cr>-writer` → Service
-  `<cr>-writer`:8080; `reader.host` renders `<cr>-reader` → `<cr>-reader`:80, whichever Envoy setting.
-  Both go through `upsertIngress` (the dashboard's ingress class and origin TLS) and are controlled
-  by the CR. A host cleared, the engine disabled or the writer's region turned `read` deletes that
-  Ingress through `deletePublicEndpointOwned`, only when the CR controls it (UID and
-  resourceVersion preconditions). A same-name Ingress the CR does not control is left alone and
-  fails publication with a conflict. `writerPublicHost` and `readerPublicHost` decide whether an
-  endpoint is published, for the Ingress, its sandbox rule and its DNS record alike. With
-  `writer.jwt` set, `https://<writer.host>` must be an exact audience or the reconcile fails before
-  any engine object changes. `/metrics` stays reachable on these hosts until the deny companions of
-  [#410](https://github.com/oramasearch/orama-operator/pull/410) land.
+  127.0.0.1:8080`, from the generated `envoy.yaml`) when `engine.envoy` is set. Envoy answers
+  `/metrics` with 404 itself, by a route before its catch-all, so OramaCore's Prometheus endpoint is
+  never served through the reader Service ([#314](https://github.com/oramasearch/orama-operator/issues/314)).
+  Service `<cr>-reader` on `:80` (→ Envoy, or → `:8080` if Envoy is off)
+  ([#382](https://github.com/oramasearch/orama-operator/issues/382)):
+  - **One disk per reader.** A `data` claim template (`ReadWriteOnce`, 10Gi by default) mounted at
+    `/app/.data`, so reader `n` has its own claim `data-<cr>-reader-<n>`, never the writer's. The
+    reader keeps its index and its last applied stream offset (`/app/.data/reader/read.info`)
+    there, so a replaced pod resumes from that offset instead of replaying the stream from 0. It
+    still needs the operations after its offset to be in the stream (5 GB, see broker-topology);
+    a reader on a new, empty claim builds from the stream and is partial once the stream has
+    passed 5 GB (seeding is [#458](https://github.com/oramasearch/orama-operator/issues/458)).
+  - **Size.** 10Gi by default, as for every other volume, so non-production stacks stay small.
+    Production sets `reader.storage.size: 512Gi` in `config/clusters/sets/v1-prod.yaml`, from
+    orama-bridge's decision 3 of 2026-10-17. Its source is techops-docs
+    `incident-2026-10-12-reader-stalls.md`, "Host storage": each Prod 1 reader has a 1,000 GB
+    (931 GiB) gp3 root volume, with EU 777, US 659 and Asia 740 GiB free on 2026-10-12, so about
+    154, 272 and 191 GiB used, OS included. 512Gi is about twice the US figure, rounded up, and an
+    upper bound since the used figures include the OS.
+    The template keeps the size it was created with; a larger `reader.storage.size` grows every
+    reader's existing claim ([Component storage](#component-storage)), and a smaller one is a
+    refused shrink.
+  - **Fixed count, no autoscaler.** `replicas` is `reader.replicas` (0 or unset → 3), set on every
+    reconcile; `podManagementPolicy: Parallel` starts them together. No HorizontalPodAutoscaler is
+    created and `reader.hpa` is ignored. Claims are kept when the count drops or the StatefulSet is
+    deleted (Kubernetes' default `Retain`; the operator sets no retention policy), and a reader
+    that comes back reuses its claim.
+  - **Headless Service** `<cr>-reader-headless` (`clusterIP: None`, reader selectors, `http`
+    `:8080` straight to OramaCore with Envoy on or off, Ready pods only) is the StatefulSet's
+    `serviceName` from creation, with analytics on or off, so each Ready reader is addressable as
+    `<cr>-reader-<n>.<cr>-reader-headless.<ns>.svc:8080`. analytics-processor reaches each reader
+    by that name ([Analytics import](#analytics-import)); disabling the import keeps the Service.
+  - **From a reader Deployment.** Earlier operator versions ran `<cr>-reader` as a Deployment on an
+    `emptyDir`. The operator deletes that Deployment (only when the CR controls it) with foreground
+    propagation and creates the StatefulSet once it and its pods are gone; the reconcile reports
+    `ReconcileError` until then and readers are down meanwhile. Nothing is copied from the
+    `emptyDir`. A Deployment of that name the CR does not control is left alone and blocks the
+    readers with a conflict error. Disabling the engine removes the StatefulSet, both reader
+    Services and the PDB, and keeps the claims, as for the writer.
 
-  A reader starts empty and replays the writer's `oramacore-operations` stream from offset 0. The
-  stream keeps 5 GB, so once more than that has been written, a new reader can no longer build a
-  complete index from it. The reader then refuses to serve rather than serve a partial index
+  A reader on a new, empty claim replays the writer's `oramacore-operations` stream from offset 0.
+  The stream keeps 5 GB, so once more than that has been written, it can no longer build a complete
+  index from it. The reader then refuses to serve rather than serve a partial index
   ([oramacore#341](https://github.com/oramasearch/oramacore/pull/341)): it exits non-zero with a
   message starting with one of two codes, and it never goes Ready. The reader container sets
   `terminationMessagePolicy: FallbackToLogsOnError` so that message reaches the pod's
@@ -437,9 +471,43 @@ Driven by `spec.region.role`:
   For example, `0/1; replication history expired; the reader cannot be built from the stream (needs a
   reader seed, #458)`. Pods being deleted, exits with code 0 and other messages add nothing; one
   cause is listed once however many readers report it. Seeding a reader from another source is not
-  available yet ([#458](https://github.com/oramasearch/orama-operator/issues/458)). Until readers
-  have persistent disks ([#382](https://github.com/oramasearch/orama-operator/issues/382)) they use
-  `emptyDir`, so any reader restart after the stream has passed 5 GB refuses.
+  available yet ([#458](https://github.com/oramasearch/orama-operator/issues/458)).
+- **Public hosts** (`cloudv1_networking.go`, [#385](https://github.com/oramasearch/orama-operator/issues/385))
+  — `reconcileEngineIngresses` runs at the end of the enabled path and before the teardown on the
+  disabled path. `writer.host` (primary region only) renders Ingress `<cr>-writer` → Service
+  `<cr>-writer`:8080; `reader.host` renders `<cr>-reader` → `<cr>-reader`:80, whichever Envoy setting.
+  Both go through `upsertIngress` (the dashboard's ingress class and origin TLS) and are controlled
+  by the CR. A host cleared, the engine disabled or the writer's region turned `read` deletes that
+  Ingress through `deletePublicEndpointOwned`, only when the CR controls it (UID and
+  resourceVersion preconditions). A same-name Ingress the CR does not control is left alone and
+  fails publication with a conflict. `writerPublicHost` and `readerPublicHost` decide whether an
+  endpoint is published, for the Ingress, its sandbox rule and its DNS record alike. With
+  `writer.jwt` set, `https://<writer.host>` must be an exact audience or the reconcile fails before
+  any engine object changes. Each Ingress also answers its endpoint's `extraHosts` (below), which get
+  no DNS record and do not widen the audiences.
+- **`/metrics` closed on the public hosts** (`engine_metrics.go`,
+  [#410](https://github.com/oramasearch/orama-operator/pull/410)) — OramaCore serves Prometheus
+  metrics on `:8080/metrics` (`http.with_prometheus: true`). Every public engine Ingress has a
+  companion, `<cr>-writer-metrics` or `<cr>-reader-metrics`, that `metricsBlockIngressSpec` narrows
+  from the same spec (`ingressSpec`): the same class, hosts (extra hosts included), TLS Secrets,
+  Service and port, but one `Exact` `/metrics` path per rule, and the single annotation
+  `nginx.ingress.kubernetes.io/denylist-source-range: "0.0.0.0/0,::/0"`. ingress-nginx prefers the
+  `Exact` location to the main Ingress's `Prefix /` and answers it 403 for every client; a snippet
+  annotation would be refused by ingress-nginx's defaults. The companion carries no cert-manager
+  annotation, so it requests no certificate of its own and serves the main Ingress's Secret. It is
+  written before its main Ingress and deleted after it, with the same labels, controller and
+  conflict refusal, so a published host never serves `/` without its `/metrics` refused; the
+  disabled-engine teardown removes it by its writer or reader label. The readers keep Envoy's 404
+  as well, so they stay closed if a companion is missing. zetta-tunnel's ingress gateway cannot
+  refuse a source, so, as an interim guard until
+  [#575](https://github.com/oramasearch/orama-operator/issues/575), it serves no host that a companion
+  covers ([ingress](infrastructure/ingress.md#what-it-serves)); for the engine hosts, whose sandbox
+  rules already admit ingress-nginx only (bridge decision 19 of 2026-10-17), it is a second safeguard: Cloud v1's engine hosts stay on ingress-nginx
+  (decision 5b of the 2026-10-16 decisions page), and a stack set to `ingressClassName:
+  zetta-tunnel` gets no gateway address for them. Inside the cluster `/metrics` stays on each pod's
+  `:8080` (`<cr>-writer:8080`, each reader at `<cr>-reader-<n>.<cr>-reader-headless:8080`; the reader Service's port 80 is the public
+  path). How Prometheus scrapes it is [#15](https://github.com/oramasearch/orama-operator/issues/15).
+
 - **Embeddings ai-server** — ONE **shared `<cr>-embeddings` Deployment** (gRPC on `:50051`) +
   Service that the writer and all readers reach via `ai_server.host: <cr>-embeddings` (#14) —
   **not** a per-pod sidecar, so the model loads into RAM once instead of once per engine pod. This
@@ -478,6 +546,16 @@ Driven by `spec.region.role`:
   same section builders in `engine.go` (`engineCommonYAML`, `writerSideYAML`, `readerSideYAML`,
   `aiServerYAML`), so the sections and stream names are identical in every mode (writer
   `oramacore-writer`/`write`, readers `oramacore-reader`/`reader`).
+- **Reader analytics** ([#386](https://github.com/oramasearch/orama-operator/issues/386)) — only
+  `reader.yaml` carries `reader_side.analytics` (`readerAnalyticsYAML`), as on Prod 1's readers:
+  `api_key: '__ANALYTICS_API_KEY__'`, filled from `<cr>-analytics-api-key`, and Prod 1's
+  `metadata_from_headers` (`user-agent`→`ua`, `CF-Connecting-IP`→`ip`, `CF-IPCountry`→`country`,
+  `continent`, `colo`, `latitude`, `longitude`), which OramaCore requires; a request without these
+  headers is still served. With it each reader logs search events under its `data_dir` and serves
+  them once on `GET /v1/analytics`, which erases what it returns; analytics-processor pulls each
+  reader once per import with the analytics key ([Analytics import](#analytics-import)). The writer config has no reader side and no analytics block, and the combined
+  `config.yaml` has none either, so on the combined image readers record no search events. Only the
+  readers' render-config reads the analytics key.
   The `ai_server` LLM settings come from `spec.llm` (`engine_llm.go`): `ai_server.llm` is the
   default provider's built-in URL, first model and key, `ai_server.remote_llms` one entry per
   provider, and `ai_server.embeddings.automatic_embeddings_selector` the optional selector. Without
@@ -492,19 +570,24 @@ Driven by `spec.region.role`:
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
   `ORAMACORE_` provider splits on `_`). Explicit `secretKeyRef` env entries carry `MASTER_API_KEY`
   from `spec.masterAPIKeySecretRef` (only where the side's template holds it), the broker
-  credentials from `<cr>-broker-admin`, and a provider's key from its `apiKeySecretRef`; the other
-  provider keys come from `<cr>-engine-secret` (via `envFrom`).
+  credentials from `<cr>-broker-admin`, `ANALYTICS_API_KEY` from `<cr>-analytics-api-key` (the
+  reader-only config only), and a provider's key from its `apiKeySecretRef`; the other provider
+  keys come from `<cr>-engine-secret` (via `envFrom`).
   The script reads each value from its environment variable and escapes it for `sed` and the
   single-quoted scalar, so no value is evaluated, logged or written into the script.
   Each pod template carries `orama.cloud/config-hash`, the SHA-256 of its own unrendered template
   (with side-only images a change to one side's config rolls only that side, a change to a shared
-  section such as the LLM settings rolls both; the combined config rolls both), and
+  section such as the LLM settings rolls both; the combined config rolls both). Readers with Envoy
+  hash their template and `envoy.yaml` together (`sha256Hex`), since Envoy reads its bootstrap only
+  at start: a bootstrap change rolls them, and leaves the writer and readers without Envoy, whose
+  hash stays their template's alone, as they were. The pod template also carries
   `orama.cloud/llm-secret-hash`, the SHA-256 of the data of `<cr>-engine-secret` and every
   `apiKeySecretRef` Secret, identical on both sides, and `orama.cloud/credentials-hash`, the side's
-  broker admin and master key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
+  broker admin, master key and (reader-only config) analytics key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
   The controller watches Secrets and maps a change to every CR that reads it, so a rotated key rolls
   the writer and readers with no restart by hand. Without a usable master key the writer and
-  readers are held at zero replicas. The LLM settings and keys are checked before any engine object is
+  reader StatefulSets are held at zero replicas, and so is a reader Deployment left by an earlier
+  operator version. The LLM settings and keys are checked before any engine object is
   written: invalid input leaves the running engine untouched with `Ready=False`. All children set
   an owner reference to the CR, so deleting the CR cascade-deletes them.
 - **Hooks deny list** ([#306](https://github.com/oramasearch/orama-operator/issues/306)) —
@@ -605,7 +688,7 @@ while the rendered file in the pod holds the real value.
 > [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images)
 > tooling (`oramasearch/embeddings-server-py:{cpu,gpu}-latest`, private Docker Hub — the tag
 > is auto-picked from `writer.gpu`; just set `spec.images.pullSecretName`); RabbitMQ
-> writer→reader replication (currently in-memory transport, single-node); HPA + the
+> writer→reader replication (currently in-memory transport, single-node); the
 > reader→primary-writer endpoint on read tiers.
 
 ## controlDB (`internal/controller/controldb.go`)
@@ -775,15 +858,37 @@ host is set)**.
   **Selenium** grid Deployment.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
-- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host`. Its environment is the
+- **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host` and
+  `dashboard.extraHosts`. It reads
+  `JWT_ISSUER` from the shared ConfigMap through `envFrom`, which a running process does not
+  re-read, so its pod template carries `orama.cloud/jwt-issuer-hash`, the SHA-256 of
+  `jwtIssuer(oc)`: a change to the effective issuer rolls it. Audience and JWKS URL changes do not.
+  The upgrade that adds the annotation rolls the dashboard once. Its environment is the
   operator's (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`, `MASTER_API_KEY` from
   `spec.masterAPIKeySecretRef`, `POSTGRES_PASSWORD`, `DATABASE_URL`)
   plus what `dashboard.envFrom` and `dashboard.env` take from Secrets and ConfigMaps
-  ([below](#the-dashboards-environment)). `JWT_ISSUER` comes from the shared ConfigMap through
-  `envFrom`, which a running process does not re-read, so the pod template carries
-  `orama.cloud/jwt-issuer-hash`, the SHA-256 of `jwtIssuer(oc)`: a change to the effective issuer
-  rolls it. Audience and JWKS URL changes do not. The upgrade that adds the annotation rolls the
-  dashboard once.
+  ([below](#the-dashboards-environment)).
+
+### Ingress hosts (`upsertIngress`, [#313](https://github.com/oramasearch/orama-operator/issues/313))
+
+`ingressSpec(oc, name, host, extraHosts, port)` builds the spec of every Cloud v1 component
+Ingress and `upsertIngress(ctx, oc, name, component, spec)` writes it: the dashboard and docs through
+`reconcileApp` (`appDef.ingressHost` and `ingressExtraHosts`), the writer and reader through
+`reconcileEngineIngresses`, which also narrows the same spec into the `/metrics` deny companions. It
+renders one rule for `host`, then one per extra host in stored order, each with the same Prefix `/`
+path to the same Service and port, on `spec.components.ingressClassName`, with TLS from
+`originTLS`; `upsertIngress` then calls `applyIngressTLS` (below) so every rule host gets a
+certificate. The rule list is built fresh and replaced on each reconcile, so
+a removed extra loses its rule and TLS entry, and an unchanged CR writes nothing.
+
+Extra hosts are aliases only: DNS (`reconcilePublicDNS`) reads `host` alone, so an extra never gets a
+`CloudflareDNSRecord`. `validateIngressHosts` runs first in `Reconcile`, before the network sandbox
+and every component step: an extra host without `host`, an empty or over-253-character extra, or a
+name repeated (case-insensitively) across the `host` and `extraHosts` of dashboard, docs,
+oramasearchApp, engine.writer and engine.reader, in that order and enabled or not, sets `Degraded`
+with `Ready=False` reason `InvalidIngressHosts` naming both fields, writes nothing else and does not
+requeue. `oramasearchApp` takes part in the check but its reconciler stays unwired, so its hosts
+never reach an Ingress. Field reference: [`crd-reference.md`](crd-reference.md#extra-hosts-extrahosts).
 
 ### Origin TLS (`ingress_tls.go`, [#457](https://github.com/oramasearch/orama-operator/issues/457))
 
@@ -810,7 +915,9 @@ environment and Zetta Ingresses do not request one yet
   any existing Ingress as it is. An empty rule list, an empty host or an empty issuer is an error.
 - **One Secret per host.** The Secret name depends only on the host, so another Ingress serving the
   same host (the `/metrics` deny companions, [#410](https://github.com/oramasearch/orama-operator/pull/410))
-  names the same Secret. Removing a host drops its TLS entry; the other hosts keep their Secrets.
+  names the same Secret. The companions copy their main Ingress's TLS entries (`originTLS`) without
+  `applyIngressTLS`'s annotations, so cert-manager issues one certificate per host, for the main
+  Ingress only. Removing a host drops its TLS entry; the other hosts keep their Secrets.
 - **Known gap:** decision 5 gives each stack its own ingress-nginx. The operator does not render one
   yet ([#573](https://github.com/oramasearch/orama-operator/issues/573)), so a stack's Ingresses
   still use `spec.components.ingressClassName` (default the platform's `nginx`). TLS renders on
@@ -1003,10 +1110,90 @@ each user's `crontab -l`, `/etc/crontab`, `/etc/cron.d`, `/etc/cron.*`) is still
 | `oramacore.test-e2e.timer` → `.service` (user `test-e2e`, binary `monitor-e2e` from the `monitor-test` release asset) | `OnBootSec=1min`, `OnUnitActiveSec=5min`, `Persistent=false` | orama-deploy `oramacore-test-e2e/production/`, `oramacore-test-e2e.production.json` | The canary above, against collection `790cea05`, with the CF worker, the AWS load balancer and the three regional readers as extra readers; state in `test-state.json`, metrics through node_exporter | Moved: `<cr>-e2e-canary`, `*/5 * * * *` (decision 11) |
 | `collection-prune.timer` → `.service` (root) | `OnCalendar=*-*-* 04:30:00 UTC`, `Persistent=true`, `OnBootSec=10min`, `TimeoutSec=600` | oramacore-aws `terraform/scripts/oramacore-custom-metrics/collection_prune-crons.sh` | The prune above | Moved into `<cr>-e2e-canary`'s daily run until the canary's leak is fixed, then dropped (decision 11) |
 | `collection-doc-count.timer` → `.service` | `OnBootSec=3min`, `OnUnitActiveSec=30min` | `collection_doc_count-crons.sh` | Exports the canary collection's document count, which warns at 400 of the 500-document cap | Dropped: the prune keeps the collection under the cap (decision 11) |
-| `analytics-processor.check-env.timer` | `OnUnitActiveSec=4min` | orama-deploy `analytics.production.json`, `analytics/prod/systemd/` | Analytics processor environment check | Not in this change: analytics processing maps to the combined import ([#421](https://github.com/oramasearch/orama-operator/pull/421) with #419, #422, #448). Decision 11 names only the canary's three timers, so Steve's confirmation for these rows is pending |
-| `analytics-processor.importer.timer` | `OnUnitActiveSec=5min` | as above | Analytics import | As above |
-| `analytics-processor.aggregator.timer` | `OnUnitActiveSec=5min` | as above | Analytics aggregation | As above |
+| `analytics-processor.check-env.timer` | `OnUnitActiveSec=4min` | orama-deploy `analytics.production.json`, `analytics/prod/systemd/` | Analytics processor environment check | Not in this change. Decision 11 names only the canary's three timers, so Steve's decision for this row is pending ([#576](https://github.com/oramasearch/orama-operator/issues/576)) |
+| `analytics-processor.importer.timer` | `OnUnitActiveSec=5min` | as above | Analytics import | Moved: `<cr>-analytics-import` runs `POST /import` every five minutes ([#421](https://github.com/oramasearch/orama-operator/pull/421), parity) |
+| `analytics-processor.aggregator.timer` | `OnUnitActiveSec=5min` | as above | Analytics aggregation | Moved: the same Job runs `POST /aggregate2`, the aggregator binary's code, after each import ([#421](https://github.com/oramasearch/orama-operator/pull/421), parity; [#576](https://github.com/oramasearch/orama-operator/issues/576)) |
 | CloudWatch agent, SSM agent (from `user_data`), Grafana Alloy and node_exporter | daemons, not schedules | oramacore-aws `terraform/modules/orama-crons/main.tf`, the scripts' headers | Host metrics and shipping, remote shell | Dropped with the host: Prod 2's monitoring is in-cluster ([#15](https://github.com/oramasearch/orama-operator/issues/15)) |
+
+## Analytics import (`gaps.go`)
+
+Each reader logs search events and serves them once through `GET /v1/analytics`, which returns
+and erases them. analytics-processor's `POST /import` reads every source in its config and writes
+the events to the in-cluster ClickHouse; nothing else may call the export, so the functional e2e
+suite does not ([#315](https://github.com/oramasearch/orama-operator/issues/315)).
+
+- **Sources.** `oramacores` lists reader ordinals `0..replicas-1`, each once, where `replicas` is
+  `engine.reader.replicas` (0 or unset → 3), the same number the reader StatefulSet uses. Entry
+  `n` is `name: <cr>-reader-<n>`,
+  `api_url: http://<cr>-reader-<n>.<cr>-reader-headless.<ns>.svc:8080/v1/analytics`, the analytics
+  key and `enabled: true`. There is no writer entry (the writer has no reader side) and no entry
+  for the load-balanced `<cr>-reader`, which would drain whichever reader it reached. The list
+  comes from the spec, never the live pods or claims, and is the same whether the import is
+  enabled, disabled or suspended. The processor Deployment's `orama.cloud/config-hash` is the
+  SHA-256 of the unrendered `config.yaml`, so a changed reader count rolls the processor and
+  re-renders its config; the credentials hash rolls it when a key changes.
+- **Schedule.** With `analyticsProcessor.import.enabled`, the operator owns the CronJob
+  `<cr>-analytics-import`: schedule `*/5 * * * *` in `Etc/UTC` (fixed), `concurrencyPolicy: Forbid`,
+  `startingDeadlineSeconds: 60`, one successful and one failed Job kept. Each Job has
+  `backoffLimit: 0`, `activeDeadlineSeconds: 300` and `ttlSecondsAfterFinished: 3600`; its pod
+  (`restartPolicy: Never`, no service-account token, the stack's pull secrets, the hardening
+  baseline, 32Mi/10m requests and a 64Mi limit) runs `curlimages/curl:8.10.1`, or
+  `spec.images.overrides["analytics-import"]` so a set can pin it by digest, with `sh -c`
+  (`analyticsImportScript`): `curl --fail --silent --show-error --connect-timeout 10 --request POST
+  --max-time 180 http://<cr>-analytics-processor:8080/import`, then the same flags with
+  `--max-time 110` on `/aggregate2`. Both fit inside the Job's 300 s. It holds no credentials:
+  neither route takes any.
+- **Aggregation.** Prod 1 runs `analytics-processor.aggregator.timer` every five minutes beside the
+  importer (orama-deploy `analytics/prod/systemd`). `POST /import` only writes raw events; the
+  processor's `POST /aggregate2` route runs the same `Aggregator::aggregate` as Prod 1's
+  `aggregator` binary and takes no parameters: it aggregates the next time range recorded in the
+  control DB's `analytics.runs` table into `oramacore_analytics_search_aggregated`, which the
+  dashboard's top terms, no-results and header totals read. Without it those stay empty. The Job
+  calls it after the import, and also when the import failed, as Prod 1's two independent timers
+  would; the Job fails when either call fails. Coverage of the aggregator row on Prod 1's crons host
+  is tracked in [#576](https://github.com/oramasearch/orama-operator/issues/576).
+- **No retries, on purpose.** Every import drains the readers, so a second request while one runs,
+  or a retry of a request that timed out on the client while the server finishes it, can split or
+  lose events. `Forbid` stops scheduled Jobs from overlapping; it cannot stop the server finishing
+  a timed-out request or another caller invoking `/import`. The processor visits its sources in
+  order and stops at the first error, so a failed run may have imported some readers and not
+  reached the rest. A reader that is not Ready has no address on `<cr>-reader-headless`, so it
+  fails every run at its ordinal and blocks the import of every later reader until it is Ready
+  again; those readers keep their events logged meanwhile. A failed run shows in the Job's status and the processor's logs; the next
+  scheduled run is the next attempt. "Each reader once" is one source per ordinal and one export
+  call per healthy run, not a durable exactly-once delivery.
+- **Suspend.** `import.suspend: true` sets the CronJob's `spec.suspend` and keeps the CronJob, the
+  headless Service and the sources, so the cutover flips one line. It stops new Jobs only: a
+  running Job finishes, and the readers keep the events logged while suspended, which the first
+  import after resuming takes. Unset writes `spec.suspend: false`, the API default.
+- **Prerequisites and teardown.** An enabled import needs `engine`, `analytics` (in-cluster) and
+  `controlDB` enabled and a reader count of zero (→ 3) or more. Otherwise the CronJob is removed,
+  suspended or not, and the reconcile fails naming what is missing. `Reconcile` runs this check
+  (`guardAnalyticsImport`) right after reading the CR, before any component step, so an earlier
+  failure cannot keep an old schedule running. `import.enabled: false` removes the CronJob and
+  keeps the headless Service. `analyticsProcessor.enabled: false` removes the CronJob, the retention
+  Job and the processor's Deployment, Service and `<cr>-analytics-processor-config` (also an older
+  operator's unlabelled one, when the CR controls it; a ConfigMap of that name it does not control
+  is left alone). The processor and its config are reconciled before the CronJob.
+- **Retention.** ClickHouse keeps analytics for 30 days (Cloud v1 migration
+  [decision 4 of 16 Oct](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-16.md#4-analytics-start-fresh-and-prod-2-keeps-30-days): analytics start fresh at the cutover). The processor creates its three tables at start without a TTL, so
+  the operator owns the Job `<cr>-analytics-retention`, created whenever the processor runs on the
+  in-cluster ClickHouse. It runs `clickhouse-client` from the stack's ClickHouse image as the
+  `default` user (password by `secretKeyRef` from `<cr>-analytics-secret`), fails until all three
+  tables exist (retried by the Job, `backoffLimit: 10`), then runs
+  `ALTER TABLE ... MODIFY TTL <column> + INTERVAL 30 DAY` (`timestamp` on the search and
+  interaction tables, `created_at` on the aggregated one) only where `system.tables` shows another
+  TTL. The Job's `orama.cloud/retention-hash` annotation is the hash of its script: a different
+  script, or a Job whose retries are exhausted, is deleted (foreground) and created again on the
+  next reconcile. A succeeded Job is kept as the record and makes the status entry
+  `analytics-retention` Ready (`applied`). The operator has no ClickHouse schema kind yet; a
+  `ClickHouseSchema` kind ([`datastore-crds.md`](datastore-crds.md)) could replace this Job.
+- **Processor image.** The image must carry the bridge's listener patch
+  (`orama-cloud-v1-bridge/build/images/analytics-processor/Dockerfile`, which changes
+  `src/bin/server.rs` at build to bind `0.0.0.0:8080`). Upstream
+  ([`11a6c2d`](https://github.com/oramasearch/analytics-processor/blob/11a6c2dd5c6db86bed2c617940c09b43d36e2c62/src/bin/server.rs))
+  binds `127.0.0.1:8888`, which neither the Service, its probes nor the import Job can reach, so
+  every run would fail to connect.
 
 ## DISCO (`disco.go`)
 
@@ -1037,7 +1224,8 @@ component is published (dashboard enabled with a host; engine enabled with `read
 plus a primary region for `writer.host`). Each record's `spec.name` is the host, `spec.content` the
 first address of its own Ingress (`componentIngressTarget`: hostname before IP; empty while the
 Ingress is absent, deleting or unaddressed), `spec.secretRef` the token Secret, `spec.type` empty.
-Every host must be in the zone of the Secret's `zoneID`.
+Every host must be in the zone of the Secret's `zoneID`. A component's `extraHosts` never get a
+record ([#313](https://github.com/oramasearch/orama-operator/issues/313)).
 
 The lifecycle runs before the Cloudflare early return, so disabling Cloudflare or DNS removes the
 records too:

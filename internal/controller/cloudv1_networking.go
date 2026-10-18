@@ -54,29 +54,52 @@ func readerPodPort(oc *oramav1alpha1.OramaCloudV1) int32 {
 	return oramacorePort
 }
 
-// reconcileEngineIngresses keeps the writer and reader Ingresses for their public hosts and deletes
-// an Ingress this CR controls once its endpoint is no longer published. reconcileEngine calls it on
-// both its enabled and disabled paths. An object at either name that this CR does not control is
-// never adopted, changed or deleted; publishing over it fails with a conflict.
+// reconcileEngineIngresses keeps the writer and reader Ingresses for their public hosts (plus each
+// endpoint's extraHosts, which get no DNS record), each with its deny-all /metrics companion
+// (<name>-metrics, engine_metrics.go) built from the same spec, and deletes both once the endpoint
+// is no longer published. reconcileEngine calls it on both its enabled and disabled paths. An
+// object at any of these names that this CR does not control is never adopted, changed or deleted;
+// publishing over it fails with a conflict, before either Ingress is written.
 func (r *OramaCloudV1Reconciler) reconcileEngineIngresses(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	engine := oc.Spec.Components.Engine
 	for _, endpoint := range []struct {
 		component, host string
+		extraHosts      []string
 		port            int32
 	}{
-		{"writer", writerPublicHost(oc), oramacorePort},
-		{"reader", readerPublicHost(oc), envoyPort},
+		{"writer", writerPublicHost(oc), engine.Writer.ExtraHosts, oramacorePort},
+		{"reader", readerPublicHost(oc), engine.Reader.ExtraHosts, envoyPort},
 	} {
-		ing := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-" + endpoint.component, Namespace: oc.Namespace}}
+		name := oc.Name + "-" + endpoint.component
+		// The main Ingress comes first: it is deleted before its companion, so a host never serves
+		// / without its /metrics refused.
+		ingresses := []*networkingv1.Ingress{
+			{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: oc.Namespace}},
+			{ObjectMeta: metav1.ObjectMeta{Name: name + "-metrics", Namespace: oc.Namespace}},
+		}
 		if endpoint.host == "" {
-			if err := r.deletePublicEndpointOwned(ctx, oc, ing); err != nil {
-				return fmt.Errorf("%s ingress: %w", endpoint.component, err)
+			for _, ing := range ingresses {
+				if err := r.deletePublicEndpointOwned(ctx, oc, ing); err != nil {
+					return fmt.Errorf("%s ingress: %w", endpoint.component, err)
+				}
 			}
 			continue
 		}
-		if _, err := r.refuseForeignPublicEndpoint(ctx, oc, ing); err != nil {
-			return err
+		for _, ing := range ingresses {
+			if _, err := r.refuseForeignPublicEndpoint(ctx, oc, ing); err != nil {
+				return err
+			}
 		}
-		if err := r.upsertIngress(ctx, oc, ing.Name, endpoint.component, endpoint.host, endpoint.port); err != nil {
+		// Checked before the companion is written, so a stack without an Issuer gets neither Ingress.
+		if _, err := stackIngressIssuer(oc); err != nil {
+			return fmt.Errorf("%s ingress: %w", endpoint.component, err)
+		}
+		main := ingressSpec(oc, name, endpoint.host, endpoint.extraHosts, endpoint.port)
+		// The companion is written first, so a host the main Ingress newly serves already refuses /metrics.
+		if err := r.upsertMetricsBlockIngress(ctx, oc, name, endpoint.component, main); err != nil {
+			return fmt.Errorf("%s metrics ingress: %w", endpoint.component, err)
+		}
+		if err := r.upsertIngress(ctx, oc, name, endpoint.component, main); err != nil {
 			return fmt.Errorf("%s ingress: %w", endpoint.component, err)
 		}
 	}

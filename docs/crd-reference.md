@@ -17,7 +17,7 @@ pointing at the primary); the full sample list is in
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `jwtIssuer` | string | — | The issuer of the stack's write tokens: the shared ConfigMap's `JWT_ISSUER`, which the dashboard signs with, and the only issuer the writer accepts ([below](#speccomponentsenginewriterjwt)). At most 128 characters. No CRD default, because a production issuer is chosen on purpose: `engine.writer.jwt` refuses an empty one. With `engine.writer.jwt` unset an empty value gives `JWT_ISSUER: orama-cloud`. A change rolls the dashboard and, with `engine.writer.jwt` set, the writer. |
-| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile while the engine is enabled) run the writer-only and reader-only OramaCore builds with their own `writer.yaml` and `reader.yaml`, and win over `overrides.oramacore`; unset, both pods run the combined image, so every reader also runs a writer ([components.md](components.md#engine-internalcontrollerenginego)). `overrides.postgres-client` is the psql image of the control DB's `PostgresSchema` Job and its cluster-row Job, default `postgres:16-alpine` ([components.md](components.md#controldb-internalcontrollercontroldbgo)); the other helper images get keys in [#569](https://github.com/oramasearch/orama-operator/issues/569). |
+| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.analytics-import` replaces the analytics import's `curlimages/curl:8.10.1` ([`analyticsProcessor.import`](#analyticsprocessorimport)). `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile while the engine is enabled) run the writer-only and reader-only OramaCore builds with their own `writer.yaml` and `reader.yaml`, and win over `overrides.oramacore`; unset, both pods run the combined image, so every reader also runs a writer ([components.md](components.md#engine-internalcontrollerenginego)). `overrides.postgres-client` is the psql image of the control DB's `PostgresSchema` Job and its cluster-row Job, default `postgres:16-alpine` ([components.md](components.md#controldb-internalcontrollercontroldbgo)); the other helper images get keys in [#569](https://github.com/oramasearch/orama-operator/issues/569). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | Prod 1's four ([below](#specllm)) | **Multiple** LLM providers (`name`: `groq \| openai \| anthropic \| google \| vllm`, `models[]`, `apiKeySecretRef: {name}`, `gpu`) — end users pick per query. The first model is the provider's default model. |
 | `llm.default` | string | `groq` | Provider used when a request doesn't name one; must be one of the providers. |
@@ -106,8 +106,7 @@ spec:
 ```
 
 Consumers: the writer's render-config (`writer_side.master_api_key`; the reader-only config has
-none, the combined config gives it to the readers too), analytics-processor's render-config (until
-its own analytics key, #419/#421), index-builder, workers, the dashboard and the
+none, the combined config gives it to the readers too), index-builder, workers, the dashboard and the
 `OramaCloudV1E2ETest` runner. Each receives an explicit `secretKeyRef`, which wins over a
 `MASTER_API_KEY` an older `<cr>-<component>-secret` still holds. The value must equal the target
 control database's `oramacore_clusters.master_api_key`, which the dashboard uses for administrative
@@ -131,8 +130,8 @@ never the value:
 
 The CR is checked again every 20 seconds and on every event of the referenced Secret, and the
 configured replica counts return once the key is valid, with no spec edit. With the engine
-disabled only the name is required, and only when analytics-processor, ingestion, workers or the
-dashboard is enabled; those consumers are not created or changed without it.
+disabled only the name is required, and only when ingestion, workers or the dashboard is enabled
+(analytics-processor holds the generated analytics key instead, #386); those consumers are not created or changed without it.
 
 **A changed key rolls its consumers.** Each consumer's pod template carries
 `orama.cloud/credentials-hash` over the Secrets it reads, so a changed value, or a reference to
@@ -156,7 +155,8 @@ an add-on price row is seeded only when listed). `id` is the reference row's UUI
 a reference row fails the seed. Empty seeds every plan without Stripe prices and no add-on price.
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
-Every host (`dashboard.host`, `docs.host`, `engine.writer.host`, `engine.reader.host`) gets origin TLS: the stack owns cert-manager `Issuer`
+Every host (`dashboard.host`, `docs.host`, `engine.writer.host`, `engine.reader.host`, and each one's
+`extraHosts`, [below](#extra-hosts-extrahosts)) gets origin TLS: the stack owns cert-manager `Issuer`
 `<cr>-letsencrypt` (Let's Encrypt, DNS-01 with `cloudflare.apiTokenSecretRef` key `token`), and each
 host's certificate lives in Secret `<host>-tls` beside the Ingress. There is no per-host TLS field and
 no way to turn it off; without the token the reconcile fails rather than serving HTTP
@@ -164,9 +164,9 @@ no way to turn it off; without the token the reconcile fails rather than serving
 
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
-| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.host`, `reader.{replicas,hpa,resources}`, `reader.host`, `envoy` | OramaCore writer + readers + Envoy |
-| `dashboard` | `host`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
-| `docs` | `host` | docs.orama.com (Next.js + Fumadocs) |
+| `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,hpa,resources,storage}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
+| `dashboard` | `host`, `extraHosts`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
+| `docs` | `host`, `extraHosts` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `stripePrices` | Always in-cluster CloudNativePG |
 | `analytics` | data-store | ClickHouse |
@@ -175,8 +175,11 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `search` | data-store | Typesense hosted-search |
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
+| `analyticsProcessor` | `resources`, `import.{enabled,suspend}` | analytics-processor (readers' search events → ClickHouse) + its scheduled import |
 
-`engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
+`engine.reader.replicas` is the fixed number of readers (0 or unset → 3), each with its own data
+volume (`10Gi` unless `engine.reader.storage` says otherwise, [below](#component-storage)); `engine.reader.hpa` is accepted but ignored: no autoscaler is
+created. `engine.writer.gpu` requests `nvidia.com/gpu` for the writer's built-in embeddings (prod runs an
 L40S). `workers` bundles all ported CF workers into one image → one Deployment.
 
 Engine startup budgets are fixed: **20 minutes for the writer** (`failureThreshold: 120`)
@@ -185,6 +188,66 @@ and **40 minutes for readers** (`failureThreshold: 240`), both at a 10s period o
 these budgets add no mandatory delay. There are no per-side startup timeout fields.
 Readiness remains every 10s and liveness every 15s, both with a 3s timeout and failure
 threshold 3. See [engine health probes](components.md#engine-internalcontrollerenginego).
+
+### `analyticsProcessor.import`
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Owns the CronJob `<cr>-analytics-import`, which sends `POST /import` and then `POST /aggregate2` to the processor every five minutes (UTC), as Prod 1's importer and aggregator timers do. Its curl image is `curlimages/curl:8.10.1`, or `spec.images.overrides["analytics-import"]`. Requires `engine`, `analytics` (the in-cluster ClickHouse) and `controlDB` enabled and `engine.reader.replicas` of zero (→ 3) or more. |
+| `suspend` | `false` | Copied to the CronJob's `spec.suspend`. The CronJob, the readers' headless Service and the processor's sources stay in place; no new Job starts. A Job already running finishes, and the readers keep the events logged meanwhile: the first import after resuming takes them. |
+
+The schedule is fixed; there is no per-stack schedule. The processor's sources are the same whether
+the import is enabled, disabled or suspended: each reader ordinal once, through
+`<cr>-reader-headless` ([components.md](components.md#analytics-import)). A missing prerequisite or
+a negative reader count removes the CronJob (suspended or not) and fails the reconcile with
+`Ready=False` (`ReconcileError`) naming it; this check runs before every other step, so an earlier
+component's failure cannot leave an old schedule running. `import.enabled: false` removes the
+CronJob; `analyticsProcessor.enabled: false` removes the CronJob and the processor's Deployment,
+Service, ConfigMap and retention Job, and reports no import error.
+
+### Extra hosts (`extraHosts`)
+
+`dashboard`, `docs`, `oramasearchApp`, `engine.writer` and `engine.reader` each take `extraHosts`
+beside `host` ([#313](https://github.com/oramasearch/orama-operator/issues/313)): further names the
+component's Ingress answers, each routed to the same backend as `host`. At the cutover
+`app.orama.com` is repointed to Prod 2 in Cloudflare while `app.orama.ing` keeps working, and an
+Ingress that answers only one name returns ingress-nginx's 404 for the other:
+
+```yaml
+spec:
+  components:
+    dashboard:
+      enabled: true
+      host: app.orama.ing
+      extraHosts:
+        - app.orama.com
+```
+
+For CR `v1-eu`, Ingress `v1-eu-dashboard` gets two Prefix `/` rules, `app.orama.ing` then
+`app.orama.com`, each to Service `v1-eu-dashboard` port 3000, and origin TLS for both (one TLS entry
+and Secret `<host>-tls` each). The rules are rebuilt from `host` then `extraHosts` in order on every
+reconcile, so removing an extra removes its rule and its certificate request. The writer's extras go
+to `<cr>-writer`:8080 and the readers' to `<cr>-reader`:80.
+
+- **No DNS.** Only `host` gets a `CloudflareDNSRecord`; an extra host never does, under any
+  setting, and adding or removing one changes no record. Pointing an extra name at the cluster is a
+  reviewed Cloudflare change (the cutover runbook). Its certificate still needs DNS-01, so the name
+  must be in a zone the stack's Cloudflare token can edit.
+- **Same lifecycle as `host`.** Extras are served only while the component is: a disabled
+  component, a disabled engine or a read region's writer gets no Ingress. They do not widen
+  `writer.jwt.audiences`; a caller using a writer alias still needs a token with an accepted audience.
+- **`oramasearchApp`** shares the type, so it accepts the field and its names take part in the
+  checks below, but the component stays unwired: no Ingress is created for it.
+- **Checks.** Each entry is 1 to 253 characters and a lowercase DNS name with at least one dot,
+  the same pattern as `engine.writer.host` (`listType: set`); the CRD refuses anything else, so
+  `App.Orama.com` or `app.orama.com:443` never reaches the reconcile, which checks the pattern again. Before writing any child
+  resource the reconcile refuses, with phase `Degraded` and `Ready=False` reason
+  `InvalidIngressHosts`: `extraHosts` without `host`; an empty or over-long entry; and any name,
+  compared case-insensitively, that appears twice across the `host` and `extraHosts` of all five
+  components, enabled or not. The message names both fields, for example
+  `spec.components.dashboard.extraHosts[0] and spec.components.docs.host are both "app.orama.com"`.
+  Only the status is written; existing children keep their last valid state until the spec is
+  fixed.
 
 ### Public writer and reader hosts (`engine.writer.host`, `engine.reader.host`)
 
@@ -208,6 +271,25 @@ being published (host cleared, engine disabled, or the writer's region turned `r
 rule are removed and its DNS record is deleted, including on the disabled-engine teardown. An object
 at `<cr>-writer` or `<cr>-reader` that the CR does not control is never adopted, changed or deleted;
 publishing over it fails the reconcile with a conflict naming the kind, namespace and name.
+
+**`/metrics` is refused on both hosts**
+([#314](https://github.com/oramasearch/orama-operator/issues/314)). OramaCore serves Prometheus
+metrics on `:8080/metrics`. Each public Ingress has a companion, `<cr>-writer-metrics` or
+`<cr>-reader-metrics`, with the same hosts (extra hosts included), class, TLS Secrets, Service and
+port, one `Exact` `/metrics` path per host, and `nginx.ingress.kubernetes.io/denylist-source-range:
+"0.0.0.0/0,::/0"`, so ingress-nginx answers `/metrics` (with any query string) 403 on every host.
+It appears, changes and goes away with the Ingress it shadows, and an object at its name the CR
+does not control blocks publishing that endpoint. Readers with Envoy also answer `/metrics` 404 in
+Envoy. Inside the cluster it stays on each engine pod's `:8080`. The refusal is ingress-nginx
+behaviour: zetta-tunnel's gateway cannot refuse a source and so serves none of these hosts
+([ingress](infrastructure/ingress.md#what-it-serves)). For the worked example below:
+
+| Ingress | Host | Path | Backend |
+|---|---|---|---|
+| `v1-dev-writer` | `writer-dev.oramadev.net` | `/`, Prefix | `v1-dev-writer:8080` |
+| `v1-dev-writer-metrics` | `writer-dev.oramadev.net` | `/metrics`, Exact, deny all | `v1-dev-writer:8080` |
+| `v1-dev-reader` | `reader-dev.oramadev.net` | `/`, Prefix | `v1-dev-reader:80` |
+| `v1-dev-reader-metrics` | `reader-dev.oramadev.net` | `/metrics`, Exact, deny all | `v1-dev-reader:80` |
 
 With `writer.jwt` set, `https://<writer.host>` must be one of `writer.jwt.audiences`
 ([below](#speccomponentsenginewriterjwt)).
@@ -233,7 +315,8 @@ Cloudflare record with its ownership comment and never touches one it did not cr
 | The Secret's `zoneID` changes | Nothing from the parent: moving a record between zones is the `CloudflareDNSRecord` controller's concern. |
 
 A child at the record's name that the CR does not control is left untouched and reported as a
-conflict. Deleting the CR removes its Ingresses and records through garbage collection.
+conflict. Deleting the CR removes its Ingresses and records through garbage collection. An
+endpoint's [`extraHosts`](#extra-hosts-extrahosts) get no record.
 
 With the worked example below (CR `v1-dev`, writer Ingress address `192.0.2.10`, reader `192.0.2.11`),
 the writer's Ingress routes `writer-dev.oramadev.net/` to `v1-dev-writer:8080`, the reader's
@@ -322,50 +405,10 @@ writer_side:
         refresh_interval: 1h
 ```
 
-### Component storage
-
-The shared `VolumeSpec` is available at `spec.components.engine.writer.storage` and at
-`spec.components.{analytics,cache,broker,search,controlDB}.storage`.
-
-| Field | Type | Default | Behavior |
-|---|---|---|---|
-| `storage.size` | positive Kubernetes quantity | `10Gi` | Omitted storage, `{}`, and omitted size all resolve to `10Gi`, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
-| `storage.storageClassName` | nonempty string, optional | cluster default on creation | Selects the new PVC's class, or CNPG's `spec.storage.storageClass`. Omission on existing resources retains their class, including a class populated by default admission. A later cluster-default change does not move existing storage. |
-
-For example, `engine.writer.storage: {size: 50Gi, storageClassName: managed-csi}` and
-`cache.storage: {size: 20Gi}` set independent sizes. These are examples, not production sizing.
-For an `OramaCloudV1Set`, put the component settings under `spec.template.components`.
-Readers use `emptyDir` and expose no storage field here. HARVEST Mongo retains its existing
-`10Gi`/default-class behavior and gains no storage API.
-
-New StatefulSets receive a `data` claim template at the resolved size/class. Existing templates
-remain intact because Kubernetes makes them immutable. The operator grows each matching claim's
-storage request itself, including retained claims and claims created later from an old template.
-The template's old size does not cause a storage mismatch. For controlDB it grows the CNPG
-Cluster's configured size; CNPG owns expansion of its PVCs. Other CNPG storage keys remain intact.
-
-Existing volumes cannot shrink or change class. Removing `storage` after growth requests the
-`10Gi` default and can therefore report an unsupported shrink. Restore the grown request to clear
-that rejection. A larger reported capacity alone is not a shrink: provisioners can round capacity
-above the request. A claim with a class mismatch receives no size update, even if growth was also
-requested. Other claims/components continue reconciling.
-
-`status.conditions[type=StorageApplied]` is independent of `Ready`, phase, and workload readiness:
-
-| Status / reason | Meaning |
-|---|---|
-| `True / Applied` | Every applicable existing PVC request and CNPG storage configuration accepts the desired size/class, or there is no locally managed storage. It does not prove disk or filesystem expansion has completed. |
-| `False / NotApplied` | At least one resource has a problem. The message lists each resource in stable sorted order with one of: `ShrinkNotSupported` (desired size below an existing claim request or CNPG configured size), `StorageClassChangeNotSupported` (an explicit class differs from an existing resource's class, including a classless existing CNPG Cluster), `StorageUpdateFailed` (a storage read or write failed; the API error is included) or `ClaimsPending` (a required claim has not appeared yet; the operator does not create it). |
-
-The condition observes the current generation and recovers after accepted settings or successful
-retries. A rejected setting may coexist with `Ready=True`. The operator polls every 20 seconds
-while locally managed storage exists, even with Ready workloads, and writes status only on change.
-See [component reconciliation](components.md#component-storage) for scope and expansion ownership.
-
 ### `spec.components.dashboard`
 
-The dashboard's toggle and host (`enabled`, `host`, `resources`, as for `docs`), plus the rest of its
-environment from Secrets and ConfigMaps in the instance's namespace
+The dashboard's toggle and hosts (`enabled`, `host`, `extraHosts`, `resources`, as for `docs`), plus
+the rest of its environment from Secrets and ConfigMaps in the instance's namespace
 ([operator#311](https://github.com/oramasearch/orama-operator/issues/311)).
 
 | Field | Type | Meaning |
@@ -508,6 +551,47 @@ also runs a writer. A single side override is reported by `Ready=False` (`Reconc
 leaves this condition as it was. It does not change the stack's `phase`, and is written only when
 it changes.
 
+### Component storage
+
+The shared `VolumeSpec` is available at `spec.components.engine.writer.storage`, `spec.components.engine.reader.storage` and at
+`spec.components.{analytics,cache,broker,search,controlDB}.storage`.
+
+| Field | Type | Default | Behavior |
+|---|---|---|---|
+| `storage.size` | positive Kubernetes quantity | `10Gi` | Omitted storage, `{}`, and omitted size all resolve to the default, including objects constructed directly in Go. Admission rejects malformed, zero and negative quantities. Quantities compare numerically: `10240Mi` equals `10Gi`. |
+| `storage.storageClassName` | nonempty string, optional | cluster default on creation | Selects the new PVC's class, or CNPG's `spec.storage.storageClass`. Omission on existing resources retains their class, including a class populated by default admission. A later cluster-default change does not move existing storage. |
+
+For example, `engine.writer.storage: {size: 50Gi, storageClassName: managed-csi}` and
+`cache.storage: {size: 20Gi}` set independent sizes. These are examples, not production sizing.
+For an `OramaCloudV1Set`, put the component settings under `spec.template.components`.
+`reader.storage` applies to every reader's claim, `data-<cr>-reader-<n>`; it defaults to `10Gi`, and production's
+size is explained in [components.md](components.md#engine-internalcontrollerenginego). HARVEST Mongo retains its existing
+`10Gi`/default-class behavior and gains no storage API.
+
+New StatefulSets receive a `data` claim template at the resolved size/class. Existing templates
+remain intact because Kubernetes makes them immutable. The operator grows each matching claim's
+storage request itself, including retained claims and claims created later from an old template.
+The template's old size does not cause a storage mismatch. For controlDB it grows the CNPG
+Cluster's configured size; CNPG owns expansion of its PVCs. Other CNPG storage keys remain intact.
+
+Existing volumes cannot shrink or change class. Removing `storage` after growth requests the
+`10Gi` default and can therefore report an unsupported shrink. Restore the grown request to clear
+that rejection. A larger reported capacity alone is not a shrink: provisioners can round capacity
+above the request. A claim with a class mismatch receives no size update, even if growth was also
+requested. Other claims/components continue reconciling.
+
+`status.conditions[type=StorageApplied]` is independent of `Ready`, phase, and workload readiness:
+
+| Status / reason | Meaning |
+|---|---|
+| `True / Applied` | Every applicable existing PVC request and CNPG storage configuration accepts the desired size/class, or there is no locally managed storage. It does not prove disk or filesystem expansion has completed. |
+| `False / NotApplied` | At least one resource has a problem. The message lists each resource in stable sorted order with one of: `ShrinkNotSupported` (desired size below an existing claim request or CNPG configured size), `StorageClassChangeNotSupported` (an explicit class differs from an existing resource's class, including a classless existing CNPG Cluster), `StorageUpdateFailed` (a storage read or write failed; the API error is included) or `ClaimsPending` (a required claim has not appeared yet; the operator does not create it). |
+
+The condition observes the current generation and recovers after accepted settings or successful
+retries. A rejected setting may coexist with `Ready=True`. The operator polls every 20 seconds
+while locally managed storage exists, even with Ready workloads, and writes status only on change.
+See [component reconciliation](components.md#component-storage) for scope and expansion ownership.
+
 ### `status.conditions[ClusterRowReady]`
 
 Present while the stack inserts its own `oramacore_clusters` row: an enabled in-cluster control DB,
@@ -529,7 +613,9 @@ is a curl+jq script that self-bootstraps a clean-slate collection+index and asse
 OramaCore function in variations** — liveness, auth (keys + negatives), collection/index lifecycle +
 document CRUD/upsert/delete, the write→searchable replication canary, fulltext (typo tolerance/exact/
 threshold/boost/pagination), vector + hybrid, filters (number/date/bool/string/geo + and/or/not),
-facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, analytics, and answer/RAG. It is the
+facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, and answer/RAG. It never calls the
+analytics export, which erases the readers' search events: only the analytics processor pulls them
+([#315](https://github.com/oramasearch/orama-operator/issues/315)). It is the
 forcing function (see the production-migration principle in `CLAUDE.md`) — never softened to pass.
 Coverage is tracked by [operator#44](https://github.com/oramasearch/orama-operator/issues/44).
 Sample: [`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).
@@ -552,8 +638,8 @@ it). With `spec.host` set it also fronts the host with an **nginx Ingress** and 
 is given — an **owned `CloudflareDNSRecord`** (a proxied A/CNAME record → the ingress LoadBalancer),
 reusing the same Cloudflare child-controller path as the dashboard DNS. A `CloudflareDNSRecord` whose
 name (or type) changes deletes the record it made before (`status.recordID`) once the new one exists,
-so a host change never leaves the old name live (#529), only while that record is still its own (see
-below); a record already gone counts as deleted.
+so a host change never leaves the old name live (#529), but only while that record is still its own
+(see the `CloudflareDNSRecord` section); a record already gone counts as deleted.
 A `CloudflareDNSRecord` takes `type` `A`, `CNAME` or `TXT`; `proxied` is always written (default
 `true` only when left out), so a controller's `false` is kept; and `deletionPolicy: Retain` leaves the
 Cloudflare record when the resource is deleted (`Delete`, the default, removes it), which a Lake's Clerk
