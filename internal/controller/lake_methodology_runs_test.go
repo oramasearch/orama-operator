@@ -97,7 +97,7 @@ func (f *fakeServiceStore) setRunDesired(desired string) {
 func methodologyTestLake() *oramav1alpha1.Lake {
 	lake := serviceTestLake()
 	lake.Spec.Host = "lake.example.test"
-	lake.Spec.Builds = oramav1alpha1.LakeBuildsSpec{Enabled: true, BuilderImage: "oramasearch/lake-builder:test"}
+	lake.Spec.Builds = oramav1alpha1.LakeBuildsSpec{BuilderImage: "oramasearch/lake-builder:test"}
 	lake.Spec.Methodologies = oramav1alpha1.LakeMethodologiesSpec{RuntimeImage: testRuntimeImg}
 	return lake
 }
@@ -235,25 +235,19 @@ func TestACancelledBuildOrNoBuildFailsTheRun(t *testing.T) {
 	}
 }
 
-func TestRunsFailWithoutARuntimeImage(t *testing.T) {
+func TestRunsUseTheDefaultRuntimeImageWithoutASpecImage(t *testing.T) {
 	run := testMethodologyRun()
 	store := &fakeServiceStore{methodologyRuns: []LakeMethodologyRun{run}}
 	lake := methodologyTestLake()
 	lake.Spec.Methodologies.RuntimeImage = ""
 	h := newServiceHarness(t, lake, store, pullSecretForTest())
 	h.poll()
-	if status := store.runStatus(t); status.Phase != MethodologyPhaseFailed || !strings.Contains(status.Message, "spec.methodologies.runtimeImage") {
+	// Every Lake runs methodologies (operator#539): a run is not refused for want of a spec image.
+	if status := store.runStatus(t); status.Phase == MethodologyPhaseFailed {
 		t.Fatalf("status %+v", status)
 	}
-	if env := lakeEnv(lake, lakeSealingMaterial{}); func() bool {
-		for _, variable := range env {
-			if variable.Name == "LAKE_METHODOLOGY_RUNTIME_IMAGE" {
-				return true
-			}
-		}
-		return false
-	}() {
-		t.Fatal("a Lake without methodology runs is not told a runtime image")
+	if got := envValue(t, lakeEnv(lake, lakeSealingMaterial{}), "LAKE_METHODOLOGY_RUNTIME_IMAGE").Value; got != lakeDefaultMethodologyRuntimeImage {
+		t.Fatalf("a Lake without a spec image is told %q, want the default", got)
 	}
 	if got := envValue(t, lakeEnv(methodologyTestLake(), lakeSealingMaterial{}), "LAKE_METHODOLOGY_RUNTIME_IMAGE").Value; got != testRuntimeImg {
 		t.Fatalf("LAKE_METHODOLOGY_RUNTIME_IMAGE = %q", got)

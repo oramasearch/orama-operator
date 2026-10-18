@@ -475,7 +475,7 @@ func TestMasterAPIKeyConsumersUseTheReference(t *testing.T) {
 
 // analytics-processor's render-config keeps every byte of a punctuated master key.
 func TestAnalyticsProcessorRendersMasterKeyVerbatim(t *testing.T) {
-	values := map[string]string{"MASTER_API_KEY": `m&a#s\ter'"$(touch pwned)`, "CLICKHOUSE_PASSWORD": `c'h&#\`, "PG_PASSWORD": "pg-pass"}
+	values := map[string]string{"MASTER_API_KEY": `m&a#s\ter'"$(touch pwned)`, "CLICKHOUSE_PASSWORD": `c'h&#\`, "PG_URI": "postgresql://app:pg'pass@v1-controldb-rw:5432/oramacore"}
 	h := newEngineHarness(t, stackOC(nil), engineSecret())
 	h.mustRun()
 	cm := &corev1.ConfigMap{}
@@ -511,7 +511,7 @@ func TestAnalyticsProcessorRendersMasterKeyVerbatim(t *testing.T) {
 	if got := doc["clickhouse"].(map[string]any)["password"]; got != values["CLICKHOUSE_PASSWORD"] {
 		t.Errorf("clickhouse.password = %q", got)
 	}
-	if got := doc["postgres"].(map[string]any)["url"].(string); !strings.Contains(got, ":pg-pass@v1-controldb-rw:5432/") {
+	if got := doc["postgres"].(map[string]any)["url"]; got != values["PG_URI"] {
 		t.Errorf("postgres.url = %q", got)
 	}
 }

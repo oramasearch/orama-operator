@@ -118,6 +118,10 @@ supersedes. It is now a reconciled `PostgresSchema` CRD:
   until the connection Secret exists.
 - The pre-CRD `<cr>-controldb-migrate` Job is cleaned up on upgrade (the new Job runs under
   `<cr>-controldb-schema-migrate`).
+- Later dashboard migrations get their own ordered `PostgresSchema`: `<cr>-controldb-schema-0008`
+  (guard `team_migrations`) and `<cr>-controldb-reference-data` (`applyEveryVersion`) follow the base
+  schema once it is current ([#378](https://github.com/oramasearch/orama-operator/issues/378);
+  [`components.md`](components.md#the-control-dbs-schema)).
 
 **Version changes:** the controller foreground-deletes an obsolete migration Job, waits for its
 pods to stop, and creates a replacement. Status stays `Applying` during replacement and records

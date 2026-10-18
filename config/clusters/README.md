@@ -54,6 +54,12 @@ The DNS records the operator makes for a member's dashboard, writer and reader h
 the zone of the Secret's `zoneID`, so every host a member publishes must be in that one zone
 ([public hosts](../../docs/crd-reference.md#public-writer-and-reader-hosts-enginewriterhost-enginereaderhost)).
 
+An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
+reference rows the operator seeds into its control database
+([`docs/components.md`](../../docs/components.md#the-control-dbs-schema)). `v1-nonprod` leaves it
+empty: no test-mode prices exist yet, so its plans carry no Stripe prices and it has no add-on
+prices. `v1-prod` needs its live-mode IDs before billing works on it.
+
 To check that the files match the cluster:
 
 ```sh
