@@ -58,6 +58,11 @@ spec:
         placement: local
       analyticsProcessor:
         enabled: true
+        # The #421 proof: the import is created suspended, and a later commit to this file sets
+        # suspend: false. Applied only with Steve's consent.
+        import:
+          enabled: true
+          suspend: true
       broker:
         enabled: true
         mode: in-cluster
@@ -90,7 +95,8 @@ spec:
         enabled: true
         envoy: true
         reader:
-          replicas: 1
+          # Two readers for the #421 proof (each imported once). Applied only with Steve's consent.
+          replicas: 2
         writer:
           gpu: false
       ingestion:

@@ -348,8 +348,14 @@ func TestAnalyticsProcessorRendersControlDBURIAndEscapesSecrets(t *testing.T) {
 	if config.Clickhouse.Password != values["CLICKHOUSE_PASSWORD"] {
 		t.Error("ClickHouse password changed during render")
 	}
-	if len(config.Oramacores) != 1 || config.Oramacores[0].APIKey != values["ANALYTICS_API_KEY"] {
-		t.Error("analytics key changed during render")
+	// One source per reader ordinal (analyticsSources), each with the analytics key.
+	if len(config.Oramacores) != int(readerReplicas(oc)) {
+		t.Errorf("rendered %d sources, want one per reader (%d)", len(config.Oramacores), readerReplicas(oc))
+	}
+	for _, src := range config.Oramacores {
+		if src.APIKey != values["ANALYTICS_API_KEY"] {
+			t.Error("analytics key changed during render")
+		}
 	}
 	if config.Postgres.URL != values["PG_URI"] {
 		t.Error("Postgres URI changed during render")

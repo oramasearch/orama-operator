@@ -250,7 +250,7 @@ type ComponentsSpec struct {
 	Workers   WorkersSpec   `json:"workers,omitempty"` // the ported CF workers (one bundled image)
 
 	// Additional v1 components (gap fill — techops-docs issues #5–#7):
-	AnalyticsProcessor Toggle `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
+	AnalyticsProcessor AnalyticsProcessorSpec `json:"analyticsProcessor,omitempty"` // pulls /v1/analytics → ClickHouse
 	// Deprecated: oramasearch-app (api.askorama.ai, the legacy "old dashboard") just redirects to
 	// the new app, so it is NOT run in-cluster — the reconciler is unwired (operator#35). Field
 	// kept for API compatibility; setting it has no effect.
@@ -512,6 +512,26 @@ type Toggle struct {
 	// sensible per-component default (workload hardening, #18).
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// AnalyticsProcessorSpec is the analytics processor's toggle plus its scheduled import.
+type AnalyticsProcessorSpec struct {
+	Toggle `json:",inline"`
+	// Import schedules the processor's POST /import, which pulls every reader once.
+	// +optional
+	Import AnalyticsImportSpec `json:"import,omitempty"`
+}
+
+// AnalyticsImportSpec controls the <cr>-analytics-import CronJob. Its schedule is fixed (every five
+// minutes, UTC).
+type AnalyticsImportSpec struct {
+	// Enabled creates the CronJob. It requires the engine, analytics and controlDB components.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Suspend keeps the CronJob, the processor and its sources in place but starts no new Job. It is
+	// copied to the CronJob's spec.suspend.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // ToggleWithHost is a toggle plus an ingress host.

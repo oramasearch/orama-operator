@@ -514,10 +514,14 @@ const clickhouseMemoryXML = `<clickhouse>
 </clickhouse>
 `
 
+// clickhouseImage is the analytics ClickHouse server's default image. The analytics retention Job
+// runs its clickhouse-client (reconcileAnalyticsRetention).
+const clickhouseImage = "clickhouse/clickhouse-server:24.8"
+
 func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Analytics, dataStoreDef{
 		component: "analytics",
-		image:     "clickhouse/clickhouse-server:24.8",
+		image:     clickhouseImage,
 		ports: []corev1.ContainerPort{
 			{Name: "http", ContainerPort: 8123},
 			{Name: "native", ContainerPort: 9000},

@@ -17,7 +17,7 @@ pointing at the primary); the full sample list is in
 | `profile` | enum | `light` | `light` (dev/no-repl) · `medium` (single-tenant prod) · `heavy` (multi-tenant). Presets replication + sizing. |
 | `idp.provider` | enum | `none` | `none \| keycloak \| firebase \| clerk`. |
 | `jwtIssuer` | string | — | The issuer of the stack's write tokens: the shared ConfigMap's `JWT_ISSUER`, which the dashboard signs with, and the only issuer the writer accepts ([below](#speccomponentsenginewriterjwt)). At most 128 characters. No CRD default, because a production issuer is chosen on purpose: `engine.writer.jwt` refuses an empty one. With `engine.writer.jwt` unset an empty value gives `JWT_ISSUER: orama-cloud`. A change rolls the dashboard and, with `engine.writer.jwt` set, the writer. |
-| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile while the engine is enabled) run the writer-only and reader-only OramaCore builds with their own `writer.yaml` and `reader.yaml`, and win over `overrides.oramacore`; unset, both pods run the combined image, so every reader also runs a writer ([components.md](components.md#engine-internalcontrollerenginego)). |
+| `images.registry/tag/overrides` | — | `oramasearch` / `latest` | Image resolution (overrides win). **`tag` applies to the operator's OWN built images only.** Reused published images resolve independently (off `:latest`, not the sandbox tag): `oramacore` → `oramasearch/oramacore:latest`; `embeddings` (the engine ai-server :50051) → `oramasearch/oramacore-ai-server:latest`, or `-cuda` when `writer.gpu`. Override either via `overrides.oramacore` / `overrides.embeddings`. `overrides.analytics-import` replaces the analytics import's `curlimages/curl:8.10.1` ([`analyticsProcessor.import`](#analyticsprocessorimport)). `overrides.oramacore-writer` and `overrides.oramacore-reader` (set both or neither; one alone fails the reconcile while the engine is enabled) run the writer-only and reader-only OramaCore builds with their own `writer.yaml` and `reader.yaml`, and win over `overrides.oramacore`; unset, both pods run the combined image, so every reader also runs a writer ([components.md](components.md#engine-internalcontrollerenginego)). |
 | `images.pullSecretName` | string | — | docker-registry Secret (CR namespace) for **private** images — e.g. the private Docker Hub repos built by the bridge's [`build/images`](https://github.com/oramasearch/orama-cloud-v1-bridge/tree/main/build/images) tooling. Attached to every pod. |
 | `llm.providers[]` | list | Prod 1's four ([below](#specllm)) | **Multiple** LLM providers (`name`: `groq \| openai \| anthropic \| google \| vllm`, `models[]`, `apiKeySecretRef: {name}`, `gpu`) — end users pick per query. The first model is the provider's default model. |
 | `llm.default` | string | `groq` | Provider used when a request doesn't name one; must be one of the providers. |
@@ -174,6 +174,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `search` | data-store | Typesense hosted-search |
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
+| `analyticsProcessor` | `resources`, `import.{enabled,suspend}` | analytics-processor (readers' search events → ClickHouse) + its scheduled import |
 
 `engine.reader.replicas` is the fixed number of readers (0 or unset → 3), each with its own data
 volume (`10Gi` unless `engine.reader.storage` says otherwise, [below](#component-storage)); `engine.reader.hpa` is accepted but ignored: no autoscaler is
@@ -186,6 +187,22 @@ and **40 minutes for readers** (`failureThreshold: 240`), both at a 10s period o
 these budgets add no mandatory delay. There are no per-side startup timeout fields.
 Readiness remains every 10s and liveness every 15s, both with a 3s timeout and failure
 threshold 3. See [engine health probes](components.md#engine-internalcontrollerenginego).
+
+### `analyticsProcessor.import`
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Owns the CronJob `<cr>-analytics-import`, which sends `POST /import` and then `POST /aggregate2` to the processor every five minutes (UTC), as Prod 1's importer and aggregator timers do. Its curl image is `curlimages/curl:8.10.1`, or `spec.images.overrides["analytics-import"]`. Requires `engine`, `analytics` (the in-cluster ClickHouse) and `controlDB` enabled and `engine.reader.replicas` of zero (→ 3) or more. |
+| `suspend` | `false` | Copied to the CronJob's `spec.suspend`. The CronJob, the readers' headless Service and the processor's sources stay in place; no new Job starts. A Job already running finishes, and the readers keep the events logged meanwhile: the first import after resuming takes them. |
+
+The schedule is fixed; there is no per-stack schedule. The processor's sources are the same whether
+the import is enabled, disabled or suspended: each reader ordinal once, through
+`<cr>-reader-headless` ([components.md](components.md#analytics-import)). A missing prerequisite or
+a negative reader count removes the CronJob (suspended or not) and fails the reconcile with
+`Ready=False` (`ReconcileError`) naming it; this check runs before every other step, so an earlier
+component's failure cannot leave an old schedule running. `import.enabled: false` removes the
+CronJob; `analyticsProcessor.enabled: false` removes the CronJob and the processor's Deployment,
+Service, ConfigMap and retention Job, and reports no import error.
 
 ### Extra hosts (`extraHosts`)
 
@@ -583,7 +600,9 @@ is a curl+jq script that self-bootstraps a clean-slate collection+index and asse
 OramaCore function in variations** — liveness, auth (keys + negatives), collection/index lifecycle +
 document CRUD/upsert/delete, the write→searchable replication canary, fulltext (typo tolerance/exact/
 threshold/boost/pagination), vector + hybrid, filters (number/date/bool/string/geo + and/or/not),
-facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, analytics, and answer/RAG. It is the
+facets, sort, groupBy, batch-get, KV, hooks, merchandising, MCP, and answer/RAG. It never calls the
+analytics export, which erases the readers' search events: only the analytics processor pulls them
+([#315](https://github.com/oramasearch/orama-operator/issues/315)). It is the
 forcing function (see the production-migration principle in `CLAUDE.md`) — never softened to pass.
 Coverage is tracked by [operator#44](https://github.com/oramasearch/orama-operator/issues/44).
 Sample: [`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).

@@ -28,7 +28,9 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **search** | `internal/controller/datastore.go` | Typesense `StatefulSet` + Service (8108) | ✅ **done** (validated on AKS) |
 | **disco** | `internal/controller/disco.go` | `Deployment` (DISCO + embeddings sidecar) + Service | ✅ **done** (validated on AKS) |
 | **workers** | `internal/controller/app.go` | one bundled-image `Deployment` + Service | ✅ **done** (validated on AKS) |
-| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service — polls the readers' `/v1/analytics` with the analytics key (`<cr>-analytics-api-key`, no master key) → ClickHouse | 🟡 **modeled** ([#5](https://github.com/oramasearch/orama-operator/issues/5); image is a follow-up) |
+| **analytics-processor** | `internal/controller/gaps.go` | `Deployment` + Service + labelled config `ConfigMap` — pulls each reader's `/v1/analytics` once per import, by its own address through `<cr>-reader-headless`, with the analytics key (`<cr>-analytics-api-key`, no master key) → ClickHouse. The image must carry the bridge's `0.0.0.0:8080` listener patch ([Analytics import](#analytics-import)) | 🟡 **implemented**, unit-tested; import on `v1-dev` pending ([#5](https://github.com/oramasearch/orama-operator/issues/5), [#388](https://github.com/oramasearch/orama-operator/issues/388)) |
+| **analytics-import** | `internal/controller/gaps.go` | opt-in `CronJob` `<cr>-analytics-import`: `POST /import`, then `POST /aggregate2`, to the processor every five minutes (UTC), `Forbid`, no retries, no credentials; `import.suspend` → `spec.suspend` | 🟡 **implemented**, unit-tested; scheduled run on `v1-dev` pending ([#388](https://github.com/oramasearch/orama-operator/issues/388)) |
+| **analytics-retention** | `internal/controller/gaps.go` | `Job` `<cr>-analytics-retention`: sets a 30-day TTL on the processor's three ClickHouse tables, once per script version; `status.components[analytics-retention]` reads `applied`, `pending` or `failed, retrying` | 🟡 **implemented**, unit-tested; not live-tested ([#388](https://github.com/oramasearch/orama-operator/issues/388)) |
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy); unwired, so its `host` and `extraHosts` are API-only (checked for duplicates, never served) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
 | **cloudflare** | `internal/controller/cloudflare.go`, `cloudflarednsrecord_controller.go` | owned DNS child CRs; create marked records, reconcile only owned or legacy-ID records, and check ownership before cleanup | 🟡 **implemented**; HTTP/fake-client and local API-server tests pass; Lake and `oramadev.net` live proof pending approval |
@@ -440,7 +442,8 @@ Driven by `spec.region.role`:
   - **Headless Service** `<cr>-reader-headless` (`clusterIP: None`, reader selectors, `http`
     `:8080` straight to OramaCore with Envoy on or off, Ready pods only) is the StatefulSet's
     `serviceName` from creation, with analytics on or off, so each Ready reader is addressable as
-    `<cr>-reader-<n>.<cr>-reader-headless.<ns>.svc:8080`.
+    `<cr>-reader-<n>.<cr>-reader-headless.<ns>.svc:8080`. analytics-processor reaches each reader
+    by that name ([Analytics import](#analytics-import)); disabling the import keeps the Service.
   - **From a reader Deployment.** Earlier operator versions ran `<cr>-reader` as a Deployment on an
     `emptyDir`. The operator deletes that Deployment (only when the CR controls it) with foreground
     propagation and creates the StatefulSet once it and its pods are gone; the reconcile reports
@@ -548,8 +551,8 @@ Driven by `spec.region.role`:
   `metadata_from_headers` (`user-agent`→`ua`, `CF-Connecting-IP`→`ip`, `CF-IPCountry`→`country`,
   `continent`, `colo`, `latitude`, `longitude`), which OramaCore requires; a request without these
   headers is still served. With it each reader logs search events under its `data_dir` and serves
-  them once on `GET /v1/analytics`, which erases what it returns; analytics-processor polls it with
-  the analytics key. The writer config has no reader side and no analytics block, and the combined
+  them once on `GET /v1/analytics`, which erases what it returns; analytics-processor pulls each
+  reader once per import with the analytics key ([Analytics import](#analytics-import)). The writer config has no reader side and no analytics block, and the combined
   `config.yaml` has none either, so on the combined image readers record no search events. Only the
   readers' render-config reads the analytics key.
   The `ai_server` LLM settings come from `spec.llm` (`engine_llm.go`): `ai_server.llm` is the
@@ -1070,10 +1073,90 @@ each user's `crontab -l`, `/etc/crontab`, `/etc/cron.d`, `/etc/cron.*`) is still
 | `oramacore.test-e2e.timer` → `.service` (user `test-e2e`, binary `monitor-e2e` from the `monitor-test` release asset) | `OnBootSec=1min`, `OnUnitActiveSec=5min`, `Persistent=false` | orama-deploy `oramacore-test-e2e/production/`, `oramacore-test-e2e.production.json` | The canary above, against collection `790cea05`, with the CF worker, the AWS load balancer and the three regional readers as extra readers; state in `test-state.json`, metrics through node_exporter | Moved: `<cr>-e2e-canary`, `*/5 * * * *` (decision 11) |
 | `collection-prune.timer` → `.service` (root) | `OnCalendar=*-*-* 04:30:00 UTC`, `Persistent=true`, `OnBootSec=10min`, `TimeoutSec=600` | oramacore-aws `terraform/scripts/oramacore-custom-metrics/collection_prune-crons.sh` | The prune above | Moved into `<cr>-e2e-canary`'s daily run until the canary's leak is fixed, then dropped (decision 11) |
 | `collection-doc-count.timer` → `.service` | `OnBootSec=3min`, `OnUnitActiveSec=30min` | `collection_doc_count-crons.sh` | Exports the canary collection's document count, which warns at 400 of the 500-document cap | Dropped: the prune keeps the collection under the cap (decision 11) |
-| `analytics-processor.check-env.timer` | `OnUnitActiveSec=4min` | orama-deploy `analytics.production.json`, `analytics/prod/systemd/` | Analytics processor environment check | Not in this change: analytics processing maps to the combined import ([#421](https://github.com/oramasearch/orama-operator/pull/421) with #419, #422, #448). Decision 11 names only the canary's three timers, so Steve's confirmation for these rows is pending |
-| `analytics-processor.importer.timer` | `OnUnitActiveSec=5min` | as above | Analytics import | As above |
-| `analytics-processor.aggregator.timer` | `OnUnitActiveSec=5min` | as above | Analytics aggregation | As above |
+| `analytics-processor.check-env.timer` | `OnUnitActiveSec=4min` | orama-deploy `analytics.production.json`, `analytics/prod/systemd/` | Analytics processor environment check | Not in this change. Decision 11 names only the canary's three timers, so Steve's decision for this row is pending ([#576](https://github.com/oramasearch/orama-operator/issues/576)) |
+| `analytics-processor.importer.timer` | `OnUnitActiveSec=5min` | as above | Analytics import | Moved: `<cr>-analytics-import` runs `POST /import` every five minutes ([#421](https://github.com/oramasearch/orama-operator/pull/421), parity) |
+| `analytics-processor.aggregator.timer` | `OnUnitActiveSec=5min` | as above | Analytics aggregation | Moved: the same Job runs `POST /aggregate2`, the aggregator binary's code, after each import ([#421](https://github.com/oramasearch/orama-operator/pull/421), parity; [#576](https://github.com/oramasearch/orama-operator/issues/576)) |
 | CloudWatch agent, SSM agent (from `user_data`), Grafana Alloy and node_exporter | daemons, not schedules | oramacore-aws `terraform/modules/orama-crons/main.tf`, the scripts' headers | Host metrics and shipping, remote shell | Dropped with the host: Prod 2's monitoring is in-cluster ([#15](https://github.com/oramasearch/orama-operator/issues/15)) |
+
+## Analytics import (`gaps.go`)
+
+Each reader logs search events and serves them once through `GET /v1/analytics`, which returns
+and erases them. analytics-processor's `POST /import` reads every source in its config and writes
+the events to the in-cluster ClickHouse; nothing else may call the export, so the functional e2e
+suite does not ([#315](https://github.com/oramasearch/orama-operator/issues/315)).
+
+- **Sources.** `oramacores` lists reader ordinals `0..replicas-1`, each once, where `replicas` is
+  `engine.reader.replicas` (0 or unset → 3), the same number the reader StatefulSet uses. Entry
+  `n` is `name: <cr>-reader-<n>`,
+  `api_url: http://<cr>-reader-<n>.<cr>-reader-headless.<ns>.svc:8080/v1/analytics`, the analytics
+  key and `enabled: true`. There is no writer entry (the writer has no reader side) and no entry
+  for the load-balanced `<cr>-reader`, which would drain whichever reader it reached. The list
+  comes from the spec, never the live pods or claims, and is the same whether the import is
+  enabled, disabled or suspended. The processor Deployment's `orama.cloud/config-hash` is the
+  SHA-256 of the unrendered `config.yaml`, so a changed reader count rolls the processor and
+  re-renders its config; the credentials hash rolls it when a key changes.
+- **Schedule.** With `analyticsProcessor.import.enabled`, the operator owns the CronJob
+  `<cr>-analytics-import`: schedule `*/5 * * * *` in `Etc/UTC` (fixed), `concurrencyPolicy: Forbid`,
+  `startingDeadlineSeconds: 60`, one successful and one failed Job kept. Each Job has
+  `backoffLimit: 0`, `activeDeadlineSeconds: 300` and `ttlSecondsAfterFinished: 3600`; its pod
+  (`restartPolicy: Never`, no service-account token, the stack's pull secrets, the hardening
+  baseline, 32Mi/10m requests and a 64Mi limit) runs `curlimages/curl:8.10.1`, or
+  `spec.images.overrides["analytics-import"]` so a set can pin it by digest, with `sh -c`
+  (`analyticsImportScript`): `curl --fail --silent --show-error --connect-timeout 10 --request POST
+  --max-time 180 http://<cr>-analytics-processor:8080/import`, then the same flags with
+  `--max-time 110` on `/aggregate2`. Both fit inside the Job's 300 s. It holds no credentials:
+  neither route takes any.
+- **Aggregation.** Prod 1 runs `analytics-processor.aggregator.timer` every five minutes beside the
+  importer (orama-deploy `analytics/prod/systemd`). `POST /import` only writes raw events; the
+  processor's `POST /aggregate2` route runs the same `Aggregator::aggregate` as Prod 1's
+  `aggregator` binary and takes no parameters: it aggregates the next time range recorded in the
+  control DB's `analytics.runs` table into `oramacore_analytics_search_aggregated`, which the
+  dashboard's top terms, no-results and header totals read. Without it those stay empty. The Job
+  calls it after the import, and also when the import failed, as Prod 1's two independent timers
+  would; the Job fails when either call fails. Coverage of the aggregator row on Prod 1's crons host
+  is tracked in [#576](https://github.com/oramasearch/orama-operator/issues/576).
+- **No retries, on purpose.** Every import drains the readers, so a second request while one runs,
+  or a retry of a request that timed out on the client while the server finishes it, can split or
+  lose events. `Forbid` stops scheduled Jobs from overlapping; it cannot stop the server finishing
+  a timed-out request or another caller invoking `/import`. The processor visits its sources in
+  order and stops at the first error, so a failed run may have imported some readers and not
+  reached the rest. A reader that is not Ready has no address on `<cr>-reader-headless`, so it
+  fails every run at its ordinal and blocks the import of every later reader until it is Ready
+  again; those readers keep their events logged meanwhile. A failed run shows in the Job's status and the processor's logs; the next
+  scheduled run is the next attempt. "Each reader once" is one source per ordinal and one export
+  call per healthy run, not a durable exactly-once delivery.
+- **Suspend.** `import.suspend: true` sets the CronJob's `spec.suspend` and keeps the CronJob, the
+  headless Service and the sources, so the cutover flips one line. It stops new Jobs only: a
+  running Job finishes, and the readers keep the events logged while suspended, which the first
+  import after resuming takes. Unset writes `spec.suspend: false`, the API default.
+- **Prerequisites and teardown.** An enabled import needs `engine`, `analytics` (in-cluster) and
+  `controlDB` enabled and a reader count of zero (→ 3) or more. Otherwise the CronJob is removed,
+  suspended or not, and the reconcile fails naming what is missing. `Reconcile` runs this check
+  (`guardAnalyticsImport`) right after reading the CR, before any component step, so an earlier
+  failure cannot keep an old schedule running. `import.enabled: false` removes the CronJob and
+  keeps the headless Service. `analyticsProcessor.enabled: false` removes the CronJob, the retention
+  Job and the processor's Deployment, Service and `<cr>-analytics-processor-config` (also an older
+  operator's unlabelled one, when the CR controls it; a ConfigMap of that name it does not control
+  is left alone). The processor and its config are reconciled before the CronJob.
+- **Retention.** ClickHouse keeps analytics for 30 days (Cloud v1 migration
+  [decision 4 of 16 Oct](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-16.md#4-analytics-start-fresh-and-prod-2-keeps-30-days): analytics start fresh at the cutover). The processor creates its three tables at start without a TTL, so
+  the operator owns the Job `<cr>-analytics-retention`, created whenever the processor runs on the
+  in-cluster ClickHouse. It runs `clickhouse-client` from the stack's ClickHouse image as the
+  `default` user (password by `secretKeyRef` from `<cr>-analytics-secret`), fails until all three
+  tables exist (retried by the Job, `backoffLimit: 10`), then runs
+  `ALTER TABLE ... MODIFY TTL <column> + INTERVAL 30 DAY` (`timestamp` on the search and
+  interaction tables, `created_at` on the aggregated one) only where `system.tables` shows another
+  TTL. The Job's `orama.cloud/retention-hash` annotation is the hash of its script: a different
+  script, or a Job whose retries are exhausted, is deleted (foreground) and created again on the
+  next reconcile. A succeeded Job is kept as the record and makes the status entry
+  `analytics-retention` Ready (`applied`). The operator has no ClickHouse schema kind yet; a
+  `ClickHouseSchema` kind ([`datastore-crds.md`](datastore-crds.md)) could replace this Job.
+- **Processor image.** The image must carry the bridge's listener patch
+  (`orama-cloud-v1-bridge/build/images/analytics-processor/Dockerfile`, which changes
+  `src/bin/server.rs` at build to bind `0.0.0.0:8080`). Upstream
+  ([`11a6c2d`](https://github.com/oramasearch/analytics-processor/blob/11a6c2dd5c6db86bed2c617940c09b43d36e2c62/src/bin/server.rs))
+  binds `127.0.0.1:8888`, which neither the Service, its probes nor the import Job can reach, so
+  every run would fail to connect.
 
 ## DISCO (`disco.go`)
 
