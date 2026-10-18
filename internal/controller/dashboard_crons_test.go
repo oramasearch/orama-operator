@@ -380,11 +380,6 @@ func TestDashboardCronsConfigurationErrors(t *testing.T) {
 			d.Env = []corev1.EnvVar{{Name: "CRON_SECRET", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: "missing"}, Key: "cron", Optional: optional()}}}}
 		}), err: "dashboard.crons CRON_SECRET: Secret orama-system/missing does not exist"},
-		{name: "a missing canary Secret", oc: cronOC(withCanary), objs: []client.Object{dashEnvSecret()},
-			err: "dashboard.crons.e2eCanary.secretRef: Secret orama-system/canary does not exist"},
-		{name: "a canary Secret without the API key", oc: cronOC(withCanary),
-			objs: []client.Object{dashEnvSecret(), secretOf("canary", map[string]string{"collectionID": "col-1", "indexID": "idx-1"})},
-			err:  "dashboard.crons.e2eCanary.secretRef: Secret orama-system/canary has no non-empty key apiKey"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -484,20 +479,15 @@ func TestE2ECanaryCronJob(t *testing.T) {
 		pvc.Spec.Resources.Requests.Storage().Cmp(resource.MustParse("1Gi")) != 0 || pvc.Spec.AccessModes[0] != corev1.ReadWriteOnce {
 		t.Fatalf("state volume %+v", pvc)
 	}
-	cond := meta.FindStatusCondition(h.stored().Status.Conditions, "E2ECanary")
-	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != "Suspended" {
-		t.Fatalf("E2ECanary condition %+v", cond)
-	}
-
+	// The canary follows crons.suspend, as the dashboard crons do.
 	h.updateCR(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.Components.Dashboard.Crons.E2ECanary.Suspend = boolPtr(false)
+		o.Spec.Components.Dashboard.Crons.Suspend = boolPtr(false)
 	})
 	h.mustRun()
-	if crons := h.cronJobs(); *crons["v1-e2e-canary"].Spec.Suspend || !*crons["v1-dashboard-cron-crawler"].Spec.Suspend {
-		t.Error("the canary's suspend must follow e2eCanary.suspend alone")
-	}
-	if cond := meta.FindStatusCondition(h.stored().Status.Conditions, "E2ECanary"); cond.Reason != "Scheduled" {
-		t.Errorf("E2ECanary condition %+v", cond)
+	for name, cj := range h.cronJobs() {
+		if *cj.Spec.Suspend {
+			t.Errorf("%s still suspended after crons.suspend=false", name)
+		}
 	}
 
 	h.updateCR(func(o *oramav1alpha1.OramaCloudV1) { o.Spec.Components.Dashboard.Crons.E2ECanary = nil })
@@ -505,28 +495,34 @@ func TestE2ECanaryCronJob(t *testing.T) {
 	if _, ok := h.cronJobs()["v1-e2e-canary"]; ok || h.get("v1-e2e-canary-state", &corev1.PersistentVolumeClaim{}) {
 		t.Error("removing e2eCanary left its CronJob or state volume")
 	}
-	if meta.FindStatusCondition(h.stored().Status.Conditions, "E2ECanary") != nil {
-		t.Error("the E2ECanary condition outlived the canary")
-	}
 }
 
-func TestE2ECanaryWithoutAPinnedImageIsNotCreated(t *testing.T) {
-	for name, image := range map[string]string{"unset": "", "a tag": "oramasearch/oramacore-test-e2e:latest"} {
+// A missing or partial canary Secret must not keep the dashboard crons from being written: they are
+// written first, and the reconcile then fails on the canary alone.
+func TestE2ECanarySecretErrorsLeaveTheDashboardCrons(t *testing.T) {
+	for name, objs := range map[string][]client.Object{
+		"missing": {dashEnvSecret()},
+		"partial": {dashEnvSecret(), secretOf("canary", map[string]string{"collectionID": "col-1", "indexID": "idx-1"})},
+	} {
 		t.Run(name, func(t *testing.T) {
-			h := newEngineHarness(t, cronOC(func(d *oramav1alpha1.DashboardSpec) {
-				withCanary(d)
-				d.Crons.E2ECanary.Image = image
-			}), dashEnvSecret()) // no canary Secret either: nothing reads it without an image
-			h.mustRun()
+			h := newEngineHarness(t, append([]client.Object{cronOC(withCanary)}, objs...)...)
+			h.mustFail("dashboard.crons.e2eCanary.secretRef: Secret orama-system/canary")
 			if got := cronNames(h.cronJobs()); !reflect.DeepEqual(got, dashboardCronNames) {
-				t.Fatalf("CronJobs %v, want only the dashboard's", got)
+				t.Fatalf("CronJobs %v, want the dashboard's three", got)
 			}
 			if h.get("v1-e2e-canary-state", &corev1.PersistentVolumeClaim{}) {
-				t.Fatal("state volume created without a canary")
+				t.Fatal("state volume created before the canary Secret was valid")
 			}
-			cond := meta.FindStatusCondition(h.stored().Status.Conditions, "E2ECanary")
-			if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != "ImageNotPinned" {
-				t.Fatalf("E2ECanary condition %+v", cond)
+			if name == "missing" {
+				if err := h.cl.Create(context.Background(), canarySecret()); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				h.setSecret("canary", "apiKey", canaryKey)
+			}
+			h.mustRun()
+			if _, ok := h.cronJobs()["v1-e2e-canary"]; !ok {
+				t.Fatal("the canary was not created once its Secret was complete")
 			}
 		})
 	}
@@ -574,6 +570,11 @@ func TestDashboardCronsAdmission(t *testing.T) {
 		{name: "both off", mut: func(d *oramav1alpha1.DashboardSpec) { d.Enabled = false }},
 		{name: "a pinned canary", mut: func(d *oramav1alpha1.DashboardSpec) { d.Crons.Enabled = true; withCanary(d) }},
 		{name: "a canary without crons", mut: withCanary, err: "dashboard.crons.e2eCanary requires dashboard.crons enabled"},
+		{name: "a canary without an image", mut: func(d *oramav1alpha1.DashboardSpec) {
+			d.Crons.Enabled = true
+			withCanary(d)
+			d.Crons.E2ECanary.Image = ""
+		}, err: "spec.components.dashboard.crons.e2eCanary.image"},
 		{name: "a canary on a tag", mut: func(d *oramav1alpha1.DashboardSpec) {
 			d.Crons.Enabled = true
 			withCanary(d)

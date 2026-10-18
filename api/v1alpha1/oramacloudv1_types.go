@@ -417,37 +417,31 @@ type DashboardCronsSpec struct {
 	// Enabled creates the three CronJobs. Disabling deletes them.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
-	// Suspend is copied to the three CronJobs' spec.suspend. It stops new runs and does not cancel
-	// a run already in progress.
+	// Suspend is copied to the spec.suspend of the three CronJobs and the e2e canary's. It stops new
+	// runs and does not cancel a run already in progress.
 	// +kubebuilder:default=true
 	// +optional
 	Suspend *bool `json:"suspend,omitempty"`
 	// E2ECanary runs Prod 1's e2e canary (every five minutes) and its collection prune (daily at
-	// 04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. Removing it deletes the
-	// CronJob and its state volume.
+	// 04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. It follows crons.suspend.
+	// Removing it deletes the CronJob and its state volume.
 	// +optional
 	E2ECanary *E2ECanarySpec `json:"e2eCanary,omitempty"`
 }
 
-// E2ECanarySpec is the canary's image, target and suspension. The canary signs in through the
-// in-cluster dashboard's /api/user/jwt with the canary project's private API key, writes a probe
-// document and checks it on the readers the dashboard returns and on the in-cluster reader.
+// E2ECanarySpec is the canary's image and target. The canary signs in through the in-cluster
+// dashboard's /api/user/jwt with the canary project's private API key, writes a probe document and
+// checks it on the readers the dashboard returns and on the in-cluster reader.
 // +kubebuilder:validation:XValidation:rule="has(self.secretRef.name) && size(self.secretRef.name) > 0",message="dashboard.crons.e2eCanary.secretRef needs a name"
 type E2ECanarySpec struct {
 	// Image runs monitor-test (oramacore-test-e2e) and provides /bin/sh, curl and jq for the prune.
-	// It must be pinned to a digest (name@sha256:<64 hex>). Without a pinned image the CronJob is
-	// not created and status.conditions[E2ECanary] says why.
+	// It must be pinned to a digest (name@sha256:<64 hex>).
 	// +kubebuilder:validation:Pattern=`^[^@\s]+@sha256:[a-f0-9]{64}$`
-	// +optional
-	Image string `json:"image,omitempty"`
+	Image string `json:"image"`
 	// SecretRef names a Secret in the instance's namespace with the non-empty keys collectionID,
 	// indexID and apiKey: the canary collection, its index, and the project's private API key.
 	// Delivered through the set's secrets list.
 	SecretRef corev1.LocalObjectReference `json:"secretRef"`
-	// Suspend is copied to the CronJob's spec.suspend.
-	// +kubebuilder:default=true
-	// +optional
-	Suspend *bool `json:"suspend,omitempty"`
 }
 
 // PeerSpec identifies another region for cross-cluster wiring (no mesh).

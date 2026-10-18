@@ -239,10 +239,9 @@ nothing. `dashboard_crons.go`; behaviour and the Prod 1 inventory are in
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `bool` | `false` | Creates the three dashboard CronJobs; `false` deletes them, and the canary with them. |
-| `suspend` | `*bool` | `true` | Copied to the three CronJobs' `spec.suspend`. Stops new runs; a run in progress finishes. |
-| `e2eCanary.image` | `string` | none | The canary image, pinned to a digest (`name@sha256:<64 hex>`; the CRD refuses anything else). It runs `monitor-test` and provides `/bin/sh`, `curl` and `jq` for the prune. Unset, the canary CronJob is not created and `status.conditions[E2ECanary]` says so. |
+| `suspend` | `*bool` | `true` | Copied to the `spec.suspend` of the three CronJobs and `<cr>-e2e-canary`. Stops new runs; a run in progress finishes. |
+| `e2eCanary.image` | `string` | required | The canary image, pinned to a digest (`name@sha256:<64 hex>`; the CRD refuses anything else). It runs `monitor-test` and provides `/bin/sh`, `curl` and `jq` for the prune. |
 | `e2eCanary.secretRef.name` | `string` | required | A Secret in the instance's namespace with non-empty keys `collectionID`, `indexID` and `apiKey` (the canary project's private API key), delivered through the set's `secrets` list. |
-| `e2eCanary.suspend` | `*bool` | `true` | Copied to `<cr>-e2e-canary`'s `spec.suspend`, independently of `suspend`. |
 
 The schedules are Prod 1's and fixed, in UTC:
 
@@ -268,8 +267,9 @@ spec:
           image: oramasearch/oramacore-test-e2e@sha256:<digest>
           secretRef:
             name: v1-prod-e2e-canary
-          suspend: true
 ```
+
+No set file carries `e2eCanary` yet: the canary image is not built, and the CRD requires it.
 
 **Admission.** `crons.enabled: true` needs `dashboard.enabled: true` (`dashboard.crons requires the
 dashboard enabled`), and `e2eCanary` needs `crons.enabled: true`. To turn a running dashboard off,
@@ -287,16 +287,10 @@ the key must be non-empty, even when the dashboard's reference is `optional`.
 
 **Errors.** A missing source, Secret or key, a canary Secret without its three keys, or a same-name
 CronJob or claim this CR does not control fails the `dashboard` step with `Ready=False`
-(`ReconcileError`) and a message naming the field and the object, never a value. Nothing is written
-until every input checks out; a foreign object is left unchanged. Run outcomes appear in Job status and
-logs only.
-
-### `status.conditions[E2ECanary]`
-
-Present while the dashboard, `crons` and `crons.e2eCanary` are all set. `False` (`ImageNotPinned`) when
-`e2eCanary.image` is unset or not pinned to a digest, so `<cr>-e2e-canary` is not created. `True` with
-reason `Suspended` or `Scheduled` once the CronJob exists. It is derived from the spec, does not
-change the stack's `phase`, and is written only when it changes.
+(`ReconcileError`) and a message naming the field and the object, never a value. The dashboard crons'
+inputs are checked before the first of them is written; the canary's Secret is checked after the three
+are written, so a canary problem never keeps the dashboard crons from running. A foreign object is
+left unchanged. Run outcomes appear in Job status and logs only.
 
 ## `status`
 

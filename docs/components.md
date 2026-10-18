@@ -643,11 +643,13 @@ suspended. Field reference: [crd-reference.md](crd-reference.md#speccomponentsda
 
 **Cutover.** `suspend` changes only through a committed change to the set file
 `config/clusters/sets/v1-prod.yaml` (member `v1-eu`; `v1-us` never runs the crons), applied to the
-managing cluster `orama-production-cluster-01`, in the same cutover step that turns Prod 1's Vercel
-crons off. Never by editing, patching or creating the CronJobs. Prod 1's schedules are stopped and
-verified first, then Prod 2 is unsuspended; a short gap is acceptable. The canary unsuspends the same
-way (`e2eCanary.suspend`) after Prod 1's crons host timers are stopped (cutover runbook step 2), since
-those call `app.orama.com/api/user/jwt` and would write to Prod 2. Rollback commits `suspend: true`
+managing cluster `orama-production-cluster-01`, never by editing, patching or creating the CronJobs.
+The cutover runbook turns Prod 1's Vercel crons off at step 1 and stops Prod 1's crons host timers at
+step 2 (they call `app.orama.com/api/user/jwt` and would write to Prod 2), and resumes Prod 2's
+CronJobs at step 5, after `app.orama.com` points at Prod 2 (step 4): the crawler reports to
+`${NEXT_PUBLIC_APP_URL}/api/private/v1/update-crawl-status`, which is `app.orama.com`, so started
+earlier its results would reach Prod 1. No crawl runs between steps 1 and 5; that gap is accepted.
+The canary follows the same `suspend`, so it resumes with the dashboard crons. Rollback commits `suspend: true`
 first and waits for active Jobs to finish. The runbook is orama-bridge
 [`docs/projects/orama-cloud-v1/cutover-runbook.md`](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/cutover-runbook.md)
 (preconditions P6 and P7, branch `cutover/v1-eu-crons`).
