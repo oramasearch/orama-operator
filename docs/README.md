@@ -22,7 +22,7 @@ Deep docs for the operator. Kept in lockstep with the source (see the repo
 - [`development.md`](development.md) — build, codegen, run, and the AKS smoke test.
 - [`releases/README.md`](releases/README.md) — **releases**: one page per tagged release and the conventions for cutting one; [`releases/v0.3.0.md`](releases/v0.3.0.md) is the current release; [`releases/v0.2.0.md`](releases/v0.2.0.md) the one before; [`releases/v0.1.0.md`](releases/v0.1.0.md) is the first and lists every resource kind.
 - [`crd-reference.md`](crd-reference.md) — the field reference for every resource kind, including DNS ownership status and cleanup.
-- [`components.md`](components.md) — what each component reconciler creates, its status, and the create-only DNS ownership contract.
+- [`components.md`](components.md) — what each component reconciler creates, its status, and the create-only DNS ownership contract, and operator-managed component storage growth.
 - [`datastore-crds.md`](datastore-crds.md) — **datastore state as declarative, owned CRDs** ([#40](https://github.com/oramasearch/orama-operator/issues/40)): the reconciled-CRD pattern and the `RabbitMQTopology` broker topology (vhosts/users/permissions/streams via the management API).
 - [`zetta-datastore.md`](zetta-datastore.md) — **Zetta as the operator's datastore** (One Orama symbiosis v0): the `orama_control` / `orama_data` schema, how it's provisioned over `/v1/sql`, and the desired-vs-observed source-of-truth boundary, and the cross-cluster topology table, whose peer rows are validated as untrusted input ([operator#279](https://github.com/oramasearch/orama-operator/issues/279)).
 - [`zetta-cluster-mtls.md`](zetta-cluster-mtls.md) — **the shared cluster join token**: how the operator mints one token per `OramaZettaCluster` so every node forms **one** mTLS cluster (the CA is derived from the token), why peer traffic is mTLS-only (no plaintext mode), and the engine dependencies for multi-node convergence ([operator#92](https://github.com/oramasearch/orama-operator/issues/92)).
@@ -50,7 +50,8 @@ Deep docs for the operator. Kept in lockstep with the source (see the repo
 - [`connecting.md`](connecting.md) — **connect to a deployed `OramaZettaCluster`** across every surface: REST/SQL (`/v1/*`), MCP (`POST /mcp`, for Claude/agents), the self-describing `mcp.md` / `llms.txt` pages, and the web portal (`/`); addressing (port-forward / Ingress `spec.host`), and MCP/admin-token auth.
 - [`operations/crd-rollout.md`](operations/crd-rollout.md) — **CRDs and rollout**: the three
   hand-maintained artifacts per kind, why one missing CRD crash-loops the whole manager, the
-  checks that hold the invariant, and why fail-fast is deliberate.
+  checks that hold the invariant, why fail-fast is deliberate, and how a removed field is applied
+  in two steps around a roll (widened before, exact after) so the old operator never reads it pruned.
 - [`operations/rename-cutover.md`](operations/rename-cutover.md) — **one-time AKS rename cutover**: install the `orama-operator` Helm release, preserve CRDs and the production leader-election Lease, move control-plane callers, and retire the former release.
 - [`karpenter-cloud-iam-prerequisite.md`](karpenter-cloud-iam-prerequisite.md) — **operator-owned Karpenter install** ([#75](https://github.com/oramasearch/orama-operator/issues/75)): the cloud IAM identity the operator can't mint (controller IRSA role / node instance profile / Azure role assignment), how it's cloud-gated (EKS self-install, no-op on AKS-NAP / bare-metal), the input validation that keeps the cluster name and role ARN from injecting manifests ([#79](https://github.com/oramasearch/orama-operator/issues/79)), and the `.status` conditions.
 

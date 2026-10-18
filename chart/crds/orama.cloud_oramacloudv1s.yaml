@@ -242,6 +242,31 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage configures local data volumes (default 10Gi and cluster default class).
+                          The operator grows PVC requests, or the CNPG Cluster size for controlDB.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                              existing storage is unsupported.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                            x-kubernetes-validations:
+                            - message: size must be a positive Kubernetes quantity
+                              rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
+                          storageClassName:
+                            description: |-
+                              StorageClassName selects a class at creation. Omission uses the cluster default
+                              for new volumes and retains the existing class. Existing classes cannot change.
+                            minLength: 1
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -417,6 +442,31 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage configures local data volumes (default 10Gi and cluster default class).
+                          The operator grows PVC requests, or the CNPG Cluster size for controlDB.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                              existing storage is unsupported.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                            x-kubernetes-validations:
+                            - message: size must be a positive Kubernetes quantity
+                              rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
+                          storageClassName:
+                            description: |-
+                              StorageClassName selects a class at creation. Omission uses the cluster default
+                              for new volumes and retains the existing class. Existing classes cannot change.
+                            minLength: 1
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -526,6 +576,31 @@ spec:
                               otherwise to an implementation-defined value. Requests cannot exceed Limits.
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
+                        type: object
+                      storage:
+                        description: |-
+                          Storage configures local data volumes (default 10Gi and cluster default class).
+                          The operator grows PVC requests, or the CNPG Cluster size for controlDB.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                              existing storage is unsupported.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                            x-kubernetes-validations:
+                            - message: size must be a positive Kubernetes quantity
+                              rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
+                          storageClassName:
+                            description: |-
+                              StorageClassName selects a class at creation. Omission uses the cluster default
+                              for new volumes and retains the existing class. Existing classes cannot change.
+                            minLength: 1
+                            type: string
                         type: object
                     required:
                     - enabled
@@ -637,6 +712,31 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage configures local data volumes (default 10Gi and cluster default class).
+                          The operator grows PVC requests, or the CNPG Cluster size for controlDB.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                              existing storage is unsupported.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                            x-kubernetes-validations:
+                            - message: size must be a positive Kubernetes quantity
+                              rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
+                          storageClassName:
+                            description: |-
+                              StorageClassName selects a class at creation. Omission uses the cluster default
+                              for new volumes and retains the existing class. Existing classes cannot change.
+                            minLength: 1
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -645,8 +745,9 @@ spec:
                       DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and
                       ConfigMaps in the instance's namespace (operator#311). Precedence, lowest to highest: the
                       operator's envFrom (<cr>-config, <cr>-dashboard-secret, <cr>-jwt), envFrom, the operator's
-                      explicit env, env. DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER
-                      and MASTER_API_KEY belong to the operator: supplying one through either field fails the reconcile.
+                      explicit env, env. DATABASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_PASSWORD,
+                      JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER and MASTER_API_KEY belong to the operator: supplying one
+                      through either field fails the reconcile.
                     properties:
                       crons:
                         description: |-
@@ -656,14 +757,13 @@ spec:
                           e2eCanary:
                             description: |-
                               E2ECanary runs Prod 1's e2e canary (every five minutes) and its collection prune (daily at
-                              04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. Removing it deletes the
-                              CronJob and its state volume.
+                              04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. It follows crons.suspend.
+                              Removing it deletes the CronJob and its state volume.
                             properties:
                               image:
                                 description: |-
                                   Image runs monitor-test (oramacore-test-e2e) and provides /bin/sh, curl and jq for the prune.
-                                  It must be pinned to a digest (name@sha256:<64 hex>). Without a pinned image the CronJob is
-                                  not created and status.conditions[E2ECanary] says why.
+                                  It must be pinned to a digest (name@sha256:<64 hex>).
                                 pattern: ^[^@\s]+@sha256:[a-f0-9]{64}$
                                 type: string
                               secretRef:
@@ -683,11 +783,8 @@ spec:
                                     type: string
                                 type: object
                                 x-kubernetes-map-type: atomic
-                              suspend:
-                                default: true
-                                description: Suspend is copied to the CronJob's spec.suspend.
-                                type: boolean
                             required:
+                            - image
                             - secretRef
                             type: object
                             x-kubernetes-validations:
@@ -702,8 +799,8 @@ spec:
                           suspend:
                             default: true
                             description: |-
-                              Suspend is copied to the three CronJobs' spec.suspend. It stops new runs and does not cancel
-                              a run already in progress.
+                              Suspend is copied to the spec.suspend of the three CronJobs and the e2e canary's. It stops new
+                              runs and does not cancel a run already in progress.
                             type: boolean
                         type: object
                         x-kubernetes-validations:
@@ -1215,6 +1312,32 @@ spec:
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
                             type: object
+                          storage:
+                            description: |-
+                              Storage configures each reader's data volume (default 512Gi and cluster default class).
+                              The StatefulSet's claim template keeps the values it was created with; the operator grows
+                              every reader's existing claim instead.
+                            properties:
+                              size:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: |-
+                                  Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                                  component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                                  existing storage is unsupported.
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                                x-kubernetes-validations:
+                                - message: size must be a positive Kubernetes quantity
+                                  rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
+                              storageClassName:
+                                description: |-
+                                  StorageClassName selects a class at creation. Omission uses the cluster default
+                                  for new volumes and retains the existing class. Existing classes cannot change.
+                                minLength: 1
+                                type: string
+                            type: object
                         type: object
                       writer:
                         properties:
@@ -1327,6 +1450,30 @@ spec:
                                   otherwise to an implementation-defined value. Requests cannot exceed Limits.
                                   More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                 type: object
+                            type: object
+                          storage:
+                            description: Storage configures the writer's data volume
+                              (default 10Gi and cluster default class).
+                            properties:
+                              size:
+                                anyOf:
+                                - type: integer
+                                - type: string
+                                description: |-
+                                  Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                                  component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                                  existing storage is unsupported.
+                                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                x-kubernetes-int-or-string: true
+                                x-kubernetes-validations:
+                                - message: size must be a positive Kubernetes quantity
+                                  rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
+                              storageClassName:
+                                description: |-
+                                  StorageClassName selects a class at creation. Omission uses the cluster default
+                                  for new volumes and retains the existing class. Existing classes cannot change.
+                                minLength: 1
+                                type: string
                             type: object
                           tolerations:
                             items:
@@ -1703,6 +1850,31 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      storage:
+                        description: |-
+                          Storage configures local data volumes (default 10Gi and cluster default class).
+                          The operator grows PVC requests, or the CNPG Cluster size for controlDB.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+                              existing storage is unsupported.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                            x-kubernetes-validations:
+                            - message: size must be a positive Kubernetes quantity
+                              rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
+                          storageClassName:
+                            description: |-
+                              StorageClassName selects a class at creation. Omission uses the cluster default
+                              for new volumes and retains the existing class. Existing classes cannot change.
+                            minLength: 1
+                            type: string
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -2016,13 +2188,10 @@ spec:
                       properties:
                         apiKeySecretRef:
                           description: |-
-                            APIKeySecretRef takes this provider's key from a Secret in the CR's namespace instead of
-                            <cr>-engine-secret. The operator reads it and never creates or changes it.
+                            APIKeySecretRef takes this provider's key from <PROVIDER>_API_KEY (for example GOOGLE_API_KEY)
+                            in a Secret in the CR's namespace instead of <cr>-engine-secret. The operator reads it and
+                            never creates or changes it.
                           properties:
-                            key:
-                              description: Key in the Secret. Empty means <PROVIDER>_API_KEY,
-                                for example GOOGLE_API_KEY.
-                              type: string
                             name:
                               description: Name of the Secret.
                               minLength: 1
@@ -2177,7 +2346,8 @@ spec:
               conditions:
                 description: |-
                   Conditions follows the standard k8s condition convention (the Ready condition is the
-                  machine-readable roll-up).
+                  machine-readable workload roll-up). StorageApplied independently reports accepted
+                  storage configuration, not completed disk/filesystem expansion.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

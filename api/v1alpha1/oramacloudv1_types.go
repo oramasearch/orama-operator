@@ -7,6 +7,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -162,8 +163,9 @@ type LLMProvider struct {
 	// restrict the model a request names.
 	// +optional
 	Models []string `json:"models,omitempty"`
-	// APIKeySecretRef takes this provider's key from a Secret in the CR's namespace instead of
-	// <cr>-engine-secret. The operator reads it and never creates or changes it.
+	// APIKeySecretRef takes this provider's key from <PROVIDER>_API_KEY (for example GOOGLE_API_KEY)
+	// in a Secret in the CR's namespace instead of <cr>-engine-secret. The operator reads it and
+	// never creates or changes it.
 	// +optional
 	APIKeySecretRef *LLMKeySecretRef `json:"apiKeySecretRef,omitempty"`
 	// GPU requests a GPU for an in-cluster vLLM provider (name=vllm).
@@ -171,14 +173,12 @@ type LLMProvider struct {
 	GPU bool `json:"gpu,omitempty"`
 }
 
-// LLMKeySecretRef names the Secret key that holds a provider's API key, in the CR's namespace.
+// LLMKeySecretRef names the Secret, in the CR's namespace, that holds a provider's API key under
+// <PROVIDER>_API_KEY.
 type LLMKeySecretRef struct {
 	// Name of the Secret.
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
-	// Key in the Secret. Empty means <PROVIDER>_API_KEY, for example GOOGLE_API_KEY.
-	// +optional
-	Key string `json:"key,omitempty"`
 }
 
 // LLMModelRef is one model of one remote provider.
@@ -254,8 +254,6 @@ type ComponentsSpec struct {
 	// kept for API compatibility; setting it has no effect.
 	OramasearchApp ToggleWithHost `json:"oramasearchApp,omitempty"`
 	SearchWorkers  Toggle         `json:"searchWorkers,omitempty"` // index-manager hosted-search serving workers
-	// Airbyte (#4) is a heavy multi-service platform → installed via its Helm chart (helmfile
-	// platformDeps), not a CR component; the dashboard/index-builder reference its endpoint.
 }
 
 // EngineSpec configures the OramaCore engine.
@@ -269,7 +267,26 @@ type EngineSpec struct {
 	Envoy bool `json:"envoy,omitempty"`
 }
 
+// VolumeSpec configures a new volume and operator-managed increases to existing storage.
+// StatefulSet claim templates are immutable; existing claims grow independently.
+type VolumeSpec struct {
+	// Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+	// component's default (10Gi; 512Gi for a reader) even without API defaulting. Shrinking
+	// existing storage is unsupported.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))",message="size must be a positive Kubernetes quantity"
+	Size *resource.Quantity `json:"size,omitempty"`
+	// StorageClassName selects a class at creation. Omission uses the cluster default
+	// for new volumes and retains the existing class. Existing classes cannot change.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	StorageClassName *string `json:"storageClassName,omitempty"`
+}
+
 type WriterSpec struct {
+	// Storage configures the writer's data volume (default 10Gi and cluster default class).
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// GPU requests nvidia.com/gpu for the writer's BUILT-IN embeddings generation
 	// (ONNX Runtime + CUDA; prod: L40S). Set false to use CPU embeddings or a remote
 	// embeddings server. (This is the main reason a GPU node is needed at all; the
@@ -327,6 +344,11 @@ type WriterJWTSpec struct {
 type ReaderSpec struct {
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
+	// Storage configures each reader's data volume (default 512Gi and cluster default class).
+	// The StatefulSet's claim template keeps the values it was created with; the operator grows
+	// every reader's existing claim instead.
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// HPA autoscales readers on load when set.
 	// +optional
 	HPA *HPASpec `json:"hpa,omitempty"`
@@ -391,6 +413,10 @@ type WorkersSpec struct {
 // DataStoreSpec: a stateful dependency that can be run in-cluster (via an upstream
 // operator/chart), pointed at an external endpoint, or centrally located.
 type DataStoreSpec struct {
+	// Storage configures local data volumes (default 10Gi and cluster default class).
+	// The operator grows PVC requests, or the CNPG Cluster size for controlDB.
+	// +optional
+	Storage *VolumeSpec `json:"storage,omitempty"`
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 	// Mode: "in-cluster" (operator provisions it) or "external" (use Endpoint).
@@ -455,8 +481,9 @@ type ToggleWithHost struct {
 // DashboardSpec is the dashboard's toggle and host plus the environment it takes from Secrets and
 // ConfigMaps in the instance's namespace (operator#311). Precedence, lowest to highest: the
 // operator's envFrom (<cr>-config, <cr>-dashboard-secret, <cr>-jwt), envFrom, the operator's
-// explicit env, env. DATABASE_URL, POSTGRES_PASSWORD, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER
-// and MASTER_API_KEY belong to the operator: supplying one through either field fails the reconcile.
+// explicit env, env. DATABASE_URL, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_PASSWORD,
+// JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_ISSUER and MASTER_API_KEY belong to the operator: supplying one
+// through either field fails the reconcile.
 // +kubebuilder:validation:XValidation:rule="!has(self.crons) || !has(self.crons.enabled) || !self.crons.enabled || (has(self.enabled) && self.enabled)",message="dashboard.crons requires the dashboard enabled"
 type DashboardSpec struct {
 	ToggleWithHost `json:",inline"`
@@ -491,37 +518,31 @@ type DashboardCronsSpec struct {
 	// Enabled creates the three CronJobs. Disabling deletes them.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
-	// Suspend is copied to the three CronJobs' spec.suspend. It stops new runs and does not cancel
-	// a run already in progress.
+	// Suspend is copied to the spec.suspend of the three CronJobs and the e2e canary's. It stops new
+	// runs and does not cancel a run already in progress.
 	// +kubebuilder:default=true
 	// +optional
 	Suspend *bool `json:"suspend,omitempty"`
 	// E2ECanary runs Prod 1's e2e canary (every five minutes) and its collection prune (daily at
-	// 04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. Removing it deletes the
-	// CronJob and its state volume.
+	// 04:30 UTC) as one CronJob, <cr>-e2e-canary, against this stack. It follows crons.suspend.
+	// Removing it deletes the CronJob and its state volume.
 	// +optional
 	E2ECanary *E2ECanarySpec `json:"e2eCanary,omitempty"`
 }
 
-// E2ECanarySpec is the canary's image, target and suspension. The canary signs in through the
-// in-cluster dashboard's /api/user/jwt with the canary project's private API key, writes a probe
-// document and checks it on the readers the dashboard returns and on the in-cluster reader.
+// E2ECanarySpec is the canary's image and target. The canary signs in through the in-cluster
+// dashboard's /api/user/jwt with the canary project's private API key, writes a probe document and
+// checks it on the readers the dashboard returns and on the in-cluster reader.
 // +kubebuilder:validation:XValidation:rule="has(self.secretRef.name) && size(self.secretRef.name) > 0",message="dashboard.crons.e2eCanary.secretRef needs a name"
 type E2ECanarySpec struct {
 	// Image runs monitor-test (oramacore-test-e2e) and provides /bin/sh, curl and jq for the prune.
-	// It must be pinned to a digest (name@sha256:<64 hex>). Without a pinned image the CronJob is
-	// not created and status.conditions[E2ECanary] says why.
+	// It must be pinned to a digest (name@sha256:<64 hex>).
 	// +kubebuilder:validation:Pattern=`^[^@\s]+@sha256:[a-f0-9]{64}$`
-	// +optional
-	Image string `json:"image,omitempty"`
+	Image string `json:"image"`
 	// SecretRef names a Secret in the instance's namespace with the non-empty keys collectionID,
 	// indexID and apiKey: the canary collection, its index, and the project's private API key.
 	// Delivered through the set's secrets list.
 	SecretRef corev1.LocalObjectReference `json:"secretRef"`
-	// Suspend is copied to the CronJob's spec.suspend.
-	// +kubebuilder:default=true
-	// +optional
-	Suspend *bool `json:"suspend,omitempty"`
 }
 
 // PeerSpec identifies another region for cross-cluster wiring (no mesh).
@@ -556,7 +577,8 @@ type OramaCloudV1Status struct {
 	// component regressed) | Pending.
 	Phase string `json:"phase,omitempty"`
 	// Conditions follows the standard k8s condition convention (the Ready condition is the
-	// machine-readable roll-up).
+	// machine-readable workload roll-up). StorageApplied independently reports accepted
+	// storage configuration, not completed disk/filesystem expansion.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// ComponentsReady is the ready/total count (e.g. "22/22").

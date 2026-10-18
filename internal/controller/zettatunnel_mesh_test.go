@@ -303,7 +303,7 @@ func TestLakeWorkspaceOverrideEnrolsItsSandbox(t *testing.T) {
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", UID: types.UID("lake-uid")},
 		Spec: oramav1alpha1.LakeSpec{Namespace: "lake-system", Workspaces: oramav1alpha1.LakeWorkspacesSpec{
-			Enabled: true, Overrides: map[string]oramav1alpha1.LakeWorkspaceOverrideSpec{testWorkspaceID: {Mesh: true}},
+			Overrides: map[string]oramav1alpha1.LakeWorkspaceOverrideSpec{testWorkspaceID: {Mesh: true}},
 		}},
 	}
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake,

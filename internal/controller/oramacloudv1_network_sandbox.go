@@ -169,7 +169,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"The dashboard uses control Postgres, cache, analytics, search, OramaCore, Keycloak and the Airbyte API.",
+			"The dashboard uses control Postgres, cache, analytics, search, OramaCore and Keycloak.",
 			oramaCloudEgressPolicy(
 				"allow-dashboard-egress",
 				dashboard,
@@ -180,7 +180,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 				egressTo(writer, 8080),
 				egressTo(readerPods, 80, 8080),
 				egressTo(keycloak, 8080),
-				airbyteEgressRule(),
 			),
 		),
 		sandboxAllowance(
@@ -205,7 +204,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"Index builder uses dashboard, cache, control Postgres, DISCO, search, decrypter, HARVEST and Airbyte APIs.",
+			"Index builder uses dashboard, cache, control Postgres, DISCO, search, decrypter and HARVEST APIs.",
 			oramaCloudEgressPolicy(
 				"allow-index-builder-egress",
 				indexBuilder,
@@ -216,7 +215,6 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 				egressTo(search, 8108),
 				egressTo(openAIDecrypter, 8080),
 				egressTo(harvestMaster, 8080),
-				airbyteEgressRule(),
 			),
 		),
 		sandboxAllowance(
@@ -510,16 +508,6 @@ func ingressGatewayRule(ports ...int32) networkingv1.NetworkPolicyIngressRule {
 	return networkingv1.NetworkPolicyIngressRule{
 		From:  []networkingv1.NetworkPolicyPeer{namespacePodPeer("ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"}), zettaTunnelIngressPeer()},
 		Ports: tcpPorts(ports...),
-	}
-}
-
-func airbyteEgressRule() networkingv1.NetworkPolicyEgressRule {
-	return networkingv1.NetworkPolicyEgressRule{
-		To: []networkingv1.NetworkPolicyPeer{{
-			NamespaceSelector: namespaceNameSelector("airbyte"),
-			PodSelector:       &metav1.LabelSelector{},
-		}},
-		Ports: tcpPorts(8001),
 	}
 }
 

@@ -46,6 +46,13 @@ export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.30.x)"
 go test ./...
 ```
 
+`TestOCV1StorageAgainstAPIServer` uses these assets to validate component storage quantities and
+classes at admission, enforce real StatefulSet immutability, and accept PVC request growth while
+preserving templates and identities. It creates claims/capacity fixtures explicitly: envtest has
+no StatefulSet controller, CSI resizer, kubelet or CNPG operator. Passing proves configuration
+application, not completed filesystem expansion; unset assets skip this test and do not count as
+passed storage API validation. Run it with `go test ./internal/controller -run '^TestOCV1Storage'`.
+
 The same assets run the workspace envtests. `TestWorkspaceDatastorePoliciesAgainstAPIServer`
 (operator#268) checks that every workspace NetworkPolicy passes API validation, that the
 Kubernetes API egress rule matches the test API server's own `default/kubernetes` Service and
@@ -53,7 +60,7 @@ Endpoints, and that a steady second pass rewrites no policy.
 
 The same assets run `TestDashboardCronsAdmission` (operator#17): the generated `OramaCloudV1` CRD
 refuses `dashboard.crons` without the dashboard, an `e2eCanary` without the crons, and a canary image
-not pinned to a digest. The scripts the dashboard crons and the e2e canary render are run against a
+that is missing or not pinned to a digest. The scripts the dashboard crons and the e2e canary render are run against a
 local HTTP server by `TestDashboardCronScriptAgainstAServer` and `TestE2ECanaryScript`, under `sh` and
 `dash` when present; they need `curl` (and `jq` for the canary) and skip without them.
 
