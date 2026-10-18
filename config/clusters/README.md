@@ -51,8 +51,15 @@ copied Secret's source, or its data on the managing cluster, rolls the member's 
 A set's `spec.secrets` list copies each named Secret from there into every member's namespace (for
 example the dashboard's environment Secret, which the set's template references in
 `components.dashboard.envFrom`); see
-[the dashboard's environment](../../docs/components.md#the-dashboards-environment). Creating or
+[the dashboard's environment](../../docs/components.md#the-dashboards-environment). The e2e canary's
+Secret (`components.dashboard.crons.e2eCanary.secretRef`) arrives the same way. Creating or
 changing a source Secret is a write on the managing cluster and needs Steve's consent.
+
+The dashboard crons and the e2e canary are created suspended. Their `suspend` fields change only in
+a set file, committed and applied to the managing cluster; production unsuspends them at cutover
+step 5, after Prod 1's crons are off and `app.orama.com` points at Prod 2 (see
+[the dashboard's scheduled jobs](../../docs/components.md#the-dashboards-scheduled-jobs)). Never
+edit, patch or create the CronJobs themselves.
 
 An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
 reference rows the operator seeds into its control database

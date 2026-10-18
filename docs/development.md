@@ -58,6 +58,12 @@ The same assets run the workspace envtests. `TestWorkspaceDatastorePoliciesAgain
 Kubernetes API egress rule matches the test API server's own `default/kubernetes` Service and
 Endpoints, and that a steady second pass rewrites no policy.
 
+The same assets run `TestDashboardCronsAdmission` (operator#17): the generated `OramaCloudV1` CRD
+refuses `dashboard.crons` without the dashboard, an `e2eCanary` without the crons, and a canary image
+that is missing or not pinned to a digest. The scripts the dashboard crons and the e2e canary render are run against a
+local HTTP server by `TestDashboardCronScriptAgainstAServer` and `TestE2ECanaryScript`, under `sh` and
+`dash` when present; they need `curl` (and `jq` for the canary) and skip without them.
+
 The same assets run `TestKarpenterInstallEnvtest` (operator#79), with RBAC authorization on: the
 `OramaZettaCluster` CRD schema refuses an injected, overlong or malformed `installClusterName` /
 `controllerRoleARN`; the chart's own ServiceAccount and ClusterRole install and remove the Karpenter

@@ -286,6 +286,70 @@ before these fields existed.
 How the environment Secret reaches each cluster is in
 [components.md](components.md#the-dashboards-environment).
 
+#### `spec.components.dashboard.crons`
+
+Prod 1's scheduled jobs as CronJobs in the stack
+([operator#17](https://github.com/oramasearch/orama-operator/issues/17)): the dashboard's three
+Vercel crons and, optionally, the e2e canary from Prod 1's AWS crons host. Omitted, it creates
+nothing. `dashboard_crons.go`; behaviour and the Prod 1 inventory are in
+[components.md](components.md#the-dashboards-scheduled-jobs).
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | `bool` | `false` | Creates the three dashboard CronJobs; `false` deletes them, and the canary with them. |
+| `suspend` | `*bool` | `true` | Copied to the `spec.suspend` of the three CronJobs and `<cr>-e2e-canary`. Stops new runs; a run in progress finishes. |
+| `e2eCanary.image` | `string` | required | The canary image, pinned to a digest (`name@sha256:<64 hex>`; the CRD refuses anything else). It runs `monitor-test` and provides `/bin/sh`, `curl` and `jq` for the prune. |
+| `e2eCanary.secretRef.name` | `string` | required | A Secret in the instance's namespace with non-empty keys `collectionID`, `indexID` and `apiKey` (the canary project's private API key), delivered through the set's `secrets` list. |
+
+The schedules are Prod 1's and fixed, in UTC:
+
+| CronJob | Calls | Schedule |
+|---|---|---|
+| `<cr>-dashboard-cron-crawler` | `GET http://<cr>-dashboard:3000/api/private/v1/run-crawler-cron` | `*/1 * * * *` |
+| `<cr>-dashboard-cron-index-gc` | `GET http://<cr>-dashboard:3000/api/private/v1/run-index-gc-cron` | `0 * * * *` |
+| `<cr>-dashboard-cron-consumption-sync` | `GET http://<cr>-dashboard:3000/api/billing/queue-consumption-sync` | `0 */6 * * *` |
+| `<cr>-e2e-canary` | `monitor-test`, then the collection prune once a day after 04:30 | `*/5 * * * *` |
+
+```yaml
+spec:
+  components:
+    dashboard:
+      enabled: true
+      envFrom:
+        - secretRef:
+            name: v1-prod-dashboard-env   # holds CRON_SECRET
+      crons:
+        enabled: true
+        suspend: true
+        e2eCanary:
+          image: oramasearch/oramacore-test-e2e@sha256:<digest>
+          secretRef:
+            name: v1-prod-e2e-canary
+```
+
+No set file carries `e2eCanary` yet: the canary image is not built, and the CRD requires it.
+
+**Admission.** `crons.enabled: true` needs `dashboard.enabled: true` (`dashboard.crons requires the
+dashboard enabled`), and `e2eCanary` needs `crons.enabled: true`. To turn a running dashboard off,
+commit `dashboard.enabled: false`, `crons.enabled: false` and no `e2eCanary` together. The reconcile
+repeats the first rule for objects that bypassed admission: it deletes the crons and the dashboard,
+then reports the error.
+
+**`CRON_SECRET`.** Each dashboard CronJob reads `CRON_SECRET` through a `secretKeyRef` to the Secret
+key the dashboard itself reads it from, so the two cannot drift. When `dashboard.env` names
+`CRON_SECRET` (its last entry wins), that entry must be a `secretKeyRef` and the CronJobs use the same
+Secret and key. Otherwise the last `envFrom` source holding `CRON_SECRET` after its `prefix` wins, and it
+must be a Secret: with `prefix: CRON_`, key `SECRET` is selected. A literal, a ConfigMap or a `fieldRef`
+winning is an error, even if an earlier Secret also holds the key. The selected Secret must exist and
+the key must be non-empty, even when the dashboard's reference is `optional`.
+
+**Errors.** A missing source, Secret or key, a canary Secret without its three keys, or a same-name
+CronJob or claim this CR does not control fails the `dashboard` step with `Ready=False`
+(`ReconcileError`) and a message naming the field and the object, never a value. The dashboard crons'
+inputs are checked before the first of them is written; the canary's Secret is checked after the three
+are written, so a canary problem never keeps the dashboard crons from running. A foreign object is
+left unchanged. Run outcomes appear in Job status and logs only.
+
 ## `status`
 
 `phase` (`Progressing | Ready | Degraded`), `componentsReady`, the per-component list and the
