@@ -43,10 +43,8 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile is the control loop. It reconciles each enabled component in turn,
-// driven by .spec.region.role. Components still TODO: control-plane Postgres (CNPG),
-// ClickHouse, RabbitMQ, Redis, Typesense, HARVEST+Mongo, index-builder + workers,
-// DISCO, dashboard, IdP shim, Cloudflare (DNS+LB via API), demo seed. See docs/.
+// Reconcile provisions enabled components in dependency order, applies storage intent, and
+// rolls up workload readiness independently of storage configuration acceptance.
 func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := log.FromContext(ctx)
 
@@ -106,9 +104,10 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Roll child readiness up into the phase (#37): Ready once every owned workload is ready,
 	// else Provisioning. Requeue while still coming up so the phase advances as pods go ready —
-	// Owns() events cover most transitions; the requeue is the backstop (e.g. the polled CNPG
-	// cluster readiness).
-	if r.applyReadiness(ctx, &oc, masterKey) {
+	// Owns() events cover most transitions; the requeue is also the backstop for CNPG readiness,
+	// PVC creation and storage retries even after workloads become Ready.
+	managedStorage := r.reconcileStorage(ctx, &oc)
+	if r.applyReadiness(ctx, &oc, masterKey) && !managedStorage {
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
