@@ -3,6 +3,11 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.6.2](v0.6.2.md) — 2026-10-19. A patch: the Cloud v1 network sandbox admits every control
+  DB migration Job, so `controldb-schema-0008` and `reference-data` reach the database (#625, #630).
+  Also carries origin TLS on every Lake Ingress with the Lake's Cloudflare zone secured by the
+  operator (#631: `EdgeProvider`, `EdgeZonePolicy`, `CloudflareZonePolicy`), the Cloud v1 engine image
+  serving `/health/ready` (#626) and `lake-prod` on `lake.live` (#624). 36 resource kinds.
 - [v0.6.1](v0.6.1.md) — 2026-10-18. A patch: the Cloud v1 network sandbox allows the analytics
   retention Job (to ClickHouse), the analytics import CronJob (to the processor) and the processor's
   pulls from the readers, which v0.6.0 needed (#616); a stack naming no master key gets a generated
