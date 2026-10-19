@@ -190,7 +190,7 @@ func (r *LakeOrderSourceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				failed++
 			}
 		}
-		_ = store.Close(context.Background())
+		closeCloudOrderStore(store)
 	}
 	sort.Slice(orders, func(i, j int) bool { return orders[i].ID < orders[j].ID })
 	status.Members, status.Orders = members, orders
@@ -217,10 +217,18 @@ func (r *LakeOrderSourceReconciler) readOrders(ctx context.Context, open CloudOr
 	}
 	rows, err := store.ListOrders(ctx, claimant)
 	if err != nil {
-		_ = store.Close(context.Background())
+		closeCloudOrderStore(store)
 		return nil, nil, err
 	}
 	return rows, store, nil
+}
+
+// closeCloudOrderStore ends a member's connection and its port-forward. It is bounded: the pass's
+// context may be spent, and a leaf that stopped answering must not hold the reconciler.
+func closeCloudOrderStore(store CloudOrderStore) {
+	ctx, cancel := context.WithTimeout(context.Background(), serviceStoreConnectTimeout)
+	defer cancel()
+	_ = store.Close(ctx)
 }
 
 // orderPass is what every order of one pass shares.

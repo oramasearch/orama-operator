@@ -170,6 +170,9 @@ func oneRow(rows pgx.Rows, err error) (bool, error) {
 func openPgxCloudOrderStore(ctx context.Context, uri string, forward *forwardedPort) (CloudOrderStore, error) {
 	config, err := pgx.ParseConfig(uri)
 	if err != nil {
+		if forward != nil {
+			forward.stop()
+		}
 		return nil, fmt.Errorf("the control DB uri cannot be parsed: %w", err)
 	}
 	config.ConnectTimeout = serviceStoreConnectTimeout
