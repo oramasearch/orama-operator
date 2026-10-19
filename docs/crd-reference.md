@@ -1542,8 +1542,9 @@ Short name `lorders`. Provisions the paid orders a `LakeSet`'s Lakes record in l
 
 | Field | Meaning |
 |---|---|
+| `metadata.name` | At most 224 characters: `claimed_by` is `orama-operator/LakeOrderSource/<name>` and lake allows 255. A longer name is `Degraded` and claims nothing. |
 | `spec.lakeSetRef` | The `LakeSet` whose members' control Postgres hold the orders. Every ordered Lake copies its template and secrets. |
-| `spec.hostDomain` | The DNS zone ordered Lakes are served in: `<lake name>.<hostDomain>`. Must be in the template's `dnsSecretRef` zone. |
+| `spec.hostDomain` | The DNS zone ordered Lakes are served in: `<lake name>.<hostDomain>`. Must be in the template's `dnsSecretRef` zone. At most 234 characters, so the host fits lake's 253. |
 | `spec.member` | Every ordered Lake's own settings, as a set member's `spec`. Must not set `host`, `args`, `apexHost`, `region`, `regions`, `namespace` or `LAKE_PUBLIC_HOST`, which the operator sets per order. |
 | `spec.memberSecrets[]` | Copied into every ordered Lake's namespace, as a set member's `secrets`. |
 | `spec.dedicatedCluster` | `providerRef` (the `KubernetesClusterProvider`: the cloud identity) and `templateClusterRef` (the `KubernetesCluster` whose version, node pools, `ClusterHelmRelease`s and `OramaOperator` a dedicated cluster copies). Without it every `dedicated_cluster` order fails. |

@@ -111,7 +111,9 @@ spec:
 
 `member` may not set `host`, `args`, `apexHost`, `region`, `regions`, `namespace` or
 `LAKE_PUBLIC_HOST`: the operator sets those for each order. A source that does is `Degraded` and
-reads no order. `kubectl get lorders` shows the counts and the message; `status.orders` lists every
+reads no order. Lake's column limits bound the rest: the source's name is at most 224 characters
+(`claimed_by` is at most 255), `hostDomain` at most 234 (`host` is at most 253), and a
+`failure_reason` or event detail over 2000 characters is cut to 2000. `kubectl get lorders` shows the counts and the message; `status.orders` lists every
 order being provisioned and what it waits for; `status.members` says whether each member's orders
 were read.
 
