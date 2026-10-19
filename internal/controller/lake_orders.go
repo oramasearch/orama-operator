@@ -21,10 +21,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -619,8 +621,12 @@ func (r *LakeOrderSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 		return nil
 	})
+	// A pass opens a port-forward and a connection to every member, so the source's own status
+	// writes must not start another one: a message that differs each pass (an error naming the
+	// forward's local port) would otherwise reconcile it without pause. Its spec, the order
+	// LakeSets and clusters below, and the poll interval are what start a pass.
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&oramav1alpha1.LakeOrderSource{}).
+		For(&oramav1alpha1.LakeOrderSource{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&oramav1alpha1.LakeSet{}, bySourceLabel).
 		Watches(&oramav1alpha1.KubernetesCluster{}, bySourceLabel).
 		Complete(r)
