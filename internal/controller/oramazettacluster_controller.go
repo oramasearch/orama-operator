@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -604,11 +605,40 @@ func (r *OramaZettaClusterReconciler) reconcileZettaIngress(ctx context.Context,
 	_ = deleteIfExists(ctx, r.Client, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: landingName, Namespace: z.Namespace}})
 	_ = deleteIfExists(ctx, r.Client, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: landingName, Namespace: z.Namespace}})
 
+	// Origin TLS (operator#578): one Let's Encrypt Issuer per Zetta with a DNS credential, DNS-01
+	// through its dnsSecretRef's `token`, as Cloud v1 (#457) and Lake have.
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(certManagerIssuerGVK)
+	issuer.SetName(zettaOriginIssuerName(z))
+	issuer.SetNamespace(z.Namespace)
 	if !z.Spec.IngressEnabled || z.Spec.Host == "" {
 		// Gate off (ingressEnabled false) or no host → tear down the Ingress + DNS.
 		_ = deleteIfExists(ctx, r.Client, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: ingName, Namespace: z.Namespace}})
 		_ = deleteIfExists(ctx, r.Client, &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: ingName + "-dns", Namespace: z.Namespace}})
-		return nil
+		return deleteIfKindExists(ctx, r.Client, issuer)
+	}
+	// No HTTP-only fallback: a public Zetta needs its DNS credential for its certificate.
+	if z.Spec.DNSSecretRef == nil || z.Spec.DNSSecretRef.Name == "" {
+		return fmt.Errorf("origin TLS for %s needs spec.dnsSecretRef (key \"token\") for the Let's Encrypt DNS-01 Issuer", z.Spec.Host)
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, issuer, func() error {
+		issuer.SetLabels(lbls)
+		issuer.Object["spec"] = map[string]any{
+			"acme": map[string]any{
+				"server":              letsEncryptDirectory,
+				"privateKeySecretRef": map[string]any{"name": zettaOriginIssuerName(z) + "-account"},
+				"solvers": []any{map[string]any{
+					"dns01": map[string]any{
+						"cloudflare": map[string]any{
+							"apiTokenSecretRef": map[string]any{"name": z.Spec.DNSSecretRef.Name, "key": "token"},
+						},
+					},
+				}},
+			},
+		}
+		return controllerutil.SetControllerReference(z, issuer, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("origin TLS issuer: %w", err)
 	}
 
 	prefix := networkingv1.PathTypePrefix
@@ -630,6 +660,9 @@ func (r *OramaZettaClusterReconciler) reconcileZettaIngress(ctx context.Context,
 				},
 			}},
 		}}
+		if err := applyIngressTLS(ing, zettaOriginIssuerName(z)); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(z, ing, r.Scheme)
 	}); err != nil {
 		return err
@@ -649,6 +682,9 @@ func (r *OramaZettaClusterReconciler) reconcileZettaIngress(ctx context.Context,
 	}
 	return nil
 }
+
+// zettaOriginIssuerName is a public Zetta's cert-manager Issuer.
+func zettaOriginIssuerName(z *oramav1alpha1.OramaZettaCluster) string { return z.Name + "-letsencrypt" }
 
 // zettaIngressTarget returns the external address (hostname preferred, else IP) of the cluster's
 // Ingress once the ingress controller has assigned one — the Content for the Cloudflare DNS record.

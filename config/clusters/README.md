@@ -90,6 +90,11 @@ reference rows the operator seeds into its control database
 empty: no test-mode prices exist yet, so its plans carry no Stripe prices and it has no add-on
 prices. `v1-prod` needs its live-mode IDs before billing works on it.
 
+Both v1 sets run the combined OramaCore engine from the private
+`oramasearch/oramacore-cloud-v1`, set by tag in each template's `images.overrides.oramacore`: v1.2.39
+plus oramacore#340 and #341, which serve `GET /health/ready`, the readers' readiness probe (#597).
+The published `oramasearch/oramacore` image has no such route, so its readers never turn Ready.
+
 [`sets/v1-prod.yaml`](sets/v1-prod.yaml) is the file production runs from. Its template holds only
 what `v1-eu` and `v1-us` share, because a member's `spec` is merged over the template and cannot
 remove a field from it; each member carries the rest. `v1-eu` has the production values and `v1-us`

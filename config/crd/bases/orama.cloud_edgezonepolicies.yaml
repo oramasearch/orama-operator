@@ -1,0 +1,231 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: edgezonepolicies.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: EdgeZonePolicy
+    listKind: EdgeZonePolicyList
+    plural: edgezonepolicies
+    shortNames:
+    - edgezp
+    singular: edgezonepolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.originEncryption
+      name: Origin
+      type: string
+    - jsonPath: .status.authenticatedOriginPulls
+      name: AOP
+      type: boolean
+    - jsonPath: .status.alwaysUseHTTPS
+      name: HTTPS
+      type: boolean
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: EdgeZonePolicy secures one DNS zone's edge through its provider
+          (see EdgeZonePolicySpec).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              EdgeZonePolicySpec asks for one DNS zone's edge to be secured. It has no settings: a policy
+              always means all of them (no off switch).
+
+              What the operator does, in this order, each step only when it is safe:
+               1. Origin encryption Full: the edge connects to every origin over TLS. Set only when every
+                  proxied host's origin completes a TLS handshake, and only from a weaker mode.
+               2. Origin encryption Full (strict): the edge also verifies the origin's certificate. Set only
+                  when every proxied host's origin presents a certificate valid for that host.
+               3. Authenticated origin pulls: the edge presents a client certificate to every origin, which
+                  an origin may then require (status.originClientCAPEM is the CA to verify it with). Set once
+                  the mode is Full or Full (strict).
+               4. Always use HTTPS: the edge redirects plain HTTP. Set only when every proxied host has a
+                  valid edge certificate.
+
+              Nothing is ever turned back: a host that later fails a check is reported, not downgraded. Several
+              policies may name one zone (one per Lake); they ask for the same settings. Deleting a policy
+              changes nothing in the zone.
+            properties:
+              providerRef:
+                description: ProviderRef names an EdgeProvider in this namespace.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              zoneID:
+                description: 'ZoneID is the provider''s identifier of the DNS zone
+                  (Cloudflare: the zone ID).'
+                minLength: 1
+                type: string
+            required:
+            - providerRef
+            - zoneID
+            type: object
+          status:
+            description: |-
+              EdgeZonePolicyStatus is the zone as the operator last observed it. CloudflareZonePolicy reports
+              it and EdgeZonePolicy copies it.
+            properties:
+              alwaysUseHTTPS:
+                description: AlwaysUseHTTPS is whether the edge redirects plain HTTP
+                  to HTTPS.
+                type: boolean
+              authenticatedOriginPulls:
+                description: AuthenticatedOriginPulls is whether the edge presents
+                  its client certificate to origins.
+                type: boolean
+              conditions:
+                description: |-
+                  Conditions: Credentials, OriginCertificates, EdgeCertificates, OriginTLSStrict,
+                  AuthenticatedOriginPulls, AlwaysUseHTTPS.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              hosts:
+                description: Hosts are the proxied hosts that fail a check, sorted
+                  by name, at most 50.
+                items:
+                  description: EdgeZoneHostStatus is one proxied host that does not
+                    pass a check.
+                  properties:
+                    edge:
+                      description: Edge is empty when the edge presents a valid certificate
+                        for the host, else why not.
+                      type: string
+                    name:
+                      description: Name is the DNS record's name; a wildcard is checked
+                        with a name under it.
+                      type: string
+                    origin:
+                      description: Origin is empty when the host's origin presents
+                        a valid certificate, else why not.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              message:
+                description: Message summarises the phase.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation the status describes.
+                format: int64
+                type: integer
+              originClientCAPEM:
+                description: OriginClientCAPEM is the CA that signs the edge's client
+                  certificate, for origins to verify.
+                type: string
+              originEncryption:
+                description: |-
+                  OriginEncryption is the zone's observed mode: off, flexible, full or strict. An origin may
+                  redirect HTTP to HTTPS only when it is full or strict; under flexible that is a loop.
+                type: string
+              phase:
+                description: |-
+                  Phase is Ready (every setting applied), Progressing (a setting waits on a check, listed in
+                  conditions and hosts), or Failed (the zone cannot be read or changed; see message).
+                type: string
+              proxiedHosts:
+                description: ProxiedHosts is how many proxied hosts the zone has.
+                format: int32
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -26,7 +26,6 @@ spec:
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-dev.oramadev.net
-      image: oramasearch/lake:dev-34718173
       clerk:
         secretKeySecretRef: {name: clerk-secret-key}
     secrets:
@@ -53,6 +52,10 @@ spec:
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-staging.oramadev.net
+      clerk:
+        secretKeySecretRef: {name: clerk-secret-key}
+    secrets:
+    - {name: clerk-lake-staging, namespace: lake, as: clerk-secret-key}
   - clusterRef: orama-nonprod-cluster-01
     name: testing
     spec:
@@ -75,6 +78,10 @@ spec:
       - name: LAKE_STRIPE_WEBHOOK_SECRET
         valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-testing.oramadev.net
+      clerk:
+        secretKeySecretRef: {name: clerk-secret-key}
+    secrets:
+    - {name: clerk-lake-testing, namespace: lake, as: clerk-secret-key}
   deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
@@ -88,7 +95,7 @@ spec:
   template:
     dnsSecretRef:
       name: cloudflare-api-token
-    image: oramasearch/lake:dev-51fe838b
+    image: oramasearch/lake:v0.2.0
     ingressEnabled: true
     postgres:
       enabled: true
