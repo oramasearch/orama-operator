@@ -92,7 +92,9 @@ spec:
               hostDomain:
                 description: |-
                   HostDomain is the DNS zone ordered Lakes are served in: each at `<lake name>.<hostDomain>`.
-                  It must be in the zone of the template's `dnsSecretRef`.
+                  It must be in the zone of the template's `dnsSecretRef`. At most 234 characters, so a host
+                  (`order-<12 hex digits>.` and the domain) fits lake's 253 for `cloud_orders.host`.
+                maxLength: 234
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
                 type: string
               lakeSetRef:

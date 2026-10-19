@@ -35,7 +35,9 @@ type LakeOrderSourceSpec struct {
 	LakeSetRef string `json:"lakeSetRef"`
 
 	// HostDomain is the DNS zone ordered Lakes are served in: each at `<lake name>.<hostDomain>`.
-	// It must be in the zone of the template's `dnsSecretRef`.
+	// It must be in the zone of the template's `dnsSecretRef`. At most 234 characters, so a host
+	// (`order-<12 hex digits>.` and the domain) fits lake's 253 for `cloud_orders.host`.
+	// +kubebuilder:validation:MaxLength=234
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
 	HostDomain string `json:"hostDomain"`
 

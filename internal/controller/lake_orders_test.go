@@ -632,3 +632,48 @@ func TestOrderResourceName(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+// Lake's CHECKs on failure_reason and the event's detail (2000 characters): a longer text is cut,
+// so the move to failed is not refused on every pass.
+func TestCloudOrderTextFitsLakesLimit(t *testing.T) {
+	if got := cloudOrderText("short"); got != "short" {
+		t.Fatalf("got %q", got)
+	}
+	long := strings.Repeat("é", cloudOrderTextLimit+50)
+	got := cloudOrderText(long)
+	if n := len([]rune(got)); n != cloudOrderTextLimit {
+		t.Fatalf("cut to %d characters, want %d", n, cloudOrderTextLimit)
+	}
+}
+
+// Lake's CHECK on claimed_by (255 characters): a source whose claimant would be longer is refused
+// and claims nothing, instead of failing the claim on every pass.
+func TestLakeOrderSourceNameTooLongClaimsNothing(t *testing.T) {
+	c := orderFakeClient(t, orderWorld(true)...)
+	ctx := context.Background()
+	var source oramav1alpha1.LakeOrderSource
+	if err := c.Get(ctx, types.NamespacedName{Name: "lake-live"}, &source); err != nil {
+		t.Fatal(err)
+	}
+	long := source.DeepCopy()
+	long.ObjectMeta = metav1.ObjectMeta{Name: strings.Repeat("a", 225)}
+	long.Status = oramav1alpha1.LakeOrderSourceStatus{}
+	if err := c.Create(ctx, long); err != nil {
+		t.Fatal(err)
+	}
+	eu := newFakeOrderDB(CloudOrder{ID: warehouseOrder, Offer: offerPrivateWarehouse, Region: "swedencentral", State: cloudOrderPaid})
+	r := &LakeOrderSourceReconciler{Client: c, Scheme: c.Scheme(), Orders: fakeOrderDBs(map[string]*fakeOrderDB{"shared": eu, "shared-us": newFakeOrderDB()})}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: long.Name}}); err != nil {
+		t.Fatal(err)
+	}
+	var got oramav1alpha1.LakeOrderSource
+	if err := c.Get(ctx, types.NamespacedName{Name: long.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != clusterPhaseDegraded || !strings.Contains(got.Status.Message, "too long") {
+		t.Fatalf("status %+v", got.Status)
+	}
+	if eu.order(warehouseOrder).State != cloudOrderPaid {
+		t.Fatal("a refused source claimed an order")
+	}
+}

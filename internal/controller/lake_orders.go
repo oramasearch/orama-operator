@@ -69,6 +69,9 @@ const (
 	// orderClusterTag is the order id among a dedicated cluster's cloud tags.
 	orderClusterTag = "order-id"
 
+	// cloudOrderClaimantLimit is lake's CHECK on cloud_orders.claimed_by.
+	cloudOrderClaimantLimit = 255
+
 	defaultOrderPollInterval = 30 * time.Second
 	orderPassTimeout         = 2 * time.Minute
 )
@@ -133,6 +136,11 @@ func (r *LakeOrderSourceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	member, err := orderMemberSpec(&source)
+	if err == nil && len(orderClaimant(&source)) > cloudOrderClaimantLimit {
+		// lake's CHECK on claimed_by: a longer claimant could claim nothing, on every pass.
+		err = fmt.Errorf("the name is too long: claimed_by %q is over lake's %d characters; use a name of at most %d",
+			orderClaimant(&source), cloudOrderClaimantLimit, cloudOrderClaimantLimit-len(orderClaimant(&oramav1alpha1.LakeOrderSource{})))
+	}
 	if err != nil {
 		// Only an edit fixes it. No order is read, so none is claimed.
 		status.Members, status.Orders = nil, nil

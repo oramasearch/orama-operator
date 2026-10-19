@@ -136,15 +136,30 @@ func (s *pgxCloudOrderStore) ListOrders(ctx context.Context, claimant string) ([
 }
 
 func (s *pgxCloudOrderStore) Claim(ctx context.Context, id, claimant string) (bool, error) {
-	return oneRow(s.conn.Query(ctx, claimCloudOrderSQL, id, claimant, "claimed by "+claimant))
+	return oneRow(s.conn.Query(ctx, claimCloudOrderSQL, id, claimant, cloudOrderText("claimed by "+claimant)))
 }
 
 func (s *pgxCloudOrderStore) MarkReady(ctx context.Context, id, claimant, host string) (bool, error) {
-	return oneRow(s.conn.Query(ctx, finishCloudOrderSQL, id, claimant, cloudOrderReady, host, nil, "ready at "+host))
+	return oneRow(s.conn.Query(ctx, finishCloudOrderSQL, id, claimant, cloudOrderReady, host, nil, cloudOrderText("ready at "+host)))
 }
 
 func (s *pgxCloudOrderStore) MarkFailed(ctx context.Context, id, claimant, reason string) (bool, error) {
+	reason = cloudOrderText(reason)
 	return oneRow(s.conn.Query(ctx, finishCloudOrderSQL, id, claimant, cloudOrderFailed, nil, reason, reason))
+}
+
+// cloudOrderTextLimit is lake's CHECK on cloud_orders.failure_reason and cloud_order_events.detail
+// (length() <= 2000, in characters). A longer text would make the move fail on every pass and leave
+// the order in provisioning for good.
+const cloudOrderTextLimit = 2000
+
+// cloudOrderText cuts s to lake's limit, on a character boundary.
+func cloudOrderText(s string) string {
+	runes := []rune(s)
+	if len(runes) <= cloudOrderTextLimit {
+		return s
+	}
+	return string(runes[:cloudOrderTextLimit-1]) + "…"
 }
 
 func (s *pgxCloudOrderStore) Close(ctx context.Context) error {
