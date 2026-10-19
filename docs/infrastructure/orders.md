@@ -234,3 +234,7 @@ act on `cancelled` yet (below).
   runs the SQL on a real Postgres in a database it creates and drops (`LAKE_ORDERS_TEST_POSTGRES=1`):
   eight connections claiming one order at once, a reconnect, only the holder moving it on, and no
   column but the operator's written.
+  Its schema, `testdata/lake-cloud-orders.sql`, is a verbatim copy of lake's 0089_cloud_orders
+  migration (the lake commit is named in its header);
+  [`lake_orders_contract_test.go`](../../internal/controller/lake_orders_contract_test.go) checks,
+  with no database, that every table and column the store's SQL names is in it.

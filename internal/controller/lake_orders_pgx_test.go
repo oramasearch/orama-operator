@@ -91,10 +91,12 @@ func TestCloudOrdersPgxStoreAgainstPostgres(t *testing.T) {
 		second    = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"
 		submitted = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"
 	)
-	if _, err := db.Exec(ctx, `INSERT INTO cloud_orders (id, offer, path, cloud_provider, region, contact_email, company, stripe_subscription_id, state) VALUES
-		($1, 'private_warehouse', 'checkout', NULL, 'swedencentral', 'a@example.com', 'A', 'sub_a', 'paid'),
-		($2, 'dedicated_cluster', 'checkout', 'azure', 'canadacentral', 'b@example.com', 'B', 'sub_b', 'paid'),
-		($3, 'on_prem', 'order_form', NULL, NULL, 'c@example.com', 'C', NULL, 'submitted')`, paid, second, submitted); err != nil {
+	// Lake's NOT NULL columns without a default are contact_name, contact_email and amount_cents;
+	// a provider or region not given is '' (lake's default), never NULL.
+	if _, err := db.Exec(ctx, `INSERT INTO cloud_orders (id, offer, path, cloud_provider, region, contact_name, contact_email, company, amount_cents, stripe_subscription_id, state) VALUES
+		($1, 'private_warehouse', 'checkout', '', 'swedencentral', 'Ada', 'a@example.com', 'A', 100000, 'sub_a', 'paid'),
+		($2, 'dedicated_cluster', 'checkout', 'azure', 'canadacentral', 'Ben', 'b@example.com', 'B', 500000, 'sub_b', 'paid'),
+		($3, 'on_prem', 'order_form', '', '', 'Cy', 'c@example.com', 'C', 1000000, NULL, 'submitted')`, paid, second, submitted); err != nil {
 		t.Fatal(err)
 	}
 
