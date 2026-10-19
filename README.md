@@ -24,13 +24,16 @@ into running systems:
   create clusters; `ClusterHelmRelease` and `OramaOperator` install a managed cluster's platform
   layer and its own operator; `LakeSet` and `OramaCloudV1Set` run instances on managed clusters
   from one template.
+- The edge kinds: `EdgeProvider`, `EdgeZonePolicy` and `CloudflareZonePolicy` keep a Lake's
+  Cloudflare zone on origin TLS, authenticated origin pulls and HTTPS (v0.6.2).
 
-That is 33 resource kinds, all installed by the chart on every cluster. The release notes cover
+That is 36 resource kinds, all installed by the chart on every cluster. The release notes cover
 them all: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
 [v0.2.0](docs/releases/v0.2.0.md) for the next seven, and
 [v0.3.0](docs/releases/v0.3.0.md) for the nine secure-networking kinds;
 [v0.4.0](docs/releases/v0.4.0.md), [v0.5.0](docs/releases/v0.5.0.md),
-[v0.6.0](docs/releases/v0.6.0.md) and [v0.6.1](docs/releases/v0.6.1.md) add no kind.
+[v0.6.0](docs/releases/v0.6.0.md) and [v0.6.1](docs/releases/v0.6.1.md) add no kind;
+[v0.6.2](docs/releases/v0.6.2.md) adds the three edge kinds.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -38,16 +41,13 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.6.1** (2026-10-18), a patch:
-[`docs/releases/v0.6.1.md`](docs/releases/v0.6.1.md) says what is new since v0.6.0: the Cloud v1
-network sandbox allows the analytics retention Job, the analytics import CronJob and the
-processor's pulls from the readers (#616), and a stack naming no master key gets a generated one
-(#615). [`docs/releases/v0.6.0.md`](docs/releases/v0.6.0.md) covers the Cloud v1 engine reachable
-and kept for the migration (the writer verifying the dashboard's write tokens, public writer and
-reader hosts with extra names and `/metrics` closed, readers as a StatefulSet with a disk each, a
-dedicated reader analytics key, a scheduled analytics import with 30 days kept in ClickHouse, and
-the `c1` cluster row on a new control database), with `engine.reader.hpa` removed. No cluster runs
-v0.6.1 yet.
+The current release is **v0.6.2** (2026-10-19), a patch:
+[`docs/releases/v0.6.2.md`](docs/releases/v0.6.2.md) says what is new since v0.6.1: the Cloud v1
+network sandbox admits every control DB migration Job (#625), origin TLS on every Lake Ingress
+with the Lake's Cloudflare zone secured by the operator through three new kinds (#578), the Cloud v1
+engine image serving `/health/ready` (#597) and `lake-prod` on `lake.live` (#513).
+[`docs/releases/v0.6.1.md`](docs/releases/v0.6.1.md) covers the Cloud v1 analytics paths in the
+network sandbox (#616) and a generated master key (#615).
 
 The operator runs on four AKS clusters. The management cluster, `orama-production-cluster-01`, is
 the development environment whatever its name says; it runs `Lake/prod`, live at
