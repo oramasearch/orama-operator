@@ -77,8 +77,10 @@ type ManagedSetSpec struct {
 
 	// Clusters are the members: one instance on one cluster each. Members are independent: none
 	// waits for another. Every member's cluster must carry the same `purpose` tag: a set never
-	// combines nonprod and production.
+	// combines nonprod and production. At most 64: OramaCloudV1Set's CEL rule that each migration
+	// names one member loops over them, and the API server refuses a rule over an unbounded list.
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=64
 	Clusters []SetMember `json:"clusters"`
 
 	// DeletionPolicy says what happens to an instance when its member is removed or the set is
@@ -168,16 +170,94 @@ type LakeSetList struct {
 //+kubebuilder:printcolumn:name="Members",type=integer,JSONPath=`.status.members`
 //+kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyMembers`
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="Migrations",type=string,JSONPath=`.status.migrationSummary`
 //+kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
 
 // OramaCloudV1Set installs OramaCloudV1 instances onto clusters this one manages and keeps their
-// versions and settings as described. Each instance's region is its cluster's.
+// versions and settings as described. Each instance's region is its cluster's. It also copies Prod 1
+// teams into its members (spec.migrations).
 type OramaCloudV1Set struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ManagedSetSpec   `json:"spec,omitempty"`
-	Status ManagedSetStatus `json:"status,omitempty"`
+	Spec   OramaCloudV1SetSpec   `json:"spec,omitempty"`
+	Status OramaCloudV1SetStatus `json:"status,omitempty"`
+}
+
+// OramaCloudV1SetSpec is a ManagedSetSpec plus the team migrations into its members.
+// +kubebuilder:validation:XValidation:rule="!has(self.migrations) || self.migrations.all(m, self.clusters.exists_one(c, c.name == m.member))",message="every migrations[].member must name exactly one clusters[].name"
+type OramaCloudV1SetSpec struct {
+	ManagedSetSpec `json:",inline"`
+	// Migrations copy Prod 1 teams into this set's members. Each becomes an OramaCloudV1Migration
+	// named Name in its member's namespace on its member's cluster. Removing one deletes it there.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=256
+	Migrations []SetMigration `json:"migrations,omitempty"`
+}
+
+// SetMigration is one Prod 1 team copied into one member (operator#654).
+type SetMigration struct {
+	// Name is the OramaCloudV1Migration's name.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+	// Member names the set member (SetMember.Name) the team is copied into. It cannot change once
+	// applied: a migration into another member is a new entry under a new name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=40
+	Member string `json:"member"`
+	// Secrets are copied into the member's namespace before the migration is applied (the Prod 1
+	// credentials and the evidence receipt), as SetMember.Secrets are, and deleted once the migration
+	// is gone. One with the name of a set or member Secret there is refused: a migration never changes
+	// what the stack mounts.
+	// +optional
+	Secrets []SetSecret `json:"secrets,omitempty"`
+	// Spec is the OramaCloudV1Migration's spec. targetRef is filled in from the member; leave it out.
+	// It is validated by the member's cluster when applied, and what that cluster refuses is reported
+	// on the migration.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Spec apiextensionsv1.JSON `json:"spec"`
+}
+
+// SetMigrationStatus is one migration as its member's cluster reports it.
+type SetMigrationStatus struct {
+	Name   string `json:"name"`
+	Member string `json:"member"`
+	// Cluster and Namespace are where it was applied. A migration removed from the set is deleted
+	// there, and its member, if it leaves too, waits for it.
+	// +optional
+	Cluster string `json:"cluster,omitempty"`
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+	// Step is the step its last Job ran.
+	// +optional
+	Step string `json:"step,omitempty"`
+	// Phase is the migration's own phase (Pending, Running, Succeeded, Blocked, Failed, Removing), or
+	// Pending while the set waits to apply it, or Blocked when the set refuses to (Message says why).
+	// +optional
+	Phase string `json:"phase,omitempty"`
+	// +optional
+	Message string `json:"message,omitempty"`
+	// Secrets are the Secrets the set copied for it, by their name on the member's cluster, deleted
+	// once it is gone.
+	// +optional
+	Secrets []string `json:"secrets,omitempty"`
+}
+
+// OramaCloudV1SetStatus is a ManagedSetStatus plus the migrations into its members. The set's phase
+// does not depend on them.
+type OramaCloudV1SetStatus struct {
+	ManagedSetStatus `json:",inline"`
+	// Migrations reports each migration: the declared ones in the order the set lists them, then the
+	// ones still being removed.
+	// +optional
+	Migrations []SetMigrationStatus `json:"migrations,omitempty"`
+	// MigrationSummary counts the declared migrations whose last step succeeded ("1/2 Succeeded").
+	// Empty when the set declares none.
+	// +optional
+	MigrationSummary string `json:"migrationSummary,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -193,8 +273,8 @@ type OramaCloudV1SetList struct {
 func (s *LakeSet) SetSpec() *ManagedSetSpec     { return &s.Spec }
 func (s *LakeSet) SetStatus() *ManagedSetStatus { return &s.Status }
 
-func (s *OramaCloudV1Set) SetSpec() *ManagedSetSpec     { return &s.Spec }
-func (s *OramaCloudV1Set) SetStatus() *ManagedSetStatus { return &s.Status }
+func (s *OramaCloudV1Set) SetSpec() *ManagedSetSpec     { return &s.Spec.ManagedSetSpec }
+func (s *OramaCloudV1Set) SetStatus() *ManagedSetStatus { return &s.Status.ManagedSetStatus }
 
 func init() {
 	SchemeBuilder.Register(&LakeSet{}, &LakeSetList{}, &OramaCloudV1Set{}, &OramaCloudV1SetList{})

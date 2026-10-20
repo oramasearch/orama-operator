@@ -650,6 +650,9 @@ Short name `ocv1m`. Sample: [`../config/samples/oramacloudv1migration.yaml`](../
 `targetRef`, `teamID`, `projectIDs`, `runID` and `source` cannot change after creation (CEL: *the
 target, team, projects, run and source are immutable; declare a new migration instead*).
 
+On a managed cluster it is declared in the stack's `OramaCloudV1Set` (`spec.migrations[]`, below),
+which applies it labelled `orama.cloud/managed-by-set` with `targetRef` set to the member.
+
 | Field | Purpose |
 |---|---|
 | `spec.targetRef` | The `OramaCloudV1` in this namespace that receives the team. |
@@ -1677,13 +1680,16 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 |---|---|
 | `spec.template` | The instance's spec (a `Lake`'s, an `OramaCloudV1`'s), the default for every member. Validated by each member's cluster when applied. A `LakeSet` template does not set `namespace`; an `OramaCloudV1Set` template does not set `region.name`. |
 | `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. |
-| `spec.clusters[]` | The members. Independent: none waits for another. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). |
+| `spec.clusters[]` | The members, 1 to 64. Independent: none waits for another. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). The cap of 64 holds for both kinds because they share this shape: the `OramaCloudV1Set` rule that each migration names one member loops over the members, and the API server refuses a CEL rule over an unbounded list. |
 | `spec.deletionPolicy` | `Retain` (default): removing a member or deleting the set leaves the instance running. `Delete`: the instance is deleted from its cluster. |
+| `spec.migrations[]` | `OramaCloudV1Set` only, at most 256, keyed by `name`: the Prod 1 teams copied into the members ([`cloud-v1-migration.md`](cloud-v1-migration.md#declared-in-the-set-oramacloudv1set)). `name` is the `OramaCloudV1Migration`'s name (DNS label, at most 63). `member` names exactly one `clusters[].name` (CEL: *every migrations[].member must name exactly one clusters[].name*) and cannot change once applied. `secrets` are copied into the member's namespace before it, like a member's, refused when the stack gets a Secret of that name from the set or the member, and deleted once the migration is gone. `spec` is the `OramaCloudV1Migration`'s spec without `targetRef`, which is the member; it is validated by the member's cluster when applied. Removing an entry deletes the migration there; removing its member or deleting the set waits for its migrations to be gone. |
 | `status.phase` | `Ready` (every member `Ready`), `Progressing`, or `Degraded` (the set was refused, or a member failed). |
 | `status.purpose` | The `purpose` tag all the members' clusters share. A set whose clusters differ in purpose, or lack one, applies nothing. |
 | `status.members`, `.readyMembers` | Counts. Columns of `kubectl get lset`. |
-| `status.memberStatuses[]` | Per member: `cluster`, `name`, `namespace`, `phase` (`Pending`, `Progressing`, `Ready`, `Degraded`), `version` (a Lake's image, a v1's image tag) and `message`. |
-| `status.message` | Which members are not `Ready`, and what each one's cluster says about it. |
+| `status.memberStatuses[]` | Per member: `cluster`, `name`, `namespace`, `phase` (`Pending`, `Progressing`, `Ready`, `Degraded`, or `Deleting` for a removed member waiting for its migrations), `version` (a Lake's image, a v1's image tag) and `message`. |
+| `status.migrations[]` | `OramaCloudV1Set` only. Per migration, the declared ones in order and then those still being removed: `name`, `member`, `cluster` and `namespace` (where it was applied), `step`, `phase` and `message` as the member's cluster reports them (`Pending` while the set waits to apply it, `Blocked` when the set refuses to), and `secrets` (the Secrets copied for it). The set's phase does not depend on them. |
+| `status.migrationSummary` | `OramaCloudV1Set` only: how many declared migrations succeeded, `1/2 Succeeded`; empty with none. The `Migrations` column of `kubectl get ocv1set`. |
+| `status.message` | Which members are not `Ready`, and what each one's cluster says about it; for an `OramaCloudV1Set`, also what the set could not do with a migration. |
 
 ## `LakeOrderSource` (separate CRD, cluster-scoped) — paid lake.live orders
 

@@ -17,6 +17,10 @@ Before this kind, an agent ran `oramacore migration plan / seed / catch-up / ver
 writing into a cluster's database outside the operator. The resource replaces that: what was copied
 where is a file in the repository, and each run is an owned Job kept for a week.
 
+On the managed clusters a migration is not applied by hand: it is an entry in the stack's
+`OramaCloudV1Set` file, which the managing operator applies to the member's cluster
+([below](#declared-in-the-set-oramacloudv1set)).
+
 Sample: [`../config/samples/oramacloudv1migration.yaml`](../config/samples/oramacloudv1migration.yaml).
 Field reference: [`crd-reference.md`](crd-reference.md#oramacloudv1migration-separate-crd-namespaced--one-prod-1-team-copied-into-a-stack).
 Short name `ocv1m`; `kubectl get ocv1m` shows the target, step, apply and phase.
@@ -202,10 +206,51 @@ The migration carries the finalizer `orama.cloud/migration`. Deleting it:
 To let go of a switched team without removing it, set `removeOnDelete: false` on the resource being
 deleted: the run volume is deleted and the copy stays on the target.
 
+## Declared in the set (`OramaCloudV1Set`)
+
+Every Cloud v1 stack is a member of an `OramaCloudV1Set` on the managing cluster, and its
+migrations are declared there too, in `spec.migrations`
+([operator#654](https://github.com/oramasearch/orama-operator/issues/654)). One committed file says
+which stacks exist and which teams are being copied into them. How to write an entry and the step
+order: [`config/clusters/README.md`](../config/clusters/README.md#copying-a-prod-1-team-into-a-member).
+Field reference: [`crd-reference.md`](crd-reference.md#lakeset-and-oramacloudv1set-separate-crds-cluster-scoped--instances-on-managed-clusters).
+
+On each pass, after the members have been applied, the set's controller takes each entry in order:
+
+1. **Waits for its member.** A member that is not applied (its cluster not `Ready`, its operator not
+   installed, a refusal) leaves the migration `Pending`, and so does a cluster without the
+   `OramaCloudV1Migration` kind.
+2. **Checks the entry.** It refuses (`Blocked`, with the reason) a `spec.targetRef` that is not the
+   member, a migration that would move to another member or namespace, a Secret named like one the
+   stack gets from the set or its member, and one Secret name copied into one member from two
+   sources. Two migrations may share one Secret from one source.
+3. **Copies its Secrets** into the member's namespace, the way a member's are copied, labelled
+   `orama.cloud/managed-by-set: OramaCloudV1Set.<set>`.
+4. **Applies the migration**: server-side apply, field owner `orama-operator-management`, the same
+   label, `spec` as written plus `targetRef: <member>`. What the cluster refuses, a change to an
+   immutable field included, is on the migration and in the set's message, and returned so it is
+   retried; the applied migration stays as it was and is never deleted to get a change in, since
+   deleting it runs `remove-target`.
+5. **Reads its status back** into `status.migrations[]`: `step` and `phase` and `message` as the
+   member's cluster reports them (`Pending` until that cluster's operator has reconciled the latest
+   generation), with the cluster, namespace and copied Secrets. `status.migrationSummary`, the
+   `Migrations` column, counts those that succeeded (`1/2 Succeeded`).
+
+The set's phase is its members' alone: a `Blocked` or `Failed` migration does not make it `Degraded`.
+The set looks again every 15 seconds while a migration is `Pending`, `Running` or `Removing`.
+
+**Removal.** An entry removed from the file is deleted on its cluster, and its own finalizer then
+does the cleanup described above. The set keeps reporting it in `status.migrations` until it is
+gone, then deletes the Secrets it copied for it, except those another migration at that place, the
+set or the member still copies there, and only those carrying the set's label. A removal holds only
+that migration. Removing a member (whose entries go with it) under `deletionPolicy: Delete` deletes
+its stack only once its migrations are gone; until then the member stays in `status.memberStatuses`
+as `Deleting`. Deleting the set deletes every migration first, under either policy, and keeps the
+set's finalizer until they are gone: a stack deleted under its migration would skip `remove-target`
+and its refusal for a switched team. A migration stuck in `Blocked` holds that deletion, with its
+message on the set. A cluster that is gone or being deleted takes its migrations with it.
+
 ## Not handled here
 
-- Delivering migrations from the managing cluster through `OramaCloudV1Set`
-  ([operator#654](https://github.com/oramasearch/orama-operator/issues/654)). Until then a
-  migration is applied in the stack's namespace.
 - Creating the isolation receipt: it stays an external, reviewed input.
 - `switch` and `cutback`: switching a customer stays a human step.

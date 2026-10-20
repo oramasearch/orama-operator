@@ -29,6 +29,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.migrationSummary
+      name: Migrations
+      type: string
     - jsonPath: .status.message
       name: Message
       type: string
@@ -37,7 +40,8 @@ spec:
       openAPIV3Schema:
         description: |-
           OramaCloudV1Set installs OramaCloudV1 instances onto clusters this one manages and keeps their
-          versions and settings as described. Each instance's region is its cluster's.
+          versions and settings as described. Each instance's region is its cluster's. It also copies Prod 1
+          teams into its members (spec.migrations).
         properties:
           apiVersion:
             description: |-
@@ -57,13 +61,15 @@ spec:
           metadata:
             type: object
           spec:
-            description: ManagedSetSpec is the shape LakeSet and OramaCloudV1Set share.
+            description: OramaCloudV1SetSpec is a ManagedSetSpec plus the team migrations
+              into its members.
             properties:
               clusters:
                 description: |-
                   Clusters are the members: one instance on one cluster each. Members are independent: none
                   waits for another. Every member's cluster must carry the same `purpose` tag: a set never
-                  combines nonprod and production.
+                  combines nonprod and production. At most 64: OramaCloudV1Set's CEL rule that each migration
+                  names one member loops over them, and the API server refuses a rule over an unbounded list.
                 items:
                   description: SetMember is one instance on one cluster.
                   properties:
@@ -119,6 +125,7 @@ spec:
                   - clusterRef
                   - name
                   type: object
+                maxItems: 64
                 minItems: 1
                 type: array
               deletionPolicy:
@@ -130,6 +137,69 @@ spec:
                 - Retain
                 - Delete
                 type: string
+              migrations:
+                description: |-
+                  Migrations copy Prod 1 teams into this set's members. Each becomes an OramaCloudV1Migration
+                  named Name in its member's namespace on its member's cluster. Removing one deletes it there.
+                items:
+                  description: SetMigration is one Prod 1 team copied into one member
+                    (operator#654).
+                  properties:
+                    member:
+                      description: |-
+                        Member names the set member (SetMember.Name) the team is copied into. It cannot change once
+                        applied: a migration into another member is a new entry under a new name.
+                      maxLength: 40
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Name is the OramaCloudV1Migration's name.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    secrets:
+                      description: |-
+                        Secrets are copied into the member's namespace before the migration is applied (the Prod 1
+                        credentials and the evidence receipt), as SetMember.Secrets are, and deleted once the migration
+                        is gone. One with the name of a set or member Secret there is refused: a migration never changes
+                        what the stack mounts.
+                      items:
+                        description: |-
+                          SetSecret names a Secret on this cluster that is copied into a member's namespace on its
+                          cluster before the instance is applied.
+                        properties:
+                          as:
+                            description: |-
+                              As is the Secret's name on the member's cluster. Default: Name. A member's secret replaces
+                              the set's secret that has the same name there.
+                            type: string
+                          name:
+                            minLength: 1
+                            type: string
+                          namespace:
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - namespace
+                        type: object
+                      type: array
+                    spec:
+                      description: |-
+                        Spec is the OramaCloudV1Migration's spec. targetRef is filled in from the member; leave it out.
+                        It is validated by the member's cluster when applied, and what that cluster refuses is reported
+                        on the migration.
+                      x-kubernetes-preserve-unknown-fields: true
+                  required:
+                  - member
+                  - name
+                  - spec
+                  type: object
+                maxItems: 256
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               secrets:
                 description: |-
                   Secrets are copied from this cluster into every member's namespace before its instance is
@@ -165,9 +235,14 @@ spec:
             - clusters
             - template
             type: object
+            x-kubernetes-validations:
+            - message: every migrations[].member must name exactly one clusters[].name
+              rule: '!has(self.migrations) || self.migrations.all(m, self.clusters.exists_one(c,
+                c.name == m.member))'
           status:
-            description: ManagedSetStatus is the status LakeSet and OramaCloudV1Set
-              share.
+            description: |-
+              OramaCloudV1SetStatus is a ManagedSetStatus plus the migrations into its members. The set's phase
+              does not depend on them.
             properties:
               conditions:
                 description: 'Conditions: Ready.'
@@ -265,6 +340,52 @@ spec:
                 type: integer
               message:
                 type: string
+              migrationSummary:
+                description: |-
+                  MigrationSummary counts the declared migrations whose last step succeeded ("1/2 Succeeded").
+                  Empty when the set declares none.
+                type: string
+              migrations:
+                description: |-
+                  Migrations reports each migration: the declared ones in the order the set lists them, then the
+                  ones still being removed.
+                items:
+                  description: SetMigrationStatus is one migration as its member's
+                    cluster reports it.
+                  properties:
+                    cluster:
+                      description: |-
+                        Cluster and Namespace are where it was applied. A migration removed from the set is deleted
+                        there, and its member, if it leaves too, waits for it.
+                      type: string
+                    member:
+                      type: string
+                    message:
+                      type: string
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    phase:
+                      description: |-
+                        Phase is the migration's own phase (Pending, Running, Succeeded, Blocked, Failed, Removing), or
+                        Pending while the set waits to apply it, or Blocked when the set refuses to (Message says why).
+                      type: string
+                    secrets:
+                      description: |-
+                        Secrets are the Secrets the set copied for it, by their name on the member's cluster, deleted
+                        once it is gone.
+                      items:
+                        type: string
+                      type: array
+                    step:
+                      description: Step is the step its last Job ran.
+                      type: string
+                  required:
+                  - member
+                  - name
+                  type: object
+                type: array
               observedGeneration:
                 format: int64
                 type: integer

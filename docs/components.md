@@ -1603,6 +1603,9 @@ pinned chart releases and the operator itself onto a managed cluster with the He
 `LakeSet` and `OramaCloudV1Set` (`managedset_controller.go`,
 [#391](https://github.com/oramasearch/orama-operator/issues/391)) apply `Lake` and `OramaCloudV1`
 instances onto managed clusters from one template, each member in its own namespace and independent of the others.
+An `OramaCloudV1Set` also applies its members' team migrations as `OramaCloudV1Migration`s
+(`managedset_migrations.go`, [#654](https://github.com/oramasearch/orama-operator/issues/654);
+[`cloud-v1-migration.md`](cloud-v1-migration.md#declared-in-the-set-oramacloudv1set)).
 
 | Controller | Reconciles | Creates |
 |---|---|---|
