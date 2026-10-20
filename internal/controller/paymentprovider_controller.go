@@ -39,8 +39,9 @@ const (
 
 	// A checked key is checked again this often, so a key revoked or narrowed in the vendor's
 	// dashboard is reported; a failed check, or a missing Secret, is looked at again sooner.
-	paymentRecheck = time.Hour
-	paymentRetry   = time.Minute
+	paymentRecheck     = time.Hour
+	paymentRetry       = time.Minute
+	paymentDeleteGrace = 5 * time.Minute
 )
 
 // paymentCheckClock remembers, per object, the last check against the vendor and what it was for,

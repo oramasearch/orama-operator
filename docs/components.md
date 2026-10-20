@@ -59,6 +59,19 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **lake sealed-secret delivery** | `internal/controller/lakesealedsecret_controller.go` | from one namespaced `LakeSealedSecret`: an owned, cluster-bound Kubernetes Secret labelled `lake.orama.cloud/sealed: "true"`; literal ciphertext opens locally, while lake and dynamic references call lake's mint capability with projected service-account attestation | 🟡 **implemented**; literal delivery and LakeEnvironment consumption with local delivery owners are complete and tested against both k0s admission policies, while lake/dynamic delivery awaits lake's `mint_sealed_secret` leaf |
 | **deployment control plane** | `internal/controller/deployment_controlplane.go` | authenticated liquid REST `/v1` and MCP server; appends immutable Zetta history, desired rows in lake's shape and audit entries, validates sealed-secret references, and reads reconciled `LakeEnvironment` status | ✅ **implemented** ([#142](https://github.com/oramasearch/orama-operator/issues/142)); REST/MCP, drift, Zetta-double and envtest coverage — see [`control-plane/README.md`](control-plane/README.md) |
 
+## Payment webhook endpoints
+
+`PaymentWebhookEndpoint` owns a `StripeWebhookEndpoint` for a Stripe provider. Its concrete
+controller creates the vendor endpoint and an owned signing Secret. On deletion, its finalizer
+retries unavailable credentials and Stripe failures every minute for five minutes from the
+deletion timestamp, then releases the object with an `EndpointLeftBehind` Warning naming the
+endpoint to delete in the Stripe Dashboard. Stripe 401/403 responses or a missing provider/key
+Secret release it immediately. With an empty endpoint ID, a working key still cleans up the
+endpoint matching our owner tag and URL; cleanup failures are logged and release it immediately
+without an event, as do unavailable credentials. Kubernetes read errors still retry.
+The abstract controller makes no vendor calls, and `PaymentProvider` has no
+finalizer. See [payments](infrastructure/payments.md#deleting-an-endpoint).
+
 ## Component storage
 
 `internal/controller/storage.go` runs after ordinary component provisioning. It manages the

@@ -200,12 +200,20 @@ before the `StripeWebhookEndpoint` goes; an endpoint Stripe no longer has (404) 
 Deleting the `PaymentWebhookEndpoint` deletes its `StripeWebhookEndpoint` through the owner
 reference.
 
-The finalizer needs the provider's key. When the provider or its key Secret is already gone (deleted
-together with the endpoint, or with the namespace), it does not block: it records a Warning event,
-`EndpointLeftBehind`, naming the Stripe endpoint it left, changes nothing in Stripe and lets the
-object go. **A person then deletes that endpoint in the Stripe Dashboard.** While the provider exists
-but its `Credentials` are not `True`, deletion waits for them. Whoever deletes a provider and its
-endpoints together deletes the endpoints first, and the provider once they are gone.
+The finalizer retries cleanup every minute for a five-minute grace window measured from
+`metadata.deletionTimestamp`. This includes a provider whose `Credentials` are not `True` and
+failures to list or delete Stripe endpoints. After the window it releases the object even if
+cleanup still fails. A Stripe 401 or 403 releases it immediately, as does a provider or key Secret
+that is already gone.
+
+When cleanup cannot finish, the operator records a Warning event, `EndpointLeftBehind`, with the
+reason and the Stripe endpoint ID. **A person then deletes that endpoint in the Stripe Dashboard.**
+With an empty `status.endpointId`, a working key still lists and deletes the endpoint matching our
+owner tag and URL: Stripe may have created it before its status could be saved. Cleanup failures
+are logged and release the object immediately without a Warning event. Unavailable credentials
+also release an empty-ID object immediately, without a Stripe call or a Warning event.
+Kubernetes read errors still retry, including after the grace window. Whoever deletes a provider
+and its endpoints together deletes the endpoints first, and the provider once they are gone.
 
 ## Catalogs
 
