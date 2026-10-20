@@ -889,7 +889,12 @@ each endpoint has its own signing secret. Short name `paywh`; `kubectl get paywh
 
 Created and owned by a `PaymentWebhookEndpoint` of a `stripe` provider; a person never writes one.
 The only kind that calls Stripe's webhook API. Short name `stripewh`, with the same columns as
-`paywh`. Finalizer `orama.cloud/payment-webhook-cleanup` deletes the Stripe endpoint first.
+`paywh`. Finalizer `orama.cloud/payment-webhook-cleanup` tries to delete the Stripe endpoint,
+retrying failures for five minutes from `metadata.deletionTimestamp`. A Stripe 401/403 or missing
+provider/key Secret releases it immediately. Cleanup failures emit `EndpointLeftBehind` with the
+endpoint ID for deletion in the Stripe Dashboard. With an empty ID, a working key still cleans up
+the endpoint matching our owner tag and URL; cleanup failures are logged and release it immediately
+without an event, as do unavailable credentials. Kubernetes read errors still retry.
 
 | Field | Meaning |
 |---|---|
