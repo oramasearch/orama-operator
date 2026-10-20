@@ -79,8 +79,10 @@ func stripeField(name string, nested ...string) string {
 //
 // target is "new" for a create and the Stripe object's ID for an update; a recreate names the ID
 // it replaces ("recreate-we_123"), so it never replays the create of the object it deleted.
-// attempt counts the 5xx answers this request has had: after one, the next attempt must be a new
-// request (suffix -<attempt>), or it would get the saved 5xx back. 0 adds no suffix.
+// attempt is how many writes Stripe has answered for the object, 2xx or not (suffix -<attempt>;
+// 0 adds none). A request Stripe answered is never sent again under its key: after a 5xx it would
+// get the saved 5xx back, and the same request needed again later would get the saved success
+// and change nothing. A request that got no answer keeps its key.
 func stripeIdempotencyKey(uid types.UID, operation, target string, form url.Values, attempt int) string {
 	sum := sha256.Sum256([]byte(form.Encode()))
 	key := fmt.Sprintf("orama-%s-%s-%s-%x", uid, operation, target, sum[:8])

@@ -296,10 +296,12 @@ rules:
   - oramaoperators
   - oramazettaclusters
   - paymentproviders
+  - paymentwebhookendpoints
   - peerconnections
   - peerlinks
   - postgresschemas
   - rabbitmqtopologies
+  - stripewebhookendpoints
   - tunnels
   - zettaclustere2etests
   - zettatunnels
@@ -337,6 +339,7 @@ rules:
   - peerconnections/finalizers
   - peerlinks/finalizers
   - rabbitmqtopologies/finalizers
+  - stripewebhookendpoints/finalizers
   - tunnels/finalizers
   - zettatunnels/finalizers
   verbs:
@@ -373,10 +376,12 @@ rules:
   - oramaoperators/status
   - oramazettaclusters/status
   - paymentproviders/status
+  - paymentwebhookendpoints/status
   - peerconnections/status
   - peerlinks/status
   - postgresschemas/status
   - rabbitmqtopologies/status
+  - stripewebhookendpoints/status
   - tunnelproviders/status
   - tunnels/status
   - zettaclustere2etests/status

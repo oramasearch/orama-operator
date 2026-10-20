@@ -26,10 +26,12 @@ into running systems:
   from one template.
 - The edge kinds: `EdgeProvider`, `EdgeZonePolicy` and `CloudflareZonePolicy` keep a Lake's
   Cloudflare zone on origin TLS, authenticated origin pulls and HTTPS (v0.6.2).
-- The payment kinds: `PaymentProvider` checks the operator's key for a Stripe account or sandbox
-  (not released yet; [`docs/infrastructure/payments.md`](docs/infrastructure/payments.md)).
+- The payment kinds: `PaymentProvider` checks the operator's key for a Stripe account or sandbox;
+  `PaymentWebhookEndpoint` and `StripeWebhookEndpoint` keep an app's Stripe webhook endpoint and
+  its signing secret (not released yet;
+  [`docs/infrastructure/payments.md`](docs/infrastructure/payments.md)).
 
-That is 37 resource kinds, all installed by the chart on every cluster. The release notes cover
+That is 39 resource kinds, all installed by the chart on every cluster. The release notes cover
 every released one: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
 [v0.2.0](docs/releases/v0.2.0.md) for the next seven, and
 [v0.3.0](docs/releases/v0.3.0.md) for the nine secure-networking kinds;
