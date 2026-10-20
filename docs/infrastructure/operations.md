@@ -48,11 +48,12 @@ kubectl --kubeconfig /tmp/nonprod.kubeconfig get nodes
 | `OramaOperator` | `ooperator` | The managed cluster's own operator, at a version. |
 | `LakeSet` | `lset` | Lake instances on managed clusters, from one template. |
 | `OramaCloudV1Set` | `ocv1set` | Orama Cloud v1 instances on managed clusters, from one template. |
+| `LakeOrderSource` | `lorders` | Provisions the paid lake.live orders a `LakeSet`'s Lakes record ([orders](orders.md)). |
 
 One command shows everything:
 
 ```sh
-kubectl --context orama-production-cluster-01 get kcp,kcluster,aks,chr,ooperator,lset,ocv1set
+kubectl --context orama-production-cluster-01 get kcp,kcluster,aks,chr,ooperator,lset,ocv1set,lorders
 ```
 
 Every one of them has a `Message` that says, in the words of whatever refused, why it is not
@@ -186,6 +187,41 @@ kubectl --context orama-production-cluster-01 get lset,ocv1set
 kubectl --context orama-production-cluster-01 get lset <name> \
   -o jsonpath='{range .status.memberStatuses[*]}{.name} {.namespace} {.phase} {.version} | {.message}{"\n"}{end}'
 ```
+
+## Paid orders: `LakeOrderSource`
+
+A private warehouse or a dedicated cluster bought on lake.live is provisioned by the management
+cluster's operator from lake's `cloud_orders` table, with nothing done by hand
+([operator#634](https://github.com/oramasearch/orama-operator/issues/634); the design is
+[`orders.md`](orders.md)). One `LakeOrderSource` names the set whose Lakes take orders; the operator
+reads each member's orders through the member's cluster, claims each `paid` one, makes the resources
+for it on the management cluster and writes the order's state back (`provisioning`, then `ready`
+with the host, or `failed` with the reason).
+
+**Turn it on for an environment**: commit a `LakeOrderSource` (the example is in
+[`orders.md`](orders.md#the-kind)) and apply it to the management cluster, with Steve's consent, after
+lake's `cloud_orders` migration (lake#831) is on that set's Lakes. Nonprod first: a source for
+`lake-nonprod`, a test-mode Stripe purchase, and the order reaching `ready`, before one for `lake-prod`.
+
+**Ordered resources are not in `config/clusters/`.** Their source of truth is the order's row, so they
+are made by the operator, not written in a file, and `kubectl diff -R -f config/clusters/` does not
+show them. Find them by their label:
+
+```sh
+kubectl --context orama-production-cluster-01 get lorders
+kubectl --context orama-production-cluster-01 get lset,kcluster,chr,ooperator -l orama.cloud/order-id
+kubectl --context orama-production-cluster-01 get lorders lake-live \
+  -o jsonpath='{range .status.orders[*]}{.id} {.offer} {.region} {.lakeSet} | {.message}{"\n"}{end}'
+```
+
+**Never edit or delete an ordered resource by hand.** The operator brings it back to the described
+spec on its next pass, and removing one is a change of the order's state, which is not built yet
+([`orders.md`](orders.md#open-questions-for-steve)). A dedicated cluster copies the template cluster's
+platform and operator, so it is upgraded by upgrading the template cluster's files, like every leaf.
+
+**What a source reports**: `Pending` while the set or lake's table is missing, `Degraded` when a
+member's orders cannot be read (the member and the reason are in `status.members`) or `spec.member`
+sets a field the operator sets per order, `Progressing` while orders are provisioning.
 
 ## Move a cluster's hosts from ingress-nginx to zetta-tunnel
 

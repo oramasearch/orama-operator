@@ -367,6 +367,7 @@ rules:
   - lakeapps/status
   - lakee2etests/status
   - lakeenvironments/status
+  - lakeordersources/status
   - lakerestorerehearsals/status
   - lakes/status
   - lakesealedsecrets/status
@@ -397,6 +398,7 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - lakeordersources
   - tunnelproviders
   verbs:
   - get

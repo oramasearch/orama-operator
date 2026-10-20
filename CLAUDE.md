@@ -193,6 +193,10 @@ instances on it are all done by editing resources on the managing cluster:
   **Change the file, apply it, commit it, in one change.** Never leave a `kubectl edit` or
   `kubectl patch` that the files do not show; `kubectl diff -R -f config/clusters/` must be empty.
 - **Why**: [`docs/infrastructure/README.md`](docs/infrastructure/README.md), the architecture.
+- **Paid lake.live orders**: [`docs/infrastructure/orders.md`](docs/infrastructure/orders.md). A
+  `LakeOrderSource` makes resources from lake's `cloud_orders` rows; those are not in
+  `config/clusters/` and are found by the `orama.cloud/order-id` label. Never edit or delete one
+  by hand.
 - **Short form for an agent**: the `orama-clusters` skill in the umbrella bridge
   (https://github.com/oramasearch/orama-bridge/blob/main/.claude/skills/orama-clusters/SKILL.md).
 
