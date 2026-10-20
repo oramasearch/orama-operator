@@ -8,20 +8,25 @@ Job and pods to disappear. This is a metadata upgrade, not a schema version chan
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` tag v0.3.0, commit 18a89c14f3ce2629090e9373e673cb450ab96911](https://github.com/oramasearch/lake/blob/18a89c14f3ce2629090e9373e673cb450ab96911/db/schema.sql),
-through `0089_cloud_orders` (lake#831): `cloud_orders`, `cloud_order_events` and
-`cloud_orders_guard`. Its SHA-256 is `690e75b738deebb28b71214d84654d984a747bfb9a1a5f935f4befb9cd70871f`.
+[`oramasearch/lake` `dev` at commit 2b39c2f73145d79f4267d12529d7e2d1c76a6090](https://github.com/oramasearch/lake/blob/2b39c2f73145d79f4267d12529d7e2d1c76a6090/db/schema.sql),
+the merge of lake#864, through `0090_billing_contacts` (lake#857): `billing_contacts` and
+`billing_contacts_guard`. Before it, lake v0.3.0's `0089_cloud_orders`. Its SHA-256 is
+`93e4e099f7520187cce521bd97af243233c5fd27cb5cf397b38311d6c442d539`. Re-pin to lake's next release tag
+when it is cut.
 
 **Pin only a commit on lake `dev` or a release tag, never a pull request's branch.** Lake records a
 migration by name only, with no checksum, so a migration applied from a branch and changed before it
-merges leaves every Lake on the old version, and nothing reports it. `0090_billing_contacts`
-(lake#857, lake#864) is added in its own pull request once lake#864 merges, pinned to that merge
-commit ([#656](https://github.com/oramasearch/orama-operator/issues/656)).
+merges leaves every Lake on the old version, and nothing reports it.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
+
+Migration `0090_billing_contacts` (lake#857, lake#864) adds `billing_contacts`, written by lake alone:
+one row per account with the email, name and address its invoices carry, with guard
+`billing_contacts_guard`. Apply it before a lake image containing lake#864 rolls; the schema gate
+holds that image until it has applied.
 
 Migration `0089_cloud_orders` (lake#831, in lake v0.3.0) adds `cloud_orders` and
 `cloud_order_events`, with guard `cloud_orders_guard`. Lake writes the orders; a `LakeOrderSource`
