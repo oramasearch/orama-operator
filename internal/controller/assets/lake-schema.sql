@@ -4616,27 +4616,3 @@ CREATE TRIGGER cloud_orders_paid AFTER INSERT OR UPDATE OF state ON cloud_orders
 
 CREATE TABLE IF NOT EXISTS cloud_orders_guard (applied_at timestamptz NOT NULL DEFAULT now());
 INSERT INTO schema_migrations (version) VALUES ('0089_cloud_orders') ON CONFLICT DO NOTHING;
-
--- ---------------------------------------------------------------------------------------------
--- 0090_billing_contacts (lake#857, docs/api/billing.md#billing-contact): where an account's
--- invoices go and the name and address they carry. One row per account, replaced whole by
--- set_billing_contact, and sent to the payment provider's customer (Stripe's email, name and
--- address). A billing record (decision 56): nothing from a workspace. `name` is the legal or
--- company name on the invoice; `country` an ISO 3166-1 alpha-2 code or empty. Kept until the
--- account is deleted. Idempotent.
--- ---------------------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS billing_contacts (
-    customer_id  uuid        PRIMARY KEY REFERENCES customers(id) ON DELETE CASCADE,
-    email        text        NOT NULL CHECK (email ~ '^[^@\s]+@[^@\s]+$' AND length(email) <= 320),
-    name         text        NOT NULL DEFAULT '' CHECK (length(name) <= 256),
-    line1        text        NOT NULL DEFAULT '' CHECK (length(line1) <= 256),
-    line2        text        NOT NULL DEFAULT '' CHECK (length(line2) <= 256),
-    city         text        NOT NULL DEFAULT '' CHECK (length(city) <= 128),
-    postal_code  text        NOT NULL DEFAULT '' CHECK (length(postal_code) <= 32),
-    state        text        NOT NULL DEFAULT '' CHECK (length(state) <= 128),
-    country      text        NOT NULL DEFAULT '' CHECK (country ~ '^([A-Z]{2})?$'),
-    updated_at   timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS billing_contacts_guard (applied_at timestamptz NOT NULL DEFAULT now());
-INSERT INTO schema_migrations (version) VALUES ('0090_billing_contacts') ON CONFLICT DO NOTHING;
