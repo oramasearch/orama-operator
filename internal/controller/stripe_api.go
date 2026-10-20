@@ -24,7 +24,10 @@ import (
 const (
 	stripeAPIBase = "https://api.stripe.com"
 	// stripeAPIVersion is the Stripe-Version of the operator's own calls: account, products and
-	// prices. A webhook endpoint's calls carry that endpoint's apiVersion instead.
+	// prices. It matches Lake's pin, keeping requests predictable and independent of the account
+	// default; the operator reads stable fields whose shape is unchanged across the apps' versions.
+	// Change it only with a test against the fake for every field the operator reads.
+	// A webhook endpoint's calls carry that endpoint's apiVersion instead.
 	stripeAPIVersion = "2024-06-20"
 	// stripeTimeout bounds one attempt of a request.
 	stripeTimeout = 15 * time.Second
