@@ -846,6 +846,105 @@ never writes one. The only kind that changes a Cloudflare zone's settings (`ssl`
 | `spec.apiTokenSecretRef` | The provider's token Secret and key. |
 | `status` | The same status as `EdgeZonePolicy`, which copies it. |
 
+## `PaymentProvider` (separate CRD, namespaced) — the vendor, account and key for payment resources
+
+Principle 10's provider resource for the payment kinds (operator#637, the Stripe epic
+orama-bridge#199). It checks its key against the vendor and changes nothing there. Short name
+`payprov`; `kubectl get payprov -A` shows `Type`, `Account`, `Live`, `Credentials`, `Reason`.
+The check, its reasons and the Secret it reads are in
+[`infrastructure/payments.md`](infrastructure/payments.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.type` | `stripe` (the only type). |
+| `spec.stripe.accountId` | The Stripe account or sandbox, `acct_...`. A key of another account is refused. |
+| `spec.stripe.livemode` | Whether this is live mode. The key's prefix must agree: `sk_live_`/`rk_live_` for `true`, `sk_test_`/`rk_test_` for `false`. Required, so a provider always says which mode it is. |
+| `spec.stripe.apiKeySecretRef` | `{name, key}` of the operator's restricted key in this namespace. Never written to status or logged. |
+| `status.conditions[Credentials]` | `True` with reason `Verified` (the key's mode and account match) or `ModeVerified` (a restricted key that may not read the account; its mode matches, the account is not checked). `False` with `SecretMissing`, `ModeMismatch`, `AccountMismatch` or `StripeAPIError`. |
+
+The key is checked every hour, and a minute after a Stripe error or while the Secret is missing.
+Status is written only when the condition changes.
+
+## `PaymentWebhookEndpoint` (separate CRD, namespaced) — deliver an app's payment events to a URL
+
+Principle 10's abstract kind for webhook endpoints (operator#637). For a `stripe` provider it keeps
+an owned `StripeWebhookEndpoint` of the same name, with the same spec and the provider's key, and
+copies back its `Ready` condition and endpoint ID; it calls no vendor itself. One per app per host:
+each endpoint has its own signing secret. Short name `paywh`; `kubectl get paywh -A` shows `App`,
+`URL`, `Endpoint`, `Ready`, `Reason`. The lifecycle is in
+[`infrastructure/payments.md`](infrastructure/payments.md#webhook-endpoints).
+
+| Field | Meaning |
+|---|---|
+| `spec.providerRef.name` | A `PaymentProvider` in this namespace. |
+| `spec.url` | Where the events go. `https://` only. |
+| `spec.events` | The event types the app handles (`invoice.paid`, ...), at least one. Sent sorted and deduplicated. |
+| `spec.apiVersion` | The payload version the app parses (Lake: `2024-06-20`). Stripe cannot change it on an endpoint, so a new value replaces the endpoint and its signing secret. |
+| `spec.app` | `cloud_v1` or `lake`: the endpoint's `metadata[orama_app]`. |
+| `spec.signingSecretName` | The Secret, in this namespace, that receives the signing secret under key `signingSecret`. The operator owns it. |
+| `status.endpointId` | The vendor's endpoint ID (`we_...`). |
+| `status.conditions[Ready]` | Copied from the concrete kind: `True` with reason `Configured`; `False` with `ProviderNotReady`, `URLTaken`, `SigningSecretTaken` or `StripeAPIError`. `False`/`Progressing` until the concrete kind has reported on its current spec. |
+
+## `StripeWebhookEndpoint` (separate CRD, namespaced) — one Stripe webhook endpoint and its signing secret
+
+Created and owned by a `PaymentWebhookEndpoint` of a `stripe` provider; a person never writes one.
+The only kind that calls Stripe's webhook API. Short name `stripewh`, with the same columns as
+`paywh`. Finalizer `orama.cloud/payment-webhook-cleanup` deletes the Stripe endpoint first.
+
+| Field | Meaning |
+|---|---|
+| `spec.*` | The `PaymentWebhookEndpoint`'s spec, unchanged. |
+| `spec.apiKeySecretRef` | The provider's key Secret and key, copied from `PaymentProvider.spec.stripe.apiKeySecretRef`. |
+| `status.endpointId` | The Stripe endpoint (`we_...`). |
+| `status.writes` | How many creates and updates Stripe has answered for this object, a 5xx included: the attempt suffix of the next idempotency key. |
+| `status.conditions[Ready]` | `True`/`Configured`; `False` with `ProviderNotReady` (the provider's `Credentials` are not `True` for its current spec, or its key is missing), `URLTaken` (another endpoint delivers to the URL; its ID is in the message), `SigningSecretTaken` (another controller owns the signing Secret) or `StripeAPIError`. |
+
+Stripe is called every hour, and a minute after a failure; a changed spec or key, or a lost signing
+Secret, is acted on at once. Status is written only when it changes.
+
+## `PaymentCatalog` (separate CRD, namespaced) — an app's products and prices in a payment account
+
+Principle 10's abstract kind for catalogs (operator#638). For a `stripe` provider it keeps an owned
+`StripeCatalog` of the same name, with the same spec and the provider's key, and copies back its
+`Ready` condition and prices; it calls no vendor itself. **Deleting it changes nothing in the
+account**: there is no finalizer. Short name `paycat`; `kubectl get paycat -A` shows `App`,
+`Version`, `Ready`, `Reason`. The lifecycle is in
+[`infrastructure/payments.md`](infrastructure/payments.md#catalogs).
+
+| Field | Meaning |
+|---|---|
+| `spec.providerRef.name` | A `PaymentProvider` in this namespace. |
+| `spec.app` | `cloud_v1` or `lake`: `metadata[orama_app]` on every product and price. |
+| `spec.version` | The definition's version, at least 1, bumped on every change. Stamped on every product as `metadata[orama_catalog_version]`; a catalog never writes a product that carries a higher one (`Superseded`). |
+| `spec.products[].id` | The product's fixed ID (`lake_usage`): `^[a-z0-9_]{3,64}$`, once per catalog. A product this catalog created that the list no longer has is archived. |
+| `spec.products[].name` | The product's name. |
+| `spec.products[].description` | Optional; empty means none. |
+| `spec.products[].metadata` | Added to the product's metadata. A key starting with `orama_` is refused (`InvalidSpec`). |
+| `spec.products[].prices[].lookupKey` | Names the price across accounts and over time (`cloud_v1.plan.<uuid>.monthly`): letters, digits, `_ . : -`, at most 128, once in the whole catalog. |
+| `spec.products[].prices[].currency` | Three lowercase letters (`usd`). |
+| `spec.products[].prices[].unitAmount` | In the currency's minor unit (cents), 0 or more. |
+| `spec.products[].prices[].interval` | `month` or `year` for a recurring price; empty for one-time. |
+| `spec.products[].prices[].metadata` | Added to the price's metadata, as for products. |
+| `status.prices` | Lookup key → the price ID now holding it, as of the last pass that brought the whole catalog to its spec. |
+| `status.conditions[Ready]` | Copied from the concrete kind: `True` with reason `Configured` or `Superseded`; `False` with `ProviderNotReady`, `InvalidSpec`, `ProductTaken`, `PriceTaken` or `StripeAPIError`. `False`/`Progressing` until the concrete kind has reported on its current spec. |
+
+## `StripeCatalog` (separate CRD, namespaced) — one catalog's Stripe products and prices
+
+Created and owned by a `PaymentCatalog` of a `stripe` provider; a person never writes one. The only
+kind that writes Stripe products and prices. It archives and never deletes, and has no finalizer.
+Short name `stripecat`, with the same columns as `paycat`.
+
+| Field | Meaning |
+|---|---|
+| `spec.*` | The `PaymentCatalog`'s spec, unchanged. |
+| `spec.apiKeySecretRef` | The provider's key Secret and key, copied from `PaymentProvider.spec.stripe.apiKeySecretRef`. |
+| `status.prices` | Lookup key → price ID (`price_...`). |
+| `status.writes` | How many creates and updates Stripe has answered for this object, a 5xx included: the attempt suffix of the next idempotency key. |
+| `status.conditions[Ready]` | `True`/`Configured`; `True`/`Superseded` (a product carries a newer catalog version, and nothing is written); `False` with `ProviderNotReady`, `InvalidSpec` (a lookup key under two products, or an `orama_` metadata key), `ProductTaken` (a product with that ID belongs to another app or was made by hand), `PriceTaken` (a price that is not this catalog's holds a lookup key; its ID is in the message) or `StripeAPIError`. |
+
+Stripe is called every six hours, and a minute after a failure; a changed spec or key is acted on at
+once. Status is written only when it changes.
+
 ## `CloudflareLoadBalancer` (separate CRD) — the global geo-LB
 
 Owns a Cloudflare **global Load Balancer** ([operator#73](https://github.com/oramasearch/orama-operator/issues/73)):
@@ -1533,3 +1632,26 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 | `status.members`, `.readyMembers` | Counts. Columns of `kubectl get lset`. |
 | `status.memberStatuses[]` | Per member: `cluster`, `name`, `namespace`, `phase` (`Pending`, `Progressing`, `Ready`, `Degraded`), `version` (a Lake's image, a v1's image tag) and `message`. |
 | `status.message` | Which members are not `Ready`, and what each one's cluster says about it. |
+
+## `LakeOrderSource` (separate CRD, cluster-scoped) — paid lake.live orders
+
+Short name `lorders`. Provisions the paid orders a `LakeSet`'s Lakes record in lake's `cloud_orders`
+([operator#634](https://github.com/oramasearch/orama-operator/issues/634), lake#831). Design:
+[`infrastructure/orders.md`](infrastructure/orders.md).
+
+| Field | Meaning |
+|---|---|
+| `metadata.name` | At most 224 characters: `claimed_by` is `orama-operator/LakeOrderSource/<name>` and lake allows 255. A longer name is `Degraded` and claims nothing. |
+| `spec.lakeSetRef` | The `LakeSet` whose members' control Postgres hold the orders. Every ordered Lake copies its template and secrets. |
+| `spec.hostDomain` | The DNS zone ordered Lakes are served in: `<lake name>.<hostDomain>`. Must be in the template's `dnsSecretRef` zone. At most 234 characters, so the host fits lake's 253. |
+| `spec.member` | Every ordered Lake's own settings, as a set member's `spec`. Must not set `host`, `args`, `apexHost`, `region`, `regions`, `namespace` or `LAKE_PUBLIC_HOST`, which the operator sets per order. |
+| `spec.memberSecrets[]` | Copied into every ordered Lake's namespace, as a set member's `secrets`. |
+| `spec.dedicatedCluster` | `providerRef` (the `KubernetesClusterProvider`: the cloud identity) and `templateClusterRef` (the `KubernetesCluster` whose version, node pools, `ClusterHelmRelease`s and `OramaOperator` a dedicated cluster copies). Without it every `dedicated_cluster` order fails. |
+| `spec.pollInterval` | How often the orders are read. Default `30s`. |
+| `status.phase` | `Ready`, `Progressing` (orders provisioning), `Pending` (the set or lake's table is missing) or `Degraded` (a member cannot be read, or the spec is refused). |
+| `status.provisioning`, `.readyOrders`, `.failed` | This source's orders in each state. Columns of `kubectl get lorders`. |
+| `status.members[]` | Per member: `cluster`, `name`, `reachable`, and the `message` when its orders were not read. |
+| `status.orders[]` | Each order being provisioned: `id`, `member`, `offer`, `region`, `lakeSet`, and the `message` saying what it waits for. |
+
+Every resource it makes is named `order-<first 12 hex digits of the id>`, labelled
+`orama.cloud/order-id` and `orama.cloud/order-source`, and annotated `orama.cloud/order-owner`.

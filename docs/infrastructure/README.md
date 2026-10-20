@@ -202,6 +202,8 @@ A general rule for every kind in this work, and for the operator from here on.
 | `DnsRecord` | `CloudflareDnsRecord` | Another DNS provider |
 | `ServiceMesh` | `IstioServiceMesh` | Another mesh |
 | `EdgeZonePolicy` | `CloudflareZonePolicy` | Another CDN or edge provider |
+| `PaymentWebhookEndpoint` | `StripeWebhookEndpoint` | Another payment provider |
+| `PaymentCatalog` | `StripeCatalog` | Another payment provider |
 
 ### A provider is its own resource
 
@@ -216,6 +218,8 @@ provider."*
 | `KubernetesCluster` | a `KubernetesClusterProvider` (of type AKS) | `AksCluster` |
 | `ServiceMesh` | a mesh provider (of type Istio) | `IstioServiceMesh` |
 | `EdgeZonePolicy` | an `EdgeProvider` (of type cloudflare) | `CloudflareZonePolicy` ([`../lake/origin-tls.md`](../lake/origin-tls.md)) |
+| `PaymentWebhookEndpoint` | a `PaymentProvider` (of type stripe) | `StripeWebhookEndpoint` ([`payments.md`](payments.md)) |
+| `PaymentCatalog` | a `PaymentProvider` (of type stripe) | `StripeCatalog` ([`payments.md`](payments.md#catalogs)) |
 
 ```
 KubernetesCluster ──providerRef──▶ KubernetesClusterProvider (type: aks)
@@ -495,6 +499,17 @@ Further behavior:
 
 [`config/samples/lakeset-nonprod.yaml`](../../config/samples/lakeset-nonprod.yaml) is a nonprod set
 with two environments.
+
+## Paid orders: `LakeOrderSource`
+
+A private warehouse or a dedicated cluster bought on lake.live is provisioned from lake's
+control-plane `cloud_orders` table by the management cluster's operator, which reaches each leaf's
+control Postgres through a port-forward over the kubeconfig it already holds
+([operator#634](https://github.com/oramasearch/orama-operator/issues/634)). An order becomes the same
+kinds a person writes: a one-member `LakeSet` on an existing cluster, or a `KubernetesCluster`, its
+platform and `OramaOperator` copied from a template cluster, and the `LakeSet` on it. These come from
+the orders, not from `config/clusters/`. The design, the reasons and the open questions:
+[`orders.md`](orders.md).
 
 ## Left out on purpose
 

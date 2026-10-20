@@ -26,14 +26,21 @@ into running systems:
   from one template.
 - The edge kinds: `EdgeProvider`, `EdgeZonePolicy` and `CloudflareZonePolicy` keep a Lake's
   Cloudflare zone on origin TLS, authenticated origin pulls and HTTPS (v0.6.2).
+- The payment kinds: `PaymentProvider` checks the operator's key for a Stripe account or sandbox;
+  `PaymentWebhookEndpoint` and `StripeWebhookEndpoint` keep an app's Stripe webhook endpoint and
+  its signing secret; `PaymentCatalog` and `StripeCatalog` keep an app's Stripe products and prices
+  ([`docs/infrastructure/payments.md`](docs/infrastructure/payments.md); v0.7.0).
+- `LakeOrderSource`, on a management cluster: provisions paid `lake.live` orders read from each
+  Lake's `cloud_orders` ([`docs/infrastructure/orders.md`](docs/infrastructure/orders.md); v0.7.0).
 
-That is 36 resource kinds, all installed by the chart on every cluster. The release notes cover
-them all: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
+That is 42 resource kinds, all installed by the chart on every cluster. The release notes cover
+every released one: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
 [v0.2.0](docs/releases/v0.2.0.md) for the next seven, and
 [v0.3.0](docs/releases/v0.3.0.md) for the nine secure-networking kinds;
 [v0.4.0](docs/releases/v0.4.0.md), [v0.5.0](docs/releases/v0.5.0.md),
 [v0.6.0](docs/releases/v0.6.0.md) and [v0.6.1](docs/releases/v0.6.1.md) add no kind;
-[v0.6.2](docs/releases/v0.6.2.md) adds the three edge kinds.
+[v0.6.2](docs/releases/v0.6.2.md) adds the three edge kinds, and
+[v0.7.0](docs/releases/v0.7.0.md) the five payment kinds and `LakeOrderSource`.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -41,13 +48,13 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.6.2** (2026-10-19), a patch:
-[`docs/releases/v0.6.2.md`](docs/releases/v0.6.2.md) says what is new since v0.6.1: the Cloud v1
-network sandbox admits every control DB migration Job (#625), origin TLS on every Lake Ingress
-with the Lake's Cloudflare zone secured by the operator through three new kinds (#578), the Cloud v1
-engine image serving `/health/ready` (#597) and `lake-prod` on `lake.live` (#513).
-[`docs/releases/v0.6.1.md`](docs/releases/v0.6.1.md) covers the Cloud v1 analytics paths in the
-network sandbox (#616) and a generated master key (#615).
+The current release is **v0.7.0** (2026-10-20):
+[`docs/releases/v0.7.0.md`](docs/releases/v0.7.0.md) says what is new since v0.6.2: the Stripe
+payment kinds (#637, #638), paid `lake.live` orders provisioned from lake's control plane through
+`LakeOrderSource` (#634), the Cloud v1 cluster-row Job admitted through the network sandbox (#648)
+and Lake's schema at lake v0.3.0, through `0089_cloud_orders` (#656).
+[`docs/releases/v0.6.2.md`](docs/releases/v0.6.2.md) covers every control DB migration Job in the
+sandbox (#625) and origin TLS on every Lake Ingress (#578).
 
 The operator runs on four AKS clusters. The management cluster, `orama-production-cluster-01`, is
 the development environment whatever its name says; it runs `Lake/prod`, live at

@@ -1,0 +1,263 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: paymentcatalogs.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: PaymentCatalog
+    listKind: PaymentCatalogList
+    plural: paymentcatalogs
+    shortNames:
+    - paycat
+    singular: paymentcatalog
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.app
+      name: App
+      type: string
+    - jsonPath: .spec.version
+      name: Version
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PaymentCatalog keeps an app's products and prices in its provider's account (see
+          PaymentCatalogSpec). Deleting it changes nothing in the account.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PaymentCatalogSpec asks for products and prices to exist in the provider's account. A price is a
+              flat amount in one currency, one-time, monthly or yearly.
+            properties:
+              app:
+                description: 'App is the metadata[orama_app] tag stamped on every
+                  product and price: cloud_v1 or lake.'
+                enum:
+                - cloud_v1
+                - lake
+                type: string
+              products:
+                description: |-
+                  Products are created or brought to this definition, in order. A product this catalog created
+                  that is no longer listed is archived. A lookup key appears once in the whole catalog.
+                items:
+                  description: PaymentProduct is one product and the prices it offers.
+                  properties:
+                    description:
+                      description: Description is shown under the name; empty means
+                        none.
+                      type: string
+                    id:
+                      description: ID is the product's fixed id (lake_usage). Lowercase,
+                        digits and _ only.
+                      pattern: ^[a-z0-9_]{3,64}$
+                      type: string
+                    metadata:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Metadata is added to the product's metadata. Keys starting with orama_ are the operator's: a
+                        catalog that sets one is refused (InvalidSpec).
+                      type: object
+                    name:
+                      description: Name is the product's name, as invoices and Checkout
+                        show it.
+                      minLength: 1
+                      type: string
+                    prices:
+                      description: Prices are the product's prices, each named by
+                        its lookup key.
+                      items:
+                        description: |-
+                          PaymentPrice is one flat price. Prices cannot be changed in place, so a changed price is a new
+                          price that takes over the lookup key, and the old one is archived.
+                        properties:
+                          currency:
+                            description: Currency is the three-letter ISO code, lowercase
+                              (usd).
+                            pattern: ^[a-z]{3}$
+                            type: string
+                          interval:
+                            description: Interval makes the price recurring (month,
+                              year). Empty means one-time.
+                            enum:
+                            - month
+                            - year
+                            type: string
+                          lookupKey:
+                            description: |-
+                              LookupKey identifies the price across accounts and over time (cloud_v1.plan.<uuid>.monthly).
+                              Letters, digits, _ . : and -, at most 128: it is part of the operator's idempotency keys,
+                              which Stripe takes in a header of at most 255 characters.
+                            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                            type: string
+                          metadata:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Metadata is added to the price's metadata. Keys starting with orama_ are the operator's: a
+                              catalog that sets one is refused (InvalidSpec).
+                            type: object
+                          unitAmount:
+                            description: UnitAmount is in the currency's minor unit
+                              (cents).
+                            format: int64
+                            minimum: 0
+                            type: integer
+                        required:
+                        - currency
+                        - lookupKey
+                        - unitAmount
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - lookupKey
+                      x-kubernetes-list-type: map
+                  required:
+                  - id
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - id
+                x-kubernetes-list-type: map
+              providerRef:
+                description: ProviderRef names a PaymentProvider in this namespace.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              version:
+                description: |-
+                  Version is the catalog definition's version, an integer the asset or Go constant that holds
+                  the products sets and bumps on every change. Stamped as metadata[orama_catalog_version]; a
+                  catalog never writes a product that carries a higher one.
+                format: int64
+                minimum: 1
+                type: integer
+            required:
+            - app
+            - products
+            - providerRef
+            - version
+            type: object
+          status:
+            description: |-
+              PaymentCatalogStatus is the catalog as the operator last made it. StripeCatalog reports it and
+              PaymentCatalog copies it.
+            properties:
+              conditions:
+                description: 'Conditions: Ready.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              prices:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Prices maps each lookup key to the price id now carrying it, as of the last pass that brought
+                  the whole catalog to its spec.
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

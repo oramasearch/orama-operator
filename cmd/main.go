@@ -195,6 +195,42 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "EdgeZonePolicy")
 		os.Exit(1)
 	}
+	if err = (&controller.PaymentProviderReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PaymentProvider")
+		os.Exit(1)
+	}
+	if err = (&controller.PaymentWebhookEndpointReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PaymentWebhookEndpoint")
+		os.Exit(1)
+	}
+	if err = (&controller.StripeWebhookEndpointReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("stripewebhookendpoint-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "StripeWebhookEndpoint")
+		os.Exit(1)
+	}
+	if err = (&controller.PaymentCatalogReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PaymentCatalog")
+		os.Exit(1)
+	}
+	if err = (&controller.StripeCatalogReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "StripeCatalog")
+		os.Exit(1)
+	}
 	if err = (&controller.CloudflareZonePolicyReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -387,6 +423,15 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeSet")
+		os.Exit(1)
+	}
+	// Paid lake.live orders (operator#634): registered on every cluster like every other kind. It
+	// acts only where a LakeOrderSource exists, which is the management cluster.
+	if err = (&controller.LakeOrderSourceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LakeOrderSource")
 		os.Exit(1)
 	}
 	if err = (&controller.OramaCloudV1SetReconciler{

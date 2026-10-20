@@ -62,6 +62,7 @@ var managementKinds = map[string]bool{
 	"ClusterHelmRelease":        true,
 	"OramaOperator":             true,
 	"LakeSet":                   true,
+	"LakeOrderSource":           true,
 	"OramaCloudV1Set":           true,
 }
 

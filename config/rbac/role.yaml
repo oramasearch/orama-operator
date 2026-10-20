@@ -295,10 +295,15 @@ rules:
   - oramacloudv1sets
   - oramaoperators
   - oramazettaclusters
+  - paymentcatalogs
+  - paymentproviders
+  - paymentwebhookendpoints
   - peerconnections
   - peerlinks
   - postgresschemas
   - rabbitmqtopologies
+  - stripecatalogs
+  - stripewebhookendpoints
   - tunnels
   - zettaclustere2etests
   - zettatunnels
@@ -336,6 +341,7 @@ rules:
   - peerconnections/finalizers
   - peerlinks/finalizers
   - rabbitmqtopologies/finalizers
+  - stripewebhookendpoints/finalizers
   - tunnels/finalizers
   - zettatunnels/finalizers
   verbs:
@@ -361,6 +367,7 @@ rules:
   - lakeapps/status
   - lakee2etests/status
   - lakeenvironments/status
+  - lakeordersources/status
   - lakerestorerehearsals/status
   - lakes/status
   - lakesealedsecrets/status
@@ -371,10 +378,15 @@ rules:
   - oramacloudv1sets/status
   - oramaoperators/status
   - oramazettaclusters/status
+  - paymentcatalogs/status
+  - paymentproviders/status
+  - paymentwebhookendpoints/status
   - peerconnections/status
   - peerlinks/status
   - postgresschemas/status
   - rabbitmqtopologies/status
+  - stripecatalogs/status
+  - stripewebhookendpoints/status
   - tunnelproviders/status
   - tunnels/status
   - zettaclustere2etests/status
@@ -386,6 +398,7 @@ rules:
 - apiGroups:
   - orama.cloud
   resources:
+  - lakeordersources
   - tunnelproviders
   verbs:
   - get
