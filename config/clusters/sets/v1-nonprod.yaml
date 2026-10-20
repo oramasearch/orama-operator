@@ -54,8 +54,9 @@ spec:
       projectIDs: [a0d16f69-1a49-4659-8a60-008886765691]
       runID: pilot-1
       step: seed                            # plan Succeeded 2026-10-20; next apply: true, catchUp, verify
+      attempt: 1                            # attempt 0 Blocked: strict schema check, Prod 1 reader /health
       evidenceSecretRef: {name: team-4e01bc49-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:5195b606e7eb48521b21d187b9ea62882d82b4757bb8edfa2908744c4a95f5ae  # dev-e066a1c0
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:c279c4fce29b8e2d0330eaa488a182168666d4d352fd0fd092220b02a3d9e718  # dev-97c5b2d1
       pullSecretName: oramasearch-dockerhub
       removeOnDelete: true
       # Fixed once applied. The revisions are the labels the run binds to and the isolation receipt
