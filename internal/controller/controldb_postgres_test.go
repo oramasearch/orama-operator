@@ -64,6 +64,7 @@ func TestControlDBSchemasAgainstPostgres(t *testing.T) {
 		p.verifySchema()
 		p.verifyReferenceRows()
 		p.verifyTeamCreation()
+		p.verifyMigrationGrants()
 		// Reconcile again, then run 0008's Job once more: the guard skips it and nothing changes.
 		p.reconcileStack()
 		if out := p.runSchemaScript("-controldb-schema-0008"); !strings.Contains(out, "schema already applied (team_migrations present)") {
@@ -166,6 +167,16 @@ type controlDBProof struct {
 
 func newControlDBProof(t *testing.T, admin string) *controlDBProof {
 	t.Helper()
+	// CNPG creates the migration role from the stack's managed roles before its grants run; roles
+	// belong to the server, so the proof creates it once and drops it only if it created it, after
+	// the databases that hold its grants.
+	if runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c",
+		"SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '"+migrationRole+"')") == "t" {
+		runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "CREATE ROLE "+migrationRole+" NOLOGIN")
+		t.Cleanup(func() {
+			runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "DROP ROLE "+migrationRole)
+		})
+	}
 	name := fmt.Sprintf("controldb_%d", time.Now().UnixNano())
 	runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "CREATE DATABASE "+name)
 	t.Cleanup(func() {
@@ -389,6 +400,24 @@ WHERE conname IN ('teams_subscription_plan_id_subscription_plans_id_fk', 'teams_
 		}
 	}
 	p.t.Log("0008 verified: seven tables, two enums, four teams columns, named constraints validated, default plan present")
+}
+
+// verifyMigrationGrants checks the migration role's grants (operator#653): rows of every public
+// table and its sequences, including a table the owner creates later, and no DDL or TRUNCATE.
+func (p *controlDBProof) verifyMigrationGrants() {
+	p.t.Helper()
+	p.sql("CREATE TABLE later_table (id serial PRIMARY KEY)")
+	got := p.sql(`SELECT has_table_privilege('migration', 'teams', 'SELECT, INSERT, UPDATE, DELETE')
+		AND has_table_privilege('migration', 'later_table', 'SELECT, INSERT, UPDATE, DELETE')
+		AND has_sequence_privilege('migration', 'later_table_id_seq', 'USAGE')
+		AND NOT has_table_privilege('migration', 'teams', 'TRUNCATE')
+		AND NOT EXISTS (SELECT 1 FROM pg_namespace n, aclexplode(n.nspacl) a
+			WHERE n.nspname = 'public' AND a.grantee = 'migration'::regrole AND a.privilege_type = 'CREATE')
+		AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT has_table_privilege('migration', c.oid, 'INSERT'))`)
+	if got != "t" {
+		p.t.Fatal("the migration role's grants are not exactly rows and sequences of public")
+	}
 }
 
 // verifyReferenceRows checks that every committed reference row is in the database with exactly the

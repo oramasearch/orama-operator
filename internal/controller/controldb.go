@@ -138,7 +138,8 @@ func pgURIEnv(oc *oramav1alpha1.OramaCloudV1, name string) corev1.EnvVar {
 // CloudNativePG Cluster. On the primary it bootstraps a fresh cluster; on a read tier
 // with replicate=true it stands up a replica cluster streaming from the primary peer.
 // On the primary it applies the dashboard schema, then inserts the stack's oramacore_clusters row
-// when the table is empty (controldb_cluster_row.go).
+// when the table is empty (controldb_cluster_row.go). Every stack declares the migration role
+// (migrationManagedRole), which signs in only while an OramaCloudV1Migration targets the stack.
 // Requires the CloudNativePG operator to be installed (see helmfile).
 func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	db := oc.Spec.Components.ControlDB
@@ -149,16 +150,26 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 		return r.teardownControlDB(ctx, oc) // disable ≠ leave running (#23)
 	}
 
+	// The migration role signs in only while a migration targets this stack.
+	migrations, err := targetingMigrations(ctx, r.Client, oc)
+	if err != nil {
+		return err
+	}
+	if err := r.ensureMigrationRoleSecret(ctx, oc); err != nil {
+		return err
+	}
+
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
 	cluster.SetName(oc.Name + "-controldb")
 	cluster.SetNamespace(oc.Namespace)
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, cluster, func() error {
 		cluster.SetLabels(labelsFor(oc, "controldb"))
 		spec := map[string]interface{}{
 			"instances": int64(profileInstances(oc)),
 			"storage":   controlDBStorage(db.Storage),
+			"managed":   map[string]interface{}{"roles": []interface{}{migrationManagedRole(oc, len(migrations) > 0)}},
 		}
 		// The storage pass owns changes to existing storage; ordinary spec rendering
 		// must retain the class, grown size, and any other CNPG storage keys.
@@ -214,6 +225,46 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 	return r.reconcileControlDBClusterRow(ctx, oc)
 }
 
+// migrationManagedRole is the CNPG managed role the migration tool signs in as (principle 4): on
+// every stack, never a superuser, at most migrationRoleConnectionLimit sessions, its password from
+// migrationRoleSecretName. login follows whether an OramaCloudV1Migration targets the stack. Every
+// field CNPG defaults is set, so a steady stack renders what the API stores. Its grants are the
+// last control DB schema (migrationGrantsSQL).
+func migrationManagedRole(oc *oramav1alpha1.OramaCloudV1, login bool) map[string]interface{} {
+	return map[string]interface{}{
+		"name":            migrationRole,
+		"comment":         "OramaCloudV1Migration copies from Prod 1 (operator#653)",
+		"ensure":          "present",
+		"login":           login,
+		"superuser":       false,
+		"createdb":        false,
+		"createrole":      false,
+		"replication":     false,
+		"bypassrls":       false,
+		"inherit":         true,
+		"connectionLimit": int64(migrationRoleConnectionLimit),
+		"passwordSecret":  map[string]interface{}{"name": migrationRoleSecretName(oc)},
+	}
+}
+
+// ensureMigrationRoleSecret creates <cr>-controldb-migration once, with a random 48-character hex
+// password: username and password for CNPG, which sets the role's password from them (cnpg.io/reload
+// makes it watch the Secret), and uri, the tool's connection to the primary. It is never changed.
+func (r *OramaCloudV1Reconciler) ensureMigrationRoleSecret(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	pass, err := randHex(24)
+	if err != nil {
+		return fmt.Errorf("generate %s: %w", migrationRoleSecretName(oc), err)
+	}
+	lbls := labelsFor(oc, "controldb")
+	lbls["cnpg.io/reload"] = "true"
+	uri := fmt.Sprintf("postgresql://%s:%s@%s-controldb-rw.%s:5432/%s", migrationRole, pass, oc.Name, oc.Namespace, controlDBName)
+	return r.createSecretIfAbsent(ctx, oc, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: migrationRoleSecretName(oc), Namespace: oc.Namespace, Labels: lbls},
+		Type:       corev1.SecretTypeBasicAuth,
+		Data:       map[string][]byte{"username": []byte(migrationRole), "password": []byte(pass), "uri": []byte(uri)},
+	})
+}
+
 // postgresClientImageKey is the spec.images.overrides key of the psql-carrying image that the control
 // DB's PostgresSchema Job and the cluster-row Job run. Unset, both run defaultPostgresClientImage.
 const postgresClientImageKey = "postgres-client"
@@ -243,6 +294,7 @@ var controlDBSchemaSuffixes = []string{
 	"-controldb-schema",
 	"-controldb-schema-0008",
 	"-controldb-reference-data",
+	"-controldb-migration-grants",
 }
 
 // controlDBSchemas lists the control DB's schemas in apply order. Each is created only after every
@@ -256,7 +308,7 @@ func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error)
 	if err != nil {
 		return nil, err
 	}
-	return []controlDBSchema{
+	schemas := []controlDBSchema{
 		// crawler_configs is created by migration 0000; with --single-transaction it exists iff the
 		// whole file applied.
 		{suffix: controlDBSchemaSuffixes[0], key: "schema.sql", sql: dashboardSchemaSQL, guard: "crawler_configs"},
@@ -268,7 +320,34 @@ func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error)
 		// needs, and is set so the API default never differs from what the operator writes.
 		{suffix: controlDBSchemaSuffixes[2], key: "reference-data.sql", guard: "subscription_plans", everyVersion: true,
 			sql: reference},
-	}, nil
+	}
+	// The migration role's grants come last, after every table exists, and again whenever a schema
+	// that creates tables changes (operator#653).
+	return append(schemas, controlDBSchema{suffix: controlDBSchemaSuffixes[3], key: "migration-grants.sql",
+		guard: "crawler_configs", everyVersion: true, sql: migrationGrantsSQL(schemas)}), nil
+}
+
+// migrationGrantsSQL gives the migration role what the migration tool needs and nothing more
+// (principle 4): reading and writing the rows of every table in schema public and using its
+// sequences, never DDL, never another schema. The default privileges cover tables the owner creates
+// later. Its header names the version of every schema before it that creates tables, so a new
+// schema version changes this one's version and its tables are granted too.
+func migrationGrantsSQL(before []controlDBSchema) string {
+	var b strings.Builder
+	b.WriteString("-- The migration role's grants (operator#653), applied after:\n")
+	for _, s := range before {
+		if !s.everyVersion {
+			fmt.Fprintf(&b, "--   %s %s\n", strings.TrimPrefix(s.suffix, "-"), schemaVersion(s.sql))
+		}
+	}
+	role := migrationRole
+	fmt.Fprintf(&b, "GRANT USAGE ON SCHEMA public TO %s;\n", role)
+	fmt.Fprintf(&b, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %s;\n", role)
+	fmt.Fprintf(&b, "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %s;\n", role)
+	// For the role that applies the schemas, the owner (<cr>-controldb-app), which creates every table.
+	fmt.Fprintf(&b, "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %s;\n", role)
+	fmt.Fprintf(&b, "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO %s;\n", role)
+	return b.String()
 }
 
 // reconcileControlDBMigrations applies the vendored dashboard schema (operator#34) as owned,

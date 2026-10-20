@@ -53,6 +53,11 @@ no StatefulSet controller, CSI resizer, kubelet or CNPG operator. Passing proves
 application, not completed filesystem expansion; unset assets skip this test and do not count as
 passed storage API validation. Run it with `go test ./internal/controller -run '^TestOCV1Storage'`.
 
+`TestMigrationAdmission` (operator#653) uses them to load `chart/crds`' `OramaCloudV1Migration` CRD
+and check its CEL rule and field validation in the API server: the issue's example is accepted,
+changing the target, team, projects, run or source is refused, and step, apply, attempt and the
+order of `projectIDs` may change.
+
 The same assets run the workspace envtests. `TestWorkspaceDatastorePoliciesAgainstAPIServer`
 (operator#268) checks that every workspace NetworkPolicy passes API validation, that the
 Kubernetes API egress rule matches the test API server's own `default/kubernetes` Service and
@@ -91,7 +96,10 @@ PostgreSQL 14 or later server (for example `postgres://postgres@127.0.0.1:5432/p
 and drops one database per case and runs the rendered migration Jobs' scripts through the real
 reconcilers: an empty database, 0000 to 0007 with an existing team, missing reference rows that roll
 back and then recover, a partial 0008 without its guard, and per-stack Stripe prices. The cases check
-the committed Prod 1 reference rows and a team insert with defaults, rolled back.
+the committed Prod 1 reference rows and a team insert with defaults, rolled back, and the `migration`
+role's grants (operator#653): rows and sequences of every `public` table, a table created later
+included, and no DDL. Roles belong to the server, so the proof creates `migration` (`NOLOGIN`) when
+the server lacks it, as CNPG would, and drops it at the end only if it created it.
 
 The control DB's cluster-row script (`TestControlDBClusterRowAgainstPostgres`, operator#443) runs
 against local Postgres with `CONTROLDB_TEST_POSTGRES=1` (connection

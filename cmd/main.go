@@ -451,6 +451,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1E2ETest")
 		os.Exit(1)
 	}
+	if err = (&controller.OramaCloudV1MigrationReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OramaCloudV1Migration")
+		os.Exit(1)
+	}
 	if err = (&controller.ZettaClusterE2ETestReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),

@@ -19,7 +19,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **dashboard** | `internal/controller/app.go`, `dashboard_env.go`, `dashboard_crons.go` | `Deployment` + Service + `Ingress` with origin TLS from the stack's Let's Encrypt `Issuer` ([#457](https://github.com/oramasearch/orama-operator/issues/457)); user environment from `dashboard.envFrom`/`env`, hashed into the pod template ([#311](https://github.com/oramasearch/orama-operator/issues/311)); opt-in `dashboard.crons`: Prod 1's three Vercel crons and the e2e canary as CronJobs, created suspended ([#17](https://github.com/oramasearch/orama-operator/issues/17), [below](#the-dashboards-scheduled-jobs)); never runs `db-migrate`. The control DB is always in-cluster (`mode: external` is refused); the operator's `PostgresSchema` owns its schema, avoiding a second Drizzle migration (Postgres `42710`, "type already exists") | ✅ **done** (validated on AKS) |
 | **docs** | `internal/controller/app.go` | `Deployment` + Service + `Ingress` with origin TLS (docs.orama.com, Next.js + Fumadocs, `:3000`) | ✅ **done** |
 | **ingestion** | `internal/controller/ingestion.go` | index-builder `Deployment` + HARVEST master + Mongo `StatefulSet` + Selenium | ✅ **done** (validated on AKS) |
-| **controlDB** | `internal/controller/controldb.go` | Always in-cluster CloudNativePG `Cluster` (primary bootstrap; read-tier replica); `mode: external` is refused. Three owned **`PostgresSchema`s**, applied in order, give it the dashboard's Drizzle schema 0000 to 0008 and its reference rows; + a Job inserting the `c1` `oramacore_clusters` row into an empty table ([#443](https://github.com/oramasearch/orama-operator/issues/443)) ([#378](https://github.com/oramasearch/orama-operator/issues/378); see [controlDB](#controldb-internalcontrollercontroldbgo)) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
+| **controlDB** | `internal/controller/controldb.go` | Always in-cluster CloudNativePG `Cluster` (primary bootstrap; read-tier replica); `mode: external` is refused. Four owned **`PostgresSchema`s**, applied in order, give it the dashboard's Drizzle schema 0000 to 0008, its reference rows and the `migration` role's grants; the CNPG managed role `migration` signs in only while an `OramaCloudV1Migration` targets the stack ([#653](https://github.com/oramasearch/orama-operator/issues/653)); + a Job inserting the `c1` `oramacore_clusters` row into an empty table ([#443](https://github.com/oramasearch/orama-operator/issues/443)) ([#378](https://github.com/oramasearch/orama-operator/issues/378); see [controlDB](#controldb-internalcontrollercontroldbgo)) | ✅ **done** (validated on AKS); schema CRD 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40), supersedes the [#34](https://github.com/oramasearch/orama-operator/issues/34) Job) |
 | **controldb-schema** | `internal/controller/postgresschema_controller.go` | owns an idempotent migration Job (wait → guard + every recorded `schema_migrations` row → apply-in-one-txn, or with `applyEveryVersion` no guard) from a `PostgresSchema` CRD, recording the applied version in `.status` (no finalizer — never drops data). The stack reports its control-DB schemas as one `controldb-schema` component | 🟡 **implemented** ([#40](https://github.com/oramasearch/orama-operator/issues/40); see [`datastore-crds.md`](datastore-crds.md)) |
 | **analytics** | `internal/controller/datastore.go` | ClickHouse `StatefulSet` + Service (8123/9000) | ✅ **done** (validated on AKS) |
 | **cache** | `internal/controller/datastore.go` | Redis `StatefulSet` + Service (6379) | ✅ **done** (validated on AKS) |
@@ -727,7 +727,7 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   `controldb_cluster_row.go`) — the dashboard places a project on an `oramacore_clusters` row, so a
   control DB without one cannot create projects. Cluster rows are never copied from Prod 1: each
   stack's only row is the operator's `c1` (orama-bridge `docs/projects/orama-cloud-v1/decisions-2026-10-16.md`,
-  decision 9). Once both public hosts (`engine.writer.host`, `engine.reader.host`) are set, every control-DB `PostgresSchema` (0000 to 0007, 0008 and the reference rows) is current and the master key is valid, the operator
+  decision 9). Once both public hosts (`engine.writer.host`, `engine.reader.host`) are set, every control-DB `PostgresSchema` (0000 to 0007, 0008, the reference rows and the migration role's grants) is current and the master key is valid, the operator
   runs the Job `<cr>-controldb-cluster-row`, which inserts one row **only when the table has no row
   at all**, soft-deleted rows included: `name` = the CR name, `cluster_prefix` = `c1` (the only
   prefix the `collections.orama.com` worker routes, so customers' read keys keep working),
@@ -765,7 +765,7 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
 ### The control DB's schema
 
 On a writable control DB (the primary, or any stack without `replicate: true` on a read tier) the
-operator owns three `PostgresSchema`s, one per file in the ConfigMap `<cr>-controldb-migrations`.
+operator owns four `PostgresSchema`s, one per file in the ConfigMap `<cr>-controldb-migrations`.
 Each file and its `PostgresSchema` are written only once the one before reports `phase: Applied`
 for its **current** `spec.version` and `metadata.generation`; a stale `Applied` does not release
 the next. A streaming replica receives the primary's schema and owns none.
@@ -775,6 +775,7 @@ the next. A streaming replica receives the primary's schema and owns none.
 | 1 | `<cr>-controldb-schema` | `schema.sql` | `crawler_configs` | Drizzle migrations 0000 to 0007, `assets/dashboard-schema.sql` (version `sha256:461cc9d132ba`, unchanged) |
 | 2 | `<cr>-controldb-schema-0008` | `schema-0008.sql` | `team_migrations` | Migration 0008 (`assets/dashboard-schema-0008.sql`, vendored from `oramasearch/dashboard` branch `cloud-migration` at `8e8f9a6`), with the reference rows seeded between 0008's tables and its `teams` columns and constraints |
 | 3 | `<cr>-controldb-reference-data` | `reference-data.sql` | none (`applyEveryVersion`) | The reference rows again, with this stack's Stripe prices, re-applied whenever the rows or the prices change |
+| 4 | `<cr>-controldb-migration-grants` | `migration-grants.sql` | none (`applyEveryVersion`) | The `migration` role's grants ([#653](https://github.com/oramasearch/orama-operator/issues/653)): `SELECT, INSERT, UPDATE, DELETE` on every table in `public` and `USAGE, SELECT` on its sequences, now and as default privileges. Its header names the versions of schemas 1 and 2, so a new version of a schema that creates tables re-applies it |
 
 - **Why a second schema for 0008.** A database built from the 0000 to 0007 file already has
   `crawler_configs`, so the first schema's Job skips it; 0008 appended there would never reach
@@ -798,7 +799,7 @@ the next. A streaming replica receives the primary's schema and owns none.
   SQL and version are the same on every stack. Empty leaves plans' Stripe columns NULL and seeds no
   add-on price (`stripe_addon_prices.stripe_price_id` is NOT NULL). An ID that is not a reference
   row fails the seed, visibly, and changes nothing.
-- **Readiness.** The stack's `controldb-schema` component is ready only when all three report their
+- **Readiness.** The stack's `controldb-schema` component is ready only when all four report their
   current version `Applied`; otherwise its detail names the first that is not, with its phase and
   message.
 - **A failed migration Job is retried by the operator.** The `PostgresSchema` controller never
@@ -807,7 +808,7 @@ the next. A streaming replica receives the primary's schema and owns none.
   `orama.cloud/retried-failed-job` on the `PostgresSchema` until it applies, and the controller
   creates a fresh Job once the pods are gone. Each Job keeps its 20-attempt backoff. Active,
   obsolete and unowned Jobs are never touched; Lake's schemas do not pass through this path.
-- **Disabling the control DB** deletes the three `PostgresSchema`s this stack controls (their Jobs
+- **Disabling the control DB** deletes the four `PostgresSchema`s this stack controls (their Jobs
   go with them) and the migrations ConfigMap, with the CNPG `Cluster`.
 - **Later dashboard migrations** follow 0008: each is vendored unchanged into its own file and its
   own `PostgresSchema` after the last, guarded on a table it creates, and applied to Prod 2 on the
@@ -815,12 +816,43 @@ the next. A streaming replica receives the primary's schema and owns none.
   ([decision 8](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/decisions-2026-10-16.md)).
   Prod 1 never receives them.
 
+- **The migration role** ([#653](https://github.com/oramasearch/orama-operator/issues/653)). The
+  `Cluster`'s `spec.managed.roles` declares `migration` on every stack: not a superuser, no
+  `createdb`, `createrole`, `replication` or `bypassrls`, `connectionLimit: 4`, and `login: true`
+  only while an `OramaCloudV1Migration` in the namespace names this stack as `targetRef` (the stack
+  watches them). Every field CNPG defaults is rendered, so a steady stack changes nothing. Its
+  password is `<cr>-controldb-migration` (`kubernetes.io/basic-auth`, `username`, `password` and
+  `uri`, labelled `cnpg.io/reload`), generated once by the operator and never changed; disabling the
+  control DB deletes it with the other `controldb` Secrets. Its grants are schema 4 below. The
+  migration tool uses it instead of the owner (principle 4); see
+  [`cloud-v1-migration.md`](cloud-v1-migration.md#what-the-stack-provides).
+
 **Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);
 CNPG bootstrapped Postgres; deleting the CR GC'd the cluster + its pods.
 
 > **Follow-ups:** the replica cluster's `streaming_replica` credentials/secret wiring;
 > exposing storage size + the DB name as CR fields; a Service alias the app can use.
+
+## Prod 1 team migrations (`internal/controller/oramacloudv1migration_controller.go`)
+
+`OramaCloudV1MigrationReconciler` runs one Prod 1 team's copy into a stack
+([#653](https://github.com/oramasearch/orama-operator/issues/653)). For each
+`(step, apply, attempt)` of an `OramaCloudV1Migration` it creates, once:
+
+| Object | Name | Notes |
+|---|---|---|
+| `PersistentVolumeClaim` | `<name>-runs` | The tool's run directory, `ReadWriteOnce`, 20Gi by default, kept across steps, grown to a larger `spec.runVolume.size` when the next Job starts, deleted on deletion |
+| `Job` | `<name>-<step>-<attempt>` (`-dry-run` before the attempt without `apply`; `<name>-remove-<attempt>` on deletion) | `run-step` of the pinned `cloud-v1-migration` image; `backoffLimit: 0`, 6h deadline, kept a week; uid 10001, read-only root, `/tmp` `emptyDir`, no service-account token; a `wait-for-database` init container on the stack's postgres-client image |
+
+It starts a Job only once no other Job of the migration runs, the stack is `Ready` with
+`ClusterRowReady` and every control DB schema current, a writing step finds the stack's dashboard
+crons and analytics import suspended, the step is in order, and every Secret it reads exists. It reads
+the outcome from the pod (exit 0, 3, other; the termination message to `status.result`) and writes
+status only on a transition. The stack side, in `controldb.go` and `oramacloudv1_network_sandbox.go`,
+is the `migration` role, its grants and the migration pod's network paths. Detail:
+[`cloud-v1-migration.md`](cloud-v1-migration.md). Not run on a cluster yet: it needs a release and
+the `cloud-v1-migration` image of oramacore-aws#108.
 
 ## Data stores — cache / broker / analytics / search (`internal/controller/datastore.go`)
 

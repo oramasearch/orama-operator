@@ -33,6 +33,7 @@ rules:
       - peerlinks
       - oramazettaclusters
       - oramacloudv1e2etests
+      - oramacloudv1migrations
       - zettaclustere2etests
       - cloudflarednsrecords
       - cloudflarekvnamespaces
@@ -78,6 +79,8 @@ rules:
       - peerlinks/status
       - oramazettaclusters/status
       - oramacloudv1e2etests/status
+      - oramacloudv1migrations/status
+      - oramacloudv1migrations/finalizers
       - zettaclustere2etests/status
       - cloudflarednsrecords/status
       - cloudflarekvnamespaces/status
