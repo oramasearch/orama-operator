@@ -38,12 +38,17 @@ spec:
       key: apiKey
 ```
 
-The Secret holds the environment's **operator key**: a restricted key allowed to write products,
-prices and webhook endpoints, and to read the account. Webhook endpoints need its Webhook Endpoints
-write permission; listing them, which the endpoints do on every pass, needs no more. Catalogs need
-its Products and Prices write permissions; reading and searching them needs no more. Each environment (live mode, and the `dev`,
-`testing` and `staging` sandboxes) has its own. Restricted keys can only be made in the Stripe
-Dashboard, so a person creates the key there; the operator only reads it. Its value never appears in
+The Secret holds the environment's **operator key**: a restricted key with these Stripe Dashboard
+permissions:
+
+- Accounts: Read (`connected_account_read`), for `GET /v1/account`.
+- Products: Write, for catalogs, including reading and searching products.
+- Prices: Write, for catalogs, including reading prices.
+- Webhook Endpoints: Write, including listing endpoints on every pass.
+
+Each environment (live mode, and the `dev`, `testing` and `staging` sandboxes) has its own key.
+Restricted keys can only be made in the Stripe Dashboard, so a person creates the key there; the
+operator only reads it. Its value never appears in
 a repository, an issue, a log or a resource's status. The Lake key and the Cloud v1 key belong to
 the apps, not to the provider.
 
@@ -59,16 +64,17 @@ and reason.
    live mode, `sk_test_` or `rk_test_` for a sandbox. A key that disagrees, or has neither prefix, is
    `False`, reason `ModeMismatch`, and is not sent to Stripe.
 3. **The account.** `GET /v1/account`. When its `id` is `spec.stripe.accountId`, the condition is
-   `True`, reason `Verified`. Another account is `False`, reason `AccountMismatch`, naming both.
+   `True`, reason `Verified`. This is the expected result with the permissions above. Another
+   account is `False`, reason `AccountMismatch`, naming both.
 4. **A key that may not read the account.** When Stripe answers `GET /v1/account` with 403 (or a
    `permission_error`), the key is a restricted key without that permission. The provider then lists
    one webhook endpoint, `GET /v1/webhook_endpoints?limit=1`. A 200 proves the key works; an endpoint
    in the list must have the provider's mode, or the condition is `ModeMismatch`. Otherwise it is
    `True`, reason `ModeVerified`. **On this path the account ID is not checked**: a key of another
-   account in the same mode passes. Whether a restricted key can be allowed to read the account, and
-   under which Dashboard permission, is recorded by
-   [orama-bridge#200](https://github.com/oramasearch/orama-bridge/issues/200) §2; a key given that
-   permission is checked fully and reports `Verified`.
+   account in the same mode passes. `ModeVerified` means the key lacks Accounts: Read
+   (`connected_account_read`); add that permission in the Dashboard so the provider checks the
+   account and reports `Verified`. The restricted-key account check was confirmed by the
+   [account inventory](https://github.com/oramasearch/orama-bridge/issues/200) §2.
 5. **A Stripe error.** Any other failure is `False`, reason `StripeAPIError`, with the HTTP status and
    Stripe's error type and code. HTTP 401 means Stripe does not accept the key: it is revoked, expired
    or mistyped.
@@ -79,6 +85,18 @@ or mode is checked at once. The provider remembers its last check in memory, so 
 checks every provider once. Status is written only when the condition changes: a steady provider
 makes one request to Stripe an hour and no write.
 
+## API versions
+
+The operator pins its account, product and price requests to `2024-06-20`, matching Lake. It reads
+stable fields of those objects whose shape is the same across the account default (`2022-11-15`),
+Lake's version and the Cloud v1 dashboard's version (`2025-10-29.clover`). The pin keeps requests
+predictable and independent of the account default, which the operator does not use. Change the
+pin only with a test against the fake for every field the operator reads.
+
+A webhook endpoint's calls use its own `spec.apiVersion` in `Stripe-Version`, and its creation sets
+Stripe's `api_version` to that version. The operator's pin therefore does not change the webhook
+payload versions the apps parse.
+
 ## How the operator calls Stripe
 
 Every payment kind calls Stripe through `stripe_api.go`:
@@ -86,9 +104,7 @@ Every payment kind calls Stripe through `stripe_api.go`:
 - **Form encoding.** Stripe's REST API takes form bodies. Nested fields are bracketed keys
   (`metadata[orama_app]`, `price_data[product]`) and a list repeats its key (`enabled_events[]`).
   Keys are sorted, so the same request always has the same body.
-- **API version.** Every request carries `Stripe-Version`. The operator's own calls (account, products,
-  prices) use one pinned version, `2024-06-20`. A webhook endpoint's calls use that endpoint's
-  `apiVersion`.
+- **API version.** Every request carries `Stripe-Version`; see [API versions](#api-versions).
 - **Idempotency keys.** Stripe replays its saved answer to an `Idempotency-Key` it has seen in the
   last 24 hours, a saved 500 included, and refuses a key reused with other parameters. So a key names
   one request exactly: `orama-<object UID>-<operation>-<target>-<first 16 hex of the body's sha256>`,
@@ -192,6 +208,20 @@ has answered for the object, 2xx or not, and is saved with the status after each
   the last 24 hours with the saved answer and do nothing: an endpoint disabled in the Dashboard a
   second time would stay disabled, and an endpoint deleted in the Dashboard soon after its create
   would be "created" again as the deleted one.
+
+### Before committing a live-mode endpoint
+
+- Deleting the `PaymentWebhookEndpoint`, or the Lake or namespace it belongs to, deletes the live
+  endpoint in Stripe (see [Deleting an endpoint](#deleting-an-endpoint)).
+- Events sent between deleting an endpoint with a lost signing Secret and creating its replacement
+  are not delivered to the new endpoint. Stripe does not replay them to it.
+- The `orama_owner` tag is `<namespace>/<name>`, with no cluster identity, so a rebuilt cluster
+  recognises its endpoints. Two clusters using the same namespace, name and URL on one account
+  would contend for the endpoint. No such pair exists today; set members have distinct names.
+- `status.writes` is saved with the status patch at the end of a reconcile. A crash or failed patch
+  after Stripe answers can leave the saved counter behind the writes Stripe has answered.
+- Changing `spec.signingSecretName` leaves the old Secret until the `StripeWebhookEndpoint` is
+  deleted; the old Secret still has that object as its owner.
 
 ### Deleting an endpoint
 
