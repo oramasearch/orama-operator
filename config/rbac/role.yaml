@@ -295,6 +295,7 @@ rules:
   - oramacloudv1sets
   - oramaoperators
   - oramazettaclusters
+  - paymentproviders
   - peerconnections
   - peerlinks
   - postgresschemas
@@ -371,6 +372,7 @@ rules:
   - oramacloudv1sets/status
   - oramaoperators/status
   - oramazettaclusters/status
+  - paymentproviders/status
   - peerconnections/status
   - peerlinks/status
   - postgresschemas/status

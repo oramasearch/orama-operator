@@ -846,6 +846,25 @@ never writes one. The only kind that changes a Cloudflare zone's settings (`ssl`
 | `spec.apiTokenSecretRef` | The provider's token Secret and key. |
 | `status` | The same status as `EdgeZonePolicy`, which copies it. |
 
+## `PaymentProvider` (separate CRD, namespaced) — the vendor, account and key for payment resources
+
+Principle 10's provider resource for the payment kinds (operator#637, the Stripe epic
+orama-bridge#199). It checks its key against the vendor and changes nothing there. Short name
+`payprov`; `kubectl get payprov -A` shows `Type`, `Account`, `Live`, `Credentials`, `Reason`.
+The check, its reasons and the Secret it reads are in
+[`infrastructure/payments.md`](infrastructure/payments.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.type` | `stripe` (the only type). |
+| `spec.stripe.accountId` | The Stripe account or sandbox, `acct_...`. A key of another account is refused. |
+| `spec.stripe.livemode` | Whether this is live mode. The key's prefix must agree: `sk_live_`/`rk_live_` for `true`, `sk_test_`/`rk_test_` for `false`. Required, so a provider always says which mode it is. |
+| `spec.stripe.apiKeySecretRef` | `{name, key}` of the operator's restricted key in this namespace. Never written to status or logged. |
+| `status.conditions[Credentials]` | `True` with reason `Verified` (the key's mode and account match) or `ModeVerified` (a restricted key that may not read the account; its mode matches, the account is not checked). `False` with `SecretMissing`, `ModeMismatch`, `AccountMismatch` or `StripeAPIError`. |
+
+The key is checked every hour, and a minute after a Stripe error or while the Secret is missing.
+Status is written only when the condition changes.
+
 ## `CloudflareLoadBalancer` (separate CRD) — the global geo-LB
 
 Owns a Cloudflare **global Load Balancer** ([operator#73](https://github.com/oramasearch/orama-operator/issues/73)):
