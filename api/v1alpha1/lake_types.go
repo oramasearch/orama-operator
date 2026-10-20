@@ -15,6 +15,7 @@ import (
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 // LakeSpec defines the desired state of Lake.
+// +kubebuilder:validation:XValidation:rule="!has(self.payments) || (has(self.host) && size(self.host) > 0)",message="spec.payments needs spec.host: the payment webhook endpoint is https://<host>/billing/stripe/webhook"
 type LakeSpec struct {
 	// Namespace the lake workloads are deployed into. Created if missing.
 	// +kubebuilder:default=lake-dev
@@ -196,6 +197,14 @@ type LakeSpec struct {
 	// +optional
 	Clerk *LakeClerkSpec `json:"clerk,omitempty"`
 
+	// Payments takes payments through a payment provider ([orama-bridge#199](https://github.com/oramasearch/orama-bridge/issues/199),
+	// docs/lake/payments.md). From the Secret the operator keeps a PaymentProvider, a
+	// PaymentWebhookEndpoint at https://<host>/billing/stripe/webhook and Lake's PaymentCatalog, and
+	// gives the Lake LAKE_STRIPE_SECRET_KEY and LAKE_STRIPE_WEBHOOK_SECRET. Without it nothing about
+	// payments is managed, and spec.env keeps whatever it says.
+	// +optional
+	Payments *LakePaymentsSpec `json:"payments,omitempty"`
+
 	// DeploySync configures how frequently this operator materializes desired deployment rows from
 	// its Zetta orama_control database into LakeEnvironment resources.
 	// +optional
@@ -231,6 +240,19 @@ type LakeClerkSpec struct {
 	// publishableKey, which then replaces the one derived from the instance's Frontend API host.
 	// A LakeSet copies it to every member with spec.secrets.
 	SecretKeySecretRef corev1.LocalObjectReference `json:"secretKeySecretRef"`
+}
+
+// LakePaymentsSpec is the payment account a Lake bills through.
+type LakePaymentsSpec struct {
+	// Mode is the Stripe mode this Lake must bill in, written in the committed set file so that a
+	// live Secret given to a nonprod Lake (or the reverse) is refused instead of used.
+	// +kubebuilder:validation:Enum=test;live
+	Mode string `json:"mode"`
+
+	// SecretRef names a Secret in spec.namespace with keys accountID (acct_...), operatorKey (the
+	// operator's restricted key) and appKey (Lake's restricted key). Both keys' prefixes must agree
+	// with mode. A LakeSet copies it to each member with spec.secrets.
+	SecretRef corev1.LocalObjectReference `json:"secretRef"`
 }
 
 // LakeRegionSpec is the region a Lake runs in.

@@ -26,6 +26,10 @@ import (
 // answers any other with a 401 whose message echoes it, as Stripe's can; it records every
 // request; and a route named in fail ("GET /v1/account") gets that canned error instead.
 //
+// acceptKey adds another key, of this account or of another one. A key of another account reads
+// only GET /v1/account; every other route answers 404, as Stripe answers for an object of another
+// account.
+//
 // It keeps webhook endpoints, products and prices, and honours idempotency keys as Stripe does: a
 // POST with a key it has seen gets the saved answer again, a saved 500 included, and a key reused
 // with other parameters is refused. A route named in drop is carried out, and its answer saved, but
@@ -35,6 +39,8 @@ type fakeStripe struct {
 	url           string
 	key           string
 	accountID     string
+	livemode      bool
+	otherKeys     map[string]string
 	endpoints     []fakeStripeEndpoint
 	products      []fakeStripeProduct
 	prices        []fakeStripePrice
@@ -107,8 +113,17 @@ func (s *fakeStripe) serve(w http.ResponseWriter, r *http.Request) {
 		Version: r.Header.Get("Stripe-Version"), IdempotencyKey: idempotencyKey,
 	})
 	route := r.Method + " " + r.URL.Path
-	if key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); key != s.key {
+	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	account, accepted := s.otherKeys[key]
+	switch {
+	case key != s.key && !accepted:
 		answerStripeError(w, fakeStripeError{http.StatusUnauthorized, "invalid_request_error", "", "Invalid API Key provided: " + key})
+		return
+	case accepted && account != s.accountID && route == "GET /v1/account":
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": account, "object": "account"})
+		return
+	case accepted && account != s.accountID:
+		answerStripeError(w, fakeStripeError{http.StatusNotFound, "invalid_request_error", "resource_missing", "No such object in this account"})
 		return
 	}
 	keyed := r.Method == http.MethodPost && idempotencyKey != ""
@@ -233,6 +248,16 @@ func answerStripeError(w http.ResponseWriter, failure fakeStripeError) {
 	}})
 }
 
+// acceptKey makes the fake accept key as a key of accountID.
+func (s *fakeStripe) acceptKey(key, accountID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.otherKeys == nil {
+		s.otherKeys = map[string]string{}
+	}
+	s.otherKeys[key] = accountID
+}
+
 // count is how many requests the fake received for route ("GET /v1/account").
 func (s *fakeStripe) count(route string) int {
 	s.mu.Lock()
@@ -313,6 +338,7 @@ type fakeStripeProduct struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
 	Active      bool              `json:"active"`
+	Livemode    bool              `json:"livemode"`
 	Metadata    map[string]string `json:"metadata"`
 }
 
@@ -350,7 +376,7 @@ func (s *fakeStripe) routeCatalog(w http.ResponseWriter, r *http.Request, form u
 			answerStripeError(w, fakeStripeError{http.StatusBadRequest, "invalid_request_error", "resource_already_exists", "Product already exists."})
 			return
 		}
-		product := fakeStripeProduct{ID: form.Get("id"), Name: form.Get("name"), Description: form.Get("description"), Active: true}
+		product := fakeStripeProduct{ID: form.Get("id"), Name: form.Get("name"), Description: form.Get("description"), Active: true, Livemode: s.livemode}
 		product.Metadata = setFakeMetadata(nil, form)
 		s.products = append(s.products, product)
 		_ = json.NewEncoder(w).Encode(product)
