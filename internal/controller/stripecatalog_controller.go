@@ -161,6 +161,10 @@ func (r *StripeCatalogReconciler) configure(ctx context.Context, catalog *oramav
 		r.clock.forget(catalog.UID)
 		return paymentCondition(false, "ProviderNotReady", problem), paymentRetry, nil
 	}
+	if catalog.Spec.App == "cloud_v1" && stripeKeyMode(key) == "live" {
+		r.clock.forget(catalog.UID)
+		return paymentCondition(false, "LiveModeRefused", "Cloud v1's live catalog belongs to Prod 1; cloud_v1 catalogs require a test-mode provider"), 0, nil
+	}
 
 	spec, _ := json.Marshal(catalog.Spec)
 	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s", spec, key))

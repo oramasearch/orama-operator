@@ -53,6 +53,7 @@ rules:
       - clusterhelmreleases
       - oramaoperators
       - lakesets
+      - lakeordersources
       - oramacloudv1sets
       - edgeproviders
       - edgezonepolicies
@@ -123,6 +124,7 @@ rules:
       - oramaoperators/finalizers
       - lakesets/status
       - lakesets/finalizers
+      - lakeordersources/status
       - oramacloudv1sets/status
       - oramacloudv1sets/finalizers
       - edgeproviders/status

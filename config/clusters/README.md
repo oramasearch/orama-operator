@@ -35,6 +35,13 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 | `orama-production-cluster-02` | `swedencentral` | `production` | `Retain` |
 | `orama-production-cluster-03` | `eastus` | `production` | `Retain` |
 
+**Paid lake.live orders are the exception, on purpose.** A private warehouse or dedicated cluster a
+customer buys is made by the operator from lake's `cloud_orders` row (operator#634): its `LakeSet`,
+and for a dedicated cluster its `KubernetesCluster`, `ClusterHelmRelease`s and `OramaOperator`, are
+not in these files, and carry the label `orama.cloud/order-id`. The order's row is their source of
+truth; the `LakeOrderSource` that turns orders into them is a file here once it is applied. See
+[`docs/infrastructure/orders.md`](../../docs/infrastructure/orders.md).
+
 The managing cluster, `orama-production-cluster-01`, was created by hand before these kinds
 existed and has no `KubernetesCluster` of its own.
 

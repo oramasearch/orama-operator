@@ -46,6 +46,14 @@ const clusterRowReadyCondition = "ClusterRowReady"
 // is replaced at once.
 const clusterRowHashKey = "orama.cloud/cluster-row-hash"
 
+// controlDBClientLabel names a control DB client pod that is neither an application component nor a
+// PostgresSchema migration, so the network sandbox can admit it to control Postgres (operator#648).
+// The cluster-row Job's pod carries it with the value controlDBClusterRowClient.
+const (
+	controlDBClientLabel      = "orama.cloud/controldb-client"
+	controlDBClusterRowClient = "cluster-row"
+)
+
 // clusterRowRetryDelay is how long the operator waits after the Job failed before it replaces it.
 // Inside one Job the pod is retried clusterRowBackoffLimit times with the Job controller's
 // exponential back-off (10s doubling, capped at 6m); a Job that still fails is replaced this long
@@ -150,9 +158,12 @@ esac`
 
 // controlDBClusterRowJob is the Job that inserts the row, annotated with the hash of its pod
 // template. It reads the connection from the CNPG owner Secret and the key from the Secret
-// spec.masterAPIKeySecretRef names, and runs the postgres-client image.
+// spec.masterAPIKeySecretRef names, and runs the postgres-client image. Its pod keeps the controldb
+// component label, which teardown deletes it by, and adds controlDBClientLabel, which the network
+// sandbox admits to control Postgres.
 func controlDBClusterRowJob(oc *oramav1alpha1.OramaCloudV1) *batchv1.Job {
 	lbls := labelsFor(oc, "controldb")
+	lbls[controlDBClientLabel] = controlDBClusterRowClient
 	env := append(controlDBClusterRowEnv(oc), pgURIEnv(oc, "DATABASE_URL"), masterAPIKeyEnv(oc))
 	template := corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{Labels: lbls},
