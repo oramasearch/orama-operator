@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.7.2](v0.7.2.md) — 2026-10-20. A patch: Lake's schema through `0090_billing_contacts`
+  (#656), so lake v0.3.1 can roll. No CRD change. 43 resource kinds.
 - [v0.7.1](v0.7.1.md) — 2026-10-20. A patch: `OramaCloudV1Migration` runs one Prod 1 team's copy
   into a Cloud v1 stack (#653), declared on `OramaCloudV1Set` (#654), and every Cloud v1 stack gets a
   `migration` role that can sign in only during a migration; `Lake.spec.payments` gives each Lake its
