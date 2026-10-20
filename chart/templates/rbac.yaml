@@ -57,6 +57,7 @@ rules:
       - edgeproviders
       - edgezonepolicies
       - cloudflarezonepolicies
+      - paymentproviders
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -123,6 +124,7 @@ rules:
       - edgeproviders/status
       - edgezonepolicies/status
       - cloudflarezonepolicies/status
+      - paymentproviders/status
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
