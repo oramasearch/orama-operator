@@ -904,6 +904,7 @@ UNION ALL SELECT 'network_guard=' || count(*) FROM network_guard
 UNION ALL SELECT 'identity_links_guard=' || count(*) FROM identity_links_guard
 UNION ALL SELECT 'clerk_webhooks_guard=' || count(*) FROM clerk_webhooks_guard
 UNION ALL SELECT 'repository_liquid_ids_guard=' || count(*) FROM repository_liquid_ids_guard
+UNION ALL SELECT 'cloud_orders_guard=' || count(*) FROM cloud_orders_guard
 `
 
 // postgresMissingMigrationsQuery returns, space-separated, every migration the vendored lake schema

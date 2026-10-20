@@ -8,16 +8,26 @@ Job and pods to disappear. This is a metadata upgrade, not a schema version chan
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit de037d1fb68d153c5a331a6f5d789fdad7e85c73](https://github.com/oramasearch/lake/blob/de037d1fb68d153c5a331a6f5d789fdad7e85c73/db/schema.sql)
-(lake `dev` after v0.2.0, through `0088_repository_liquid_ids` (lake#805): `repositories.liquid_id`,
-its index and `repository_liquid_ids_guard`, so a deployment row naming liquid's repository id is
-matched. Before it, `0086_identity_links` (lake#762) and `0087_clerk_webhooks` (lake#765)).
-Its SHA-256 is `dbb4c7ae2465a396fd7cb16a91ac62e09ff6a7ed02e03bdbc275885995d86ac9`. Re-pin to lake `main` at its next release.
+[`oramasearch/lake` tag v0.3.0, commit 18a89c14f3ce2629090e9373e673cb450ab96911](https://github.com/oramasearch/lake/blob/18a89c14f3ce2629090e9373e673cb450ab96911/db/schema.sql),
+through `0089_cloud_orders` (lake#831): `cloud_orders`, `cloud_order_events` and
+`cloud_orders_guard`. Its SHA-256 is `690e75b738deebb28b71214d84654d984a747bfb9a1a5f935f4befb9cd70871f`.
+
+**Pin only a commit on lake `dev` or a release tag, never a pull request's branch.** Lake records a
+migration by name only, with no checksum, so a migration applied from a branch and changed before it
+merges leaves every Lake on the old version, and nothing reports it. `0090_billing_contacts`
+(lake#857, lake#864) is added in its own pull request once lake#864 merges, pinned to that merge
+commit ([#656](https://github.com/oramasearch/orama-operator/issues/656)).
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
+
+Migration `0089_cloud_orders` (lake#831, in lake v0.3.0) adds `cloud_orders` and
+`cloud_order_events`, with guard `cloud_orders_guard`. Lake writes the orders; a `LakeOrderSource`
+(orama-operator#634, [`../infrastructure/orders.md`](../infrastructure/orders.md)) claims paid ones and
+writes only their state, host, failure reason and claim. Apply it before lake v0.3.0 rolls; the schema
+gate holds that image until it has applied.
 
 Migration `0083_methodology_deployments` (lake#690) adds `methodology_deployments` (written by lake
 when a workspace methodology's model is published), `methodology_deployment_status` (written by the
