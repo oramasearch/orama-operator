@@ -902,6 +902,49 @@ The only kind that calls Stripe's webhook API. Short name `stripewh`, with the s
 Stripe is called every hour, and a minute after a failure; a changed spec or key, or a lost signing
 Secret, is acted on at once. Status is written only when it changes.
 
+## `PaymentCatalog` (separate CRD, namespaced) — an app's products and prices in a payment account
+
+Principle 10's abstract kind for catalogs (operator#638). For a `stripe` provider it keeps an owned
+`StripeCatalog` of the same name, with the same spec and the provider's key, and copies back its
+`Ready` condition and prices; it calls no vendor itself. **Deleting it changes nothing in the
+account**: there is no finalizer. Short name `paycat`; `kubectl get paycat -A` shows `App`,
+`Version`, `Ready`, `Reason`. The lifecycle is in
+[`infrastructure/payments.md`](infrastructure/payments.md#catalogs).
+
+| Field | Meaning |
+|---|---|
+| `spec.providerRef.name` | A `PaymentProvider` in this namespace. |
+| `spec.app` | `cloud_v1` or `lake`: `metadata[orama_app]` on every product and price. |
+| `spec.version` | The definition's version, at least 1, bumped on every change. Stamped on every product as `metadata[orama_catalog_version]`; a catalog never writes a product that carries a higher one (`Superseded`). |
+| `spec.products[].id` | The product's fixed ID (`lake_usage`): `^[a-z0-9_]{3,64}$`, once per catalog. A product this catalog created that the list no longer has is archived. |
+| `spec.products[].name` | The product's name. |
+| `spec.products[].description` | Optional; empty means none. |
+| `spec.products[].metadata` | Added to the product's metadata. A key starting with `orama_` is refused (`InvalidSpec`). |
+| `spec.products[].prices[].lookupKey` | Names the price across accounts and over time (`cloud_v1.plan.<uuid>.monthly`): letters, digits, `_ . : -`, at most 128, once in the whole catalog. |
+| `spec.products[].prices[].currency` | Three lowercase letters (`usd`). |
+| `spec.products[].prices[].unitAmount` | In the currency's minor unit (cents), 0 or more. |
+| `spec.products[].prices[].interval` | `month` or `year` for a recurring price; empty for one-time. |
+| `spec.products[].prices[].metadata` | Added to the price's metadata, as for products. |
+| `status.prices` | Lookup key → the price ID now holding it, as of the last pass that brought the whole catalog to its spec. |
+| `status.conditions[Ready]` | Copied from the concrete kind: `True` with reason `Configured` or `Superseded`; `False` with `ProviderNotReady`, `InvalidSpec`, `ProductTaken`, `PriceTaken` or `StripeAPIError`. `False`/`Progressing` until the concrete kind has reported on its current spec. |
+
+## `StripeCatalog` (separate CRD, namespaced) — one catalog's Stripe products and prices
+
+Created and owned by a `PaymentCatalog` of a `stripe` provider; a person never writes one. The only
+kind that writes Stripe products and prices. It archives and never deletes, and has no finalizer.
+Short name `stripecat`, with the same columns as `paycat`.
+
+| Field | Meaning |
+|---|---|
+| `spec.*` | The `PaymentCatalog`'s spec, unchanged. |
+| `spec.apiKeySecretRef` | The provider's key Secret and key, copied from `PaymentProvider.spec.stripe.apiKeySecretRef`. |
+| `status.prices` | Lookup key → price ID (`price_...`). |
+| `status.writes` | How many creates and updates Stripe has answered for this object, a 5xx included: the attempt suffix of the next idempotency key. |
+| `status.conditions[Ready]` | `True`/`Configured`; `True`/`Superseded` (a product carries a newer catalog version, and nothing is written); `False` with `ProviderNotReady`, `InvalidSpec` (a lookup key under two products, or an `orama_` metadata key), `ProductTaken` (a product with that ID belongs to another app or was made by hand), `PriceTaken` (a price that is not this catalog's holds a lookup key; its ID is in the message) or `StripeAPIError`. |
+
+Stripe is called every six hours, and a minute after a failure; a changed spec or key is acted on at
+once. Status is written only when it changes.
+
 ## `CloudflareLoadBalancer` (separate CRD) — the global geo-LB
 
 Owns a Cloudflare **global Load Balancer** ([operator#73](https://github.com/oramasearch/orama-operator/issues/73)):

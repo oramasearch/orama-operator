@@ -60,6 +60,8 @@ rules:
       - paymentproviders
       - paymentwebhookendpoints
       - stripewebhookendpoints
+      - paymentcatalogs
+      - stripecatalogs
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -130,6 +132,8 @@ rules:
       - paymentwebhookendpoints/status
       - stripewebhookendpoints/status
       - stripewebhookendpoints/finalizers
+      - paymentcatalogs/status
+      - stripecatalogs/status
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]

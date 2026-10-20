@@ -203,6 +203,7 @@ A general rule for every kind in this work, and for the operator from here on.
 | `ServiceMesh` | `IstioServiceMesh` | Another mesh |
 | `EdgeZonePolicy` | `CloudflareZonePolicy` | Another CDN or edge provider |
 | `PaymentWebhookEndpoint` | `StripeWebhookEndpoint` | Another payment provider |
+| `PaymentCatalog` | `StripeCatalog` | Another payment provider |
 
 ### A provider is its own resource
 
@@ -218,6 +219,7 @@ provider."*
 | `ServiceMesh` | a mesh provider (of type Istio) | `IstioServiceMesh` |
 | `EdgeZonePolicy` | an `EdgeProvider` (of type cloudflare) | `CloudflareZonePolicy` ([`../lake/origin-tls.md`](../lake/origin-tls.md)) |
 | `PaymentWebhookEndpoint` | a `PaymentProvider` (of type stripe) | `StripeWebhookEndpoint` ([`payments.md`](payments.md)) |
+| `PaymentCatalog` | a `PaymentProvider` (of type stripe) | `StripeCatalog` ([`payments.md`](payments.md#catalogs)) |
 
 ```
 KubernetesCluster ──providerRef──▶ KubernetesClusterProvider (type: aks)
