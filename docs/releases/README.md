@@ -3,13 +3,19 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.7.1](v0.7.1.md) — 2026-10-20. A patch: `OramaCloudV1Migration` runs one Prod 1 team's copy
+  into a Cloud v1 stack (#653), declared on `OramaCloudV1Set` (#654), and every Cloud v1 stack gets a
+  `migration` role that can sign in only during a migration; `Lake.spec.payments` gives each Lake its
+  own Stripe endpoint, catalog and keys (#639); a Stripe webhook endpoint's deletion always finishes
+  (#663). Nothing is used on a cluster until a resource names it. 43 resource kinds.
 - [v0.7.0](v0.7.0.md) — 2026-10-20. The payment kinds: the operator keeps an app's Stripe webhook
   endpoint and catalog from committed resources (#637, #638: `PaymentProvider`,
   `PaymentWebhookEndpoint`, `StripeWebhookEndpoint`, `PaymentCatalog`, `StripeCatalog`; a `cloud_v1`
   catalog on a live key refused); paid
   `lake.live` orders provisioned from lake's control plane (#634: `LakeOrderSource`); the Cloud v1
   cluster-row Job through the network sandbox (#648); Lake's schema at lake v0.3.0 (#656). None of
-  the new kinds is used on a cluster yet. 42 resource kinds.
+  the new kinds is used on a cluster yet. 42 resource kinds. Image `main-deea3c8` = `v0.7.0`
+  (`sha256:527a65f8…`), rolled to every cluster on 2026-10-20.
 - [v0.6.2](v0.6.2.md) — 2026-10-19. A patch: the Cloud v1 network sandbox admits every control
   DB migration Job, so `controldb-schema-0008` and `reference-data` reach the database (#625, #630).
   Also carries origin TLS on every Lake Ingress with the Lake's Cloudflare zone secured by the

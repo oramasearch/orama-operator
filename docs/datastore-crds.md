@@ -131,7 +131,10 @@ exists and every migration the file records (`INSERT INTO schema_migrations …`
 both SQL and its latest migration guard
 ([schema guide](lake/schema.md)). True incremental migrations remain #126. **Least-privilege Postgres roles** (CNPG
 `managed.roles`: one login role per service instead of the shared `oramacore` owner, per the #40
-refinement + principle #4) is also a separate slice.
+refinement + principle #4) is also a separate slice. The first is in: the `migration` role of
+[#653](https://github.com/oramasearch/orama-operator/issues/653), which the Prod 1 migration tool
+signs in as, with row grants on `public` applied by the last control DB `PostgresSchema`
+([`cloud-v1-migration.md`](cloud-v1-migration.md#what-the-stack-provides)).
 
 ## Deferred / tracked separately
 

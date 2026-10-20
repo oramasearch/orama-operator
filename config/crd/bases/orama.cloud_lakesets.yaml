@@ -63,7 +63,8 @@ spec:
                 description: |-
                   Clusters are the members: one instance on one cluster each. Members are independent: none
                   waits for another. Every member's cluster must carry the same `purpose` tag: a set never
-                  combines nonprod and production.
+                  combines nonprod and production. At most 64: OramaCloudV1Set's CEL rule that each migration
+                  names one member loops over them, and the API server refuses a rule over an unbounded list.
                 items:
                   description: SetMember is one instance on one cluster.
                   properties:
@@ -119,6 +120,7 @@ spec:
                   - clusterRef
                   - name
                   type: object
+                maxItems: 64
                 minItems: 1
                 type: array
               deletionPolicy:

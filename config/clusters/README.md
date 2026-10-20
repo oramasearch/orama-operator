@@ -27,7 +27,7 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 | `<cluster>/platform.yaml` | One `ClusterHelmRelease` per chart the cluster runs, in install order. |
 | `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs. |
 | `sets/lake-<purpose>.yaml` | A `LakeSet`: the Lake instances of that purpose. |
-| `sets/v1-<purpose>.yaml` | An `OramaCloudV1Set`: the Orama Cloud v1 instances of that purpose. |
+| `sets/v1-<purpose>.yaml` | An `OramaCloudV1Set`: the Orama Cloud v1 instances of that purpose, and the Prod 1 teams being copied into them. |
 
 | Cluster | Region | Purpose | Deletion policy |
 |---|---|---|---|
@@ -97,6 +97,20 @@ reference rows the operator seeds into its control database
 empty: no test-mode prices exist yet, so its plans carry no Stripe prices and it has no add-on
 prices. `v1-prod` needs its live-mode IDs before billing works on it.
 
+A Lake's `spec.payments` ([`docs/lake/payments.md`](../../docs/lake/payments.md)) names a Stripe
+Secret with keys `accountID`, `operatorKey` and `appKey`, one per Stripe environment
+([orama-bridge#201](https://github.com/oramasearch/orama-bridge/issues/201)). Restricted keys can only
+be made in the Stripe Dashboard, so a person creates these Secrets on the managing cluster, with
+Steve's consent, and a set copies a member's Secret into its namespace. None exists yet.
+
+| Secret | Namespace | Stripe environment |
+|---|---|---|
+| `stripe-dev` | `lake` | the `dev` sandbox |
+| `stripe-testing` | `lake` | the `testing` sandbox |
+| `stripe-staging` | `lake` | the `staging` sandbox |
+| `stripe-live` | `lake` | live mode, for `lake-prod` |
+| `stripe-v1-dev` | `orama-system` | the `dev` sandbox, for `v1-dev` |
+
 Both v1 sets run the combined OramaCore engine from the private
 `oramasearch/oramacore-cloud-v1`, set by tag in each template's `images.overrides.oramacore`: v1.2.39
 plus oramacore#340 and #341, which serve `GET /health/ready`, the readers' readiness probe (#597).
@@ -110,6 +124,61 @@ operator, derived, or copied, and lists what still blocks the cutover. Each memb
 (`v1-eu`'s production keys, and `v1-us`'s own engine master key) are in that member's `secrets`
 list: a member's list adds Secrets for that member only, and replaces a set entry with the same name
 on the member's cluster. Nothing is created directly in a member's namespace.
+
+## Copying a Prod 1 team into a member
+
+A v1 set file also says which Prod 1 teams are being copied into its members: one entry per team
+under `spec.migrations`
+([operator#654](https://github.com/oramasearch/orama-operator/issues/654)). The managing operator
+applies each entry as an `OramaCloudV1Migration` named `name` in the member's namespace on the
+member's cluster, with `targetRef` set to the member, and the member's operator runs the copy
+([`docs/cloud-v1-migration.md`](../../docs/cloud-v1-migration.md)).
+[`sets/v1-nonprod.yaml`](sets/v1-nonprod.yaml) carries the pilot's entry, commented out.
+
+```yaml
+  migrations:
+  - name: team-4e01bc49          # the OramaCloudV1Migration's name
+    member: v1-dev               # a clusters[].name of this set
+    secrets:                     # the Prod 1 credentials and the evidence receipt, from orama-system
+    - {name: v1-nonprod-prod1-db-ro, namespace: orama-system}
+    spec: {...}                  # an OramaCloudV1Migration's spec, without targetRef
+```
+
+Each change to an entry is a change to the set file, applied to the managing cluster with Steve's
+consent like any other set change, and committed with it. A step is one change to `spec`:
+
+1. `step: plan`.
+2. `step: seed`, without `apply`: the tool's dry run.
+3. `apply: true`: the seed writes to the stack.
+4. `step: catchUp`. Raise `attempt` for each further catch-up before the cutover.
+5. `step: verify`.
+
+The stack must keep `components.dashboard.crons.suspend: true`, and `analyticsProcessor.import.suspend:
+true` while the import is enabled, or a writing step is `Blocked`. Watch progress in the set's
+`Migrations` column (`1/2 Succeeded`) and `status.migrations`, and on the member's cluster with
+`kubectl get ocv1m -n <namespace>`. A `Blocked` migration does not change the set's phase.
+
+- **Secrets.** A migration's `secrets` are copied into the member's namespace before it is applied,
+  as a member's are, and deleted once it is gone. A name the stack already gets from the set or the
+  member is refused (copy it under another name with `as`), and so is one name copied from two
+  sources into one member. Two migrations may list the same Secret from the same source. The Prod 1
+  Secrets must exist in `orama-system` on the managing cluster first; creating them is a write there
+  and needs Steve's consent.
+- **What cannot change.** `member` and the migration's `teamID`, `projectIDs`, `runID` and `source`
+  are fixed once applied. The set reports a change to them on the migration and in its own message,
+  and leaves the applied migration as it is. To change one, remove the entry and add a new one under
+  a new name.
+- **Removing an entry** deletes the migration on its cluster. With `removeOnDelete: true` and data
+  already written, that runs the tool's `remove-target` on the stack; a team already switched to
+  the stack is refused, and the migration stays `Blocked` in `status.migrations` until a person
+  decides. To let a switched team go without removing it, first set `removeOnDelete: false`, apply,
+  then remove the entry. A removal holds only that migration; the member and the other entries keep
+  reconciling.
+- **Removing a member, or deleting the set,** deletes its migrations too: a member's entries go
+  with it, since the API server refuses an entry that names no member. Under `deletionPolicy:
+  Delete` a member's stack is deleted only once its migrations are gone, and a set being deleted
+  keeps its finalizer until all of them are, under either policy. A migration stuck in `Blocked`
+  holds that deletion, with its message on the set.
 
 To check that the files match the cluster:
 

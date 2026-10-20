@@ -8,8 +8,10 @@ package controller
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -25,7 +27,8 @@ import (
 )
 
 // fakeMembers stands in for the managed clusters. An instance becomes Ready when the test says
-// so; until then it is as a cluster's operator leaves a new one.
+// so; until then it is as a cluster's operator leaves a new one. A migration reports the status
+// the test gives it, and stays while being deleted for as long as the test says it is held.
 type fakeMembers struct {
 	applied   []memberRequest
 	deleted   []string
@@ -33,6 +36,12 @@ type fakeMembers struct {
 	missing   bool            // the instance's CRD is not on the cluster
 	applyErr  error
 	kubeconfs []string
+
+	migrations        []memberRequest           // ApplyMigration calls
+	migrationStatus   map[string]map[string]any // by name: the status its cluster reports
+	migrationErr      map[string]error          // by name: the cluster refuses the apply
+	deletedMigrations []memberRequest           // DeleteMigration calls
+	held              map[string]map[string]any // by name: still there while deleted, with this status
 }
 
 func (f *fakeMembers) ApplyMember(_ context.Context, kubeconfig []byte, req memberRequest) (memberState, error) {
@@ -60,6 +69,39 @@ func (f *fakeMembers) ApplyMember(_ context.Context, kubeconfig []byte, req memb
 func (f *fakeMembers) DeleteMember(_ context.Context, _ []byte, req memberRequest) error {
 	f.deleted = append(f.deleted, req.Name)
 	return nil
+}
+
+func fakeMigration(req memberRequest, status map[string]any) *unstructured.Unstructured {
+	obj := memberObject(req)
+	obj.SetGeneration(1)
+	obj.Object["spec"] = req.Spec
+	if status != nil {
+		status = maps.Clone(status)
+		if _, ok := status["observedGeneration"]; !ok {
+			status["observedGeneration"] = int64(1)
+		}
+		obj.Object["status"] = status
+	}
+	return obj
+}
+
+func (f *fakeMembers) ApplyMigration(_ context.Context, _ []byte, req memberRequest) (memberState, error) {
+	f.migrations = append(f.migrations, req)
+	if f.missing {
+		return memberState{MissingCRD: true}, nil
+	}
+	// A refusal leaves the migration the cluster has, as it was.
+	return memberState{Object: fakeMigration(req, f.migrationStatus[req.Name])}, f.migrationErr[req.Name]
+}
+
+func (f *fakeMembers) DeleteMigration(_ context.Context, _ []byte, req memberRequest) (memberState, error) {
+	f.deletedMigrations = append(f.deletedMigrations, req)
+	if status, held := f.held[req.Name]; held {
+		obj := fakeMigration(req, status)
+		obj.SetDeletionTimestamp(&metav1.Time{Time: time.Now()})
+		return memberState{Object: obj}, nil
+	}
+	return memberState{}, nil
 }
 
 func managedCluster(name, region, purpose string) []client.Object {
@@ -339,13 +381,13 @@ func TestRemovingAMemberOrTheSetFollowsTheDeletionPolicy(t *testing.T) {
 func TestAnOramaCloudV1SetTakesTheRegionFromTheCluster(t *testing.T) {
 	set := &oramav1alpha1.OramaCloudV1Set{
 		ObjectMeta: metav1.ObjectMeta{Name: "v1-prod"},
-		Spec: oramav1alpha1.ManagedSetSpec{
+		Spec: oramav1alpha1.OramaCloudV1SetSpec{ManagedSetSpec: oramav1alpha1.ManagedSetSpec{
 			Template: *rawJSON(`{"profile":"light","region":{"role":"read"},"images":{"tag":"v1-sandbox"}}`),
 			Clusters: []oramav1alpha1.SetMember{
 				{ClusterRef: "orama-production-cluster-02", Name: "shared", Spec: rawJSON(`{"region":{"role":"primary"}}`)},
 				{ClusterRef: "orama-production-cluster-02", Name: "customer-1", Spec: rawJSON(`{"region":{"name":"us-east"}}`)},
 			},
-		},
+		}},
 	}
 	members := &fakeMembers{ready: map[string]bool{"shared": true}}
 	c := setTestClient(t, append(managedCluster("orama-production-cluster-02", "swedencentral", "production"), set)...)

@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -77,6 +78,11 @@ type LakeReconciler struct {
 	SvixAPIBase  string
 	// clerkClock throttles the Clerk configuration pass per Lake (lake_clerk.go).
 	clerkClock lakeClerkClock
+	// StripeAPIBase is Stripe's API for the check of a Lake's own key (lake_payments.go); empty is
+	// https://api.stripe.com. Tests point it at a fake.
+	StripeAPIBase string
+	// lakeAppKeyChecks throttles that check per Lake.
+	lakeAppKeyChecks lakeAppKeyChecks
 	// VolumeStats reads the kubelet's volume stats for a store's used space (lake#666). Nil reads
 	// them through Clientset's node proxy; with neither, used space is not reported.
 	VolumeStats VolumeStatsReader
@@ -203,6 +209,13 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	ns := lakeNamespace(&lake)
 	if !lake.DeletionTimestamp.IsZero() {
+		// Payments first, while the Lake's finalizer holds it: the provider must outlive the
+		// webhook endpoint, whose own finalizer deletes the Stripe endpoint with the provider's key.
+		if done, err := r.removeLakePayments(ctx, &lake, ns); err != nil {
+			return ctrl.Result{}, fmt.Errorf("remove payments: %w", err)
+		} else if !done {
+			return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
+		}
 		return r.finalizeLakeZetta(ctx, &lake)
 	}
 	if !controllerutil.ContainsFinalizer(&lake, lakeZettaFinalizer) {
@@ -276,6 +289,11 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile Clerk: %w", err)
 	}
+	// Payments (spec.payments, lake_payments.go): before the Deployment, which reads its keys.
+	payments, err := r.reconcileLakePayments(ctx, &lake, ns, labels)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile payments: %w", err)
+	}
 
 	// Service.
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
@@ -310,7 +328,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	deploy := &appsv1.Deployment{}
 	if schemaReady {
 		deploy, err = r.reconcileLakeDeployment(
-			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing, clerk,
+			ctx, &lake, ns, name, image, claimName, storeAccessModes, labels, replicas, port, sealing, clerk, payments,
 		)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment: %w", err)
@@ -394,6 +412,14 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	} else if apimeta.RemoveStatusCondition(&desiredConditions, lakeClerkConditionType) {
 		conditionsChanged = true
 	}
+	// PaymentsReady exists only on a Lake with spec.payments, or while what it made is removed.
+	if payments.Condition != nil {
+		if apimeta.SetStatusCondition(&desiredConditions, *payments.Condition) {
+			conditionsChanged = true
+		}
+	} else if apimeta.RemoveStatusCondition(&desiredConditions, lakePaymentsConditionType) {
+		conditionsChanged = true
+	}
 	if lake.Status.ReadyReplicas != deploy.Status.ReadyReplicas || lake.Status.Phase != phase ||
 		lake.Status.PostgresReady != pgReady || lake.Status.PostgresInstances != pgDetail ||
 		lake.Status.ZettaReady != zettaReady ||
@@ -422,28 +448,38 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			return ctrl.Result{}, err
 		}
 	}
+	result := lakeRequeue(&lake, controlRowsChanging, zettaReady, storeReady)
+	// The next check of the Lake's Stripe key, or a payments removal, may be due sooner.
+	if payments.Requeue > 0 && (result.RequeueAfter == 0 || payments.Requeue < result.RequeueAfter) {
+		result.RequeueAfter = payments.Requeue
+	}
+	return result, nil
+}
+
+// lakeRequeue is when a reconciled Lake is looked at again.
+func lakeRequeue(lake *oramav1alpha1.Lake, controlRowsChanging, zettaReady, storeReady bool) ctrl.Result {
 	// Control rows are polled, and their observed Kubernetes state can change without updating the
 	// Lake, so they run at their own cadence; unchanged polls write nothing.
-	if lakeControlRowsEnabled(&lake) {
+	if lakeControlRowsEnabled(lake) {
 		// Starting or deleting work is followed closely so its status tracks the cluster rather
 		// than the regular poll.
 		if controlRowsChanging {
-			return ctrl.Result{RequeueAfter: lakeServicesChangingPoll}, nil
+			return ctrl.Result{RequeueAfter: lakeServicesChangingPoll}
 		}
-		return ctrl.Result{RequeueAfter: min(lakeStatusRequeue, lakeServicesPollInterval(&lake))}, nil
+		return ctrl.Result{RequeueAfter: min(lakeStatusRequeue, lakeServicesPollInterval(lake))}
 	}
 	// CNPG Cluster and Backup resources are not watched. Keep polling after success so
 	// readiness loss and future backups are observed; unchanged polls write no status.
-	if lakePostgresEnabled(&lake) {
-		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
+	if lakePostgresEnabled(lake) {
+		return ctrl.Result{RequeueAfter: lakeStatusRequeue}
 	}
-	if lakeZettaEnabled(&lake) && !zettaReady {
-		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
+	if lakeZettaEnabled(lake) && !zettaReady {
+		return ctrl.Result{RequeueAfter: lakeStatusRequeue}
 	}
 	if !storeReady {
-		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
+		return ctrl.Result{RequeueAfter: lakeStatusRequeue}
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}
 }
 
 func (r *LakeReconciler) finalizeLakeZetta(
@@ -621,6 +657,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 	port int32,
 	sealing lakeSealingMaterial,
 	clerk lakeClerkState,
+	payments lakePaymentsState,
 ) (*appsv1.Deployment, error) {
 	terminationGracePeriodSeconds := int64(lakeTerminationGracePeriodSeconds)
 	strategy, affinity := lakeRollout(replicas, storeAccessModes, lake.Spec.Rollout.OverlapOnSharedStore, labels)
@@ -643,6 +680,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		deployment.Spec.Strategy = strategy
 		deployment.Spec.Template.ObjectMeta.Labels = withLabels(labels, lakeInstancePodLabels(lake))
+		setLakePaymentsSecretHash(&deployment.Spec.Template.ObjectMeta, payments.Hash)
 		deployment.Spec.Template.Spec = corev1.PodSpec{
 			// ndots:2, so the full Service names lake dials resolve on the first query.
 			DNSConfig: lakePodDNSConfig(),
@@ -661,7 +699,7 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 				Image:           image,
 				Args:            lake.Spec.Args,
 				Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
-				Env:             append(lakeEnv(lake, sealing), lakeClerkEnv(lake, clerk)...),
+				Env:             slices.Concat(lakeEnv(lake, sealing), lakeClerkEnv(lake, clerk), lakePaymentsEnv(lake, payments)),
 				Resources:       *resources,
 				SecurityContext: containerSecurityContext,
 				Lifecycle:       lakeDrainPreStop(),
@@ -1231,6 +1269,12 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 	// With spec.clerk the operator gives the Clerk variables (lakeClerkEnv); spec.env cannot.
 	if lake.Spec.Clerk != nil {
 		for _, name := range lakeClerkEnvNames {
+			reserved[name] = struct{}{}
+		}
+	}
+	// With spec.payments the operator gives the Stripe variables (lakePaymentsEnv); spec.env cannot.
+	if lake.Spec.Payments != nil {
+		for _, name := range lakePaymentsEnvNames {
 			reserved[name] = struct{}{}
 		}
 	}
@@ -1900,8 +1944,12 @@ func (r *LakeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&networkingv1.NetworkPolicy{}).
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Owns(&oramav1alpha1.EdgeZonePolicy{}).
+		Owns(&oramav1alpha1.PaymentProvider{}).
+		Owns(&oramav1alpha1.PaymentWebhookEndpoint{}).
+		Owns(&oramav1alpha1.PaymentCatalog{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.lakeRequestsForPaymentsSecret)).
 		Owns(&oramav1alpha1.LakeSealedSecret{}).
 		Owns(&oramav1alpha1.NetworkSandbox{}).
 		Watches(&oramav1alpha1.LakeApp{}, handler.EnqueueRequestsFromMapFunc(lakeRequestsForAppSandbox)).

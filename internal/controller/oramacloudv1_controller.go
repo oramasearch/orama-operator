@@ -42,6 +42,7 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1migrations,verbs=get;list;watch
 
 // Reconcile provisions enabled components in dependency order, applies storage intent, and
 // rolls up workload readiness independently of storage configuration acceptance.
@@ -167,5 +168,8 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.requestsForDashboardEnv)).
 		// And the e2e canary's target Secret, so creating or fixing it retries at once (dashboard_crons.go).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.requestsForE2ECanarySecret)).
+		// The migrations that target a stack turn its migration role's login and its Prod 1 egress on
+		// and off (operator#653).
+		Watches(&oramav1alpha1.OramaCloudV1Migration{}, handler.EnqueueRequestsFromMapFunc(r.requestsForMigration)).
 		Complete(r)
 }

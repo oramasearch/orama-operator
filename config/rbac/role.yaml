@@ -291,6 +291,7 @@ rules:
   - lakesets
   - networksandboxes
   - oramacloudv1e2etests
+  - oramacloudv1migrations
   - oramacloudv1s
   - oramacloudv1sets
   - oramaoperators
@@ -335,6 +336,7 @@ rules:
   - lakes/finalizers
   - lakesealedsecrets/finalizers
   - lakesets/finalizers
+  - oramacloudv1migrations/finalizers
   - oramacloudv1sets/finalizers
   - oramaoperators/finalizers
   - oramazettaclusters/finalizers
@@ -374,6 +376,7 @@ rules:
   - lakesets/status
   - networksandboxes/status
   - oramacloudv1e2etests/status
+  - oramacloudv1migrations/status
   - oramacloudv1s/status
   - oramacloudv1sets/status
   - oramaoperators/status

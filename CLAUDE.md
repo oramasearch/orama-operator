@@ -278,6 +278,8 @@ It also runs isolated image-build Jobs from Lake's `builds` table; see `docs/lak
 With `spec.clerk` (one Clerk instance's secret key) it keeps that instance configured for lake through
 Clerk's Backend API and gives the Lake its keys; Clerk's Platform API is a private beta it does not use.
 See `docs/lake/clerk.md`.
+With `spec.payments` (a Stripe mode and account Secret) it owns a `PaymentProvider`, a webhook endpoint
+and Lake's catalog, and gives the Lake its Stripe keys only once all are ready; see `docs/lake/payments.md`.
 `LakeSealedSecret` delivers cluster-bound ciphertext into
 owned Kubernetes Secrets; see `docs/lake/sealed-secrets.md`.
 Read [`docs/lake/README.md`](docs/lake/README.md) (what it reconciles, deploy and run runbook, the current

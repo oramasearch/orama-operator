@@ -510,6 +510,43 @@ spec:
                 description: Namespace the lake workloads are deployed into. Created
                   if missing.
                 type: string
+              payments:
+                description: |-
+                  Payments takes payments through a payment provider ([orama-bridge#199](https://github.com/oramasearch/orama-bridge/issues/199),
+                  docs/lake/payments.md). From the Secret the operator keeps a PaymentProvider, a
+                  PaymentWebhookEndpoint at https://<host>/billing/stripe/webhook and Lake's PaymentCatalog, and
+                  gives the Lake LAKE_STRIPE_SECRET_KEY and LAKE_STRIPE_WEBHOOK_SECRET. Without it nothing about
+                  payments is managed, and spec.env keeps whatever it says.
+                properties:
+                  mode:
+                    description: |-
+                      Mode is the Stripe mode this Lake must bill in, written in the committed set file so that a
+                      live Secret given to a nonprod Lake (or the reverse) is refused instead of used.
+                    enum:
+                    - test
+                    - live
+                    type: string
+                  secretRef:
+                    description: |-
+                      SecretRef names a Secret in spec.namespace with keys accountID (acct_...), operatorKey (the
+                      operator's restricted key) and appKey (Lake's restricted key). Both keys' prefixes must agree
+                      with mode. A LakeSet copies it to each member with spec.secrets.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                required:
+                - mode
+                - secretRef
+                type: object
               port:
                 default: 4900
                 description: |-
@@ -1522,6 +1559,10 @@ spec:
             required:
             - image
             type: object
+            x-kubernetes-validations:
+            - message: 'spec.payments needs spec.host: the payment webhook endpoint
+                is https://<host>/billing/stripe/webhook'
+              rule: '!has(self.payments) || (has(self.host) && size(self.host) > 0)'
           status:
             description: status defines the observed state of Lake
             properties:

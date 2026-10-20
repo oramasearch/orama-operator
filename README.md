@@ -14,6 +14,8 @@ into running systems:
   an authenticated REST `/v1` and MCP deployment surface that liquid drives.
 - `OramaCloudV1`: the complete, self-contained Orama Cloud v1 stack (engine, dashboard,
   control-plane DB, analytics, cache, broker, ingestion, workers), one CR per cluster.
+- `OramaCloudV1Migration`: one Prod 1 team copied into an `OramaCloudV1` stack, each step run as a
+  Job of the migration tool (not released yet; [`docs/cloud-v1-migration.md`](docs/cloud-v1-migration.md)).
 - The supporting CRDs those own: `PostgresSchema`, `RabbitMQTopology`, `CloudflareDNSRecord`,
   `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `ClerkApplication`,
   `NetworkSandbox`, `Connection`, `Tunnel`, `TunnelProvider`, `ZettaTunnel`, `CloudflareTunnel`,
@@ -33,14 +35,15 @@ into running systems:
 - `LakeOrderSource`, on a management cluster: provisions paid `lake.live` orders read from each
   Lake's `cloud_orders` ([`docs/infrastructure/orders.md`](docs/infrastructure/orders.md); v0.7.0).
 
-That is 42 resource kinds, all installed by the chart on every cluster. The release notes cover
+That is 43 resource kinds, all installed by the chart on every cluster. The release notes cover
 every released one: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
 [v0.2.0](docs/releases/v0.2.0.md) for the next seven, and
 [v0.3.0](docs/releases/v0.3.0.md) for the nine secure-networking kinds;
 [v0.4.0](docs/releases/v0.4.0.md), [v0.5.0](docs/releases/v0.5.0.md),
 [v0.6.0](docs/releases/v0.6.0.md) and [v0.6.1](docs/releases/v0.6.1.md) add no kind;
 [v0.6.2](docs/releases/v0.6.2.md) adds the three edge kinds, and
-[v0.7.0](docs/releases/v0.7.0.md) the five payment kinds and `LakeOrderSource`.
+[v0.7.0](docs/releases/v0.7.0.md) the five payment kinds and `LakeOrderSource`, and
+[v0.7.1](docs/releases/v0.7.1.md) `OramaCloudV1Migration`.
 
 Kubernetes holds the desired state, Zetta holds the observed state, and a steady stack produces
 zero writes. The Go module, image, Helm chart, default release, and rendered operator Deployment
@@ -48,13 +51,12 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.7.0** (2026-10-20):
-[`docs/releases/v0.7.0.md`](docs/releases/v0.7.0.md) says what is new since v0.6.2: the Stripe
-payment kinds (#637, #638), paid `lake.live` orders provisioned from lake's control plane through
-`LakeOrderSource` (#634), the Cloud v1 cluster-row Job admitted through the network sandbox (#648)
-and Lake's schema at lake v0.3.0, through `0089_cloud_orders` (#656).
-[`docs/releases/v0.6.2.md`](docs/releases/v0.6.2.md) covers every control DB migration Job in the
-sandbox (#625) and origin TLS on every Lake Ingress (#578).
+The current release is **v0.7.1** (2026-10-20), a patch:
+[`docs/releases/v0.7.1.md`](docs/releases/v0.7.1.md) says what is new since v0.7.0: Prod 1 team
+migrations run by the operator (`OramaCloudV1Migration`, #653) and declared on `OramaCloudV1Set`
+(#654), `Lake.spec.payments` (#639) and a Stripe webhook endpoint's deletion that always finishes
+(#663). [`docs/releases/v0.7.0.md`](docs/releases/v0.7.0.md) covers the Stripe payment kinds, paid
+`lake.live` orders, the cluster-row admission and Lake's schema at lake v0.3.0.
 
 The operator runs on four AKS clusters. The management cluster, `orama-production-cluster-01`, is
 the development environment whatever its name says; it runs `Lake/prod`, live at
