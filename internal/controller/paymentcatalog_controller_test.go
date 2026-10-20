@@ -96,4 +96,16 @@ func TestPaymentCatalogResolvesToStripe(t *testing.T) {
 	if catalog.ResourceVersion != version {
 		t.Error("an unchanged status was written again")
 	}
+
+	meta.SetStatusCondition(&concrete.Status.Conditions, metav1.Condition{
+		Type: paymentConditionReady, Status: metav1.ConditionFalse, Reason: "LiveModeRefused",
+		Message: "Cloud v1's live catalog belongs to Prod 1", ObservedGeneration: concrete.Generation,
+	})
+	if err := c.Status().Update(ctx, &concrete); err != nil {
+		t.Fatal(err)
+	}
+	if ready := readyOf(); ready.Status != metav1.ConditionFalse || ready.Reason != "LiveModeRefused" ||
+		ready.Message != concrete.Status.Conditions[0].Message || ready.ObservedGeneration != catalog.Generation {
+		t.Errorf("Ready = %+v", ready)
+	}
 }

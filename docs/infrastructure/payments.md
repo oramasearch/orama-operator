@@ -251,8 +251,9 @@ needs Meters, which would be a new optional field.
 
 - **Cloud v1's sandbox catalog** is a copy of its live catalog, with lookup keys named after the
   reference rows' UUIDs (`cloud_v1.plan.<uuid>.monthly`). Cloud v1's **live** catalog belongs to
-  Prod 1 and is never changed, so no `cloud_v1` catalog is written for a live-mode provider. The
-  operator does not refuse one; the rule is kept by not committing one.
+  Prod 1 and is never changed. The `StripeCatalog` controller refuses `app: cloud_v1` with a
+  live-mode provider before any Stripe request: `Ready=False`, reason `LiveModeRefused`, also
+  copied to the parent `PaymentCatalog`. Lake catalogs can use live-mode providers.
 - **Lake's catalog lists products and no prices.** Lake's products have fixed IDs (`lake_usage`,
   `lake_private_warehouse`, `lake_dedicated_cluster`). Its prices stay in Lake's own price list and
   order sheet, and its invoice lines reference the product with an inline price (rule 5 of the
@@ -268,6 +269,8 @@ Each pass of a `StripeCatalog`:
    cannot keep is `Ready=False`, reason `InvalidSpec`, also without a request: a lookup key under
    two products, which would move between them on every pass, or a metadata key starting with
    `orama_`, which would overwrite the operator's tags.
+   A `cloud_v1` catalog whose resolved key is live-mode is `Ready=False`, reason `LiveModeRefused`,
+   without a Stripe request; the key's prefix identifies its mode.
 2. **Reads everything before writing anything.** `GET /v1/products/{id}` for each product, a
    search for the products this catalog created
    (`GET /v1/products/search?query=metadata['orama_owner']:'<namespace>/<name>'`), and

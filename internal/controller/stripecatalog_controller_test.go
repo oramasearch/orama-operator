@@ -172,6 +172,58 @@ func ownPrice(product, lookupKey string, amount int64, interval string) fakeStri
 
 var catalogKeyPattern = regexp.MustCompile(`^orama-catalog-uid-([a-z]+-[a-z]+)-(.+)-[0-9a-f]{16}(-[0-9]+)?$`)
 
+func TestStripeCatalogRefusesCloudV1InLiveModeAndAllowsLake(t *testing.T) {
+	for _, key := range []string{"sk_live_51OperatorKey", "rk_live_51OperatorKey"} {
+		for _, app := range []string{"cloud_v1", "lake"} {
+			t.Run(key[:7]+"/"+app, func(t *testing.T) {
+				stripe := newFakeStripe(t, key, testStripeAccount)
+				f := newStripeCatalogFixture(t, stripe)
+				ctx := context.Background()
+				var provider oramav1alpha1.PaymentProvider
+				if err := f.client.Get(ctx, types.NamespacedName{Namespace: "billing", Name: "stripe"}, &provider); err != nil {
+					t.Fatal(err)
+				}
+				provider.Spec.Stripe.Livemode = true
+				if err := f.client.Update(ctx, &provider); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.client.Update(ctx, paymentKeySecret(key)); err != nil {
+					t.Fatal(err)
+				}
+				f.edit(func(spec *oramav1alpha1.StripeCatalogSpec) {
+					spec.App = app
+					if app == "lake" {
+						spec.Products = []oramav1alpha1.PaymentProduct{{ID: "lake_usage", Name: "Lake usage"}}
+					}
+				})
+
+				catalog, _ := f.reconcile()
+				if app == "lake" {
+					wantCatalogReady(t, catalog, metav1.ConditionTrue, "Configured")
+					if writes := stripe.writes(); len(writes) != 1 || writes[0].Form.Get("id") != "lake_usage" {
+						t.Errorf("writes = %+v", writes)
+					}
+					return
+				}
+				condition := wantCatalogReady(t, catalog, metav1.ConditionFalse, "LiveModeRefused")
+				if condition.ObservedGeneration != catalog.Generation || !strings.Contains(condition.Message, "Prod 1") {
+					t.Errorf("Ready = %+v", condition)
+				}
+				if catalog.Status.Writes != 0 || len(catalog.Status.Prices) != 0 {
+					t.Errorf("refused catalog status = %+v", catalog.Status)
+				}
+				second, _ := f.reconcile()
+				if second.ResourceVersion != catalog.ResourceVersion {
+					t.Error("an unchanged refusal was written again")
+				}
+				if requests := stripe.received(); len(requests) != 0 {
+					t.Errorf("refused catalog sent %d requests to Stripe", len(requests))
+				}
+			})
+		}
+	}
+}
+
 // The first pass creates each product and its prices, in order, tagged with the app, the owner and
 // (on products) the catalog version, under keys naming each request and ended by the count of
 // writes before it; status maps every lookup key to the price now holding it.
