@@ -55,7 +55,7 @@ spec:
       runID: pilot-1
       step: plan                            # then seed, seed with apply: true, catchUp, verify
       evidenceSecretRef: {name: team-4e01bc49-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:DIGEST-FROM-PILOT-STEP-3
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:5195b606e7eb48521b21d187b9ea62882d82b4757bb8edfa2908744c4a95f5ae  # dev-e066a1c0
       pullSecretName: oramasearch-dockerhub
       removeOnDelete: true
       # Fixed once applied. The revisions are the labels the run binds to and the isolation receipt
