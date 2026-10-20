@@ -130,12 +130,27 @@ annotated `orama.cloud/order-owner`. The existing controllers do the rest.
 | `on_prem`, `shared`, anything else | nothing | the order fails: lake sends those through the order form |
 
 When the order's `LakeSet` is `Ready`, the order moves to `ready` with `host`. Copying the template
-cluster is what keeps an ordered cluster's platform and operator identical to every other leaf's
-(the two-installation-paths rule, `cmd/platform_sync_test.go`, holds the template in step).
+cluster is what makes an ordered cluster's platform and operator identical to every other leaf's
+when it is created (the two-installation-paths rule, `cmd/platform_sync_test.go`, holds the template
+in step).
 
-Resources of `provisioning` and `ready` orders are brought back to the described spec on every pass:
-a change to the source set's template (a new lake image) reaches ordered Lakes too, the way it
-reaches the set's own members.
+**Placed and copied once.** Two things are decided only when an order's resources are first made,
+and never again:
+
+- **A dedicated cluster is copied from the template once.** The `ClusterHelmRelease`s and the
+  `OramaOperator` are made first and the `KubernetesCluster` last; once the `KubernetesCluster`
+  exists, the order is not compared with the template again. A change to the template cluster (an
+  operator version, a Kubernetes version, a node pool, a chart) therefore never reaches customers'
+  clusters, at once and ungated, through this controller. Moving a dedicated cluster on is a change
+  to its own resources, rolled as its own stage (open question 7).
+- **A private warehouse stays on the cluster it was placed on.** Its `LakeSet`'s member keeps its
+  `clusterRef`. A cluster added to the source set later, in the same region, places only new orders;
+  choosing again would give a ready customer a new, empty Lake on another cluster and leave the old
+  one, with their data, running unmanaged under `Retain`.
+
+A missing resource of a `provisioning` or `ready` order is made again, and an ordered `LakeSet`
+follows the source set's template on every pass: a change to it (a new lake image) reaches ordered
+Lakes too, the way it reaches the set's own members (open question 7).
 
 ## When an order fails
 
@@ -169,7 +184,8 @@ waits for.
   `orama-operator/LakeOrderSource/<name>`. After a restart, or on a recreated management cluster
   with the same file, the source lists the orders it holds and resumes them.
 - **Creation is idempotent**: every resource's name comes from the order id, and one that exists
-  with the order's label is brought to the described spec, never made twice.
+  with the order's label is never made twice. An ordered `LakeSet` is brought to the described spec
+  (keeping its cluster); a dedicated cluster's copies are made once and left as they are.
 
 A consequence to keep: **one management cluster has a given `LakeOrderSource`**. Two management
 clusters with the same file would both act on the orders they hold, as two management clusters with
@@ -207,8 +223,9 @@ act on `cancelled` yet (below).
 3. **Stuck orders.** An order waiting on our side (a cluster that never becomes `Ready`) stays
    `provisioning` indefinitely, with the reason in the source's status. Should it be failed after a
    bound, and should support be told while it waits (lake#831 says a failure goes to support)?
-4. **Which cluster a private warehouse lands on** when a region has more than one: today it is the
-   set member's cluster in that region, the first in the set's order.
+4. **Which cluster a private warehouse lands on** when a region has more than one: today a new order
+   goes to the set member's cluster in that region, the first in the set's order. An order already
+   placed stays where it is.
 5. **Regions for dedicated clusters.** The operator creates them only in regions it has a location
    for (`cloudRegionLocations`: North America and Europe today). Asia, named on the order sheet,
    needs entries there, and a quota check in each region first.
@@ -216,8 +233,10 @@ act on `cancelled` yet (below).
    Clerk instance and the set's Stripe and model-provider keys. Whether a customer's private
    warehouse should share lake.live's sign-in and Orama's Stripe account, or get its own, is open.
 7. **Upgrades.** An ordered Lake follows the source set's template on every pass, so a lake release
-   reaches it when it reaches lake.live. Should customers' instances follow the dev, testing,
-   staging, prod pipeline as a stage of their own, or be pinned per customer?
+   reaches it when it reaches lake.live. A dedicated cluster's operator, Kubernetes version, node
+   pools and platform do not follow the template after it is made, so nothing upgrades them yet.
+   Should customers' instances and clusters follow the dev, testing, staging, prod pipeline as a
+   stage of their own, or be pinned per customer?
 8. **Size of a dedicated cluster.** It is a copy of the template cluster's node pools. Whether an
    order can choose a size (or accelerators) is for lake#831's order form.
 
@@ -228,7 +247,9 @@ act on `cancelled` yet (below).
 - SQL, the port-forward and the pgx store: [`internal/controller/lake_orders_pgx.go`](../../internal/controller/lake_orders_pgx.go).
 - Tests: [`lake_orders_test.go`](../../internal/controller/lake_orders_test.go) runs every scenario
   (each offer `paid` → `provisioning` → `ready` with its host; each failure; no cloud identity;
-  four concurrent pollers and a restart; a missing table; a refused source) against the fake client
+  four concurrent pollers and a restart; a missing table; a refused source; a ready dedicated
+  cluster that does not follow a changed template; a ready warehouse that stays on its cluster when
+  the set gains one in its region) against the fake client
   and, with `KUBEBUILDER_ASSETS`, against envtest's API server, which checks every object made
   against its CRD. [`lake_orders_pgx_test.go`](../../internal/controller/lake_orders_pgx_test.go)
   runs the SQL on a real Postgres in a database it creates and drops (`LAKE_ORDERS_TEST_POSTGRES=1`):

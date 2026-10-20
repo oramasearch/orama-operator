@@ -268,6 +268,8 @@ var orderScenarios = []struct {
 	{"a cluster without the cloud identity fails a dedicated cluster order", scenarioNoCloudIdentity},
 	{"each order is provisioned exactly once across concurrent pollers and restarts", scenarioExactlyOnce},
 	{"nothing is claimed before lake's table exists, and a bad source claims nothing", scenarioNothingClaimed},
+	{"a ready dedicated cluster does not follow the template cluster", scenarioDedicatedClusterIsCopiedOnce},
+	{"a ready private warehouse stays on its cluster when the set's members change", scenarioWarehouseStaysPlaced},
 }
 
 func TestLakeOrders(t *testing.T) {
@@ -623,6 +625,111 @@ func scenarioNothingClaimed(h *orderHarness) {
 	}
 	if eu.order(later).State != cloudOrderPaid {
 		t.Fatal("a refused source claimed an order")
+	}
+}
+
+// A dedicated cluster is copied from the template once. A later change to the template cluster (its
+// operator, Kubernetes version, node pools or platform) does not reach the customer's cluster.
+func scenarioDedicatedClusterIsCopiedOnce(h *orderHarness) {
+	t := h.t
+	ctx := context.Background()
+	us := newFakeOrderDB(CloudOrder{ID: dedicatedOrder, Offer: offerDedicatedCluster, CloudProvider: "azure", Region: "canadacentral", State: cloudOrderPaid})
+	h.dbs = map[string]*fakeOrderDB{"shared": newFakeOrderDB(), "shared-us": us}
+	h.providerReady()
+	h.reconcile()
+	name := "order-1b2c3d4e5f6a"
+	h.setReady(name)
+	h.reconcile()
+	if o := us.order(dedicatedOrder); o.State != cloudOrderReady {
+		t.Fatalf("order is %s, want ready", o.State)
+	}
+
+	// Cloud v1 work on the template cluster: a new operator, a Kubernetes upgrade, a node pool and a
+	// chart.
+	var template oramav1alpha1.KubernetesCluster
+	h.get("orama-production-cluster-03", &template)
+	count := int32(2)
+	template.Spec.KubernetesVersion = "1.36"
+	template.Spec.NodePools = append(template.Spec.NodePools, oramav1alpha1.ClusterNodePool{Name: "readers", Role: oramav1alpha1.ClusterNodePoolUser, MachineSize: "Standard_D16as_v7", Count: &count})
+	if err := h.c.Update(ctx, &template); err != nil {
+		t.Fatal(err)
+	}
+	var operator oramav1alpha1.OramaOperator
+	h.get("orama-production-cluster-03", &operator)
+	operator.Spec.Version = "v0.7.0"
+	if err := h.c.Update(ctx, &operator); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.c.Create(ctx, &oramav1alpha1.ClusterHelmRelease{ObjectMeta: metav1.ObjectMeta{Name: "prod3-readers"},
+		Spec: oramav1alpha1.ClusterHelmReleaseSpec{ClusterRef: "orama-production-cluster-03", ReleaseName: "readers", Namespace: "readers",
+			Chart: oramav1alpha1.ClusterHelmChart{Repository: "https://charts.example.com", Name: "readers", Version: "1.0.0"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.reconcile()
+	var cluster oramav1alpha1.KubernetesCluster
+	h.get(name, &cluster)
+	if cluster.Spec.KubernetesVersion != "1.35" || len(cluster.Spec.NodePools) != 1 || cluster.Spec.Region != "canadacentral" {
+		t.Fatalf("the customer's cluster followed the template: %+v", cluster.Spec)
+	}
+	var copied oramav1alpha1.OramaOperator
+	if h.get(name, &copied); copied.Spec.Version != "v0.6.1" {
+		t.Fatalf("the customer's operator followed the template to %s", copied.Spec.Version)
+	}
+	var readers oramav1alpha1.ClusterHelmRelease
+	if h.get(name+"-readers", &readers) {
+		t.Fatal("a chart added to the template cluster was installed on the customer's cluster")
+	}
+	if o := us.order(dedicatedOrder); o.State != cloudOrderReady {
+		t.Fatalf("order is %s, want still ready", o.State)
+	}
+}
+
+// A private warehouse is placed once. A cluster added to the source set in the same region, listed
+// first, does not move a ready warehouse to it.
+func scenarioWarehouseStaysPlaced(h *orderHarness) {
+	t := h.t
+	ctx := context.Background()
+	eu := newFakeOrderDB(CloudOrder{ID: warehouseOrder, Offer: offerPrivateWarehouse, Region: "swedencentral", State: cloudOrderPaid})
+	h.dbs = map[string]*fakeOrderDB{"shared": eu, "shared-us": newFakeOrderDB()}
+	h.reconcile()
+	name := "order-0a1b2c3d4e5f"
+	h.setReady(name)
+	h.reconcile()
+	if o := eu.order(warehouseOrder); o.State != cloudOrderReady {
+		t.Fatalf("order is %s, want ready", o.State)
+	}
+
+	count := int32(1)
+	if err := h.c.Create(ctx, &oramav1alpha1.KubernetesCluster{ObjectMeta: metav1.ObjectMeta{Name: "orama-production-cluster-04"},
+		Spec: oramav1alpha1.KubernetesClusterSpec{ProviderRef: "azure-orama", Region: "swedencentral", KubernetesVersion: "1.35",
+			NodePools:      []oramav1alpha1.ClusterNodePool{{Name: "agentpool", Role: oramav1alpha1.ClusterNodePoolSystem, MachineSize: "Standard_D8as_v7", Count: &count}},
+			DeletionPolicy: oramav1alpha1.ClusterDeletionRetain}}); err != nil {
+		t.Fatal(err)
+	}
+	var prod oramav1alpha1.LakeSet
+	h.get("lake-prod", &prod)
+	prod.Spec.Clusters = append([]oramav1alpha1.SetMember{{ClusterRef: "orama-production-cluster-04", Name: "shared-2", Spec: rawJSON(`{"host":"eu2.lake.live"}`)}}, prod.Spec.Clusters...)
+	if err := h.c.Update(ctx, &prod); err != nil {
+		t.Fatal(err)
+	}
+	h.dbs["shared-2"] = newFakeOrderDB()
+
+	h.reconcile()
+	var set oramav1alpha1.LakeSet
+	h.get(name, &set)
+	if len(set.Spec.Clusters) != 1 || set.Spec.Clusters[0].ClusterRef != "orama-production-cluster-02" {
+		t.Fatalf("the ready warehouse was moved: %+v", set.Spec.Clusters)
+	}
+	// A new order in the region is placed by the set's order as before.
+	const second = "60000000-0000-4000-8000-000000000001"
+	eu.mu.Lock()
+	eu.orders[second] = &CloudOrder{ID: second, Offer: offerPrivateWarehouse, Region: "swedencentral", State: cloudOrderPaid}
+	eu.mu.Unlock()
+	h.reconcile()
+	var placed oramav1alpha1.LakeSet
+	if !h.get(orderResourceName(second), &placed) || placed.Spec.Clusters[0].ClusterRef != "orama-production-cluster-04" {
+		t.Fatalf("a new order is placed on the region's first cluster: %+v", placed.Spec.Clusters)
 	}
 }
 

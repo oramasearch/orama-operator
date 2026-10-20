@@ -266,7 +266,8 @@ func (r *LakeOrderSourceReconciler) advance(ctx context.Context, store CloudOrde
 		log.Info("claimed a paid order")
 	case cloudOrderProvisioning:
 	case cloudOrderReady:
-		// Its resources are kept as described, so a recreated management cluster has them again.
+		// Its resources are made again if missing, so a recreated management cluster has them. Its
+		// LakeSet keeps its cluster, and a dedicated cluster is not copied from the template again.
 		if outcome := r.provision(ctx, pass, order); outcome.failure != "" {
 			log.Info("a ready order's resources cannot be kept as described", "reason", outcome.failure)
 		}
@@ -316,7 +317,10 @@ func (r *LakeOrderSourceReconciler) provision(ctx context.Context, pass orderPas
 	var outcome orderOutcome
 	switch order.Offer {
 	case offerPrivateWarehouse:
-		cluster, outcome = r.warehouseCluster(ctx, pass.set, order.Region)
+		cluster, outcome = r.placedWarehouse(ctx, name, order)
+		if cluster == "" && outcome.waiting == "" {
+			cluster, outcome = r.warehouseCluster(ctx, pass.set, order.Region)
+		}
 	case offerDedicatedCluster:
 		cluster, outcome = r.dedicatedCluster(ctx, pass.source, order, name)
 	default:
@@ -360,8 +364,27 @@ func orderError(err error, what string) orderOutcome {
 	return orderOutcome{waiting: what + " cannot be written: " + err.Error()}
 }
 
-// warehouseCluster is the set's cluster in the ordered region. A private warehouse runs on the
-// hardware lake.live already runs on there.
+// placedWarehouse is the cluster an order's private warehouse already runs on: its LakeSet's member's.
+// A warehouse is placed once, when its LakeSet is first made. Choosing again would move a ready
+// customer to a new, empty Lake on another cluster whenever the source set's member list changes,
+// and leave the old Lake, with the customer's data, running unmanaged under Retain. "" when the
+// order has no LakeSet yet, or the name is taken by something else (ensure then fails the order).
+func (r *LakeOrderSourceReconciler) placedWarehouse(ctx context.Context, name string, order CloudOrder) (string, orderOutcome) {
+	var set oramav1alpha1.LakeSet
+	if err := r.Get(ctx, types.NamespacedName{Name: name}, &set); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", orderOutcome{}
+		}
+		return "", orderOutcome{waiting: "LakeSet " + name + " cannot be read: " + err.Error()}
+	}
+	if set.Labels[orderIDLabel] != order.ID || len(set.Spec.Clusters) == 0 {
+		return "", orderOutcome{}
+	}
+	return set.Spec.Clusters[0].ClusterRef, orderOutcome{}
+}
+
+// warehouseCluster is the set's cluster in the ordered region, for an order placed for the first
+// time. A private warehouse runs on the hardware lake.live already runs on there.
 func (r *LakeOrderSourceReconciler) warehouseCluster(ctx context.Context, set *oramav1alpha1.LakeSet, region string) (string, orderOutcome) {
 	var offered []string
 	for _, member := range set.Spec.Clusters {
@@ -388,12 +411,28 @@ var cloudProviderTypes = map[string]oramav1alpha1.KubernetesClusterProviderType{
 	"azure": oramav1alpha1.KubernetesClusterProviderAKS,
 }
 
-// dedicatedCluster creates or keeps the cluster of a dedicated_cluster order: the
-// KubernetesCluster, its platform and its operator, each a copy of the template cluster's.
+// dedicatedCluster creates the cluster of a dedicated_cluster order: the KubernetesCluster, its
+// platform and its operator, each a copy of the template cluster's.
+//
+// The template is copied once, when the order's resources are first made, and never again: an
+// ordered cluster does not follow the template, so a change to the template cluster (an operator
+// version, a Kubernetes version, a node pool) never reaches customers' clusters at once and
+// ungated. The KubernetesCluster is made last, so once it exists every copy was made, and the order
+// is not compared with the template again.
 func (r *LakeOrderSourceReconciler) dedicatedCluster(ctx context.Context, source *oramav1alpha1.LakeOrderSource, order CloudOrder, name string) (string, orderOutcome) {
 	spec := source.Spec.DedicatedCluster
 	if spec == nil {
 		return "", orderOutcome{failure: "this cluster cannot create clusters: LakeOrderSource " + source.Name + " names no dedicatedCluster provider"}
+	}
+	var made oramav1alpha1.KubernetesCluster
+	switch err := r.Get(ctx, types.NamespacedName{Name: name}, &made); {
+	case err == nil:
+		if id := made.Labels[orderIDLabel]; id != order.ID {
+			return "", orderError(fmt.Errorf("%w (its %s label is %q)", errOrderNameTaken, orderIDLabel, id), "KubernetesCluster "+name)
+		}
+		return name, orderOutcome{}
+	case !apierrors.IsNotFound(err):
+		return "", orderOutcome{waiting: "KubernetesCluster " + name + " cannot be read: " + err.Error()}
 	}
 	providerType, supported := cloudProviderTypes[strings.ToLower(order.CloudProvider)]
 	if !supported {
@@ -437,9 +476,10 @@ func (r *LakeOrderSourceReconciler) dedicatedCluster(ctx context.Context, source
 	if err != nil {
 		return "", orderOutcome{waiting: err.Error()}
 	}
+	// Made only: a copy already made on an earlier pass (one that stopped before the cluster) keeps
+	// its spec. The KubernetesCluster comes last in objects.
 	for _, desired := range objects {
-		desired := desired
-		if err := r.ensure(ctx, source, order, desired, func(existing client.Object) { copySpec(existing, desired) }); err != nil {
+		if err := r.ensure(ctx, source, order, desired, func(client.Object) {}); err != nil {
 			return "", orderError(err, fmt.Sprintf("%T %s", desired, desired.GetName()))
 		}
 	}
@@ -449,8 +489,8 @@ func (r *LakeOrderSourceReconciler) dedicatedCluster(ctx context.Context, source
 }
 
 // dedicatedClusterObjects is what a dedicated cluster is made of: the template cluster's
-// KubernetesCluster, ClusterHelmReleases and OramaOperator, each copied with the order's name
-// and region. A release's dependencies are renamed with it.
+// ClusterHelmReleases, OramaOperator and KubernetesCluster, each copied with the order's name and
+// region, the KubernetesCluster last. A release's dependencies are renamed with it.
 func dedicatedClusterObjects(template *oramav1alpha1.KubernetesCluster, releases []oramav1alpha1.ClusterHelmRelease, operators []oramav1alpha1.OramaOperator, providerRef string, order CloudOrder, name string) ([]client.Object, error) {
 	cluster := &oramav1alpha1.KubernetesCluster{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	template.Spec.DeepCopyInto(&cluster.Spec)
@@ -465,7 +505,7 @@ func dedicatedClusterObjects(template *oramav1alpha1.KubernetesCluster, releases
 	}
 	tags[orderClusterTag] = order.ID
 	cluster.Spec.Tags = tags
-	objects := []client.Object{cluster}
+	var objects []client.Object
 
 	renamed := map[string]string{}
 	var platform []oramav1alpha1.ClusterHelmRelease
@@ -504,26 +544,7 @@ func dedicatedClusterObjects(template *oramav1alpha1.KubernetesCluster, releases
 	copiedOperator := &oramav1alpha1.OramaOperator{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	operator.Spec.DeepCopyInto(&copiedOperator.Spec)
 	copiedOperator.Spec.ClusterRef = name
-	return append(objects, copiedOperator), nil
-}
-
-// copySpec sets an existing object's spec to the desired one's.
-func copySpec(existing, desired client.Object) {
-	switch d := desired.(type) {
-	case *oramav1alpha1.KubernetesCluster:
-		e := existing.(*oramav1alpha1.KubernetesCluster)
-		// Fields the cluster's own controller defaults, or that cannot change, are kept.
-		region, ref := e.Spec.Region, e.Spec.KubeconfigSecretRef
-		d.Spec.DeepCopyInto(&e.Spec)
-		if region != "" {
-			e.Spec.Region = region
-		}
-		e.Spec.KubeconfigSecretRef = ref
-	case *oramav1alpha1.ClusterHelmRelease:
-		d.Spec.DeepCopyInto(&existing.(*oramav1alpha1.ClusterHelmRelease).Spec)
-	case *oramav1alpha1.OramaOperator:
-		d.Spec.DeepCopyInto(&existing.(*oramav1alpha1.OramaOperator).Spec)
-	}
+	return append(objects, copiedOperator, cluster), nil
 }
 
 // orderLakeSet is the LakeSet of an order: the source set's template and secrets, and one member
