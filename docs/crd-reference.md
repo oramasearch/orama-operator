@@ -157,6 +157,9 @@ operator seeds ([`components.md`](components.md#the-control-dbs-schema)): `plans
 listed has both NULL) and `addons[]` is `{ id, priceID }` (sets `stripe_addon_prices.stripe_price_id`;
 an add-on price row is seeded only when listed). `id` is the reference row's UUID; an ID that is not
 a reference row fails the seed. Empty seeds every plan without Stripe prices and no add-on price.
+Every control DB also declares the CNPG managed role `migration`, which signs in only while an
+[`OramaCloudV1Migration`](#oramacloudv1migration-separate-crd-namespaced--one-prod-1-team-copied-into-a-stack)
+targets the stack; it has no field ([`cloud-v1-migration.md`](cloud-v1-migration.md#what-the-stack-provides)).
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
 Every host (`dashboard.host`, `docs.host`, `engine.writer.host`, `engine.reader.host`, and each one's
@@ -635,6 +638,47 @@ Sample: [`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).
 | `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
 | `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ocv1e2e`. |
 
+## `OramaCloudV1Migration` (separate CRD, namespaced) — one Prod 1 team copied into a stack
+
+Copies one Prod 1 team into the `OramaCloudV1` named by `spec.targetRef`, in the same namespace
+([#653](https://github.com/oramasearch/orama-operator/issues/653)). Each step runs the
+`cloud-v1-migration` image's `run-step` as an owned Job, once per `(step, apply, attempt)`, and the
+tool's `status --json` becomes `status.result`. What it checks before a Job, the Job's environment,
+the migration role, the network paths and deletion: [`cloud-v1-migration.md`](cloud-v1-migration.md).
+Short name `ocv1m`. Sample: [`../config/samples/oramacloudv1migration.yaml`](../config/samples/oramacloudv1migration.yaml).
+
+`targetRef`, `teamID`, `projectIDs`, `runID` and `source` cannot change after creation (CEL: *the
+target, team, projects, run and source are immutable; declare a new migration instead*).
+
+| Field | Purpose |
+|---|---|
+| `spec.targetRef` | The `OramaCloudV1` in this namespace that receives the team. |
+| `spec.teamID` | The Prod 1 team, a lowercase UUID. |
+| `spec.projectIDs[]` | The team's complete, reviewed project set (1 to 1000 UUIDs, a set). The tool refuses a list that differs from the team's projects. Passed sorted and comma-joined. |
+| `spec.runID` | The tool's durable run, resumed by every step (DNS label, at most 40 characters). |
+| `spec.step` | `plan`, `seed`, `catchUp` or `verify`: how far the migration should go. Each change runs that step once. |
+| `spec.apply` | Lets `seed` and `catchUp` write to the target (`--apply`); without it they run the tool's dry run. Ignored by `plan` and `verify`. |
+| `spec.attempt` | Runs the current step again when raised (Job `<name>-<step>-<attempt>`); during deletion, retries a removal that did not finish. Minimum 0. |
+| `spec.evidenceSecretRef` | `{name, key}` of the reviewed isolation receipt, mounted read-only at `/evidence/isolation.json` for `seed` and `catchUp`, which refuse to run without it. The operator never creates it. |
+| `spec.image` | The `cloud-v1-migration` image, pinned by digest (`name@sha256:<64 hex>`). |
+| `spec.pullSecretName` | Pull Secret for `image`. The pod also gets the stack's `spec.images.pullSecretName` for its postgres-client init container. |
+| `spec.runVolume` | `{size, storageClassName}` of the run volume `<name>-runs` (`ReadWriteOnce`, default 20Gi on the cluster's default class; a larger size grows it when the next Job starts). It holds customer payloads. |
+| `spec.removeOnDelete` | On deletion, runs `run-step remove-target --apply` when an applied seed or catch-up started, before deleting the run volume. The tool refuses (exit 3) once the team was switched, and the resource then stays. |
+| `spec.source.databaseSecretRef` | `{name, key}` of the SELECT-only PlanetScale URL (`planetscale-dump-ro`). |
+| `spec.source.databaseHost` | The host in that URL, used only to name the Prod 1 egress; the URL stays in the Secret. |
+| `spec.source.writerURL`, `.readerURL` | Prod 1's engine origins, `https://<host>` with no port or path. |
+| `spec.source.masterKeySecretRef` | `{name, key}` of Prod 1's engine master key. |
+| `spec.source.deploymentRevision`, `.schemaRevision` | The reviewed Prod 1 revisions (`v1.2.39`, `890a7e97` on 2026-10-19). |
+| `spec.source.settings` | Where the writer's `info.json` is read over SSM: `region` (`us-east-2`), `instanceID` (`i-` and 8 to 17 hex), `document` (the SSM document's name), `dataDir` (the writer's `writer_side.collections.data_dir`, absolute), and `credentialsSecretRef.name`, a Secret with `access_key_id` and `secret_access_key` for an IAM user that may run only that document on that instance. |
+| `status.phase` | `Pending` (waiting for an earlier Job, the target or a Secret) \| `Running` \| `Succeeded` (exit 0) \| `Blocked` (refused by the operator, or by the tool with exit 3) \| `Failed` \| `Removing`. |
+| `status.step`, `.attempt`, `.apply`, `.jobName` | What the last Job ran (`step` is `remove` for the removal). |
+| `status.result` | The tool's `status --json` from the Job's termination message, as the API server stores it. Absent when the message is not a JSON object. |
+| `status.message`, `.startedAt`, `.completedAt`, `.observedGeneration` | The last transition's explanation and the last Job's times. |
+| `status.conditions[Seeded]` | `True` once an applied seed succeeded under this resource; `catchUp` and `verify` need it. Never cleared. |
+| `status.conditions[TargetWritten]` | `True` once an applied seed or catch-up started; deletion with `removeOnDelete` then removes the team. Never cleared. |
+
+Print columns: Target, Step, Apply, Phase, Age. Status is written only on a real transition.
+
 ## `OramaZettaCluster` (separate CRD) — step 1 of One Orama
 
 Deploys a **headless Orama Zetta cluster** (a StatefulSet of equal-peer CRDT nodes) from one CR — the
@@ -1029,10 +1073,12 @@ apply-in-one-transaction) and reflects `phase` + `appliedVersion` (read back fro
 desired version never misreports). It carries **no finalizer** — deleting the CR never drops the
 schema/data, it only stops managing the migration.
 
-`OramaCloudV1` creates + owns three instances, in order (`reconcileControlDBMigrations`):
+`OramaCloudV1` creates + owns four instances, in order (`reconcileControlDBMigrations`):
 `<cr>-controldb-schema` (dashboard migrations 0000 to 0007), `<cr>-controldb-schema-0008` (0008 with
-the reference rows) and `<cr>-controldb-reference-data` (the reference rows with the stack's Stripe
-prices, `applyEveryVersion`); see [`components.md`](components.md#the-control-dbs-schema). See
+the reference rows), `<cr>-controldb-reference-data` (the reference rows with the stack's Stripe
+prices, `applyEveryVersion`) and `<cr>-controldb-migration-grants` (the `migration` role's grants,
+`applyEveryVersion`, [#653](https://github.com/oramasearch/orama-operator/issues/653)); see
+[`components.md`](components.md#the-control-dbs-schema). See
 [`datastore-crds.md`](datastore-crds.md) for the full design. Sample:
 [`../config/samples/postgresschema.yaml`](../config/samples/postgresschema.yaml).
 

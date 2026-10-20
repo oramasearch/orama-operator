@@ -246,9 +246,9 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBClusterRow(ctx context.Contex
 }
 
 // controlDBClusterRowPrerequisites reports whether the Job may be created: both public hosts are
-// published, every owned PostgresSchema of the control DB (0000-0007, 0008, the reference rows) is
-// current, so the row goes into the dashboard's final schema (their status changes requeue this CR),
-// and the master key is valid.
+// published, every owned PostgresSchema of the control DB (0000-0007, 0008, the reference rows, the
+// migration role's grants) is current, so the row goes into the dashboard's final schema (their
+// status changes requeue this CR), and the master key is valid.
 func (r *OramaCloudV1Reconciler) controlDBClusterRowPrerequisites(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (bool, error) {
 	if controlDBClusterRowMissingHosts(oc) != "" {
 		return false, nil
@@ -297,7 +297,7 @@ func (r *OramaCloudV1Reconciler) controlDBClusterRowCondition(ctx context.Contex
 	case apierrors.IsNotFound(err) && blocked != nil:
 		cond.Reason, cond.Message = "WaitingForMasterAPIKey", "waiting for a valid master API key before inserting "+row
 	case apierrors.IsNotFound(err):
-		cond.Reason, cond.Message = "WaitingForSchema", "waiting for the control DB schemas (0000 to 0008 and the reference rows) before inserting "+row
+		cond.Reason, cond.Message = "WaitingForSchema", "waiting for the control DB schemas (0000 to 0008, the reference rows and the migration role's grants) before inserting "+row
 	case err != nil:
 		return nil, err
 	case job.Status.Succeeded > 0:

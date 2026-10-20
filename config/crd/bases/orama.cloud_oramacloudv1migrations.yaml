@@ -1,0 +1,438 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: oramacloudv1migrations.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: OramaCloudV1Migration
+    listKind: OramaCloudV1MigrationList
+    plural: oramacloudv1migrations
+    shortNames:
+    - ocv1m
+    singular: oramacloudv1migration
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef
+      name: Target
+      type: string
+    - jsonPath: .spec.step
+      name: Step
+      type: string
+    - jsonPath: .spec.apply
+      name: Apply
+      type: boolean
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          OramaCloudV1Migration copies one Prod 1 team into one OramaCloudV1 stack in its namespace. The
+          operator runs the cloud-v1-migration tool's run-step as one Job per step, attempt and apply,
+          and reports the tool's outcome in status.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: OramaCloudV1MigrationSpec declares one Prod 1 team copied
+              into one OramaCloudV1 stack.
+            properties:
+              apply:
+                description: |-
+                  Apply lets seed and catchUp write to the target. Without it they only check (the tool's dry
+                  run). plan and verify never write, and ignore it.
+                type: boolean
+              attempt:
+                description: |-
+                  Attempt runs the current step again when raised (a catch-up before the cutover, a retry after
+                  a Blocked or Failed step was fixed). Raised while the resource is being deleted, it retries a
+                  removal that did not finish.
+                format: int32
+                minimum: 0
+                type: integer
+              evidenceSecretRef:
+                description: |-
+                  EvidenceSecretRef names the Secret key holding the isolation receipt the tool requires for
+                  seed and catchUp (docs/migration/README.md in oramacore-aws, "Isolation and preflight
+                  evidence"). It is mounted read-only for those two steps only. The operator does not create it.
+                properties:
+                  key:
+                    description: The key of the secret to select from.  Must be a
+                      valid secret key.
+                    type: string
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  optional:
+                    description: Specify whether the Secret or its key must be defined
+                    type: boolean
+                required:
+                - key
+                type: object
+                x-kubernetes-map-type: atomic
+              image:
+                description: Image is the cloud-v1-migration image, pinned by digest
+                  (name@sha256:<64 hex>).
+                pattern: ^[^@\s]+@sha256:[a-f0-9]{64}$
+                type: string
+              projectIDs:
+                description: |-
+                  ProjectIDs is the reviewed, complete project set of the team. The tool refuses a list that
+                  differs from the team's actual projects.
+                items:
+                  pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+                  type: string
+                maxItems: 1000
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              pullSecretName:
+                description: PullSecretName names the Secret the Job pulls Image with.
+                type: string
+              removeOnDelete:
+                description: |-
+                  RemoveOnDelete removes the copied team from the target when this resource is deleted, with the
+                  tool's remove-target. The tool refuses once the team has been switched to the target, and the
+                  resource then stays until a person decides.
+                type: boolean
+              runID:
+                description: RunID names the tool's durable run; the same run is resumed
+                  by every step.
+                maxLength: 40
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                type: string
+              runVolume:
+                description: |-
+                  RunVolume holds the tool's run directory (manifest and payloads), kept across steps so the
+                  tool resumes from it. It contains customer data. Default 20Gi, the cluster's default class.
+                properties:
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                      component's default (10Gi) even without API defaulting. Shrinking
+                      existing storage is unsupported.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: size must be a positive Kubernetes quantity
+                      rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
+                  storageClassName:
+                    description: |-
+                      StorageClassName selects a class at creation. Omission uses the cluster default
+                      for new volumes and retains the existing class. Existing classes cannot change.
+                    minLength: 1
+                    type: string
+                type: object
+              source:
+                description: 'Source is Prod 1: where it is and the Secrets that reach
+                  it read-only.'
+                properties:
+                  databaseHost:
+                    description: |-
+                      DatabaseHost is the host name in that URL. It is used only to admit the migration pod's
+                      egress; the URL itself stays in the Secret.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
+                    type: string
+                  databaseSecretRef:
+                    description: |-
+                      DatabaseSecretRef names the Secret key holding the SELECT-only PlanetScale URL
+                      (planetscale-dump-ro).
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  deploymentRevision:
+                    description: |-
+                      DeploymentRevision and SchemaRevision are the reviewed Prod 1 revisions (v1.2.39 and
+                      890a7e97 on 2026-10-19).
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                  masterKeySecretRef:
+                    description: MasterKeySecretRef names the Secret key holding Prod
+                      1's engine master key.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  readerURL:
+                    maxLength: 261
+                    pattern: ^https://[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
+                    type: string
+                  schemaRevision:
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                  settings:
+                    description: |-
+                      Settings reaches the Prod 1 writer's per-index info.json through one read-only SSM document
+                      (orama-bridge#205).
+                    properties:
+                      credentialsSecretRef:
+                        description: |-
+                          CredentialsSecretRef names a Secret with access_key_id and secret_access_key: the IAM user that
+                          may only run that document on that instance.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      dataDir:
+                        description: DataDir is the writer's writer_side.collections.data_dir,
+                          an absolute path.
+                        maxLength: 1024
+                        pattern: ^/[^\s]*$
+                        type: string
+                      document:
+                        description: Document is the SSM document's name.
+                        pattern: ^[a-zA-Z0-9_.-]{3,128}$
+                        type: string
+                      instanceID:
+                        description: InstanceID is the writer's EC2 instance.
+                        pattern: ^i-[0-9a-f]{8,17}$
+                        type: string
+                      region:
+                        description: Region is the AWS region of the writer instance
+                          (us-east-2).
+                        maxLength: 32
+                        pattern: ^[a-z]{2}(-[a-z]+)+-[0-9]+$
+                        type: string
+                    required:
+                    - credentialsSecretRef
+                    - dataDir
+                    - document
+                    - instanceID
+                    - region
+                    type: object
+                  writerURL:
+                    description: WriterURL and ReaderURL are Prod 1's HTTPS engine
+                      origins (https://<host>, no port or path).
+                    maxLength: 261
+                    pattern: ^https://[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
+                    type: string
+                required:
+                - databaseHost
+                - databaseSecretRef
+                - deploymentRevision
+                - masterKeySecretRef
+                - readerURL
+                - schemaRevision
+                - settings
+                - writerURL
+                type: object
+              step:
+                description: |-
+                  Step is how far the migration should go: plan, seed, catchUp or verify. Each change runs that
+                  step once.
+                enum:
+                - plan
+                - seed
+                - catchUp
+                - verify
+                type: string
+              targetRef:
+                description: TargetRef names the OramaCloudV1 in this namespace that
+                  receives the team.
+                maxLength: 63
+                minLength: 1
+                type: string
+              teamID:
+                description: TeamID is the Prod 1 team (a UUID) being migrated.
+                pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+                type: string
+            required:
+            - image
+            - projectIDs
+            - runID
+            - source
+            - step
+            - targetRef
+            - teamID
+            type: object
+            x-kubernetes-validations:
+            - message: the target, team, projects, run and source are immutable; declare
+                a new migration instead
+              rule: self.targetRef == oldSelf.targetRef && self.teamID == oldSelf.teamID
+                && self.projectIDs == oldSelf.projectIDs && self.runID == oldSelf.runID
+                && self.source == oldSelf.source
+          status:
+            description: |-
+              OramaCloudV1MigrationStatus is what the last Job ran and how it ended. Written only on a real
+              transition (principle 7).
+            properties:
+              apply:
+                type: boolean
+              attempt:
+                format: int32
+                type: integer
+              completedAt:
+                format: date-time
+                type: string
+              conditions:
+                description: |-
+                  Conditions: Seeded (an applied seed succeeded under this resource; set once, never cleared) and
+                  TargetWritten (an applied seed or catch-up started, so deletion with removeOnDelete removes the
+                  team; set once, never cleared).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              jobName:
+                type: string
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: |-
+                  Phase: Pending (waiting for the target or a Secret), Running, Succeeded, Blocked (the operator
+                  refused the step, or the tool's guard did: exit 3), Failed, Removing.
+                type: string
+              result:
+                description: Result is the tool's status --json from the Job's termination
+                  message, verbatim.
+                x-kubernetes-preserve-unknown-fields: true
+              startedAt:
+                format: date-time
+                type: string
+              step:
+                description: Step, Attempt and Apply are what the last Job ran.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

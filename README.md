@@ -14,6 +14,8 @@ into running systems:
   an authenticated REST `/v1` and MCP deployment surface that liquid drives.
 - `OramaCloudV1`: the complete, self-contained Orama Cloud v1 stack (engine, dashboard,
   control-plane DB, analytics, cache, broker, ingestion, workers), one CR per cluster.
+- `OramaCloudV1Migration`: one Prod 1 team copied into an `OramaCloudV1` stack, each step run as a
+  Job of the migration tool (not released yet; [`docs/cloud-v1-migration.md`](docs/cloud-v1-migration.md)).
 - The supporting CRDs those own: `PostgresSchema`, `RabbitMQTopology`, `CloudflareDNSRecord`,
   `CloudflareLoadBalancer`, `CloudflareKVNamespace`, `CloudflareR2Bucket`, `ClerkApplication`,
   `NetworkSandbox`, `Connection`, `Tunnel`, `TunnelProvider`, `ZettaTunnel`, `CloudflareTunnel`,
@@ -33,7 +35,7 @@ into running systems:
 - `LakeOrderSource`, on a management cluster: provisions paid `lake.live` orders read from each
   Lake's `cloud_orders` ([`docs/infrastructure/orders.md`](docs/infrastructure/orders.md); v0.7.0).
 
-That is 42 resource kinds, all installed by the chart on every cluster. The release notes cover
+That is 43 resource kinds, all installed by the chart on every cluster. The release notes cover
 every released one: [v0.1.0](docs/releases/v0.1.0.md) for the first 17,
 [v0.2.0](docs/releases/v0.2.0.md) for the next seven, and
 [v0.3.0](docs/releases/v0.3.0.md) for the nine secure-networking kinds;

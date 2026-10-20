@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -96,6 +97,10 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	reader := oramaCloudAPIReader(r)
 	apiTarget, apiErr := readKubernetesAPIServerTarget(ctx, reader)
 	publicPeers, internetErr := publicInternetPeers(ctx, reader)
+	migrations, err := targetingMigrations(ctx, r.Client, oc)
+	if err != nil {
+		return err
+	}
 
 	writer := oramaCloudComponentSelector(oc, "writer")
 	readerPods := oramaCloudComponentSelector(oc, "reader")
@@ -129,6 +134,8 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		"telemetry-worker",
 	)
 	openAIDecrypter := oramaCloudComponentSelector(oc, "openai-decrypter")
+	// OramaCloudV1Migration Jobs (operator#653).
+	migration := oramaCloudComponentSelector(oc, migrationComponent)
 	// Every control DB schema's migration Job, not only the first: each PostgresSchema labels its pods
 	// with its own name (operator#625).
 	schemaNames := make([]string, 0, len(controlDBSchemaSuffixes))
@@ -367,6 +374,28 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			oramaCloudIngressPolicy("allow-keycloak-ingress", keycloak, ingressFrom(dashboard, 8080)),
 		),
 		sandboxAllowance(
+			"OramaCloudV1Migration Jobs copy a Prod 1 team into control Postgres, the writer and the readers (operator#653); DNS is allow-dns-egress.",
+			oramaCloudEgressPolicy(
+				"allow-migration-egress",
+				migration,
+				egressTo(cnpgPods, 5432),
+				egressTo(writer, oramacorePort),
+				egressTo(readerPods, readerPodPort(oc)),
+			),
+		),
+		sandboxAllowance(
+			"Control Postgres accepts the migration role from OramaCloudV1Migration Jobs (operator#653).",
+			oramaCloudIngressPolicy("allow-controldb-migration-ingress", cnpgPods, ingressFrom(migration, 5432)),
+		),
+		sandboxAllowance(
+			"OramaCore writer accepts OramaCloudV1Migration Jobs' collection and document writes (operator#653).",
+			oramaCloudIngressPolicy("allow-writer-migration-ingress", writer, ingressFrom(migration, oramacorePort)),
+		),
+		sandboxAllowance(
+			"OramaCore readers accept OramaCloudV1Migration Jobs' verification reads (operator#653).",
+			oramaCloudIngressPolicy("allow-reader-migration-ingress", readerPods, ingressFrom(migration, readerPodPort(oc))),
+		),
+		sandboxAllowance(
 			"CloudNativePG instances replicate and exchange health traffic within this stack.",
 			networkPolicy(
 				"allow-controldb-internal",
@@ -460,6 +489,8 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			oramaCloudIngressPolicy("allow-reader-ingress-nginx", readerPods, ingressNginxRule(readerPodPort(oc))),
 		))
 	}
+	// Prod 1, only while a migration targets this stack (operator#653).
+	prod1Hosts := migrationProd1Hosts(migrations)
 	if internetErr == nil {
 		allowances = append(allowances, oramaCloudPublicInternetAllowances(
 			publicPeers,
@@ -473,6 +504,9 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			searchWorkers,
 			cnpgPods,
 		)...)
+		if len(prod1Hosts) > 0 {
+			allowances = append(allowances, migrationProd1Allowance(publicPeers, migration, prod1Hosts))
+		}
 	} else {
 		publicPolicyNames := []string{
 			"allow-engine-public-internet",
@@ -484,6 +518,9 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			"allow-embeddings-public-https",
 			"allow-search-workers-public-https",
 			"allow-controldb-primary-replication",
+		}
+		if len(prod1Hosts) > 0 {
+			publicPolicyNames = append(publicPolicyNames, migrationProd1PolicyName)
 		}
 		preserved, preserveErr := existingSandboxAllowances(
 			ctx,
@@ -518,6 +555,21 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		internetErr = nil
 	}
 	return errors.Join(apiErr, internetErr, reconcileErr)
+}
+
+// migrationProd1PolicyName is the migration pods' egress to Prod 1.
+const migrationProd1PolicyName = "allow-migration-prod1-egress"
+
+// migrationProd1Allowance lets migration pods reach Prod 1: the database on 5432 and the engine
+// origins and the SSM endpoint on 443. It is enforced by port and public address range, not by
+// name, since Cilium's FQDN policy needs AKS Advanced Container Networking Services, which these
+// clusters do not run; the comment names the hosts it is for.
+func migrationProd1Allowance(publicPeers []networkingv1.NetworkPolicyPeer, migration metav1.LabelSelector, hosts []string) oramav1alpha1.NetworkSandboxPolicy {
+	return sandboxAllowance(
+		"OramaCloudV1Migration Jobs read Prod 1 at "+strings.Join(hosts, ", ")+
+			" (operator#653), enforced by port and public range, not by name; private, metadata, API, pod and node ranges stay excluded.",
+		oramaCloudEgressPolicy(migrationProd1PolicyName, migration, publicEgressRule(publicPeers, 443, 5432)),
+	)
 }
 
 // ingressGatewayRule admits ingress-nginx and zetta-tunnel's ingress gateway, the two controllers
