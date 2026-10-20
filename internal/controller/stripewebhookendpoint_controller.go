@@ -398,40 +398,53 @@ func stripeDeleteWebhookEndpoint(ctx context.Context, api stripeAPI, version, id
 }
 
 // finalize deletes ours in Stripe, only while it carries the owner tag, then releases the object.
-// With the provider or its key gone (deleted with it, or with the namespace) it does not block: it
-// says in a Warning event which endpoint it left behind, for a person to delete in the Dashboard.
+// A working key still looks for our endpoint when its ID was not saved. Cleanup failures retry for
+// paymentDeleteGrace only with a saved ID, unless Stripe refuses the key or credentials are gone.
+// A Warning event names any saved endpoint left behind for a person to delete in the Dashboard.
 func (r *StripeWebhookEndpointReconciler) finalize(ctx context.Context, endpoint *oramav1alpha1.StripeWebhookEndpoint) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(endpoint, paymentWebhookFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	key, problem, gone, err := r.credential(ctx, endpoint)
+	withinGrace := r.clock.time().Sub(endpoint.DeletionTimestamp.Time) < paymentDeleteGrace
 	switch {
 	case err != nil:
 		return ctrl.Result{}, err
 	case gone:
-		if id := endpoint.Status.EndpointID; id != "" {
-			r.event(endpoint, corev1.EventTypeWarning, "EndpointLeftBehind",
-				"%s, so Stripe webhook endpoint %s was not deleted: delete it in the Stripe Dashboard", problem, id)
-		}
 	case problem != "":
-		status := *endpoint.Status.DeepCopy()
-		meta.SetStatusCondition(&status.Conditions, metav1.Condition{
-			Type: paymentConditionReady, Status: metav1.ConditionFalse, Reason: "ProviderNotReady",
-			Message: "deleting, waiting for the key: " + problem, ObservedGeneration: endpoint.Generation,
-		})
-		return ctrl.Result{RequeueAfter: paymentRetry}, r.saveStatus(ctx, endpoint, status)
+		problem = "deleting, waiting for the key: " + problem
+		if endpoint.Status.EndpointID != "" && withinGrace {
+			status := *endpoint.Status.DeepCopy()
+			meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+				Type: paymentConditionReady, Status: metav1.ConditionFalse, Reason: "ProviderNotReady",
+				Message: problem, ObservedGeneration: endpoint.Generation,
+			})
+			return ctrl.Result{RequeueAfter: paymentRetry}, r.saveStatus(ctx, endpoint, status)
+		}
 	default:
 		pass := stripeWebhookPass{r: r, endpoint: endpoint, status: &endpoint.Status, api: stripeAPI{Base: r.StripeAPIBase, Key: key}}
 		listed, err := pass.list(ctx)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if ours, _ := stripeWebhookMatch(listed, pass.owner(), endpoint.Spec.URL, endpoint.Status.EndpointID); ours != nil {
-			if err := stripeDeleteWebhookEndpoint(ctx, pass.api, endpoint.Spec.APIVersion, ours.ID); err != nil {
-				return ctrl.Result{}, err
+		if err == nil {
+			if ours, _ := stripeWebhookMatch(listed, pass.owner(), endpoint.Spec.URL, endpoint.Status.EndpointID); ours != nil {
+				err = stripeDeleteWebhookEndpoint(ctx, pass.api, endpoint.Spec.APIVersion, ours.ID)
+				if err == nil {
+					logf.FromContext(ctx).Info("deleted Stripe webhook endpoint", "endpoint", ours.ID)
+				}
 			}
-			logf.FromContext(ctx).Info("deleted Stripe webhook endpoint", "endpoint", ours.ID)
 		}
+		if err != nil {
+			logf.FromContext(ctx).Info("could not delete Stripe webhook endpoint", "endpoint", endpoint.Status.EndpointID, "error", err.Error())
+			var apiErr *stripeAPIError
+			refused := errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden)
+			if endpoint.Status.EndpointID != "" && withinGrace && !refused {
+				return ctrl.Result{RequeueAfter: paymentRetry}, nil
+			}
+			problem = err.Error()
+		}
+	}
+	if problem != "" && endpoint.Status.EndpointID != "" {
+		r.event(endpoint, corev1.EventTypeWarning, "EndpointLeftBehind",
+			"%s, so Stripe webhook endpoint %s was not deleted: delete it in the Stripe Dashboard", problem, endpoint.Status.EndpointID)
 	}
 	r.clock.forget(endpoint.UID)
 	controllerutil.RemoveFinalizer(endpoint, paymentWebhookFinalizer)

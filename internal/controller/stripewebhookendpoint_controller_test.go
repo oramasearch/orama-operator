@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"regexp"
 	"slices"
@@ -25,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -39,13 +41,15 @@ const (
 var testWebhookKey = types.NamespacedName{Namespace: "billing", Name: "lake"}
 
 type stripeWebhookFixture struct {
-	client    client.Client
+	client    client.WithWatch
 	recorder  *record.FakeRecorder
 	reconcile func() (oramav1alpha1.StripeWebhookEndpoint, ctrl.Result)
 	// edit changes the endpoint's spec, as the abstract kind would.
 	edit func(func(*oramav1alpha1.StripeWebhookEndpointSpec))
 	// advance moves the controller's clock forward.
 	advance func(time.Duration)
+	// delete starts deletion and sets the clock to its timestamp.
+	delete func()
 	// logs is every line the controller logged.
 	logs func() []string
 }
@@ -117,6 +121,20 @@ func newStripeWebhookFixture(t *testing.T, stripe *fakeStripe, objects ...client
 			}
 		},
 		advance: func(d time.Duration) { now = now.Add(d) },
+		delete: func() {
+			t.Helper()
+			var endpoint oramav1alpha1.StripeWebhookEndpoint
+			if err := c.Get(ctx, testWebhookKey, &endpoint); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Delete(ctx, &endpoint); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(ctx, testWebhookKey, &endpoint); err != nil {
+				t.Fatal(err)
+			}
+			now = endpoint.DeletionTimestamp.Time
+		},
 		logs: func() []string {
 			mu.Lock()
 			defer mu.Unlock()
@@ -607,5 +625,235 @@ func TestStripeWebhookEndpointLeavesItsEndpointWhenTheProviderIsGone(t *testing.
 	events := eventsOf(f.recorder)
 	if len(events) != 1 || !strings.HasPrefix(events[0], "Warning EndpointLeftBehind") || !strings.Contains(events[0], "we_1") {
 		t.Errorf("events = %v", events)
+	}
+}
+
+func TestStripeWebhookEndpointDeletionWaitsForCredentialsWithinGrace(t *testing.T) {
+	stripe := newFakeStripe(t, testStripeKey, testStripeAccount)
+	f := newStripeWebhookFixture(t, stripe)
+	f.reconcile()
+	ctx := context.Background()
+	var provider oramav1alpha1.PaymentProvider
+	if err := f.client.Get(ctx, types.NamespacedName{Namespace: "billing", Name: "stripe"}, &provider); err != nil {
+		t.Fatal(err)
+	}
+	provider.Status.Conditions[0].Status = metav1.ConditionFalse
+	provider.Status.Conditions[0].Reason = "StripeAPIError"
+	provider.Status.Conditions[0].Message = "stripe GET /v1/account: HTTP 401"
+	if err := f.client.Status().Update(ctx, &provider); err != nil {
+		t.Fatal(err)
+	}
+	f.delete()
+	requests := len(stripe.received())
+	for _, elapsed := range []time.Duration{0, paymentDeleteGrace - time.Second} {
+		f.advance(elapsed)
+		endpoint, result := f.reconcile()
+		condition := wantReady(t, endpoint, metav1.ConditionFalse, "ProviderNotReady")
+		if !strings.Contains(condition.Message, "HTTP 401") || !slices.Contains(endpoint.Finalizers, paymentWebhookFinalizer) || result.RequeueAfter != paymentRetry {
+			t.Errorf("condition %+v, finalizers %v, requeue %v", condition, endpoint.Finalizers, result.RequeueAfter)
+		}
+		if events := eventsOf(f.recorder); len(events) != 0 {
+			t.Errorf("events within grace = %v", events)
+		}
+	}
+	f.advance(2 * time.Second)
+	if gone, result := f.reconcile(); gone.Name != "" || result.RequeueAfter != 0 {
+		t.Errorf("object %q remains, requeue %v", gone.Name, result.RequeueAfter)
+	}
+	if len(stripe.received()) != requests {
+		t.Error("called Stripe without verified credentials")
+	}
+	events := eventsOf(f.recorder)
+	if len(events) != 1 || !strings.HasPrefix(events[0], "Warning EndpointLeftBehind") ||
+		!strings.Contains(events[0], "HTTP 401") ||
+		!strings.Contains(events[0], ", so Stripe webhook endpoint we_1 was not deleted: delete it in the Stripe Dashboard") {
+		t.Errorf("events = %v", events)
+	}
+}
+
+func TestStripeWebhookEndpointDeletionBoundsStripeFailures(t *testing.T) {
+	for _, route := range []string{"GET /v1/webhook_endpoints", "DELETE /v1/webhook_endpoints/we_1"} {
+		for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusInternalServerError} {
+			t.Run(route+"/"+http.StatusText(status), func(t *testing.T) {
+				stripe := newFakeStripe(t, testStripeKey, testStripeAccount)
+				f := newStripeWebhookFixture(t, stripe)
+				f.reconcile()
+				stripe.setFailure(route, &fakeStripeError{status, "api_error", "", "Error for key " + testStripeKey})
+				f.delete()
+				if status == http.StatusInternalServerError {
+					for _, elapsed := range []time.Duration{0, paymentDeleteGrace - time.Second} {
+						f.advance(elapsed)
+						endpoint, result := f.reconcile()
+						if !slices.Contains(endpoint.Finalizers, paymentWebhookFinalizer) || result.RequeueAfter != paymentRetry {
+							t.Errorf("finalizers %v, requeue %v", endpoint.Finalizers, result.RequeueAfter)
+						}
+						if events := eventsOf(f.recorder); len(events) != 0 {
+							t.Errorf("events within grace = %v", events)
+						}
+						if n := stripe.count(route); n == 0 {
+							t.Error("did not attempt Stripe cleanup")
+						}
+						if !slices.ContainsFunc(f.logs(), func(line string) bool {
+							return strings.Contains(line, "could not delete Stripe webhook endpoint") && strings.Contains(line, "HTTP 500")
+						}) {
+							t.Error("the cleanup retry was not logged")
+						}
+					}
+					f.advance(time.Second)
+				}
+				if gone, result := f.reconcile(); gone.Name != "" || result.RequeueAfter != 0 {
+					t.Errorf("object %q remains, requeue %v", gone.Name, result.RequeueAfter)
+				}
+				events := eventsOf(f.recorder)
+				if len(events) != 1 || !strings.HasPrefix(events[0], "Warning EndpointLeftBehind stripe "+route+": HTTP ") ||
+					!strings.Contains(events[0], ", so Stripe webhook endpoint we_1 was not deleted: delete it in the Stripe Dashboard") {
+					t.Errorf("events = %v", events)
+				}
+				for _, line := range append(f.logs(), events...) {
+					if strings.Contains(line, testStripeKey) {
+						t.Errorf("the key was logged: %q", line)
+					}
+				}
+				if len(stripe.webhookEndpoints()) != 1 {
+					t.Error("expected the Stripe endpoint to remain")
+				}
+			})
+		}
+	}
+}
+
+func TestStripeWebhookEndpointDeletionWithoutAnEndpointID(t *testing.T) {
+	stripe := newFakeStripe(t, testStripeKey, testStripeAccount)
+	stripe.setFailure("GET /v1/webhook_endpoints", &fakeStripeError{http.StatusInternalServerError, "api_error", "", "unavailable"})
+	f := newStripeWebhookFixture(t, stripe)
+	endpoint, _ := f.reconcile()
+	if endpoint.Status.EndpointID != "" {
+		t.Fatalf("endpoint ID = %q", endpoint.Status.EndpointID)
+	}
+	f.delete()
+	if gone, result := f.reconcile(); gone.Name != "" || result.RequeueAfter != 0 {
+		t.Errorf("object %q remains, requeue %v", gone.Name, result.RequeueAfter)
+	}
+	if events := eventsOf(f.recorder); len(events) != 0 {
+		t.Errorf("events = %v", events)
+	}
+	if !slices.ContainsFunc(f.logs(), func(line string) bool {
+		return strings.Contains(line, "could not delete Stripe webhook endpoint") && strings.Contains(line, "HTTP 500")
+	}) {
+		t.Error("the failed cleanup attempt was not logged")
+	}
+}
+
+func TestStripeWebhookEndpointDeletionFindsItsEndpointWithoutAnID(t *testing.T) {
+	for name, deleteAnswer := range map[string]*fakeStripeError{
+		"deleted":       nil,
+		"delete failed": {http.StatusInternalServerError, "api_error", "", "Error for key " + testStripeKey},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stripe := newFakeStripe(t, testStripeKey, testStripeAccount)
+			f := newStripeWebhookFixture(t, stripe)
+			endpoint, _ := f.reconcile()
+			// Stripe created the endpoint, but Kubernetes did not save its ID.
+			endpoint.Status.EndpointID = ""
+			if err := f.client.Status().Update(context.Background(), &endpoint); err != nil {
+				t.Fatal(err)
+			}
+			stripe.setFailure("DELETE /v1/webhook_endpoints/we_1", deleteAnswer)
+			f.delete()
+			if gone, result := f.reconcile(); gone.Name != "" || result.RequeueAfter != 0 {
+				t.Errorf("object %q remains, requeue %v", gone.Name, result.RequeueAfter)
+			}
+			if n := stripe.count("DELETE /v1/webhook_endpoints/we_1"); n != 1 {
+				t.Errorf("delete attempts = %d, want 1", n)
+			}
+			if deleteAnswer == nil && len(stripe.webhookEndpoints()) != 0 {
+				t.Error("the Stripe endpoint remains")
+			}
+			if events := eventsOf(f.recorder); len(events) != 0 {
+				t.Errorf("events = %v", events)
+			}
+			if deleteAnswer != nil && !slices.ContainsFunc(f.logs(), func(line string) bool {
+				return strings.Contains(line, "could not delete Stripe webhook endpoint") && strings.Contains(line, "HTTP 500")
+			}) {
+				t.Error("the failed cleanup attempt was not logged")
+			}
+			for _, line := range f.logs() {
+				if strings.Contains(line, testStripeKey) {
+					t.Errorf("the key was logged: %q", line)
+				}
+			}
+		})
+	}
+}
+
+func TestStripeWebhookEndpointDeletionWithoutAnIDOrCredentials(t *testing.T) {
+	stripe := newFakeStripe(t, testStripeKey, testStripeAccount)
+	f := newStripeWebhookFixture(t, stripe)
+	ctx := context.Background()
+	var provider oramav1alpha1.PaymentProvider
+	if err := f.client.Get(ctx, types.NamespacedName{Namespace: "billing", Name: "stripe"}, &provider); err != nil {
+		t.Fatal(err)
+	}
+	provider.Status.Conditions[0].Status = metav1.ConditionFalse
+	provider.Status.Conditions[0].Reason = "StripeAPIError"
+	if err := f.client.Status().Update(ctx, &provider); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, _ := f.reconcile()
+	if endpoint.Status.EndpointID != "" {
+		t.Fatalf("endpoint ID = %q", endpoint.Status.EndpointID)
+	}
+	f.delete()
+	if gone, result := f.reconcile(); gone.Name != "" || result.RequeueAfter != 0 {
+		t.Errorf("object %q remains, requeue %v", gone.Name, result.RequeueAfter)
+	}
+	if events := eventsOf(f.recorder); len(events) != 0 {
+		t.Errorf("events = %v", events)
+	}
+	if n := len(stripe.received()); n != 0 {
+		t.Errorf("Stripe calls = %d, want 0", n)
+	}
+}
+
+func TestStripeWebhookEndpointDeletionRetriesKubernetesReadErrors(t *testing.T) {
+	for _, resource := range []string{"provider", "secret"} {
+		t.Run(resource, func(t *testing.T) {
+			stripe := newFakeStripe(t, testStripeKey, testStripeAccount)
+			f := newStripeWebhookFixture(t, stripe)
+			f.reconcile()
+			f.delete()
+			readError := errors.New("Kubernetes read failed")
+			r := &StripeWebhookEndpointReconciler{
+				Client: interceptor.NewClient(f.client, interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+						switch object.(type) {
+						case *oramav1alpha1.PaymentProvider:
+							if resource == "provider" {
+								return readError
+							}
+						case *corev1.Secret:
+							if resource == "secret" {
+								return readError
+							}
+						}
+						return c.Get(ctx, key, object, opts...)
+					},
+				}), Recorder: f.recorder, StripeAPIBase: stripe.url,
+			}
+			r.clock.now = func() time.Time { return time.Now().Add(paymentDeleteGrace + time.Minute) }
+			if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: testWebhookKey}); !errors.Is(err, readError) {
+				t.Errorf("reconcile error = %v, want %v", err, readError)
+			}
+			var endpoint oramav1alpha1.StripeWebhookEndpoint
+			if err := f.client.Get(context.Background(), testWebhookKey, &endpoint); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(endpoint.Finalizers, paymentWebhookFinalizer) {
+				t.Error("released the finalizer after a Kubernetes read error")
+			}
+			if events := eventsOf(f.recorder); len(events) != 0 {
+				t.Errorf("events = %v", events)
+			}
+		})
 	}
 }
