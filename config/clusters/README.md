@@ -133,7 +133,7 @@ under `spec.migrations`
 applies each entry as an `OramaCloudV1Migration` named `name` in the member's namespace on the
 member's cluster, with `targetRef` set to the member, and the member's operator runs the copy
 ([`docs/cloud-v1-migration.md`](../../docs/cloud-v1-migration.md)).
-[`sets/v1-nonprod.yaml`](sets/v1-nonprod.yaml) carries the pilot's entry, commented out.
+[`sets/v1-nonprod.yaml`](sets/v1-nonprod.yaml) carries the pilot's entry (orama-bridge#206).
 
 ```yaml
   migrations:
