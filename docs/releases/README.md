@@ -5,7 +5,8 @@ does not, what is knowingly still broken, and how it was verified.
 
 - [v0.7.0](v0.7.0.md) — 2026-10-20. The payment kinds: the operator keeps an app's Stripe webhook
   endpoint and catalog from committed resources (#637, #638: `PaymentProvider`,
-  `PaymentWebhookEndpoint`, `StripeWebhookEndpoint`, `PaymentCatalog`, `StripeCatalog`); paid
+  `PaymentWebhookEndpoint`, `StripeWebhookEndpoint`, `PaymentCatalog`, `StripeCatalog`; a `cloud_v1`
+  catalog on a live key refused); paid
   `lake.live` orders provisioned from lake's control plane (#634: `LakeOrderSource`); the Cloud v1
   cluster-row Job through the network sandbox (#648); Lake's schema at lake v0.3.0 (#656). None of
   the new kinds is used on a cluster yet. 42 resource kinds.
