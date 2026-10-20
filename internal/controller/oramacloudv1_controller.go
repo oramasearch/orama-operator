@@ -70,6 +70,27 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := validateEngineImages(&oc); err != nil {
 		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "engine", err)
 	}
+	if err := validateDashboardPayments(&oc); err != nil {
+		r.setStatus(ctx, &oc, oc.Status.Phase, oc.Status.ComponentsReady, oc.Status.Components, nil, metav1.Condition{
+			Type: dashboardPaymentsCondition, Status: metav1.ConditionFalse, Reason: "InvalidSpec", Message: err.Error(),
+		})
+		return ctrl.Result{}, nil
+	}
+	payments, paymentsErr := r.reconcileDashboardPayments(ctx, &oc)
+	if paymentsErr != nil {
+		payments = &metav1.Condition{Type: dashboardPaymentsCondition, Status: metav1.ConditionFalse,
+			Reason: "ReconcileError", Message: paymentsErr.Error()}
+	}
+	if payments == nil {
+		for _, condition := range oc.Status.Conditions {
+			if condition.Type == dashboardPaymentsCondition {
+				r.setStatus(ctx, &oc, oc.Status.Phase, oc.Status.ComponentsReady, oc.Status.Components, []string{dashboardPaymentsCondition})
+				break
+			}
+		}
+	} else {
+		r.setStatus(ctx, &oc, oc.Status.Phase, oc.Status.ComponentsReady, oc.Status.Components, nil, *payments)
+	}
 	// A missing or placeholder master key is configuration, not a failure: the rest of the stack
 	// reconciles, the engine is held at zero (reconcileEngine), and Ready names the cause until a
 	// Secret event or the readiness requeue finds it fixed.
@@ -120,7 +141,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Owns() events cover most transitions; the requeue is also the backstop for CNPG readiness,
 	// PVC creation and storage retries even after workloads become Ready.
 	managedStorage := r.reconcileStorage(ctx, &oc)
-	if r.applyReadiness(ctx, &oc, masterKey) && !managedStorage {
+	if r.applyReadiness(ctx, &oc, masterKey) && !managedStorage && (payments == nil || payments.Status == metav1.ConditionTrue) {
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
@@ -157,6 +178,9 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&oramav1alpha1.NetworkSandbox{}).
 		Owns(&oramav1alpha1.RabbitMQTopology{}).
 		Owns(&oramav1alpha1.PostgresSchema{}).
+		Owns(&oramav1alpha1.PaymentProvider{}).
+		Owns(&oramav1alpha1.PaymentCatalog{}).
+		Owns(&oramav1alpha1.PaymentWebhookEndpoint{}).
 		// Secrets supplied or copied from outside the operator (LLM keys, the master API key, a
 		// broker or cache credential) have no owner reference: map them to the CRs that read them,
 		// so a changed value rolls their consumers (requestsForSecret).

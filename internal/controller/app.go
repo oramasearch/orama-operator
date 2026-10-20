@@ -405,6 +405,10 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if err != nil {
 		return err
 	}
+	paymentsEnv, err := r.dashboardPaymentsEnv(ctx, oc)
+	if err != nil {
+		return err
+	}
 	img := componentImage(oc, "dashboard", "dashboard")
 	// The dashboard never migrates the control DB: the operator's PostgresSchema owns the
 	// schema (operator#40). A second Drizzle migrate collides with those objects (Postgres 42710).
@@ -416,7 +420,7 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		ingressExtraHosts: d.ExtraHosts,
 		// The master key (#307), the CNPG-generated credentials for the dashboard's control-DB client,
 		// then the user's dashboard.env (#311).
-		env:               overrideEnv([]corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}, d.Env),
+		env:               overrideEnv([]corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}, overrideEnv(paymentsEnv, dashboardUserEnv(oc))),
 		credentialSecrets: []string{masterKey},
 		extraEnvFrom:      d.EnvFrom,
 		envHash:           envHash,

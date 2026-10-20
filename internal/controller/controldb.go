@@ -248,11 +248,15 @@ var controlDBSchemaSuffixes = []string{
 // controlDBSchemas lists the control DB's schemas in apply order. Each is created only after every
 // one before it reports its current version Applied, because each builds on the tables of the last.
 func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error) {
+	return controlDBSchemasWithPrices(oc.Spec.Components.ControlDB.StripePrices)
+}
+
+func controlDBSchemasWithPrices(prices oramav1alpha1.ControlDBStripePrices) ([]controlDBSchema, error) {
 	schema0008, err := controlDBSchema0008SQL()
 	if err != nil {
 		return nil, err
 	}
-	reference, err := controlDBReferenceSQL(dashboardReferenceRowsSQL, oc.Spec.Components.ControlDB.StripePrices)
+	reference, err := controlDBReferenceSQL(dashboardReferenceRowsSQL, prices)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +293,11 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBMigrations(ctx context.Contex
 
 	cmName := oc.Name + "-controldb-migrations"
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: oc.Namespace}}
-	schemas, err := controlDBSchemas(oc)
+	prices, err := r.dashboardStripePrices(ctx, oc)
+	if err != nil {
+		return err
+	}
+	schemas, err := controlDBSchemasWithPrices(prices)
 	if err != nil {
 		return err
 	}

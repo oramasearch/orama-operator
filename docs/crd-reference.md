@@ -157,6 +157,8 @@ operator seeds ([`components.md`](components.md#the-control-dbs-schema)): `plans
 listed has both NULL) and `addons[]` is `{ id, priceID }` (sets `stripe_addon_prices.stripe_price_id`;
 an add-on price row is seeded only when listed). `id` is the reference row's UUID; an ID that is not
 a reference row fails the seed. Empty seeds every plan without Stripe prices and no add-on price.
+With `dashboard.payments`, catalog status supplies these prices instead; combining payments with
+non-empty explicit prices is refused by the controller (`PaymentsReady=False`, `InvalidSpec`).
 `spec.components.ingressClassName` (`nginx`, the default, or `zetta-tunnel`) picks the ingress that
 serves the stack's Ingresses; DNS follows ([`infrastructure/ingress.md`](infrastructure/ingress.md)).
 Every host (`dashboard.host`, `docs.host`, `engine.writer.host`, `engine.reader.host`, and each one's
@@ -169,7 +171,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | Component | Extra fields | Maps to (prod) |
 |---|---|---|
 | `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,resources,storage}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
-| `dashboard` | `host`, `extraHosts`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
+| `dashboard` | `host`, `extraHosts`, `envFrom`, `env`, `payments` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host`, `extraHosts` | docs.orama.com (Next.js + Fumadocs) |
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `stripePrices` | Always in-cluster CloudNativePG |
@@ -411,12 +413,25 @@ writer_side:
 
 ### `spec.components.dashboard`
 
+`payments: {secretRef: {name: stripe-dev}}` configures the dashboard's sandbox. The named Secret
+holds `accountID`, `operatorKey` and `appKey` in this namespace. The dashboard must be enabled with
+a host; both keys must be test-mode (`LiveModeRefused` for a live key). Production leaves this field
+unset. It owns `<cr>-payments` (`PaymentProvider` and `PaymentWebhookEndpoint`) and `<cr>-catalog`
+(`PaymentCatalog`, `app: cloud_v1`), seeds control DB prices from the catalog's last non-empty status,
+and supplies explicit Stripe env once prices and `<cr>-payments-webhook/signingSecret` exist.
+`PaymentsReady` never blocks instance `Ready`. User `envFrom` may carry the same Stripe names;
+explicit sandbox env wins, and user `env` entries with those names are dropped while payments is
+set. Rotation of either referenced value changes `dashboard-env-hash`. Removing the field withdraws
+env, then the endpoint, then its provider. See [dashboard payments](components.md#dashboard-payments)
+for catalog omissions and the reference upsert's retention of removed add-on rows.
+
 The dashboard's toggle and hosts (`enabled`, `host`, `extraHosts`, `resources`, as for `docs`), plus
 the rest of its environment from Secrets and ConfigMaps in the instance's namespace
 ([operator#311](https://github.com/oramasearch/orama-operator/issues/311)).
 
 | Field | Type | Meaning |
 |---|---|---|
+| `payments` | `DashboardPaymentsSpec` | `{secretRef: {name}}` for a test-mode sandbox. Requires an enabled dashboard with a host, refuses non-empty `controlDB.stripePrices`; see above. |
 | `envFrom` | `[]EnvFromSource` | Secrets (`secretRef`) and ConfigMaps (`configMapRef`), each with an optional `prefix` and `optional`. Appended after the operator's own sources (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`), so a key here overrides the shared ConfigMap and the seeded dashboard Secret, and a later entry overrides an earlier one. |
 | `env` | `[]EnvVar` | Variables as in a container: a `value`, or `valueFrom` with `secretKeyRef`, `configMapKeyRef`, `fieldRef` or `resourceFieldRef`. Appended after the operator's explicit env; an entry with the same name as an operator variable replaces it, and for a name listed twice the last entry wins, so each name appears once. |
 

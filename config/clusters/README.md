@@ -93,9 +93,12 @@ analytics import's proof (#421). It reaches the cluster only when Steve consents
 
 An Orama Cloud v1 stack's `controlDB.stripePrices` holds that stack's Stripe price IDs for the
 reference rows the operator seeds into its control database
-([`docs/components.md`](../../docs/components.md#the-control-dbs-schema)). `v1-nonprod` leaves it
-empty: no test-mode prices exist yet, so its plans carry no Stripe prices and it has no add-on
-prices. `v1-prod` needs its live-mode IDs before billing works on it.
+([`docs/components.md`](../../docs/components.md#the-control-dbs-schema)). Nonprod can use
+`dashboard.payments.secretRef` to create a sandbox catalog and webhook and seed prices from catalog
+status, with no test price IDs entered by hand
+([dashboard payments](../../docs/components.md#dashboard-payments), operator#640). The set-file
+adoption is operator#642; until then, empty prices leave plan prices NULL and seed no add-ons.
+`v1-prod` leaves payments unset and supplies its copied live-mode IDs through `controlDB.stripePrices`.
 
 A Lake's `spec.payments` ([`docs/lake/payments.md`](../../docs/lake/payments.md)) names a Stripe
 Secret with keys `accountID`, `operatorKey` and `appKey`, one per Stripe environment

@@ -806,8 +806,9 @@ the next. A streaming replica receives the primary's schema and owns none.
   0008 it runs before `teams.subscription_plan_id` and its foreign key, so existing teams validate
   against the default plan in the same transaction and a new team can be created; without the
   rows, 0008 rolls back as a whole. The tenant copy tool does not copy these rows.
-- **Stripe prices are per stack**: `spec.components.controlDB.stripePrices` (test-mode IDs on
-  nonprod, live-mode IDs on `v1-prod`). They reach only `<cr>-controldb-reference-data`, so 0008's
+- **Stripe prices are per stack**: `dashboard.payments` reads sandbox prices from its catalog; otherwise
+  `spec.components.controlDB.stripePrices` supplies test-mode IDs on nonprod or live-mode IDs on
+  `v1-prod`. The prices reach only `<cr>-controldb-reference-data`, so 0008's
   SQL and version are the same on every stack. Empty leaves plans' Stripe columns NULL and seeds no
   add-on price (`stripe_addon_prices.stripe_price_id` is NOT NULL). An ID that is not a reference
   row fails the seed, visibly, and changes nothing.
@@ -985,6 +986,46 @@ the Mongo StatefulSet, the dashboard Ingress, and 6 Services; CR-delete GC'd the
 > needs porting to k8s Jobs (the master + Mongo + Selenium are here; the job spawner
 > is a follow-up). index-builder needs its env + secret wiring (control-plane DB URL, API keys)
 > via the component secret.
+
+### Dashboard payments
+
+`spec.components.dashboard.payments.secretRef.name` names a Secret in the instance's namespace
+with `accountID`, `operatorKey` and `appKey`. Both keys must be test-mode keys. The controller
+refuses live keys with `PaymentsReady=False`, reason `LiveModeRefused`, before creating payment
+resources. Production leaves payments unset: Prod 1 owns the live catalog, and `v1-prod` keeps its
+copied keys, endpoint and explicit `controlDB.stripePrices`. Payments and non-empty
+`controlDB.stripePrices` together are refused with reason `InvalidSpec`.
+
+The instance owns `PaymentProvider` `<cr>-payments`, `PaymentCatalog` `<cr>-catalog` and
+`PaymentWebhookEndpoint` `<cr>-payments`. The catalog is a copy of the live catalog documented in
+orama-bridge's `docs/projects/stripe/README.md`; the asset
+`internal/controller/assets/cloud-v1-payment-catalog.yaml` records its source commit and date.
+Products retain their names and metadata, including `addon_type`, under `cloud_v1_` IDs. Each
+reference row gets its own lookup key, `cloud_v1.plan.<uuid>.monthly` / `.yearly` or
+`cloud_v1.addon.<uuid>`. The asset header lists rows left out: plans without a live price, metered
+add-ons and Extra Data Sources' transformed quantities. The flat-price catalog cannot express
+transforms, tiers or per-price currency options. Omitted add-ons are not seeded on a fresh sandbox.
+
+The webhook delivers the dashboard's eight handled events to
+`https://<dashboard.host>/api/webhooks/stripe`, pinned to `2025-10-29.clover`, with signing Secret
+`<cr>-payments-webhook`. Once that Secret holds `signingSecret` and the catalog has written prices,
+the dashboard gets explicit `STRIPE_SECRET_KEY` (`secretRef/appKey`) and `STRIPE_WEBHOOK_SECRET`
+(`signingSecret`). These shadow the same names in user `envFrom` sources, so the existing
+`v1-nonprod-dashboard-env` needs no edit. With payments set, user `dashboard.env` entries for either
+name are dropped. Both referenced values enter `orama.cloud/dashboard-env-hash`; rotating either
+rolls the dashboard. Secret watches include both references.
+
+The reference-data SQL uses every non-empty `catalog.status.prices`, even while the catalog is not
+Ready. A transient Stripe failure therefore preserves the last plan prices. Before the first prices
+arrive it runs with empty prices, as before; a changed price changes the reference-data schema
+version and reruns its Job. **The reference SQL never deletes rows**: an add-on removed from the
+asset keeps its old price ID in an existing control database. Removing a row is rare and must be
+followed by a manual check of those rows.
+
+`PaymentsReady` reports payment progress and failures independently of instance `Ready`. Removing
+payments withdraws explicit env, deletes the catalog and webhook endpoint, then deletes the
+provider once the endpoint and its finalizer are gone. Stripe products and prices remain. Without
+payments, the existing dashboard environment and explicit control DB prices behave as before.
 
 ### The dashboard's environment
 

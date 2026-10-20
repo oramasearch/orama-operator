@@ -373,6 +373,18 @@ subscription and invoice that uses it keeps working, and adding it back to the s
 products may have subscriptions, and archiving them is a decision for a person, in the Stripe
 Dashboard.
 
+### Cloud v1 dashboard sandbox
+
+`OramaCloudV1.spec.components.dashboard.payments` owns a sandbox provider, catalog and webhook.
+The catalog asset copies the live inventory at bridge commit `bf6a8aa` (2026-10-20), preserving
+product names and metadata and making one flat price per supported reference row. Metered rows
+and Extra Data Sources' `transform_quantity` prices are listed as omitted in its header. Production
+leaves the field unset; both this field and the concrete catalog controller refuse live keys with
+`LiveModeRefused`. The dashboard's endpoint pins `2025-10-29.clover` and subscribes to its eight
+handled event types. Catalog status supplies the control DB prices even during a later Stripe
+failure, and the two referenced dashboard secrets participate in its environment hash. See
+[dashboard payments](../components.md#dashboard-payments) for gating, removal and retained add-on rows.
+
 ### Two catalogs, one product
 
 Two Lakes in the same account each own a catalog with the same products (`shared` and `shared-us`

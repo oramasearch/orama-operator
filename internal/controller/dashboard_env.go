@@ -62,6 +62,9 @@ func refusedEnvError(field, name string) error {
 func validateDashboardEnv(oc *oramav1alpha1.OramaCloudV1) error {
 	d := oc.Spec.Components.Dashboard
 	for i, e := range d.Env {
+		if d.Payments != nil && slices.Contains(dashboardPaymentsEnvNames, e.Name) {
+			continue
+		}
 		if _, owned := dashboardOwnedEnv[e.Name]; owned {
 			return refusedEnvError(fmt.Sprintf("dashboard.env[%d]", i), e.Name)
 		}
@@ -173,7 +176,11 @@ func (r *OramaCloudV1Reconciler) dashboardEnvSources(ctx context.Context, oc *or
 func (r *OramaCloudV1Reconciler) dashboardEnvHash(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, sources []dashboardEnvSource) (string, error) {
 	h := sha256.New()
 	keys := 0
-	for _, e := range overrideEnv(nil, oc.Spec.Components.Dashboard.Env) {
+	paymentsEnv, err := r.dashboardPaymentsEnv(ctx, oc)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range overrideEnv(paymentsEnv, dashboardUserEnv(oc)) {
 		kind, name, key, optional, ok := envKeyRef(e)
 		if !ok {
 			continue
@@ -251,6 +258,9 @@ func dashboardReferences(oc *oramav1alpha1.OramaCloudV1, kind, name string) bool
 	if !d.Enabled {
 		return false
 	}
+	if kind == "Secret" && d.Payments != nil && (name == d.Payments.SecretRef.Name || name == oc.Name+"-payments-webhook") {
+		return true
+	}
 	for _, src := range d.EnvFrom {
 		if (src.SecretRef == nil) == (src.ConfigMapRef == nil) {
 			continue
@@ -259,7 +269,7 @@ func dashboardReferences(oc *oramav1alpha1.OramaCloudV1, kind, name string) bool
 			return true
 		}
 	}
-	for _, e := range overrideEnv(nil, d.Env) {
+	for _, e := range overrideEnv(nil, dashboardUserEnv(oc)) {
 		if k, n, _, _, ok := envKeyRef(e); ok && k == kind && n == name {
 			return true
 		}

@@ -556,6 +556,11 @@ type ToggleWithHost struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.crons) || !has(self.crons.enabled) || !self.crons.enabled || (has(self.enabled) && self.enabled)",message="dashboard.crons requires the dashboard enabled"
 type DashboardSpec struct {
 	ToggleWithHost `json:",inline"`
+	// Payments configures a payment sandbox: the Cloud v1 catalog, the webhook at
+	// https://<host>/api/webhooks/stripe, the dashboard's Stripe keys and the control DB's price
+	// columns (docs/components.md#dashboard-payments). Production leaves it unset.
+	// +optional
+	Payments *DashboardPaymentsSpec `json:"payments,omitempty"`
 	// EnvFrom adds Secrets and ConfigMaps (in the instance's namespace) after the operator's own
 	// envFrom sources, so a key here overrides the shared ConfigMap and the seeded dashboard Secret,
 	// and a later entry overrides an earlier one. It never overrides the operator's explicit env.
@@ -566,7 +571,8 @@ type DashboardSpec struct {
 	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
 	// Env adds variables after the operator's explicit env (e.g. STRIPE_SECRET_KEY from a
 	// secretKeyRef). An entry with the same name as an operator variable replaces it; for a name
-	// listed twice the last entry wins. A non-optional secretKeyRef or configMapKeyRef whose object
+	// listed twice the last entry wins. With payments set, STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET
+	// entries are dropped in favor of the sandbox keys. A non-optional secretKeyRef or configMapKeyRef whose object
 	// or key is missing fails the reconcile; a change to the selected key rolls the dashboard.
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
@@ -574,6 +580,13 @@ type DashboardSpec struct {
 	// the e2e canary (operator#17). Off unless enabled; requires the dashboard enabled.
 	// +optional
 	Crons DashboardCronsSpec `json:"crons,omitempty"`
+}
+
+// DashboardPaymentsSpec points the dashboard at a sandbox the operator configures.
+type DashboardPaymentsSpec struct {
+	// SecretRef names a Secret in the instance's namespace with accountID, operatorKey and appKey
+	// (the dashboard's secret key). Live-mode keys are refused: production keeps its copied keys.
+	SecretRef corev1.LocalObjectReference `json:"secretRef"`
 }
 
 // DashboardCronsSpec turns on the dashboard's three scheduled calls, with Prod 1's fixed schedules:

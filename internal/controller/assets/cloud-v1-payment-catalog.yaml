@@ -1,0 +1,133 @@
+# Copied from the live catalog, bf6a8aa, 2026-10-20.
+# Source: orama-bridge/docs/projects/stripe/README.md sections 3 and 4.
+# One price per reference row, even when rows share a live price. Amounts are Stripe's cents.
+# Products without reference rows have no prices, including the archived Cloud v2 products.
+# Left out (plan UUID covers both monthly and yearly):
+# plan 0d735744-e58e-4438-b618-97523e407cdc: Base has no live price.
+# plan 89fe1078-3b82-4a07-9b6c-b58628cf0939: Base+ has no live price.
+# plan 400e3a11-e448-4ee8-be87-08c4e28e09d4: Enterprise has no live price.
+# plan ae8a9b7e-bb28-4ed3-afc2-f28a6f3f1fac: Open Source has no live price.
+# addon 0ce86e08-0ea4-4b8b-9baf-bac907fc836e: Extra Data Sources, transform_quantity divides by 10, round up.
+# addon 3a549bbb-1c25-40bb-8077-f974e3c1f97e: Extra Data Sources, transform_quantity divides by 10, round up.
+# addon d47de792-ace8-4747-9ebf-bcf6c748e38f: Extra Data Sources, transform_quantity divides by 10, round up.
+# addon 086af6fd-3ab6-4e5d-b095-2a0625f865d1: AI Sessions Base, metered; requires a Meter (bridge#204).
+# addon 2265b381-5458-4b25-9edb-237d746e87d5: AI Sessions Base, metered; requires a Meter (bridge#204).
+# addon eeec97e8-abd2-4982-9fb0-b14996c317a2: AI Sessions Base, metered; requires a Meter (bridge#204).
+# addon 174f95cc-02ce-4986-8b92-a103acf71281: AI Sessions Premium, metered; requires a Meter (bridge#204).
+# addon ca92196f-a643-46ca-be46-8fe6cde5fa6f: AI Sessions Premium, metered; requires a Meter (bridge#204).
+# addon eeb72c29-b8d1-477f-ade4-527bd682e4f5: AI Sessions Premium, metered; requires a Meter (bridge#204).
+# addon 32ac1099-87ff-49e7-8140-7caf0438a8d9: AI Sessions Pro, metered; requires a Meter (bridge#204).
+# addon 5d885a0e-2930-4dc0-8959-77b581b179ee: AI Sessions Pro, metered; requires a Meter (bridge#204).
+# addon a128a420-7327-4ccd-afa6-3eee64b15635: AI Sessions Pro, metered; requires a Meter (bridge#204).
+# addon 313bcf6b-ba4a-472b-ac13-2666063e9477: Extra Documents, metered; requires a Meter (bridge#204).
+# addon 94cffc17-9f12-4883-ade0-1d93012aea44: Extra Documents, metered; requires a Meter (bridge#204).
+# addon c55f46f6-1f72-4670-aaed-47defd3852ef: Extra Documents, metered; requires a Meter (bridge#204).
+app: cloud_v1
+version: 1
+products:
+  - id: cloud_v1_orama_cloud_build_subscription
+    name: Orama Cloud Build Subscription
+    prices:
+      - lookupKey: cloud_v1.plan.28c01974-de01-40a5-be0b-d640f060bbfe.monthly
+        currency: usd
+        unitAmount: 10000
+        interval: month
+      - lookupKey: cloud_v1.plan.28c01974-de01-40a5-be0b-d640f060bbfe.yearly
+        currency: usd
+        unitAmount: 100000
+        interval: year
+  - id: cloud_v1_orama_cloud_scale_subscription
+    name: Orama Cloud Scale Subscription
+    prices:
+      - lookupKey: cloud_v1.plan.46246ab8-4389-418f-a7f5-fb629cc659a6.monthly
+        currency: usd
+        unitAmount: 145000
+        interval: month
+      - lookupKey: cloud_v1.plan.46246ab8-4389-418f-a7f5-fb629cc659a6.yearly
+        currency: usd
+        unitAmount: 1450000
+        interval: year
+  - id: cloud_v1_extra_project
+    name: Extra Project
+    metadata:
+      addon_type: extra_project
+    prices:
+      - lookupKey: cloud_v1.addon.ff6f4595-ad00-4f22-8c96-cee67c93306e
+        currency: usd
+        unitAmount: 500
+        interval: month
+      - lookupKey: cloud_v1.addon.3c3b49f4-c664-4273-8d85-08d140e84e1a
+        currency: usd
+        unitAmount: 500
+        interval: month
+      - lookupKey: cloud_v1.addon.fb125974-3077-4c83-b9c9-c6f1735873b9
+        currency: usd
+        unitAmount: 500
+        interval: month
+  - id: cloud_v1_upgrade_to_high_precision_training
+    name: Upgrade to High Precision Training
+    metadata:
+      addon_type: few_shots_upgrade
+    prices:
+      - lookupKey: cloud_v1.addon.3a71548d-ccd5-4f94-a1e1-10e2a3d3a112
+        currency: usd
+        unitAmount: 1000
+        interval: month
+  - id: cloud_v1_full_analytics
+    name: Full Analytics
+    metadata:
+      addon_type: full_analytics
+    prices:
+      - lookupKey: cloud_v1.addon.6daeda62-cbb6-47ee-9e65-41e09ba363e7
+        currency: usd
+        unitAmount: 1000
+        interval: month
+      - lookupKey: cloud_v1.addon.4d15ac28-b018-4dba-82fd-48e15d4080f5
+        currency: usd
+        unitAmount: 500
+        interval: month
+  - id: cloud_v1_raw_analytics
+    name: Raw Analytics
+    metadata:
+      addon_type: raw_analytics
+    prices:
+      - lookupKey: cloud_v1.addon.c36ae842-1925-4c86-a2af-7ed590fba1be
+        currency: usd
+        unitAmount: 10000
+        interval: month
+      - lookupKey: cloud_v1.addon.71bc6838-1321-4c1d-af2a-dc732c1bb6c6
+        currency: usd
+        unitAmount: 10000
+        interval: month
+  - id: cloud_v1_extra_data_sources
+    name: Extra Data Sources
+    metadata:
+      addon_type: extra_indexes
+  - id: cloud_v1_extra_documents
+    name: Extra Documents
+    metadata:
+      addon_type: extra_documents
+  - id: cloud_v1_ai_sessions_base_models
+    name: AI Sessions (Base Models)
+    metadata:
+      addon_type: ai_sessions_base
+  - id: cloud_v1_ai_sessions_pro_models
+    name: AI Sessions (Pro Models)
+    metadata:
+      addon_type: ai_sessions_pro
+  - id: cloud_v1_ai_sessisions_premium_models
+    name: AI Sessisions (Premium Models)
+    metadata:
+      addon_type: ai_sessions_premium
+  - id: cloud_v1_extra_team
+    name: Extra Team
+  - id: cloud_v1_pro_unlimited_plan
+    name: Pro Unlimited Plan
+  - id: cloud_v1_premium_unlimited
+    name: Premium Unlimited
+  - id: cloud_v1_orama_cloud_pro_onboarding
+    name: Orama Cloud Pro Onboarding
+  - id: cloud_v1_orama_cloud_pro_annual
+    name: Orama Cloud Pro (Annual)
+  - id: cloud_v1_orama_cloud_pro_monthly
+    name: Orama Cloud Pro (Monthly)
