@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -79,7 +81,9 @@ type paymentsHarness struct {
 	name   string
 	ns     string
 
-	provider, endpoint, stripeEndpoint, catalog, stripeCatalog reconcile.Reconciler
+	provider                         *PaymentProviderReconciler
+	stripeEndpoint                   *StripeWebhookEndpointReconciler
+	endpoint, catalog, stripeCatalog reconcile.Reconciler
 }
 
 func newPaymentsHarness(t *testing.T, lake *oramav1alpha1.Lake, objects ...client.Object) *paymentsHarness {
@@ -608,6 +612,128 @@ func TestDeletingALakeRemovesItsPaymentsFirst(t *testing.T) {
 	h.reconcileLake()
 	if h.exists("lake-testing-payments", &oramav1alpha1.PaymentProvider{}) {
 		t.Error("the provider was kept after the endpoint went")
+	}
+}
+
+func TestDeletingALakeWithARefusedStripeKeyCompletes(t *testing.T) {
+	testDeletingALakeWithARefusedStripeKey(t, false)
+}
+
+func TestDeletingALakeWithARevokedStripeKeyCompletesAfterGrace(t *testing.T) {
+	testDeletingALakeWithARefusedStripeKey(t, true)
+}
+
+// A refused replacement key reaches Stripe directly while the provider's check is still cached;
+// a previously valid key that fails its next check holds deletion only for the grace window.
+func testDeletingALakeWithARefusedStripeKey(t *testing.T, checkProvider bool) {
+	t.Helper()
+	h := newPaymentsHarness(t, paymentsTestLake("testing"), lakePaymentsTestSecret("lake-testing", nil))
+	h.configure()
+	recorder := record.NewFakeRecorder(10)
+	h.stripeEndpoint.Recorder = recorder
+	if checkProvider {
+		for _, route := range []string{"GET /v1/account", "GET /v1/webhook_endpoints"} {
+			h.stripe.setFailure(route, &fakeStripeError{status: http.StatusUnauthorized, errType: "invalid_request_error"})
+		}
+		h.provider.clock.now = func() time.Time { return time.Now().Add(2 * paymentRecheck) }
+		h.runProvider()
+		var provider oramav1alpha1.PaymentProvider
+		h.exists("lake-testing-payments", &provider)
+		credentials := apimeta.FindStatusCondition(provider.Status.Conditions, paymentConditionCredentials)
+		if credentials == nil || credentials.Status != metav1.ConditionFalse || !strings.Contains(credentials.Message, "HTTP 401") {
+			t.Fatalf("revoked key Credentials = %+v", credentials)
+		}
+	} else {
+		h.updatePaymentsSecret(map[string]string{"operatorKey": "rk_test_51RefusedOperatorKey"})
+	}
+
+	// The fake client has no garbage collector. Hold the abstract endpoint until its concrete
+	// child's finalizer releases it, as Kubernetes foreground deletion does.
+	var endpoint oramav1alpha1.PaymentWebhookEndpoint
+	if !h.exists("lake-testing-payments", &endpoint) {
+		t.Fatal("no PaymentWebhookEndpoint")
+	}
+	controllerutil.AddFinalizer(&endpoint, "test.orama.cloud/foreground")
+	if err := h.c.Update(h.ctx, &endpoint); err != nil {
+		t.Fatal(err)
+	}
+	var lake oramav1alpha1.Lake
+	lakeKey := types.NamespacedName{Name: "testing"}
+	if err := h.c.Get(h.ctx, lakeKey, &lake); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.c.Delete(h.ctx, &lake); err != nil {
+		t.Fatal(err)
+	}
+	h.reconcileLake()
+	if !h.exists("lake-testing-payments", &endpoint) || endpoint.DeletionTimestamp.IsZero() {
+		t.Fatal("the PaymentWebhookEndpoint is not being deleted")
+	}
+	if !h.exists("lake-testing-payments", &oramav1alpha1.PaymentProvider{}) {
+		t.Fatal("the provider went before the endpoint")
+	}
+	var concrete oramav1alpha1.StripeWebhookEndpoint
+	if !h.exists("lake-testing-payments", &concrete) || concrete.Status.EndpointID == "" {
+		t.Fatal("no configured StripeWebhookEndpoint")
+	}
+	endpointID := concrete.Status.EndpointID
+	if err := h.c.Delete(h.ctx, &concrete); err != nil {
+		t.Fatal(err)
+	}
+	h.exists("lake-testing-payments", &concrete)
+	now := concrete.DeletionTimestamp.Time
+	h.stripeEndpoint.clock.now = func() time.Time { return now }
+	requests := h.stripe.count("GET /v1/webhook_endpoints")
+	result, err := h.stripeEndpoint.Reconcile(h.ctx, ctrl.Request{NamespacedName: h.key("lake-testing-payments")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkProvider {
+		if !h.exists("lake-testing-payments", &concrete) || !controllerutil.ContainsFinalizer(&concrete, paymentWebhookFinalizer) || result.RequeueAfter != paymentRetry {
+			t.Fatalf("within grace: endpoint %+v, requeue %v", concrete.ObjectMeta, result.RequeueAfter)
+		}
+		wantReady(t, concrete, metav1.ConditionFalse, "ProviderNotReady")
+		h.reconcileLake()
+		if err := h.c.Get(h.ctx, lakeKey, &lake); err != nil || !controllerutil.ContainsFinalizer(&lake, lakeZettaFinalizer) {
+			t.Fatalf("the Lake was released within grace: %v", err)
+		}
+		if !h.exists("lake-testing-payments", &oramav1alpha1.PaymentProvider{}) {
+			t.Fatal("the provider went within grace")
+		}
+		if events := eventsOf(recorder); len(events) != 0 {
+			t.Fatalf("events within grace = %v", events)
+		}
+		if h.stripe.count("GET /v1/webhook_endpoints") != requests {
+			t.Fatal("called Stripe with Credentials=False")
+		}
+		now = now.Add(paymentDeleteGrace + time.Second)
+		h.run(h.stripeEndpoint, h.key("lake-testing-payments"))
+	} else if result.RequeueAfter != 0 || h.stripe.count("GET /v1/webhook_endpoints") != requests+1 {
+		t.Fatalf("Stripe 401: requeue %v, list calls %d", result.RequeueAfter, h.stripe.count("GET /v1/webhook_endpoints")-requests)
+	}
+	if h.exists("lake-testing-payments", &oramav1alpha1.StripeWebhookEndpoint{}) {
+		t.Fatal("the StripeWebhookEndpoint was kept after the refused key")
+	}
+	events := eventsOf(recorder)
+	if len(events) != 1 || !strings.HasPrefix(events[0], "Warning EndpointLeftBehind") || !strings.Contains(events[0], "HTTP 401") ||
+		!strings.Contains(events[0], "Stripe webhook endpoint "+endpointID+" was not deleted: delete it in the Stripe Dashboard") {
+		t.Fatalf("events = %v", events)
+	}
+	if remaining := h.stripe.webhookEndpoints(); len(remaining) != 1 || remaining[0].ID != endpointID {
+		t.Fatalf("Stripe endpoints left behind = %+v", remaining)
+	}
+	controllerutil.RemoveFinalizer(&endpoint, "test.orama.cloud/foreground")
+	if err := h.c.Update(h.ctx, &endpoint); err != nil {
+		t.Fatal(err)
+	}
+	h.reconcileLake()
+	h.reconcileLake()
+	if err := h.c.Get(h.ctx, lakeKey, &lake); !apierrors.IsNotFound(err) {
+		t.Fatalf("the Lake remains after payment cleanup: %v", err)
+	}
+	if h.exists("lake-testing-payments", &oramav1alpha1.PaymentWebhookEndpoint{}) ||
+		h.exists("lake-testing-payments", &oramav1alpha1.PaymentProvider{}) {
+		t.Fatal("the PaymentWebhookEndpoint or PaymentProvider was kept")
 	}
 }
 

@@ -187,14 +187,18 @@ again), then:
 
 1. deletes the `PaymentCatalog`; Stripe's products stay;
 2. deletes the `PaymentWebhookEndpoint` in the foreground, so it is gone only once its
-   `StripeWebhookEndpoint`'s finalizer has deleted the Stripe endpoint with the provider's key;
+   `StripeWebhookEndpoint`'s finalizer finishes cleanup;
 3. deletes the `PaymentProvider` once the endpoint is gone.
 
-Deleting the Lake runs the same steps before the Lake's finalizer is released, so the provider never
-goes before the endpoint, and the Stripe endpoint is never left behind. If the provider's
-`Credentials` are not `True`, the endpoint's finalizer waits for them
-([Deleting an endpoint](../infrastructure/payments.md#deleting-an-endpoint)), and so does the
-removal.
+Deleting the Lake runs the same steps before the Lake's finalizer is released. Lake deletion always
+finishes regardless of Stripe's response: endpoint cleanup retries for five minutes from the
+`StripeWebhookEndpoint`'s deletion timestamp, then releases it. A Stripe 401 or 403 releases it
+immediately. A provider whose `Credentials` are not `True` waits only for that grace window.
+
+When cleanup cannot finish, Warning event `EndpointLeftBehind` names the Stripe endpoint ID and
+the reason. A person deletes that endpoint in the Stripe Dashboard. The provider stays until the
+endpoint's finalizer releases it; Kubernetes API errors still retry. See
+[Deleting an endpoint](../infrastructure/payments.md#deleting-an-endpoint) for the cleanup rules.
 
 ## Moving a member from `spec.env` to `spec.payments`
 
