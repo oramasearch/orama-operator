@@ -86,6 +86,14 @@ lake through Clerk's Backend API, writes a production instance's DNS records, an
 environments. See [`clerk.md`](clerk.md) (operator#541), which also lists the one-time dashboard
 steps and the Secrets to create.
 
+## Payments
+
+With `spec.payments` (a Stripe mode and a Secret with the account and two restricted keys), the
+Lake owns a `PaymentProvider`, its own Stripe webhook endpoint at
+`https://<host>/billing/stripe/webhook` and Lake's product catalog, and gets `LAKE_STRIPE_SECRET_KEY`
+and `LAKE_STRIPE_WEBHOOK_SECRET` once all of them are ready and its key has been checked. Until then
+it takes payments through its manual provider. See [`payments.md`](payments.md) (operator#639).
+
 ## Origin TLS
 
 Every Lake Ingress (the Lake's own, its app and preview wildcards, its apps and its environments)

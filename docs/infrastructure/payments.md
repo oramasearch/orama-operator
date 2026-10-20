@@ -14,6 +14,9 @@ edge kinds do ([`README.md`](README.md#abstract-kinds-and-concrete-providers)).
 | `PaymentCatalog` | The provider-neutral request "these products and prices exist in the provider's account". | Built ([operator#638](https://github.com/oramasearch/orama-operator/issues/638)) |
 | `StripeCatalog` | Created and owned by a `PaymentCatalog` of a stripe provider; the only kind that writes Stripe products and prices. | Built (operator#638) |
 
+A Lake with `spec.payments` owns a provider, a webhook endpoint and a catalog, all made
+from its Secret ([`../lake/payments.md`](../lake/payments.md), operator#639).
+
 The code is `internal/controller/paymentprovider_controller.go`,
 `paymentwebhookendpoint_controller.go`, `stripewebhookendpoint_controller.go`,
 `paymentcatalog_controller.go` and `stripecatalog_controller.go`, and the Stripe client the payment

@@ -90,6 +90,20 @@ reference rows the operator seeds into its control database
 empty: no test-mode prices exist yet, so its plans carry no Stripe prices and it has no add-on
 prices. `v1-prod` needs its live-mode IDs before billing works on it.
 
+A Lake's `spec.payments` ([`docs/lake/payments.md`](../../docs/lake/payments.md)) names a Stripe
+Secret with keys `accountID`, `operatorKey` and `appKey`, one per Stripe environment
+([orama-bridge#201](https://github.com/oramasearch/orama-bridge/issues/201)). Restricted keys can only
+be made in the Stripe Dashboard, so a person creates these Secrets on the managing cluster, with
+Steve's consent, and a set copies a member's Secret into its namespace. None exists yet.
+
+| Secret | Namespace | Stripe environment |
+|---|---|---|
+| `stripe-dev` | `lake` | the `dev` sandbox |
+| `stripe-testing` | `lake` | the `testing` sandbox |
+| `stripe-staging` | `lake` | the `staging` sandbox |
+| `stripe-live` | `lake` | live mode, for `lake-prod` |
+| `stripe-v1-dev` | `orama-system` | the `dev` sandbox, for `v1-dev` |
+
 Both v1 sets run the combined OramaCore engine from the private
 `oramasearch/oramacore-cloud-v1`, set by tag in each template's `images.overrides.oramacore`: v1.2.39
 plus oramacore#340 and #341, which serve `GET /health/ready`, the readers' readiness probe (#597).
