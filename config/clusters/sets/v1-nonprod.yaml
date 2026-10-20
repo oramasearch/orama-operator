@@ -55,6 +55,7 @@ spec:
       runID: pilot-1
       step: seed                            # plan Succeeded 2026-10-20; next apply: true, catchUp, verify
       attempt: 1                            # attempt 0 Blocked: strict schema check, Prod 1 reader /health
+      apply: true                           # the dry run (attempt 1) Succeeded 2026-10-20; this writes v1-dev
       evidenceSecretRef: {name: team-4e01bc49-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:c279c4fce29b8e2d0330eaa488a182168666d4d352fd0fd092220b02a3d9e718  # dev-97c5b2d1
       pullSecretName: oramasearch-dockerhub
