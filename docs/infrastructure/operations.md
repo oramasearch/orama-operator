@@ -169,7 +169,12 @@ replaces:
 ```
 
 **Remove a member**: delete it from the list. With the default `deletionPolicy: Retain` the
-instance keeps running and is no longer managed. Only `deletionPolicy: Delete` deletes it.
+instance keeps running and is no longer managed. Only `deletionPolicy: Delete` deletes it. A
+member's migrations go with it, and are deleted first.
+
+**Copy a Prod 1 team into a v1 member**: add an entry to the set's `spec.migrations`, and change its
+`step` one commit at a time; see
+[`config/clusters/README.md`](../../config/clusters/README.md#copying-a-prod-1-team-into-a-member).
 
 **What a set will refuse**, with the reason in its `Message`:
 
@@ -178,6 +183,9 @@ instance keeps running and is no longer managed. Only `deletionPolicy: Delete` d
 - two members on one cluster with the same name or namespace;
 - a `LakeSet` whose template or member `spec` sets `namespace` (use the member's `namespace` field);
 - an `OramaCloudV1Set` member whose `spec` sets a `region.name` other than its cluster's region;
+- a migration that names no member, or a name two members share (the API server refuses it), whose
+  `spec.targetRef` is not its member, that would move to another member, or whose Secret the stack
+  already gets or another migration copies from another source (on the migration, as `Blocked`);
 - an instance of the same name on the cluster that the set did not create.
 
 **Check a set**:

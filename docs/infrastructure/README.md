@@ -496,6 +496,11 @@ Further behavior:
   set's label is an error, and is neither changed nor deleted.
 - **Per-instance keys are never copied.** A Lake's instance key and sealing key are generated on
   its own cluster; only the Secrets a set lists travel.
+- **An `OramaCloudV1Set` also declares team migrations** into its members (`spec.migrations`,
+  [#654](https://github.com/oramasearch/orama-operator/issues/654)): each is applied as an
+  `OramaCloudV1Migration` in its member's namespace, after the member, and reported in the set's
+  `status.migrations`. A member leaving the set, or the set being deleted, waits for its migrations
+  to be gone. See [`cloud-v1-migration.md`](../cloud-v1-migration.md#declared-in-the-set-oramacloudv1set).
 
 [`config/samples/lakeset-nonprod.yaml`](../../config/samples/lakeset-nonprod.yaml) is a nonprod set
 with two environments.

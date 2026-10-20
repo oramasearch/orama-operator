@@ -212,11 +212,18 @@ type memberState struct {
 	Object *unstructured.Unstructured
 }
 
-// leafMemberApplier applies, reads and deletes one instance on a cluster reached by a kubeconfig.
-// The set controllers hold one as an injected dependency; tests give a fake.
+// leafMemberApplier applies, reads and deletes one instance, or one OramaCloudV1Set migration, on a
+// cluster reached by a kubeconfig. The set controllers hold one as an injected dependency; tests
+// give a fake.
 type leafMemberApplier interface {
 	ApplyMember(ctx context.Context, kubeconfig []byte, req memberRequest) (memberState, error)
 	DeleteMember(ctx context.Context, kubeconfig []byte, req memberRequest) error
+	// ApplyMigration applies an OramaCloudV1Migration and its Secrets as ApplyMember applies an
+	// instance. A refused apply returns the migration the cluster still has with the error.
+	ApplyMigration(ctx context.Context, kubeconfig []byte, req memberRequest) (memberState, error)
+	// DeleteMigration deletes one, and once it is gone the Secrets named in req.Secrets. While its
+	// finalizer keeps it, the state's Object is the migration; nil means it is gone.
+	DeleteMigration(ctx context.Context, kubeconfig []byte, req memberRequest) (memberState, error)
 }
 
 type clientMemberApplier struct{}
@@ -256,7 +263,9 @@ func applyMemberWith(ctx context.Context, c client.Client, req memberRequest) (m
 		if owner := existing.GetLabels()[managedBySetLabel]; owner != req.Owner {
 			return memberState{Object: existing}, fmt.Errorf("%s %s on the cluster %w (its %s label is %q)", req.Kind.Kind, req.Name, errNotManagedBySet, managedBySetLabel, owner)
 		}
-	case !apierrors.IsNotFound(err):
+	case apierrors.IsNotFound(err):
+		existing = nil
+	default:
 		return memberState{}, fmt.Errorf("%s %s cannot be read on the cluster: %w", req.Kind.Kind, req.Name, err)
 	}
 	// The namespace, then the Secrets, then the instance: an instance whose pull secret or
@@ -267,7 +276,7 @@ func applyMemberWith(ctx context.Context, c client.Client, req memberRequest) (m
 	for _, source := range req.Secrets {
 		sec := &corev1.Secret{}
 		sec.APIVersion, sec.Kind = "v1", "Secret"
-		sec.Name, sec.Namespace = source.Name, req.Namespace
+		sec.Name, sec.Namespace, sec.Labels = source.Name, req.Namespace, source.Labels
 		sec.Type, sec.Data = source.Type, source.Data
 		if err := c.Patch(ctx, sec, client.Apply, client.FieldOwner(leafFieldOwner), client.ForceOwnership); err != nil {
 			return memberState{}, fmt.Errorf("the cluster refused Secret %s/%s: %w", req.Namespace, source.Name, err)
@@ -277,7 +286,8 @@ func applyMemberWith(ctx context.Context, c client.Client, req memberRequest) (m
 	desired.SetLabels(map[string]string{managedBySetLabel: req.Owner})
 	desired.Object["spec"] = req.Spec
 	if err := c.Patch(ctx, desired, client.Apply, client.FieldOwner(leafFieldOwner), client.ForceOwnership); err != nil {
-		return memberState{}, fmt.Errorf("the cluster refused %s %s: %w", req.Kind.Kind, req.Name, err)
+		// What the cluster has is left as it was, and returned with the refusal.
+		return memberState{Object: existing}, fmt.Errorf("the cluster refused %s %s: %w", req.Kind.Kind, req.Name, err)
 	}
 	return memberState{Object: desired}, nil
 }
@@ -318,6 +328,8 @@ type managedSetReconciler struct {
 	client.Client
 	kind    setKind
 	applier leafMemberApplier
+	// migrations copies Prod 1 teams into an OramaCloudV1Set's members; nil for a LakeSet.
+	migrations *setMigrations
 }
 
 // resolvedMember is a member with everything worked out from the set and its cluster.
@@ -341,10 +353,7 @@ func (r *managedSetReconciler) resolve(ctx context.Context, spec *oramav1alpha1.
 	purposes := map[string][]string{}
 	var purpose string
 	for _, member := range spec.Clusters {
-		namespace := member.Namespace
-		if namespace == "" {
-			namespace = r.kind.namespacePrefix + member.Name
-		}
+		namespace := r.kind.namespaceOf(member)
 		if key := member.ClusterRef + "/" + member.Name; names[key] {
 			return nil, "", &setError{"DuplicateMember", fmt.Sprintf("two members are named %s on cluster %s", member.Name, member.ClusterRef)}
 		} else {
@@ -383,6 +392,11 @@ func (r *managedSetReconciler) resolve(ctx context.Context, spec *oramav1alpha1.
 	return members, purpose, nil
 }
 
+// namespaceOf is a member's own namespace on its cluster.
+func (k setKind) namespaceOf(member oramav1alpha1.SetMember) string {
+	return firstNonEmpty(member.Namespace, k.namespacePrefix+member.Name)
+}
+
 func dedupe(sorted []string) []string {
 	var out []string
 	for i, value := range sorted {
@@ -396,15 +410,23 @@ func dedupe(sorted []string) []string {
 // secretsFor reads the Secrets a member gets: the set's, with the member's own replacing any of
 // the same name on the member's cluster.
 func (r *managedSetReconciler) secretsFor(ctx context.Context, spec *oramav1alpha1.ManagedSetSpec, member oramav1alpha1.SetMember) ([]*corev1.Secret, error) {
-	target := func(s oramav1alpha1.SetSecret) string { return firstNonEmpty(s.As, s.Name) }
+	return r.copySecrets(ctx, spec.Secrets, member.Secrets)
+}
+
+// secretTarget is a SetSecret's name on the member's cluster.
+func secretTarget(s oramav1alpha1.SetSecret) string { return firstNonEmpty(s.As, s.Name) }
+
+// copySecrets reads the named Secrets on this cluster, each named as it is to be on the member's
+// cluster. One in a later list replaces one of the same name there in an earlier list.
+func (r *managedSetReconciler) copySecrets(ctx context.Context, lists ...[]oramav1alpha1.SetSecret) ([]*corev1.Secret, error) {
 	chosen := map[string]oramav1alpha1.SetSecret{}
 	var order []string
-	for _, list := range [][]oramav1alpha1.SetSecret{spec.Secrets, member.Secrets} {
+	for _, list := range lists {
 		for _, ref := range list {
-			if _, seen := chosen[target(ref)]; !seen {
-				order = append(order, target(ref))
+			if _, seen := chosen[secretTarget(ref)]; !seen {
+				order = append(order, secretTarget(ref))
 			}
-			chosen[target(ref)] = ref
+			chosen[secretTarget(ref)] = ref
 		}
 	}
 	secrets := make([]*corev1.Secret, 0, len(order))
@@ -424,10 +446,15 @@ func (r *managedSetReconciler) secretsFor(ctx context.Context, spec *oramav1alph
 	return secrets, nil
 }
 
+// owner is the managedBySetLabel value on what the set applies.
+func (r *managedSetReconciler) owner(set managedSet) string {
+	return r.kind.setKindName + "." + set.GetName()
+}
+
 func (r *managedSetReconciler) request(set managedSet, resolved resolvedMember) memberRequest {
 	req := memberRequest{
 		Kind: r.kind.instance, CRD: r.kind.crd, Name: resolved.member.Name, Namespace: resolved.namespace,
-		Owner: r.kind.setKindName + "." + set.GetName(),
+		Owner: r.owner(set),
 	}
 	if r.kind.namespaced {
 		req.ObjectNamespace = resolved.namespace
@@ -469,8 +496,15 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 		return ctrl.Result{}, err
 	}
 
+	// Migrations the set no longer declares are deleted first: a member leaving the set waits for
+	// the ones at its place.
+	var migrationsAt map[string]bool
+	if r.migrations != nil {
+		migrationsAt = r.migrations.removeUndeclared(ctx, r)
+	}
 	// Members that were in the set and no longer are.
-	if err := r.release(ctx, set, members, observed); err != nil {
+	held, err := r.release(ctx, set, members, observed, migrationsAt)
+	if err != nil {
 		setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), clusterPhaseDegraded, "RemovalFailed", err.Error())
 		if statusErr := r.writeStatus(ctx, set, observed); statusErr != nil {
 			return settle(ctrl.Result{}, statusErr)
@@ -506,24 +540,37 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 		}
 		statuses = append(statuses, entry)
 	}
-	status.MemberStatuses = statuses
+	status.MemberStatuses = append(statuses, held...)
 	status.Members, status.ReadyMembers = int32(len(members)), ready
 	status.ObservedGeneration = set.GetGeneration()
 
+	phase, reason, requeue := setPhaseProgressing, "MembersNotReady", leafOperatorPollInterval
+	message := fmt.Sprintf("%d of %d members are Ready; not Ready: %s", ready, len(members), strings.Join(notReady, "; "))
 	switch {
 	case firstErr != nil:
-		setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), clusterPhaseDegraded, "MemberFailed", firstErr.Error())
-		if statusErr := r.writeStatus(ctx, set, observed); statusErr != nil {
-			return settle(ctrl.Result{}, statusErr)
-		}
-		return ctrl.Result{}, firstErr
+		phase, reason, message = clusterPhaseDegraded, "MemberFailed", firstErr.Error()
 	case int(ready) == len(members):
-		setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), clusterPhaseReady, "AllMembersReady", "")
-		return settle(ctrl.Result{RequeueAfter: leafOperatorSteadyRecheck}, r.writeStatus(ctx, set, observed))
+		phase, reason, message, requeue = clusterPhaseReady, "AllMembersReady", "", leafOperatorSteadyRecheck
 	}
-	message := fmt.Sprintf("%d of %d members are Ready; not Ready: %s", ready, len(members), strings.Join(notReady, "; "))
-	setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), setPhaseProgressing, "MembersNotReady", message)
-	return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.writeStatus(ctx, set, observed))
+	if r.migrations != nil {
+		// After the members, since a migration needs its stack. They do not change the set's phase;
+		// what the set could not do with one is added to its message, and returned.
+		r.migrations.apply(ctx, r, members, statuses)
+		if problems := r.migrations.problems; len(problems) > 0 {
+			message = strings.TrimPrefix(message+"; "+strings.Join(problems, "; "), "; ")
+		}
+		if r.migrations.busy {
+			requeue = leafOperatorPollInterval
+		}
+		if firstErr == nil {
+			firstErr = r.migrations.err
+		}
+	}
+	setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), phase, reason, message)
+	if err := r.writeStatus(ctx, set, observed); err != nil {
+		return settle(ctrl.Result{}, err)
+	}
+	return settle(ctrl.Result{RequeueAfter: requeue}, firstErr)
 }
 
 // applyMember brings one member to its settings and fills in its status. It returns whether the
@@ -590,24 +637,32 @@ func memberSpec(template map[string]any, resolved resolvedMember) (map[string]an
 }
 
 // release handles members that were in the set's status and are no longer in its spec. Under
-// Retain they are let go; under Delete their instances are deleted from their clusters.
-func (r *managedSetReconciler) release(ctx context.Context, set managedSet, members []resolvedMember, observed *oramav1alpha1.ManagedSetStatus) error {
+// Retain they are let go; under Delete their instances are deleted from their clusters, each once
+// no migration is left at its place (migrationsAt, by cluster/namespace). It returns the members
+// still waiting for theirs, which stay in the status until they are deleted.
+func (r *managedSetReconciler) release(ctx context.Context, set managedSet, members []resolvedMember, observed *oramav1alpha1.ManagedSetStatus, migrationsAt map[string]bool) ([]oramav1alpha1.SetMemberStatus, error) {
 	if set.SetSpec().DeletionPolicy != oramav1alpha1.SetDeletionDelete {
-		return nil
+		return nil, nil
 	}
 	current := map[string]bool{}
 	for _, resolved := range members {
 		current[resolved.member.ClusterRef+"/"+resolved.member.Name] = true
 	}
+	var held []oramav1alpha1.SetMemberStatus
 	for _, previous := range observed.MemberStatuses {
 		if current[previous.Cluster+"/"+previous.Name] {
 			continue
 		}
+		if migrationsAt[previous.Cluster+"/"+previous.Namespace] {
+			previous.Phase, previous.Message = clusterPhaseDeleting, "waiting for its migrations to be removed first"
+			held = append(held, previous)
+			continue
+		}
 		if err := r.deleteMember(ctx, set, previous); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return held, nil
 }
 
 func (r *managedSetReconciler) deleteMember(ctx context.Context, set managedSet, member oramav1alpha1.SetMemberStatus) error {
@@ -632,6 +687,21 @@ func (r *managedSetReconciler) finalize(ctx context.Context, set managedSet, obs
 		return ctrl.Result{}, nil
 	}
 	status := set.SetStatus()
+	// Migrations go first and the members wait for them: a stack deleted under its migration would
+	// skip the migration's removal and its guard for a switched team.
+	if r.migrations != nil {
+		if waiting := r.migrations.removeAll(ctx, r); waiting != "" || r.migrations.err != nil {
+			reason, message := "RemovingMigrations", "waiting for its migrations to be removed: "+waiting
+			if r.migrations.err != nil {
+				reason, message = "DeleteFailed", r.migrations.err.Error()
+			}
+			setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), clusterPhaseDeleting, reason, message)
+			if statusErr := r.writeStatus(ctx, set, observed); statusErr != nil {
+				return settle(ctrl.Result{}, statusErr)
+			}
+			return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.migrations.err)
+		}
+	}
 	if set.SetSpec().DeletionPolicy == oramav1alpha1.SetDeletionDelete {
 		for _, member := range observed.MemberStatuses {
 			if err := r.deleteMember(ctx, set, member); err != nil {
@@ -649,13 +719,17 @@ func (r *managedSetReconciler) finalize(ctx context.Context, set managedSet, obs
 
 // writeStatus patches the status only when it differs from what was read.
 func (r *managedSetReconciler) writeStatus(ctx context.Context, set managedSet, observed *oramav1alpha1.ManagedSetStatus) error {
-	if reflect.DeepEqual(set.SetStatus(), observed) {
-		return nil
-	}
-	// A patch of what changed, with no version precondition: this controller is the only writer
-	// of this status, so a read that is one write behind must not make the write fail.
+	// The set as read: this one with the status it had. A patch of what changed, with no version
+	// precondition: this controller is the only writer of this status, so a read that is one write
+	// behind must not make the write fail.
 	base := set.DeepCopyObject().(managedSet)
 	*base.SetStatus() = *observed.DeepCopy()
+	if r.migrations != nil {
+		r.migrations.restore(base)
+	}
+	if reflect.DeepEqual(base, set) {
+		return nil
+	}
 	return r.Status().Patch(ctx, set, client.MergeFrom(base))
 }
 
@@ -667,7 +741,8 @@ type LakeSetReconciler struct {
 	Applier leafMemberApplier
 }
 
-// OramaCloudV1SetReconciler installs OramaCloudV1 instances onto managed clusters (operator#391).
+// OramaCloudV1SetReconciler installs OramaCloudV1 instances onto managed clusters (operator#391),
+// and copies Prod 1 teams into them (operator#654).
 type OramaCloudV1SetReconciler struct {
 	client.Client
 	Scheme  *runtime.Scheme
@@ -700,7 +775,8 @@ func (r *OramaCloudV1SetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, req.NamespacedName, &set); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	return (&managedSetReconciler{Client: r.Client, kind: oramaCloudV1SetKind, applier: applierOr(r.Applier)}).reconcile(ctx, &set)
+	return (&managedSetReconciler{Client: r.Client, kind: oramaCloudV1SetKind, applier: applierOr(r.Applier),
+		migrations: &setMigrations{set: &set, observed: set.Status.DeepCopy()}}).reconcile(ctx, &set)
 }
 
 // setsForCluster maps a KubernetesCluster to the sets with a member on it, so a cluster becoming
