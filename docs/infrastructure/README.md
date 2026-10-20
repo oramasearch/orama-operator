@@ -202,7 +202,7 @@ A general rule for every kind in this work, and for the operator from here on.
 | `DnsRecord` | `CloudflareDnsRecord` | Another DNS provider |
 | `ServiceMesh` | `IstioServiceMesh` | Another mesh |
 | `EdgeZonePolicy` | `CloudflareZonePolicy` | Another CDN or edge provider |
-| `PaymentWebhookEndpoint` (not built yet) | `StripeWebhookEndpoint` | Another payment provider |
+| `PaymentWebhookEndpoint` | `StripeWebhookEndpoint` | Another payment provider |
 
 ### A provider is its own resource
 
@@ -217,7 +217,7 @@ provider."*
 | `KubernetesCluster` | a `KubernetesClusterProvider` (of type AKS) | `AksCluster` |
 | `ServiceMesh` | a mesh provider (of type Istio) | `IstioServiceMesh` |
 | `EdgeZonePolicy` | an `EdgeProvider` (of type cloudflare) | `CloudflareZonePolicy` ([`../lake/origin-tls.md`](../lake/origin-tls.md)) |
-| `PaymentWebhookEndpoint` (not built yet) | a `PaymentProvider` (of type stripe) | `StripeWebhookEndpoint` ([`payments.md`](payments.md)) |
+| `PaymentWebhookEndpoint` | a `PaymentProvider` (of type stripe) | `StripeWebhookEndpoint` ([`payments.md`](payments.md)) |
 
 ```
 KubernetesCluster ──providerRef──▶ KubernetesClusterProvider (type: aks)

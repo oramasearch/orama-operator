@@ -58,6 +58,8 @@ rules:
       - edgezonepolicies
       - cloudflarezonepolicies
       - paymentproviders
+      - paymentwebhookendpoints
+      - stripewebhookendpoints
     verbs: ["*"]
   - apiGroups: ["orama.cloud"]
     resources:
@@ -125,6 +127,9 @@ rules:
       - edgezonepolicies/status
       - cloudflarezonepolicies/status
       - paymentproviders/status
+      - paymentwebhookendpoints/status
+      - stripewebhookendpoints/status
+      - stripewebhookendpoints/finalizers
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]

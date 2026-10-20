@@ -865,6 +865,43 @@ The check, its reasons and the Secret it reads are in
 The key is checked every hour, and a minute after a Stripe error or while the Secret is missing.
 Status is written only when the condition changes.
 
+## `PaymentWebhookEndpoint` (separate CRD, namespaced) — deliver an app's payment events to a URL
+
+Principle 10's abstract kind for webhook endpoints (operator#637). For a `stripe` provider it keeps
+an owned `StripeWebhookEndpoint` of the same name, with the same spec and the provider's key, and
+copies back its `Ready` condition and endpoint ID; it calls no vendor itself. One per app per host:
+each endpoint has its own signing secret. Short name `paywh`; `kubectl get paywh -A` shows `App`,
+`URL`, `Endpoint`, `Ready`, `Reason`. The lifecycle is in
+[`infrastructure/payments.md`](infrastructure/payments.md#webhook-endpoints).
+
+| Field | Meaning |
+|---|---|
+| `spec.providerRef.name` | A `PaymentProvider` in this namespace. |
+| `spec.url` | Where the events go. `https://` only. |
+| `spec.events` | The event types the app handles (`invoice.paid`, ...), at least one. Sent sorted and deduplicated. |
+| `spec.apiVersion` | The payload version the app parses (Lake: `2024-06-20`). Stripe cannot change it on an endpoint, so a new value replaces the endpoint and its signing secret. |
+| `spec.app` | `cloud_v1` or `lake`: the endpoint's `metadata[orama_app]`. |
+| `spec.signingSecretName` | The Secret, in this namespace, that receives the signing secret under key `signingSecret`. The operator owns it. |
+| `status.endpointId` | The vendor's endpoint ID (`we_...`). |
+| `status.conditions[Ready]` | Copied from the concrete kind: `True` with reason `Configured`; `False` with `ProviderNotReady`, `URLTaken`, `SigningSecretTaken` or `StripeAPIError`. `False`/`Progressing` until the concrete kind has reported on its current spec. |
+
+## `StripeWebhookEndpoint` (separate CRD, namespaced) — one Stripe webhook endpoint and its signing secret
+
+Created and owned by a `PaymentWebhookEndpoint` of a `stripe` provider; a person never writes one.
+The only kind that calls Stripe's webhook API. Short name `stripewh`, with the same columns as
+`paywh`. Finalizer `orama.cloud/payment-webhook-cleanup` deletes the Stripe endpoint first.
+
+| Field | Meaning |
+|---|---|
+| `spec.*` | The `PaymentWebhookEndpoint`'s spec, unchanged. |
+| `spec.apiKeySecretRef` | The provider's key Secret and key, copied from `PaymentProvider.spec.stripe.apiKeySecretRef`. |
+| `status.endpointId` | The Stripe endpoint (`we_...`). |
+| `status.writes` | How many creates and updates Stripe has answered for this object, a 5xx included: the attempt suffix of the next idempotency key. |
+| `status.conditions[Ready]` | `True`/`Configured`; `False` with `ProviderNotReady` (the provider's `Credentials` are not `True` for its current spec, or its key is missing), `URLTaken` (another endpoint delivers to the URL; its ID is in the message), `SigningSecretTaken` (another controller owns the signing Secret) or `StripeAPIError`. |
+
+Stripe is called every hour, and a minute after a failure; a changed spec or key, or a lost signing
+Secret, is acted on at once. Status is written only when it changes.
+
 ## `CloudflareLoadBalancer` (separate CRD) — the global geo-LB
 
 Owns a Cloudflare **global Load Balancer** ([operator#73](https://github.com/oramasearch/orama-operator/issues/73)):
