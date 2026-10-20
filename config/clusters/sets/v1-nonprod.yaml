@@ -33,47 +33,44 @@ spec:
   deletionPolicy: Retain
   # Prod 1 teams copied into the members (operator#654; config/clusters/README.md, "Copying a Prod 1
   # team into a member"). Each entry becomes an OramaCloudV1Migration named `name` in its member's
-  # namespace, with targetRef set to the member. Each step change is applied only with Steve's
-  # consent. The four Secrets below must exist in orama-system on the managing cluster first.
-  migrations:
-  # The #149 pilot (orama-bridge#206): one team, one project, 330 documents, copied into v1-dev,
-  # verified, then removed by deleting this entry (removeOnDelete runs the tool's remove-target).
-  - name: team-4e01bc49
-    member: v1-dev
-    secrets:                                # copied into v1-dev first, deleted once the migration is gone
-    - name: v1-nonprod-prod1-db-ro          # url: the SELECT-only PlanetScale URL
-      namespace: orama-system
-    - name: v1-nonprod-prod1-master-key     # key: Prod 1's engine master key
-      namespace: orama-system
-    - name: v1-nonprod-prod1-settings-ssm   # access_key_id, secret_access_key: the SSM document's IAM key
-      namespace: orama-system
-    - name: team-4e01bc49-evidence          # isolation.json: the reviewed isolation receipt
-      namespace: orama-system
-    spec:                                   # an OramaCloudV1Migration's spec, without targetRef
-      teamID: 4e01bc49-b388-43c2-8986-2395a0b8fe52
-      projectIDs: [a0d16f69-1a49-4659-8a60-008886765691]
-      runID: pilot-1
-      step: plan                            # then seed, seed with apply: true, catchUp, verify
-      evidenceSecretRef: {name: team-4e01bc49-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:5195b606e7eb48521b21d187b9ea62882d82b4757bb8edfa2908744c4a95f5ae  # dev-e066a1c0
-      pullSecretName: oramasearch-dockerhub
-      removeOnDelete: true
-      # Fixed once applied. The revisions are the labels the run binds to and the isolation receipt
-      # names: Prod 1's writer build and its control DB catalog.
-      source:
-        databaseSecretRef: {name: v1-nonprod-prod1-db-ro, key: url}
-        databaseHost: aws-us-east-2-1.pg.psdb.cloud
-        writerURL: https://writer.bovista.cluster.oramacore.com
-        readerURL: https://collections.orama.com
-        masterKeySecretRef: {name: v1-nonprod-prod1-master-key, key: key}
-        deploymentRevision: oramacore@1.2.39+890a7e9761dfec61ea8567dcab92b4df737318a2
-        schemaRevision: pg17.11-drizzle-push-catalog-sha256:d995b5cb539d
-        settings:
-          region: us-east-2
-          instanceID: i-0b9478719a8f91e2b
-          document: OramaMigrationReadIndexInfo
-          dataDir: /opt/oramacore/.data/writer
-          credentialsSecretRef: {name: v1-nonprod-prod1-settings-ssm}
+  # namespace, with targetRef set to the member. The pilot (orama-bridge#206) uncomments this once
+  # the four Secrets exist in orama-system and the image's digest is known; it is applied only with
+  # Steve's consent, and so is every later step change.
+  # migrations:
+  # - name: team-4e01bc49
+  #   member: v1-dev
+  #   secrets:                                # copied into v1-dev first, deleted once the migration is gone
+  #   - name: v1-nonprod-prod1-db-ro          # url: the SELECT-only PlanetScale URL
+  #     namespace: orama-system
+  #   - name: v1-nonprod-prod1-master-key     # key: Prod 1's engine master key
+  #     namespace: orama-system
+  #   - name: v1-nonprod-prod1-settings-ssm   # access_key_id, secret_access_key: the SSM document's IAM key
+  #     namespace: orama-system
+  #   - name: team-4e01bc49-evidence          # isolation.json: the reviewed isolation receipt
+  #     namespace: orama-system
+  #   spec:                                   # an OramaCloudV1Migration's spec, without targetRef
+  #     teamID: 4e01bc49-b388-43c2-8986-2395a0b8fe52
+  #     projectIDs: [a0d16f69-1a49-4659-8a60-008886765691]
+  #     runID: pilot-1
+  #     step: plan                            # then seed, seed with apply: true, catchUp, verify
+  #     evidenceSecretRef: {name: team-4e01bc49-evidence, key: isolation.json}
+  #     image: docker.io/oramasearch/cloud-v1-migration@sha256:<digest>
+  #     pullSecretName: oramasearch-dockerhub
+  #     removeOnDelete: true
+  #     source:
+  #       databaseSecretRef: {name: v1-nonprod-prod1-db-ro, key: url}
+  #       databaseHost: <the host in that URL>
+  #       writerURL: https://<Prod 1's writer host>
+  #       readerURL: https://<Prod 1's reader host>
+  #       masterKeySecretRef: {name: v1-nonprod-prod1-master-key, key: key}
+  #       deploymentRevision: v1.2.39
+  #       schemaRevision: 890a7e97
+  #       settings:
+  #         region: us-east-2
+  #         instanceID: i-0b9478719a8f91e2b
+  #         document: OramaMigrationReadIndexInfo
+  #         dataDir: /opt/oramacore/.data/writer
+  #         credentialsSecretRef: {name: v1-nonprod-prod1-settings-ssm}
   secrets:
   - name: oramasearch-dockerhub
     namespace: orama-system
