@@ -756,6 +756,11 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
     `RowPresent`). It does not change the phase. `RowPresent` reports the Job, not a live read of the
     table: the Job is not re-run, so a control DB emptied later (a restore) still shows it, and its
     message says so.
+  - **Network.** The Job's pod keeps `app.kubernetes.io/component=controldb` (teardown deletes the
+    Job by it) and carries `orama.cloud/controldb-client=cluster-row`. The stack's network sandbox
+    lets that pod, and only this stack's, reach the CNPG pods on 5432 (`allow-controldb-cluster-row-egress`
+    and `allow-controldb-ingress`); without them the Job waits for the database forever
+    ([#648](https://github.com/oramasearch/orama-operator/issues/648)).
 
 ### The control DB's schema
 

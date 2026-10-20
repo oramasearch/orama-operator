@@ -258,7 +258,7 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-index-builder-egress` | Index builder reaches dashboard 3000, cache 6379, control DB 5432, DISCO 8080/50051, Typesense 8108, decrypter 8080 and HARVEST 8080. |
 | `allow-harvest-egress` | HARVEST reaches Mongo 27017, broker 5672, cache 6379 and Selenium 4444. |
 | `allow-disco-egress`, `allow-pgadmin-egress`, `allow-search-workers-egress` | DISCO reaches embeddings; pgAdmin reaches control DB; hosted-search workers reach Typesense, writer/readers and ClickHouse. |
-| `allow-controldb-ingress`, `allow-postgres-schema-egress`, `allow-controldb-internal` | Selected clients and the schema job reach control DB 5432; CNPG members use 5432/8000 internally. |
+| `allow-controldb-ingress`, `allow-postgres-schema-egress`, `allow-controldb-cluster-row-egress`, `allow-controldb-internal` | Selected clients, every control DB `PostgresSchema` migration Job and the cluster-row Job (its pod's `orama.cloud/controldb-client=cluster-row`, [#648](https://github.com/oramasearch/orama-operator/issues/648)) reach control DB 5432; CNPG members use 5432/8000 internally. |
 | `allow-cache-ingress`, `allow-analytics-ingress`, `allow-search-ingress` | Each store admits only its listed client component selectors on 6379, 8123 or 8108. |
 | `allow-writer-ingress`, `allow-reader-ingress` | OramaCore admits only the dashboard, workers, analytics processor and named hosted-search clients on its service ports. |
 | `allow-dashboard-internal-ingress`, `allow-disco-ingress`, `allow-openai-decrypter-ingress`, `allow-harvest-master-ingress` | Index builder reaches each orchestration API on its declared port. |

@@ -138,6 +138,13 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	postgresSchema := metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 		{Key: "orama.cloud/postgresschema", Operator: metav1.LabelSelectorOpIn, Values: schemaNames},
 	}}
+	// The cluster-row Job inserts the stack's c1 row (operator#648). It is not a PostgresSchema Job,
+	// so it has its own label; the instance label keeps another stack's Job out.
+	clusterRowJob := metav1.LabelSelector{MatchLabels: map[string]string{
+		"app.kubernetes.io/name":     appName,
+		"app.kubernetes.io/instance": oc.Name,
+		controlDBClientLabel:         controlDBClusterRowClient,
+	}}
 	cnpgPods := metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 		{
 			Key:      "cnpg.io/cluster",
@@ -271,18 +278,23 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"Control Postgres accepts application, migration and replication clients declared by this stack.",
+			"Control Postgres accepts application, migration, cluster-row Job and replication clients declared by this stack.",
 			oramaCloudIngressPolicy(
 				"allow-controldb-ingress",
 				cnpgPods,
 				ingressFrom(oramaCloudComponentSelector(oc, "dashboard", "index-builder", "analytics-processor", "pgadmin"), 5432),
 				ingressFrom(postgresSchema, 5432),
+				ingressFrom(clusterRowJob, 5432),
 				ingressFrom(cnpgPods, 5432, 8000),
 			),
 		),
 		sandboxAllowance(
 			"PostgresSchema applies the dashboard schema to control Postgres.",
 			oramaCloudEgressPolicy("allow-postgres-schema-egress", postgresSchema, egressTo(cnpgPods, 5432)),
+		),
+		sandboxAllowance(
+			"The cluster-row Job inserts the stack's c1 oramacore_clusters row into control Postgres.",
+			oramaCloudEgressPolicy("allow-controldb-cluster-row-egress", clusterRowJob, egressTo(cnpgPods, 5432)),
 		),
 		sandboxAllowance(
 			"Cache accepts Redis clients from dashboard, index builder, workers and HARVEST.",
