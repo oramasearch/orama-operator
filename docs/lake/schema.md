@@ -8,16 +8,26 @@ Job and pods to disappear. This is a metadata upgrade, not a schema version chan
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` commit de037d1fb68d153c5a331a6f5d789fdad7e85c73](https://github.com/oramasearch/lake/blob/de037d1fb68d153c5a331a6f5d789fdad7e85c73/db/schema.sql)
-(lake `dev` after v0.2.0, through `0088_repository_liquid_ids` (lake#805): `repositories.liquid_id`,
-its index and `repository_liquid_ids_guard`, so a deployment row naming liquid's repository id is
-matched. Before it, `0086_identity_links` (lake#762) and `0087_clerk_webhooks` (lake#765)).
-Its SHA-256 is `dbb4c7ae2465a396fd7cb16a91ac62e09ff6a7ed02e03bdbc275885995d86ac9`. Re-pin to lake `main` at its next release.
+[`oramasearch/lake` commit 00764a0dc4722749e29c51614da70b5e5a2fa2aa](https://github.com/oramasearch/lake/blob/00764a0dc4722749e29c51614da70b5e5a2fa2aa/db/schema.sql),
+the head of lake#864's branch `thatjuan/billing-contact`, through `0090_billing_contacts` (lake#857):
+the `billing_contacts` table and `billing_contacts_guard`. Before it, `0089_cloud_orders` (lake#831):
+`cloud_orders`, `cloud_order_events` and `cloud_orders_guard`. **This commit is not on lake `dev`.**
+Move the pin to lake#864's merge commit once it merges
+([#656](https://github.com/oramasearch/orama-operator/issues/656)).
+Its SHA-256 is `93e4e099f7520187cce521bd97af243233c5fd27cb5cf397b38311d6c442d539`. Re-pin to lake `main` at its next release.
 The adjacent `lake-schema.source.json` records the repository, path, commit, and digest.
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
+
+Migration `0090_billing_contacts` (lake#857, lake#864) adds `billing_contacts`, written by lake
+alone: one row per account with the email, name and address its invoices carry, with guard
+`billing_contacts_guard`. Migration `0089_cloud_orders` (lake#831) adds `cloud_orders` and
+`cloud_order_events`, with guard `cloud_orders_guard`; the operator will read paid orders for
+orama-operator#634 and reads nothing of either table yet. Apply both before a lake image containing
+lake#864 (or lake#865 and lake#866, stacked on it) rolls; the schema gate holds that image until
+they have applied.
 
 Migration `0083_methodology_deployments` (lake#690) adds `methodology_deployments` (written by lake
 when a workspace methodology's model is published), `methodology_deployment_status` (written by the
