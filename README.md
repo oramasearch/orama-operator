@@ -51,7 +51,8 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.7.1** (2026-10-20), a patch:
+The current release is **v0.7.2** (2026-10-20), a patch that moves Lake's schema through
+`0090_billing_contacts` ([`docs/releases/v0.7.2.md`](docs/releases/v0.7.2.md)). Before it, **v0.7.1**, a patch:
 [`docs/releases/v0.7.1.md`](docs/releases/v0.7.1.md) says what is new since v0.7.0: Prod 1 team
 migrations run by the operator (`OramaCloudV1Migration`, #653) and declared on `OramaCloudV1Set`
 (#654), `Lake.spec.payments` (#639) and a Stripe webhook endpoint's deletion that always finishes
