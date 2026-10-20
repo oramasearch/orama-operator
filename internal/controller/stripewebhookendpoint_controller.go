@@ -19,7 +19,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -125,30 +124,9 @@ func (r *StripeWebhookEndpointReconciler) saveStatus(ctx context.Context, endpoi
 	return nil
 }
 
-// credential is the endpoint's key once its provider's Credentials are True for the provider's
-// current spec. Otherwise problem says why not, and gone whether the provider or its key's Secret
-// no longer exists.
+// credential is the endpoint's key once its provider's Credentials are True (paymentCredential).
 func (r *StripeWebhookEndpointReconciler) credential(ctx context.Context, endpoint *oramav1alpha1.StripeWebhookEndpoint) (key, problem string, gone bool, err error) {
-	name := endpoint.Spec.ProviderRef.Name
-	var provider oramav1alpha1.PaymentProvider
-	if err := r.Get(ctx, client.ObjectKey{Namespace: endpoint.Namespace, Name: name}, &provider); err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", fmt.Sprintf("PaymentProvider %q does not exist", name), true, nil
-		}
-		return "", "", false, err
-	}
-	key, problem, err = paymentSecretValue(ctx, r.Client, endpoint.Namespace, endpoint.Spec.APIKeySecretRef)
-	if err != nil || problem != "" {
-		return "", problem, problem != "", err
-	}
-	credentials := meta.FindStatusCondition(provider.Status.Conditions, paymentConditionCredentials)
-	switch {
-	case credentials == nil || credentials.ObservedGeneration != provider.Generation:
-		return "", fmt.Sprintf("PaymentProvider %q has not checked its key yet", name), false, nil
-	case credentials.Status != metav1.ConditionTrue:
-		return "", fmt.Sprintf("PaymentProvider %q: Credentials %s (%s)", name, credentials.Reason, credentials.Message), false, nil
-	}
-	return key, "", false, nil
+	return paymentCredential(ctx, r.Client, endpoint.Namespace, endpoint.Spec.ProviderRef.Name, endpoint.Spec.APIKeySecretRef)
 }
 
 // configure brings the Stripe endpoint to the spec and returns the Ready condition, without its
@@ -174,7 +152,7 @@ func (r *StripeWebhookEndpointReconciler) configure(ctx context.Context, endpoin
 
 	digest := stripeWebhookDigest(endpoint, key, held)
 	previous := meta.FindStatusCondition(endpoint.Status.Conditions, paymentConditionReady)
-	if wait := r.clock.wait(endpoint.UID, digest); wait > 0 && previous != nil && previous.ObservedGeneration == endpoint.Generation {
+	if wait := r.clock.wait(endpoint.UID, digest, paymentRecheck); wait > 0 && previous != nil && previous.ObservedGeneration == endpoint.Generation {
 		return *previous, wait, nil
 	}
 	pass := stripeWebhookPass{r: r, endpoint: endpoint, status: status, api: stripeAPI{Base: r.StripeAPIBase, Key: key}}

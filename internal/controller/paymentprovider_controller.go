@@ -66,8 +66,8 @@ func (c *paymentCheckClock) time() time.Time {
 }
 
 // wait is how long until the object's next check: zero when it was never checked or was checked
-// for something else, else what is left of paymentRecheck, or of paymentRetry after a failure.
-func (c *paymentCheckClock) wait(uid types.UID, digest string) time.Duration {
+// for something else, else what is left of recheck, or of paymentRetry after a failure.
+func (c *paymentCheckClock) wait(uid types.UID, digest string, recheck time.Duration) time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	check, found := c.last[uid]
@@ -76,7 +76,7 @@ func (c *paymentCheckClock) wait(uid types.UID, digest string) time.Duration {
 	}
 	interval := paymentRetry
 	if check.ok {
-		interval = paymentRecheck
+		interval = recheck
 	}
 	return max(0, check.at.Add(interval).Sub(c.time()))
 }
@@ -110,6 +110,31 @@ func paymentSecretValue(ctx context.Context, c client.Client, namespace string, 
 		return "", fmt.Sprintf("Secret %q has no key %q", ref.Name, ref.Key), nil
 	}
 	return value, "", nil
+}
+
+// paymentCredential is a concrete payment kind's key once its provider's Credentials are True for
+// the provider's current spec. Otherwise problem says why not, and gone whether the provider or the
+// key's Secret no longer exists.
+func paymentCredential(ctx context.Context, c client.Client, namespace, providerName string, keyRef oramav1alpha1.PaymentSecretKeyRef) (key, problem string, gone bool, err error) {
+	var provider oramav1alpha1.PaymentProvider
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: providerName}, &provider); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Sprintf("PaymentProvider %q does not exist", providerName), true, nil
+		}
+		return "", "", false, err
+	}
+	key, problem, err = paymentSecretValue(ctx, c, namespace, keyRef)
+	if err != nil || problem != "" {
+		return "", problem, problem != "", err
+	}
+	credentials := meta.FindStatusCondition(provider.Status.Conditions, paymentConditionCredentials)
+	switch {
+	case credentials == nil || credentials.ObservedGeneration != provider.Generation:
+		return "", fmt.Sprintf("PaymentProvider %q has not checked its key yet", providerName), false, nil
+	case credentials.Status != metav1.ConditionTrue:
+		return "", fmt.Sprintf("PaymentProvider %q: Credentials %s (%s)", providerName, credentials.Reason, credentials.Message), false, nil
+	}
+	return key, "", false, nil
 }
 
 // PaymentProviderReconciler checks a provider's key against its vendor and reports the result in
@@ -181,7 +206,7 @@ func (r *PaymentProviderReconciler) credentials(ctx context.Context, provider *o
 	sum := sha256.Sum256([]byte(strings.Join([]string{key, spec.AccountID, strconv.FormatBool(spec.Livemode)}, "\x00")))
 	digest := fmt.Sprintf("%x", sum[:])
 	previous := meta.FindStatusCondition(provider.Status.Conditions, paymentConditionCredentials)
-	if wait := r.clock.wait(provider.UID, digest); wait > 0 && previous != nil {
+	if wait := r.clock.wait(provider.UID, digest, paymentRecheck); wait > 0 && previous != nil {
 		return *previous, wait, nil
 	}
 	condition := r.checkStripe(ctx, spec, key)

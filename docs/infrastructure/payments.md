@@ -11,11 +11,13 @@ edge kinds do ([`README.md`](README.md#abstract-kinds-and-concrete-providers)).
 | `PaymentProvider` | The vendor, the account or sandbox, and the operator's key. Checks the key; changes nothing in Stripe. | Built |
 | `PaymentWebhookEndpoint` | The provider-neutral request "deliver these payment events to this URL". | Built ([operator#637](https://github.com/oramasearch/orama-operator/issues/637)) |
 | `StripeWebhookEndpoint` | Created and owned by a `PaymentWebhookEndpoint` of a stripe provider; the only kind that calls Stripe's webhook API. | Built (operator#637) |
-| The catalog kinds | Cloud v1's sandbox catalog. | [operator#638](https://github.com/oramasearch/orama-operator/issues/638) |
+| `PaymentCatalog` | The provider-neutral request "these products and prices exist in the provider's account". | Built ([operator#638](https://github.com/oramasearch/orama-operator/issues/638)) |
+| `StripeCatalog` | Created and owned by a `PaymentCatalog` of a stripe provider; the only kind that writes Stripe products and prices. | Built (operator#638) |
 
 The code is `internal/controller/paymentprovider_controller.go`,
-`paymentwebhookendpoint_controller.go` and `stripewebhookendpoint_controller.go`, and the Stripe
-client the payment kinds share, `internal/controller/stripe_api.go`. The fields are in
+`paymentwebhookendpoint_controller.go`, `stripewebhookendpoint_controller.go`,
+`paymentcatalog_controller.go` and `stripecatalog_controller.go`, and the Stripe client the payment
+kinds share, `internal/controller/stripe_api.go`. The fields are in
 [`crd-reference.md`](../crd-reference.md#paymentprovider-separate-crd-namespaced--the-vendor-account-and-key-for-payment-resources).
 
 ## A provider and its Secret
@@ -38,7 +40,8 @@ spec:
 
 The Secret holds the environment's **operator key**: a restricted key allowed to write products,
 prices and webhook endpoints, and to read the account. Webhook endpoints need its Webhook Endpoints
-write permission; listing them, which the endpoints do on every pass, needs no more. Each environment (live mode, and the `dev`,
+write permission; listing them, which the endpoints do on every pass, needs no more. Catalogs need
+its Products and Prices write permissions; reading and searching them needs no more. Each environment (live mode, and the `dev`,
 `testing` and `staging` sandboxes) has its own. Restricted keys can only be made in the Stripe
 Dashboard, so a person creates the key there; the operator only reads it. Its value never appears in
 a repository, an issue, a log or a resource's status. The Lake key and the Cloud v1 key belong to
@@ -89,7 +92,8 @@ Every payment kind calls Stripe through `stripe_api.go`:
 - **Idempotency keys.** Stripe replays its saved answer to an `Idempotency-Key` it has seen in the
   last 24 hours, a saved 500 included, and refuses a key reused with other parameters. So a key names
   one request exactly: `orama-<object UID>-<operation>-<target>-<first 16 hex of the body's sha256>`,
-  where the target is `new` for a create and the Stripe object's ID for an update. A key Stripe has
+  where the target is `new` for a create and the Stripe object's ID for an update (a catalog names
+  the product ID, the lookup key or the price ID; see [Catalogs](#catalogs)). A key Stripe has
   answered is never sent again for a new request: the object's status counts the writes Stripe has
   answered, and that count ends the key (`-1`, `-2`, ...; none while it is 0). See
   [Idempotency keys](#idempotency-keys-a-key-stripe-answered-is-spent). These keys are what Stripe's
@@ -202,3 +206,153 @@ together with the endpoint, or with the namespace), it does not block: it record
 object go. **A person then deletes that endpoint in the Stripe Dashboard.** While the provider exists
 but its `Credentials` are not `True`, deletion waits for them. Whoever deletes a provider and its
 endpoints together deletes the endpoints first, and the provider once they are gone.
+
+## Catalogs
+
+Products and prices used to be made by hand in the Stripe Dashboard, and Cloud v1's nonprod had
+none (operator#580). With three sandboxes and live mode, by-hand setup would be repeated four times
+and would drift. A `PaymentCatalog` declares them instead, and the operator creates them in any
+account its provider points at:
+
+```yaml
+apiVersion: orama.cloud/v1alpha1
+kind: PaymentCatalog
+metadata:
+  name: cloud-v1
+  namespace: v1-dev
+spec:
+  providerRef:
+    name: stripe
+  app: cloud_v1                     # metadata[orama_app] on every product and price
+  version: 3                        # bumped on every change to the definition
+  products:
+    - id: cloud_v1_plan_pro         # fixed: [a-z0-9_]{3,64}
+      name: Pro
+      metadata:
+        plan_id: 4b0c7c3e-2f7a-4c1e-9d3b-5a6f0e1d2c3b
+      prices:
+        - lookupKey: cloud_v1.plan.4b0c7c3e-2f7a-4c1e-9d3b-5a6f0e1d2c3b.monthly
+          currency: usd
+          unitAmount: 4900          # cents
+          interval: month           # month, year, or none for one-time
+```
+
+For a `stripe` provider it creates a `StripeCatalog` of the same name, which it owns, with the same
+spec and the provider's key reference, and copies back that object's `Ready` condition and
+`status.prices`, which maps each lookup key to the price ID now holding it. `kubectl get paycat -A`
+and `kubectl get stripecat -A` show both.
+
+A price is a flat amount in one currency, one-time, monthly or yearly. Metered prices, Meters,
+tiers, `transform_quantity`, `currency_options` and Billing Portal configurations are out of scope;
+[orama-bridge#204](https://github.com/oramasearch/orama-bridge/issues/204) decides whether Cloud v1
+needs Meters, which would be a new optional field.
+
+### What goes in a catalog
+
+- **Cloud v1's sandbox catalog** is a copy of its live catalog, with lookup keys named after the
+  reference rows' UUIDs (`cloud_v1.plan.<uuid>.monthly`). Cloud v1's **live** catalog belongs to
+  Prod 1 and is never changed, so no `cloud_v1` catalog is written for a live-mode provider. The
+  operator does not refuse one; the rule is kept by not committing one.
+- **Lake's catalog lists products and no prices.** Lake's products have fixed IDs (`lake_usage`,
+  `lake_private_warehouse`, `lake_dedicated_cluster`). Its prices stay in Lake's own price list and
+  order sheet, and its invoice lines reference the product with an inline price (rule 5 of the
+  [epic](https://github.com/oramasearch/orama-bridge/issues/199)), so there are no Lake usage prices
+  for a catalog to hold.
+
+### What the catalog controller does
+
+Each pass of a `StripeCatalog`:
+
+1. **Waits for the provider** as a webhook endpoint does: `Ready=False`, reason `ProviderNotReady`,
+   and nothing sent to Stripe until the provider's `Credentials` are `True`. A spec the controller
+   cannot keep is `Ready=False`, reason `InvalidSpec`, also without a request: a lookup key under
+   two products, which would move between them on every pass, or a metadata key starting with
+   `orama_`, which would overwrite the operator's tags.
+2. **Reads everything before writing anything.** `GET /v1/products/{id}` for each product, a
+   search for the products this catalog created
+   (`GET /v1/products/search?query=metadata['orama_owner']:'<namespace>/<name>'`), and
+   `GET /v1/prices?lookup_keys[]=<key>&expand[]=data.product` for each price. If any of them is not
+   the catalog's to write, the pass stops there and **changes nothing**, not even the products
+   before it:
+   - `ProductTaken` (`Ready=False`): a product with that ID whose `metadata[orama_app]` is not the
+     catalog's `app`, including one made by hand without the tag. It is never adopted.
+   - `PriceTaken` (`Ready=False`): a price holding one of the spec's lookup keys whose product is not
+     one of the catalog's products, or whose `metadata[orama_app]` is not the catalog's `app`. The
+     message names the price. Its lookup key is never transferred and the price is never archived.
+   - `Superseded` (`Ready=True`): a product carrying a higher `metadata[orama_catalog_version]` than
+     the spec's `version`. See [Two catalogs, one product](#two-catalogs-one-product).
+3. **Products.** One that does not exist is created (`POST /v1/products`) with its `id`, `name`,
+   `description`, its metadata and `metadata[orama_app]`, `metadata[orama_owner]` and
+   `metadata[orama_catalog_version]`. One that exists gets only what differs: `name`,
+   `description`, `active=true` for an archived one, and its metadata, which is made to equal the
+   spec's plus the app and version tags. A metadata key the spec does not have is removed, except
+   `orama_owner`: it is set on create only, and no update changes it.
+4. **Prices**, by lookup key:
+   - none holds it: `POST /v1/prices` with the product, `currency`, `unit_amount`,
+     `recurring[interval]` (for a recurring price), `lookup_key` and its metadata plus
+     `orama_app` and `orama_owner`;
+   - it is held by a price with the same product, currency, amount and interval: nothing, except its
+     metadata where it differs and `active=true` if it was archived;
+   - it is held by a price that differs: a new price is created with `transfer_lookup_key=true`
+     (see [Prices cannot change](#prices-cannot-change)).
+5. **Archives what is no longer wanted.** For each of the catalog's products it lists the active
+   prices (`GET /v1/prices?product=<id>&active=true`, page by page) and archives
+   (`POST /v1/prices/{id}` with `active=false`) every one that carries the catalog's `app` and is
+   not the price now holding one of the spec's lookup keys. Then it archives each active product
+   the search found that the spec no longer lists, carries the catalog's `app` and no newer version,
+   stamping it with the catalog's version.
+6. `status.prices` maps each lookup key to its price ID, and `Ready=True`, reason `Configured`.
+   `status.prices` changes only on a pass that brought the whole catalog to its spec; a refused,
+   superseded or failed pass leaves it as it was.
+
+A pass runs every six hours, a minute after a failure (`ProductTaken` and `PriceTaken` included),
+and at once when the spec or the key changes. Between passes nothing is sent to Stripe. Status is
+written only when it changes, so a matching catalog makes one round of reads every six hours and
+no write. Stripe's search can lag a write by about a minute, so a product removed from the spec
+right after it was created may be archived a pass later.
+
+### Prices cannot change
+
+Stripe prices are immutable: a price's product, currency, amount and interval are fixed when it is
+created. So a changed price is a new price, created with `transfer_lookup_key=true` so that it takes
+the lookup key over, and step 5 archives the old one. Archiving comes after every create, so a pass
+that stops between the two (a crash, a Stripe error) loses nothing: the old price has lost its
+lookup key, and the next pass archives it as a price no spec lookup key holds. Existing
+subscriptions keep the old price, as Stripe intends; only new ones get the new price.
+
+### Archive, never delete
+
+The operator never deletes a product or a price. Whatever a catalog no longer wants is archived
+(`active=false`): an archived price can no longer be used for a new subscription, but every
+subscription and invoice that uses it keeps working, and adding it back to the spec reactivates it.
+**Deleting a `PaymentCatalog` or `StripeCatalog` changes nothing in Stripe.** There is no finalizer:
+products may have subscriptions, and archiving them is a decision for a person, in the Stripe
+Dashboard.
+
+### Two catalogs, one product
+
+Two Lakes in the same account each own a catalog with the same products (`shared` and `shared-us`
+in live mode). While both run the same operator version their specs are identical and every write
+is "make it match". During a roll one cluster's operator can be newer than the other's, and without
+a rule the two would undo each other's changes: one archives a product the other reactivates.
+
+The rule is the catalog `version`, an integer the asset or Go constant holding the products sets
+and bumps on every change. Every write to a product stamps it as `metadata[orama_catalog_version]`,
+an archive included, and **a catalog never writes a product that carries a higher version than its
+own**: it reports `Superseded` and changes nothing at all, so the newer definition wins. When the
+older operator is upgraded its version catches up and it writes again. `metadata[orama_owner]`
+names the catalog that created a product and is never changed, so only that catalog archives the
+product once its spec drops it.
+
+### Idempotency keys
+
+Catalog writes carry keys built as for webhook endpoints
+([Idempotency keys](#idempotency-keys-a-key-stripe-answered-is-spent)): the object's UID, the
+operation, the target and a hash of the form body, ended by `status.writes`, which counts the
+writes Stripe has answered for the `StripeCatalog`. The operations and their targets are
+`create-product`, `update-product` and `archive-product` (the product ID), `create-price` (the
+lookup key), `replace-price` (the ID of the price it replaces), and `update-price` and
+`archive-price` (the price ID). A request that got no answer is sent again under its key, so Stripe
+makes one price, not two; after a 5xx, and for the same drift repaired twice, the key is new, so a
+saved answer is never replayed. This follows the decision made for webhook endpoints in
+operator#637: `status.writes` moves on after every answered write, not only after a 5xx.

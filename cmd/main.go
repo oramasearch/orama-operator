@@ -217,6 +217,20 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "StripeWebhookEndpoint")
 		os.Exit(1)
 	}
+	if err = (&controller.PaymentCatalogReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PaymentCatalog")
+		os.Exit(1)
+	}
+	if err = (&controller.StripeCatalogReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "StripeCatalog")
+		os.Exit(1)
+	}
 	if err = (&controller.CloudflareZonePolicyReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

@@ -61,6 +61,14 @@ type stripeList[T any] struct {
 	HasMore bool `json:"has_more"`
 }
 
+// stripeSearchPage is one page of a Stripe search, such as GET /v1/products/search. NextPage is the
+// next request's page parameter.
+type stripeSearchPage[T any] struct {
+	Data     []T    `json:"data"`
+	HasMore  bool   `json:"has_more"`
+	NextPage string `json:"next_page"`
+}
+
 // stripeField names a nested form key in Stripe's encoding: stripeField("metadata", "orama_app")
 // is metadata[orama_app], stripeField("price_data", "product") is price_data[product], and an
 // empty name makes a list, stripeField("enabled_events", "") is enabled_events[].

@@ -295,12 +295,14 @@ rules:
   - oramacloudv1sets
   - oramaoperators
   - oramazettaclusters
+  - paymentcatalogs
   - paymentproviders
   - paymentwebhookendpoints
   - peerconnections
   - peerlinks
   - postgresschemas
   - rabbitmqtopologies
+  - stripecatalogs
   - stripewebhookendpoints
   - tunnels
   - zettaclustere2etests
@@ -375,12 +377,14 @@ rules:
   - oramacloudv1sets/status
   - oramaoperators/status
   - oramazettaclusters/status
+  - paymentcatalogs/status
   - paymentproviders/status
   - paymentwebhookendpoints/status
   - peerconnections/status
   - peerlinks/status
   - postgresschemas/status
   - rabbitmqtopologies/status
+  - stripecatalogs/status
   - stripewebhookendpoints/status
   - tunnelproviders/status
   - tunnels/status

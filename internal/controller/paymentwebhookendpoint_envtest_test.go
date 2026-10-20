@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -24,10 +25,15 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// The three payment controllers against an API server and the fake Stripe: the CRDs refuse a
-// plain-HTTP URL and an empty event list, the abstract endpoint owns its concrete one, the
-// concrete one owns the signing Secret, and the endpoint ID and Ready come back to the abstract.
-func TestPaymentWebhookEndpointEnvtestOwnsItsStripeEndpoint(t *testing.T) {
+// paymentReconciler is a reconciler the payment envtests run.
+type paymentReconciler interface{ SetupWithManager(ctrl.Manager) error }
+
+// startPaymentEnvtest starts an API server with the chart's CRDs and a manager running a
+// PaymentProvider reconciler and the given ones against stripe, and creates namespace "billing"
+// with the operator's key Secret and a stripe PaymentProvider "stripe". It skips the test without
+// KUBEBUILDER_ASSETS. The context ends with the test.
+func startPaymentEnvtest(t *testing.T, stripe *fakeStripe, reconcilers func(ctrl.Manager, *runtime.Scheme) []paymentReconciler) (context.Context, client.Client) {
+	t.Helper()
 	assets := os.Getenv("KUBEBUILDER_ASSETS")
 	if assets == "" {
 		t.Skip("KUBEBUILDER_ASSETS is required for the payment envtest")
@@ -51,13 +57,8 @@ func TestPaymentWebhookEndpointEnvtestOwnsItsStripeEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stripe := newFakeStripe(t, testStripeKey, testStripeAccount)
-	for _, setup := range []interface{ SetupWithManager(ctrl.Manager) error }{
-		&PaymentProviderReconciler{Client: manager.GetClient(), Scheme: scheme, StripeAPIBase: stripe.url},
-		&PaymentWebhookEndpointReconciler{Client: manager.GetClient(), Scheme: scheme},
-		&StripeWebhookEndpointReconciler{Client: manager.GetClient(), Scheme: scheme, StripeAPIBase: stripe.url,
-			Recorder: manager.GetEventRecorderFor("stripewebhookendpoint-controller")},
-	} {
+	for _, setup := range append(reconcilers(manager, scheme),
+		&PaymentProviderReconciler{Client: manager.GetClient(), Scheme: scheme, StripeAPIBase: stripe.url}) {
 		if err := setup.SetupWithManager(manager); err != nil {
 			t.Fatal(err)
 		}
@@ -95,6 +96,21 @@ func TestPaymentWebhookEndpointEnvtestOwnsItsStripeEndpoint(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	return ctx, kube
+}
+
+// The three payment controllers against an API server and the fake Stripe: the CRDs refuse a
+// plain-HTTP URL and an empty event list, the abstract endpoint owns its concrete one, the
+// concrete one owns the signing Secret, and the endpoint ID and Ready come back to the abstract.
+func TestPaymentWebhookEndpointEnvtestOwnsItsStripeEndpoint(t *testing.T) {
+	stripe := newFakeStripe(t, testStripeKey, testStripeAccount)
+	ctx, kube := startPaymentEnvtest(t, stripe, func(manager ctrl.Manager, scheme *runtime.Scheme) []paymentReconciler {
+		return []paymentReconciler{
+			&PaymentWebhookEndpointReconciler{Client: manager.GetClient(), Scheme: scheme},
+			&StripeWebhookEndpointReconciler{Client: manager.GetClient(), Scheme: scheme, StripeAPIBase: stripe.url,
+				Recorder: manager.GetEventRecorderFor("stripewebhookendpoint-controller")},
+		}
+	})
 	for name, change := range map[string]func(*oramav1alpha1.PaymentWebhookEndpointSpec){
 		"plain HTTP":  func(spec *oramav1alpha1.PaymentWebhookEndpointSpec) { spec.URL = "http://eu.lake.live/stripe" },
 		"no events":   func(spec *oramav1alpha1.PaymentWebhookEndpointSpec) { spec.Events = nil },
