@@ -3,6 +3,9 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.7.3](v0.7.3.md) — 2026-10-20. A patch releasing the committed cluster files: every Lake on
+  lake v0.3.1, the leaves on the operator, and the Cloud v1 pilot's migration declared (not
+  applied). No code or CRD change. 43 resource kinds.
 - [v0.7.2](v0.7.2.md) — 2026-10-20. A patch: Lake's schema through `0090_billing_contacts`
   (#656), so lake v0.3.1 can roll. No CRD change. 43 resource kinds.
 - [v0.7.1](v0.7.1.md) — 2026-10-20. A patch: `OramaCloudV1Migration` runs one Prod 1 team's copy

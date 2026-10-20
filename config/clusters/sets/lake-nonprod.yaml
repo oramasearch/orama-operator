@@ -95,7 +95,7 @@ spec:
   template:
     dnsSecretRef:
       name: cloudflare-api-token
-    image: oramasearch/lake:v0.2.0
+    image: oramasearch/lake:v0.3.1
     ingressEnabled: true
     postgres:
       enabled: true
