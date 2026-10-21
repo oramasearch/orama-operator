@@ -189,8 +189,8 @@ spec:
       # Built from oramacore caca2a59 into the private oramasearch/oramacore-cloud-v1.
       # v1-prod.yaml still runs 9d8ed373.
       overrides:
-        # The Clerk dashboard from dashboard dev 8e158a99 (orama-bridge#227, orama-cloud-v1-bridge#8).
-        dashboard: oramasearch/dashboard:v1-dev-8e158a99@sha256:40407865dec2e893bc138ee9fd9c8ca8b0b7095a41d2dd7e2c3ae0865cf90187
+        # The Clerk dashboard from dashboard dev 507c8b52 (orama-bridge#230; built as in orama-cloud-v1-bridge#8).
+        dashboard: oramasearch/dashboard:v1-dev-507c8b52@sha256:07cefdb08c70a36c308d841694fccb0a74e6021156c9873b42b4a9661e10bf1b
         oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-caca2a59
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
