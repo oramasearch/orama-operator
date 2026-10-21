@@ -156,8 +156,9 @@ Job. Status is written only on a real transition: a steady migration produces no
 | `Failed` | the tool failed, the Job ran out of time, or the role could not sign in |
 | `Removing` | the resource is being deleted |
 
-Conditions: `Seeded` (an applied seed succeeded here) and `TargetWritten` (an applied seed or
-catch-up started, so the target may hold part of the team). Both are set once and never cleared.
+Conditions: `Seeded` (an applied seed succeeded here), `TargetWritten` (an applied seed or
+catch-up started, so the target may hold part of the team) and `Removed` (the removal on deletion
+succeeded). Each is set once and never cleared.
 
 ## What the stack provides
 
@@ -195,13 +196,20 @@ The migration carries the finalizer `orama.cloud/migration`. Deleting it:
 
 1. waits for a running Job to finish;
 2. when `removeOnDelete` is set and `TargetWritten` is `True`, runs `run-step remove-target --apply`
-   as `<name>-remove-<attempt>` (`Removing`). Exit 0 continues. Exit 3 means the team was switched
-   to the target: the migration stays `Blocked` with the finalizer, because deleting a resource never
-   deletes a switched customer, and a person decides. Any other failure also keeps it, `Failed`;
-   raising `spec.attempt` runs the removal again. A stack that is gone or being deleted takes the
-   copy with it, and the removal is skipped;
-3. deletes the run volume, which holds customer payloads, and waits until it is gone;
-4. removes the finalizer.
+   as `<name>-remove-<attempt>` (`Removing`). Exit 0 sets `Removed` and continues; once `Removed` is
+   set the removal never runs again, whatever `spec.attempt` says and whether or not its Job still
+   exists. Exit 3 means the team was switched to the target: the migration stays `Blocked` with the
+   finalizer, because deleting a resource never deletes a switched customer, and a person decides.
+   Any other failure also keeps it, `Failed`; raising `spec.attempt` runs the removal again. A stack
+   that is gone or being deleted takes the copy with it, and the removal is skipped;
+3. deletes the migration's Jobs, all finished by now, with their pods, and waits until no pod of the
+   migration is left: `kubernetes.io/pvc-protection` keeps the run volume while any pod that mounts
+   it exists, finished or not, and a finished Job keeps its pod for its week-long TTL;
+4. deletes the run volume, which holds customer payloads, and waits until it is gone;
+5. removes the finalizer.
+
+Steps 3 to 5 report `Removing` with what they wait for. A failed or refused removal stops before
+step 3, so its Jobs stay as the record.
 
 To let go of a switched team without removing it, set `removeOnDelete: false` on the resource being
 deleted: the run volume is deleted and the copy stays on the target.

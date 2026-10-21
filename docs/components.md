@@ -856,7 +856,7 @@ CNPG bootstrapped Postgres; deleting the CR GC'd the cluster + its pods.
 | Object | Name | Notes |
 |---|---|---|
 | `PersistentVolumeClaim` | `<name>-runs` | The tool's run directory, `ReadWriteOnce`, 20Gi by default, kept across steps, grown to a larger `spec.runVolume.size` when the next Job starts, deleted on deletion |
-| `Job` | `<name>-<step>-<attempt>` (`-dry-run` before the attempt without `apply`; `<name>-remove-<attempt>` on deletion) | `run-step` of the pinned `cloud-v1-migration` image; `backoffLimit: 0`, 6h deadline, kept a week; uid 10001, read-only root, `/tmp` `emptyDir`, no service-account token; a `wait-for-database` init container on the stack's postgres-client image |
+| `Job` | `<name>-<step>-<attempt>` (`-dry-run` before the attempt without `apply`; `<name>-remove-<attempt>` on deletion) | `run-step` of the pinned `cloud-v1-migration` image; `backoffLimit: 0`, 6h deadline, kept a week or until deletion, which deletes them with their pods before the run volume; uid 10001, read-only root, `/tmp` `emptyDir`, no service-account token; a `wait-for-database` init container on the stack's postgres-client image |
 
 It starts a Job only once no other Job of the migration runs, the stack is `Ready` with
 `ClusterRowReady` and every control DB schema current, a writing step finds the stack's dashboard

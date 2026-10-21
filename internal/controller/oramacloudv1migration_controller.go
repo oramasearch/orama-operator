@@ -72,6 +72,9 @@ const (
 	// migrationTargetWrittenCondition is True once an applied seed or catch-up started, so the
 	// target may hold part of the team: deletion with removeOnDelete removes it.
 	migrationTargetWrittenCondition = "TargetWritten"
+	// migrationRemovedCondition is True once the removal on deletion succeeded. It is set once and
+	// never cleared: the removal never runs again, even once its Job is gone.
+	migrationRemovedCondition = "Removed"
 
 	// The tool's exit codes (oramacore-aws#108): 0 completed, 3 blocked by a guard or preflight,
 	// 1 an unexpected error, 4 verification found a difference.
@@ -684,7 +687,7 @@ func (r *OramaCloudV1MigrationReconciler) activeJob(ctx context.Context, m *oram
 }
 
 // followJob records a run's Job: Running (or Removing) until it finishes, then its outcome. An
-// applied seed that succeeded sets the Seeded condition.
+// applied seed that succeeded sets the Seeded condition, a removal that succeeded Removed.
 func (r *OramaCloudV1MigrationReconciler) followJob(ctx context.Context, m *oramav1alpha1.OramaCloudV1Migration, status *oramav1alpha1.OramaCloudV1MigrationStatus, run migrationRun, job *batchv1.Job) error {
 	if status.JobName != run.jobName {
 		status.Result, status.StartedAt, status.CompletedAt = nil, nil, nil
@@ -714,6 +717,10 @@ func (r *OramaCloudV1MigrationReconciler) followJob(ctx context.Context, m *oram
 	if outcome.phase == oramav1alpha1.MigrationPhaseSucceeded && run.step == oramav1alpha1.MigrationStepSeed && run.apply {
 		markOnce(status, metav1.Condition{Type: migrationSeededCondition, Status: metav1.ConditionTrue,
 			Reason: "SeedApplied", Message: fmt.Sprintf("Job %s applied the seed", run.jobName), ObservedGeneration: m.Generation})
+	}
+	if outcome.phase == oramav1alpha1.MigrationPhaseSucceeded && run.step == migrationRemoveStep {
+		markOnce(status, metav1.Condition{Type: migrationRemovedCondition, Status: metav1.ConditionTrue,
+			Reason: "TeamRemoved", Message: fmt.Sprintf("Job %s removed the team from OramaCloudV1 %s", run.jobName, m.Spec.TargetRef), ObservedGeneration: m.Generation})
 	}
 	return nil
 }
@@ -844,9 +851,10 @@ func (r *OramaCloudV1MigrationReconciler) newestPod(ctx context.Context, job *ba
 }
 
 // reconcileDelete removes the copied team when spec.removeOnDelete asks and the target may hold
-// part of it, then deletes the run volume, which holds customer payloads, then lets the resource
-// go. A removal the tool refuses (exit 3: the team was switched to the target) or that fails keeps
-// the finalizer: a switched customer is never deleted by deleting a resource, and a person decides.
+// part of it, then deletes the finished Jobs and their pods, then the run volume, which holds
+// customer payloads, then lets the resource go. A removal the tool refuses (exit 3: the team was
+// switched to the target) or that fails keeps the finalizer: a switched customer is never deleted
+// by deleting a resource, and a person decides.
 func (r *OramaCloudV1MigrationReconciler) reconcileDelete(ctx context.Context, m *oramav1alpha1.OramaCloudV1Migration) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(m, migrationFinalizer) {
 		return ctrl.Result{}, nil
@@ -861,6 +869,10 @@ func (r *OramaCloudV1MigrationReconciler) reconcileDelete(ctx context.Context, m
 			}
 			return r.writeStatus(ctx, m, status, result)
 		}
+		// Removed is stored before the removal's Job, the other record of it, is deleted.
+		if _, err := r.writeStatus(ctx, m, status, ctrl.Result{}); err != nil {
+			return ctrl.Result{}, err
+		}
 	} else if active, err := r.activeJob(ctx, m, ""); err != nil || active != "" {
 		if err != nil {
 			return ctrl.Result{}, err
@@ -869,6 +881,13 @@ func (r *OramaCloudV1MigrationReconciler) reconcileDelete(ctx context.Context, m
 		return r.writeStatus(ctx, m, status, ctrl.Result{RequeueAfter: migrationWait})
 	}
 
+	if left, err := r.deleteJobs(ctx, m); err != nil || left != "" {
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		migrationSet(status, oramav1alpha1.MigrationPhaseRemoving, fmt.Sprintf("deleting the finished Jobs before the run volume %s: pod %s is still there", migrationRunVolumeName(m), left))
+		return r.writeStatus(ctx, m, status, ctrl.Result{RequeueAfter: 5 * time.Second})
+	}
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: migrationRunVolumeName(m)}, pvc)
 	switch {
@@ -887,9 +906,44 @@ func (r *OramaCloudV1MigrationReconciler) reconcileDelete(ctx context.Context, m
 	return ctrl.Result{}, r.Update(ctx, m)
 }
 
-// reconcileRemoval runs remove-target --apply once per attempt. done is true once the team is
-// removed, or when the target no longer exists (its control DB went with it).
+// deleteJobs deletes this migration's Jobs, which have all finished, and waits for their pods:
+// pvc-protection keeps the run volume while any pod that mounts it exists, finished or not, and a
+// finished Job keeps its pod for its TTL. It names a pod still there, or "" once none is.
+func (r *OramaCloudV1MigrationReconciler) deleteJobs(ctx context.Context, m *oramav1alpha1.OramaCloudV1Migration) (string, error) {
+	var jobs batchv1.JobList
+	if err := r.List(ctx, &jobs, client.InNamespace(m.Namespace), client.MatchingLabels{migrationLabel: m.Name}); err != nil {
+		return "", err
+	}
+	for i := range jobs.Items {
+		job := &jobs.Items[i]
+		if !metav1.IsControlledBy(job, m) || !job.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
+			return "", err
+		}
+	}
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods, client.InNamespace(m.Namespace), client.MatchingLabels{migrationLabel: m.Name}); err != nil {
+		return "", fmt.Errorf("list the pods of OramaCloudV1Migration %s: %w", m.Name, err)
+	}
+	if len(pods.Items) > 0 {
+		return pods.Items[0].Name, nil
+	}
+	return "", nil
+}
+
+// reconcileRemoval runs remove-target --apply once per attempt, until one succeeds. done is true
+// once the team is removed (Removed, whatever spec.attempt says since), or when the target no
+// longer exists (its control DB went with it).
 func (r *OramaCloudV1MigrationReconciler) reconcileRemoval(ctx context.Context, m *oramav1alpha1.OramaCloudV1Migration, status *oramav1alpha1.OramaCloudV1MigrationStatus) (bool, ctrl.Result, error) {
+	if meta.IsStatusConditionTrue(status.Conditions, migrationRemovedCondition) {
+		return true, ctrl.Result{}, nil
+	}
 	run := migrationRemovalRun(m)
 	if status.JobName == run.jobName && migrationFinished(status.Phase) {
 		return status.Phase == oramav1alpha1.MigrationPhaseSucceeded, ctrl.Result{}, nil
