@@ -263,10 +263,15 @@ type AksNetworkSettings struct {
 	// +kubebuilder:default=overlay
 	// +optional
 	PluginMode string `json:"pluginMode,omitempty"`
+	// Dataplane is always cilium (operator#699): workspace isolation is CiliumNetworkPolicy and
+	// NetworkPolicy, which only isolate anything on a dataplane that enforces them.
 	// +kubebuilder:default=cilium
+	// +kubebuilder:validation:Enum=cilium
 	// +optional
 	Dataplane string `json:"dataplane,omitempty"`
+	// Policy is always cilium (operator#699), the engine that enforces the operator's policies.
 	// +kubebuilder:default=cilium
+	// +kubebuilder:validation:Enum=cilium
 	// +optional
 	Policy string `json:"policy,omitempty"`
 	// +kubebuilder:default="10.244.0.0/16"

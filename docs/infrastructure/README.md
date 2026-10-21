@@ -389,6 +389,31 @@ class as an image pull secret.
   credentials Secret holds only `tenantID` and `clientID`.
 - **Service principal:** the same Secret with a `clientSecret` as well.
 
+## Every cluster enforces network policy with Cilium (operator#699)
+
+Workspace isolation on the network is policy: the operator's `NetworkSandbox` renders
+`CiliumNetworkPolicy` objects, and the workspace, app, build and environment controllers render
+Kubernetes `NetworkPolicy`. Those isolate nothing on a dataplane that does not enforce them, so:
+
+- **The `aks` provider's `network.dataplane` and `network.policy` accept only `cilium`** (CRD enum,
+  default `cilium`), on `KubernetesClusterProvider` and `AksCluster`. `azureManagedClusterBody` refuses
+  anything else for a resource stored before the enum, before any request reaches Azure.
+- **A Lake cannot run where Cilium policy is missing.** Its `NetworkSandbox` needs the
+  `ciliumnetworkpolicies.cilium.io` kind (`networksandbox_controller.go`), so the Lake's reconcile fails
+  with the reason instead of running unisolated.
+
+| Cluster | Installed by | Policy engine | How it is known |
+|---|---|---|---|
+| `orama-production-cluster-01` (managing) | `helmfile` | Cilium | Read 2026-10-20: the `cilium` DaemonSet runs, the CRD is installed, 190 NetworkPolicies and 7 CiliumNetworkPolicies exist |
+| `orama-nonprod-cluster-01` | the managing cluster's operator | Cilium | `config/clusters/orama-nonprod-cluster-01/cluster.yaml` sets no `network`, so the provider default `cilium` applies |
+| `orama-production-cluster-02` | the managing cluster's operator | Cilium | as above |
+| `orama-production-cluster-03` | the managing cluster's operator | Cilium | as above |
+
+**Still owed (needs Steve's consent):** a live isolation probe on `lake-testing`, as part of the e2e
+suite (#537): a pod in one workspace namespace must fail to reach another workspace's Zetta, lake's
+control Postgres, the lake Zetta (the bus) and the Kubernetes API. The leaves' live dataplane has not
+been read from this host.
+
 ## The clusters today, and the path from here
 
 As of 2026-10-12. The resources themselves are in
