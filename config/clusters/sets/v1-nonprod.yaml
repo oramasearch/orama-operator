@@ -129,12 +129,14 @@ spec:
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
       tag: v1-sandbox
-    # Prod 1's providers, models and selector, as in v1-prod. Keys come from v1-nonprod-llm-keys.
+    # Prod 1's providers, models and selector, as in v1-prod, except the default. Keys come from
+    # v1-nonprod-llm-keys, where only OPENAI_API_KEY is real: the others are placeholders, so the
+    # default is openai, not Prod 1's groq (orama-bridge#221).
     llm:
       automaticEmbeddingsSelector:
         model: gpt-5.2
         provider: openai
-      default: groq
+      default: openai
       providers:
       - apiKeySecretRef:
           name: v1-nonprod-llm-keys
