@@ -177,7 +177,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
 | `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `stripePrices` | Always in-cluster CloudNativePG |
 | `analytics` | data-store | ClickHouse |
-| `cache` | data-store | Upstash Redis |
+| `cache` | data-store | Upstash Redis; its REST API through the `redis-http` shim the cache brings ([components](components.md#the-upstash-rest-shim-redis_httpgo-562)) |
 | `broker` | data-store (`placement: central`) | RabbitMQ |
 | `search` | data-store | Typesense hosted-search |
 | `disco` | `enabled` | DISCO semantic cache |

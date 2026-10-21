@@ -248,7 +248,8 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 | Secret | Keys | Created by | Read by |
 |---|---|---|---|
 | `<cr>-broker-admin` | `username` (`orama`), `password` | the bootstrap step, where the broker runs locally | broker `rabbitmq.conf` and boot definitions, writer and reader transport config, harvest-master `AMQP_HOST`, `RabbitMQTopology` (`adminSecretRef`) |
-| `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL` |
+| `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL`, redis-http `SRH_CONNECTION_STRING` |
+| `<cr>-redis-http` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where the cache runs locally | redis-http `SRH_TOKEN`, dashboard `REDIS_CACHE_TOKEN` ([below](#the-upstash-rest-shim-redis_httpgo-562)) |
 | `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, reader-only config only), analytics-processor render-config (every `oramacores` entry's `api_key`) |
 | `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`; the reader-only config has none), index-builder, workers, dashboard, the e2e runner |
 
@@ -296,7 +297,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   shared with the LLM key hash). The controller maps every Secret event, owned or copied, to each CR
   in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
   `<cr>-broker-admin` the broker, writer, readers and harvest-master; `<cr>-cache-auth` the cache,
-  harvest-master and index-builder; `<cr>-analytics-api-key` the readers on the reader-only config
+  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-analytics-api-key` the readers on the reader-only config
   and analytics-processor, never the writer; the master key the writer (and readers on the combined
   image), index-builder, workers and dashboard. analytics-processor's hash also covers its component
   Secret (ClickHouse password) and `<cr>-controldb-app` (the Postgres URI). Metadata changes roll
@@ -1114,9 +1115,49 @@ outside service. Per-key sources, and whether each must equal Prod 1, are in the
   `CLICKHOUSE_*` key. The dashboard's `runClickhouse` (`src/lib/clickhouse/index.ts`) posts JSON
   `{sql, queryVariables}` with Basic auth to a URL, while the operator gives it a bare service name in
   `CLICKHOUSE_HOST` and a placeholder `CLICKHOUSE_PASSWORD`; nothing here makes that connection work.
-  Likewise `REDIS_CACHE_URL`/`REDIS_CACHE_TOKEN` feed `@upstash/redis` over HTTP (`src/lib/redis/redis.ts`),
-  not the in-cluster Redis TCP service; the bridge decisions plan an in-stack `serverless-redis-http`
-  shim (12a). Rendering these variables does not prove either integration works.
+  `REDIS_CACHE_URL`/`REDIS_CACHE_TOKEN` feed `@upstash/redis` over HTTP (`src/lib/redis/redis.ts`),
+  not the in-cluster Redis TCP service. Where the cache runs, the operator sets both to the in-stack
+  `serverless-redis-http` shim ([below](#the-upstash-rest-shim-redis_httpgo-562)); a value the set
+  delivers through `dashboard.envFrom` is shadowed by them, and `dashboard.env` still wins. Rendering
+  the ClickHouse variables does not prove that integration works.
+
+### The Upstash REST shim (`redis_http.go`, [#562](https://github.com/oramasearch/orama-operator/issues/562))
+
+Prod 1's dashboard caches analytics query results (`analytics/search-get-body`,
+`analytics/conversations-get-body`) in Upstash Redis through its REST API. Upstash comes into the
+cluster (bridge decisions of 2026-10-16, 12a) and the dashboard is not changed: the operator runs
+[`serverless-redis-http`](https://github.com/hiett/serverless-redis-http), which speaks Upstash's REST
+protocol, in front of the stack's own Redis (bridge decisions of 2026-10-17, 7).
+
+- **When.** Whenever the cache runs in this cluster (enabled, not `mode: external`, not
+  `placement: central` on a read region). No toggle of its own; disabling the cache removes the
+  Deployment and Service and keeps the token.
+- **Token.** `<cr>-redis-http`, key `token`: 64 hex characters (32 random bytes), generated once by
+  the bootstrap step like the other [credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo),
+  never rotated by the reconcile and never removed by a teardown.
+- **Deployment and Service** `<cr>-redis-http`, port 80, one replica, `64Mi`/`50m` requested and a
+  `256Mi` limit, with `NET_BIND_SERVICE` for port 80. Env, in order: `REDIS_PASSWORD` from
+  `<cr>-cache-auth`, `SRH_MODE=env`, `SRH_TOKEN` from `<cr>-redis-http`, and
+  `SRH_CONNECTION_STRING=redis://:$(REDIS_PASSWORD)@<cr>-cache:6379`. Probes are TCP on 80 (the shim
+  answers `GET /` but has no health route). A changed token or Redis password rolls it.
+- **Image.** `oramasearch/serverless-redis-http@sha256:65128347949bca511e448fd7238780d624573d74c22b79155a7563db19e9b678`:
+  upstream `hiett/serverless-redis-http:0.0.10` (that index digest; `linux/amd64` and `linux/arm64`),
+  copied without a rebuild into a private Docker Hub repository, so the digest does not change, and
+  pulled with `spec.images.pullSecretName`. `spec.images.overrides["redis-http"]` replaces it.
+- **Dashboard.** `REDIS_CACHE_URL=http://<cr>-redis-http` and `REDIS_CACHE_TOKEN` from
+  `<cr>-redis-http` key `token`; the token's hash is on the dashboard's template, so a new token rolls
+  it.
+- **Network.** Only the dashboard reaches the shim, on 80 (`allow-redis-http-ingress`, and port 80 in
+  `allow-dashboard-egress`); the shim reaches only the cache, on 6379 (`allow-redis-http-egress`,
+  and `redis-http` in `allow-cache-ingress`).
+- **Other Upstash REST users.** `secure-proxy` and `worker-answer-engine` import `@upstash/redis`, but
+  neither runs in the cluster: the `orama-workers` bundle (`build/images/workers` in the Cloud v1
+  bridge) mounts no worker's code yet and reads no Upstash variable, so the workers get no path to the
+  shim. Wire it when a worker that uses Upstash is mounted.
+- **Protocol.** The shim implements the request-body form `@upstash/redis` uses (`POST /`,
+  `/pipeline`, `/multi-exec` with `Authorization: Bearer <token>`), not command paths such as
+  `/set/<key>/<value>`. A probe by hand is
+  `curl -s -H "Authorization: Bearer $REDIS_CACHE_TOKEN" -H 'Content-Type: application/json' -d '["SET","probe","1"]' $REDIS_CACHE_URL`.
 
 ### The dashboard's scheduled jobs
 

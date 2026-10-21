@@ -406,6 +406,15 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		return err
 	}
 	img := componentImage(oc, "dashboard", "dashboard")
+	// The master key (#307), the CNPG-generated credentials for the dashboard's control-DB client,
+	// and, where the cache runs, the serverless-redis-http shim's URL and token for its Upstash
+	// client (#562); then the user's dashboard.env (#311), which may replace any but the owned ones.
+	env := []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
+	credentialSecrets := []string{masterKey}
+	if redisHTTPRuns(oc) {
+		env = append(env, redisCacheEnv(oc)...)
+		credentialSecrets = append(credentialSecrets, redisHTTPSecretName(oc))
+	}
 	// The dashboard never migrates the control DB: the operator's PostgresSchema owns the
 	// schema (operator#40). A second Drizzle migrate collides with those objects (Postgres 42710).
 	if err := r.reconcileApp(ctx, oc, appDef{
@@ -414,10 +423,8 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		port:              3000,
 		ingressHost:       d.Host,
 		ingressExtraHosts: d.ExtraHosts,
-		// The master key (#307), the CNPG-generated credentials for the dashboard's control-DB client,
-		// then the user's dashboard.env (#311).
-		env:               overrideEnv([]corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}, d.Env),
-		credentialSecrets: []string{masterKey},
+		env:               overrideEnv(env, d.Env),
+		credentialSecrets: credentialSecrets,
 		extraEnvFrom:      d.EnvFrom,
 		envHash:           envHash,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.
