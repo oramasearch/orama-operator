@@ -1614,6 +1614,11 @@ instances onto managed clusters from one template, each member in its own namesp
 An `OramaCloudV1Set` also applies its members' team migrations as `OramaCloudV1Migration`s
 (`managedset_migrations.go`, [#654](https://github.com/oramasearch/orama-operator/issues/654);
 [`cloud-v1-migration.md`](cloud-v1-migration.md#declared-in-the-set-oramacloudv1set)).
+A `LakeSet` also applies its `spec.e2eTests` as cluster-scoped `LakeE2ETest`s on its members'
+clusters and reads each run's result back into its status (`managedset_e2etests.go`,
+[#589](https://github.com/oramasearch/orama-operator/issues/589)): every file in `config/clusters/`
+is applied to the managing cluster, and this is how the testing → staging gate gets onto the
+cluster that runs `testing`.
 
 | Controller | Reconciles | Creates |
 |---|---|---|

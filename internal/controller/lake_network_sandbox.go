@@ -426,6 +426,11 @@ func lakeInternalIngressAllowances(
 				NamespaceSelector: namespaceNameSelector(methodologyRunsNamespace(lake.Name)),
 				PodSelector:       methodologyTransferPods(lake),
 			}}, int32(lakeContainerPort(lake))},
+		// The LakeE2ETest runner (orama-operator#537, #589) is a Job in this Lake's namespace. It
+		// is not one of the Lake's pods, so its own egress is not sandboxed; the Lake's ingress is.
+		{"allow-e2e-ingress-to-lake", "The LakeE2ETest runner Job in this Lake's namespace calls the Lake API (REST, MCP and liquid sync) as a freshly signed-up test person.", lakePods,
+			[]networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{labelExists(lakeE2ELabel)}}}},
+			int32(lakeContainerPort(lake))},
 	}
 	policies := make([]oramav1alpha1.NetworkSandboxPolicy, 0, len(paths))
 	for _, path := range paths {

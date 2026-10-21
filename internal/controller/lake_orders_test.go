@@ -164,7 +164,7 @@ func orderWorld(withProvider bool) []client.Object {
 			Spec: oramav1alpha1.OramaOperatorSpec{ClusterRef: "orama-production-cluster-03", Version: "v0.6.1", Namespace: "orama-system",
 				ImagePullSecretRef: oramav1alpha1.ClusterSecretReference{Name: "oramasearch-dockerhub", Namespace: "orama-system"}}},
 		&oramav1alpha1.LakeSet{ObjectMeta: metav1.ObjectMeta{Name: "lake-prod"},
-			Spec: oramav1alpha1.ManagedSetSpec{
+			Spec: oramav1alpha1.LakeSetSpec{ManagedSetSpec: oramav1alpha1.ManagedSetSpec{
 				Template: *rawJSON(`{"image":"oramasearch/lake:v0.2.0","ingressEnabled":true,"dnsSecretRef":{"name":"cloudflare-api-token-lake-live"}}`),
 				Secrets:  []oramav1alpha1.SetSecret{{Name: "oramasearch-dockerhub", Namespace: "lake"}},
 				Clusters: []oramav1alpha1.SetMember{
@@ -172,7 +172,7 @@ func orderWorld(withProvider bool) []client.Object {
 					{ClusterRef: "orama-production-cluster-03", Name: "shared-us", Spec: rawJSON(`{"host":"us.lake.live"}`)},
 				},
 				DeletionPolicy: oramav1alpha1.SetDeletionRetain,
-			}},
+			}}},
 		&oramav1alpha1.LakeOrderSource{ObjectMeta: metav1.ObjectMeta{Name: "lake-live"},
 			Spec: oramav1alpha1.LakeOrderSourceSpec{LakeSetRef: "lake-prod", HostDomain: "lake.live",
 				Member:           rawJSON(`{"clerk":{"secretKeySecretRef":{"name":"clerk-secret-key"}}}`),

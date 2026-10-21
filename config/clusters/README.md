@@ -26,7 +26,7 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 | `<cluster>/cluster.yaml` | The `KubernetesCluster`: region, version, node pools, `purpose` tag, deletion policy. |
 | `<cluster>/platform.yaml` | One `ClusterHelmRelease` per chart the cluster runs, in install order. |
 | `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs. |
-| `sets/lake-<purpose>.yaml` | A `LakeSet`: the Lake instances of that purpose. |
+| `sets/lake-<purpose>.yaml` | A `LakeSet`: the Lake instances of that purpose, and the end-to-end runs against them (`spec.e2eTests`). |
 | `sets/v1-<purpose>.yaml` | An `OramaCloudV1Set`: the Orama Cloud v1 instances of that purpose, and the Prod 1 teams being copied into them. |
 
 | Cluster | Region | Purpose | Deletion policy |
@@ -179,6 +179,19 @@ true` while the import is enabled, or a writing step is `Blocked`. Watch progres
   Delete` a member's stack is deleted only once its migrations are gone, and a set being deleted
   keeps its finalizer until all of them are, under either policy. A migration stuck in `Blocked`
   holds that deletion, with its message on the set.
+
+## Running the Lake end-to-end gate from a set file
+
+A `LakeE2ETest` runs on the cluster of the Lake it tests, but these files are applied to the managing
+cluster. So the testing -> staging gate is an entry under `spec.e2eTests` of
+[`sets/lake-nonprod.yaml`](sets/lake-nonprod.yaml), and the managing operator applies it as a
+`LakeE2ETest` on the member's cluster with `spec.member` filled in
+([operator#589](https://github.com/oramasearch/orama-operator/issues/589),
+[`docs/lake/README.md#service-e2e`](../../docs/lake/README.md#service-e2e)). The image is named by
+digest. Applying the file starts a run, and changing `runID` to the next release starts the next;
+both are a set change, applied with Steve's consent and committed with it. The result is in the
+set's `E2E` column and `status.e2eTests`. The entry is in the file, commented out, until
+`oramasearch/lake-e2e` has an image and the managing cluster runs an operator that knows the field.
 
 To check that the files match the cluster:
 
