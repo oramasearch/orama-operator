@@ -166,6 +166,20 @@ of Secret keys to version-1 records. A dynamic response also has `value.lease` w
 `expires_at`, and optional `renew_at`. Plaintext and unsealed dynamic credentials must not appear in
 the response.
 
+#### What a lake source does not bind
+
+The envelope binds the cluster, the namespace and the Secret name. App and store projections all
+live in the shared Lake namespace, so it does not bind the workspace, and lake's
+`mint_sealed_secret` does not check that the mount belongs to the workspace the projection is for:
+the only workspace check is when the reference is written (`check_secret_references`,
+`create_store`). Binding it at delivery is
+[lake#950](https://github.com/oramasearch/lake/issues/950). When lake stops delivering a secret
+(deleted, destroyed, revoked), the last projected Secret is kept and retried every five minutes;
+removing it on a definite refusal is
+[orama-operator#777](https://github.com/oramasearch/orama-operator/issues/777). Lake does not yet
+verify the `attestation`: the admin bearer is the credential. The security review is
+[`docs/security/deep-search-714-workspace-services.md`](../security/deep-search-714-workspace-services.md).
+
 ## Environment delivery references
 
 The environment controller creates a local `LakeSealedSecret` beside each copied Secret with
@@ -235,7 +249,11 @@ kubectl get secret application-database -n application \
 ```
 
 Repository verification covers the reference fixture, each AAD mismatch, unknown `kid`, key
-retention and cleanup, Lake-source minting, dynamic renewal, labels, and ownership:
+retention and cleanup, Lake-source minting, dynamic renewal, labels, and ownership, and the
+isolation rules of the security review (`lakesealedsecret_isolation_test.go`: a record refused
+outside its cluster, namespace and name with no Secret written anywhere, a foreign Secret never
+overwritten, the mint recipient always the resource's own namespace and a record lake sealed for
+another namespace refused, no plaintext in status, conditions or the reconcile error):
 
 ```sh
 go test ./internal/controller -run 'Test(SealedSecret|LakeSealedSecret|LakeSealing|LakeSource|DynamicSource)'
