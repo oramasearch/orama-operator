@@ -839,8 +839,9 @@ spec:
                     description: |-
                       ZettaEnv is copied to every managed Zetta service's and workspace Zetta's OramaZettaCluster
                       spec.env, followed by the operator's default Zetta env for every name it does not set
-                      (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864, MALLOC_ARENA_MAX=2). Operator-managed Zetta
-                      environment names remain reserved and are reported by each child cluster when ignored.
+                      (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864, MALLOC_ARENA_MAX=2, ZETTA_EGRESS_ALLOW=*, which
+                      leaves egress to the namespace's NetworkSandbox). Operator-managed Zetta environment names
+                      remain reserved and are reported by each child cluster when ignored.
                     items:
                       description: EnvVar represents an environment variable present
                         in a Container.
@@ -1404,8 +1405,9 @@ spec:
                     description: |-
                       Env is copied to the owned OramaZettaCluster spec.env, followed by the operator's default Zetta
                       env for every name it does not set (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864,
-                      MALLOC_ARENA_MAX=2). Operator-managed Zetta environment names remain reserved and are reported
-                      by the child cluster when ignored.
+                      MALLOC_ARENA_MAX=2, ZETTA_EGRESS_ALLOW=*, which leaves egress to the namespace's
+                      NetworkSandbox). Operator-managed Zetta environment names remain reserved and are reported by
+                      the child cluster when ignored.
                     items:
                       description: EnvVar represents an environment variable present
                         in a Container.
