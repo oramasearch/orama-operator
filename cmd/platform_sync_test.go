@@ -296,3 +296,35 @@ func TestEveryLeafRunsTheSameOperatorVersion(t *testing.T) {
 		t.Errorf("the managed clusters do not all run the same operator: %v", versions)
 	}
 }
+
+// operator#719: on every cluster, ingress-nginx takes the client address from CF-Connecting-IP only
+// for connections from Cloudflare's published ranges, so a sender that reaches the ingress directly
+// cannot choose the address lake counts (lake#838).
+func TestIngressTrustsCloudflaresClientAddressOnlyFromCloudflare(t *testing.T) {
+	check := func(where string, release platformRelease) {
+		controller, _ := release.Values["controller"].(map[string]any)
+		config, _ := controller["config"].(map[string]any)
+		if config["use-forwarded-headers"] != "true" || config["forwarded-for-header"] != "CF-Connecting-IP" {
+			t.Errorf("%s: ingress-nginx config %v does not take the address from CF-Connecting-IP", where, config)
+		}
+		cidrs, _ := config["proxy-real-ip-cidr"].(string)
+		for _, want := range []string{"173.245.48.0/20", "104.16.0.0/13", "172.64.0.0/13", "2606:4700::/32"} {
+			if !strings.Contains(cidrs, want) {
+				t.Errorf("%s: proxy-real-ip-cidr lacks Cloudflare's %s", where, want)
+			}
+		}
+		for _, private := range []string{"0.0.0.0/0", "10.0.0.0/8", "::/0"} {
+			if strings.Contains(cidrs, private) {
+				t.Errorf("%s: proxy-real-ip-cidr trusts %s, not only Cloudflare", where, private)
+			}
+		}
+	}
+	check("helmfile.yaml", helmfilePlatform(t)["ingress-nginx"])
+	paths, err := filepath.Glob("../config/clusters/*/platform.yaml")
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("no leaf platform files (%v)", err)
+	}
+	for _, path := range paths {
+		check(path, leafPlatform(t, path)["ingress-nginx"])
+	}
+}

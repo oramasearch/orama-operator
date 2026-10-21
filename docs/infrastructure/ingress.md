@@ -38,6 +38,18 @@ Every backend that admitted ingress-nginx now admits the gateway beside it: the 
 (`allow-ingress-nginx`), Orama Cloud v1's dashboard and docs, and Lake environments. Lake apps do not
 (below).
 
+## The client address ingress-nginx passes on (operator#719)
+
+ingress-nginx takes a request's client address from Cloudflare's `CF-Connecting-IP` **only** when
+the connection comes from Cloudflare's published ranges (`proxy-real-ip-cidr`, from
+https://www.cloudflare.com/ips/, read 2026-10-21; `use-forwarded-headers`,
+`forwarded-for-header: CF-Connecting-IP`), and from the TCP peer otherwise. It then sets `X-Real-IP`
+and `X-Forwarded-For` from that address. A sender that reaches the ingress without passing
+Cloudflare therefore cannot choose its own address. Lake's order sheet counts `X-Real-IP`
+(lake#838). The values are in `helmfile.yaml` and every `config/clusters/*/platform.yaml`;
+`TestIngressTrustsCloudflaresClientAddressOnlyFromCloudflare` checks both. When Cloudflare publishes
+new ranges, update the list in all of them in one pull request.
+
 ## What it serves
 
 Every Ingress the operator writes (an `orama.cloud` resource controls it), **whatever its class**:
