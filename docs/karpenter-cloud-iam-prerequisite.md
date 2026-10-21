@@ -72,6 +72,8 @@ The install reconcile is **cloud-gated and prerequisite-guarded**. It detects th
 | `.status` condition | Reason | Meaning / action |
 |---|---|---|
 | `KarpenterInstalled=False` | `InvalidInstallSpec` | `installClusterName` or `controllerRoleARN` is not a valid EKS cluster name / IAM role ARN (the CRD refuses these at admission; this catches a CR stored before the patterns existed, [operator#79](https://github.com/oramasearch/orama-operator/issues/79)). Nothing is applied; fix the field. |
+| `KarpenterInstalled=False` | `InstallNamespaceNotAllowed` | The CR is not in the operator's own namespace (`POD_NAMESPACE`). The Karpenter controller is one per cluster and its IRSA role decides which cloud account it acts in, so a tenant's CR in a workspace namespace may not set it ([operator#280](https://github.com/oramasearch/orama-operator/issues/280)). Nothing is applied; declare the install on a CR in the operator's namespace. |
+| `KarpenterInstalled=False` | `ConflictingInstallSpec` | Another CR in the operator's namespace already installs Karpenter with a different `installClusterName` or `controllerRoleARN`. The oldest CR's values hold; this one applies nothing (operator#280). Make them equal, or clear `install` on one. |
 | `KarpenterInstalled=False` | `BareMetalNoCloud` | No cloud provider — nothing to install. |
 | `KarpenterInstalled=False` | `ManagedByAKSNAP` | On AKS: enable NAP + use `enabled` (not `install`). |
 | `KarpenterInstalled=False` | `UnsupportedCloud` | Cloud detected but not an EKS self-install target — install Karpenter out-of-band and use `enabled`. |
@@ -86,8 +88,8 @@ kubectl get ozc <name> -o jsonpath='{.status.conditions[?(@.type=="KarpenterInst
 
 ## Teardown / safety notes
 
-- The controller install is a **cluster singleton**, ref-counted across every `OramaZettaCluster` that
-  opts in. Disabling `install` (or deleting the last consumer CR) removes the operator-managed controller
+- The controller install is a **cluster singleton**, ref-counted across every `OramaZettaCluster` in
+  the operator's namespace that opts in (a refused CR in another namespace does not count). Disabling `install` (or deleting the last consumer CR) removes the operator-managed controller
   ServiceAccount/RBAC/Deployment/Service/PDB via a finalizer (the resources are cluster-scoped, so they
   can't be owner-GC'd by a namespaced CR).
 - **The Karpenter CRDs are applied but never deleted on teardown.** Deleting a Karpenter CRD cascades to

@@ -100,6 +100,10 @@ type OramaZettaClusterReconciler struct {
 	droppedPeersLog sync.Map
 	operatorIDOnce  sync.Once
 	operatorIDValue string
+	// OperatorNamespace is the manager pod's namespace (POD_NAMESPACE). Only an OramaZettaCluster in it
+	// may own the cluster-wide Karpenter install (operator#280); a tenant's CR, in its own namespace,
+	// is refused.
+	OperatorNamespace string
 }
 
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete

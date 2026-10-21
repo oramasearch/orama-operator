@@ -103,6 +103,26 @@ func (r *OramaZettaClusterReconciler) reconcileKarpenterInstall(ctx context.Cont
 		return installBlocked("InvalidInstallSpec", "operator-owned Karpenter install refused, nothing applied: "+err.Error()), nil
 	}
 
+	// The Karpenter controller is one per cluster, and its IRSA role decides which cloud account it
+	// acts in. Only a CR in the operator's own namespace may set it; a tenant's CR, in a workspace
+	// namespace, could otherwise point it at a role in the tenant's account (operator#280).
+	if !r.installNamespaceAllowed(z) {
+		log.Info("Karpenter install refused: CR is not in the operator's namespace", "namespace", z.Namespace)
+		return installBlocked("InstallNamespaceNotAllowed", fmt.Sprintf(
+			"operator-owned Karpenter install refused, nothing applied: only an OramaZettaCluster in the operator's namespace %q may install the cluster-wide Karpenter controller; this one is in %q",
+			r.OperatorNamespace, z.Namespace)), nil
+	}
+	// Several such CRs must agree: the first (oldest) one's values hold and a conflicting one is
+	// refused, never last-writer-wins.
+	if owner, err := r.conflictingInstallOwner(ctx, z); err != nil {
+		return nil, err
+	} else if owner != nil {
+		log.Info("Karpenter install refused: conflicts with another CR", "owner", owner.Namespace+"/"+owner.Name)
+		return installBlocked("ConflictingInstallSpec", fmt.Sprintf(
+			"operator-owned Karpenter install refused, nothing applied: %s/%s already installs Karpenter with a different installClusterName or controllerRoleARN; make them equal or clear install on one of them",
+			owner.Namespace, owner.Name)), nil
+	}
+
 	// Cloud gate: only self-install on a cloud that both has a VM API and isn't already managing Karpenter.
 	cloud, err := r.detectCloudProvider(ctx)
 	if err != nil {
@@ -304,11 +324,49 @@ func (r *OramaZettaClusterReconciler) otherClustersRequestInstall(ctx context.Co
 		if c.UID == self.UID || !c.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if capacityInstallRequested(c) {
+		if capacityInstallRequested(c) && r.installNamespaceAllowed(c) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// installNamespaceAllowed reports whether z may own the operator-managed Karpenter install: it is in
+// the operator's own namespace. Without a known operator namespace no CR may (fail closed).
+func (r *OramaZettaClusterReconciler) installNamespaceAllowed(z *oramav1alpha1.OramaZettaCluster) bool {
+	return r.OperatorNamespace != "" && z.Namespace == r.OperatorNamespace
+}
+
+// conflictingInstallOwner returns the oldest other (non-deleting) allowed CR requesting the install
+// with a different cluster name or role ARN than z, when that CR is older than z (creation time,
+// then namespace/name). nil when z's values hold.
+func (r *OramaZettaClusterReconciler) conflictingInstallOwner(ctx context.Context, z *oramav1alpha1.OramaZettaCluster) (*oramav1alpha1.OramaZettaCluster, error) {
+	var list oramav1alpha1.OramaZettaClusterList
+	if err := r.reader().List(ctx, &list); err != nil {
+		return nil, err
+	}
+	older := func(a, b *oramav1alpha1.OramaZettaCluster) bool {
+		if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+			return a.CreationTimestamp.Before(&b.CreationTimestamp)
+		}
+		return a.Namespace+"/"+a.Name < b.Namespace+"/"+b.Name
+	}
+	mine := z.Spec.Capacity.Karpenter
+	var owner *oramav1alpha1.OramaZettaCluster
+	for i := range list.Items {
+		c := &list.Items[i]
+		if c.UID == z.UID || !c.DeletionTimestamp.IsZero() || !capacityInstallRequested(c) || !r.installNamespaceAllowed(c) {
+			continue
+		}
+		theirs := c.Spec.Capacity.Karpenter
+		if theirs.InstallClusterName == mine.InstallClusterName && theirs.ControllerRoleARN == mine.ControllerRoleARN {
+			continue
+		}
+		if older(c, z) && (owner == nil || older(c, owner)) {
+			owner = c
+		}
+	}
+	return owner, nil
 }
 
 // finalizeKarpenterInstall is the delete-path cleanup: release the shared Karpenter install (if this was

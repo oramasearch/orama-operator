@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -19,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -435,5 +437,101 @@ func TestReconcileKarpenterInstallRefusesInvalidSpec(t *testing.T) {
 		if len(bindings.Items) != 0 || len(accounts.Items) != 0 {
 			t.Errorf("refused spec still wrote objects: %d bindings, %d service accounts", len(bindings.Items), len(accounts.Items))
 		}
+	}
+}
+
+// operator#280: only a CR in the operator's namespace may own the cluster-wide Karpenter install. A
+// tenant's CR is refused before the finalizer or any object is written, and so is every CR when the
+// operator's namespace is unknown.
+func TestReconcileKarpenterInstallRefusesCRsOutsideTheOperatorNamespace(t *testing.T) {
+	scheme := newLakeScheme(t)
+	if err := rbacv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	kc := oramav1alpha1.KarpenterCapacity{Install: true, InstallClusterName: "orama-eks-prod", ControllerRoleARN: "arn:aws:iam::210987654321:role/TenantRole"}
+	for _, operatorNamespace := range []string{"orama-system", ""} {
+		z := &oramav1alpha1.OramaZettaCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "zetta", Namespace: "prod-ws-0123456789ab"},
+			Spec:       oramav1alpha1.OramaZettaClusterSpec{Capacity: &oramav1alpha1.OramaZettaCapacity{Karpenter: &kc}},
+		}
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}, Spec: corev1.NodeSpec{ProviderID: "aws:///us-east-1a/i-0123"}}
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(z, node).Build()
+		r := &OramaZettaClusterReconciler{Client: c, Scheme: scheme, OperatorNamespace: operatorNamespace}
+		cond, err := r.reconcileKarpenterInstall(context.Background(), z)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != "InstallNamespaceNotAllowed" {
+			t.Fatalf("operator namespace %q: condition = %+v, want KarpenterInstalled=False InstallNamespaceNotAllowed", operatorNamespace, cond)
+		}
+		if controllerutil.ContainsFinalizer(z, installFinalizer) {
+			t.Errorf("operator namespace %q: install finalizer added for a refused CR", operatorNamespace)
+		}
+		var accounts corev1.ServiceAccountList
+		if err := c.List(context.Background(), &accounts, client.InNamespace(karpenterNamespace)); err != nil {
+			t.Fatal(err)
+		}
+		if len(accounts.Items) != 0 {
+			t.Errorf("operator namespace %q: refused CR still wrote %d service accounts", operatorNamespace, len(accounts.Items))
+		}
+	}
+}
+
+// operator#280: two CRs in the operator's namespace that disagree are not last-writer-wins: the older
+// one holds and the newer is refused; one that agrees is not.
+func TestReconcileKarpenterInstallRefusesAConflictingSecondCR(t *testing.T) {
+	scheme := newLakeScheme(t)
+	if err := rbacv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	cr := func(name string, created time.Time, roleARN string) *oramav1alpha1.OramaZettaCluster {
+		return &oramav1alpha1.OramaZettaCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "orama-system", UID: types.UID(name), CreationTimestamp: metav1.NewTime(created)},
+			Spec: oramav1alpha1.OramaZettaClusterSpec{Capacity: &oramav1alpha1.OramaZettaCapacity{Karpenter: &oramav1alpha1.KarpenterCapacity{
+				Install: true, InstallClusterName: "orama-eks-prod", ControllerRoleARN: roleARN,
+			}}},
+		}
+	}
+	now := time.Now().Truncate(time.Second)
+	first := cr("first", now.Add(-time.Hour), "arn:aws:iam::123456789012:role/KarpenterController")
+	agreeing := cr("agreeing", now, "arn:aws:iam::123456789012:role/KarpenterController")
+	conflicting := cr("conflicting", now, "arn:aws:iam::210987654321:role/Other")
+	tenant := cr("tenant", now.Add(-2*time.Hour), "arn:aws:iam::210987654321:role/Tenant")
+	tenant.Namespace = "prod-ws-0123456789ab"
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}, Spec: corev1.NodeSpec{ProviderID: "aws:///us-east-1a/i-0123"}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(first, agreeing, conflicting, tenant, node).Build()
+	r := &OramaZettaClusterReconciler{Client: c, Scheme: scheme, OperatorNamespace: "orama-system"}
+
+	cond, err := r.reconcileKarpenterInstall(context.Background(), conflicting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cond == nil || cond.Reason != "ConflictingInstallSpec" || !strings.Contains(cond.Message, "orama-system/first") {
+		t.Fatalf("conflicting CR: condition = %+v, want ConflictingInstallSpec naming orama-system/first", cond)
+	}
+	if controllerutil.ContainsFinalizer(conflicting, installFinalizer) {
+		t.Error("install finalizer added for a conflicting CR")
+	}
+	for _, z := range []*oramav1alpha1.OramaZettaCluster{first, agreeing} {
+		owner, err := r.conflictingInstallOwner(context.Background(), z)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if owner != nil {
+			t.Errorf("%s: conflicting owner = %s, want none (the tenant CR is older but not allowed)", z.Name, owner.Name)
+		}
+	}
+	// The tenant's CR does not keep the shared install alive.
+	others, err := r.otherClustersRequestInstall(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !others {
+		t.Error("the agreeing CR in the operator namespace should count as another requester")
+	}
+	onlyTenant := fake.NewClientBuilder().WithScheme(scheme).WithObjects(first, tenant).Build()
+	r.Client = onlyTenant
+	if others, err := r.otherClustersRequestInstall(context.Background(), first); err != nil || others {
+		t.Errorf("tenant CR counted as a requester of the shared install (others=%v, err=%v)", others, err)
 	}
 }
