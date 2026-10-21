@@ -209,6 +209,10 @@ func (r *LakeReconciler) reserveMethodologyQuota(ctx context.Context, lake *oram
 		return methodologyReservationOutcome{}, fmt.Errorf("reserve the %s's resources in %s: %w", want.What, want.Namespace, err)
 	}
 	refusal := apiRefusalMessage(err)
+	if strings.Contains(refusal, "cannot create resource") {
+		// The operator's own RBAC, not the workspace: an error to retry, never the run's failure.
+		return methodologyReservationOutcome{}, fmt.Errorf("reserve the %s's resources in %s: %w", want.What, want.Namespace, err)
+	}
 	quota := &corev1.ResourceQuota{}
 	if qerr := r.reader().Get(ctx, client.ObjectKey{Namespace: want.Namespace, Name: workspaceProfileName}, quota); qerr == nil {
 		if over := quotaNeverFits(quota.Spec.Hard, want.Resources); over != "" {

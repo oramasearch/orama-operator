@@ -300,3 +300,27 @@ func TestReservationResourcesAreTheLargestOfEachPod(t *testing.T) {
 		t.Fatalf("over = %q", over)
 	}
 }
+
+// A refusal by the operator's own RBAC is an error to retry, never the run's failure.
+func TestAnRBACRefusalOfTheReservationIsRetriedNotFailed(t *testing.T) {
+	h, store := newMethodologyHarness(t, false)
+	watch := h.client.(client.WithWatch)
+	h.reconciler.Client = interceptor.NewClient(watch, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if _, isPod := obj.(*corev1.Pod); isPod {
+				return apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, obj.GetName(),
+					errorString(`User "system:serviceaccount:orama-system:orama-operator" cannot create resource "pods" in API group "" in the namespace "`+testWorkspaceName+`"`))
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+	})
+	store.setBuild(LakeMethodologyRunBuild{Desired: buildDesiredQueued, Phase: BuildPhaseSucceeded, Digest: testBuildDigest,
+		Target: "lake-prod.lake.svc/acme/churn-methodology:build-1"})
+	h.poll()
+	store.mu.Lock()
+	status := store.methodologyRuns[0].Status
+	store.mu.Unlock()
+	if status != nil && status.Phase == MethodologyPhaseFailed || !h.changing {
+		t.Fatalf("an RBAC refusal failed the run: %+v (changing %v)", status, h.changing)
+	}
+}
