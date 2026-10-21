@@ -4640,3 +4640,74 @@ CREATE TABLE IF NOT EXISTS billing_contacts (
 
 CREATE TABLE IF NOT EXISTS billing_contacts_guard (applied_at timestamptz NOT NULL DEFAULT now());
 INSERT INTO schema_migrations (version) VALUES ('0090_billing_contacts') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0091_account_deletion (lake#810, docs/api/identity.md#deleting-an-account): a person deletes
+-- their own account, or the operator deletes one. delete_account first deletes the workspaces of
+-- the account's personal space and the organizations it is the only owner of (through
+-- delete_workspace and delete_organization), then removes its sessions, tokens, devices,
+-- credentials, identity documents, memberships and grants and its space's billing contact, and
+-- marks the user and its space deleted. The user row stays, its email and display name erased,
+-- because the central audit chain names its TAAP identity and space (audit_events is append-only
+-- and audit_events.customer_id is ON DELETE RESTRICT); lake never lists or reads a deleted account
+-- again, and its handle and TAAP identity stay retired. Idempotent; drops nothing.
+-- ---------------------------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS account_deletion_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0091_account_deletion') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0092_saml_sign_in (lake#836, docs/api/sso.md#saml-sign-in): SAML sign-in through Lake's
+-- Assertion Consumer Service. `sso_saml_requests` holds each outstanding AuthnRequest (its id only
+-- as a SHA-256 hash), used once within ten minutes; `sso_saml_assertions` holds the hash of each
+-- accepted assertion's id until the assertion expires, so a response is accepted once. Sign-in
+-- state (decision 50): nothing from a workspace. Rows go with their provider. Idempotent.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sso_saml_requests (
+    id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider_id     uuid        NOT NULL REFERENCES sso_providers(id) ON DELETE CASCADE,
+    request_id_hash text        NOT NULL UNIQUE,
+    device_name     text        NOT NULL CHECK (length(device_name) <= 256),
+    taap_id         text        NOT NULL DEFAULT '' CHECK (length(taap_id) <= 512),
+    return_to       text        NOT NULL DEFAULT '' CHECK (length(return_to) <= 2048),
+    expires_at      timestamptz NOT NULL,
+    used_at         timestamptz,
+    created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS sso_saml_requests_expires_idx ON sso_saml_requests (expires_at);
+
+CREATE TABLE IF NOT EXISTS sso_saml_assertions (
+    provider_id       uuid        NOT NULL REFERENCES sso_providers(id) ON DELETE CASCADE,
+    assertion_id_hash text        NOT NULL,
+    expires_at        timestamptz NOT NULL,
+    used_at           timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (provider_id, assertion_id_hash)
+);
+CREATE INDEX IF NOT EXISTS sso_saml_assertions_expires_idx ON sso_saml_assertions (expires_at);
+
+CREATE TABLE IF NOT EXISTS saml_sign_in_guard (applied_at timestamptz NOT NULL DEFAULT now());
+INSERT INTO schema_migrations (version) VALUES ('0092_saml_sign_in') ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------------------------
+-- 0093_root_recovery_participants (lake#934, docs/api/break-glass.md): who holds each share of a
+-- root recovery ceremony. begin_root_recovery names distinct participants, share i to the i-th;
+-- each claims only their own share, issued once (`share_issued_at`), and presents it themselves.
+-- A presented share's evidence stays in pki_recovery_shares. No share is stored. A ceremony begun
+-- before this migration has no participants and cannot be completed. Idempotent.
+-- ---------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pki_recovery_participants (
+    ceremony_id     uuid        NOT NULL REFERENCES pki_recovery_ceremonies(id) ON DELETE CASCADE,
+    share_index     integer     NOT NULL,
+    principal_id    text        NOT NULL CHECK (principal_id <> ''),
+    share_issued_at timestamptz,
+    PRIMARY KEY (ceremony_id, share_index),
+    CONSTRAINT pki_recovery_participants_principal_unique UNIQUE (ceremony_id, principal_id),
+    CONSTRAINT pki_recovery_participants_index_check CHECK (share_index BETWEEN 1 AND 255)
+);
+
+CREATE TABLE IF NOT EXISTS root_recovery_participants_guard (
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO schema_migrations (version) VALUES ('0093_root_recovery_participants')
+    ON CONFLICT DO NOTHING;
