@@ -146,7 +146,7 @@ leaves it off), and every Lake runs the same features whatever its value
 | Image builds | `spec.builds.builderImage` | `oramasearch/lake-builder:31a48d9` |
 | Methodologies (`LAKE_METHODOLOGY_RUNTIME_IMAGE`) | `spec.methodologies.runtimeImage` | `oramasearch/methodology-runtime:ac58062` |
 | User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:v0.1.0` |
-| MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a` |
+| MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892` |
 | `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:v0.1.0` |
 | `agent-project` | `spec.agents.library[key]` | `oramasearch/agent-project:v0.1.0` |
 | `agent-autosuggest` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest:v0.1.0` |

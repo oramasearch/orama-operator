@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -83,7 +84,7 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 	for name, want := range map[string]string{
 		"LAKE_APPS_RUNTIME_IMAGE":        "oramasearch/app-runtime:976e6a8",
 		"LAKE_METHODOLOGY_RUNTIME_IMAGE": "oramasearch/methodology-runtime:ac58062",
-		"LAKE_MCP_RUNNER_IMAGE":          "oramasearch/lake-mcp-runner:d98451a",
+		"LAKE_MCP_RUNNER_IMAGE":          "oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892",
 		"LAKE_APPS_WILDCARD":             "lake-dev.oramadev.net",
 		"LAKE_AGENT_MODEL":               "gpt-5.5",
 		"LAKE_SERVICE_DIR":               lakeServicesMountPath,
@@ -381,4 +382,23 @@ func wantLakeOperatorEnv(postgres, deployments bool) []string {
 	}
 	return append(names, "LAKE_AGENT_ENDPOINTS", "LAKE_INTERNAL_URL", "LAKE_AGENT_MODEL",
 		"LAKE_AGENT_SERVICE_TOKEN", "LAKE_AGENT_BUS_DIR")
+}
+
+// The MCP runner image becomes an image App's image: lake creates every stdio MCP connection as
+// an App with mode image on it. lake refuses a stdio connection when it is not pinned by digest
+// (lake#783), and the operator fails such an App in lakeAppRowSource and the LakeApp CRD pattern,
+// so a tagged default means no stdio MCP server can start (operator#744).
+func TestTheDefaultMCPRunnerImageIsPinnedByDigestSoItsAppsCanRun(t *testing.T) {
+	runner, fromSpec := lakeMCPRunnerEnv(bareLake())
+	if fromSpec {
+		t.Fatal("a bare Lake's runner image came from its spec")
+	}
+	row := &LakeAppRow{Mode: oramav1alpha1.LakeAppModeImage, Image: runner.Value}
+	if err := lakeAppRowSource(row, &oramav1alpha1.LakeAppSpec{}); err != nil {
+		t.Errorf("an App on the default runner image %q fails: %v", runner.Value, err)
+	}
+	// The LakeApp CRD's spec.image pattern (api/v1alpha1/lakeapp_types.go).
+	if !regexp.MustCompile(`^.+@sha256:[a-fA-F0-9]{64}$`).MatchString(runner.Value) {
+		t.Errorf("the default runner image %q does not match the LakeApp image pattern", runner.Value)
+	}
 }
