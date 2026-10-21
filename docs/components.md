@@ -348,6 +348,16 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   Secret (ClickHouse password) and `<cr>-controldb-app` (the Postgres URI). Metadata changes roll
   nothing. An
   existing e2e Job is immutable and keeps the reference it was created with.
+- **Declared rotation (#594).** `spec.credentialRotation: {broker: N, cache: N}` rotates a generated
+  password through the committed CR, never by replacing a Secret on the cluster. When a generation is
+  above the one the Secret records (annotation `orama.cloud/credential-rotation`), the operator writes
+  a new 48-character hex password into `<cr>-broker-admin` or `<cr>-cache-auth` and records the
+  generation; the automatic rolls above restart the store and its clients, and the broker re-imports
+  its admin user from the boot definitions, so the running broker takes the new password. The same
+  generation rotates nothing again, a lower one never rotates back, and only a Secret this stack
+  generated is rotated (a supplied one is refused with the reason). Verify with
+  `TestCredentialRotationReplacesAGeneratedPasswordAndRollsItsReaders`; a live rotation on `v1-dev`
+  is still owed.
 
 ## Network sandboxes (`internal/controller/networksandbox_controller.go`)
 
