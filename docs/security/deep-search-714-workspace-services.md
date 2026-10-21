@@ -282,8 +282,9 @@ only when the reference is written (`lake:src/api/web_app_capabilities.cpp:333-3
 `lake_controller.go:1173`). Filed [lake#950](https://github.com/oramasearch/lake/issues/950) (p3).
 
 `mint_sealed_secret` is reachable only with the Lake's admin bearer (`resolve_object = operator_only`,
-`sealed_delivery.cpp:687`; admin bypass at `lake:src/api/registry.cpp:846-851`); the `attestation` in
-the body is not verified. Creating a `LakeSealedSecret` needs Kubernetes RBAC that only the operator
+`sealed_delivery.cpp:687`; admin bypass at `lake:src/api/registry.cpp:846-851`); the body
+carries no `attestation` since [#791](https://github.com/oramasearch/orama-operator/issues/791)
+(LSR-042): it used to carry the operator's own Kubernetes service-account token, unverified by lake. Creating a `LakeSealedSecret` needs Kubernetes RBAC that only the operator
 and cluster administrators hold (no aggregation to `edit`/`admin` in `config/rbac` or the chart); live,
 no `LakeSealedSecret` exists on the managing cluster.
 

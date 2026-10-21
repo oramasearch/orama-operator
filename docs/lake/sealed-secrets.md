@@ -138,15 +138,11 @@ complete against a real Lake; the operator's HTTP, refresh and renewal behavior 
 `httptest` lake double.
 
 The lake leaf's action input is the following JSON. `source` is the CRD source object unchanged.
-The capability must exchange and authorize the attestation before reading or minting a value.
+The call is authenticated by the Lake's admin bearer in the `Authorization` header, which the
+operator minted for that Lake; it is the only credential the operator sends.
 
 ```json
 {
-  "attestation": {
-    "type": "kubernetes",
-    "token": "<projected service-account token>",
-    "audiences": ["lake"]
-  },
   "recipient": {
     "cluster": "<Lake UID>",
     "namespace": "application",
@@ -176,9 +172,23 @@ the only workspace check is when the reference is written (`check_secret_referen
 [lake#950](https://github.com/oramasearch/lake/issues/950). When lake stops delivering a secret
 (deleted, destroyed, revoked), the last projected Secret is kept and retried every five minutes;
 removing it on a definite refusal is
-[orama-operator#777](https://github.com/oramasearch/orama-operator/issues/777). Lake does not yet
-verify the `attestation`: the admin bearer is the credential. The security review is
+[orama-operator#777](https://github.com/oramasearch/orama-operator/issues/777). The security review is
 [`docs/security/deep-search-714-workspace-services.md`](../security/deep-search-714-workspace-services.md).
+
+#### The operator's Kubernetes token never reaches Lake (orama-operator#791)
+
+The mint request carries no `attestation`. Until 2026-10-21 it carried the operator pod's default
+service-account token, read from `/var/run/secrets/kubernetes.io/serviceaccount/token`, which Lake
+never verified. That token is the operator's own Kubernetes credential, with cluster-wide Secret and
+workload rights, so anyone who could read a mint request inside Lake could act as the operator
+against the cluster (finding LSR-042 of the Lake pre-launch security review). The reconciler no
+longer reads any service-account token, and the admin bearer is the only credential in the request.
+
+If Lake ever needs to know which cluster identity is calling, beyond the admin bearer, the
+attestation must be a separate token minted for that purpose through the `TokenRequest` API, with
+audience `lake` only and a lifetime of minutes, so the Kubernetes API server refuses it; never the
+pod's default token. Tests: `TestMintRequestNeverCarriesTheOperatorsKubernetesBearer` (the request
+body and headers, captured by an `httptest` Lake) and `TestSealedSecretReconcilerReadsNoServiceAccountToken`.
 
 ## Environment delivery references
 

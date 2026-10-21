@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -39,7 +38,6 @@ import (
 const (
 	sealedSecretLabel          = "lake.orama.cloud/sealed"
 	sealedSecretContentMAC     = "lake.orama.cloud/content-mac"
-	serviceAccountTokenPath    = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	lakeMintSealedSecretRoute  = "/v1/mint_sealed_secret"
 	dynamicRenewalDefaultRatio = 3
 	// lakeSourceRefreshDefault is how often an unpinned lake source is delivered again, so a new
@@ -51,13 +49,11 @@ const (
 // LakeSealedSecretReconciler decrypts cluster-bound envelopes into owned Secrets.
 type LakeSealedSecretReconciler struct {
 	client.Client
-	Scheme              *runtime.Scheme
-	APIReader           client.Reader
-	HTTPClient          *http.Client
-	LakeURL             string
-	ServiceAccountToken string
-	TokenPath           string
-	Now                 func() time.Time
+	Scheme     *runtime.Scheme
+	APIReader  client.Reader
+	HTTPClient *http.Client
+	LakeURL    string
+	Now        func() time.Time
 	// LakeSourceRefresh overrides lakeSourceRefreshDefault (tests).
 	LakeSourceRefresh time.Duration
 }
@@ -423,16 +419,12 @@ func (r *LakeSealedSecretReconciler) secretContentMACValid(
 	return hmac.Equal(got, want)
 }
 
+// lakeMintRequest is the body of a mint call. It carries no attestation: the operator's own
+// service-account token authorizes cluster-wide Secret and workload access and must never leave the
+// operator (LSR-042, orama-operator#791). Lake authenticates the call with its admin bearer alone.
 type lakeMintRequest struct {
-	Attestation lakeMintAttestation                  `json:"attestation"`
-	Recipient   lakeMintRecipient                    `json:"recipient"`
-	Source      oramav1alpha1.LakeSealedSecretSource `json:"source"`
-}
-
-type lakeMintAttestation struct {
-	Type      string   `json:"type"`
-	Token     string   `json:"token"`
-	Audiences []string `json:"audiences"`
+	Recipient lakeMintRecipient                    `json:"recipient"`
+	Source    oramav1alpha1.LakeSealedSecretSource `json:"source"`
 }
 
 type lakeMintRecipient struct {
@@ -477,16 +469,7 @@ func (r *LakeSealedSecretReconciler) mintSealedSecret(
 	lake *oramav1alpha1.Lake,
 	resource *oramav1alpha1.LakeSealedSecret,
 ) (lakeMintResult, error) {
-	token, err := r.serviceAccountToken()
-	if err != nil {
-		return lakeMintResult{}, err
-	}
 	requestBody := lakeMintRequest{
-		Attestation: lakeMintAttestation{
-			Type:      "kubernetes",
-			Token:     token,
-			Audiences: []string{"lake"},
-		},
 		Recipient: lakeMintRecipient{
 			Cluster:   lake.Status.Sealing.Cluster,
 			Namespace: resource.Namespace,
@@ -506,7 +489,8 @@ func (r *LakeSealedSecretReconciler) mintSealedSecret(
 	}
 	request.Header.Set("Content-Type", "application/json")
 	// Lake delivers only to the operator: its credential is the Lake's admin bearer, which the
-	// operator minted (lake#625). The attestation stays in the body for a lake that verifies it.
+	// operator minted (lake#625). It is the only credential sent; the operator's Kubernetes
+	// service-account token is never sent (orama-operator#791).
 	bearer, err := r.lakeAdminToken(ctx, lake)
 	if err != nil {
 		return lakeMintResult{}, err
@@ -602,25 +586,6 @@ func (r *LakeSealedSecretReconciler) requestsForLake(
 		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(resource)})
 	}
 	return requests
-}
-
-func (r *LakeSealedSecretReconciler) serviceAccountToken() (string, error) {
-	if r.ServiceAccountToken != "" {
-		return r.ServiceAccountToken, nil
-	}
-	path := r.TokenPath
-	if path == "" {
-		path = serviceAccountTokenPath
-	}
-	value, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read projected service-account token: %w", err)
-	}
-	token := strings.TrimSpace(string(value))
-	if token == "" {
-		return "", errors.New("projected service-account token is empty")
-	}
-	return token, nil
 }
 
 // lakeAdminToken reads the Lake's admin bearer from the Secret the operator minted for it.
