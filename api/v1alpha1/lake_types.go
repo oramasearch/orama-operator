@@ -26,9 +26,12 @@ type LakeSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
-	// Replicas of the lake Deployment.
+	// Replicas of the lake Deployment: 1, or 0 to stop it. More is refused (operator#698): lake runs
+	// one process per store root (lake docs/deployment/store-volume.md), so a second replica would
+	// report Ready while it waits for the root forever and fail every request routed to it.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
@@ -63,10 +66,10 @@ type LakeSpec struct {
 	// +optional
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 
-	// Store configures the persistent root shared by all lake replicas. When ExistingClaim is
-	// empty, the operator creates lake-<name>-store once from Size, StorageClassName, and
-	// AccessModes. Later spec changes never replace or delete that claim. ReadWriteOnce requires
-	// Replicas=1; multiple replicas need storage that supports ReadWriteMany.
+	// Store configures the lake process's persistent root. When ExistingClaim is empty, the
+	// operator creates lake-<name>-store once from Size, StorageClassName, and AccessModes. Later
+	// spec changes never replace or delete that claim. One lake process owns the root at a time, so
+	// a Lake runs one replica whatever the access mode (operator#698).
 	// +optional
 	Store LakeStoreSpec `json:"store,omitempty"`
 

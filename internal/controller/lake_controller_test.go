@@ -19,6 +19,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -167,12 +168,10 @@ func TestLakeEnvIncludesManagedAppsRuntimeImage(t *testing.T) {
 
 func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
 	s := newLakeScheme(t)
-	two := int32(2)
 	lake := &oramav1alpha1.Lake{
 		ObjectMeta: metav1.ObjectMeta{Name: "hardened"},
 		Spec: oramav1alpha1.LakeSpec{
-			Image:    "oramasearch/lake:20260906a",
-			Replicas: &two,
+			Image: "oramasearch/lake:20260906a",
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}).Build()
@@ -229,26 +228,45 @@ func TestLakeReconcileRendersHardeningDefaults(t *testing.T) {
 	}
 	assertLakeSurges(t, deployment)
 	assertLakeProbesAndDrain(t, deployment)
-	// The default ReadWriteMany store lets replicas run on any node: no co-location.
+	// The default ReadWriteMany store surges with no co-location. One replica: no default topology
+	// spread and no PodDisruptionBudget (operator#698).
 	if deployment.Spec.Template.Spec.Affinity != nil {
-		t.Errorf("RWX multi-replica Lake has affinity %+v", deployment.Spec.Template.Spec.Affinity)
+		t.Errorf("RWX Lake has affinity %+v", deployment.Spec.Template.Spec.Affinity)
 	}
-	constraints := deployment.Spec.Template.Spec.TopologySpreadConstraints
-	if len(constraints) != 1 || constraints[0].MaxSkew != 1 ||
-		constraints[0].TopologyKey != "kubernetes.io/hostname" ||
-		constraints[0].WhenUnsatisfiable != corev1.ScheduleAnyway ||
-		constraints[0].LabelSelector == nil ||
-		constraints[0].LabelSelector.MatchLabels["app.kubernetes.io/instance"] != "hardened" {
-		t.Errorf("default topology spread = %+v", constraints)
+	if constraints := deployment.Spec.Template.Spec.TopologySpreadConstraints; len(constraints) != 0 {
+		t.Errorf("single-replica Lake has a default topology spread %+v", constraints)
 	}
-	pdb := &policyv1.PodDisruptionBudget{}
-	if err := c.Get(context.Background(), key, pdb); err != nil {
+}
+
+// operator#698: a Lake asking for more than one replica (a CR stored before the CRD's maximum)
+// keeps one, and its Ready condition says why.
+func TestLakeRefusesMoreThanOneReplica(t *testing.T) {
+	s := newLakeScheme(t)
+	two := int32(2)
+	lake := &oramav1alpha1.Lake{
+		ObjectMeta: metav1.ObjectMeta{Name: "doubled"},
+		Spec:       oramav1alpha1.LakeSpec{Image: "oramasearch/lake:20260906a", Replicas: &two},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}).Build()
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
+	reconcileLake(t, c, s, "doubled")
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake-dev", Name: "lake-doubled"}, deployment); err != nil {
 		t.Fatal(err)
 	}
-	if pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.IntValue() != 1 ||
-		pdb.Spec.Selector == nil ||
-		pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"] != "hardened" {
-		t.Errorf("PodDisruptionBudget = %+v", pdb.Spec)
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
+		t.Fatalf("deployment replicas = %v, want 1", deployment.Spec.Replicas)
+	}
+	var got oramav1alpha1.Lake
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "doubled"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	ready := apimeta.FindStatusCondition(got.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != "ReplicasRefused" || !strings.Contains(ready.Message, "operator#698") {
+		t.Fatalf("Ready condition = %+v, want ReplicasRefused naming operator#698", ready)
+	}
+	if replicas, refused := lakeReplicas(&oramav1alpha1.Lake{Spec: oramav1alpha1.LakeSpec{Replicas: new(int32)}}); replicas != 0 || refused != "" {
+		t.Errorf("replicas 0 (stopped) = %d, %q; want 0 and no refusal", replicas, refused)
 	}
 }
 

@@ -228,10 +228,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if image == "" {
 		return ctrl.Result{}, fmt.Errorf("lake %q: spec.image is required", lake.Name)
 	}
-	replicas := int32(1)
-	if lake.Spec.Replicas != nil {
-		replicas = *lake.Spec.Replicas
-	}
+	replicas, replicasRefused := lakeReplicas(&lake)
 	port := int32(lakeDefaultPort)
 	if lake.Spec.Port != nil {
 		port = *lake.Spec.Port
@@ -387,6 +384,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 	if backup.Enabled && !backup.Valid {
 		readiness = append(readiness, lakeComponentReadiness{"Degraded", backupCondition.Reason, backupCondition.Message})
+	}
+	if replicasRefused != "" {
+		readiness = append(readiness, lakeComponentReadiness{"Degraded", "ReplicasRefused", replicasRefused})
 	}
 	phase, readyCondition := lakeAggregateReadiness(&lake, readiness)
 	dataServices, dataServicesSummary := lakeDataServiceStatus(&lake)
@@ -787,6 +787,20 @@ func lakeDrainPreStop() *corev1.Lifecycle {
 			Sleep: &corev1.SleepAction{Seconds: lakePreStopDrainSeconds},
 		},
 	}
+}
+
+// lakeReplicas is the Deployment's replica count: spec.replicas, default 1, never more than 1
+// (operator#698). Lake runs one process per store root; a second one reports Ready while it waits
+// for the root, takes half the traffic and fails it. A CR stored before the CRD's maximum gets one
+// replica and the reason it was refused, for a Degraded Ready condition.
+func lakeReplicas(lake *oramav1alpha1.Lake) (int32, string) {
+	if lake.Spec.Replicas == nil {
+		return 1, ""
+	}
+	if requested := *lake.Spec.Replicas; requested > 1 {
+		return 1, fmt.Sprintf("spec.replicas is %d; lake runs one process per store root (operator#698), so the Deployment keeps one replica", requested)
+	}
+	return *lake.Spec.Replicas, ""
 }
 
 // lakeRollout chooses how a pod-template change replaces lake pods.
