@@ -147,6 +147,12 @@ type CloudflareTunnelStatus struct {
 	// +optional
 	DNSRecordID string `json:"dnsRecordId,omitempty"`
 
+	// DNSRecordOwnerComment is the ownership marker the operator wrote on that record
+	// (orama-operator:<namespace>/<name>, operator#585). The record is deleted only while it still
+	// carries it; empty for a record tracked before markers, which keeps its earlier cleanup.
+	// +optional
+	DNSRecordOwnerComment string `json:"dnsRecordOwnerComment,omitempty"`
+
 	// AccessApplicationID is the Access application admitting only Subject.
 	// +optional
 	AccessApplicationID string `json:"accessApplicationId,omitempty"`

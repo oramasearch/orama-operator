@@ -33,10 +33,13 @@ type fakeCloudflare struct {
 	records  map[string]bool
 	apps     map[string]bool
 	tokenHdr []string
+	// The zone's records by id: name and comment. A test seeds one to stand for a record the
+	// tunnel did not create (operator#585).
+	zone map[string]map[string]any
 }
 
 func newFakeCloudflare() *fakeCloudflare {
-	return &fakeCloudflare{bodies: map[string]map[string]any{}, tunnels: map[string]bool{}, records: map[string]bool{}, apps: map[string]bool{}}
+	return &fakeCloudflare{bodies: map[string]map[string]any{}, tunnels: map[string]bool{}, records: map[string]bool{}, apps: map[string]bool{}, zone: map[string]map[string]any{}}
 }
 
 func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -65,9 +68,25 @@ func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && r.URL.Path == account+"/cfd_tunnel/cf-tunnel/configurations":
 		reply(map[string]any{})
 	case r.Method == http.MethodGet && r.URL.Path == "/client/v4/zones/zone/dns_records":
-		reply([]any{})
+		found := []any{}
+		for id, record := range f.zone {
+			if name := r.URL.Query().Get("name"); name == "" || record["name"] == name {
+				found = append(found, map[string]any{"id": id, "name": record["name"], "content": record["content"], "comment": record["comment"]})
+			}
+		}
+		reply(found)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/client/v4/zones/zone/dns_records/"):
+		id := strings.TrimPrefix(r.URL.Path, "/client/v4/zones/zone/dns_records/")
+		record, ok := f.zone[id]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false}`))
+			return
+		}
+		reply(map[string]any{"id": id, "name": record["name"], "content": record["content"], "comment": record["comment"]})
 	case r.Method == http.MethodPost && r.URL.Path == "/client/v4/zones/zone/dns_records":
 		f.records["dns-record"] = true
+		f.zone["dns-record"] = map[string]any{"name": body["name"], "content": body["content"], "comment": body["comment"]}
 		reply(map[string]any{"id": "dns-record", "name": body["name"], "content": body["content"]})
 	case r.Method == http.MethodGet && r.URL.Path == account+"/access/apps":
 		reply([]any{})
@@ -79,6 +98,7 @@ func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(map[string]any{"id": "access-app"})
 	case r.Method == http.MethodDelete && r.URL.Path == "/client/v4/zones/zone/dns_records/dns-record":
 		delete(f.records, "dns-record")
+		delete(f.zone, "dns-record")
 		reply(map[string]any{"id": "dns-record"})
 	case r.Method == http.MethodDelete && r.URL.Path == account+"/cfd_tunnel/cf-tunnel/connections":
 		reply(map[string]any{})
@@ -266,5 +286,99 @@ func TestTunnelLeafIsReissuedWhenItsNamesOrIssuerChange(t *testing.T) {
 	}
 	if string(pemBundle(other.CertPEM, ca.CertPEM)) != string(bundle) {
 		t.Fatal("the bundle depends on input order")
+	}
+}
+
+// cloudflareTunnelRun sets up one Cloudflare grant against api and returns the fixture, a function
+// running every reconciler four times (errors from the Cloudflare reconciler collected, not fatal),
+// and the grant's hostname.
+func cloudflareTunnelRun(t *testing.T, api *fakeCloudflare, apiURL string) (*tunnelFixture, func() []error, string) {
+	t.Helper()
+	provider := &oramav1alpha1.TunnelProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: defaultTunnelProviderName, Namespace: testTunnelNS},
+		Spec: oramav1alpha1.TunnelProviderSpec{
+			Type: oramav1alpha1.TunnelProviderCloudflare, CustomerID: testServiceCustomer,
+			Cloudflare: &oramav1alpha1.CloudflareTunnelProviderSpec{
+				AccountID: "acct", ZoneID: "zone", Domain: "dev.customer.example",
+				APITokenSecretRef: oramav1alpha1.TunnelProviderSecretKeyRef{Name: "cloudflare", Key: "token"},
+			},
+		},
+	}
+	token := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cloudflare", Namespace: testTunnelNS},
+		Data: map[string][]byte{"token": []byte("customer-token")}}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node"}, Spec: corev1.NodeSpec{PodCIDR: "10.244.0.0/24"},
+		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.224.0.4"}}}}
+	f := newTunnelFixture(t, provider, token, node)
+	cloudflareR := &CloudflareTunnelReconciler{Client: f.kube, Scheme: f.scheme, APIBase: apiURL + "/client/v4", Now: f.tunnelR.Now}
+	providerR := &TunnelProviderReconciler{Client: f.kube, Scheme: f.scheme}
+	f.store.grants = []LakeTunnelGrant{f.grant()}
+	run := func() []error {
+		t.Helper()
+		var errs []error
+		cloudflareR.Now = f.tunnelR.Now
+		for i := 0; i < 4; i++ {
+			f.lakeR.reconcileLakeTunnels(f.ctx, f.lake, f.store)
+			if _, err := providerR.Reconcile(f.ctx, f.request(defaultTunnelProviderName)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.tunnelR.Reconcile(f.ctx, f.request(lakeTunnelName(testTunnelGrantID))); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cloudflareR.Reconcile(f.ctx, f.request(lakeTunnelName(testTunnelGrantID))); err != nil {
+				errs = append(errs, err)
+			}
+			if _, err := f.connR.Reconcile(f.ctx, f.request(tunnelConnectionName(testTunnelGrantID))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return errs
+	}
+	return f, run, "tunnel-" + testTunnelGrantID + ".dev.customer.example"
+}
+
+// operator#585: a record already at the tunnel's hostname that does not carry the tunnel's marker
+// is never repointed or adopted, and the tunnel creates nothing there.
+func TestCloudflareTunnelNeverAdoptsARecordItDidNotCreate(t *testing.T) {
+	api := newFakeCloudflare()
+	server := httptest.NewServer(api)
+	defer server.Close()
+	_, run, hostname := cloudflareTunnelRun(t, api, server.URL)
+	api.zone["prod-record"] = map[string]any{"name": hostname, "content": "app.orama.com", "comment": "Prod 1"}
+	errs := run()
+	if len(errs) == 0 || !strings.Contains(errs[0].Error(), "operator#585") {
+		t.Fatalf("errors = %v, want a refusal naming operator#585", errs)
+	}
+	for _, call := range api.calls {
+		if call == "POST /client/v4/zones/zone/dns_records" || strings.HasPrefix(call, "PUT /client/v4/zones/zone/dns_records") ||
+			strings.HasPrefix(call, "DELETE /client/v4/zones/zone/dns_records") {
+			t.Fatalf("the tunnel changed the zone: %s", call)
+		}
+	}
+	if record := api.zone["prod-record"]; record["content"] != "app.orama.com" || record["comment"] != "Prod 1" {
+		t.Fatalf("the existing record changed: %v", record)
+	}
+}
+
+// operator#585: the tunnel's own record carries its marker, and teardown deletes it only while the
+// marker is still there; a record someone else has since taken over is left in place.
+func TestCloudflareTunnelDeletesOnlyARecordStillCarryingItsMarker(t *testing.T) {
+	api := newFakeCloudflare()
+	server := httptest.NewServer(api)
+	defer server.Close()
+	f, run, _ := cloudflareTunnelRun(t, api, server.URL)
+	if errs := run(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	record, ok := api.zone["dns-record"]
+	if !ok || record["comment"] != "orama-operator:"+testTunnelNS+"/"+lakeTunnelName(testTunnelGrantID) {
+		t.Fatalf("created record = %v, want the tunnel's ownership marker", record)
+	}
+	record["comment"] = "taken over by hand"
+	f.setNow(f.now.Add(3 * time.Hour))
+	if errs := run(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	if _, ok := api.zone["dns-record"]; !ok {
+		t.Fatal("teardown deleted a record that no longer carries the tunnel's marker")
 	}
 }
