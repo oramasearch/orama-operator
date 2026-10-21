@@ -268,6 +268,8 @@ rules:
   - orama.cloud
   resources:
   - aksclusters
+  - backups
+  - backupschedules
   - clerkapplications
   - cloudflarednsrecords
   - cloudflarekvnamespaces
@@ -320,6 +322,7 @@ rules:
   - orama.cloud
   resources:
   - aksclusters/finalizers
+  - backups/finalizers
   - clerkapplications/finalizers
   - cloudflarednsrecords/finalizers
   - cloudflarekvnamespaces/finalizers
@@ -352,6 +355,8 @@ rules:
   - orama.cloud
   resources:
   - aksclusters/status
+  - backups/status
+  - backupschedules/status
   - clerkapplications/status
   - cloudflarednsrecords/status
   - cloudflarekvnamespaces/status

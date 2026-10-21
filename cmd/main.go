@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
+	"github.com/oramasearch/orama-operator/internal/backup"
 	"github.com/oramasearch/orama-operator/internal/controller"
 )
 
@@ -34,6 +35,11 @@ func init() {
 }
 
 func main() {
+	// `/manager backup ...` is the same binary run by a Backup's Job (operator#453): one image, one
+	// version, and a backup always runs the code of the operator that scheduled it.
+	if len(os.Args) > 1 && os.Args[1] == "backup" {
+		os.Exit(backup.Main(os.Args[2:], os.Getenv, "/dev/termination-log", os.Stderr))
+	}
 	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage, lakeDuckDBImage, lakePolarsImage string
 	var zettaTunnelImage, cloudflaredImage string
 	var enableLeaderElection bool
@@ -258,6 +264,22 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareR2Bucket")
+		os.Exit(1)
+	}
+	if err = (&controller.BackupScheduleReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "BackupSchedule")
+		os.Exit(1)
+	}
+	if err = (&controller.BackupReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		APIReader:         mgr.GetAPIReader(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Backup")
 		os.Exit(1)
 	}
 	if err = (&controller.CloudflareLoadBalancerReconciler{

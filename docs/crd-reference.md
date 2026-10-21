@@ -846,6 +846,61 @@ The `app.orama.com` cutover repoint is a reviewed Cloudflare change in the bridg
 listed in [production changes](https://github.com/oramasearch/orama-bridge/blob/main/docs/projects/orama-cloud-v1/production-changes.md).
 The operator cannot adopt that existing record.
 
+## `CloudflareR2Bucket` (separate CRD, namespaced) — an R2 bucket, its deletion policy and scoped credentials
+
+| Field | Meaning |
+|---|---|
+| `spec.secretRef` | Same-namespace Secret with the account `token` and `accountID`. Missing reports nothing and waits. |
+| `spec.name` | The R2 bucket name. An existing bucket is adopted. |
+| `spec.deletionPolicy` | **Required, no default.** `Delete` deletes the bucket from Cloudflare with the resource; `Retain` keeps the bucket and every object in it. Backup buckets use `Retain` ([`backups.md`](backups.md#the-bucket)). |
+| `spec.credentials.secretName` | When set, the operator mints an account-owned API token granting *Workers R2 Storage Bucket Item Write* on this bucket alone and writes its S3 credentials here (keys `accessKeyId`, `secretAccessKey`, `endpoint`, `bucket`, `region`), owned by this resource. A lost Secret is replaced by a new token; the old one is revoked. Removing `spec.credentials` revokes the token and deletes the Secret. |
+| `spec.credentials.allowedNamespaces` | Other namespaces whose `Backup`s may use the bucket. |
+| `status.created`, `status.ready`, `status.message` | Bucket exists; everything reconciled; otherwise Cloudflare's refusal (written only on change). |
+| `status.credentialsTokenID`, `status.credentialsSecret` | The bucket token's id (also the S3 access key id, not a secret) and the Secret holding the credentials. |
+
+On deletion the finalizer revokes the bucket token whatever the policy, and deletes the bucket only
+with `Delete`.
+
+## `BackupSchedule` (separate CRD, namespaced) — backups of one datastore on a schedule
+
+[`backups.md`](backups.md). Lives in the datastore's namespace. Short name `bsched`.
+
+| Field | Meaning |
+|---|---|
+| `spec.datastore.kind` | `Postgres`, `ClickHouse`, `Zetta`, `Kafka`, `Cassandra`, `TiDB`, `Valkey`, `SQLite`, `DuckDB` or `Polars`. Selects the mechanism; a kind with none yet makes the schedule `Ready=False`, `MechanismNotAvailable`, and it creates nothing. Today only `ClickHouse` has one. |
+| `spec.datastore.name` | The datastore's name in the namespace; part of the default path and the `orama.cloud/backup-datastore` label. |
+| `spec.datastore.connectionSecretRef.name` | Secret with `host`, `username`, `password`, optional `port` and `database`, read by the backup Job as environment variables. |
+| `spec.bucket` | `kind` (`CloudflareR2Bucket`, the default), `name`, optional `namespace` (another namespace must list this one in the bucket's `spec.credentials.allowedNamespaces`). |
+| `spec.path` | Prefix in the bucket; default `<namespace>/<kind>/<name>` in lower case. Each Backup writes under `<path>/<backup>/`. |
+| `spec.schedule` | Five-field cron, UTC. Default `0 3 * * *`. |
+| `spec.keep` | Succeeded Backups kept, minimum 1, default 7. The newest succeeded one is never deleted; failed ones are kept to the same number; running ones are never deleted. |
+| `spec.suspend` | No new Backups; none deleted. |
+| `status.lastScheduleTime`, `status.nextScheduleTime` | The newest Backup's tick (taken from the Backups, so a restart neither skips nor repeats); the next tick. |
+| `status.lastSuccessfulBackup`, `status.lastSuccessTime` | The newest succeeded Backup and when it completed. |
+| `status.conditions` | `Ready` (`Scheduled`, `Suspended`, `InvalidSchedule`, `MechanismNotAvailable`); `LastBackupSucceeded` (the newest finished Backup's outcome, its message in the words of what refused); `OnSchedule` (`False`, `BackupLate`, once a whole tick has passed after the one that should have followed the last success). |
+
+Missed ticks become one Backup for the latest tick. No new Backup starts while one is running.
+Deleting the schedule keeps its Backups.
+
+## `Backup` (separate CRD, namespaced) — one backup
+
+[`backups.md`](backups.md#how-one-backup-runs). Short name `bkp`. **The spec is immutable.**
+
+| Field | Meaning |
+|---|---|
+| `spec.datastore`, `spec.bucket`, `spec.path` | As on `BackupSchedule`. |
+| `status.phase` | `Pending` (waiting, reason in `Complete`), `Running`, `Succeeded`, `Failed`. |
+| `status.location` | `s3://<bucket>/<path>/<name>/`. |
+| `status.jobName`, `status.startTime`, `status.completionTime` | The Job (`<name>-backup`, shortened with a hash past 56 characters) and when it ran. |
+| `status.sizeBytes`, `status.message` | What the mechanism reported. |
+| `status.conditions[Complete]` | `True`/`BackupSucceeded`, or `False` with `BucketNotFound`, `BucketHasNoCredentials`, `BucketNotAllowed`, `BucketNotReady`, `OperatorImageUnknown`, `Running`, `MechanismNotAvailable`, `BackupFailed`, `JobFailed`, `NoReport` or `JobLost`. |
+
+The Job runs the operator's own image as `/manager backup --datastore <kind> --backup <name>
+--prefix <path>/<name>`, restricted, with no service account token, next to an owned
+`NetworkPolicy` and an owned copy of the bucket's scoped credentials (`<job>-bucket`), both removed
+when the Backup finishes. Deleting a Backup deletes its objects from the bucket; if the bucket
+resource is gone the objects stay.
+
 ## `EdgeProvider` (separate CRD, namespaced) — the vendor, account and credentials for edge resources
 
 Principle 10's provider resource for the edge kinds (operator#578). A Lake with a `dnsSecretRef` owns
