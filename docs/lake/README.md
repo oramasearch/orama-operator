@@ -157,6 +157,14 @@ leaves it off), and every Lake runs the same features whatever its value
 | `agent-application` | `spec.agents.library[key]` | `oramasearch/agent-application:v0.1.0` |
 | `agent-experiments` | `spec.agents.library[key]` | `oramasearch/agent-experiments:v0.1.0` |
 
+The MCP runner image is pinned by digest because lake runs every stdio MCP connection as an image
+App on it: lake refuses a stdio connection when `LAKE_MCP_RUNNER_IMAGE` is not
+`name@sha256:<64 hex>` ([lake#783](https://github.com/oramasearch/lake/issues/783)), and the
+operator fails an image App that is not pinned (`lakeAppRowSource`, the `LakeApp` CRD pattern)
+([#744](https://github.com/oramasearch/orama-operator/issues/744)). A value set in `spec.env` must
+be pinned the same way. The other tagged defaults are not checked for a digest by lake or the
+operator: they are build bases, build Jobs and agent pods, not image Apps.
+
 Every Zetta a Lake owns also gets `ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864`,
 `MALLOC_ARENA_MAX=2` and `ZETTA_EGRESS_ALLOW` unless its env (`spec.zetta.env`,
 `spec.services.zettaEnv`) names the variable. The engine denies outbound connections by default
