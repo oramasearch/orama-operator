@@ -294,73 +294,49 @@ func TestLakeAppsEnvtestLifecycle(t *testing.T) {
 	}
 }
 
+// operator#492: a row that names a Kubernetes Secret, in either the object or the legacy array form,
+// is refused with a reason, and nothing from the Lake namespace reaches the app, the instance key
+// included. A row with lake-secret:// references only is the one accepted form.
 func assertSyncedAppSecretEnvironment(t *testing.T, h *appsSyncHarness) {
 	t.Helper()
-	for _, secret := range []*corev1.Secret{
-		{
-			ObjectMeta: metav1.ObjectMeta{Name: "svc-creds", Namespace: h.app().Namespace},
-			Data: map[string][]byte{
-				"token":   []byte("api-token"),
-				"ignored": []byte("do-not-copy"),
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{Name: "db-secret", Namespace: h.app().Namespace},
-			Data:       map[string][]byte{"DB_URL": []byte("postgresql://app@db/app")},
-		},
+	instanceKey := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "lake-prod-instance-kek", Namespace: h.app().Namespace},
+		Data:       map[string][]byte{"kek": []byte("instance-key")},
+	}
+	if err := h.client.Create(h.ctx, instanceKey); err != nil {
+		t.Fatal(err)
+	}
+	for _, refs := range []string{
+		`{"KEK":"lake-prod-instance-kek/kek"}`,
+		`{"KEK":"lake-prod-instance-kek"}`,
+		`["lake-prod-instance-kek"]`,
 	} {
-		if err := h.client.Create(h.ctx, secret); err != nil {
+		h.store.rows[0].SecretEnvRefs = refs
+		h.store.rows[0].Generation++
+		h.converge()
+		status := h.store.rows[0].Status
+		if status.Phase != "Failed" || !strings.Contains(status.Message, "operator#492") {
+			t.Fatalf("%s: status = %+v, want Failed naming operator#492", refs, status)
+		}
+		app := h.app()
+		if len(app.Spec.SecretEnv) != 0 || len(app.Spec.SecretRefs) != 0 {
+			t.Fatalf("%s: refused row still reached the LakeApp: env %+v, refs %+v", refs, app.Spec.SecretEnv, app.Spec.SecretRefs)
+		}
+		var secrets corev1.SecretList
+		if err := h.client.List(h.ctx, &secrets, client.InNamespace(lakeAppNamespace(app))); err != nil {
 			t.Fatal(err)
 		}
+		for _, secret := range secrets.Items {
+			if string(secret.Data["kek"]) == "instance-key" {
+				t.Fatalf("%s: the instance key was copied into the app namespace as %s", refs, secret.Name)
+			}
+		}
 	}
-	h.store.rows[0].SecretEnvRefs = `{"API_KEY":"svc-creds/token","DB_URL":"db-secret"}`
+	h.store.rows[0].SecretEnvRefs = `{}`
 	h.store.rows[0].Generation++
 	h.converge()
-	app := h.app()
-	if len(app.Spec.SecretEnv) != 2 || len(app.Spec.SecretRefs) != 0 {
-		t.Fatalf("object secret environment = %+v, legacy = %+v", app.Spec.SecretEnv, app.Spec.SecretRefs)
-	}
-	var deployment appsv1.Deployment
-	deploymentKey := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppWorkloadObjectName(app)}
-	if err := h.client.Get(h.ctx, deploymentKey, &deployment); err != nil {
-		t.Fatal(err)
-	}
-	container := deployment.Spec.Template.Spec.Containers[0]
-	assertLakeAppSecretEnv(t, container.Env, "API_KEY", lakeAppEnvSecretName(app, "svc-creds"), "token")
-	assertLakeAppSecretEnv(t, container.Env, "DB_URL", lakeAppEnvSecretName(app, "db-secret"), "DB_URL")
-	if len(container.EnvFrom) != 0 {
-		t.Fatalf("object secret environment used envFrom: %+v", container.EnvFrom)
-	}
-	var copied corev1.Secret
-	copyKey := client.ObjectKey{Namespace: lakeAppNamespace(app), Name: lakeAppEnvSecretName(app, "svc-creds")}
-	if err := h.client.Get(h.ctx, copyKey, &copied); err != nil {
-		t.Fatal(err)
-	}
-	if len(copied.Data) != 1 || string(copied.Data["token"]) != "api-token" {
-		t.Fatalf("selected secret copy = %#v", copied.Data)
-	}
-
-	legacy := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "legacy-env", Namespace: app.Namespace},
-		Data:       map[string][]byte{"LEGACY_FLAG": []byte("enabled")},
-	}
-	if err := h.client.Create(h.ctx, legacy); err != nil {
-		t.Fatal(err)
-	}
-	h.store.rows[0].SecretEnvRefs = `["legacy-env"]`
-	h.store.rows[0].Generation++
-	h.converge()
-	app = h.app()
-	if len(app.Spec.SecretEnv) != 0 || !reflect.DeepEqual(app.Spec.SecretRefs, []string{"legacy-env"}) {
-		t.Fatalf("legacy secret environment = %+v, object = %+v", app.Spec.SecretRefs, app.Spec.SecretEnv)
-	}
-	if err := h.client.Get(h.ctx, deploymentKey, &deployment); err != nil {
-		t.Fatal(err)
-	}
-	container = deployment.Spec.Template.Spec.Containers[0]
-	legacyName := lakeAppEnvSecretName(app, "legacy-env")
-	if len(container.EnvFrom) != 1 || container.EnvFrom[0].SecretRef == nil || container.EnvFrom[0].SecretRef.Name != legacyName {
-		t.Fatalf("legacy envFrom = %+v, want %q", container.EnvFrom, legacyName)
+	if status := h.store.rows[0].Status; status.Phase == "Failed" {
+		t.Fatalf("app still failed after its references were cleared: %+v", status)
 	}
 }
 
@@ -487,14 +463,9 @@ func TestLakeAppRowSecretEnvironmentContract(t *testing.T) {
 		{name: "empty"},
 		{name: "null", raw: "null"},
 		{name: "empty object", raw: `{}`},
-		{
-			name: "object references",
-			raw:  `{"DB_URL":"db-secret","API_KEY":"svc-creds/token"}`,
-			wantSecretEnv: []oramav1alpha1.LakeAppSecretEnvironmentVariable{
-				{Name: "API_KEY", SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{Name: "svc-creds", Key: "token"}},
-				{Name: "DB_URL", SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{Name: "db-secret", Key: "DB_URL"}},
-			},
-		},
+		{name: "Kubernetes Secret with a key", raw: `{"API_KEY":"svc-creds/token"}`, wantError: "operator#492"},
+		{name: "Kubernetes Secret by name", raw: `{"DB_URL":"db-secret"}`, wantError: "operator#492"},
+		{name: "the instance key", raw: `{"KEK":"lake-prod-instance-kek/kek"}`, wantError: "names a Kubernetes Secret"},
 		{
 			name: "lake secret reference",
 			raw:  `{"DB_PASSWORD":"lake-secret://m-1/payments/db#prod#password"}`,
@@ -509,10 +480,8 @@ func TestLakeAppRowSecretEnvironmentContract(t *testing.T) {
 		},
 		{name: "lake secret without a field", raw: `{"GOOD":"lake-secret://m-1/db"}`, wantError: "lake-secret://"},
 		{name: "lake secret with a bad field", raw: `{"GOOD":"lake-secret://m-1/db#a b"}`, wantError: "not a Secret key"},
-		{name: "legacy array", raw: `["z-secret","a-secret","z-secret"]`, wantLegacy: []string{"a-secret", "z-secret"}},
-		{name: "invalid environment name", raw: `{"9BAD":"good-secret"}`, wantError: "environment name"},
-		{name: "invalid Secret name", raw: `{"GOOD":"Bad-Secret"}`, wantError: "Secret name"},
-		{name: "invalid Secret key", raw: `{"GOOD":"good-secret/.."}`, wantError: "Secret key"},
+		{name: "legacy array", raw: `["z-secret","a-secret","z-secret"]`, wantError: "legacy array"},
+		{name: "invalid environment name", raw: `{"9BAD":"lake-secret://m-1/db#password"}`, wantError: "environment name"},
 		{name: "nested object value", raw: `{"GOOD":{"secret":"good-secret"}}`, wantError: "must be an object"},
 		{name: "invalid shape", raw: `true`, wantError: "must be an object"},
 	}
