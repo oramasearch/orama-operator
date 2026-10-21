@@ -23,7 +23,7 @@ browser ──HTTPS (edge certificate)──▶ Cloudflare ──HTTPS, Full (st
 | Browser to Cloudflare | The edge certificate (Universal SSL covers the zone apex and one level below it) and **Always Use HTTPS** | The zone; Always Use HTTPS set by `CloudflareZonePolicy` |
 | Cloudflare to the origin | **Full (strict)**: TLS, with the origin's certificate verified | The zone mode, set by `CloudflareZonePolicy` once every origin certificate is valid |
 | The origin's certificate | Let's Encrypt, issued and renewed by cert-manager: DNS-01 through the Lake's `dnsSecretRef` for names in its zone, HTTP-01 for any other name | The Lake's `Issuer`; one certificate per host, or a wildcard (DNS-01 only) |
-| Only Cloudflare reaches the origin | **Authenticated origin pulls**: Cloudflare presents its client certificate, and every Lake Ingress requires it | The zone setting `tls_client_auth`, set by `CloudflareZonePolicy`; the requirement on each Ingress, set by the Lake once the zone has it |
+| Only our zone reaches the origin | **Zone-level authenticated origin pulls**: Cloudflare presents the zone's own client certificate, signed by a CA the operator generated, and every Lake Ingress requires it | The certificate, uploaded and turned on by `CloudflareZonePolicy` ([operator#633](https://github.com/oramasearch/orama-operator/issues/633)); before that, global pulls (`tls_client_auth`) with Cloudflare's shared certificate. The requirement on each Ingress, set by the Lake once the zone has it |
 | Plain HTTP | Redirected to HTTPS by nginx on every Lake host, and by Cloudflare zone-wide once every host has an edge certificate | The Ingresses, once the zone's mode is Full or stricter |
 
 ## Certificates
@@ -139,6 +139,7 @@ on only when it is safe, in this order:
 | 1 | `ssl` = `full` (from `off` or `flexible`) | Every proxied host's origin completes a TLS handshake |
 | 2 | `ssl` = `strict` | Every proxied host's origin presents a certificate valid for that host |
 | 3 | `tls_client_auth` = `on` (authenticated origin pulls, Cloudflare's shared certificate) | The mode is `full` or `strict` |
+| 3b | Zone-level authenticated origin pulls: the zone's own certificate uploaded (`POST /zones/{zone}/origin_tls_client_auth`) and turned on (`PUT .../origin_tls_client_auth/settings` `{"enabled": true}`) | The mode is `full` or `strict`, and every proxied origin that asks for a client certificate accepts the operator's CA ([below](#zone-level-authenticated-origin-pulls-the-operators-own-certificate)) |
 | 4 | An Advanced Certificate ordered for each proxied host more than one level below the apex (lake#798) | The host has no valid edge certificate and no live certificate pack in the zone covers it |
 | 5 | `always_use_https` = `on` | Every proxied host has a valid edge certificate |
 
@@ -167,10 +168,10 @@ on only when it is safe, in this order:
   zone whose hosts all have edge certificates makes no certificate API calls.
 - **Automatic SSL/TLS.** A zone in Cloudflare's automatic mode (`ssl_automatic_mode` = `auto`) is
   switched to `custom` before the mode is set, so the mode the operator sets holds.
-- **Status.** `kubectl get edgezp -A` shows `Origin` (the mode), `AOP`, `HTTPS` and `Phase`
+- **Status.** `kubectl get edgezp -A` shows `Origin` (the mode), `AOP`, `ZoneAOP`, `HTTPS` and `Phase`
   (`Ready`, `Progressing` while a step waits on a check, `Failed` when the zone cannot be read or
   changed). Conditions: `Credentials`, `OriginCertificates`, `EdgeCertificates`, `OriginTLSStrict`,
-  `AuthenticatedOriginPulls`, `EdgeCertificateOrders`, `AlwaysUseHTTPS`. `status.hosts` lists up to 50 failing hosts with the
+  `AuthenticatedOriginPulls`, `ZoneOriginPulls`, `EdgeCertificateOrders`, `AlwaysUseHTTPS`. `Ready` needs zone-level pulls on. `status.hosts` lists up to 50 failing hosts with the
   reason for each leg. A refused read keeps the last observed settings, so a Cloudflare outage does
   not make the Lakes drop their redirect or client-certificate check.
 
@@ -183,12 +184,16 @@ On the zone, the API token in `dnsSecretRef` needs:
 | Zone > DNS > Edit | DNS records (already required) and DNS-01 challenges; includes DNS Read, which lists the proxied records |
 | **Zone > Zone Settings > Edit** | Reading and setting `ssl`, `ssl_automatic_mode`, `tls_client_auth`, `always_use_https` |
 | Zone > Zone > Read | Reading the zone's name, so names outside it are issued through HTTP-01 ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)); cert-manager's DNS-01 solver already needs it |
-| **Zone > SSL and Certificates > Edit** | Listing certificate packs and ordering Advanced Certificates for hosts Universal SSL does not cover (step 4). Without it the `EdgeCertificateOrders` condition names it and the rest of the policy is unaffected |
+| **Zone > SSL and Certificates > Edit** | Listing certificate packs and ordering Advanced Certificates for hosts Universal SSL does not cover (step 4); listing, uploading and deleting the zone-level origin-pull certificates and turning zone-level pulls on (step 3b). Without it the `EdgeCertificateOrders` and `ZoneOriginPulls` conditions name it |
 
 A token without Zone Settings is reported by name: the policy goes `Failed` with the message
 *"the API token may not read the zone's settings: add Zone > Zone Settings > Read (Edit includes it)
 for this zone"*, or the Edit form when only the change is refused. The Lakes then keep serving HTTPS
 with no redirect and no client-certificate check, which is safe in any mode.
+
+A token without SSL and Certificates is named in the `ZoneOriginPulls` condition (*"add Zone > SSL and
+Certificates > Read (Edit includes it)"*); the policy stays `Progressing` on global pulls, and fails
+only when an upload or the switch itself is refused.
 
 ## What each Lake Ingress does with the zone's state
 
@@ -199,7 +204,7 @@ its apps' and its environments'):
 |---|---|---|
 | Not observed yet, no policy, `off` or `flexible` | `"false"`: under Flexible, Cloudflare reaches the origin over HTTP and a redirect would loop | Not required |
 | `full` or `strict` | `"true"`, unless a host of the Ingress is in the policy's `status.hosts` without an edge certificate (itself or its wildcard), then `"false"`: a visitor sent to HTTPS could not follow | Not required |
-| `full` or `strict`, authenticated origin pulls on | `"true"` | **Required**: `auth-tls-secret` names a Secret `<ingress>-edge-client-ca` (`ca.crt` = Cloudflare's origin-pull CA, from the policy's `status.originClientCAPEM`), `auth-tls-verify-client: "on"`, `auth-tls-verify-depth: "1"` |
+| `full` or `strict`, authenticated origin pulls on | `"true"` | **Required**: `auth-tls-secret` names a Secret `<ingress>-edge-client-ca` (`ca.crt` = the policy's `status.originClientCAPEM`: Cloudflare's origin-pull CA and the operator's CA for the zone until the zone presents its own certificate, then the operator's CA alone), `auth-tls-verify-client: "on"`, `auth-tls-verify-depth: "1"` |
 
 `"false"` is written rather than left out because ingress-nginx redirects every host that has a
 certificate by default.
@@ -227,11 +232,52 @@ origin pulls were chosen:
   certificate: nginx completes the handshake and answers 400 without a client certificate.
 - **The order is safe.** The zone presents the certificate before any Ingress requires it.
 
-Its limit, stated plainly: the global origin-pull certificate is Cloudflare's, shared by every
-Cloudflare account, so it proves "from Cloudflare", not "from our zone". The stronger form is
-zone-level authenticated origin pulls with a certificate the operator generates and uploads (Zone >
-SSL and Certificates > Edit). Plain HTTP on port 80 is not covered by a client certificate; with the
-redirect on it serves only redirects.
+Global pulls alone have a limit: the global origin-pull certificate is Cloudflare's, shared by every
+Cloudflare account, so it proves "from Cloudflare", not "from our zone". Someone with their own
+Cloudflare zone pointed at our load balancer would pass. So the operator goes on to zone-level pulls
+with a certificate it owns (next section). Plain HTTP on port 80 is not covered by a client
+certificate; with the redirect on it serves only redirects.
+
+## Zone-level authenticated origin pulls: the operator's own certificate
+
+[operator#633](https://github.com/oramasearch/orama-operator/issues/633). Code:
+`internal/controller/cloudflarezonepolicy_originpull.go`.
+
+- **The CA and the leaf.** One Secret per zone per cluster, `orama-edge-origin-pull-<zone ID>` in the
+  operator's namespace (`ca.crt`, `ca.key`, `tls.crt`, `tls.key`), shared by every policy naming the
+  zone, so they all upload the same leaf. The CA (RSA 2048, valid 10 years) is created once and never
+  replaced by the operator; a Secret whose CA cannot be read fails the step rather than making a new
+  CA, which would break every origin that trusts the old one. The client leaf (RSA 2048, `clientAuth`,
+  valid one year) is replaced 45 days before it expires (Cloudflare's own alerts start at 30).
+- **Upload and switch.** The leaf and its key are uploaded (`POST /zones/{zone}/origin_tls_client_auth`)
+  and zone-level pulls turned on (`PUT .../settings` `{"enabled": true}`). Zone-level certificates take
+  precedence over the global one, and of several the most recently deployed is presented. Once ours
+  is `active`, older leaves of our CA are deleted. A certificate of any other CA is never touched.
+- **What the origins trust.** `status.originClientCAPEM` is Cloudflare's global CA and ours together
+  until the zone presents our leaf, then ours alone, which is what shuts out other Cloudflare zones.
+  `status.zoneOriginPulls` says the zone presents our leaf. While a new leaf of our own CA deploys,
+  the bundle stays ours alone (both leaves verify).
+- **The switch is gated by a probe.** Once the zone presents our leaf, an origin that requires a
+  client certificate and does not trust our CA refuses Cloudflare. A zone may be served by several
+  clusters, each with its own CA, and by origins the operator does not run. So the operator reads,
+  for every proxied record, the origin's TLS CertificateRequest (the CAs it accepts). It uploads a
+  leaf that would change what the zone presents, and turns zone-level pulls on, only when every origin
+  that asks for a client certificate lists our CA and every origin answered. Otherwise the
+  `ZoneOriginPulls` condition names up to five origins it waits for. Renewing a leaf of the CA the
+  zone already presents needs no gate.
+- **Never an outage from the other side.** If the zone may present a certificate of another CA (one
+  uploaded by another cluster or by hand), the policy sets `authenticatedOriginPulls` false, so its
+  Lakes stop requiring a client certificate rather than refuse the edge, and says so in the condition.
+- **A refused read keeps the last bundle**, so a Cloudflare outage never sends the origins back to
+  Cloudflare's global CA while the zone presents ours.
+- **Known gaps.** A zone served by **several clusters** (`lake.live` on `orama-production-cluster-02`
+  and `-03`; `oramadev.net` on the managing cluster and `orama-nonprod-cluster-01`) has one CA per
+  cluster, so each cluster's probe finds the other's origins not trusting its CA and the zone stays
+  on global pulls, safely, until one CA is shared by every cluster serving the zone. How that CA is
+  distributed is open ([operator#633](https://github.com/oramasearch/orama-operator/issues/633)). The
+  CA itself is not rotated before its ten years run out. If zone-level pulls are turned off by hand
+  after the switch, origins refuse the edge until the next check (at most ten minutes) turns them back
+  on.
 
 ## Rolling it out
 
@@ -243,7 +289,8 @@ What a release containing this does on a cluster, in order (no step is done by h
    with `ssl-redirect: "false"`. cert-manager issues the certificates through DNS-01 (a minute or
    two each); the app and environment controllers copy them next to their Ingresses.
 3. The zone policy probes. Once every proxied origin presents a valid certificate it sets Full
-   (strict); from Full it turns on authenticated origin pulls. A zone with a proxied host the
+   (strict); from Full it turns on authenticated origin pulls, and creates the zone's origin-pull CA.
+   Zone-level pulls follow once every origin that asks for a client certificate accepts that CA. A zone with a proxied host the
    operator does not serve (or whose certificate is not valid) stays where it is and lists the host.
 4. The Lakes see the zone's state and turn on the redirect and the client-certificate requirement.
 5. Always Use HTTPS waits until every proxied host has an edge certificate. App hosts two levels

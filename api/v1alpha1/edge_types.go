@@ -41,10 +41,10 @@ type CloudflareEdgeProviderSpec struct {
 	// the kinds that use the provider. An EdgeZonePolicy needs, on its zone: Zone > Zone Settings >
 	// Edit, Zone > DNS > Read (DNS > Edit includes it), Zone > Zone > Read (the zone's name), and
 	// Zone > SSL and Certificates > Edit to order edge certificates for hosts more than one level
-	// below the apex. An EdgeHostPolicy needs, on each host's zone: Zone > Zone > Read, Zone > Config
-	// Rules > Edit (API permission group "Config Settings Write", for originTLS) and Zone > Single
-	// Redirect > Edit ("Dynamic URL Redirects Write", for redirectToHTTPS). The operator never writes
-	// or logs it.
+	// below the apex and for zone-level authenticated origin pulls. An EdgeHostPolicy needs, on each
+	// host's zone: Zone > Zone > Read, Zone > Config Rules > Edit (API permission group "Config
+	// Settings Write", for originTLS) and Zone > Single Redirect > Edit ("Dynamic URL Redirects
+	// Write", for redirectToHTTPS). The operator never writes or logs it.
 	APITokenSecretRef EdgeProviderSecretKeyRef `json:"apiTokenSecretRef"`
 }
 
@@ -111,7 +111,11 @@ type EdgeProviderList struct {
 //     when every proxied host's origin presents a certificate valid for that host.
 //  3. Authenticated origin pulls: the edge presents a client certificate to every origin, which
 //     an origin may then require (status.originClientCAPEM is the CA to verify it with). Set once
-//     the mode is Full or Full (strict).
+//     the mode is Full or Full (strict). Then zone-level authenticated origin pulls: the zone's
+//     CA (generated once by the managing cluster's operator and copied by the sets to every
+//     member cluster that serves the zone) signs a client certificate that the operator uploads,
+//     turning zone-level pulls on once every proxied origin that asks for a client certificate
+//     accepts that CA; it renews the certificate before it expires.
 //  4. Edge certificates: a proxied host more than one level below the zone apex (an app host
 //     such as <app>.lake-testing.oramadev.net) is not covered by the provider's free certificate.
 //     For each such host without a valid edge certificate, and not covered by an existing one, the
@@ -169,11 +173,21 @@ type EdgeZonePolicyStatus struct {
 	// +optional
 	OriginEncryption string `json:"originEncryption,omitempty"`
 
-	// AuthenticatedOriginPulls is whether the edge presents its client certificate to origins.
+	// AuthenticatedOriginPulls is whether the edge presents a client certificate that
+	// originClientCAPEM verifies, so origins may require it. It is false while the zone may present
+	// a certificate the bundle cannot verify (one of another CA).
 	// +optional
 	AuthenticatedOriginPulls bool `json:"authenticatedOriginPulls,omitempty"`
 
-	// OriginClientCAPEM is the CA that signs the edge's client certificate, for origins to verify.
+	// ZoneOriginPulls is whether the edge presents the zone's own client certificate, signed by the
+	// operator's CA (zone-level authenticated origin pulls), rather than Cloudflare's certificate
+	// shared by every account.
+	// +optional
+	ZoneOriginPulls bool `json:"zoneOriginPulls,omitempty"`
+
+	// OriginClientCAPEM is what origins verify the edge's client certificate against: Cloudflare's
+	// global origin-pull CA and the operator's CA for the zone until the zone presents its own
+	// certificate, then the operator's CA alone.
 	// +optional
 	OriginClientCAPEM string `json:"originClientCAPEM,omitempty"`
 
@@ -194,7 +208,7 @@ type EdgeZonePolicyStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions: Credentials, OriginCertificates, EdgeCertificates, OriginTLSStrict,
-	// AuthenticatedOriginPulls, EdgeCertificateOrders, AlwaysUseHTTPS, ZoneName.
+	// AuthenticatedOriginPulls, ZoneOriginPulls, EdgeCertificateOrders, AlwaysUseHTTPS, ZoneName.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -206,6 +220,7 @@ type EdgeZonePolicyStatus struct {
 // +kubebuilder:resource:scope=Namespaced,shortName=edgezp
 // +kubebuilder:printcolumn:name="Origin",type=string,JSONPath=`.status.originEncryption`
 // +kubebuilder:printcolumn:name="AOP",type=boolean,JSONPath=`.status.authenticatedOriginPulls`
+// +kubebuilder:printcolumn:name="ZoneAOP",type=boolean,JSONPath=`.status.zoneOriginPulls`
 // +kubebuilder:printcolumn:name="HTTPS",type=boolean,JSONPath=`.status.alwaysUseHTTPS`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
@@ -245,6 +260,7 @@ type CloudflareZonePolicySpec struct {
 // +kubebuilder:resource:scope=Namespaced,shortName=cfzp
 // +kubebuilder:printcolumn:name="Origin",type=string,JSONPath=`.status.originEncryption`
 // +kubebuilder:printcolumn:name="AOP",type=boolean,JSONPath=`.status.authenticatedOriginPulls`
+// +kubebuilder:printcolumn:name="ZoneAOP",type=boolean,JSONPath=`.status.zoneOriginPulls`
 // +kubebuilder:printcolumn:name="HTTPS",type=boolean,JSONPath=`.status.alwaysUseHTTPS`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

@@ -1348,7 +1348,12 @@ The contract is [`lake/origin-tls.md`](lake/origin-tls.md). What the reconcilers
 - **`EdgeZonePolicyReconciler`** creates the owned `CloudflareZonePolicy` and copies its status;
   **`CloudflareZonePolicyReconciler`** reads the zone and its proxied records every ten minutes, probes
   each host's origin and edge, reports the zone's name (`status.zone`), and turns on Full, Full (strict), authenticated origin pulls and Always
-  Use HTTPS in that order, each when its check passes. It never turns one off.
+  Use HTTPS in that order, each when its check passes. It never turns one off. After global pulls it
+  keeps the zone's origin-pull CA and client certificate (Secret `orama-edge-origin-pull-<zone>` in the
+  operator's namespace), uploads the certificate and turns zone-level pulls on once every origin that
+  asks for a client certificate accepts that CA (read from each origin's TLS CertificateRequest),
+  renews it 45 days before expiry, and publishes the CA in `status.originClientCAPEM`
+  ([#633](https://github.com/oramasearch/orama-operator/issues/633)).
 - **`OramaZettaClusterReconciler`**: a public Zetta's Ingress gets its own `Issuer` `<name>-letsencrypt`
   from its `dnsSecretRef` and `applyIngressTLS`; without a `dnsSecretRef` the reconcile fails.
 
