@@ -94,6 +94,11 @@ Lake owns a `PaymentProvider`, its own Stripe webhook endpoint at
 and `LAKE_STRIPE_WEBHOOK_SECRET` once all of them are ready and its key has been checked. Until then
 it takes payments through its manual provider. See [`payments.md`](payments.md) (operator#639).
 
+Whether a Lake bills at all is `spec.billing` (`enabled: true` gives `LAKE_BILLING=on`; operator#662).
+`spec.payments` requires it. On-prem and enterprise installs leave it unset and bill nothing; a Lake
+can bill with no `spec.payments`, through the manual provider. See
+[`payments.md`](payments.md#billing-specbilling).
+
 ## Origin TLS
 
 Every Lake Ingress (the Lake's own, its app and preview wildcards, its apps and its environments)
@@ -122,6 +127,9 @@ Lake's Zetta (`spec.zetta.enabled`, default `true`; otherwise reason `ZettaDisab
 host (`spec.host` or `LAKE_PUBLIC_HOST` in `spec.env`; otherwise reason `NoPublicHost`), see
 [environments](environments.md#every-lakes-control-plane-is-its-own-zetta). `ingressEnabled` stays: it
 decides whether the Lake is exposed outside the cluster, not which features it runs.
+`spec.billing` is not a feature switch either: it says whether this install charges anyone (on-prem
+leaves it off), and every Lake runs the same features whatever its value
+([payments](payments.md#billing-specbilling)).
 
 ### Default images
 
