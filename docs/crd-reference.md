@@ -1912,17 +1912,20 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 
 [orama-operator#787](https://github.com/oramasearch/orama-operator/issues/787) and
 [#789](https://github.com/oramasearch/orama-operator/issues/789) (findings LSR-038 and LSR-040 of the
-Lake pre-launch security review). Before copying a Secret into a member (as a set, member or
+Lake pre-launch security review), and [#790](https://github.com/oramasearch/orama-operator/issues/790)
+(LSR-041: lake-nonprod copied lake-prod's Stripe and OpenAI Secrets). Before copying a Secret into a member (as a set, member or
 migration Secret), the operator refuses it, and copies nothing for that member or migration, when:
 
 | The Secret on the managing cluster | Refused for a member whose cluster is |
 |---|---|
 | is labelled `orama.cloud/purpose: <purpose>` | any other purpose, in either direction |
 | is listed by a production set: its `spec.secrets`, a member's `secrets` or a migration's `secrets`, in any `LakeSet` or `OramaCloudV1Set` with a member on a cluster tagged `purpose: production` | not `production` |
+| is in the `memberSecrets` of a `LakeOrderSource` whose `lakeSetRef` is a production set: it is copied into every Lake ordered from that set, so it is production before the first order | not `production` |
 | is named by the migration's `spec.source.databaseSecretRef`, `masterKeySecretRef` or `settings.credentialsSecretRef`: a Prod 1 credential, which is production whatever the Secret is called | not `production`, unless the Secret is labelled `orama.cloud/purpose` with that cluster's purpose (a fixture standing in for Prod 1) |
 
 What is production comes only from resources: each member's cluster's `purpose` tag, the set files,
-and the Secret's label. A refused member is `Degraded`, with the reason on it; a refused migration is
+the order sources, and the Secret's label. An ordered `LakeSet` is a set like any other: one made from
+a production set onto a cluster that is not production gets none of that set's Secrets. A refused member is `Degraded`, with the reason on it; a refused migration is
 `Blocked` (or keeps its last phase if it was already applied) and is not updated. Neither is retried
 until an edit: give the nonprod set its own Secret, copied under the name its stack mounts with `as`,
 so the earlier copy is overwritten in place. A production set is never refused by this rule for a

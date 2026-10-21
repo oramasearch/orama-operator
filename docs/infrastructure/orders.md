@@ -117,6 +117,11 @@ reads no order. Lake's column limits bound the rest: the source's name is at mos
 order being provisioned and what it waits for; `status.members` says whether each member's orders
 were read.
 
+An ordered Lake's Secrets are its source set's and `memberSecrets`. When the source set is
+production, both count as production credentials from the start, before any order: the set copy
+never puts one into a Lake on a cluster that is not production, ordered or not
+([the rule](../crd-reference.md#production-credentials-never-reach-a-nonprod-member), #790).
+
 ## What each offer becomes
 
 Every resource below is made on the management cluster, named `order-<the first 12 hex digits of the
