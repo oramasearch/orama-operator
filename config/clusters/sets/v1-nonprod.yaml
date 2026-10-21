@@ -86,6 +86,10 @@ spec:
     namespace: orama-system
   - name: v1-nonprod-dashboard-env
     namespace: orama-system
+  # Lake's development Clerk instance (keys publishableKey, secretKey). The dashboard is its satellite
+  # on app-dev.oramadev.net (orama-bridge#228; decisions of 21 October, 4 and 6).
+  - name: clerk-lake-dev
+    namespace: lake
   template:
     cloudflare:
       apiTokenSecretRef:
@@ -124,6 +128,21 @@ spec:
         envFrom:
         - secretRef:
             name: v1-nonprod-dashboard-env
+        # Clerk sign-in as a satellite of Lake's development instance. The NEXT_PUBLIC_* values are also
+        # compiled into the image (orama-cloud-v1-bridge build/images/dashboard/public.env.v1-dev); the
+        # server reads them at runtime, so the two must match. The dashboard refuses to start on Lake's
+        # keys unless app-dev.oramadev.net is registered as the instance's satellite.
+        env:
+        - name: CLERK_SECRET_KEY
+          valueFrom: {secretKeyRef: {name: clerk-lake-dev, key: secretKey}}
+        - name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+          valueFrom: {secretKeyRef: {name: clerk-lake-dev, key: publishableKey}}
+        - {name: NEXT_PUBLIC_CLERK_IS_SATELLITE, value: "true"}
+        - {name: NEXT_PUBLIC_CLERK_DOMAIN, value: app-dev.oramadev.net}
+        - {name: NEXT_PUBLIC_CLERK_SIGN_IN_URL, value: https://above-seahorse-7535.accounts.dev/sign-in}
+        - {name: NEXT_PUBLIC_CLERK_SIGN_UP_URL, value: https://above-seahorse-7535.accounts.dev/sign-up}
+        - {name: NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL, value: https://app-dev.oramadev.net/auth/complete}
+        - {name: NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL, value: https://app-dev.oramadev.net/auth/complete}
         # Prod 1's three dashboard crons, created suspended; CRON_SECRET comes from the envFrom Secret.
         # Unsuspending is a committed change here, never an edit of the CronJobs.
         crons:
@@ -159,6 +178,8 @@ spec:
         enabled: true
         replicas: 1
     demoSeed: false
+    # The operator's idp.provider: clerk is not wired into the dashboard; the dashboard's env above is
+    # what it reads.
     idp:
       provider: none
     images:
@@ -168,6 +189,8 @@ spec:
       # Built from oramacore caca2a59 into the private oramasearch/oramacore-cloud-v1.
       # v1-prod.yaml still runs 9d8ed373.
       overrides:
+        # The Clerk dashboard from dashboard dev 8e158a99 (orama-bridge#227, orama-cloud-v1-bridge#8).
+        dashboard: oramasearch/dashboard:v1-dev-8e158a99@sha256:40407865dec2e893bc138ee9fd9c8ca8b0b7095a41d2dd7e2c3ae0865cf90187
         oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-caca2a59
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
