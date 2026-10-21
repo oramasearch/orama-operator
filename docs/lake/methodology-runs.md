@@ -42,6 +42,14 @@ Each run gets, in the Lake's namespace `lake-<lake>-methodology-runs`:
 - `LAKE_URL` is lake's in-cluster Service (`http://lake-<lake>.<namespace>.svc.cluster.local:80`),
   `RUN_ID` the row's id, `HOME=/tmp`. The credential is a file from Secret `<slug>-credential`, never
   an environment value.
+- **Credential pods never start in the work volume** (orama-operator#714). Stage, collect and the
+  model stage start in their own `/tmp` emptyDir (`workingDir: /tmp`) with `PYTHONSAFEPATH=1`. The
+  runtime runs `python3 -m`, which puts the working directory first on the module path, and the
+  image's working directory is `/work`, which the sandbox writes: a module planted there would
+  otherwise run in the collect pod with the credential and the transfer network. The runtime's own
+  half is [methodology-runtime#4](https://github.com/oramasearch/methodology-runtime/issues/4);
+  collect following symbolic links in `/work/out` is
+  [methodology-runtime#5](https://github.com/oramasearch/methodology-runtime/issues/5).
 - **Why three pods.** NetworkPolicy applies to a pod, not a container, so the code that is not
   trusted must not share a pod (a network namespace) with the credential-carrying transfers. The
   pods run one after another and share the run's work volume, a `ReadWriteOnce` PVC
@@ -179,7 +187,7 @@ generated methodology Dockerfile builds `FROM`.
 ## Verify
 
 ```sh
-go test ./internal/controller/ -run 'Methodology|TheSandbox|AGranted|ARunSucceeds|AFailing|ACode|AStage|Stopping|ACancelled|RunsFail|TheWorkloadPass|AWorkspacesRuns|TheLakeSetsTheCap|AQueuedRun|AGPURun|ACPURun'
+go test ./internal/controller/ -run 'Methodology|MethodologyCredentialPods|TheSandbox|AGranted|ARunSucceeds|AFailing|ACode|AStage|Stopping|ACancelled|RunsFail|TheWorkloadPass|AWorkspacesRuns|TheLakeSetsTheCap|AQueuedRun|AGPURun|ACPURun'
 go test ./internal/controller/ -run 'AServedModel|TheServePod|OnlyLakeReaches|AServerThatKeeps|Unpublishing|AGPUModel|DeploymentsAreSkipped'
 LAKE_SERVICES_TEST_POSTGRES=1 LAKE_SERVICES_TEST_POSTGRES_URI=postgres://127.0.0.1:5432/postgres \
   go test ./internal/controller/ -run TestServicesPgxStoreAgainstPostgres   # checkMethodologyRunsPgx and checkMethodologyDeploymentsPgx
