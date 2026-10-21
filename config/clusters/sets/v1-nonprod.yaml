@@ -163,10 +163,12 @@ spec:
       provider: none
     images:
       # The combined OramaCore engine: v1.2.39 plus oramacore#340 and #341, which serve
-      # GET /health/ready, the readers' readiness probe since #506 (#597). Built from
-      # oramacore 9d8ed373 into the private oramasearch/oramacore-cloud-v1.
+      # GET /health/ready, the readers' readiness probe since #506 (#597), and oramacore#343,
+      # which keeps a collection recreated before the readers' next commit (orama-bridge#220).
+      # Built from oramacore caca2a59 into the private oramasearch/oramacore-cloud-v1.
+      # v1-prod.yaml still runs 9d8ed373.
       overrides:
-        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-9d8ed373
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-caca2a59
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
       tag: v1-sandbox
