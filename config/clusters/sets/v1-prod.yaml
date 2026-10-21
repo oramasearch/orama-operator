@@ -55,6 +55,8 @@
 #   v1-eu-broker-admin      username, password                 broker, engine, harvest-master (credentials.go ensureCredentialSecrets)
 #   v1-eu-broker-users      writer-password, reader-password   RabbitMQTopology users         (datastore.go ensureBrokerSecrets)
 #   v1-eu-cache-auth        password                           Redis, harvest-master, index-builder (credentials.go)
+#   v1-eu-hpes (#574)       token                              HPES API_KEY, index-builder ORAMA_EMBEDDINGS_BEARER
+#                                                              (credentials.go)
 #   v1-eu-controldb-app     uri, password                      CNPG: dashboard DATABASE_URL/POSTGRES_PASSWORD,
 #                                                              index-builder, analytics processor, PostgresSchema
 #   v1-eu-analytics-api-key (#386)                             readers' reader_side.analytics and the analytics
@@ -73,6 +75,7 @@
 #                                  without it)
 #   dashboard ORAMACORE_PLACEMENT_CLUSTER_ID <- the `c1` row's id the cluster-row Job records (#572)
 #   dashboard REDIS_CACHE_URL      <- http://v1-eu-redis-http, the serverless-redis-http shim (#562)
+#   index-builder ORAMA_EMBEDDINGS_URL <- http://v1-eu-hpes:8787/v1/embeddings_b64, the stack's HPES (#574)
 #
 # Blocked (#570 generated credentials, #747 the remaining third-party keys,
 # #573 the stack's own ingress-nginx, #574 HPES, #575 no tunnel ingress,
@@ -86,13 +89,14 @@
 #       image, which the template sets to oramasearch/oramacore-cloud-v1 with #340/#341 (#597).
 #     - dashboard: the Clerk build (orama-bridge#180, #187).
 #     - analytics-processor: the build with the 0.0.0.0:8080 listener patch (#421).
-#     - HPES: the component and its image (decisions 2026-10-16 #3, 2026-10-17 #5; #574).
+#     - HPES: the CPU image oramasearch/embeddings-server-py:cpu-<sha> (embeddings-server-py#9), pinned by
+#       digest in images.overrides.hpes; the operator runs the component (hpes.go, #574).
 #   Credentials the operator does not generate yet, all of which only have to agree inside the stack:
 #     the one ClickHouse password (analytics, analytics processor, dashboard, workers), TYPESENSE_API_KEY
 #     (search and index-builder), HARVEST_SIGN (index-builder, harvest-master, harvest workers),
 #     CRON_SECRET (dashboard and its CronJobs), DECRYPTER_API_SECRET_BASE64 (index-builder's x-api-key to
 #     openai-decrypter, index-manager apps/index-builder/src/embeddings/openai.ts; openai-decrypter gets
-#     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder), ORAMA_EMBEDDINGS_BEARER (HPES),
+#     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder),
 #     REDIS_CACHE_TOKEN (the serverless-redis-http shim, decisions #12a, not built), QSTASH_TOKEN (workers).
 #   Third-party keys: the workers' SENTRY_DSN now takes a reference (components.workers.sentryDSNSecretRef,
 #     #571), but its source Secret does not exist yet; creating it in orama-system is Steve's consent.

@@ -98,6 +98,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"broker", r.reconcileBroker},
 		{"analytics", r.reconcileAnalytics},
 		{"search", r.reconcileSearch},
+		{"hpes", r.reconcileHPES}, // index-builder's embeddings server, on CPU, no public host (#574)
 		{"ingestion", r.reconcileIngestion},
 		{"workers", r.reconcileWorkers},
 		{"dashboard", r.reconcileDashboard},

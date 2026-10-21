@@ -175,7 +175,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `engine` | `writer.gpu`, `writer.{resources,nodeSelector,tolerations,storage}`, `writer.jwt`, `writer.{host,extraHosts}`, `reader.{replicas,resources,storage}`, `reader.{host,extraHosts}`, `envoy` | OramaCore writer + readers + Envoy |
 | `dashboard` | `host`, `extraHosts`, `envFrom`, `env` ([below](#speccomponentsdashboard)) | app.orama.com (Next.js) |
 | `docs` | `host`, `extraHosts` | docs.orama.com (Next.js + Fumadocs) |
-| `ingestion` | `harvest` | index-builder (Deployment) + HARVEST |
+| `ingestion` | `harvest`, `resources`, `hpesResources` | index-builder (Deployment) + HARVEST + HPES, the embeddings server index-builder calls (`hpesResources`: default 7Gi and 2 CPUs requested, 10Gi limit; [components](components.md#hpes-index-builders-embeddings-hpesgo-574)) |
 | `controlDB` | data-store (`mode: in-cluster` only; `external` refused even when disabled), `stripePrices` | Always in-cluster CloudNativePG |
 | `analytics` | data-store | ClickHouse |
 | `cache` | data-store | Upstash Redis; its REST API through the `redis-http` shim the cache brings ([components](components.md#the-upstash-rest-shim-redis_httpgo-562)) |

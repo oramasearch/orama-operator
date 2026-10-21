@@ -325,7 +325,7 @@ func (r *OramaCloudV1Reconciler) requestsForSecret(ctx context.Context, object c
 
 // secretsReadBy is the Secrets a CR's workloads read that requestsForSecret maps back to it.
 func secretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
-	names := []string{brokerAdminSecretName(oc), cacheAuthSecretName(oc), redisHTTPSecretName(oc), analyticsKeySecretName(oc)}
+	names := []string{brokerAdminSecretName(oc), cacheAuthSecretName(oc), redisHTTPSecretName(oc), hpesSecretName(oc), analyticsKeySecretName(oc)}
 	if oc.Spec.Components.AnalyticsProcessor.Enabled {
 		names = append(names, controlDBAppSecret(oc))
 	}

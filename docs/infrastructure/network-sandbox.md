@@ -264,7 +264,8 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-analytics-processor-egress` | Analytics processor reaches ClickHouse 8123, writer 8080, every reader 8080 (it pulls their search events, #419 and #421) and control DB 5432. |
 | `allow-analytics-import-egress`, `allow-analytics-processor-ingress` | The analytics import CronJob (#421) calls the analytics processor on 8080, and the processor admits only it there. |
 | `allow-analytics-retention-egress` | The analytics retention Job (#421) reaches ClickHouse's native port 9000 for `clickhouse-client`; `allow-analytics-ingress` admits it on 9000 (#616). |
-| `allow-index-builder-egress` | Index builder reaches dashboard 3000, cache 6379, control DB 5432, DISCO 8080/50051, Typesense 8108, decrypter 8080 and HARVEST 8080. |
+| `allow-index-builder-egress` | Index builder reaches dashboard 3000, cache 6379, control DB 5432, HPES 8787, DISCO 8080/50051, Typesense 8108, decrypter 8080 and HARVEST 8080. |
+| `allow-hpes-ingress` | HPES admits only index-builder, on 8787; it has no egress allowance beyond DNS and no public internet ([#574](https://github.com/oramasearch/orama-operator/issues/574)). |
 | `allow-harvest-egress` | HARVEST reaches Mongo 27017, broker 5672, cache 6379 and Selenium 4444. |
 | `allow-disco-egress`, `allow-pgadmin-egress`, `allow-search-workers-egress` | DISCO reaches embeddings; pgAdmin reaches control DB; hosted-search workers reach Typesense, writer/readers and ClickHouse. |
 | `allow-controldb-ingress`, `allow-postgres-schema-egress`, `allow-controldb-cluster-row-egress`, `allow-controldb-internal` | Selected clients, every control DB `PostgresSchema` migration Job and the cluster-row Job (its pod's `orama.cloud/controldb-client=cluster-row`, [#648](https://github.com/oramasearch/orama-operator/issues/648)) reach control DB 5432; CNPG members use 5432/8000 internally. |
