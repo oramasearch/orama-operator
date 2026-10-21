@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -54,11 +55,15 @@ const (
 	agentJobTTLSeconds   = int32(3600)
 	agentTempVolume      = "tmp"
 
-	agentLaunchIDLabel   = "orama.cloud/agent-launch-id"
-	libraryAgentLabel    = "orama.cloud/library-agent"
-	agentCredentialKey   = "token"
-	agentServiceTokenKey = "token"
-	openAIKeyName        = "OPENAI_API_KEY"
+	agentLaunchIDLabel = "orama.cloud/agent-launch-id"
+	libraryAgentLabel  = "orama.cloud/library-agent"
+	agentCredentialKey = "token"
+	// agentLaunchServiceTokenKey holds, in a service launch's credential Secret, the token Lake
+	// presents to that launch alone (agent-runtime#14): derived from the shared agent service token,
+	// never the shared token itself, so the user code it runs cannot call a library agent.
+	agentLaunchServiceTokenKey = "service-token"
+	agentServiceTokenKey       = "token"
+	openAIKeyName              = "OPENAI_API_KEY"
 
 	agentLaunchModeJob     = "job"
 	agentLaunchModeService = "service"
@@ -433,16 +438,60 @@ func (r *LakeReconciler) reconcileAgentWorkspaceSecrets(
 	workspaceID string,
 	serviceMode bool,
 ) error {
-	names := []string{lake.Spec.PullSecretName, lake.Spec.Agents.OpenAISecretName}
-	if serviceMode {
-		names = append(names, lakeAgentServiceTokenSecret(lake.Name))
-	}
-	for _, name := range names {
+	for _, name := range []string{lake.Spec.PullSecretName, lake.Spec.Agents.OpenAISecretName} {
 		if err := reconcileLakeSecretCopy(ctx, r.Client, r.Scheme, lake, workspaceID, namespace, name, labels); err != nil {
 			return err
 		}
 	}
+	// The shared agent service token never goes into a workspace namespace (agent-runtime#14): a
+	// user's launch runs its own code there, and every library agent accepts that token. A copy
+	// an earlier operator made is removed.
+	stale := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: namespace, Name: lakeAgentServiceTokenSecret(lake.Name)}
+	if err := r.Get(ctx, key, stale); err == nil {
+		if metav1.IsControlledBy(stale, lake) && stale.Labels[workspaceLabel] == workspaceID {
+			if err := r.Delete(ctx, stale); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("remove the shared agent service token from %s: %w", namespace, err)
+			}
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
 	return nil
+}
+
+// launchServiceToken is the token Lake presents to one service launch (agent-runtime#14):
+// hex(HMAC-SHA256(shared agent service token, "lake-agent-launch:" + launch id)). Lake derives the
+// same value from the same two inputs, so neither side stores it, and it opens only that launch.
+func launchServiceToken(shared, launchID string) string {
+	mac := hmac.New(sha256.New, []byte(shared))
+	mac.Write([]byte("lake-agent-launch:" + launchID))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// reconcileLaunchServiceToken writes the launch's own service token into its credential Secret.
+func (r *LakeReconciler) reconcileLaunchServiceToken(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, launch *LakeAgentLaunch) error {
+	shared := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: lakeNamespace(lake), Name: lakeAgentServiceTokenSecret(lake.Name)}, shared); err != nil {
+		return fmt.Errorf("read the agent service token: %w", err)
+	}
+	token := string(shared.Data[agentServiceTokenKey])
+	if token == "" {
+		return fmt.Errorf("the agent service token Secret %s has no %q", lakeAgentServiceTokenSecret(lake.Name), agentServiceTokenKey)
+	}
+	derived := launchServiceToken(token, launch.ID)
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: agentLaunchCredentialSecret(lake.Name, launch.Slug)}, secret); err != nil {
+		return err
+	}
+	if string(secret.Data[agentLaunchServiceTokenKey]) == derived {
+		return nil
+	}
+	if secret.Data == nil {
+		secret.Data = map[string][]byte{}
+	}
+	secret.Data[agentLaunchServiceTokenKey] = []byte(derived)
+	return r.Update(ctx, secret)
 }
 
 // reconcileAgentCredential returns the credential in Secret `name`, generating it once as
@@ -508,7 +557,8 @@ func agentRunEnv(lake *oramav1alpha1.Lake, credentialSecret, customerID, workspa
 		}
 		env = append(env, corev1.EnvVar{Name: "AGENT_INPUT", Value: input})
 	} else {
-		env = append(env, secretEnv("AGENT_SERVICE_TOKEN", lakeAgentServiceTokenSecret(lake.Name), agentServiceTokenKey))
+		// Its own token, never the shared one every library agent accepts (agent-runtime#14).
+		env = append(env, secretEnv("AGENT_SERVICE_TOKEN", credentialSecret, agentLaunchServiceTokenKey))
 	}
 	return env
 }
@@ -581,6 +631,11 @@ func (r *LakeReconciler) reconcileAgentLaunch(ctx context.Context, lake *oramav1
 	credential, err := r.reconcileAgentLaunchCredential(ctx, lake, namespace, labels, launch)
 	if err != nil {
 		return status, true, err
+	}
+	if launch.Mode == agentLaunchModeService {
+		if err := r.reconcileLaunchServiceToken(ctx, lake, namespace, launch); err != nil {
+			return status, true, err
+		}
 	}
 	status.CredentialSHA256 = credentialDigest(credential)
 	name := agentLaunchName(lake.Name, launch.Slug)

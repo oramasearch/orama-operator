@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -271,9 +272,17 @@ func TestAJobLaunchRunsOnceWithItsCredentialAndReportsItsOutcome(t *testing.T) {
 	}
 }
 
+// sharedAgentTokenForTest is the Lake's shared agent service token, which every library agent accepts.
+func sharedAgentTokenForTest() *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "lake-prod-agent-service-token", Namespace: testServiceNamespace},
+		Data:       map[string][]byte{"token": []byte("the-shared-agent-service-token")},
+	}
+}
+
 func TestAServiceLaunchIsReadyWhenItsDeploymentIs(t *testing.T) {
 	store := &fakeServiceStore{launches: []LakeAgentLaunch{testLaunch(agentLaunchModeService)}}
-	h := newServiceHarness(t, agentsTestLake(), store)
+	h := newServiceHarness(t, agentsTestLake(), store, sharedAgentTokenForTest())
 	h.poll()
 	if store.launchStatus(t).Phase != AgentPhasePending {
 		t.Fatalf("status %+v", store.launchStatus(t))
@@ -285,6 +294,23 @@ func TestAServiceLaunchIsReadyWhenItsDeploymentIs(t *testing.T) {
 	}
 	if deployment.Spec.Template.Spec.Containers[0].Image != "oramasearch/agent-runtime:test" {
 		t.Fatal("every launch runs on agent-runtime")
+	}
+	// agent-runtime#14: the launch runs user code, so it gets its own token, derived for this launch,
+	// never the shared one every library agent accepts.
+	ref := envValue(t, deployment.Spec.Template.Spec.Containers[0].Env, "AGENT_SERVICE_TOKEN").ValueFrom.SecretKeyRef
+	if ref.Name != testLaunchName+"-credential" || ref.Key != agentLaunchServiceTokenKey {
+		t.Fatalf("AGENT_SERVICE_TOKEN comes from %s/%s, want the launch's own credential Secret", ref.Name, ref.Key)
+	}
+	var credential corev1.Secret
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testServiceNamespace, Name: ref.Name}, &credential); err != nil {
+		t.Fatal(err)
+	}
+	own := string(credential.Data[agentLaunchServiceTokenKey])
+	if own != launchServiceToken("the-shared-agent-service-token", testLaunchID) || own == "the-shared-agent-service-token" {
+		t.Fatalf("the launch's service token %q is not the one derived for it", own)
+	}
+	if launchServiceToken("the-shared-agent-service-token", "another-launch") == own {
+		t.Fatal("two launches share a service token")
 	}
 	deployment.Status.AvailableReplicas = 1
 	if err := h.client.Status().Update(ctx, &deployment); err != nil {
@@ -329,5 +355,44 @@ func TestLaunchesRunOnTheDefaultRuntimeImageWithoutASpecImage(t *testing.T) {
 	}
 	if got := job.Spec.Template.Spec.Containers[0].Image; got != lakeDefaultAgentRuntimeImage {
 		t.Fatalf("launch runs %q, want the default %q", got, lakeDefaultAgentRuntimeImage)
+	}
+}
+
+// agent-runtime#14: the shared agent service token is never copied into a workspace namespace, and a
+// copy an earlier operator made there is removed; another workspace's Secret of that name is not.
+func TestTheSharedAgentServiceTokenLeavesWorkspaceNamespaces(t *testing.T) {
+	const workspaceNamespace = "prod-ws-0123456789ab"
+	lake := agentsTestLake()
+	// Only the service token is under test; the other copies need their source Secrets.
+	lake.Spec.PullSecretName, lake.Spec.Agents.OpenAISecretName = "", ""
+	stale := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "lake-prod-agent-service-token", Namespace: workspaceNamespace,
+		Labels: map[string]string{workspaceLabel: testWorkspaceID},
+	}, Data: map[string][]byte{"token": []byte("the-shared-agent-service-token")}}
+	if err := controllerutil.SetControllerReference(lake, stale, newLakeScheme(t)); err != nil {
+		t.Fatal(err)
+	}
+	foreign := stale.DeepCopy()
+	foreign.Namespace = "prod-ws-ffffffffffff"
+	foreign.Labels = map[string]string{workspaceLabel: "another-workspace"}
+	h := newServiceHarness(t, lake, &fakeServiceStore{}, sharedAgentTokenForTest(), stale, foreign)
+	ctx := context.Background()
+	if err := h.reconciler.reconcileAgentWorkspaceSecrets(ctx, h.lake, workspaceNamespace, map[string]string{workspaceLabel: testWorkspaceID}, testWorkspaceID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.client.Get(ctx, client.ObjectKeyFromObject(stale), &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the shared token copy is still in the workspace namespace: %v", err)
+	}
+	if err := h.client.Get(ctx, client.ObjectKeyFromObject(foreign), &corev1.Secret{}); err != nil {
+		t.Fatalf("another workspace's Secret was removed: %v", err)
+	}
+}
+
+// agent-runtime#14: the same fixed vector lake's AgentRuns.ALaunchsServiceTokenIsDerivedForThatLaunchAlone
+// checks, so the operator's and lake's derivations cannot drift apart.
+func TestLaunchServiceTokenMatchesLakesDerivation(t *testing.T) {
+	got := launchServiceToken("the-shared-agent-service-token", "6f1c2a4e-0d3b-4c55-9a7e-1b2c3d4e5f60")
+	if want := "7b5669274c2c87960d42063668286334197529b4f4439c37a00fbd10b166cba9"; got != want {
+		t.Fatalf("launchServiceToken = %s, want %s", got, want)
 	}
 }

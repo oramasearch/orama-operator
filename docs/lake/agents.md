@@ -51,8 +51,8 @@ Zetta pub/sub on lake's own Zetta (`spec.zetta`, which needs a Zetta image with 
 library agent authenticates to lake with **its own** credential. Secret `lake-<lake>-agent-bus`
 holds one key per `library` entry (32 random bytes, hex, minted when the agent is added, kept
 across reconciles, removed with the agent). Lake mounts the whole Secret; each agent pod gets only
-its own key. The service token is never a bus credential, because user-created service launches
-on `runtimeImage` hold it too. The operator runs no task loop: tasks, claims and results travel on
+its own key. The service token is never a bus credential, and no user-created launch holds it
+(agent-runtime#14, below). The operator runs no task loop: tasks, claims and results travel on
 the bus.
 
 ## Launches
@@ -67,8 +67,10 @@ fallback. For each present launch:
    `orama.cloud/agent-launch-id`. The operator writes only its **SHA-256** into
    `agent_launch_status.credential_sha256`; lake resolves the credential by comparing digests and
    never stores it. The pod reads it as `LAKE_TOKEN` through a Secret reference, never a plain value.
-   The credential, pull credential, OpenAI key and service token used by service-mode agents are
-   copied into the workspace namespace.
+   The pull credential and the OpenAI key are copied into the workspace namespace. **The shared agent
+   service token is not** (agent-runtime#14): every library agent accepts it on `POST /v1/turn`, and a
+   launch runs the account's own code. A copy an earlier operator made there (controlled by the Lake,
+   labelled with the workspace) is deleted.
 2. **`job`** — a Job `<lake>-<slug>` from `runtimeImage` with `backoffLimit: 0` (an agent run is never
    retried behind the person's back), `activeDeadlineSeconds` = `jobDeadlineSeconds`,
    `ttlSecondsAfterFinished: 3600`, `AGENT_MODE=job` and the launch's `input` as `AGENT_INPUT`.
@@ -77,7 +79,10 @@ fallback. For each present launch:
    `credential_sha256` is cleared, so its credential stops resolving; its outcome is kept after the
    Job is garbage-collected.
 3. **`service`** — a Deployment and Service `<lake>-<slug>` from `runtimeImage`, `AGENT_MODE=service`,
-   `AGENT_SERVICE_TOKEN`. `Ready` with `endpoint = http://<lake>-<slug>.<ns>.svc.cluster.local:8080` once a replica is
+   `AGENT_SERVICE_TOKEN` from the launch's own credential Secret, key `service-token`: hex
+   HMAC-SHA256 of the shared token over `lake-agent-launch:<launch id>`, which lake derives the same way
+   when it calls the launch, so it opens that launch alone (agent-runtime#14,
+   `TestLaunchServiceTokenMatchesLakesDerivation`). `Ready` with `endpoint = http://<lake>-<slug>.<ns>.svc.cluster.local:8080` once a replica is
    available; `Pending` until then.
 
 **Agent pods never carry the Lake's `app.kubernetes.io/name` and `instance`**: those are the selector
