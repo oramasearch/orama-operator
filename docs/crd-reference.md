@@ -31,7 +31,7 @@ pointing at the primary); the full sample list is in
 ## `spec.llm`
 
 The engine's LLM settings, rendered into the `ai_server` section of every engine config (the
-combined `config.yaml`, or both `writer.yaml` and `reader.yaml`):
+combined `config.yaml` and `combined-reader.yaml`, or both `writer.yaml` and `reader.yaml`):
 
 - `ai_server.llm` is the `default` provider as an OpenAI-compatible remote (`local: false`): its
   built-in base URL, its first model and its key. A request that names no provider goes there.
@@ -106,9 +106,11 @@ spec:
       key: MASTER_API_KEY
 ```
 
-Consumers: the writer's render-config (`writer_side.master_api_key`; the reader-only config has
-none, the combined config gives it to the readers too), index-builder, workers, the dashboard and the
-`OramaCloudV1E2ETest` runner. Each receives an explicit `secretKeyRef`, which wins over a
+Consumers: the writer's render-config (`writer_side.master_api_key`), index-builder, workers, the
+dashboard and the
+`OramaCloudV1E2ETest` runner; never a reader, in either image mode
+([#795](https://github.com/oramasearch/orama-operator/issues/795): the combined image's readers
+generate their own writer's key at pod start). Each receives an explicit `secretKeyRef`, which wins over a
 `MASTER_API_KEY` an older `<cr>-<component>-secret` still holds. The value must equal the target
 control database's `oramacore_clusters.master_api_key`, which the dashboard uses for administrative
 calls. On a control DB with no row the operator inserts the `c1` row with this key once, and never
@@ -554,8 +556,9 @@ left unchanged. Run outcomes appear in Job status and logs only.
 Present while the engine is enabled and its image selection is valid; removed when the engine is
 disabled. `True` (`SideImages`) when `spec.images.overrides` sets both `oramacore-writer` and
 `oramacore-reader`: the writer renders `writer.yaml` and the readers `reader.yaml`. `False`
-(`CombinedImage`) while both run the combined `oramacore` image with `config.yaml`, so every reader
-also runs a writer. A single side override is reported by `Ready=False` (`ReconcileError`) and
+(`CombinedImage`) while both run the combined `oramacore` image, the writer with `config.yaml` and
+the readers with `combined-reader.yaml`, so every reader also runs a writer (one with a key of its
+own that produces to `oramacore-reader-local`, never the writer's master key). A single side override is reported by `Ready=False` (`ReconcileError`) and
 leaves this condition as it was. It does not change the stack's `phase`, and is written only when
 it changes.
 
@@ -1203,10 +1206,13 @@ topology (principle #3). See [`datastore-crds.md`](datastore-crds.md) for the fu
 
 `OramaCloudV1` creates + owns one `<cr>-broker` instance (in `reconcileBrokerTopology`) declaring the
 `/` vhost, the least-privilege per-service users `oramacore-writer` / `oramacore-reader` (passwords
-generated into `<cr>-broker-users`), their stream-scoped permissions, and the `oramacore-operations`
-replication stream. The engine signs in as those users and is written only once this resource reports
-`Ready` for its generation with every user applied
-([#99](https://github.com/oramasearch/orama-operator/issues/99)). **Ordered readiness gating:** until the broker (and its `<cr>-broker-admin`
+generated into `<cr>-broker-users`) and `harvest` (`<cr>-broker-harvest`), their scoped permissions,
+the `oramacore-operations` replication stream and the combined readers' `oramacore-reader-local`
+stream. The engine and harvest-master sign in as those users and are written only once this resource
+reports `Ready` for its generation with every user applied
+([#99](https://github.com/oramasearch/orama-operator/issues/99),
+[#795](https://github.com/oramasearch/orama-operator/issues/795),
+[#824](https://github.com/oramasearch/orama-operator/issues/824)). **Ordered readiness gating:** until the broker (and its `<cr>-broker-admin`
 Secret) is reachable the reconciler is a safe no-op reporting `Ready=False (BrokerUnavailable /
 WaitingForCredentials)`, not an error. Sample:
 [`../config/samples/rabbitmqtopology.yaml`](../config/samples/rabbitmqtopology.yaml).

@@ -260,12 +260,14 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 
 | Secret | Keys | Created by | Read by |
 |---|---|---|---|
-| `<cr>-broker-admin` | `username` (`orama`), `password` | the bootstrap step, where the broker runs locally | broker `rabbitmq.conf` and boot definitions, writer and reader transport config, harvest-master `AMQP_HOST`, `RabbitMQTopology` (`adminSecretRef`) |
+| `<cr>-broker-admin` | `username` (`orama`), `password` | the bootstrap step, where the broker runs locally | broker `rabbitmq.conf` and boot definitions, `RabbitMQTopology` (`adminSecretRef`); no other workload ([#796](https://github.com/oramasearch/orama-operator/issues/796)) |
+| `<cr>-broker-users` | `writer-password`, `reader-password` | the bootstrap step, where the broker runs locally | the writer's and readers' render-config, `RabbitMQTopology` users `oramacore-writer` / `oramacore-reader` |
+| `<cr>-broker-harvest` | `password` | the bootstrap step, where the broker runs locally | harvest-master `AMQP_HOST`, `RabbitMQTopology` user `harvest` ([#824](https://github.com/oramasearch/orama-operator/issues/824)) |
 | `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL`, redis-http `SRH_CONNECTION_STRING` |
 | `<cr>-redis-http` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where the cache runs locally | redis-http `SRH_TOKEN`, dashboard `REDIS_CACHE_TOKEN` ([below](#the-upstash-rest-shim-redis_httpgo-562)) |
 | `<cr>-hpes` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | HPES `API_KEY`, index-builder `ORAMA_EMBEDDINGS_BEARER` ([below](#hpes-index-builders-embeddings-hpesgo-574)) |
 | `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, reader-only config only), analytics-processor render-config (every `oramacores` entry's `api_key`) |
-| `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`; the reader-only config has none), index-builder, workers, dashboard, the e2e runner |
+| `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`), index-builder, workers, dashboard, the e2e runner; never a reader ([#795](https://github.com/oramasearch/orama-operator/issues/795)) |
 
 - **Generated once.** Where the store runs in this cluster (enabled, not `mode: external`, not
   `placement: central` on a read region) the operator creates the Secret with a random 48-character
@@ -281,26 +283,40 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   the reconcile with `Ready=False` naming the Secret and key, and is left as it is. The bootstrap
   step reads each generated Secret back after creating it, so a Secret another writer created first
   is the one checked and used; no consumer starts with another key.
-- **Wiring.** AMQP clients (harvest-master) get `BROKER_USERNAME`, `BROKER_PASSWORD` and
-  `REDIS_PASSWORD` as `secretKeyRef` entries placed before the URLs that reference them
+- **Wiring.** harvest-master gets `BROKER_USERNAME` (the literal `harvest`), `BROKER_PASSWORD` (from
+  `<cr>-broker-harvest`) and `REDIS_PASSWORD` as entries placed before the URLs that reference them
   (`amqp://$(BROKER_USERNAME):$(BROKER_PASSWORD)@<cr>-broker:5672`,
   `redis://:$(REDIS_PASSWORD)@<cr>-cache:6379`), and Redis runs
   `redis-server --appendonly yes --requirepass $(REDIS_PASSWORD)`. Config files hold
   `__BROKER_PASSWORD__`, `__MASTER_API_KEY__` and `__ANALYTICS_API_KEY__` placeholders that a
   `render-config` init container fills into an `emptyDir`; the broker's own files also hold
   `__BROKER_USERNAME__`.
-- **The engine's own broker users** ([#99](https://github.com/oramasearch/orama-operator/issues/99),
-  principle 4). The writer signs in as `oramacore-writer`, a reader-only pod as `oramacore-reader`,
-  and every pod of the combined image, which runs a producer in the readers too, as
-  `oramacore-writer`. The user is named in the template; `BROKER_PASSWORD` is that user's key of
-  `<cr>-broker-users` (`writer-password`, `reader-password`), which the bootstrap step generates
-  where the broker runs, so no engine pod reads `<cr>-broker-admin`. Both users may declare and read
-  only `oramacore-operations`; only the writer may publish to it (`brokerUserPermissions`, checked
-  by `TestBrokerUserPermissionsAreLeastPrivilege`). Until the stack's `RabbitMQTopology` reports
-  `Ready` for its generation with both users applied, no engine object is written: a fresh stack
-  waits instead of crash-looping on a refused sign-in, and a running engine keeps its templates.
-  A changed `<cr>-broker-users` rolls the writer and readers; a changed admin password rolls only
-  the broker and harvest-master.
+- **Every broker client has its own user** ([#99](https://github.com/oramasearch/orama-operator/issues/99),
+  [#795](https://github.com/oramasearch/orama-operator/issues/795),
+  [#796](https://github.com/oramasearch/orama-operator/issues/796),
+  [#824](https://github.com/oramasearch/orama-operator/issues/824), principle 4). Only the broker
+  reads `<cr>-broker-admin`. The writer signs in as `oramacore-writer` and every reader pod, of
+  either image, as `oramacore-reader`; harvest-master as `harvest`. The engine user is named in the
+  template and `BROKER_PASSWORD` is its key of `<cr>-broker-users` (`writer-password`,
+  `reader-password`); harvest's password is `<cr>-broker-harvest`'s `password`, its own Secret so
+  that neither Secret's change rolls the other's consumers. The bootstrap step generates both where
+  the broker runs. What each may do on `/` (`brokerUserPermissions`, checked by
+  `TestBrokerUserPermissionsAreLeastPrivilege` and `TestHarvestBrokerUserIsLeastPrivilege`):
+
+  | User | configure | write | read |
+  |---|---|---|---|
+  | `oramacore-writer` | `oramacore-operations` | `oramacore-operations` | `oramacore-operations` |
+  | `oramacore-reader` | `oramacore-operations`, `oramacore-reader-local` | `oramacore-reader-local` | `oramacore-operations` |
+  | `harvest` | `<workerID>-<indexID>-queue` | `amq.default` (the default exchange), `<workerID>-<indexID>-queue` | `<workerID>-<indexID>-queue` |
+
+  No reader may publish to the replication stream, and harvest may touch neither OramaCore stream.
+  `oramacore-reader-local` is where the writer the combined image starts in each reader produces
+  (*Combined readers* under the engine, below); nothing consumes it. Until the stack's
+  `RabbitMQTopology` reports `Ready` for its generation with every user applied, no engine object
+  and no harvest-master is written: a fresh stack waits instead of crash-looping on a refused
+  sign-in, and a running one keeps its templates. A changed `<cr>-broker-users` rolls the writer and
+  readers, a changed `<cr>-broker-harvest` only harvest-master, and a changed admin password only
+  the broker.
 - **Broker password on a retained volume.** RabbitMQ applies `default_user`/`default_pass` only to
   an empty data directory, so the broker also imports `/etc/rabbitmq/credentials.json` on every
   boot (`definitions.import_backend = local_filesystem`): the admin user, the `/` vhost and its
@@ -324,10 +340,11 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   `orama.cloud/credentials-hash`, the data hash of exactly the Secrets it reads (`secretDataHash`,
   shared with the LLM key hash). The controller maps every Secret event, owned or copied, to each CR
   in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
-  `<cr>-broker-admin` the broker, writer, readers and harvest-master; `<cr>-cache-auth` the cache,
+  `<cr>-broker-admin` the broker; `<cr>-broker-users` the writer and readers; `<cr>-broker-harvest`
+  harvest-master; `<cr>-cache-auth` the cache,
   harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-analytics-api-key` the readers on the reader-only config
-  and analytics-processor, never the writer; the master key the writer (and readers on the combined
-  image), index-builder, workers and dashboard. analytics-processor's hash also covers its component
+  and analytics-processor, never the writer; the master key the writer, index-builder, workers and
+  dashboard, never a reader. analytics-processor's hash also covers its component
   Secret (ClickHouse password) and `<cr>-controldb-app` (the Postgres URI). Metadata changes roll
   nothing. An
   existing e2e Job is immutable and keeps the reference it was created with.
@@ -577,18 +594,34 @@ Driven by `spec.region.role`:
   neither: one without the other (an empty value counts as unset) fails the reconcile with
   `Ready=False` (`ReconcileError`) before any resource changes; a disabled engine skips the check,
   so it can still be torn down. With both set they win over `overrides.oramacore`; with neither,
-  both pods keep the combined image (`overrides.oramacore`, else `<registry>/oramacore:latest`) and
-  `config.yaml`, unchanged. `status.conditions[EngineSidesSeparated]` reports which mode runs.
+  both pods keep the combined image (`overrides.oramacore`, else `<registry>/oramacore:latest`): the
+  writer renders `config.yaml`, unchanged, and the readers `combined-reader.yaml` (next).
+  `status.conditions[EngineSidesSeparated]` reports which mode runs.
+- **Combined readers hold no writer master key** ([#795](https://github.com/oramasearch/orama-operator/issues/795),
+  LSR-133). The combined binary will not start without a `writer_side`, so `combined-reader.yaml`
+  has one, but it is not the writer's: its `master_api_key` is `'__LOCAL_WRITER_KEY__'`, which the
+  readers' render-config fills with 48 hex characters it generates at every pod start
+  (`localWriterKeyScript`; in no Secret, known to no other pod), it has no `jwt` provider, and it
+  produces to `oramacore-reader-local` as `oramacore-reader` (`readerLocalWriterSideYAML`). Its
+  `reader_side` consumes `oramacore-operations` as `oramacore-reader`. So a reader's writer routes
+  authenticate nothing (an unknown key over an empty collection store), a reader holds neither the
+  writer's master key nor the right to publish to the stream the other readers apply, and the
+  readers' render-config reads no master key Secret. It sets `MASTER_API_KEY` to an empty value,
+  which wins over an older `<cr>-engine-secret` that still holds one. The reader-only image needs
+  none of this: `reader.yaml` has no `writer_side`. Checked by `TestReaderNeverHoldsTheWriterMasterKey`,
+  `TestMasterKeyChangeDoesNotRollTheReaders` and `TestCombinedReaderCannotPublishToTheReplicationStream`.
 - **Config** — a `ConfigMap` `<cr>-engine-config` with `envoy.yaml` + **full, valid** OramaCore
   configs, matching `oramacore/config-docker.yaml` (`execution_providers: CUDA|CPU` from
   `writer.gpu`). Without side-only images it holds the combined `config.yaml` (`http` / `log` /
-  `writer_side` / `reader_side` / `ai_server`), which both pods render. With them it holds
+  `writer_side` / `reader_side` / `ai_server`), which the writer renders, and `combined-reader.yaml`
+  (the same sections, the `writer_side` the readers' own, above), which the readers render. With them it holds
   `writer.yaml` (`http` / `log` / `writer_side` / `ai_server`), rendered by the writer, and
   `reader.yaml` (`http` / `log` / `reader_side` / `ai_server`), rendered by the readers; switching
-  modes replaces the data, so the other mode's keys disappear. All three are assembled from the
-  same section builders in `engine.go` (`engineCommonYAML`, `writerSideYAML`, `readerSideYAML`,
-  `aiServerYAML`), so the sections and stream names are identical in every mode (writer
-  `oramacore-writer`/`write`, readers `oramacore-reader`/`reader`).
+  modes replaces the data, so the other mode's keys disappear. All four are assembled from the
+  same section builders in `engine.go` (`engineCommonYAML`, `writerSideYAML`,
+  `readerLocalWriterSideYAML`, `readerSideYAML`, `aiServerYAML`), so the sections and the
+  replication stream are identical in every mode (writer `oramacore-writer`/`write`, readers
+  `oramacore-reader`/`reader`).
 - **Reader analytics** ([#386](https://github.com/oramasearch/orama-operator/issues/386)) — only
   `reader.yaml` carries `reader_side.analytics` (`readerAnalyticsYAML`), as on Prod 1's readers:
   `api_key: '__ANALYTICS_API_KEY__'`, filled from `<cr>-analytics-api-key`, and Prod 1's
@@ -597,14 +630,15 @@ Driven by `spec.region.role`:
   headers is still served. With it each reader logs search events under its `data_dir` and serves
   them once on `GET /v1/analytics`, which erases what it returns; analytics-processor pulls each
   reader once per import with the analytics key ([Analytics import](#analytics-import)). The writer config has no reader side and no analytics block, and the combined
-  `config.yaml` has none either, so on the combined image readers record no search events. Only the
+  `config.yaml` and `combined-reader.yaml` have none either, so on the combined image readers record no search events. Only the
   readers' render-config reads the analytics key.
   The `ai_server` LLM settings come from `spec.llm` (`engine_llm.go`): `ai_server.llm` is the
   default provider's built-in URL, first model and key, `ai_server.remote_llms` one entry per
   provider, and `ai_server.embeddings.automatic_embeddings_selector` the optional selector. Without
   `spec.llm` they are Prod 1's four providers with no selector
   ([crd-reference.md](crd-reference.md#specllm)).
-  Every config is a **template** — `master_api_key` is a `'__MASTER_API_KEY__'`, the broker
+  Every config is a **template** — `master_api_key` is a `'__MASTER_API_KEY__'` (on the combined
+  readers `'__LOCAL_WRITER_KEY__'`, generated in the pod), the broker
   `password` is `'__BROKER_PASSWORD__'` (the `user` is the side's own broker user, `oramacore-writer`
   or `oramacore-reader`, [#99](https://github.com/oramasearch/orama-operator/issues/99)), and each provider's
   key a `'__<PROVIDER>_API_KEY__'` placeholder (single-quoted scalars), so **no credential lives in
@@ -627,7 +661,7 @@ Driven by `spec.region.role`:
   hash stays their template's alone, as they were. The pod template also carries
   `orama.cloud/llm-secret-hash`, the SHA-256 of the data of `<cr>-engine-secret` and every
   `apiKeySecretRef` Secret, identical on both sides, and `orama.cloud/credentials-hash`, the side's
-  broker admin, master key and (reader-only config) analytics key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
+  `<cr>-broker-users`, master key (writer only) and (reader-only config) analytics key Secrets ([Credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
   The controller watches Secrets and maps a change to every CR that reads it, so a rotated key rolls
   the writer and readers with no restart by hand. Without a usable master key the writer and
   reader StatefulSets are held at zero replicas, and so is a reader Deployment left by an earlier

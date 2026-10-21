@@ -363,14 +363,29 @@ func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav
 func brokerAdminSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-broker-admin" }
 func brokerUsersSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-broker-users" }
 
-// The engine's per-service broker users (#99, principle 4). The writer, and every pod of the
-// combined image (which runs a producer in readers too), signs in as brokerWriterUser; a reader-only
-// pod signs in as brokerReaderUser, which may not write to the stream. Their passwords are the keys of
-// <cr>-broker-users (brokerUserPasswordKey).
+// The per-service broker users (#99, #824, principle 4). The writer signs in as brokerWriterUser and
+// every reader pod, of either image, as brokerReaderUser, which may not write to the replication
+// stream (#795). The engine users' passwords are the keys of <cr>-broker-users (brokerUserPasswordKey);
+// harvest-master's is <cr>-broker-harvest.
 const (
 	brokerWriterUser = "oramacore-writer"
 	brokerReaderUser = "oramacore-reader"
+	// brokerHarvestUser is harvest-master's broker user (#824, LSR-134): HARVEST's per-crawl queues
+	// only. Its password is <cr>-broker-harvest's password key.
+	brokerHarvestUser = "harvest"
 )
+
+// brokerReaderLocalStream is where the writer that the combined OramaCore image starts in every
+// reader pod produces (#795, LSR-133). Nothing addresses that writer and no reader consumes this
+// stream: it exists so a reader never needs write permission on the replication stream.
+const brokerReaderLocalStream = "oramacore-reader-local"
+
+// brokerHarvestSecretName is the Secret holding harvest-master's broker password (key password). It
+// is its own Secret, not a key of <cr>-broker-users, so a change to it rolls only harvest-master and
+// adding it rolls neither the writer nor the readers.
+func brokerHarvestSecretName(oc *oramav1alpha1.OramaCloudV1) string {
+	return oc.Name + "-broker-harvest"
+}
 
 // brokerUserPasswordKey is the <cr>-broker-users key holding a broker user's password.
 func brokerUserPasswordKey(user string) string {
@@ -380,15 +395,28 @@ func brokerUserPasswordKey(user string) string {
 	return "writer-password"
 }
 
-// brokerUserPermissions is what each engine user may do on the / vhost, as RabbitMQ regular
-// expressions over resource names: both may declare (configure) and read the replication stream,
-// which OramaCore's stream creator and consumer need, only the writer may publish to it, and neither
-// may touch any other queue or exchange.
+// harvestQueuePattern matches HARVEST's per-crawl queues, <workerID>-<indexID>-queue (HARVEST
+// worker/src/models/scrapping_metadata.py), and nothing OramaCore uses.
+const harvestQueuePattern = `[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-queue`
+
+// brokerUserPermissions is what each user may do on the / vhost, as RabbitMQ regular expressions over
+// resource names:
+//   - oramacore-writer declares (configure), publishes to and reads the replication stream;
+//   - oramacore-reader declares and reads the replication stream, and declares and publishes to
+//     oramacore-reader-local, where the writer the combined image starts in a reader produces (#795);
+//     it may not publish to the replication stream;
+//   - harvest declares, consumes and deletes HARVEST's per-crawl queues and publishes to them through
+//     the default exchange (authorized as amq.default), as harvest-master and the workers do (#824).
+//
+// None may touch any other queue, stream or exchange.
 func brokerUserPermissions() []oramav1alpha1.RabbitMQPermission {
 	stream := "^" + brokerOperationsStream + "$"
+	local := "^" + brokerReaderLocalStream + "$"
+	queues := "^" + harvestQueuePattern + "$"
 	return []oramav1alpha1.RabbitMQPermission{
 		{User: brokerWriterUser, VHost: "/", Configure: stream, Write: stream, Read: stream},
-		{User: brokerReaderUser, VHost: "/", Configure: stream, Write: "^$", Read: stream},
+		{User: brokerReaderUser, VHost: "/", Configure: "^(" + brokerOperationsStream + "|" + brokerReaderLocalStream + ")$", Write: local, Read: stream},
+		{User: brokerHarvestUser, VHost: "/", Configure: queues, Write: `^(amq\.default|` + harvestQueuePattern + `)$`, Read: queues},
 	}
 }
 
@@ -450,13 +478,19 @@ func (r *OramaCloudV1Reconciler) reconcileBrokerTopology(ctx context.Context, oc
 			Users: []oramav1alpha1.RabbitMQUser{
 				{Name: brokerWriterUser, PasswordSecretRef: oramav1alpha1.RabbitMQSecretKeyRef{Name: usersSecret, Key: brokerUserPasswordKey(brokerWriterUser)}},
 				{Name: brokerReaderUser, PasswordSecretRef: oramav1alpha1.RabbitMQSecretKeyRef{Name: usersSecret, Key: brokerUserPasswordKey(brokerReaderUser)}},
+				{Name: brokerHarvestUser, PasswordSecretRef: oramav1alpha1.RabbitMQSecretKeyRef{Name: brokerHarvestSecretName(oc), Key: "password"}},
 			},
 			Permissions: brokerUserPermissions(),
-			// Declare the stream with the SAME retention OramaCore uses on its own stream-protocol
+			// Declare the streams with the SAME retention OramaCore uses on its own stream-protocol
 			// Create (x-max-length-bytes = 5 GB) — RabbitMQ rejects a redeclare whose properties differ,
 			// which would fail this reconcile before the reader/writer users are created (the reader then
 			// can't auth to the stream). Value confirmed against a live cluster. Bounds growth too (#8).
-			Streams: []oramav1alpha1.RabbitMQStream{{Name: brokerOperationsStream, VHost: "/", MaxLengthBytes: brokerOperationsStreamMaxBytes, LeaderLocator: brokerOperationsStreamLeaderLocator}},
+			// oramacore-reader-local is declared by the combined image's readers (#795) with the same
+			// Create, so it takes the same arguments.
+			Streams: []oramav1alpha1.RabbitMQStream{
+				{Name: brokerOperationsStream, VHost: "/", MaxLengthBytes: brokerOperationsStreamMaxBytes, LeaderLocator: brokerOperationsStreamLeaderLocator},
+				{Name: brokerReaderLocalStream, VHost: "/", MaxLengthBytes: brokerOperationsStreamMaxBytes, LeaderLocator: brokerOperationsStreamLeaderLocator},
+			},
 		}
 		return controllerutil.SetControllerReference(oc, topo, r.Scheme)
 	})
@@ -464,9 +498,20 @@ func (r *OramaCloudV1Reconciler) reconcileBrokerTopology(ctx context.Context, oc
 }
 
 // ensureBrokerSecrets provisions the per-service user passwords the topology declares (random,
-// generated once; create-if-absent so they survive reconciles). The admin Secret comes from
-// ensureCredentialSecrets in the bootstrap step.
+// generated once; create-if-absent so they survive reconciles): <cr>-broker-users for the engine and
+// <cr>-broker-harvest for harvest-master. An existing Secret is never changed. The admin Secret comes
+// from ensureCredentialSecrets in the bootstrap step.
 func (r *OramaCloudV1Reconciler) ensureBrokerSecrets(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
+	harvestPass, err := randHex(24)
+	if err != nil {
+		return err
+	}
+	if err := r.createSecretIfAbsent(ctx, oc, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: brokerHarvestSecretName(oc), Namespace: oc.Namespace, Labels: labelsFor(oc, "broker")},
+		Data:       map[string][]byte{"password": []byte(harvestPass)},
+	}); err != nil {
+		return err
+	}
 	writerPass, err := randHex(16)
 	if err != nil {
 		return err

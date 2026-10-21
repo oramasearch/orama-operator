@@ -79,6 +79,8 @@ func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 		return []string{"username", "password"}
 	case brokerUsersSecretName(oc):
 		return []string{brokerUserPasswordKey(brokerWriterUser), brokerUserPasswordKey(brokerReaderUser)}
+	case brokerHarvestSecretName(oc):
+		return []string{"password"}
 	case cacheAuthSecretName(oc):
 		return []string{"password"}
 	case redisHTTPSecretName(oc):
@@ -123,11 +125,21 @@ func masterAPIKeyEnv(oc *oramav1alpha1.OramaCloudV1) corev1.EnvVar {
 	return secretKeyEnv(masterAPIKeyEnvName, name, key)
 }
 
-// brokerCredentialEnv carries the broker admin user and password from <cr>-broker-admin.
+// brokerCredentialEnv carries the broker admin user and password from <cr>-broker-admin. Only the
+// broker itself takes them (#796): every client signs in as its own user.
 func brokerCredentialEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		secretKeyEnv(brokerUserEnv, brokerAdminSecretName(oc), "username"),
 		secretKeyEnv(brokerPasswordEnv, brokerAdminSecretName(oc), "password"),
+	}
+}
+
+// harvestBrokerEnv carries harvest-master's broker user, harvest, and its password from
+// <cr>-broker-harvest (#824), under the names amqpURL references.
+func harvestBrokerEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: brokerUserEnv, Value: brokerHarvestUser},
+		secretKeyEnv(brokerPasswordEnv, brokerHarvestSecretName(oc), "password"),
 	}
 }
 
@@ -142,7 +154,7 @@ func redisPasswordEnvVar(oc *oramav1alpha1.OramaCloudV1) corev1.EnvVar {
 }
 
 // amqpURL is the broker's AMQP URL. The credentials are $(VAR) references the kubelet expands from
-// the brokerCredentialEnv entries, which must come before it, so the pod spec holds no value.
+// the harvestBrokerEnv entries, which must come before it, so the pod spec holds no password.
 func amqpURL(oc *oramav1alpha1.OramaCloudV1) string {
 	return "amqp://$(" + brokerUserEnv + "):$(" + brokerPasswordEnv + ")@" + oc.Name + "-broker:5672"
 }

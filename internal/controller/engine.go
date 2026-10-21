@@ -199,13 +199,20 @@ func engineCredentialSecrets(oc *oramav1alpha1.OramaCloudV1, side engineSide) []
 
 func engineConfigName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-engine-config" }
 
-// Keys of the engine ConfigMap's OramaCore config templates. The combined config is for an image
-// that runs both OramaCore sides; the writer and reader configs are for side-only images (#308).
+// Keys of the engine ConfigMap's OramaCore config templates. The combined config is for the writer
+// of an image that runs both OramaCore sides and the combined reader config for its readers (#795);
+// the writer and reader configs are for side-only images (#308).
 const (
-	combinedConfigKey = "config.yaml"
-	writerConfigKey   = "writer.yaml"
-	readerConfigKey   = "reader.yaml"
+	combinedConfigKey       = "config.yaml"
+	combinedReaderConfigKey = "combined-reader.yaml"
+	writerConfigKey         = "writer.yaml"
+	readerConfigKey         = "reader.yaml"
 )
+
+// localWriterKeyEnv names the master key of the writer the combined image starts in a reader pod
+// (#795, LSR-133). render-config generates it at pod start (renderConfigScript): it is in no Secret,
+// no other pod knows it, and the writer's own master key never reaches a reader.
+const localWriterKeyEnv = "LOCAL_WRITER_KEY"
 
 // engineSide is what a writer or reader pod takes from the engine's image selection: the OramaCore
 // image it runs, and the ConfigMap key and unrendered template of the config it renders. The
@@ -214,8 +221,8 @@ type engineSide struct {
 	image     string
 	configKey string
 	template  string
-	// brokerUser is the broker user the side's template signs in as: oramacore-reader for a
-	// reader-only pod, oramacore-writer otherwise (#99).
+	// brokerUser is the broker user the side's template signs in as: oramacore-writer for the
+	// writer, oramacore-reader for every reader pod (#99, #795).
 	brokerUser string
 }
 
@@ -225,6 +232,12 @@ func (s engineSide) readsMasterAPIKey() bool {
 	return strings.Contains(s.template, keyPlaceholder(masterAPIKeyEnvName))
 }
 
+// generatesLocalWriterKey reports whether the side's template holds the local writer key placeholder:
+// only the combined reader config does (its writer_side.master_api_key).
+func (s engineSide) generatesLocalWriterKey() bool {
+	return strings.Contains(s.template, keyPlaceholder(localWriterKeyEnv))
+}
+
 // readsAnalyticsKey reports whether the side's template holds the analytics key placeholder: only
 // the reader-only config does (reader_side.analytics.api_key).
 func (s engineSide) readsAnalyticsKey() bool {
@@ -232,11 +245,16 @@ func (s engineSide) readsAnalyticsKey() bool {
 }
 
 // engineSideFor resolves the "writer" or "reader" side. With side-only images each side renders its
-// own config; otherwise both run the combined image and render the combined config.
+// own config; otherwise both run the combined image, the writer with the combined config and the
+// readers with the combined reader config, which holds no writer master key (#795).
 func engineSideFor(oc *oramav1alpha1.OramaCloudV1, side string) engineSide {
 	if !engineSidesSeparated(oc) {
-		return engineSide{image: oramacoreImage(oc), configKey: combinedConfigKey, template: oramacoreConfigYAML(oc),
-			brokerUser: brokerWriterUser}
+		if side == "writer" {
+			return engineSide{image: oramacoreImage(oc), configKey: combinedConfigKey, template: oramacoreConfigYAML(oc),
+				brokerUser: brokerWriterUser}
+		}
+		return engineSide{image: oramacoreImage(oc), configKey: combinedReaderConfigKey, template: oramacoreCombinedReaderConfigYAML(oc),
+			brokerUser: brokerReaderUser}
 	}
 	if side == "writer" {
 		return engineSide{image: oramacoreSideImage(oc, side), configKey: writerConfigKey, template: oramacoreWriterConfigYAML(oc),
@@ -297,10 +315,49 @@ func (r *OramaCloudV1Reconciler) reconcileEngineConfig(ctx context.Context, oc *
 // can't take them from env — config's ORAMACORE_ override splits on "_" and can't reach the nested
 // writer_side.master_api_key.
 //
-// Both sections of the combined config authenticate as oramacore-writer: the combined image runs a
-// producer in every pod, readers included, and oramacore-reader may not write to the stream.
+// The combined config is the writer pod's: both its sections authenticate as oramacore-writer. The
+// combined image's readers render oramacoreCombinedReaderConfigYAML instead.
 func oramacoreConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
 	return engineCommonYAML() + writerSideYAML(oc) + readerSideYAML(oc, brokerWriterUser) + aiServerYAML(oc)
+}
+
+// oramacoreCombinedReaderConfigYAML is the config of a reader pod that runs the combined image (#795,
+// LSR-133). That binary refuses to start without a writer_side, and starts a writer in every pod, so
+// the config has one, but it is not the writer's: its master key is generated at pod start
+// (localWriterKeyEnv), it has no JWT provider, and it produces to its own stream,
+// oramacore-reader-local, as oramacore-reader. The reader section consumes the replication stream as
+// oramacore-reader too, so a reader holds neither the writer's master key nor any right to publish to
+// the stream the other readers apply.
+func oramacoreCombinedReaderConfigYAML(oc *oramav1alpha1.OramaCloudV1) string {
+	return engineCommonYAML() + readerLocalWriterSideYAML(oc) + readerSideYAML(oc, brokerReaderUser) + aiServerYAML(oc)
+}
+
+// readerLocalWriterSideYAML is the writer_side of the combined reader config: the same writer settings
+// and hooks as the writer's, its data in the reader's own claim as before, but producing to
+// oramacore-reader-local as oramacore-reader, with a master key only that pod knows and no JWT.
+// Requests reach a reader's writer routes only through the reader Service, and none of them can
+// authenticate: the key is unknown and its collection store is empty.
+func readerLocalWriterSideYAML(oc *oramav1alpha1.OramaCloudV1) string {
+	return fmt.Sprintf(`writer_side:
+  output:
+    type: rabbitmq
+    host: %s
+    port: 5552
+    user: %s
+    password: '__BROKER_PASSWORD__'
+    v_host: /
+    stream_name: %s
+    client_provided_name: oramacore-reader-local
+    producer_name: write
+%s  master_api_key: '%s'
+  config:
+    data_dir: /app/.data/writer
+    embedding_queue_limit: 50000
+    insert_batch_commit_size: 50000000
+    default_embedding_model: BGESmall
+    javascript_queue_limit: 500000
+    commit_interval: 1m
+`, oc.Name+"-broker", brokerReaderUser, brokerReaderLocalStream, hooksYAML(oc), keyPlaceholder(localWriterKeyEnv))
 }
 
 // oramacoreWriterConfigYAML is the writer-only image's config: no reader_side.
@@ -504,7 +561,7 @@ func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 // rendered file to the shared rendered-config emptyDir that the OramaCore container reads via
 // CONFIG_PATH, so the credentials stay out of the ConfigMap while the reviewable config lives in one.
 // Explicit env entries, which take precedence over envFrom, carry MASTER_API_KEY from
-// spec.masterAPIKeySecretRef where the side reads it, BROKER_PASSWORD, the password of the side's
+// spec.masterAPIKeySecretRef where the side reads it (an empty MASTER_API_KEY elsewhere), BROKER_PASSWORD, the password of the side's
 // broker user from <cr>-broker-users (engineBrokerPasswordEnv), ANALYTICS_API_KEY from <cr>-analytics-api-key on the reader-only config, and a
 // provider's key from its apiKeySecretRef; the other provider keys come from the engine Secret
 // (envFrom). See renderConfigScript and llmKeySecretEnv.
@@ -512,6 +569,10 @@ func renderConfigInit(oc *oramav1alpha1.OramaCloudV1, side engineSide) corev1.Co
 	var env []corev1.EnvVar
 	if side.readsMasterAPIKey() {
 		env = append(env, masterAPIKeyEnv(oc))
+	} else {
+		// A side that does not read the master key (every reader, #795) masks the MASTER_API_KEY an
+		// engine Secret from before #307 may still hold: an explicit entry wins over envFrom.
+		env = append(env, corev1.EnvVar{Name: masterAPIKeyEnvName, Value: ""})
 	}
 	env = append(env, engineBrokerPasswordEnv(oc, side))
 	if side.readsAnalyticsKey() {

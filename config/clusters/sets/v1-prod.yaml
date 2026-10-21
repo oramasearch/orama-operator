@@ -52,9 +52,11 @@
 # Generated (never copied, never shared between members):
 #   v1-eu-jwt               JWT_PRIVATE_KEY, JWT_PUBLIC_KEY   dashboard signs write tokens  (config.go ensureJWTSecrets)
 #   v1-eu-jwt-pub           JWT_PUBLIC_KEY                     engine verifies               (config.go ensureJWTSecrets)
-#   v1-eu-broker-admin      username, password                 broker, harvest-master          (credentials.go ensureCredentialSecrets)
+#   v1-eu-broker-admin      username, password                 broker only (#796)           (credentials.go ensureCredentialSecrets)
 #   v1-eu-broker-users      writer-password, reader-password   RabbitMQTopology users; the writer and readers
 #                                                              sign in as them (#99)        (datastore.go ensureBrokerSecrets)
+#   v1-eu-broker-harvest    password                           RabbitMQTopology user harvest; harvest-master
+#                                                              signs in as it (#824)        (datastore.go ensureBrokerSecrets)
 #   v1-eu-cache-auth        password                           Redis, harvest-master, index-builder (credentials.go)
 #   v1-eu-hpes (#574)       token                              HPES API_KEY, index-builder ORAMA_EMBEDDINGS_BEARER
 #                                                              (credentials.go)
@@ -89,7 +91,8 @@
 #     on the operator's default tags. Still to build before an apply:
 #     - oramacore-writer, oramacore-reader: the v1.2.39 side-only images (#308, orama-cloud-v1-bridge#5),
 #       and the reader with oramacore#340/#341. Without both overrides the engine runs the combined
-#       image, which the template sets to oramasearch/oramacore-cloud-v1 with #340/#341 (#597).
+#       image, which the template sets to oramasearch/oramacore-cloud-v1 with #340/#341 (#597). Its
+#       readers still never hold the writer's master key: they render combined-reader.yaml (#795).
 #     - dashboard: the Clerk build (orama-bridge#180, #187).
 #     - analytics-processor: the build with the 0.0.0.0:8080 listener patch (#421).
 #     - HPES: the CPU image oramasearch/embeddings-server-py:cpu-<sha> (embeddings-server-py#9), pinned by
