@@ -136,6 +136,8 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	openAIDecrypter := oramaCloudComponentSelector(oc, "openai-decrypter")
 	// OramaCloudV1Migration Jobs (operator#653).
 	migration := oramaCloudComponentSelector(oc, migrationComponent)
+	// OramaCloudV1E2ETest runner pods (operator#61, #63).
+	e2eRunner := oramaCloudComponentSelector(oc, e2eComponent)
 	// Every control DB schema's migration Job, not only the first: each PostgresSchema labels its pods
 	// with its own name (operator#625).
 	schemaNames := make([]string, 0, len(controlDBSchemaSuffixes))
@@ -394,6 +396,34 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		sandboxAllowance(
 			"OramaCore readers accept OramaCloudV1Migration Jobs' verification reads (operator#653).",
 			oramaCloudIngressPolicy("allow-reader-migration-ingress", readerPods, ingressFrom(migration, readerPodPort(oc))),
+		),
+		sandboxAllowance(
+			"OramaCloudV1E2ETest runner pods call the writer, the readers, the dashboard and the edge workers they test (operator#61, #63); DNS is allow-dns-egress.",
+			oramaCloudEgressPolicy(
+				"allow-e2e-egress",
+				e2eRunner,
+				egressTo(writer, oramacorePort),
+				egressTo(readerPods, readerPodPort(oc)),
+				egressTo(dashboard, 3000),
+				egressTo(workers, 8080),
+				egressTo(searchWorkers, 8080),
+			),
+		),
+		sandboxAllowance(
+			"OramaCore writer accepts the e2e suite's admin and write calls (operator#61, #63).",
+			oramaCloudIngressPolicy("allow-writer-e2e-ingress", writer, ingressFrom(e2eRunner, oramacorePort)),
+		),
+		sandboxAllowance(
+			"OramaCore readers accept the e2e suite's searches (operator#61, #63).",
+			oramaCloudIngressPolicy("allow-reader-e2e-ingress", readerPods, ingressFrom(e2eRunner, readerPodPort(oc))),
+		),
+		sandboxAllowance(
+			"Dashboard accepts the e2e suite's JWKS, write-token, RBAC and CSRF checks (operator#63).",
+			oramaCloudIngressPolicy("allow-dashboard-e2e-ingress", dashboard, ingressFrom(e2eRunner, 3000)),
+		),
+		sandboxAllowance(
+			"The workers bundle and the hosted-search workers accept the e2e suite's auth checks (operator#61).",
+			oramaCloudIngressPolicy("allow-workers-e2e-ingress", oramaCloudComponentSelector(oc, append([]string{"workers"}, searchWorkerNames...)...), ingressFrom(e2eRunner, 8080)),
 		),
 		sandboxAllowance(
 			"CloudNativePG instances replicate and exchange health traffic within this stack.",

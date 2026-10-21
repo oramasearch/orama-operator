@@ -6,6 +6,7 @@ Licensed under the Apache License, Version 2.0.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -29,6 +30,16 @@ type OramaCloudV1E2ETestSpec struct {
 	// PullSecretName lets the Job pull a private test image.
 	// +optional
 	PullSecretName string `json:"pullSecretName,omitempty"`
+
+	// DashboardFixtureSecretRef names a Secret in the test's namespace describing a dashboard project
+	// of the target that the suite may write to, so it can check the dashboard's write tokens end to
+	// end: keys collectionID, indexID and apiKey (the project's private API key, as in the e2e
+	// canary's Secret) are required. The optional key readerSessionCookie is the `_orama_session`
+	// cookie of a member holding only read access to that project, for the wrong-role checks.
+	// Omitted, the suite skips its write-token, plan, expiry and role checks and says why. The Job
+	// reads the Secret through its environment; nothing from it lands in the ConfigMap.
+	// +optional
+	DashboardFixtureSecretRef *corev1.LocalObjectReference `json:"dashboardFixtureSecretRef,omitempty"`
 }
 
 // OramaCloudV1E2ETestStatus is the observed state of a test run.
