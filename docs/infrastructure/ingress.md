@@ -95,8 +95,9 @@ done by hand ([operations](operations.md)).
 3. **Move the cluster's hosts**: in `config/clusters/sets/*.yaml`, set the member for that cluster to
    `ingressClassName: zetta-tunnel` (Lake, Zetta) or `components.ingressClassName: zetta-tunnel`
    (Cloud v1), and apply. The Ingress gets the gateway's address and its DNS record follows. The
-   Cloudflare zone must use SSL mode **Full (strict)** for these hosts: the gateway has no plain HTTP
-   listener. Rollback is the same change back to `nginx`.
+   edge must use **Full (strict)** for these hosts, declared per host by an `EdgeHostPolicy`
+   (`originTLS: strict`) or zone-wide by a Lake's `EdgeZonePolicy`, never set by hand: the gateway has
+   no plain HTTP listener. Rollback is the same change back to `nginx`.
 4. **Confirm**: `kubectl get ingress -A` shows the gateway's address for every moved Ingress, the
    report's `skipped` is empty, and every public host answers through the gateway with its
    certificate.

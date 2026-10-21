@@ -953,7 +953,7 @@ one, `lake-<name>-edge`.
 |---|---|
 | `spec.type` | `cloudflare` (the only type). |
 | `spec.cloudflare.accountId` | Optional Cloudflare account ID; zone policies do not need it. |
-| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of the token in this namespace. For an `EdgeZonePolicy`: Zone > Zone Settings > Edit and Zone > DNS > Read on the zone. Never written or logged. |
+| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of the token in this namespace. For an `EdgeZonePolicy`: Zone > Zone Settings > Edit and Zone > DNS > Read on the zone. For an `EdgeHostPolicy`, on each host's zone: Zone > Zone > Read, **Zone > Config Rules > Edit** (API permission group `Config Settings Write`, for `originTLS`) and **Zone > Single Redirect > Edit** (`Dynamic URL Redirects Write`, for `redirectToHTTPS`). Never written or logged. |
 | `status.ready`, `status.message` | Whether the Secret and key exist. Whether the token is allowed what a kind needs is reported by that kind. |
 
 ## `EdgeZonePolicy` (separate CRD, namespaced) — secure a DNS zone's edge
@@ -990,6 +990,62 @@ never writes one. The only kind that changes a Cloudflare zone's settings (`ssl`
 | `spec.zoneID` | The Cloudflare zone. |
 | `spec.apiTokenSecretRef` | The provider's token Secret and key. |
 | `status` | The same status as `EdgeZonePolicy`, which copies it. |
+
+## `EdgeHostPolicy` (separate CRD, namespaced) — per-host Full (strict) and HTTPS redirect
+
+The provider-neutral request "these hosts get authenticated origin TLS and/or an HTTPS redirect"
+([operator#527](https://github.com/oramasearch/orama-operator/issues/527)). It changes only the hosts
+it names, as declared rules; a zone-wide setting is never touched, because the same zones carry hosts
+the operator does not run (Prod 1's). Short name `edgehp`; `kubectl get edgehp -A` shows `OriginTLS`,
+`Redirect`, `Ready`.
+
+**Order with certificates:** Full (strict) on a host whose origin certificate is not valid yet takes
+that host down. The policy does not check certificates: whatever creates an `EdgeHostPolicy` adds a
+host only once that host's origin certificate is ready.
+
+| Field | Meaning |
+|---|---|
+| `spec.providerRef.name` | An `EdgeProvider` in this namespace (its token needs the permissions listed there). |
+| `spec.hosts[]` | 1 to 100 exact host names, lowercase, no wildcards. Each must be in a zone the token can read. |
+| `spec.originTLS` | `strict`: origin encryption Full (strict) for these hosts. Empty leaves the zone's mode in force. |
+| `spec.redirectToHTTPS` | `true`: plain-HTTP requests for these hosts are answered with a 301 to HTTPS (path and query kept). |
+| `status.ready`, `status.message` | Copied from the `CloudflareHostPolicy`: ready when every rule is in place in every zone and no other rule overrides it. |
+
+Deleting the policy deletes the `CloudflareHostPolicy`, whose finalizer removes the rules.
+
+## `CloudflareHostPolicy` (separate CRD, namespaced) — an `EdgeHostPolicy` applied as Cloudflare rules
+
+Created and owned by an `EdgeHostPolicy` whose provider is `cloudflare`, with the same name; a person
+never writes one. The only kind that calls the Cloudflare Rulesets API. Short name `cfhp`.
+
+| Field | Meaning |
+|---|---|
+| `spec.accountId` | The provider's account; narrows the zone lookup when set. |
+| `spec.apiTokenSecretRef` | The provider's token Secret and key. |
+| `spec.hosts`, `spec.originTLS`, `spec.redirectToHTTPS` | The parent's. |
+| `spec.ruleRefPrefix` | `orama-operator-<namespace>-<name>` (dots as dashes; a longer one is cut to 64 characters ending in 12 hex characters of its SHA-256). Our rules have the refs `<prefix>-tls` and `<prefix>-https`; no other rule is ever changed or deleted. |
+| `status.zones[]` | `{zoneID, zoneName, configRuleID, redirectRuleID, ready, message}` per zone holding our rules. |
+| `status.ready`, `status.message`, `status.observedGeneration` | Every zone ready, else what is wrong (a missing zone, a refused call with the permission it needs, or another rule that overrides ours). |
+
+What it does in each zone (hosts grouped by zone, the zone being the longest suffix of the host that is
+a zone the token can read):
+
+| Phase | Ref | Rule | Position |
+|---|---|---|---|
+| `http_config_settings` | `<prefix>-tls` | `http.host in {<hosts, sorted>}`, `set_config`, `{"ssl": "strict"}` | Appended last: every matching set_config rule applies and the last change wins |
+| `http_request_dynamic_redirect` | `<prefix>-https` | `(http.request.scheme eq "http" and http.host in {…})`, `redirect`, 301 to `concat("https://", http.host, http.request.uri.path)`, query kept | Inserted first: a redirect stops evaluation, the first match wins |
+
+- A phase with no entrypoint gets one holding only our rule (`PUT .../phases/<phase>/entrypoint`). An
+  existing entrypoint is never `PUT`, which would replace every rule in it: our rule is added with
+  `POST .../rulesets/<id>/rules`, changed with `PATCH .../rules/<rule id>` only when it differs, and
+  left alone when equal (a steady policy only reads).
+- Another enabled rule that may match one of our hosts and would override ours (a later set_config
+  rule setting a different `ssl`, an earlier redirect with other parameters) makes the zone not ready,
+  naming that rule's ID and description. It is never moved or changed.
+- A flag turned off, or a zone with no host left, deletes our rule there by ID, only while its ref is
+  still ours. Deletion (finalizer `orama.cloud/cloudflare-hostpolicy-cleanup`) does the same in every
+  zone; a `404` counts as done, any other error keeps the finalizer.
+- It rechecks every ten minutes, so a rule edited by hand is put back.
 
 ## `PaymentProvider` (separate CRD, namespaced) — the vendor, account and key for payment resources
 

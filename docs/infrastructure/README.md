@@ -202,6 +202,7 @@ A general rule for every kind in this work, and for the operator from here on.
 | `DnsRecord` | `CloudflareDnsRecord` | Another DNS provider |
 | `ServiceMesh` | `IstioServiceMesh` | Another mesh |
 | `EdgeZonePolicy` | `CloudflareZonePolicy` | Another CDN or edge provider |
+| `EdgeHostPolicy` | `CloudflareHostPolicy` | Another CDN or edge provider |
 | `PaymentWebhookEndpoint` | `StripeWebhookEndpoint` | Another payment provider |
 | `PaymentCatalog` | `StripeCatalog` | Another payment provider |
 
@@ -218,6 +219,7 @@ provider."*
 | `KubernetesCluster` | a `KubernetesClusterProvider` (of type AKS) | `AksCluster` |
 | `ServiceMesh` | a mesh provider (of type Istio) | `IstioServiceMesh` |
 | `EdgeZonePolicy` | an `EdgeProvider` (of type cloudflare) | `CloudflareZonePolicy` ([`../lake/origin-tls.md`](../lake/origin-tls.md)) |
+| `EdgeHostPolicy` | an `EdgeProvider` (of type cloudflare) | `CloudflareHostPolicy` ([`../crd-reference.md`](../crd-reference.md#edgehostpolicy-separate-crd-namespaced--per-host-full-strict-and-https-redirect)) |
 | `PaymentWebhookEndpoint` | a `PaymentProvider` (of type stripe) | `StripeWebhookEndpoint` ([`payments.md`](payments.md)) |
 | `PaymentCatalog` | a `PaymentProvider` (of type stripe) | `StripeCatalog` ([`payments.md`](payments.md#catalogs)) |
 
