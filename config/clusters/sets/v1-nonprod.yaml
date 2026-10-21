@@ -55,7 +55,7 @@ spec:
       teamID: 4e01bc49-b388-43c2-8986-2395a0b8fe52
       projectIDs: [a0d16f69-1a49-4659-8a60-008886765691]
       runID: pilot-1
-      step: seed                            # the new copy (#222): dry run Succeeded 2026-10-21; next catchUp
+      step: catchUp                         # the new copy (#222): seed Succeeded 2026-10-21; the last copy step
       apply: true                           # writes v1-dev
       evidenceSecretRef: {name: team-4e01bc49-evidence, key: isolation.json}
       image: docker.io/oramasearch/cloud-v1-migration@sha256:bbecb1d209ce107c45af404298973195acecee62c81db418cfab0cfa3268be97  # dev-28c5192c
