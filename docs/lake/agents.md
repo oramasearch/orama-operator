@@ -16,7 +16,7 @@ and reports back, as it does for services and stores.
 |---|---|
 | `runtimeImage` | `oramasearch/agent-runtime:<tag>`, the one image every launch runs on. Empty uses the operator's default (`internal/controller/lake_defaults.go`) |
 | `library[]` | `{key, image}`: replaces the image of one specialized agent. Every Lake runs all nine (`agent-ask-orama`, `agent-project`, `agent-autosuggest`, `agent-creator`, `agent-eval-generator`, `agent-project-corpus`, `agent-autosuggest-corpus`, `agent-application`, `agent-experiments`) on the operator's default images; an entry cannot remove an agent |
-| `openaiSecretName` | a Secret in `spec.namespace` holding `OPENAI_API_KEY`, the general Orama key. **People provide it**; the operator copies it into each launch's workspace and never writes the key to a row or status |
+| `openaiSecretName` | a Secret in `spec.namespace` holding `OPENAI_API_KEY`, the general Orama key. **People provide it**. Only the library agents in `spec.namespace` get it; it is **never** copied into a workspace namespace or given to a launch or schedule pod ([below](#oramas-provider-key-never-reaches-a-workspace)), and never written to a row or status |
 | `model` | the frontier model agents default to (default `gpt-5.5`) |
 | `jobDeadlineSeconds` | the bound on one job launch (default 3600) |
 
@@ -67,8 +67,8 @@ fallback. For each present launch:
    `orama.cloud/agent-launch-id`. The operator writes only its **SHA-256** into
    `agent_launch_status.credential_sha256`; lake resolves the credential by comparing digests and
    never stores it. The pod reads it as `LAKE_TOKEN` through a Secret reference, never a plain value.
-   The credential, pull credential, OpenAI key and service token used by service-mode agents are
-   copied into the workspace namespace.
+   The pull credential, and for a service launch the agent service token, are copied into the
+   workspace namespace. **Orama's provider key is not** ([below](#oramas-provider-key-never-reaches-a-workspace)).
 2. **`job`** — a Job `<lake>-<slug>` from `runtimeImage` with `backoffLimit: 0` (an agent run is never
    retried behind the person's back), `activeDeadlineSeconds` = `jobDeadlineSeconds`,
    `ttlSecondsAfterFinished: 3600`, `AGENT_MODE=job` and the launch's `input` as `AGENT_INPUT`.
@@ -90,10 +90,28 @@ it stays `Running` with *collecting the result*, since a finished run is never r
 
 Every user-agent pod runs in its workspace namespace as UID 10001, non-root, with a read-only root
 filesystem, a 1 GiB `emptyDir` at `/tmp`, no service-account token, all capabilities dropped, the
-localized pull Secret, and `LAKE_URL`, `WORKSPACE_ID`, `CUSTOMER_ID`, `AGENT_ID`, `OPENAI_API_KEY`,
-the model and `TRACE_DIR`. `LAKE_URL` is Lake's in-cluster Service followed by
+localized pull Secret, and `LAKE_URL`, `LAKE_TOKEN`, `WORKSPACE_ID`, `CUSTOMER_ID`, `AGENT_ID`, the
+model and `TRACE_DIR`, and no provider key. `LAKE_URL` is Lake's in-cluster Service followed by
 `/w/<workspace id>`; workspace NetworkPolicy permits that service while denying other Lake and
 cluster traffic. Library agents remain trusted control-plane workloads in `spec.namespace`.
+
+### Orama's provider key never reaches a workspace
+
+[orama-operator#779](https://github.com/oramasearch/orama-operator/issues/779). `openaiSecretName` is
+Orama's own key, a platform Secret of the Lake (umbrella `CLAUDE.md`, *Two levels of secrets*). A
+launch or schedule pod runs a tenant's agent with public egress, so it never gets that key: no
+`OPENAI_API_KEY`, no reference to the Secret, and no copy of the Secret in the workspace namespace.
+Its model calls go through lake's model gateway (lake `docs/api/model-gateway.md`), with its own
+`LAKE_TOKEN` as the API key; lake meters them in the run's workspace and stops honouring the
+credential when the run ends. A user's own provider key, if they want one, is a workspace secret in
+their workspace Zetta (lake#625), never Orama's.
+
+**On roll**: every Lake reconcile runs `removeWorkspaceProviderKeyCopies`, which deletes each copy an
+earlier operator made: a Secret named `openaiSecretName`, outside `spec.namespace`, controlled by the
+Lake and labelled `orama.cloud/workspace`. A Secret of that name the Lake does not control is kept.
+The first reconcile after the operator is rolled therefore removes them all. Launch Deployments and
+schedule CronJobs are rewritten without the key on the same pass, so their next pods start without
+it; a job pod already running keeps the environment it started with until it finishes.
 
 An **absent** launch's Job or Deployment, Service and credential Secret are deleted (only objects
 this Lake controls with this launch's id), and its status becomes `Stopped` with the credential

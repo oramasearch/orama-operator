@@ -351,6 +351,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeLibraryAgents(ctx, &lake, ns, labels); err != nil {
 		log.Error(err, "library agents deferred")
 	}
+	// Orama's provider key never stays in a workspace namespace (orama-operator#779).
+	if err := r.removeWorkspaceProviderKeyCopies(ctx, &lake); err != nil {
+		log.Error(err, "removing provider key copies from workspace namespaces deferred")
+	}
 
 	// Ingress + DNS (opt-in, same contract as OramaZettaCluster).
 	if err := r.reconcileLakeIngress(ctx, &lake, ns, name, labels); err != nil {
