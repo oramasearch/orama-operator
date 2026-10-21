@@ -176,14 +176,14 @@ func renderConfigScript(oc *oramav1alpha1.OramaCloudV1, side engineSide) string 
 }
 
 // renderEnvs is the variables an engine side's render-config fills: the master key where the
-// side's template holds writer_side.master_api_key, the broker admin user and password, the
+// side's template holds writer_side.master_api_key, the password of the side's broker user, the
 // analytics key where it holds reader_side.analytics, and each provider's key.
 func renderEnvs(oc *oramav1alpha1.OramaCloudV1, side engineSide) []string {
 	var envs []string
 	if side.readsMasterAPIKey() {
 		envs = append(envs, masterAPIKeyEnvName)
 	}
-	envs = append(envs, brokerUserEnv, brokerPasswordEnv)
+	envs = append(envs, brokerPasswordEnv)
 	if side.readsAnalyticsKey() {
 		envs = append(envs, analyticsKeyEnvName)
 	}
@@ -304,7 +304,7 @@ func secretDataHash(secrets ...*corev1.Secret) string {
 
 // requestsForSecret maps a Secret event to the OramaCloudV1 resources in its namespace that read
 // it: an enabled engine's LLM key Secrets (<cr>-engine-secret, or an apiKeySecretRef), the Secret
-// spec.masterAPIKeySecretRef names, <cr>-broker-admin, <cr>-cache-auth and <cr>-analytics-api-key,
+// spec.masterAPIKeySecretRef names, <cr>-broker-admin, <cr>-broker-users, <cr>-cache-auth and <cr>-analytics-api-key,
 // and the control DB's <cr>-controldb-app while analytics-processor runs. Supplied and copied
 // Secrets carry no owner reference, so Owns alone would miss them; a Secret several CRs share
 // enqueues each of them.
@@ -325,9 +325,12 @@ func (r *OramaCloudV1Reconciler) requestsForSecret(ctx context.Context, object c
 
 // secretsReadBy is the Secrets a CR's workloads read that requestsForSecret maps back to it.
 func secretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
-	names := []string{brokerAdminSecretName(oc), cacheAuthSecretName(oc), redisHTTPSecretName(oc), hpesSecretName(oc), analyticsKeySecretName(oc)}
+	names := []string{brokerAdminSecretName(oc), brokerUsersSecretName(oc), cacheAuthSecretName(oc), redisHTTPSecretName(oc), hpesSecretName(oc), analyticsKeySecretName(oc)}
 	if oc.Spec.Components.AnalyticsProcessor.Enabled {
 		names = append(names, controlDBAppSecret(oc))
+	}
+	if oc.Spec.Components.Dashboard.Enabled {
+		names = append(names, dashboardDBSecrets(oc)...)
 	}
 	if name, _ := masterAPIKeyRef(oc); name != "" {
 		names = append(names, name)

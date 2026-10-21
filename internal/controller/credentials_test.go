@@ -321,6 +321,8 @@ func TestBrokerAndCacheCredentialWiring(t *testing.T) {
 	secrets := map[string]*corev1.Secret{broker.Name: broker, cache.Name: cache, testMasterSecret: h.secret(testMasterSecret)}
 	tmpls := h.templates()
 	brokerAdminEnv := []corev1.EnvVar{secretKeyEnv("BROKER_USERNAME", "v1-broker-admin", "username"), secretKeyEnv("BROKER_PASSWORD", "v1-broker-admin", "password")}
+	// The combined image's pods sign in as oramacore-writer (#99; broker_users_test.go).
+	engineBrokerEnv := []corev1.EnvVar{secretKeyEnv("BROKER_PASSWORD", "v1-broker-users", "writer-password")}
 
 	// Broker: templates in the ConfigMap, rendered at pod start.
 	cm := &corev1.ConfigMap{}
@@ -392,12 +394,12 @@ func TestBrokerAndCacheCredentialWiring(t *testing.T) {
 		t.Errorf("rendered boot definitions are not the admin user, / and its permissions")
 	}
 
-	// Engine: the broker credentials as render-config env on both sides.
+	// Engine: its broker user's password as render-config env on both sides.
 	for _, side := range []string{"writer", "reader"} {
 		init := containerIn(t, tmpls[side].Spec, "render-config")
-		for _, want := range brokerAdminEnv {
+		for _, want := range engineBrokerEnv {
 			if !slices.ContainsFunc(init.Env, func(e corev1.EnvVar) bool { return reflect.DeepEqual(e, want) }) {
-				t.Errorf("%s render-config lacks %s from v1-broker-admin", side, want.Name)
+				t.Errorf("%s render-config lacks %s from v1-broker-users", side, want.Name)
 			}
 		}
 	}
@@ -735,7 +737,7 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			steady("an unchanged reconcile")
 			h.setSecret("unrelated", "X", "2")
 			steady("an unrelated Secret change")
-			for _, name := range []string{"v1-cache-auth", "v1-redis-http", "v1-broker-admin", "v1-analytics-api-key", testMasterSecret} {
+			for _, name := range []string{"v1-cache-auth", "v1-redis-http", "v1-broker-admin", "v1-broker-users", "v1-analytics-api-key", testMasterSecret} {
 				sec := h.secret(name)
 				sec.Labels = map[string]string{"touched": "yes"}
 				data := map[string][]byte{}
@@ -758,8 +760,12 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			// The shim requires the token and the dashboard sends it (#562).
 			h.setSecret("v1-redis-http", "token", "rotatedredishttp0123")
 			rolled("a redis-http token change", []string{"dashboard", "redis-http"})
+			// The engine signs in as its own users (#99), so the admin password rolls only the broker
+			// and harvest-master, and a broker user's password only the engine.
 			h.setSecret("v1-broker-admin", "password", "rotatedbroker0123")
-			rolled("a broker password change", []string{"broker", "harvest-master", "reader", "writer"})
+			rolled("a broker password change", []string{"broker", "harvest-master"})
+			h.setSecret("v1-broker-users", "reader-password", "rotatedreader0123")
+			rolled("a broker user password change", []string{"reader", "writer"})
 			h.setSecret(testMasterSecret, "MASTER_API_KEY", "rotated-master-0123")
 			rolled("a master key change", masterReaders)
 			// Only the reader-only config reads the analytics key; the writer never does.
@@ -988,7 +994,7 @@ func TestExistingAnalyticsKeyIsKept(t *testing.T) {
 		t.Fatal("the existing analytics key was changed")
 	}
 	tmpls := h.templates()
-	if want := secretDataHash(h.secret("v1-broker-admin"), got); tmpls["reader"].Annotations[credentialsHashKey] != want {
+	if want := secretDataHash(h.secret("v1-broker-users"), got); tmpls["reader"].Annotations[credentialsHashKey] != want {
 		t.Error("the readers do not carry the existing key's hash")
 	}
 	if want := secretDataHash(got, h.secret("v1-analytics-processor-secret")); tmpls["analytics-processor"].Annotations[credentialsHashKey] != want {
@@ -1032,7 +1038,7 @@ func TestAnalyticsKeyCreateRace(t *testing.T) {
 	s := ocv1TestScheme(t)
 	oc := stackOC(withSideImages)
 	winner := secretOf("v1-analytics-api-key", map[string]string{"ANALYTICS_API_KEY": strings.Repeat("cd", 24)})
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(oc, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": testMasterKey})).
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(oc, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": testMasterKey}), readyBrokerTopology("v1")).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				if sec, ok := obj.(*corev1.Secret); ok && sec.Name == winner.Name {
@@ -1063,7 +1069,7 @@ func TestAnalyticsKeyCreateRace(t *testing.T) {
 		t.Fatal("the operator overwrote the Secret that won the race")
 	}
 	broker, component := &corev1.Secret{}, &corev1.Secret{}
-	for name, sec := range map[string]*corev1.Secret{"v1-broker-admin": broker, "v1-analytics-processor-secret": component} {
+	for name, sec := range map[string]*corev1.Secret{"v1-broker-users": broker, "v1-analytics-processor-secret": component} {
 		if err := cl.Get(ctx, types.NamespacedName{Namespace: "orama-system", Name: name}, sec); err != nil {
 			t.Fatal(err)
 		}

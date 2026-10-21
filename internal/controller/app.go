@@ -419,13 +419,18 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if err != nil {
 		return err
 	}
+	// The dashboard signs in to the control DB as its own role (#99): until that role's grants
+	// apply, the Deployment is left as it is.
+	if ready, err := r.dashboardRoleReady(ctx, oc); err != nil || !ready {
+		return err
+	}
 	img := componentImage(oc, "dashboard", "dashboard")
-	// The master key (#307), the CNPG-generated credentials for the dashboard's control-DB client,
+	// The master key (#307), the dashboard role's control-DB credentials (#99),
 	// and, where the cache runs, the serverless-redis-http shim's URL and token for its Upstash
 	// client (#562), then the derived values below; then the user's dashboard.env (#311), which may
 	// replace any but the owned ones.
-	env := []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
-	credentialSecrets := []string{masterKey}
+	env := append([]corev1.EnvVar{masterAPIKeyEnv(oc)}, dashboardDBEnv(oc)...)
+	credentialSecrets := append([]string{masterKey}, dashboardDBSecrets(oc)...)
 	if redisHTTPRuns(oc) {
 		env = append(env, redisCacheEnv(oc)...)
 		credentialSecrets = append(credentialSecrets, redisHTTPSecretName(oc))

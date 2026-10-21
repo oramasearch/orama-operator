@@ -158,6 +158,9 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 	if err := r.ensureMigrationRoleSecret(ctx, oc); err != nil {
 		return err
 	}
+	if err := r.ensureDashboardRoleSecret(ctx, oc); err != nil {
+		return err
+	}
 
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
@@ -169,7 +172,8 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 		spec := map[string]interface{}{
 			"instances": int64(profileInstances(oc)),
 			"storage":   controlDBStorage(db.Storage),
-			"managed":   map[string]interface{}{"roles": []interface{}{migrationManagedRole(oc, len(migrations) > 0)}},
+			"managed": map[string]interface{}{"roles": []interface{}{
+				migrationManagedRole(oc, len(migrations) > 0), dashboardManagedRole(oc)}},
 		}
 		// The storage pass owns changes to existing storage; ordinary spec rendering
 		// must retain the class, grown size, and any other CNPG storage keys.
@@ -295,6 +299,7 @@ var controlDBSchemaSuffixes = []string{
 	"-controldb-schema-0008",
 	"-controldb-reference-data",
 	"-controldb-migration-grants",
+	dashboardGrantsSchemaSuffix,
 }
 
 // controlDBSchemas lists the control DB's schemas in apply order. Each is created only after every
@@ -323,8 +328,12 @@ func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error)
 	}
 	// The migration role's grants come last, after every table exists, and again whenever a schema
 	// that creates tables changes (operator#653).
-	return append(schemas, controlDBSchema{suffix: controlDBSchemaSuffixes[3], key: "migration-grants.sql",
-		guard: "crawler_configs", everyVersion: true, sql: migrationGrantsSQL(schemas)}), nil
+	// Then the dashboard role's grants (operator#99), on the same terms.
+	return append(schemas,
+		controlDBSchema{suffix: controlDBSchemaSuffixes[3], key: "migration-grants.sql",
+			guard: "crawler_configs", everyVersion: true, sql: migrationGrantsSQL(schemas)},
+		controlDBSchema{suffix: controlDBSchemaSuffixes[4], key: "dashboard-grants.sql",
+			guard: "crawler_configs", everyVersion: true, sql: dashboardGrantsSQL(schemas)}), nil
 }
 
 // migrationGrantsSQL gives the migration role what the migration tool needs and nothing more
@@ -334,12 +343,7 @@ func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error)
 // schema version changes this one's version and its tables are granted too.
 func migrationGrantsSQL(before []controlDBSchema) string {
 	var b strings.Builder
-	b.WriteString("-- The migration role's grants (operator#653), applied after:\n")
-	for _, s := range before {
-		if !s.everyVersion {
-			fmt.Fprintf(&b, "--   %s %s\n", strings.TrimPrefix(s.suffix, "-"), schemaVersion(s.sql))
-		}
-	}
+	b.WriteString(grantsHeader("The migration role's grants (operator#653)", before))
 	role := migrationRole
 	fmt.Fprintf(&b, "GRANT USAGE ON SCHEMA public TO %s;\n", role)
 	fmt.Fprintf(&b, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %s;\n", role)

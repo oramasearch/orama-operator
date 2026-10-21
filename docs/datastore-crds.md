@@ -74,7 +74,8 @@ password where the broker runs locally ([#307](https://github.com/oramasearch/or
 The same Secret is rendered into the broker's `rabbitmq.conf` and its boot definitions
 (`credentials.json`, the admin user, `/` and its permissions), which RabbitMQ imports on every start,
 so a changed password reaches a broker whose data volume holds the old one when the broker rolls. The
-broker, writer, readers and harvest-master carry the Secret's data hash and roll on a change. All
+broker and harvest-master carry the Secret's data hash and roll on a change; the writer and readers
+carry `<cr>-broker-users`' hash instead. All
 broker Secrets are **create-if-absent**, so generated or supplied material survives reconciles; see
 [components.md](components.md#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo).
 
@@ -88,11 +89,14 @@ broker Secrets are **create-if-absent**, so generated or supplied material survi
    growth (principle #8) requires matching OramaCore's exact create args, confirmed on a live cluster —
    tracked as a follow-up, not set blind. The CRD fully supports `maxAge`/`maxLengthBytes` for streams
    the operator owns end-to-end.
-2. **Engine still uses the shared admin user (for now).** The per-service users are declared so
-   least-privilege is *ready to adopt*, but the engine's writer/reader still authenticate as the shared
-   admin user — switching the engine config to `oramacore-writer`/`oramacore-reader` (generated password
-   secrets, render-config substitution) is the fast-follow, kept separate so the replication e2e can be
-   validated against the credential switch on a real cluster.
+2. **The engine signs in as the per-service users**
+   ([#99](https://github.com/oramasearch/orama-operator/issues/99)). The writer uses `oramacore-writer`,
+   a reader-only pod `oramacore-reader`, and every pod of the combined image `oramacore-writer` (its
+   readers also produce, which `oramacore-reader` may not). render-config fills `__BROKER_PASSWORD__`
+   from the user's key of `<cr>-broker-users`. The engine is written only once this topology reports
+   `Ready` for its generation with both users applied, so a fresh stack never starts it before the
+   users exist. harvest-master still uses the admin user; its queues are named per crawl, so its own
+   user needs a pattern of its own (follow-up on #99).
 
 ## `PostgresSchema` — the control-DB schema
 

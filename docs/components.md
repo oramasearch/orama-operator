@@ -212,7 +212,7 @@ Runs **first**. Makes the install self-bootstrapping (no manual secret pre-creat
   `engine-secret` = the LLM keys (`GROQ_`, `OPENAI_`, `ANTHROPIC_`, `GOOGLE_API_KEY`) + `HF_TOKEN`;
   a third-party key that names its own Secret is not seeded ([#571](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo));
   `dashboard-secret` = ClickHouse/JWT/Stripe (its **Postgres
-  password comes from the CNPG `<cr>-controldb-app` secret**, not here — #32). No component Secret
+  credentials come from its own role's `<cr>-controldb-dashboard` Secret**, not here — #32, #99). No component Secret
   holds `MASTER_API_KEY`: every consumer reads `spec.masterAPIKeySecretRef`. **No shared blob** —
   a pod never sees a credential it doesn't use. **Create-if-absent** — the operator
   never overwrites an existing secret, so real / rotated values are
@@ -281,12 +281,26 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   the reconcile with `Ready=False` naming the Secret and key, and is left as it is. The bootstrap
   step reads each generated Secret back after creating it, so a Secret another writer created first
   is the one checked and used; no consumer starts with another key.
-- **Wiring.** Clients get `BROKER_USERNAME`, `BROKER_PASSWORD` and `REDIS_PASSWORD` as `secretKeyRef`
-  entries placed before the URLs that reference them (`amqp://$(BROKER_USERNAME):$(BROKER_PASSWORD)@<cr>-broker:5672`,
+- **Wiring.** AMQP clients (harvest-master) get `BROKER_USERNAME`, `BROKER_PASSWORD` and
+  `REDIS_PASSWORD` as `secretKeyRef` entries placed before the URLs that reference them
+  (`amqp://$(BROKER_USERNAME):$(BROKER_PASSWORD)@<cr>-broker:5672`,
   `redis://:$(REDIS_PASSWORD)@<cr>-cache:6379`), and Redis runs
   `redis-server --appendonly yes --requirepass $(REDIS_PASSWORD)`. Config files hold
-  `__BROKER_USERNAME__`, `__BROKER_PASSWORD__`, `__MASTER_API_KEY__` and `__ANALYTICS_API_KEY__`
-  placeholders that a `render-config` init container fills into an `emptyDir`.
+  `__BROKER_PASSWORD__`, `__MASTER_API_KEY__` and `__ANALYTICS_API_KEY__` placeholders that a
+  `render-config` init container fills into an `emptyDir`; the broker's own files also hold
+  `__BROKER_USERNAME__`.
+- **The engine's own broker users** ([#99](https://github.com/oramasearch/orama-operator/issues/99),
+  principle 4). The writer signs in as `oramacore-writer`, a reader-only pod as `oramacore-reader`,
+  and every pod of the combined image, which runs a producer in the readers too, as
+  `oramacore-writer`. The user is named in the template; `BROKER_PASSWORD` is that user's key of
+  `<cr>-broker-users` (`writer-password`, `reader-password`), which the bootstrap step generates
+  where the broker runs, so no engine pod reads `<cr>-broker-admin`. Both users may declare and read
+  only `oramacore-operations`; only the writer may publish to it (`brokerUserPermissions`, checked
+  by `TestBrokerUserPermissionsAreLeastPrivilege`). Until the stack's `RabbitMQTopology` reports
+  `Ready` for its generation with both users applied, no engine object is written: a fresh stack
+  waits instead of crash-looping on a refused sign-in, and a running engine keeps its templates.
+  A changed `<cr>-broker-users` rolls the writer and readers; a changed admin password rolls only
+  the broker and harvest-master.
 - **Broker password on a retained volume.** RabbitMQ applies `default_user`/`default_pass` only to
   an empty data directory, so the broker also imports `/etc/rabbitmq/credentials.json` on every
   boot (`definitions.import_backend = local_filesystem`): the admin user, the `/` vhost and its
@@ -590,16 +604,17 @@ Driven by `spec.region.role`:
   provider, and `ai_server.embeddings.automatic_embeddings_selector` the optional selector. Without
   `spec.llm` they are Prod 1's four providers with no selector
   ([crd-reference.md](crd-reference.md#specllm)).
-  Every config is a **template** — `master_api_key` is a `'__MASTER_API_KEY__'`, the broker `user`
-  and `password` are `'__BROKER_USERNAME__'` and `'__BROKER_PASSWORD__'`, and each provider's
+  Every config is a **template** — `master_api_key` is a `'__MASTER_API_KEY__'`, the broker
+  `password` is `'__BROKER_PASSWORD__'` (the `user` is the side's own broker user, `oramacore-writer`
+  or `oramacore-reader`, [#99](https://github.com/oramasearch/orama-operator/issues/99)), and each provider's
   key a `'__<PROVIDER>_API_KEY__'` placeholder (single-quoted scalars), so **no credential lives in
   the ConfigMap**. A `render-config` **init container** substitutes the real values into the pod's
   template and writes it to a shared `emptyDir`, and OramaCore reads it via
   `CONFIG_PATH=/etc/oramacore/config.yaml`
   (env override can't reach the nested `writer_side.master_api_key` — `config`'s
   `ORAMACORE_` provider splits on `_`). Explicit `secretKeyRef` env entries carry `MASTER_API_KEY`
-  from `spec.masterAPIKeySecretRef` (only where the side's template holds it), the broker
-  credentials from `<cr>-broker-admin`, `ANALYTICS_API_KEY` from `<cr>-analytics-api-key` (the
+  from `spec.masterAPIKeySecretRef` (only where the side's template holds it), `BROKER_PASSWORD`
+  from the side's key of `<cr>-broker-users`, `ANALYTICS_API_KEY` from `<cr>-analytics-api-key` (the
   reader-only config only), and a provider's key from its `apiKeySecretRef`; the other provider
   keys come from `<cr>-engine-secret` (via `envFrom`).
   The script reads each value from its environment variable and escapes it for `sed` and the
@@ -755,7 +770,7 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
   `controldb_cluster_row.go`) — the dashboard places a project on an `oramacore_clusters` row, so a
   control DB without one cannot create projects. Cluster rows are never copied from Prod 1: each
   stack's only row is the operator's `c1` (orama-bridge `docs/projects/orama-cloud-v1/decisions-2026-10-16.md`,
-  decision 9). Once both public hosts (`engine.writer.host`, `engine.reader.host`) are set, every control-DB `PostgresSchema` (0000 to 0007, 0008, the reference rows and the migration role's grants) is current and the master key is valid, the operator
+  decision 9). Once both public hosts (`engine.writer.host`, `engine.reader.host`) are set, every control-DB `PostgresSchema` (0000 to 0007, 0008, the reference rows, the migration role's grants and the dashboard role's grants) is current and the master key is valid, the operator
   runs the Job `<cr>-controldb-cluster-row`, which inserts one row **only when the table has no row
   at all**, soft-deleted rows included: `name` = the CR name, `cluster_prefix` = `c1` (the only
   prefix the `collections.orama.com` worker routes, so customers' read keys keep working),
@@ -804,7 +819,7 @@ Go types/version. Requires the CNPG operator (installed via the helmfile).
 ### The control DB's schema
 
 On a writable control DB (the primary, or any stack without `replicate: true` on a read tier) the
-operator owns four `PostgresSchema`s, one per file in the ConfigMap `<cr>-controldb-migrations`.
+operator owns five `PostgresSchema`s, one per file in the ConfigMap `<cr>-controldb-migrations`.
 Each file and its `PostgresSchema` are written only once the one before reports `phase: Applied`
 for its **current** `spec.version` and `metadata.generation`; a stale `Applied` does not release
 the next. A streaming replica receives the primary's schema and owns none.
@@ -815,6 +830,7 @@ the next. A streaming replica receives the primary's schema and owns none.
 | 2 | `<cr>-controldb-schema-0008` | `schema-0008.sql` | `team_migrations` | Migration 0008 (`assets/dashboard-schema-0008.sql`, vendored from `oramasearch/dashboard` branch `cloud-migration` at `8e8f9a6`), with the reference rows seeded between 0008's tables and its `teams` columns and constraints |
 | 3 | `<cr>-controldb-reference-data` | `reference-data.sql` | none (`applyEveryVersion`) | The reference rows again, with this stack's Stripe prices, re-applied whenever the rows or the prices change |
 | 4 | `<cr>-controldb-migration-grants` | `migration-grants.sql` | none (`applyEveryVersion`) | The `migration` role's grants ([#653](https://github.com/oramasearch/orama-operator/issues/653)): `SELECT, INSERT, UPDATE, DELETE` on every table in `public` and `USAGE, SELECT` on its sequences, now and as default privileges. Its header names the versions of schemas 1 and 2, so a new version of a schema that creates tables re-applies it |
+| 5 | `<cr>-controldb-dashboard-grants` | `dashboard-grants.sql` | none (`applyEveryVersion`) | The `dashboard` role's grants ([#99](https://github.com/oramasearch/orama-operator/issues/99)): `CONNECT, TEMPORARY` on the database (the `projects` delete trigger creates a temporary table), `SELECT, INSERT, UPDATE, DELETE` on every table in `public` except the rows the operator owns (`subscription_plans`, `stripe_addon_prices`, `llms`, `oramacore_clusters`: `SELECT` only), and `USAGE, SELECT` on its sequences, now and as default privileges. No DDL, no `TRUNCATE`, no other schema. Same header rule as schema 4 |
 
 - **Why a second schema for 0008.** A database built from the 0000 to 0007 file already has
   `crawler_configs`, so the first schema's Job skips it; 0008 appended there would never reach
@@ -838,7 +854,7 @@ the next. A streaming replica receives the primary's schema and owns none.
   SQL and version are the same on every stack. Empty leaves plans' Stripe columns NULL and seeds no
   add-on price (`stripe_addon_prices.stripe_price_id` is NOT NULL). An ID that is not a reference
   row fails the seed, visibly, and changes nothing.
-- **Readiness.** The stack's `controldb-schema` component is ready only when all four report their
+- **Readiness.** The stack's `controldb-schema` component is ready only when all five report their
   current version `Applied`; otherwise its detail names the first that is not, with its phase and
   message.
 - **A failed migration Job is retried by the operator.** The `PostgresSchema` controller never
@@ -847,7 +863,7 @@ the next. A streaming replica receives the primary's schema and owns none.
   `orama.cloud/retried-failed-job` on the `PostgresSchema` until it applies, and the controller
   creates a fresh Job once the pods are gone. Each Job keeps its 20-attempt backoff. Active,
   obsolete and unowned Jobs are never touched; Lake's schemas do not pass through this path.
-- **Disabling the control DB** deletes the four `PostgresSchema`s this stack controls (their Jobs
+- **Disabling the control DB** deletes the five `PostgresSchema`s this stack controls (their Jobs
   go with them) and the migrations ConfigMap, with the CNPG `Cluster`.
 - **Later dashboard migrations** follow 0008: each is vendored unchanged into its own file and its
   own `PostgresSchema` after the last, guarded on a table it creates, and applied to Prod 2 on the
@@ -865,6 +881,22 @@ the next. A streaming replica receives the primary's schema and owns none.
   control DB deletes it with the other `controldb` Secrets. Its grants are schema 4 below. The
   migration tool uses it instead of the owner (principle 4); see
   [`cloud-v1-migration.md`](cloud-v1-migration.md#what-the-stack-provides).
+- **The dashboard role** ([#99](https://github.com/oramasearch/orama-operator/issues/99),
+  `controldb_roles.go`). `spec.managed.roles` also declares `dashboard`: `login: true`, not a
+  superuser, no `createdb`, `createrole`, `replication` or `bypassrls`, `connectionLimit: 40` (the
+  dashboard's postgres-js client pools at most 10 per pod). Its password is
+  `<cr>-controldb-dashboard` (`kubernetes.io/basic-auth`, `username`, `password`, `uri`, labelled
+  `cnpg.io/reload`), generated once and never changed. Its grants are schema 5. The dashboard's
+  `DATABASE_URL` and `POSTGRES_PASSWORD` come from that Secret wherever the control DB runs as a
+  primary; the Deployment is not written until schema 5 reports its current version `Applied`, so a
+  running dashboard keeps the owner's credentials until its role can sign in, and then rolls once.
+  A read-tier replica's dashboard keeps the owner's credentials until replica credentials are wired.
+  The owner (`<cr>-controldb-app`) is left to the `PostgresSchema` Jobs, the cluster-row Job and
+  pgAdmin; index-builder and analytics-processor still use it
+  ([#99](https://github.com/oramasearch/orama-operator/issues/99) follow-ups below).
+  `TestControlDBSchemasAgainstPostgres` signs in as the role and checks it can read every table and
+  do the dashboard's writes, including the delete triggers, and is refused DDL, `TRUNCATE`, writes
+  to the operator-owned rows and any other schema.
 
 **Validated on AKS (2026-07-07):** with the CNPG operator installed, a `medium`
 primary CR produced a `Cluster` (instances=2, initdb=`oramacore`, owned by the CR);

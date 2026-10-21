@@ -99,7 +99,11 @@ back and then recover, a partial 0008 without its guard, and per-stack Stripe pr
 the committed Prod 1 reference rows and a team insert with defaults, rolled back, and the `migration`
 role's grants (operator#653): rows and sequences of every `public` table, a table created later
 included, and no DDL. Roles belong to the server, so the proof creates `migration` (`NOLOGIN`) when
-the server lacks it, as CNPG would, and drops it at the end only if it created it.
+the server lacks it, as CNPG would, and drops it at the end only if it created it. It does the same
+for the `dashboard` role (`LOGIN`, operator#99) and signs in as it to check its grants: every public
+table readable, the dashboard's writes and delete triggers working, and DDL, `TRUNCATE`, writes to
+the operator-owned rows and other schemas refused. That sign-in has no password, so the server must
+trust local connections (Homebrew's default `pg_hba.conf` does).
 
 The control DB's cluster-row script (`TestControlDBClusterRowAgainstPostgres`, operator#443) runs
 against local Postgres with `CONTROLDB_TEST_POSTGRES=1` (connection

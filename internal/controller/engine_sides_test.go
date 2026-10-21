@@ -38,7 +38,8 @@ import (
 // combinedConfigFixture is config.yaml for a CR named v1 with a CPU writer and no spec.llm, captured
 // from the renderer before it was split into sections, with the LLM section rendered from the default
 // providers (#304), the master key single-quoted for safe substitution, Prod 1's hooks block on
-// both sides (#306), and the broker credentials as placeholders (#307). The combined config must stay byte-for-byte this.
+// both sides (#306), the broker password as a placeholder (#307), and both sections signed in as
+// oramacore-writer, since the combined image produces from every pod (#99). The combined config must stay byte-for-byte this.
 const combinedConfigFixture = `http:
   host: 0.0.0.0
   port: 8080
@@ -50,7 +51,7 @@ writer_side:
     type: rabbitmq
     host: v1-broker
     port: 5552
-    user: '__BROKER_USERNAME__'
+    user: oramacore-writer
     password: '__BROKER_PASSWORD__'
     v_host: /
     stream_name: oramacore-operations
@@ -69,7 +70,7 @@ reader_side:
     type: rabbitmq
     host: v1-broker
     port: 5552
-    user: '__BROKER_USERNAME__'
+    user: oramacore-writer
     password: '__BROKER_PASSWORD__'
     v_host: /
     stream_name: oramacore-operations
@@ -116,7 +117,6 @@ ai_server:
 // with the default providers.
 const combinedRenderCommand = `esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e 's/[\\&#]/\\&/g'; }; sed` +
 	` -e "s#__MASTER_API_KEY__#$(esc "${MASTER_API_KEY}")#g"` +
-	` -e "s#__BROKER_USERNAME__#$(esc "${BROKER_USERNAME}")#g"` +
 	` -e "s#__BROKER_PASSWORD__#$(esc "${BROKER_PASSWORD}")#g"` +
 	` -e "s#__OPENAI_API_KEY__#$(esc "${OPENAI_API_KEY}")#g"` +
 	` -e "s#__GOOGLE_API_KEY__#$(esc "${GOOGLE_API_KEY}")#g"` +
@@ -154,6 +154,11 @@ func newEngineHarness(t *testing.T, objs ...client.Object) *engineHarness {
 	h := &engineHarness{t: t, updates: map[string]int{}}
 	if !slices.ContainsFunc(objs, func(o client.Object) bool { _, ok := o.(*corev1.Secret); return ok && o.GetName() == testMasterSecret }) {
 		objs = append(objs, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": testMasterKey}))
+	}
+	// There is no RabbitMQTopology controller here: the stack's topology reports its users applied,
+	// as on a cluster, so the engine is written (brokerUsersReady).
+	if !slices.ContainsFunc(objs, func(o client.Object) bool { _, ok := o.(*oramav1alpha1.RabbitMQTopology); return ok }) {
+		objs = append(objs, readyBrokerTopology("v1"))
 	}
 	h.cl = fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&oramav1alpha1.OramaCloudV1{}).
@@ -428,6 +433,14 @@ func TestEngineSideOnlyPodsAndConfigs(t *testing.T) {
 				t.Error("reader.yaml has no reader_side.analytics")
 			}
 			delete(rs, "analytics")
+			// A reader-only pod signs in as oramacore-reader; the combined config's readers, which
+			// also produce, as oramacore-writer (#99).
+			if in, ok := rs["input"].(map[string]any); ok {
+				if in["user"] != brokerReaderUser {
+					t.Errorf("reader.yaml reader_side.input.user = %v, want %s", in["user"], brokerReaderUser)
+				}
+				in["user"] = brokerWriterUser
+			}
 		}
 		if _, ok := parsed[p.absent]; ok {
 			t.Errorf("%s has %s", p.key, p.absent)
@@ -822,7 +835,7 @@ func TestRenderConfigInitRendersSelectedTemplate(t *testing.T) {
 	const master, groq = "synthetic-master-0123abcd", "gsk_synthetic_4567efgh"
 	keys := map[string]string{"__MASTER_API_KEY__": master, "__GROQ_API_KEY__": groq,
 		"__OPENAI_API_KEY__": "sk-synthetic", "__GOOGLE_API_KEY__": "AIza-synthetic", "__ANTHROPIC_API_KEY__": "sk-ant-synthetic",
-		"__BROKER_USERNAME__": "orama", "__BROKER_PASSWORD__": "synthetic-broker-89ab", "__ANALYTICS_API_KEY__": "synthetic-analytics-cdef"}
+		"__BROKER_PASSWORD__": "synthetic-broker-89ab", "__ANALYTICS_API_KEY__": "synthetic-analytics-cdef"}
 	for _, oc := range []*oramav1alpha1.OramaCloudV1{engineOC(nil), engineOC(withSideImages)} {
 		h := newEngineHarness(t)
 		h.reconcile(oc)
