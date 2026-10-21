@@ -31,7 +31,8 @@ and connection details are in the [deployment control-plane guide](../control-pl
 Namespaced `LakeApp` resources run customer apps from a pinned Lake repository revision or a
 digest-pinned image. Synchronized apps share their restricted workspace namespace with
 collision-free resource names; standalone CRs retain a private namespace. Apps have
-private-by-default ingress, scoped data bindings, and live rollout events. The CR contract and resource lifecycle are in
+private-by-default ingress, scoped data bindings, and live rollout events. Each app pod is told
+its auth mode in `APP_AUTH`, so app-runtime trusts Lake's identity headers only behind forward auth. The CR contract and resource lifecycle are in
 [`apps.md`](apps.md). On every Lake, a dedicated controller follows lake's `apps`
 table using the Services DSN, `lake_apps` notifications and a 60-second fallback list. It registers
 generated source, Zetta, event and registry-pull token hashes, merges the pull token with the Lake's

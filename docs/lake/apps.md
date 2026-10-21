@@ -333,6 +333,12 @@ Runtime mode sets both the original app-runtime source variables and the expande
 optional `APP_ENTRYPOINT`, `APP_FRAMEWORK`, `APP_TOKEN`, and `APP_PORT`. Standalone apps default
 service filenames to the ID and obtain `EVENTS_URL` and `EVENTS_TOKEN` from their source Secret.
 
+Every app, in either mode, also gets `APP_AUTH`: `lake` when the Ingress puts Lake's forward auth in
+front of it (below), and `public` otherwise (any `spec.auth` other than empty or `lake` is reported
+as `public`). It is a managed name, so neither the app's `env` nor its `secretEnv` can set it, and an
+explicit `env` entry wins over `envFrom`. app-runtime reads Lake's identity headers only when it is
+`lake` ([app-runtime#11](https://github.com/oramasearch/app-runtime/issues/11)).
+
 ## Ingress and authentication
 
 An empty app host derives `<app>.<Lake spec.apps.wildcard>`, and an empty wildcard is the Lake's `spec.host`. That address uses the one shared
@@ -357,6 +363,19 @@ the auth call reaches the browser. When the Lake has public ingress (`ingressEna
 `auth-signin` sends a browser without that cookie to
 `https://<lake host>/apps/authorize?app=<app id>&rd=https://$host$escaped_request_uri`. The return URL
 is always https because TLS ends at the edge proxy. The handoff and cookie are specified in lake#407.
+
+**Identity headers.** With `auth: lake` the Ingress names `X-Orama-User,X-Orama-Space` as
+`auth-response-headers`. ingress-nginx then sends the app each of those headers set from Lake's
+answer to the auth call, and a copy the client sent never reaches the app: it is replaced, or dropped
+when Lake's answer has none (an empty `proxy_set_header` value sends no header). The app's access
+policy admits only ingress-nginx and its Lake, so nothing reaches the pod around the Ingress. No other
+header is replaced, so `X-Orama-User-Id`, `X-Auth-Request-*` and the like arrive as the client wrote
+them. With `auth: public` there is no auth call and **every** identity header, `X-Orama-User`
+included, is the client's: an app must not treat any of them as identity, and app-runtime returns no
+signed-in user there (`APP_AUTH=public`). The Ingress does not strip them on a public app because
+that would need an nginx snippet; app-runtime removes them instead before app code sees the request.
+Lake apps stay on ingress-nginx and are not served by the zetta-tunnel gateway
+(`ingressRefusal`), which makes no auth subrequest.
 
 The bytes an app's Ingress carries are metered: the operator reads ingress-nginx's per-Ingress byte
 counters and reports them by app and hour in `app_transfer` ([app-transfer.md](app-transfer.md),

@@ -1208,6 +1208,16 @@ func lakeAppResources(app *oramav1alpha1.LakeApp) corev1.ResourceRequirements {
 	}
 }
 
+// lakeAppAuth is the app's auth mode with the CRD default applied. It is lake only when the Ingress
+// puts Lake's forward auth in front of the app, and public for anything else, so the pod is never
+// told it is protected when it is not.
+func lakeAppAuth(app *oramav1alpha1.LakeApp) string {
+	if app.Spec.Auth == "" || app.Spec.Auth == oramav1alpha1.LakeAppAuthLake {
+		return oramav1alpha1.LakeAppAuthLake
+	}
+	return oramav1alpha1.LakeAppAuthPublic
+}
+
 func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, secrets lakeAppSecrets) []corev1.EnvVar {
 	lakeURL := lakeInternalURL(lake, app.Namespace)
 	if app.Spec.Sync != nil {
@@ -1216,6 +1226,9 @@ func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, sec
 	env := []corev1.EnvVar{
 		{Name: "LAKE_URL", Value: lakeURL},
 		{Name: "APP_PORT", Value: fmt.Sprint(app.Spec.Port)},
+		// app-runtime trusts X-Orama-User only when this says lake: only then does the Ingress
+		// replace the client's copy with Lake's forward-auth answer (app-runtime#11).
+		{Name: "APP_AUTH", Value: lakeAppAuth(app)},
 	}
 	mode := app.Spec.Mode
 	if mode == "" {
