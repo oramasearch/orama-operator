@@ -221,7 +221,9 @@ SQLite, DuckDB and Polars wrappers already use 8080, covered by `allow-lake-to-w
 Zetta uses 4800. Catalog egress uses only the ports emitted in the credentials.
 
 BuildKit runs inside each build Job. Source fetches, registry pushes and events flow from the
-builder to Lake (`buildEnv` and `buildEgressRules`); Lake does not connect to a BuildKit daemon.
+builder to Lake (`buildEnv` and `buildEgressRules`); Lake does not connect to a BuildKit daemon. Build namespaces are not
+sandboxes, but they get the same `deny-cloud-metadata` CiliumNetworkPolicy, selecting every pod
+(`reconcileBuildMetadataDeny`, [#761](https://github.com/oramasearch/orama-operator/issues/761)).
 The operator reads build logs via the Kubernetes API, not via Lake pod egress. App-proxy egress
 is **inferred** from the declared LakeApp backend Service and port; the generated public app URL
 is also reachable through Lake's existing public HTTPS allowance.

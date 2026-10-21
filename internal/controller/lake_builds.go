@@ -26,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -288,6 +289,9 @@ func (r *LakeReconciler) reconcileBuildNetworkPolicies(ctx context.Context, lake
 	}); err != nil {
 		return fmt.Errorf("reconcile build default-deny NetworkPolicy: %w", err)
 	}
+	if err := r.reconcileBuildMetadataDeny(ctx, lake, namespace, labels); err != nil {
+		return err
+	}
 	access := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: buildNetworkPolicy, Namespace: namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, access, func() error {
 		access.Labels = labels
@@ -298,6 +302,32 @@ func (r *LakeReconciler) reconcileBuildNetworkPolicies(ctx context.Context, lake
 		return controllerutil.SetControllerReference(lake, access, r.Scheme)
 	}); err != nil {
 		return fmt.Errorf("reconcile build access NetworkPolicy: %w", err)
+	}
+	return nil
+}
+
+// reconcileBuildMetadataDeny gives the build namespace the same mandatory Cilium deny every
+// NetworkSandbox carries (orama-operator#712): tenant source runs in the builder, and on
+// AKS-managed Cilium the public rule's ipBlock exclusions alone did not stop a pod reaching the
+// instance metadata service. The namespace belongs to one Lake space, so the deny selects every pod.
+func (r *LakeReconciler) reconcileBuildMetadataDeny(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) error {
+	policy := &unstructured.Unstructured{}
+	policy.SetGroupVersionKind(ciliumNetworkPolicyGVK)
+	policy.SetName(networkSandboxMetadataDenyName)
+	policy.SetNamespace(namespace)
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, policy, func() error {
+		if owner := metav1.GetControllerOf(policy); owner != nil && !metav1.IsControlledBy(policy, lake) {
+			return fmt.Errorf("CiliumNetworkPolicy %s/%s is controlled by %s %s", namespace, policy.GetName(), owner.Kind, owner.Name)
+		}
+		policy.SetLabels(copyStringMap(labels))
+		policy.SetAnnotations(map[string]string{networkSandboxCommentAnnotation: "Deny cloud metadata and host-service addresses to tenant builds regardless of other allowances."})
+		policy.Object["spec"] = map[string]interface{}{
+			"endpointSelector": map[string]interface{}{},
+			"egressDeny":       []interface{}{map[string]interface{}{"toCIDR": cloudMetadataDenyCIDRs()}},
+		}
+		return controllerutil.SetControllerReference(lake, policy, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("reconcile build metadata-deny CiliumNetworkPolicy: %w", err)
 	}
 	return nil
 }
@@ -370,18 +400,27 @@ func buildEgressRules(lake *oramav1alpha1.Lake) []networkingv1.NetworkPolicyEgre
 		},
 		{
 			To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{
-				CIDR: "0.0.0.0/0",
-				Except: []string{
-					"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
-					"172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15",
-					"198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
-				},
+				CIDR:   "0.0.0.0/0",
+				Except: buildPublicEgressExcept(),
 			}}},
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &tcp, Port: buildPort(80)},
 				{Protocol: &tcp, Port: buildPort(443)},
 			},
 		},
+	}
+}
+
+// buildPublicEgressExcept lists what the builder's public 80/443 rule never reaches: private,
+// shared, loopback, link-local (the instance metadata service), documentation, multicast and
+// reserved ranges, and Azure's platform endpoint 168.63.129.16 (WireServer and the host agent),
+// which is a public address on every Azure host and serves node provisioning data on port 80.
+// Tenant source runs in the builder, so none of them may be reachable from a build step.
+func buildPublicEgressExcept() []string {
+	return []string{
+		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "168.63.129.16/32", "169.254.0.0/16",
+		"172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15",
+		"198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
 	}
 }
 
