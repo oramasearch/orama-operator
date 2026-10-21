@@ -1687,17 +1687,19 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: svcName + "-apex-dns", Namespace: ns}}
 	}
 	apex := lakeApexHost(lake)
-	// Origin TLS (operator#578): the Issuer and the zone policy exist whenever the Lake has a DNS
-	// credential, because its apps and environments use them even without the Lake's own Ingress.
-	if err := reconcileLakeOriginIssuer(ctx, r.Client, r.Scheme, lake, lbls); err != nil {
-		return fmt.Errorf("origin TLS issuer: %w", err)
-	}
+	// Origin TLS (operator#578, #632): the Issuer always exists, because the Lake's apps and
+	// environments use it even without the Lake's own Ingress; the zone policy exists whenever the
+	// Lake has a DNS credential. The Issuer reads the zone's name from the policy, to solve DNS-01
+	// for names in the zone and HTTP-01 for the rest.
 	if err := reconcileLakeEdgePolicy(ctx, r.Client, r.Scheme, lake, lbls); err != nil {
 		return fmt.Errorf("edge zone policy: %w", err)
 	}
 	edge, err := readLakeEdge(ctx, r.Client, lake)
 	if err != nil {
 		return err
+	}
+	if err := reconcileLakeOriginIssuer(ctx, r.Client, r.Scheme, lake, lbls, edge.dnsZone); err != nil {
+		return fmt.Errorf("origin TLS issuer: %w", err)
 	}
 	caSecret := svcName + "-edge-client-ca"
 	if !lake.Spec.IngressEnabled || lake.Spec.Host == "" {
@@ -1722,12 +1724,11 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	if apex != "" {
 		hosts = append(hosts, apex)
 	}
-	// No HTTP-only fallback: without a hand-supplied certificate the Lake needs its DNS credential.
+	// No HTTP-only Ingress: without a hand-supplied certificate every host is issued by the Lake's
+	// Issuer, through DNS-01 in the credential's zone and HTTP-01 otherwise.
 	issuer := ""
 	if lake.Spec.TLS.SecretName == "" {
-		if issuer, err = lakeOriginIssuer(lake); err != nil {
-			return err
-		}
+		issuer = lakeOriginIssuerName(lake)
 	}
 	caRef, err := reconcileEdgeClientCA(ctx, r.Client, ns, caSecret, edge, func(secret *corev1.Secret) error {
 		secret.Labels = lbls

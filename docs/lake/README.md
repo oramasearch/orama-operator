@@ -103,7 +103,8 @@ can bill with no `spec.payments`, through the manual provider. See
 ## Origin TLS
 
 Every Lake Ingress (the Lake's own, its app and preview wildcards, its apps and its environments)
-serves HTTPS with a Let's Encrypt certificate issued through the Lake's `dnsSecretRef`, and the
+serves HTTPS with a Let's Encrypt certificate: DNS-01 through the Lake's `dnsSecretRef` for names in
+its zone, HTTP-01 for any other name and for a Lake without one (operator#632), and the
 Lake's Cloudflare zone is secured by an `EdgeZonePolicy` the Lake owns: Full (strict), authenticated
 origin pulls and Always Use HTTPS, each only once probes show it is safe. The token needs Zone > Zone
 Settings > Edit besides DNS Edit. See [`origin-tls.md`](origin-tls.md) (operator#578).

@@ -12,11 +12,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -206,23 +206,127 @@ func TestLakeIngressFollowsTheZone(t *testing.T) {
 	}
 }
 
-// A Lake host with no certificate source is refused, not served over HTTP only.
-func TestLakeIngressWithoutACertificateSourceIsRefused(t *testing.T) {
+// issuerSolvers reads the Lake's Issuer's ACME solvers.
+func issuerSolvers(t *testing.T, c client.Client, lake *oramav1alpha1.Lake) []any {
+	t.Helper()
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(certManagerIssuerGVK)
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: lakeNamespace(lake), Name: lakeOriginIssuerName(lake)}, issuer); err != nil {
+		t.Fatalf("issuer: %v", err)
+	}
+	solvers, _, _ := unstructured.NestedSlice(issuer.Object, "spec", "acme", "solvers")
+	return solvers
+}
+
+// A Lake without a dnsSecretRef (an install that brings its own DNS) is no longer refused: its
+// hosts are issued through HTTP-01 by the Lake's Issuer, through the Lake's ingress class. It has
+// no wildcard Ingress (a wildcard needs DNS-01) and no zone policy (operator#632).
+func TestLakeWithoutADNSCredentialIssuesThroughHTTP01(t *testing.T) {
 	s := newLakeScheme(t)
+	ctx := context.Background()
 	lake, _ := originTLSLake()
 	lake.Spec.DNSSecretRef = nil
+	lake.Spec.IngressClassName = "internal-nginx"
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake).
 		WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}, &networkingv1.Ingress{}).Build()
 	applyLakeSchemaForWorkloadTest(t, c, s, lake)
-	r := &LakeReconciler{Client: c, Scheme: s}
-	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "shared"}})
-	if err == nil || !strings.Contains(err.Error(), "dnsSecretRef") {
-		t.Fatalf("err = %v, want the missing dnsSecretRef named", err)
+	reconcileLake(t, c, s, "shared")
+
+	main := getIngress(t, c, "lake", "lake-shared")
+	got := tlsSecretsByHost(main)
+	if len(got) != 2 || got["eu.lake.live"] != "eu.lake.live-tls" || got["lake.live"] != "lake.live-tls" {
+		t.Errorf("main ingress TLS = %+v", main.Spec.TLS)
 	}
-	var ing networkingv1.Ingress
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake", Name: "lake-shared"}, &ing); !apierrors.IsNotFound(err) {
-		t.Errorf("an HTTP-only ingress was written: %v", err)
+	if main.Annotations[annotationCertManagerIssuer] != "lake-shared-letsencrypt" {
+		t.Errorf("main ingress issuer = %+v", main.Annotations)
 	}
+	solvers := issuerSolvers(t, c, lake)
+	if len(solvers) != 1 {
+		t.Fatalf("solvers = %v, want HTTP-01 alone", solvers)
+	}
+	class, _, _ := unstructured.NestedString(solvers[0].(map[string]any), "http01", "ingress", "ingressClassName")
+	if class != "internal-nginx" {
+		t.Errorf("HTTP-01 solver = %v, want the Lake's ingress class", solvers[0])
+	}
+	if _, found := solvers[0].(map[string]any)["dns01"]; found {
+		t.Errorf("a DNS-01 solver without a credential: %v", solvers[0])
+	}
+	for _, name := range []string{"lake-shared-apps-wildcard", "lake-shared-preview-wildcard"} {
+		var ing networkingv1.Ingress
+		if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: name}, &ing); !apierrors.IsNotFound(err) {
+			t.Errorf("%s exists without a DNS-01 credential: %v", name, err)
+		}
+	}
+	var policy oramav1alpha1.EdgeZonePolicy
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "lake-shared-edge"}, &policy); !apierrors.IsNotFound(err) {
+		t.Errorf("a zone policy without a credential: %v", err)
+	}
+	if main.Annotations[annotationNginxSSLRedirect] != "false" {
+		t.Errorf("redirect without an observed edge: %+v", main.Annotations)
+	}
+}
+
+// With a dnsSecretRef the solver is chosen per host: until the zone's name is observed, DNS-01
+// alone for every name (as before HTTP-01 existed); once it is, DNS-01 for the zone and every name
+// under it, wildcards included, and HTTP-01 only for names outside it. A name in the zone is never
+// moved off DNS-01: cert-manager always prefers a solver whose dnsZones selector matches.
+func TestLakeIssuerChoosesTheSolverPerHost(t *testing.T) {
+	s := newLakeScheme(t)
+	lake, secret := originTLSLake()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, secret).
+		WithStatusSubresource(lake, &oramav1alpha1.PostgresSchema{}, &networkingv1.Ingress{}, &oramav1alpha1.EdgeZonePolicy{}).Build()
+	applyLakeSchemaForWorkloadTest(t, c, s, lake)
+	reconcileLake(t, c, s, "shared")
+
+	solvers := issuerSolvers(t, c, lake)
+	if len(solvers) != 1 {
+		t.Fatalf("zone unknown: solvers = %v, want DNS-01 alone", solvers)
+	}
+	if _, found := solvers[0].(map[string]any)["selector"]; found {
+		t.Errorf("zone unknown: DNS-01 is limited by a selector: %v", solvers[0])
+	}
+
+	var policy oramav1alpha1.EdgeZonePolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "lake", Name: "lake-shared-edge"}, &policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.Zone = "Lake.Live."
+	if err := c.Status().Update(context.Background(), &policy); err != nil {
+		t.Fatal(err)
+	}
+	reconcileLake(t, c, s, "shared")
+	solvers = issuerSolvers(t, c, lake)
+	if len(solvers) != 2 {
+		t.Fatalf("zone known: solvers = %v, want DNS-01 for the zone and HTTP-01 for the rest", solvers)
+	}
+	dns01 := solvers[0].(map[string]any)
+	zones, _, _ := unstructured.NestedStringSlice(dns01, "selector", "dnsZones")
+	ref, _, _ := unstructured.NestedStringMap(dns01, "dns01", "cloudflare", "apiTokenSecretRef")
+	if len(zones) != 1 || zones[0] != "lake.live" || ref["name"] != "cloudflare-api-token-lake-live" || ref["key"] != "token" {
+		t.Errorf("DNS-01 solver = %v", dns01)
+	}
+	http01 := solvers[1].(map[string]any)
+	if _, found := http01["selector"]; found {
+		t.Errorf("HTTP-01 has a selector, so it could compete with DNS-01: %v", http01)
+	}
+	if class, _, _ := unstructured.NestedString(http01, "http01", "ingress", "ingressClassName"); class != "nginx" {
+		t.Errorf("HTTP-01 solver = %v", http01)
+	}
+	// Every Lake host and both wildcards are in the zone, so they stay on DNS-01.
+	for _, host := range []string{"eu.lake.live", "lake.live", "*.eu.lake.live", "*.preview.lake.live"} {
+		if !dnsZoneCovers("lake.live", host) {
+			t.Errorf("%s is not solved by DNS-01", host)
+		}
+	}
+	if dnsZoneCovers("lake.live", "shop.example.com") || dnsZoneCovers("lake.live", "notlake.live") {
+		t.Error("a name outside the zone is solved by DNS-01")
+	}
+}
+
+// dnsZoneCovers is cert-manager's dnsZones rule: the zone itself and every name under it.
+func dnsZoneCovers(zone, name string) bool {
+	name = strings.TrimPrefix(name, "*.")
+	return name == zone || strings.HasSuffix(name, "."+zone)
 }
 
 // An app under the apps wildcard uses the wildcard's certificate, copied next to its Ingress; an
@@ -340,5 +444,89 @@ func TestLakeEnvironmentIngressGetsOriginTLS(t *testing.T) {
 	}
 	if got := lakeWildcardFor(lake, "a.b.preview.lake.live"); got != "" {
 		t.Errorf("two labels under a wildcard are not covered by it, got %q", got)
+	}
+}
+
+// Apps and environments of a Lake without a dnsSecretRef get certificates (operator#632): each host
+// its own Certificate from the Lake's Issuer, which solves it through HTTP-01. A preview host is
+// left on HTTP: no wildcard covers it, and one certificate per preview would exhaust Let's
+// Encrypt's weekly limit for the Lake's domain.
+func TestLakeWithoutADNSCredentialIssuesAppAndEnvironmentHosts(t *testing.T) {
+	ctx := context.Background()
+	lake, _ := originTLSLake()
+	lake.Spec.DNSSecretRef = nil
+
+	s := newLakeScheme(t)
+	app := &oramav1alpha1.LakeApp{ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "lake", UID: "app-uid"}, Spec: oramav1alpha1.LakeAppSpec{LakeRef: "shared"}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lake, app).WithStatusSubresource(&networkingv1.Ingress{}).Build()
+	r := &LakeAppReconciler{Client: c, Scheme: s}
+	if err := r.reconcileLakeAppIngress(ctx, lake, app, "ws-1", "shop.eu.lake.live"); err != nil {
+		t.Fatalf("reconcile app ingress: %v", err)
+	}
+	if tlsSecretsByHost(getIngress(t, c, "ws-1", lakeAppWorkloadObjectName(app)))["shop.eu.lake.live"] == "" {
+		t.Error("the app's Ingress has no TLS entry")
+	}
+	certificate := &unstructured.Unstructured{}
+	certificate.SetGroupVersionKind(certManagerCertificateGVK)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: "shop.eu.lake.live-tls"}, certificate); err != nil {
+		t.Fatalf("app certificate: %v", err)
+	}
+	if issuer, _, _ := unstructured.NestedString(certificate.Object, "spec", "issuerRef", "name"); issuer != "lake-shared-letsencrypt" {
+		t.Errorf("app certificate issuer = %q", issuer)
+	}
+
+	scheme := newLakeEnvironmentScheme(t)
+	preview := &oramav1alpha1.LakeEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-7", Namespace: "lake", UID: "preview-uid"},
+		Spec: oramav1alpha1.LakeEnvironmentSpec{
+			LakeRef: "shared", Repository: "repo-1", Environment: "pr-7", Kind: oramav1alpha1.LakeEnvironmentKindPreview,
+			Change: "7ac4c59b92e4", Domains: []oramav1alpha1.LakeEnvironmentDomain{{Host: "shop.example.com"}},
+			Image: testEnvironmentImage, Replicas: 1, Port: 8080,
+		},
+	}
+	ec := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake, preview).WithStatusSubresource(preview, &networkingv1.Ingress{}).Build()
+	er := &LakeEnvironmentReconciler{Client: ec, Scheme: scheme}
+	namespace := lakeEnvironmentNamespace(preview)
+	previewHost := "7ac4c59b92e4.preview.lake.live"
+	if _, err := er.reconcileEnvironmentIngress(ctx, lake, preview, namespace, previewHost); err != nil {
+		t.Fatalf("reconcile environment ingress: %v", err)
+	}
+	got := tlsSecretsByHost(getIngress(t, ec, namespace, environmentWorkloadName(preview)))
+	if len(got) != 1 || got["shop.example.com"] == "" {
+		t.Errorf("preview ingress TLS = %+v, want the custom domain only", got)
+	}
+	if err := ec.Get(ctx, types.NamespacedName{Namespace: "lake", Name: ingressTLSSecretName("shop.example.com")}, certificate); err != nil {
+		t.Errorf("custom domain certificate: %v", err)
+	}
+	if err := ec.Get(ctx, types.NamespacedName{Namespace: "lake", Name: ingressTLSSecretName(previewHost)}, certificate); !apierrors.IsNotFound(err) {
+		t.Errorf("a per-preview certificate was requested: %v", err)
+	}
+}
+
+// certManagerTestCRDs are cert-manager's Issuer and Certificate, schema-free, for envtests that
+// reconcile Lake hosts: every cluster runs cert-manager (both installation paths), and since
+// operator#632 every Lake host is issued, with or without a dnsSecretRef.
+func certManagerTestCRDs() []*apiextensionsv1.CustomResourceDefinition {
+	preserve := true
+	crd := func(plural, singular, kind string) *apiextensionsv1.CustomResourceDefinition {
+		return &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: plural + ".cert-manager.io"},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Group: "cert-manager.io",
+				Names: apiextensionsv1.CustomResourceDefinitionNames{Plural: plural, Singular: singular, Kind: kind, ListKind: kind + "List"},
+				Scope: apiextensionsv1.NamespaceScoped,
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+					Name: "v1", Served: true, Storage: true,
+					Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+						Type:       "object",
+						Properties: map[string]apiextensionsv1.JSONSchemaProps{"spec": {Type: "object", XPreserveUnknownFields: &preserve}},
+					}},
+				}},
+			},
+		}
+	}
+	return []*apiextensionsv1.CustomResourceDefinition{
+		crd("issuers", "issuer", "Issuer"),
+		crd("certificates", "certificate", "Certificate"),
 	}
 }

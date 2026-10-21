@@ -1467,11 +1467,9 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 
 	// Origin TLS (operator#578): the host's certificate, issued in the Lake namespace and copied
 	// here, and the zone's redirect and client-certificate settings.
-	// A Lake without a DNS credential cannot issue certificates (docs/lake/origin-tls.md).
-	var tlsHosts []string
-	if lakeHasDNSCredential(lake) {
-		tlsHosts = []string{host}
-	}
+	// The Lake's Issuer solves DNS-01 in its credential's zone and HTTP-01 for any other host
+	// (operator#632, docs/lake/origin-tls.md).
+	tlsHosts := lakeIssuableHosts(lake, []string{host}, "")
 	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, tlsHosts)
 	if err != nil {
 		return fmt.Errorf("app certificate: %w", err)

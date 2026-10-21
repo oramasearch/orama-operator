@@ -127,6 +127,7 @@ func TestLakeAppEnvtestLifecycle(t *testing.T) {
 	testEnvironment := &envtest.Environment{
 		BinaryAssetsDirectory: assets,
 		CRDDirectoryPaths:     []string{crdPath},
+		CRDs:                  certManagerTestCRDs(),
 		ErrorIfCRDPathMissing: true,
 	}
 	config, err := testEnvironment.Start()
