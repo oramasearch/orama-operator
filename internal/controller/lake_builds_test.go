@@ -419,6 +419,46 @@ func TestLakeBuildPublishesPodEventsOnce(t *testing.T) {
 	}
 }
 
+// lake#802: a failed build says what the builder said, not only that its Job gave up.
+func TestAFailedLakeBuildCarriesTheBuildersOwnWords(t *testing.T) {
+	for _, tc := range []struct{ said, want string }{
+		{"#7 ERROR: failed to push lake-registry/space-one/app: 413\nexit 1\n", "#7 ERROR: failed to push lake-registry/space-one/app: 413 exit 1"},
+		{"", "Job has reached the specified backoff limit"},
+	} {
+		lake := buildTestLake()
+		store := &fakeServiceStore{builds: []LakeBuild{testBuild(testBuildID, testBuildTarget)}}
+		h := newBuildHarness(t, lake, store)
+		h.poll()
+		h.poll()
+		target, _ := parseBuildTarget(testBuildTarget)
+		namespace := buildNamespace(lake.Name, target.Space)
+		var job batchv1.Job
+		if err := h.client.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: buildJobName(testBuildID)}, &job); err != nil {
+			t.Fatal(err)
+		}
+		if tc.said != "" {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "builder-pod", Namespace: namespace, Labels: map[string]string{"job-name": job.Name}},
+				Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: "builder", State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error", Message: tc.said}}}}},
+			}
+			if err := h.client.Create(context.Background(), pod); err != nil {
+				t.Fatal(err)
+			}
+		}
+		job.Status.Failed = 1
+		job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+			Reason: "BackoffLimitExceeded", Message: "Job has reached the specified backoff limit"}}
+		if err := h.client.Status().Update(context.Background(), &job); err != nil {
+			t.Fatal(err)
+		}
+		h.poll()
+		if status := buildStatus(t, store, testBuildID); status.Phase != BuildPhaseFailed || status.Message != tc.want {
+			t.Fatalf("failed build = %+v, want message %q", status, tc.want)
+		}
+	}
+}
+
 func TestParseLakeBuildResultRequiresFinalJSONLine(t *testing.T) {
 	valid := "progress\n{\"digest\":\"sha256:" + strings.Repeat("b", 64) + "\",\"size\":9}\n"
 	result, err := parseBuildResult(valid)

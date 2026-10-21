@@ -836,7 +836,13 @@ func (r *LakeReconciler) buildLogs(ctx context.Context, namespace, jobName strin
 	return string(raw), nil
 }
 
+// buildFailureMessage is why a build Job failed: the builder pod's own words first (its termination
+// message, the tail of its log, lake#802), since the Job's condition only ever says "Job has
+// reached the specified backoff limit"; then that condition.
 func (r *LakeReconciler) buildFailureMessage(ctx context.Context, namespace string, job *batchv1.Job) string {
+	if words := failedPodWords(ctx, r.reader(), namespace, job.Name); words != "" {
+		return words
+	}
 	for _, condition := range job.Status.Conditions {
 		if condition.Type == batchv1.JobFailed {
 			if condition.Message != "" {
@@ -844,25 +850,6 @@ func (r *LakeReconciler) buildFailureMessage(ctx context.Context, namespace stri
 			}
 			if condition.Reason != "" {
 				return condition.Reason
-			}
-		}
-	}
-	reader := r.APIReader
-	if reader == nil {
-		reader = r.Client
-	}
-	var pods corev1.PodList
-	if err := reader.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{"job-name": job.Name}); err == nil {
-		for _, pod := range pods.Items {
-			for _, container := range pod.Status.ContainerStatuses {
-				if terminated := container.State.Terminated; terminated != nil {
-					if terminated.Message != "" {
-						return terminated.Message
-					}
-					if terminated.Reason != "" {
-						return terminated.Reason
-					}
-				}
 			}
 		}
 	}
