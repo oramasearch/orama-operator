@@ -1143,6 +1143,7 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		"LAKE_AGENT_ENDPOINTS":           {},
 		"LAKE_AGENT_MODEL":               {},
 		"LAKE_AGENT_SERVICE_TOKEN":       {},
+		"LAKE_BASE_AGENT_MODEL":          {},
 		"LAKE_APPS_RUNTIME_IMAGE":        {},
 		"LAKE_METHODOLOGY_RUNTIME_IMAGE": {},
 		"LAKE_INTERNAL_URL":              {},

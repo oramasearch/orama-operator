@@ -69,6 +69,13 @@ workspace namespace and owns its complete desired spec. Its image is
 Resources and Zetta environment variables continue to come from the shared workspace/service
 settings. Replicas remain one.
 
+Every workspace Zetta carries the **Orama base model** as `spec.models[{name: base-agent}]`, from
+`spec.workspaces.baseModelImage` or the operator default: an init container copies it to
+`/data/models/base-agent` on the workspace volume before the node starts, and lake is told that
+path as `LAKE_BASE_AGENT_MODEL`, so a native agent created without a model can chat (lake#246). It
+comes as an image, so the workspace's default-deny egress needs no exception. The default memory
+limit is `4Gi` to leave room to load it. See [`../zetta-models.md`](../zetta-models.md).
+
 Storage class is copied from `spec.workspaces.storage`; the size comes from lake (next section).
 Image, resources, environment, pull credentials and the forced private reachability settings
 remain reconciled normally.

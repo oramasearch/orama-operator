@@ -824,6 +824,9 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 				FSGroupChangePolicy: &onRootMismatch,
 				SeccompProfile:      &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 			},
+			// spec.models: each checkpoint copied onto the data volume before the node starts
+			// (zetta_models.go, lake#246).
+			InitContainers: zettaModelInitContainers(z),
 			Containers: []corev1.Container{{
 				Name:            "zetta",
 				Image:           image,

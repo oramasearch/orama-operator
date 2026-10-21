@@ -36,6 +36,19 @@ const (
 	// lakeDefaultMCPRunnerImage is LAKE_MCP_RUNNER_IMAGE, the image lake runs MCP servers on.
 	// spec.env may still set the variable, which wins.
 	lakeDefaultMCPRunnerImage = "oramasearch/lake-mcp-runner:d98451a"
+	// lakeDefaultBaseModelImage is the model image of the Orama base model every workspace Zetta
+	// gets (spec.workspaces.baseModelImage, lake#246): the checkpoint published as
+	// OramaSearch/base-agent-0.6b v16 on Hugging Face, built by zetta's images/base-agent.
+	lakeDefaultBaseModelImage = "oramasearch/base-agent-0.6b:v16"
+)
+
+// The Orama base model's place in a workspace Zetta: its spec.models name and the directory the
+// checkpoint is copied to on the data volume, which lake is told as LAKE_BASE_AGENT_MODEL so a
+// native agent created without a model loads it (lake#246).
+const (
+	lakeBaseModelName = "base-agent"
+	lakeBaseModelEnv  = "LAKE_BASE_AGENT_MODEL"
+	lakeBaseModelPath = zettaModelsDir + "/" + lakeBaseModelName
 )
 
 // lakeMCPRunnerImageEnv is the variable lake reads the MCP runner image from.
@@ -100,6 +113,17 @@ func lakeDataPlaneZettaEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
 // serviceZettaEnv is the env of every managed Zetta service and every workspace Zetta.
 func serviceZettaEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
 	return withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv)
+}
+
+// lakeBaseModelImage is the model image of the Orama base model: spec.workspaces.baseModelImage,
+// else the default.
+func lakeBaseModelImage(lake *oramav1alpha1.Lake) string {
+	return orDefault(lake.Spec.Workspaces.BaseModelImage, lakeDefaultBaseModelImage)
+}
+
+// workspaceZettaModels is the spec.models of every workspace Zetta: the Orama base model.
+func workspaceZettaModels(lake *oramav1alpha1.Lake) []oramav1alpha1.OramaZettaModel {
+	return []oramav1alpha1.OramaZettaModel{{Name: lakeBaseModelName, Image: lakeBaseModelImage(lake)}}
 }
 
 // lakeAppsRuntimeImage is the image runtime-mode apps run.

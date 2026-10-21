@@ -43,6 +43,7 @@ lake learns where they are through its own environment:
 | `LAKE_AGENT_ENDPOINTS` | `key=http://<lake>-<key>.<ns>.svc.cluster.local:8080,...`, sorted |
 | `LAKE_INTERNAL_URL` | lake's in-cluster address, handed to agents |
 | `LAKE_AGENT_MODEL` | `spec.agents.model` |
+| `LAKE_BASE_AGENT_MODEL` | `/data/models/base-agent`: where every workspace Zetta holds the Orama base model (`spec.workspaces.baseModelImage`), which a native agent created without a model runs on ([`../zetta-models.md`](../zetta-models.md), lake#246) |
 | `LAKE_AGENT_SERVICE_TOKEN` | from Secret `lake-<lake>-agent-service-token` (key `token`, 32 random bytes, minted once), the bearer lake presents to every agent service |
 | `LAKE_AGENT_BUS_DIR` | `/var/run/lake/agent-bus`, where Secret `lake-<lake>-agent-bus` is mounted: one file per library agent, its bus credential |
 

@@ -1230,6 +1230,14 @@ spec:
                   credentials. Needs the control-plane Postgres; without it condition FeaturesReady is False.
                   See docs/lake/workspaces.md.
                 properties:
+                  baseModelImage:
+                    description: |-
+                      BaseModelImage is the model image of the Orama base model, the checkpoint a native agent
+                      created without a model runs on (lake#246). Every workspace Zetta gets it at
+                      /data/models/base-agent on its data volume, and lake is told that path as
+                      LAKE_BASE_AGENT_MODEL. Empty uses the operator's default (internal/controller/lake_defaults.go).
+                      See docs/zetta-models.md.
+                    type: string
                   defaultPlan:
                     description: |-
                       DefaultPlan selects the quota plan for a workspace without an override. Empty selects the
@@ -1317,7 +1325,8 @@ spec:
                   resources:
                     description: |-
                       Resources configures each workspace Zetta node's container. When omitted, the operator
-                      requests 64Mi memory, limits memory to 1Gi, and sets no CPU request.
+                      requests 64Mi memory, limits memory to 4Gi (room to load the base model for a native agent's
+                      chat, lake#246), and sets no CPU request.
                     properties:
                       claims:
                         description: |-

@@ -1325,6 +1325,8 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 		cluster.Spec.Storage = workspaceZettaStorage(lake, row, cluster.Spec.Storage, creating)
 		cluster.Spec.Resources = serviceZettaResources(lake)
 		cluster.Spec.Env = serviceZettaEnv(lake)
+		// The Orama base model, which a native agent created without a model runs on (lake#246).
+		cluster.Spec.Models = workspaceZettaModels(lake)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.Host = ""
 		cluster.Spec.DNSSecretRef = nil

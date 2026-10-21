@@ -449,6 +449,14 @@ type LakeWorkspacesSpec struct {
 	// +optional
 	Image string `json:"image,omitempty"`
 
+	// BaseModelImage is the model image of the Orama base model, the checkpoint a native agent
+	// created without a model runs on (lake#246). Every workspace Zetta gets it at
+	// /data/models/base-agent on its data volume, and lake is told that path as
+	// LAKE_BASE_AGENT_MODEL. Empty uses the operator's default (internal/controller/lake_defaults.go).
+	// See docs/zetta-models.md.
+	// +optional
+	BaseModelImage string `json:"baseModelImage,omitempty"`
+
 	// Storage configures every workspace Zetta cluster's persistent data volume. StorageClassName is
 	// the class of every workspace volume. Size is deprecated and ignored once lake's schema has
 	// workspaces.storage_gi (migration 0069): each workspace's size comes from that column, whose
@@ -458,7 +466,8 @@ type LakeWorkspacesSpec struct {
 	Storage OramaZettaStorage `json:"storage,omitempty"`
 
 	// Resources configures each workspace Zetta node's container. When omitted, the operator
-	// requests 64Mi memory, limits memory to 1Gi, and sets no CPU request.
+	// requests 64Mi memory, limits memory to 4Gi (room to load the base model for a native agent's
+	// chat, lake#246), and sets no CPU request.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
