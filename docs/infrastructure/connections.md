@@ -104,6 +104,18 @@ namespace. Only the operator reads it. Each workspace `NetworkSandbox` has the a
 computes itself, so the plaintext password never reaches the server, its logs or
 `pg_stat_activity`.
 
+**The superuser session trusts nothing in the tenant's database**
+([operator#800](https://github.com/oramasearch/orama-operator/issues/800), LSR-138). The database
+belongs to the tenant: its owner may set the database's default `search_path` and create objects in
+its own schemas, so a name resolved through that path could be the owner's look-alike of a catalog
+view, function or operator, run with superuser rights. Every session the operator opens as the
+superuser sends `search_path=pg_catalog, pg_temp` in its startup message, which is in force before
+the first statement and overrides the database's default; every transaction sets it again with
+`SET LOCAL search_path = pg_catalog, pg_temp`; and every query names its catalog objects,
+functions and operators by schema (`pg_catalog.pg_roles`, `pg_catalog.pg_get_userbyid`,
+`OPERATOR(pg_catalog.=)`). Roles and schemas are named as quoted identifiers, never resolved through
+the path.
+
 **Delivery (the two levels of secrets).** The credential is a user-level secret. The operator writes
 it with Lake's `put_secret`, as the operator's admin identity, into the workspace mount
 `network-credentials` (created with `create_secret_mount` on first use), under the name
@@ -165,6 +177,13 @@ real server: a read role reads and is refused `INSERT`, `UPDATE` and `CREATE`; a
 and is refused DDL; a schema scope reads its schema, including a table created afterwards, and is
 refused another; the rotated-out password is refused; revocation ends an open session and refuses a
 new sign-in.
+`TestConnectionRolesIgnoreTheOwnersSearchPath` (same opt-in) has the database owner put its own
+schema ahead of `pg_catalog` in the database's `search_path` and fill it with look-alikes of every
+catalog view, function and operator the operator uses, each recording its caller and trying to make
+the owner a superuser; issuing, rescoping, checking and revoking a role must run none of them.
+`TestConnectionPostgresSessionPinsSearchPath` checks the startup parameter and
+`TestConnectionRoleSQLQualifiesEveryCatalogObject` that no query names a catalog object without its
+schema; both run without a server.
 
 Native tests cover app-to-service selector mapping, paired ingress and egress, target Service port
 resolution, guarded rollout, removal in one reconcile, absence before `network_guard`, legacy app
