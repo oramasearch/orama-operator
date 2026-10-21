@@ -23,3 +23,10 @@ found, with file and line references, and links the issue filed for every defect
   and domains, sizes, secret references, labels, cluster-scoped objects, cross-row references) with
   pass, fail or unknown and evidence, the issues filed, the app-row refusals fixed with it, and the
   live probes.
+- [`deep-search-714-workspace-services.md`](deep-search-714-workspace-services.md) — **workspace data
+  services, methodology runs and sealed secret delivery**
+  ([#714](https://github.com/oramasearch/orama-operator/issues/714), part of
+  [lake#873](https://github.com/oramasearch/lake/issues/873)): service credentials, reachability,
+  sharing and privilege; methodology pods, their credential, network and collect step (one sandbox
+  escape fixed); sealed delivery's namespace binding, replay, rotation and logging; the regression
+  tests that pin each rule, and a live probe that needs Steve's consent.
