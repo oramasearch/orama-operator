@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"net/netip"
 	"os"
 	"sort"
@@ -151,7 +152,21 @@ func (r *zettaTunnelMeshReconciler) Reconcile(ctx context.Context, _ ctrl.Reques
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.reconcileShards(ctx, templates); err != nil {
+	var nodeList corev1.NodeList
+	if err := r.List(ctx, &nodeList); err != nil {
+		return ctrl.Result{}, err
+	}
+	nodes := make([]string, 0, len(nodeList.Items))
+	for i := range nodeList.Items {
+		nodes = append(nodes, nodeList.Items[i].Name)
+	}
+	sort.Strings(nodes)
+	if err := r.reconcileNodeSecrets(ctx, nodes, templates); err != nil {
+		return ctrl.Result{}, err
+	}
+	// The single DaemonSet and the shard Secrets every node mounted (before #788) go first: the new
+	// agents bind the same host ports.
+	if err := r.removeSharedTemplates(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
 	projectorImage, err := r.projectorImage(ctx)
@@ -160,7 +175,14 @@ func (r *zettaTunnelMeshReconciler) Reconcile(ctx context.Context, _ ctrl.Reques
 	}
 	if projectorImage == "" {
 		log.Info("the node agent waits for the projector image: the manager is not running in a pod")
-	} else if err := r.reconcileDaemonSet(ctx, pullSecrets, projectorImage); err != nil {
+	} else {
+		for _, node := range nodes {
+			if err := r.reconcileDaemonSet(ctx, pullSecrets, projectorImage, node); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+	if err := r.removeGoneNodes(ctx, nodes); err != nil {
 		return ctrl.Result{}, err
 	}
 	if enrolled {
@@ -421,52 +443,142 @@ func meshPolicyPort(port networkingv1.NetworkPolicyPort, target *corev1.Pod) (in
 	return 0, false
 }
 
+// Each node's template, and the workload certificates and private keys it names, are in that
+// node's own Secret, mounted only by that node's agent (orama-operator#788, LSR-039). The kubelet
+// delivers a Secret to a node only for a pod bound there that mounts it, so root on one node reads
+// only the keys of the workloads on that node, never another node's.
+
+// meshNodeKey is a fixed-length name for a node: FNV-1a 64 of its name, in hex. A node name can be
+// longer than an object name allows.
+func meshNodeKey(node string) string {
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(node))
+	return fmt.Sprintf("%016x", hash.Sum64())
+}
+
+// meshNodeSecret is the name of a node's template Secret.
+func meshNodeSecret(node string) string { return zettaTunnelMeshNodePrefix + meshNodeKey(node) }
+
+// meshNodeDaemonSet is the name of a node's agent DaemonSet.
+func meshNodeDaemonSet(node string) string { return zettaTunnelMeshName + "-" + meshNodeKey(node) }
+
+const (
+	// meshNodeLabel carries meshNodeKey on a node's Secret, DaemonSet and pods.
+	meshNodeLabel = "orama.cloud/mesh-node"
+	// meshNodeNameAnnotation carries the node's full name.
+	meshNodeNameAnnotation = "orama.cloud/mesh-node-name"
+)
+
+func meshNodeLabels(node string) map[string]string {
+	return withLabels(zettaTunnelMeshLabels(), map[string]string{meshNodeLabel: meshNodeKey(node)})
+}
+
+func meshNodeObjectLabels(node string) map[string]string {
+	return withLabels(meshNodeLabels(node), map[string]string{workspaceManagedByLabel: zettaTunnelManagedBy})
+}
+
+// existingShards is every workload certificate and key already issued, so a steady pass reissues
+// none.
 func (r *zettaTunnelMeshReconciler) existingShards(ctx context.Context) (map[string][]byte, error) {
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.InNamespace(zettaTunnelMeshNamespace), client.HasLabels{meshNodeLabel}); err != nil {
+		return nil, err
+	}
 	out := map[string][]byte{}
-	for i := 0; i < meshprojection.Shards; i++ {
-		var secret corev1.Secret
-		if err := r.Get(ctx, client.ObjectKey{Namespace: zettaTunnelMeshNamespace, Name: meshprojection.ShardSecret(i)}, &secret); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return nil, err
+	for i := range secrets.Items {
+		if secrets.Items[i].Labels[workspaceManagedByLabel] != zettaTunnelManagedBy {
+			continue
 		}
-		for key, value := range secret.Data {
+		for key, value := range secrets.Items[i].Data {
 			out[key] = value
 		}
 	}
 	return out, nil
 }
 
-// reconcileShards writes every node's template, and the files it names, into its shard. Every shard
-// exists, empty or not, so the DaemonSet's mounts never wait.
-func (r *zettaTunnelMeshReconciler) reconcileShards(ctx context.Context, templates map[string]*nodeTemplate) error {
-	shards := make([]map[string][]byte, meshprojection.Shards)
-	for i := range shards {
-		shards[i] = map[string][]byte{}
-	}
-	for node, entry := range templates {
-		encoded, err := json.Marshal(entry.template)
-		if err != nil {
-			return err
+// reconcileNodeSecrets writes each node's template, and only the files it names, into that node's
+// Secret. Every node has one, empty or not, so its agent's mount never waits.
+func (r *zettaTunnelMeshReconciler) reconcileNodeSecrets(ctx context.Context, nodes []string, templates map[string]*nodeTemplate) error {
+	for _, node := range nodes {
+		data := map[string][]byte{}
+		if entry := templates[node]; entry != nil {
+			encoded, err := json.Marshal(entry.template)
+			if err != nil {
+				return err
+			}
+			data[meshprojection.TemplateFile(node)] = encoded
+			for name, value := range entry.files {
+				data[name] = value
+			}
 		}
-		data := shards[meshprojection.Shard(node)]
-		data[meshprojection.TemplateFile(node)] = encoded
-		for name, value := range entry.files {
-			data[name] = value
-		}
-	}
-	for i, data := range shards {
-		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: meshprojection.ShardSecret(i), Namespace: zettaTunnelMeshNamespace}}
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: meshNodeSecret(node), Namespace: zettaTunnelMeshNamespace}}
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 			if secret.ResourceVersion != "" && secret.Labels[workspaceManagedByLabel] != zettaTunnelManagedBy {
 				return fmt.Errorf("Secret %s/%s is not the operator's", zettaTunnelMeshNamespace, secret.Name)
 			}
-			secret.Labels = zettaTunnelMeshObjectLabels()
+			secret.Labels = meshNodeObjectLabels(node)
+			secret.Annotations = map[string]string{meshNodeNameAnnotation: node}
 			secret.Type = corev1.SecretTypeOpaque
 			secret.Data = data
 			return nil
 		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeSharedTemplates deletes the operator's single DaemonSet and the shard Secrets it mounted on
+// every node, which held every node's keys.
+func (r *zettaTunnelMeshReconciler) removeSharedTemplates(ctx context.Context) error {
+	legacy := []client.Object{&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: zettaTunnelMeshName, Namespace: zettaTunnelMeshNamespace}}}
+	for i := 0; i < meshprojection.Shards; i++ {
+		legacy = append(legacy, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: meshprojection.ShardSecret(i), Namespace: zettaTunnelMeshNamespace}})
+	}
+	for _, object := range legacy {
+		if err := r.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if object.GetLabels()[workspaceManagedByLabel] != zettaTunnelManagedBy {
+			continue
+		}
+		if err := r.Delete(ctx, object); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeGoneNodes deletes the DaemonSet and Secret of every node that is no longer in the cluster.
+func (r *zettaTunnelMeshReconciler) removeGoneNodes(ctx context.Context, nodes []string) error {
+	current := map[string]bool{}
+	for _, node := range nodes {
+		current[meshNodeKey(node)] = true
+	}
+	var daemonSets appsv1.DaemonSetList
+	if err := r.List(ctx, &daemonSets, client.InNamespace(zettaTunnelMeshNamespace), client.HasLabels{meshNodeLabel}); err != nil {
+		return err
+	}
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.InNamespace(zettaTunnelMeshNamespace), client.HasLabels{meshNodeLabel}); err != nil {
+		return err
+	}
+	var stale []client.Object
+	for i := range daemonSets.Items {
+		stale = append(stale, &daemonSets.Items[i])
+	}
+	for i := range secrets.Items {
+		stale = append(stale, &secrets.Items[i])
+	}
+	for _, object := range stale {
+		labels := object.GetLabels()
+		if current[labels[meshNodeLabel]] || labels[workspaceManagedByLabel] != zettaTunnelManagedBy {
+			continue
+		}
+		if err := r.Delete(ctx, object); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}
@@ -501,34 +613,40 @@ func (r *zettaTunnelMeshReconciler) image() string {
 	return DefaultZettaTunnelImage
 }
 
-func (r *zettaTunnelMeshReconciler) reconcileDaemonSet(ctx context.Context, pullSecrets []string, projectorImage string) error {
+// reconcileDaemonSet keeps one node's agent: a DaemonSet whose required node affinity names only
+// that node, mounting only that node's Secret. The Secret is mounted where the projector reads its
+// node's template (<templates>/<Shard(node)>), so the projector is unchanged.
+func (r *zettaTunnelMeshReconciler) reconcileDaemonSet(ctx context.Context, pullSecrets []string, projectorImage, node string) error {
 	var references []corev1.LocalObjectReference
 	for _, name := range pullSecrets {
 		references = append(references, corev1.LocalObjectReference{Name: name})
 	}
 	hostPathDirectory := corev1.HostPathDirectory
-	var shardMounts []corev1.VolumeMount
-	var shardVolumes []corev1.Volume
-	for i := 0; i < meshprojection.Shards; i++ {
-		name := fmt.Sprintf("templates-%d", i)
-		shardMounts = append(shardMounts, corev1.VolumeMount{Name: name, MountPath: fmt.Sprintf("%s/%d", zettaTunnelMeshTemplatesDir, i), ReadOnly: true})
-		shardVolumes = append(shardVolumes, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-			SecretName: meshprojection.ShardSecret(i), DefaultMode: int32Ptr(0o400), Optional: boolPtr(true),
-		}}})
-	}
-	daemonSet := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: zettaTunnelMeshName, Namespace: zettaTunnelMeshNamespace}}
+	templateMount := corev1.VolumeMount{Name: "template", MountPath: fmt.Sprintf("%s/%d", zettaTunnelMeshTemplatesDir, meshprojection.Shard(node)), ReadOnly: true}
+	templateVolume := corev1.Volume{Name: "template", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+		SecretName: meshNodeSecret(node), DefaultMode: int32Ptr(0o400), Optional: boolPtr(true),
+	}}}
+	name := meshNodeDaemonSet(node)
+	daemonSet := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: zettaTunnelMeshNamespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, daemonSet, func() error {
 		if daemonSet.ResourceVersion != "" && daemonSet.Labels[workspaceManagedByLabel] != zettaTunnelManagedBy {
-			return fmt.Errorf("DaemonSet %s/%s is not the operator's", zettaTunnelMeshNamespace, zettaTunnelMeshName)
+			return fmt.Errorf("DaemonSet %s/%s is not the operator's", zettaTunnelMeshNamespace, name)
 		}
-		daemonSet.Labels = zettaTunnelMeshObjectLabels()
-		daemonSet.Spec.Selector = &metav1.LabelSelector{MatchLabels: zettaTunnelMeshLabels()}
+		daemonSet.Labels = meshNodeObjectLabels(node)
+		daemonSet.Annotations = map[string]string{meshNodeNameAnnotation: node}
+		daemonSet.Spec.Selector = &metav1.LabelSelector{MatchLabels: meshNodeLabels(node)}
 		daemonSet.Spec.UpdateStrategy = appsv1.DaemonSetUpdateStrategy{
 			Type:          appsv1.RollingUpdateDaemonSetStrategyType,
 			RollingUpdate: &appsv1.RollingUpdateDaemonSet{MaxUnavailable: intstrPtr(intstr.FromInt32(1))},
 		}
-		daemonSet.Spec.Template.Labels = zettaTunnelMeshObjectLabels()
+		daemonSet.Spec.Template.Labels = meshNodeObjectLabels(node)
 		daemonSet.Spec.Template.Spec = corev1.PodSpec{
+			// Only this node: its Secret holds this node's workload keys and no other's.
+			Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+					MatchFields: []corev1.NodeSelectorRequirement{{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{node}}},
+				}}},
+			}},
 			AutomountServiceAccountToken:  boolPtr(false),
 			ImagePullSecrets:              references,
 			HostNetwork:                   true,
@@ -594,16 +712,18 @@ func (r *zettaTunnelMeshReconciler) reconcileDaemonSet(ctx context.Context, pull
 						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
 						Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("200m"), corev1.ResourceMemory: resource.MustParse("128Mi")},
 					},
-					VolumeMounts: append([]corev1.VolumeMount{
+					VolumeMounts: []corev1.VolumeMount{
 						{Name: "host-proc", MountPath: "/host/proc", ReadOnly: true},
 						{Name: "projection", MountPath: zettaTunnelMeshProjectionDir},
-					}, shardMounts...),
+						templateMount,
+					},
 				},
 			},
-			Volumes: append([]corev1.Volume{
+			Volumes: []corev1.Volume{
 				{Name: "host-proc", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/proc", Type: &hostPathDirectory}}},
 				{Name: "projection", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}},
-			}, shardVolumes...),
+				templateVolume,
+			},
 		}
 		return nil
 	})
