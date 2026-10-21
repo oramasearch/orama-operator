@@ -136,12 +136,17 @@ leaves it off), and every Lake runs the same features whatever its value
 ### Default images
 
 `internal/controller/lake_defaults.go`, pinned to what the managing cluster's `Lake/prod` ran on
-2026-10-17:
+2026-10-17, apart from Zetta, which is the v0.3.0 release (`main-d7551c75`) pinned by digest
+([operator#588](https://github.com/oramasearch/orama-operator/issues/588)). The `lake-nonprod` and
+`lake-prod` sets still name `oramasearch/zetta:main-4015ef76` (v0.2.0) in `spec.zetta.image`, so
+the new default reaches a member only when its set file moves too, environment by environment.
+v0.3.0 refuses to start a node that cannot create the network record collections, so the first
+start on `lake-dev` is the check:
 
 | What | Spec field that overrides it | Default |
 |---|---|---|
-| Zetta: the Lake's data plane | `spec.zetta.image` | `oramasearch/zetta:main-4015ef76` |
-| Zetta: every workspace and managed Zetta service | `spec.services.zettaImage`, then `spec.workspaces.image` | `oramasearch/zetta:main-4015ef76` |
+| Zetta: the Lake's data plane | `spec.zetta.image` | `oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a` |
+| Zetta: every workspace and managed Zetta service | `spec.services.zettaImage`, then `spec.workspaces.image` | `oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a` |
 | Runtime-mode apps (`LAKE_APPS_RUNTIME_IMAGE`) | `spec.apps.runtimeImage` | `oramasearch/app-runtime:976e6a8` |
 | Image builds | `spec.builds.builderImage` | `oramasearch/lake-builder:31a48d9` |
 | Methodologies (`LAKE_METHODOLOGY_RUNTIME_IMAGE`) | `spec.methodologies.runtimeImage` | `oramasearch/methodology-runtime:ac58062` |

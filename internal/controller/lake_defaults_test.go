@@ -108,8 +108,8 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 	for _, image := range [][2]string{
 		{lakeAgentRuntimeImage(lake), "oramasearch/agent-runtime:v0.1.0"},
 		{lakeBuilderImage(lake), "oramasearch/lake-builder:31a48d9"},
-		{serviceZettaImage(lake), "oramasearch/zetta:main-4015ef76"},
-		{lakeDataPlaneZettaImage(lake), "oramasearch/zetta:main-4015ef76"},
+		{serviceZettaImage(lake), "oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a"},
+		{lakeDataPlaneZettaImage(lake), "oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a"},
 		{lakeAppsRuntimeImage(lake), "oramasearch/app-runtime:976e6a8"},
 		{lakeMethodologyRuntimeImage(lake), "oramasearch/methodology-runtime:ac58062"},
 	} {
