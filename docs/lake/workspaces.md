@@ -139,7 +139,11 @@ Every workspace namespace receives all of the following:
 - The `default` ServiceAccount with `automountServiceAccountToken: false`. Zetta, agent, app and
   operator-owned service pods also set `automountServiceAccountToken: false` on their pod specs.
   The operator creates no Role or RoleBinding in the namespace and binds no ClusterRole to it.
-- One `ResourceQuota` and `LimitRange` selected by the workspace's declarative plan.
+- One `ResourceQuota` and `LimitRange` selected by the workspace's declarative plan. The workspace's
+  methodology runs and served models count against them too: their pods run in the Lake's
+  methodology-runs namespace, and each holds its room here with a never-scheduled reservation pod
+  `<slug>-quota` while it runs ([`methodology-runs.md`](methodology-runs.md#counted-against-the-workspaces-quota),
+  orama-operator#799).
 - An owned `NetworkSandbox` that renders default-deny for both ingress and egress, followed only by
   the explicit policies below. The stage-1 ownership migration preserves former policy specs;
   stage 2 retires only `allow-workspace-internal` after initial Connections are Ready.

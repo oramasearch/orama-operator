@@ -104,7 +104,7 @@ func methodologyTestLake() *oramav1alpha1.Lake {
 }
 
 func testMethodologyRun() LakeMethodologyRun {
-	return LakeMethodologyRun{ID: testRunID, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID,
+	return LakeMethodologyRun{ID: testRunID, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID, WorkspaceNamespace: testWorkspaceName,
 		MethodologyID: "W-0123abcd", Mode: methodologyModeTrain, BuildID: testBuildID,
 		RuntimeImage: testRuntimeImg, CPUMillis: 2000, MemoryBytes: 4 << 30, TimeoutSeconds: 900,
 		Slug: testRunSlug, Desired: serviceDesiredPresent, Generation: 1,
