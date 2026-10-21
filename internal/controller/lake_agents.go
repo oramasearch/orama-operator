@@ -169,6 +169,8 @@ func lakeAgentEnv(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar {
 		{Name: "LAKE_AGENT_ENDPOINTS", Value: libraryAgentEndpoints(lake, namespace)},
 		{Name: "LAKE_INTERNAL_URL", Value: lakeInternalURL(lake, namespace)},
 		{Name: "LAKE_AGENT_MODEL", Value: agentModel(lake)},
+		// Where every workspace Zetta holds the Orama base model (workspaceZettaModels, lake#246).
+		{Name: lakeBaseModelEnv, Value: lakeBaseModelPath},
 		{Name: "LAKE_AGENT_SERVICE_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: lakeAgentServiceTokenSecret(lake.Name)},
 			Key:                  agentServiceTokenKey,

@@ -337,6 +337,6 @@ func wantLakeOperatorEnv(postgres, deployments bool) []string {
 	if postgres {
 		names = append(names, "LAKE_SERVICE_DIR")
 	}
-	return append(names, "LAKE_AGENT_ENDPOINTS", "LAKE_INTERNAL_URL", "LAKE_AGENT_MODEL",
+	return append(names, "LAKE_AGENT_ENDPOINTS", "LAKE_INTERNAL_URL", "LAKE_AGENT_MODEL", "LAKE_BASE_AGENT_MODEL",
 		"LAKE_AGENT_SERVICE_TOKEN", "LAKE_AGENT_BUS_DIR")
 }

@@ -60,6 +60,17 @@ type OramaZettaClusterSpec struct {
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
+	// Models are model checkpoints placed on every node's data volume before the node starts, each
+	// at /data/models/<name> (lake#246). Each comes from a model image: an OCI image that holds the
+	// checkpoint files under /model and a POSIX shell. An init container copies them when the
+	// directory does not already hold that image's copy, so a node restart copies nothing and a new
+	// image replaces the old copy. Model images are pulled with PullSecretName. See
+	// docs/zetta-models.md.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Models []OramaZettaModel `json:"models,omitempty"`
+
 	// NOTE: inter-node peer traffic is ALWAYS mutual-TLS. The operator mints one shared cluster join
 	// token per cluster (Secret `<name>-zetta-cluster`) and injects it into every node as
 	// ZETTA_CLUSTER_TOKEN; the engine derives the cluster CA from it, so all nodes form ONE cluster
@@ -383,6 +394,20 @@ type OramaZettaStorage struct {
 	// StorageClassName for the per-node PVCs (empty = the cluster default StorageClass).
 	// +optional
 	StorageClassName string `json:"storageClassName,omitempty"`
+}
+
+// OramaZettaModel is one model checkpoint placed on each node's data volume (spec.models).
+type OramaZettaModel struct {
+	// Name is the checkpoint's directory under /data/models.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=50
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Image is the model image: the checkpoint files under /model, and /bin/sh. Use a tag that is
+	// never moved, or a digest; the copy on the volume is replaced only when this value changes.
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
 }
 
 // OramaZettaClusterStatus is the observed state of the cluster.

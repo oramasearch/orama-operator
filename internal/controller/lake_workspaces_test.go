@@ -299,6 +299,11 @@ func TestLakeWorkspaceReconcilesIsolatedNamespaceAndStatus(t *testing.T) {
 		cluster.Spec.Storage.Size != "20Gi" || cluster.Spec.Image != lake.Spec.Services.ZettaImage {
 		t.Fatalf("workspace Zetta = %+v", cluster)
 	}
+	// lake#246: every workspace Zetta carries the Orama base model.
+	if len(cluster.Spec.Models) != 1 || cluster.Spec.Models[0].Name != "base-agent" ||
+		cluster.Spec.Models[0].Image != lakeDefaultBaseModelImage {
+		t.Fatalf("workspace Zetta models = %+v", cluster.Spec.Models)
+	}
 	if len(store.serviceUpserts) != 1 || store.serviceUpserts[0].Phase != ServicePhaseProvisioning ||
 		store.serviceUpserts[0].Endpoint != "http://prod-ws-123e4567e89b-zetta.prod-ws-123e4567e89b.svc.cluster.local:4800" {
 		t.Fatalf("workspace Zetta service status = %+v", store.serviceUpserts)

@@ -77,9 +77,11 @@ const (
 	servicePostgresPort     = 5432
 
 	// serviceDefaultMemoryReq and serviceDefaultMemoryLimit size a Zetta service node when
-	// spec.workspaces.resources is unset; a service idles most of the time.
+	// spec.workspaces.resources is unset. A service idles most of the time, so the request stays
+	// small; the limit leaves room for a workspace Zetta to load the Orama base model (about 2.4 GiB
+	// once its weights are in memory) when a native agent chats (lake#246).
 	serviceDefaultMemoryReq   = "64Mi"
-	serviceDefaultMemoryLimit = "1Gi"
+	serviceDefaultMemoryLimit = "4Gi"
 	// serviceLongestNameSuffix is the longest suffix appended to <lake>-<slug> (the Zetta headless
 	// Service); the name check keeps every derived name inside the 63-character DNS label limit.
 	serviceLongestNameSuffix = "-zetta-headless"
@@ -265,7 +267,7 @@ func serviceQuota(lake *oramav1alpha1.Lake) int {
 }
 
 // serviceZettaResources is spec.workspaces.resources, or the small default: 64Mi memory request,
-// 1Gi memory limit, no CPU request.
+// 4Gi memory limit, no CPU request.
 func serviceZettaResources(lake *oramav1alpha1.Lake) *corev1.ResourceRequirements {
 	if lake.Spec.Workspaces.Resources != nil {
 		return lake.Spec.Workspaces.Resources.DeepCopy()

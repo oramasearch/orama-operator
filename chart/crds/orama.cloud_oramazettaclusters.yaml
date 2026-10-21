@@ -460,6 +460,38 @@ spec:
                   longer renders it or provisions a `<name>-zetta-mcp` Secret. Auth is always enforced with the seeded
                   admin token instead (see RequireAuth). Retained only for API compatibility; setting it has no effect.
                 type: boolean
+              models:
+                description: |-
+                  Models are model checkpoints placed on every node's data volume before the node starts, each
+                  at /data/models/<name> (lake#246). Each comes from a model image: an OCI image that holds the
+                  checkpoint files under /model and a POSIX shell. An init container copies them when the
+                  directory does not already hold that image's copy, so a node restart copies nothing and a new
+                  image replaces the old copy. Model images are pulled with PullSecretName. See
+                  docs/zetta-models.md.
+                items:
+                  description: OramaZettaModel is one model checkpoint placed on each
+                    node's data volume (spec.models).
+                  properties:
+                    image:
+                      description: |-
+                        Image is the model image: the checkpoint files under /model, and /bin/sh. Use a tag that is
+                        never moved, or a digest; the copy on the volume is replaced only when this value changes.
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Name is the checkpoint's directory under /data/models.
+                      maxLength: 50
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - image
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               provisionOperatorSchema:
                 default: true
                 description: |-
