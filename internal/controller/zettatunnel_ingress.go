@@ -184,6 +184,38 @@ func sourceDeniedHosts(ingresses []networkingv1.Ingress) map[string]bool {
 	return denied
 }
 
+// requiresOriginClientCertificate reports whether ingress-nginx asks the caller of this Ingress's
+// hosts for a client certificate: nginx's auth-tls annotations, which the Lake controller sets when
+// the zone has authenticated origin pulls (applyLakeEdgeAnnotations). "optional" counts too: nginx
+// still verifies a certificate that is presented and tells the backend the result.
+func requiresOriginClientCertificate(ingress *networkingv1.Ingress) bool {
+	if ingress.Annotations[annotationNginxAuthTLSSecret] != "" {
+		return true
+	}
+	verify := strings.ToLower(strings.TrimSpace(ingress.Annotations[annotationNginxAuthTLSVerifyClient]))
+	return verify != "" && verify != "off"
+}
+
+// originClientCertHosts is every host (lower case) of any Ingress that requires a client
+// certificate (operator#798, LSR-136). The gateway verifies no client certificate (zetta-tunnel's
+// ingress listener), so serving such a host would let a caller who finds the gateway's address skip
+// the edge, its WAF and rate limits, and set the edge's attribution headers itself. ingress-nginx
+// applies auth-tls to the whole host, so the host is refused on every Ingress that names it, of any
+// class and any owner, and one being deleted still counts until it is gone.
+func originClientCertHosts(ingresses []networkingv1.Ingress) map[string]bool {
+	protected := map[string]bool{}
+	for i := range ingresses {
+		ingress := &ingresses[i]
+		if !requiresOriginClientCertificate(ingress) {
+			continue
+		}
+		for _, rule := range ingress.Spec.Rules {
+			protected[strings.ToLower(rule.Host)] = true
+		}
+	}
+	return protected
+}
+
 // projectIngresses builds the gateway's projection from every Ingress the operator wrote, whatever
 // its class: the gateway serves every host it can, so a cutover moves only DNS. A host it cannot
 // serve with its own certificate, and an Ingress needing a feature it lacks, is skipped and reported.
@@ -201,6 +233,7 @@ func projectIngresses(ctx context.Context, c client.Client) (zettaIngressProject
 		return a.Name < b.Name
 	})
 	denied := sourceDeniedHosts(ingresses.Items)
+	protected := originClientCertHosts(ingresses.Items)
 	hosts := map[string]*zettaIngressHost{}
 	hostOwner := map[string]string{}
 	paths := map[string]bool{}
@@ -237,6 +270,11 @@ func projectIngresses(ctx context.Context, c client.Client) (zettaIngressProject
 			host := strings.ToLower(rule.Host)
 			if !validIngressHost(host) {
 				skip(host, "the gateway serves only exact host names")
+				served = false
+				continue
+			}
+			if protected[host] {
+				skip(host, "it requires origin client certificates (nginx auth-tls, authenticated origin pulls), which the gateway does not verify")
 				served = false
 				continue
 			}

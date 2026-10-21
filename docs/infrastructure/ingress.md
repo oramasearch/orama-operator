@@ -55,6 +55,7 @@ It refuses, and reports, rather than serve something differently:
 | Lake app Ingresses | An app's authentication is nginx's `auth-url` subrequest to Lake, and app transfer is metered from nginx's per-Ingress byte counters (`lake_app_transfer.go`). The gateway does neither. Apps stay on ingress-nginx (`spec.apps.ingressClass` stays `nginx`) until zetta-tunnel can, so ingress-nginx cannot be removed before then. |
 | `auth-url`, `auth-signin`, rewrites, snippets, a non-HTTP backend protocol | Not implemented by the gateway; serving without them would change behaviour. |
 | Every host of an Ingress with `denylist-source-range`, on every Ingress that serves it | The gateway cannot refuse a source. Orama Cloud v1's `/metrics` deny companions ([#410](https://github.com/oramasearch/orama-operator/pull/410)) cover its public writer and reader hosts, and the main Ingress's Prefix `/` would forward `/metrics` too, so those hosts stay on ingress-nginx. An interim guard until [#575](https://github.com/oramasearch/orama-operator/issues/575) keeps the gateway from serving Cloud v1 at all; for the engine hosts, whose sandbox rules admit ingress-nginx only (bridge decision 19 of 2026-10-17), it is a second safeguard. |
+| Every host of an Ingress that requires a client certificate (`auth-tls-secret`, or `auth-tls-verify-client` other than `off`), on every Ingress that names it, of any class and owner | ingress-nginx refuses a caller without the edge's client certificate on that whole host; the Lake controller sets it when the zone has authenticated origin pulls ([`lake/origin-tls.md`](../lake/origin-tls.md)). The gateway verifies no client certificate, so serving the host would let anyone who finds its address skip the edge, its WAF and rate limits, and set the edge's attribution headers (`CF-Connecting-IP`) itself ([#798](https://github.com/oramasearch/orama-operator/issues/798), LSR-136). Such a host stays on ingress-nginx until zetta-tunnel verifies the same CA. |
 | Wildcard hosts, a host already served with another certificate, a path already routed, a missing backend Service or port | The projection would be invalid or ambiguous. |
 
 ## How a host moves: the Ingress class
@@ -122,6 +123,10 @@ the gateway Deployment, its copied pull secret and the IngressClass; the gateway
 the served backends; that only a served `zetta-tunnel` Ingress gets the address, and only after the
 gateway is available; and that losing a certificate takes the address away.
 `TestIngressGatewayIsScaledToZeroWithNothingToServe` covers an empty cluster.
+`TestIngressGatewayNeverServesAHostThatRequiresOriginClientCertificates` checks that a Lake host with
+the edge's client-certificate requirement, cut over or not, `on` or `optional`, and a second Ingress
+naming the same host without the annotations are all refused and reported, that none of their keys
+or backends reach the gateway, and that the host is served again once the requirement is off.
 
 Live acceptance per cluster (the cutover steps above): every public host answers through the gateway
 with its certificate, and nothing reaches ingress-nginx.
