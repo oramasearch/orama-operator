@@ -172,7 +172,13 @@ func lakeRowHost(lake *oramav1alpha1.Lake) string {
 func (r *OramaZettaClusterReconciler) materializeZettaPlatformRows(ctx context.Context, lake *oramav1alpha1.Lake, host, base, token string, rows zettaPlatformRows) {
 	log := logf.FromContext(ctx)
 	env := latestEnvironmentEnv(rows.EnvironmentEnv)
-	domains := planLakeDomains(lake, host, rows.Domains)
+	guard, err := lakeDomainGuardFor(ctx, r.Client, lake)
+	if err != nil {
+		// Without the guard no domain can be checked against the platform: apply nothing this poll.
+		log.Error(err, "deployment sync deferred — the domain guard could not be read", "lake", lake.Name)
+		return
+	}
+	domains := planLakeDomains(lake, host, rows.Domains, guard)
 	operator := r.operatorID(ctx)
 	for _, state := range latestDeploymentEnvironmentStates(reduceDeploymentRows(rows.Deployments)) {
 		deploymentID := state.Desired.DeploymentID
@@ -743,16 +749,73 @@ func domainRowKey(row map[string]string) string {
 	return strings.Join([]string{row["repository"], row["environment"], row["host"]}, "\n")
 }
 
+// lakeDomainClaimSince is when each live claim was made: per (repository, environment, host), lake's
+// row order of the claim's first row since its last tombstone. A later row of the same claim (a tls
+// change, the operator's status answer) does not make it younger; a claim withdrawn and made again
+// is a new claim. A key whose newest row is a tombstone has no live claim and no entry.
+func lakeDomainClaimSince(rows []map[string]string) map[string][3]string {
+	type claim struct {
+		since   [3]string
+		deleted bool
+	}
+	byKey := make(map[string]*claim)
+	ordered := make([]map[string]string, 0, len(rows))
+	for _, row := range rows {
+		if row["repository"] != "" && row["environment"] != "" && row["host"] != "" && row["updated_at"] != "" {
+			ordered = append(ordered, row)
+		}
+	}
+	order := func(row map[string]string) [3]string {
+		return lakeRowOrder(row["updated_at"], row["ordering_token"], row)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool { return lakeRowIsNewer(order(ordered[j]), order(ordered[i])) })
+	for _, row := range ordered {
+		key := domainRowKey(row)
+		current := byKey[key]
+		deleted := parseDeploymentBool(row["deleted"])
+		if current == nil {
+			current = &claim{deleted: true}
+			byKey[key] = current
+		}
+		if current.deleted && !deleted {
+			current.since = order(row)
+		}
+		current.deleted = deleted
+	}
+	since := make(map[string][3]string, len(byKey))
+	for key, current := range byKey {
+		if !current.deleted {
+			since[key] = current.since
+		}
+	}
+	return since
+}
+
 // planLakeDomains reduces lake's domain requests and decides which ones an environment serves.
-// A host is applied once per Lake: it must be a DNS name, not the Lake's own host, and not
-// already claimed by another environment of the Lake (the first in key order keeps it).
-func planLakeDomains(lake *oramav1alpha1.Lake, host string, rows []map[string]string) lakeDomainPlan {
+// A host must be a lowercase DNS name and not a platform host (lakeDomainGuard), and it belongs to
+// the first claim: the earliest live claim by its creation time (lakeDomainClaimSince), then by the
+// claim's id (repository, environment, host). Every later claim of the host by another environment
+// is refused, so a later claim never takes a host already served, whatever its repository id
+// (#776). lake does not verify domain ownership yet (lake#949): when its rows carry a verification
+// state, an unverified claim is refused here too.
+func planLakeDomains(lake *oramav1alpha1.Lake, host string, rows []map[string]string, guard lakeDomainGuard) lakeDomainPlan {
 	latest := latestPlatformRows(rows, "repository", "environment", "host")
+	since := lakeDomainClaimSince(rows)
 	keys := make([]string, 0, len(latest))
 	for key := range latest {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	// The first claim first: by creation time, then by the claim's id.
+	sort.Slice(keys, func(i, j int) bool {
+		left, right := since[keys[i]], since[keys[j]]
+		if left[0] != right[0] {
+			return left[0] < right[0]
+		}
+		if left[1] != right[1] {
+			return left[1] < right[1]
+		}
+		return keys[i] < keys[j]
+	})
 	plan := lakeDomainPlan{
 		active:  make(map[string][]oramav1alpha1.LakeEnvironmentDomain),
 		refused: make(map[string]string),
@@ -773,8 +836,13 @@ func planLakeDomains(lake *oramav1alpha1.Lake, host string, rows []map[string]st
 		case domain == host || domain == lake.Spec.Host:
 			plan.refused[key] = fmt.Sprintf("%q is the Lake's own host", domain)
 			continue
-		case claimed[domain] != "" && claimed[domain] != identity:
-			plan.refused[key] = fmt.Sprintf("%q is already a domain of another environment", domain)
+		}
+		if reason := guard.refuses(lake, identity, domain); reason != "" {
+			plan.refused[key] = reason
+			continue
+		}
+		if claimed[domain] != "" && claimed[domain] != identity {
+			plan.refused[key] = fmt.Sprintf("%q is already claimed by another environment", domain)
 			continue
 		}
 		claimed[domain] = identity
@@ -783,6 +851,12 @@ func planLakeDomains(lake *oramav1alpha1.Lake, host string, rows []map[string]st
 			tls = "acme"
 		}
 		plan.active[identity] = append(plan.active[identity], oramav1alpha1.LakeEnvironmentDomain{Host: domain, TLS: tls})
+	}
+	// spec.domains and the status answers in a stable order, not in claim order.
+	sort.Slice(plan.latest, func(i, j int) bool { return domainRowKey(plan.latest[i]) < domainRowKey(plan.latest[j]) })
+	for identity := range plan.active {
+		domains := plan.active[identity]
+		sort.Slice(domains, func(i, j int) bool { return domains[i].Host < domains[j].Host })
 	}
 	return plan
 }

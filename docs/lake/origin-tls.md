@@ -51,6 +51,12 @@ solver.
   named `<ingress>-tls-<12 hex of the host's SHA-256>`. A renewal is copied again: the app and
   environment controllers watch the Lake namespace's `*-tls` Secrets. A certificate not issued yet is
   not copied; ingress-nginx then serves no certificate and no redirect for that host until it is.
+- **A certificate is never shared across owners**
+  ([#776](https://github.com/oramasearch/orama-operator/issues/776)). When `<host>-tls` already belongs to
+  another `LakeApp` or `LakeEnvironment`, a second owner naming the same host gets no copy of it, and a
+  copy made for it before is deleted: the private key of one tenant's host is never copied into another
+  tenant's namespace. The domain intake refuses such a claim earlier (`environments.md`, *The first
+  claim keeps a host*); this is the check behind it.
 - **Why wildcards.** Let's Encrypt allows 50 new certificates per registered domain per week, and
   5 per identical set of names. One wildcard per Lake for apps and one for previews keeps a busy week
   of new apps and previews within both.
