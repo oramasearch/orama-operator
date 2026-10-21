@@ -42,6 +42,10 @@
 #                                                        dashboard, through components.dashboard.envFrom (#311).
 #                                                        It never holds DATABASE_URL, POSTGRES_PASSWORD, JWT_*,
 #                                                        or MASTER_API_KEY: the operator owns them and refuses them.
+#                                                        Every member of this set is production (its clusters'
+#                                                        purpose tag), so its dashboard is not rendered unless
+#                                                        CRON_SECRET, STRIPE_WEBHOOK_SECRET and STRIPE_SECRET_KEY
+#                                                        come from a Secret like this one, crons on or off (#794).
 # v1-us: nothing copied. Its master key is generated (#615) until the US migration names Prod 1's.
 #
 #   Not copied: AIRBYTE_WEBHOOK_SECRET and every AIRBYTE_* (Airbyte removed, bridge decisions 2026-10-16
@@ -252,6 +256,9 @@ spec:
         pgAdmin:
           enabled: false
   # US keeps the sandbox stack it runs today and never runs the dashboard crons.
+  # Its dashboard has no dashboard env, so an operator with #794 refuses to render it (Ready=False
+  # naming CRON_SECRET, STRIPE_WEBHOOK_SECRET and STRIPE_SECRET_KEY) and leaves its last template
+  # running. Disabling it here, or giving it production values, is Steve's decision (#794).
   - clusterRef: orama-production-cluster-03
     name: v1-us
     namespace: v1-us

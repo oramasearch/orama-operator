@@ -1354,6 +1354,34 @@ different program and is unchanged.
   `allow-index-builder-egress`). HPES has no egress allowance beyond the stack-wide DNS rule and no
   public-internet allowance.
 
+### A production dashboard needs its production authentication settings ([#794](https://github.com/oramasearch/orama-operator/issues/794))
+
+The dashboard is internet-facing, and some of its routes are authenticated only by a shared value:
+the cron routes by `Authorization: Bearer $CRON_SECRET`, the Stripe webhook by a signature made with
+`STRIPE_WEBHOOK_SECRET`. The operator seeds `dev-*` placeholders for the Stripe pair into
+`<cr>-dashboard-secret` and keeps whatever that Secret holds, so a stack without its production values
+would serve those routes with a value anyone can read in this repository (finding LSR-132 of the Lake
+pre-launch security review).
+
+A stack is **production** when the `OramaCloudV1Set` that created it says so: the set writes its
+member cluster's `purpose` tag as the label `orama.cloud/purpose` on every pass
+([infrastructure/README.md](infrastructure/README.md)). There is no field or flag for it. On a
+production stack (`dashboard_production.go`):
+
+- `CRON_SECRET`, `STRIPE_WEBHOOK_SECRET` and `STRIPE_SECRET_KEY` must each come from the user's own
+  Secrets: a `dashboard.envFrom` Secret or a `dashboard.env` `secretKeyRef`, resolved with the same
+  precedence as the container's environment. A literal, a ConfigMap, or a value in the operator's
+  `<cr>-dashboard-secret` does not count.
+- Each value must be non-empty and must not be any placeholder `componentSecretData` seeds.
+- `CRON_SECRET` is required whether or not the crons are enabled: the routes are served either way.
+- The operator seeds no placeholder for these three into `<cr>-dashboard-secret`. One seeded earlier
+  stays in that Secret and is never read, because the user's source wins.
+
+Otherwise the dashboard step fails before the Deployment is written, with `Ready=False`
+(`ReconcileError`) naming each missing setting and never a value. A fresh stack gets no dashboard; a
+running one keeps its last template until the settings are there. A stack that is not production
+(no set, or a `nonprod` set) is unchanged.
+
 ### The dashboard's scheduled jobs
 
 `spec.components.dashboard.crons` ([operator#17](https://github.com/oramasearch/orama-operator/issues/17),
