@@ -257,6 +257,10 @@ only after every cluster is cut over.
 - **No differences between clusters' operators**: same chart, image, CRDs, controllers and RBAC
   everywhere ([`CLAUDE.md`](../../CLAUDE.md) rule 11).
 - **A set never combines nonprod and production.**
+- **Nonprod never gets a production credential.** A Secret a production set lists, one labelled
+  `orama.cloud/purpose: production`, or a migration's Prod 1 source credential is never copied into a
+  nonprod member; the operator refuses it
+  ([the rule](../crd-reference.md#production-credentials-never-reach-a-nonprod-member)).
 - **Per-instance keys are never copied** between clusters; only the Secrets a set lists travel.
 - **Nothing is changed by hand on any cluster without Steve's explicit consent** (the section at
   the top of this page). Change the operator, or change a resource file and apply it.

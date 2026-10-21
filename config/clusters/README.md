@@ -56,7 +56,15 @@ engine master key (production carries Prod 1's) receives it this way and names i
 `<cr>-master-api-key` (#615), which is right for a fresh stack such as `v1-dev`. Changing a
 copied Secret's source, or its data on the managing cluster, rolls the member's consumers of it.
 
-An `OramaCloudV1Set` copies `cloudflare-api-token` to each member's namespace the same way;
+**Nonprod and production never share a Secret** (orama-operator#787, #789). A nonprod set lists its
+own Secrets, copied under the names its stack mounts with `as`; the operator refuses to copy into a
+nonprod member a Secret any production set lists, one labelled `orama.cloud/purpose: production`, or
+a migration's Prod 1 source credential, and `TestCommittedSetsNeverShareASecretAcrossPurposes` fails
+on a set file that shares one
+([the rule](../../docs/crd-reference.md#production-credentials-never-reach-a-nonprod-member)).
+
+An `OramaCloudV1Set` copies a Cloudflare token to each member's namespace as `cloudflare-api-token`
+the same way (`v1-prod` the production token, `v1-nonprod` its own `cloudflare-api-token-oramadev`);
 besides DNS, it is the DNS-01 credential of every stack's Let's Encrypt `Issuer`,
 so a v1 member with a host fails to reconcile without it
 ([origin TLS](../../docs/components.md#origin-tls-ingress_tlsgo-457)). Every host in a v1 set,

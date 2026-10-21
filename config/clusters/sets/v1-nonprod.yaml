@@ -40,6 +40,13 @@ spec:
   # verified, then removed by deleting this entry (removeOnDelete runs the tool's remove-target).
   # Copied again by orama-bridge#222 on a new run volume: the first copy's reader storage broke
   # (orama-bridge#219) and it was removed on 2026-10-21. runID and the receipt are unchanged.
+  #
+  # REFUSED by the operator since orama-operator#787 (LSR-038): the three v1-nonprod-prod1-* Secrets
+  # are named by spec.source, so they are Prod 1's credentials, which are production, and a Prod 1
+  # credential is never copied into a nonprod member. The set reports this migration Blocked and does
+  # not update it; what was already copied into v1-dev stays until this entry is removed. A nonprod
+  # rehearsal runs against a source standing in for Prod 1 whose Secrets carry
+  # orama.cloud/purpose=nonprod.
   - name: team-4e01bc49
     member: v1-dev
     secrets:                                # copied into v1-dev first, deleted once the migration is gone
@@ -77,11 +84,17 @@ spec:
           document: OramaMigrationReadIndexInfo
           dataDir: /opt/oramacore/.data/writer
           credentialsSecretRef: {name: v1-nonprod-prod1-settings-ssm}
+  # Nonprod's own Secrets: none of these is one a production set copies (orama-operator#789). The
+  # operator refuses to copy a production set's Secret into a nonprod member, and
+  # TestCommittedSetsNeverShareASecretAcrossPurposes fails on one. Each is copied under the name the
+  # stack already mounts, so the copy of the production Secret in v1-dev is overwritten in place.
   secrets:
-  - name: oramasearch-dockerhub
+  - name: oramasearch-dockerhub-nonprod       # a Docker Hub pull token for nonprod only
     namespace: orama-system
-  - name: cloudflare-api-token
+    as: oramasearch-dockerhub
+  - name: cloudflare-api-token-oramadev       # token, zoneID, accountID: a token limited to oramadev.net
     namespace: orama-system
+    as: cloudflare-api-token
   - name: v1-nonprod-llm-keys
     namespace: orama-system
   - name: v1-nonprod-dashboard-env

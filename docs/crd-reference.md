@@ -1880,7 +1880,7 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 | Field | Meaning |
 |---|---|
 | `spec.template` | The instance's spec (a `Lake`'s, an `OramaCloudV1`'s), the default for every member. Validated by each member's cluster when applied. A `LakeSet` template does not set `namespace`; an `OramaCloudV1Set` template does not set `region.name`. |
-| `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. |
+| `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. A production credential is never copied into a member whose cluster is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). |
 | `spec.clusters[]` | The members, 1 to 64. Independent: none waits for another. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). The cap of 64 holds for both kinds because they share this shape: the `OramaCloudV1Set` rule that each migration names one member loops over the members, and the API server refuses a CEL rule over an unbounded list. |
 | `spec.deletionPolicy` | `Retain` (default): removing a member or deleting the set leaves the instance running. `Delete`: the instance is deleted from its cluster. |
 | `spec.migrations[]` | `OramaCloudV1Set` only, at most 256, keyed by `name`: the Prod 1 teams copied into the members ([`cloud-v1-migration.md`](cloud-v1-migration.md#declared-in-the-set-oramacloudv1set)). `name` is the `OramaCloudV1Migration`'s name (DNS label, at most 63). `member` names exactly one `clusters[].name` (CEL: *every migrations[].member must name exactly one clusters[].name*) and cannot change once applied. `secrets` are copied into the member's namespace before it, like a member's, refused when the stack gets a Secret of that name from the set or the member, and deleted once the migration is gone. `spec` is the `OramaCloudV1Migration`'s spec without `targetRef`, which is the member; it is validated by the member's cluster when applied. Removing an entry deletes the migration there; removing its member or deleting the set waits for its migrations to be gone. |
@@ -1894,6 +1894,28 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 | `status.e2eTests[]` | `LakeSet` only. Per e2e test, the declared ones in order and then those still being removed: `name`, `member`, `cluster` (where it was applied), and the latest run as the member's cluster reports it: `phase` (`Pending`, `Running`, `Succeeded`, `Failed`; `Pending` while the set waits to apply it or until the cluster starts the run for the latest `spec`, so an earlier run's result is never reported as this one's; `Blocked` when the set refuses it; `Removing`), `message`, `jobName`, `runID`, `lakeRevision`, `pass`, `fail`, `skip`. The failed and skipped steps' reasons stay on the `LakeE2ETest` on the member's cluster. The set's phase does not depend on them. |
 | `status.e2eSummary` | `LakeSet` only: each declared test's phase and, once finished, `pass/fail/skip`, e.g. `testing-gate Failed 311/22/3`; empty with none. The `E2E` column of `kubectl get lset`. |
 | `status.message` | Which members are not `Ready`, and what each one's cluster says about it; for an `OramaCloudV1Set`, also what the set could not do with a migration, and for a `LakeSet` with an e2e test. |
+
+### Production credentials never reach a nonprod member
+
+[orama-operator#787](https://github.com/oramasearch/orama-operator/issues/787) and
+[#789](https://github.com/oramasearch/orama-operator/issues/789) (findings LSR-038 and LSR-040 of the
+Lake pre-launch security review). Before copying a Secret into a member (as a set, member or
+migration Secret), the operator refuses it, and copies nothing for that member or migration, when:
+
+| The Secret on the managing cluster | Refused for a member whose cluster is |
+|---|---|
+| is labelled `orama.cloud/purpose: <purpose>` | any other purpose, in either direction |
+| is listed by a production set: its `spec.secrets`, a member's `secrets` or a migration's `secrets`, in any `LakeSet` or `OramaCloudV1Set` with a member on a cluster tagged `purpose: production` | not `production` |
+| is named by the migration's `spec.source.databaseSecretRef`, `masterKeySecretRef` or `settings.credentialsSecretRef`: a Prod 1 credential, which is production whatever the Secret is called | not `production`, unless the Secret is labelled `orama.cloud/purpose` with that cluster's purpose (a fixture standing in for Prod 1) |
+
+What is production comes only from resources: each member's cluster's `purpose` tag, the set files,
+and the Secret's label. A refused member is `Degraded`, with the reason on it; a refused migration is
+`Blocked` (or keeps its last phase if it was already applied) and is not updated. Neither is retried
+until an edit: give the nonprod set its own Secret, copied under the name its stack mounts with `as`,
+so the earlier copy is overwritten in place. A production set is never refused by this rule for a
+Secret it shares, so production keeps running while nonprod is split off.
+`TestCommittedSetsNeverShareASecretAcrossPurposes` checks the files in `config/clusters/sets/`: no
+Secret source is listed by sets of two purposes.
 
 ## `LakeOrderSource` (separate CRD, cluster-scoped) — paid lake.live orders
 

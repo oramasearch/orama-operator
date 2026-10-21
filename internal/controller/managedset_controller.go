@@ -340,6 +340,8 @@ type managedSetReconciler struct {
 	// e2eTests runs lake's end-to-end suite against a LakeSet's members; nil for an
 	// OramaCloudV1Set.
 	e2eTests *setE2ETests
+	// productionSources is what every production set copies, read once per pass (managedset_secret_scope.go).
+	productionSources map[string]string
 }
 
 // resolvedMember is a member with everything worked out from the set and its cluster.
@@ -419,8 +421,12 @@ func dedupe(sorted []string) []string {
 
 // secretsFor reads the Secrets a member gets: the set's, with the member's own replacing any of
 // the same name on the member's cluster.
-func (r *managedSetReconciler) secretsFor(ctx context.Context, spec *oramav1alpha1.ManagedSetSpec, member oramav1alpha1.SetMember) ([]*corev1.Secret, error) {
-	return r.copySecrets(ctx, spec.Secrets, member.Secrets)
+func (r *managedSetReconciler) secretsFor(ctx context.Context, spec *oramav1alpha1.ManagedSetSpec, resolved resolvedMember) ([]*corev1.Secret, error) {
+	scope, err := r.scopeFor(ctx, resolved, nil)
+	if err != nil {
+		return nil, err
+	}
+	return r.copySecrets(ctx, scope, spec.Secrets, resolved.member.Secrets)
 }
 
 // secretTarget is a SetSecret's name on the member's cluster.
@@ -428,7 +434,9 @@ func secretTarget(s oramav1alpha1.SetSecret) string { return firstNonEmpty(s.As,
 
 // copySecrets reads the named Secrets on this cluster, each named as it is to be on the member's
 // cluster. One in a later list replaces one of the same name there in an earlier list.
-func (r *managedSetReconciler) copySecrets(ctx context.Context, lists ...[]oramav1alpha1.SetSecret) ([]*corev1.Secret, error) {
+// Every one is checked against scope first: a Secret that may not reach the member's cluster is
+// refused, and nothing is copied.
+func (r *managedSetReconciler) copySecrets(ctx context.Context, scope secretScope, lists ...[]oramav1alpha1.SetSecret) ([]*corev1.Secret, error) {
 	chosen := map[string]oramav1alpha1.SetSecret{}
 	var order []string
 	for _, list := range lists {
@@ -447,6 +455,9 @@ func (r *managedSetReconciler) copySecrets(ctx context.Context, lists ...[]orama
 			if apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("Secret %s/%s does not exist on this cluster", ref.Namespace, ref.Name)
 			}
+			return nil, err
+		}
+		if err := scope.refuse(ref, name, source); err != nil {
 			return nil, err
 		}
 		copied := &corev1.Secret{Type: source.Type, Data: source.Data}
@@ -627,7 +638,7 @@ func (r *managedSetReconciler) applyMember(ctx context.Context, set managedSet, 
 	}
 	req := r.request(set, resolved)
 	req.Spec = merged
-	if req.Secrets, err = r.secretsFor(ctx, set.SetSpec(), resolved.member); err != nil {
+	if req.Secrets, err = r.secretsFor(ctx, set.SetSpec(), resolved); err != nil {
 		return fail(err)
 	}
 	state, err := r.applier.ApplyMember(ctx, kubeconfig, req)
