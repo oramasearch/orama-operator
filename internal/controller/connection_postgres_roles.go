@@ -39,6 +39,13 @@ const (
 	connectionPostgresTimeout = 15 * time.Second
 	// scramIterations matches PostgreSQL's default scram_iterations.
 	scramIterations = 4096
+	// trustedSearchPath is the only search_path a superuser session against a service uses
+	// (operator#800, LSR-138). The service's database belongs to the tenant, and its owner may set
+	// the database's default search_path and create objects in its own schemas; a superuser session
+	// that resolved a name through that path would run the owner's look-alike of a catalog view,
+	// function or operator with superuser rights. pg_temp is listed last so a temporary object can
+	// never come first either.
+	trustedSearchPath = "pg_catalog, pg_temp"
 )
 
 // errConnectionSchemaMissing is returned when a schema-scoped credential names a schema the
@@ -142,7 +149,10 @@ func connectionScopeStatements(role string, scope oramav1alpha1.ConnectionCreden
 // pgxPostgresRoleManager is the PostgresRoleManager that signs in to the service over pgx.
 type pgxPostgresRoleManager struct{}
 
-func (pgxPostgresRoleManager) connect(ctx context.Context, target ConnectionPostgresTarget) (*pgx.Conn, error) {
+// connectionPostgresConfig is the session the operator opens as a service's superuser. The
+// search_path is a startup parameter, so it is in force before the first statement and overrides
+// the database's own default (ALTER DATABASE ... SET search_path), which the tenant controls.
+func connectionPostgresConfig(target ConnectionPostgresTarget) (*pgx.ConnConfig, error) {
 	uri := url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(target.User, target.Password),
@@ -153,7 +163,27 @@ func (pgxPostgresRoleManager) connect(ctx context.Context, target ConnectionPost
 	query.Set("sslmode", "prefer")
 	query.Set("application_name", "orama-operator-connections")
 	uri.RawQuery = query.Encode()
-	return pgx.Connect(ctx, uri.String())
+	config, err := pgx.ParseConfig(uri.String())
+	if err != nil {
+		return nil, err
+	}
+	config.RuntimeParams["search_path"] = trustedSearchPath
+	return config, nil
+}
+
+func (pgxPostgresRoleManager) connect(ctx context.Context, target ConnectionPostgresTarget) (*pgx.Conn, error) {
+	config, err := connectionPostgresConfig(target)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.ConnectConfig(ctx, config)
+}
+
+// pinSearchPath sets the trusted search_path again for one transaction. The startup parameter
+// already holds it; this keeps each transaction correct on its own, whatever the session did.
+func pinSearchPath(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, "SET LOCAL search_path = "+trustedSearchPath)
+	return err
 }
 
 func (m pgxPostgresRoleManager) RoleExists(ctx context.Context, target ConnectionPostgresTarget, role string) (bool, error) {
@@ -181,6 +211,9 @@ func (m pgxPostgresRoleManager) SetRole(
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		if err := pinSearchPath(ctx, tx); err != nil {
+			return err
+		}
 		if err := setPostgresRole(ctx, tx, role, verifier); err != nil {
 			return err
 		}
@@ -202,6 +235,9 @@ func (m pgxPostgresRoleManager) ApplyScope(
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		if err := pinSearchPath(ctx, tx); err != nil {
+			return err
+		}
 		return applyPostgresScope(ctx, tx, role, scope)
 	})
 }
@@ -221,7 +257,7 @@ func postgresRoleCanLogin(ctx context.Context, db interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }, role string) (bool, error) {
 	var canLogin bool
-	err := db.QueryRow(ctx, `SELECT rolcanlogin FROM pg_roles WHERE rolname = $1`, role).Scan(&canLogin)
+	err := db.QueryRow(ctx, `SELECT rolcanlogin FROM pg_catalog.pg_roles WHERE rolname OPERATOR(pg_catalog.=) $1`, role).Scan(&canLogin)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -236,7 +272,7 @@ func setPostgresRole(ctx context.Context, tx pgx.Tx, role, verifier string) erro
 		return errors.New("refusing a password that is not a SCRAM-SHA-256 verifier")
 	}
 	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, role).Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname OPERATOR(pg_catalog.=) $1)`, role).Scan(&exists); err != nil {
 		return err
 	}
 	r := pgx.Identifier{role}.Sanitize()
@@ -254,12 +290,12 @@ func applyPostgresScope(ctx context.Context, tx pgx.Tx, role string, scope orama
 		return fmt.Errorf("refusing to manage role %q: not a connection role", role)
 	}
 	var owner string
-	if err := tx.QueryRow(ctx, `SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()`).Scan(&owner); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database WHERE datname OPERATOR(pg_catalog.=) pg_catalog.current_database()`).Scan(&owner); err != nil {
 		return err
 	}
 	if scope.Schema != "" {
 		var found bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)`, scope.Schema).Scan(&found); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname OPERATOR(pg_catalog.=) $1)`, scope.Schema).Scan(&found); err != nil {
 			return err
 		}
 		if !found {
@@ -287,7 +323,7 @@ func dropPostgresRole(ctx context.Context, conn *pgx.Conn, role string) error {
 		return fmt.Errorf("refusing to drop role %q: not a connection role", role)
 	}
 	var exists bool
-	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, role).Scan(&exists); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname OPERATOR(pg_catalog.=) $1)`, role).Scan(&exists); err != nil {
 		return err
 	}
 	if !exists {
@@ -298,10 +334,13 @@ func dropPostgresRole(ctx context.Context, conn *pgx.Conn, role string) error {
 	if _, err := conn.Exec(ctx, "ALTER ROLE "+r+" NOLOGIN"); err != nil {
 		return err
 	}
-	if _, err := conn.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1`, role); err != nil {
+	if _, err := conn.Exec(ctx, `SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity WHERE usename OPERATOR(pg_catalog.=) $1`, role); err != nil {
 		return err
 	}
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		if err := pinSearchPath(ctx, tx); err != nil {
+			return err
+		}
 		for _, statement := range []string{"DROP OWNED BY " + r, "DROP ROLE " + r} {
 			if _, err := tx.Exec(ctx, statement); err != nil {
 				return err
