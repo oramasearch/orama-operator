@@ -25,7 +25,7 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 | [`provider.yaml`](provider.yaml) | `KubernetesClusterProvider/azure-orama`: the Azure subscription and defaults every cluster is created with. |
 | `<cluster>/cluster.yaml` | The `KubernetesCluster`: region, version, node pools, `purpose` tag, deletion policy. |
 | `<cluster>/platform.yaml` | One `ClusterHelmRelease` per chart the cluster runs, in install order. |
-| `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs. |
+| `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs, and the pull Secret copied to it. A nonprod cluster names its own (`orama-system/oramasearch-dockerhub-nonprod`, copied as `oramasearch-dockerhub`); a Secret production uses is refused for it (orama-operator#832). |
 | `sets/lake-<purpose>.yaml` | A `LakeSet`: the Lake instances of that purpose, and the end-to-end runs against them (`spec.e2eTests`). |
 | `sets/v1-<purpose>.yaml` | An `OramaCloudV1Set`: the Orama Cloud v1 instances of that purpose, and the Prod 1 teams being copied into them. |
 
@@ -59,8 +59,10 @@ copied Secret's source, or its data on the managing cluster, rolls the member's 
 **Nonprod and production never share a Secret** (orama-operator#787, #789). A nonprod set lists its
 own Secrets, copied under the names its stack mounts with `as`; the operator refuses to copy into a
 nonprod member a Secret any production set lists, one labelled `orama.cloud/purpose: production`, or
-a migration's Prod 1 source credential, and `TestCommittedSetsNeverShareASecretAcrossPurposes` fails
-on a set file that shares one
+a migration's Prod 1 source credential. The same holds for each `<cluster>/operator.yaml` pull Secret
+(orama-operator#832): a nonprod cluster names its own, and the operator refuses to copy to it a
+Secret production uses. `TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes` fails on a set
+or operator file that shares one
 ([the rule](../../docs/crd-reference.md#production-credentials-never-reach-a-nonprod-member)).
 
 An `OramaCloudV1Set` copies a Cloudflare token to each member's namespace as `cloudflare-api-token`

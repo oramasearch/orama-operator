@@ -34,8 +34,19 @@ type OramaOperatorSpec struct {
 
 	// ImagePullSecretRef names a registry credentials Secret (kubernetes.io/dockerconfigjson) on
 	// this cluster. It is copied to the target cluster so its nodes can pull the private operator
-	// image, and it authenticates the pull of the chart.
+	// image, and it authenticates the pull of the chart. A Secret production uses is never copied
+	// to a cluster that is not production (orama-operator#832; docs/crd-reference.md, "Production
+	// credentials never reach a nonprod member").
 	ImagePullSecretRef ClusterSecretReference `json:"imagePullSecretRef"`
+
+	// ImagePullSecretAs is the name the pull Secret is copied under on the target cluster, which
+	// the cluster's operator pulls with. Defaults to imagePullSecretRef's name. It lets a cluster
+	// get its own credential under the name of the one it replaces, so the old copy is
+	// overwritten in place.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	// +optional
+	ImagePullSecretAs string `json:"imagePullSecretAs,omitempty"`
 
 	// ImageRepository is the operator image without a tag.
 	// +kubebuilder:default="oramasearch/orama-operator"

@@ -99,7 +99,7 @@ spec:
   #       valueFrom: {secretKeyRef: {name: clerk-secret-key, key: secretKey}}
   # Nonprod's own Secrets: none of these is one lake-prod copies (orama-operator#789). The operator
   # refuses to copy a production set's Secret into a nonprod member, and
-  # TestCommittedSetsNeverShareASecretAcrossPurposes fails on one. Each is copied under the name the
+  # TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes fails on one. Each is copied under the name the
   # Lakes already mount, so the copies of the production Secrets in the lake-* namespaces are
   # overwritten in place.
   secrets:

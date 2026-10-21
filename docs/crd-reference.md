@@ -1864,13 +1864,14 @@ Short name `ooperator`. Reconciled wherever it is created.
 | `spec.clusterRef` | The `KubernetesCluster` to install onto. Immutable. |
 | `spec.version` | The operator version the cluster runs: the image tag, and the chart published with it. Changing it upgrades the cluster's operator, CRDs first. |
 | `spec.namespace` | Default `orama-system`. Immutable. |
-| `spec.imagePullSecretRef` | A `kubernetes.io/dockerconfigjson` Secret on the management cluster. Copied to the leaf for the image pull, and used to pull the chart. |
+| `spec.imagePullSecretRef` | A `kubernetes.io/dockerconfigjson` Secret on the management cluster. Copied to the leaf for the image pull, and used to pull the chart. A Secret production uses is never copied to a cluster that is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). |
+| `spec.imagePullSecretAs` | The name of the copy on the leaf, which the leaf's operator pulls with. Default: `imagePullSecretRef`'s name. Lets a cluster get its own credential under the name of the one it replaces, so the old copy is overwritten in place. |
 | `spec.imageRepository`, `spec.chartRepository` | Defaults `oramasearch/orama-operator` and `registry-1.docker.io/oramasearch/orama-operator-chart`. |
 | `spec.values` | Chart values for the cluster's operator. The image and its pull secret are set by the controller and win; nothing else differs from any other cluster's operator. |
 | `status.phase` | `Pending` (waiting for the cluster, or for prerequisites), `Installing`, `Ready`, `Degraded` or `Deleting`. |
 | `status.installedVersion`, `.chartVersion`, `.revision`, `.releaseStatus` | The Helm release on the leaf. |
 | `status.image`, `.replicas`, `.readyReplicas` | The operator's Deployment on the leaf. `Ready` needs every replica ready on the image asked for. |
-| `status.message` | Why it is not `Ready`. When prerequisites are missing it names the CRDs and says nothing was installed; when pods are failing it carries the kubelet's reason. |
+| `status.message` | Why it is not `Ready`. When prerequisites are missing it names the CRDs and says nothing was installed; when pods are failing it carries the kubelet's reason; when the pull Secret is refused as a production credential (reason `ProductionCredential`) it names what makes it production. |
 
 ## `LakeSet` and `OramaCloudV1Set` (separate CRDs, cluster-scoped) — instances on managed clusters
 
@@ -1914,8 +1915,22 @@ and the Secret's label. A refused member is `Degraded`, with the reason on it; a
 until an edit: give the nonprod set its own Secret, copied under the name its stack mounts with `as`,
 so the earlier copy is overwritten in place. A production set is never refused by this rule for a
 Secret it shares, so production keeps running while nonprod is split off.
-`TestCommittedSetsNeverShareASecretAcrossPurposes` checks the files in `config/clusters/sets/`: no
-Secret source is listed by sets of two purposes.
+**`OramaOperator` keeps the same rule** for the pull Secret it copies to the cluster it installs onto
+([orama-operator#832](https://github.com/oramasearch/orama-operator/issues/832)). The Secret is
+refused when it is labelled `orama.cloud/purpose` with another purpose than the cluster's, or, for a
+cluster that is not `production` (including one with no `purpose` tag), when a production set lists
+it or another `OramaOperator` names it for a cluster tagged `production`. The refused resource is
+`Degraded` with reason `ProductionCredential`, nothing reaches its cluster (no pull Secret, no chart
+pull, no release change), and it is looked at again every five minutes. Give the cluster its own
+Secret in `spec.imagePullSecretRef`, copied under the old name with `spec.imagePullSecretAs`. The
+sets count a production `OramaOperator`'s pull Secret as production too. Nothing else copies a
+Secret from the managing cluster to a managed one: a `ClusterHelmRelease`'s
+`chart.credentialsSecretRef` and a `KubernetesClusterProvider`'s `credentialsSecretRef` are read on
+the managing cluster only, and a `KubernetesCluster`'s kubeconfig is written there.
+
+`TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes` checks the files in
+`config/clusters/sets/` and `config/clusters/<cluster>/operator.yaml`: no Secret source is named by
+sets or `OramaOperator`s of two purposes.
 
 ## `LakeOrderSource` (separate CRD, cluster-scoped) — paid lake.live orders
 
