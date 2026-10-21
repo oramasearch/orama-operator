@@ -78,7 +78,7 @@ func catalogCases() []catalogCase {
 				kafka := h.upstream(strimziKafkaGVK, c.name())
 				listeners, _, _ := unstructured.NestedSlice(kafka.Object, "spec", "kafka", "listeners")
 				listener := listeners[0].(map[string]interface{})
-				if len(listeners) != 1 || listener["port"] != int64(9092) || listener["type"] != "internal" || listener["tls"] != false ||
+				if len(listeners) != 1 || listener["port"] != int64(9092) || listener["type"] != "internal" || listener["tls"] != true ||
 					listener["authentication"].(map[string]interface{})["type"] != "scram-sha-512" {
 					h.t.Fatalf("listeners = %v", listeners)
 				}
@@ -112,12 +112,16 @@ func catalogCases() []catalogCase {
 				h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.name() + "-app", Namespace: testServiceNamespace,
 					OwnerReferences: []metav1.OwnerReference{{APIVersion: "kafka.strimzi.io/v1", Kind: "KafkaUser", Name: user.GetName(), UID: user.GetUID()}}},
 					Data: map[string][]byte{"password": []byte("scram-secret"), "sasl.jaas.config": []byte("...")}})
+				kafka := h.upstream(strimziKafkaGVK, c.name())
+				h.create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: c.name() + "-cluster-ca-cert", Namespace: testServiceNamespace,
+					OwnerReferences: []metav1.OwnerReference{{APIVersion: "kafka.strimzi.io/v1", Kind: "Kafka", Name: kafka.GetName(), UID: kafka.GetUID()}}},
+					Data: map[string][]byte{"ca.crt": []byte("cluster-ca-pem")}})
 			},
 			endpoint: "prod-svc-666666666666-kafka-bootstrap.lake.svc.cluster.local:9092",
 			credential: func(string) string {
 				return `{"kind":"kafka","endpoint":"prod-svc-666666666666-kafka-bootstrap.lake.svc.cluster.local:9092",` +
 					`"bootstrap":"prod-svc-666666666666-kafka-bootstrap.lake.svc.cluster.local:9092","username":"prod-svc-666666666666-app",` +
-					`"password":"scram-secret","sasl_mechanism":"SCRAM-SHA-512","security_protocol":"SASL_PLAINTEXT"}`
+					`"password":"scram-secret","sasl_mechanism":"SCRAM-SHA-512","security_protocol":"SASL_SSL","ca_certificate":"cluster-ca-pem"}`
 			},
 			claimLabels: map[string]string{strimziClusterLabel: "prod-svc-666666666666", strimziKindLabel: "Kafka"},
 		},
@@ -701,7 +705,7 @@ func TestServicesClickHouseSingleReplicaHasNoKeeper(t *testing.T) {
 
 func TestServicesKafkaReplicationFollowsBrokers(t *testing.T) {
 	for instances, want := range map[int32][2]int64{1: {1, 1}, 2: {2, 1}, 3: {3, 2}} {
-		resources := kafkaServiceKind{}.build(catalogService{name: "k", spec: lakeServiceSpec{Instances: instances, StorageGi: 1}}, "")
+		resources := kafkaServiceKind{}.build(catalogService{lake: serviceTestLake(), name: "k", spec: lakeServiceSpec{Instances: instances, StorageGi: 1}}, "")
 		config := resources[0].fields[1].value.(map[string]interface{})
 		if config["offsets.topic.replication.factor"] != want[0] || config["default.replication.factor"] != want[0] ||
 			config["min.insync.replicas"] != want[1] || config["transaction.state.log.min.isr"] != want[1] {
@@ -826,7 +830,7 @@ func TestServicesKafkaSaysWhatStrimziIsStuckOn(t *testing.T) {
 // the broker pod and on the entity operator's pod, so the service does not depend on how Strimzi
 // is configured on a cluster (operator#428).
 func TestServicesKafkaPodsMeetRestrictedPodSecurity(t *testing.T) {
-	resources := kafkaServiceKind{}.build(catalogService{name: "svc", namespace: "ws", spec: lakeServiceSpec{Instances: 1, StorageGi: 10}}, "")
+	resources := kafkaServiceKind{}.build(catalogService{lake: serviceTestLake(), name: "svc", namespace: "ws", spec: lakeServiceSpec{Instances: 1, StorageGi: 10}}, "")
 	field := func(kind string, path ...string) interface{} {
 		for _, resource := range resources {
 			if resource.gvk.Kind != kind {
@@ -882,7 +886,7 @@ func TestServicesKafkaCostsOneCPUOfLimits(t *testing.T) {
 		t.Fatalf("a one-broker Kafka's containers have %s of CPU limits; more than 1 and it no longer costs what other services do", total.String())
 	}
 
-	resources := kafkaServiceKind{}.build(catalogService{name: "svc", namespace: "ws", spec: lakeServiceSpec{Instances: 1, StorageGi: 10}}, "")
+	resources := kafkaServiceKind{}.build(catalogService{lake: serviceTestLake(), name: "svc", namespace: "ws", spec: lakeServiceSpec{Instances: 1, StorageGi: 10}}, "")
 	var poolHas, operatorsHave bool
 	for _, r := range resources {
 		for _, f := range r.fields {
@@ -935,7 +939,7 @@ func TestServicesKafkaReportsAQuotaRefusal(t *testing.T) {
 // operator#435). The check is on what is rendered: a field named securityContext must be
 // restricted, and every kind must have at least one, and at least one stated resources block.
 func TestServicesEveryUpstreamKindIsRestrictedAndSized(t *testing.T) {
-	in := catalogService{name: "prod-svc-0123456789ab", namespace: "ws", svc: &LakeService{Slug: "svc-0123456789ab"},
+	in := catalogService{lake: serviceTestLake(), name: "prod-svc-0123456789ab", namespace: "ws", svc: &LakeService{Slug: "svc-0123456789ab"},
 		spec: lakeServiceSpec{Instances: 3, StorageGi: 10}}
 	for name, kind := range map[string]catalogKind{
 		"kafka": kafkaServiceKind{}, "cassandra": cassandraServiceKind{}, "clickhouse": clickHouseServiceKind{},
