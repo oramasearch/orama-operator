@@ -124,6 +124,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	pgadmin := oramaCloudComponentSelector(oc, "pgadmin")
 	keycloak := oramaCloudComponentSelector(oc, "keycloak")
 	analyticsProcessor := oramaCloudComponentSelector(oc, "analytics-processor")
+	importConsumer := oramaCloudComponentSelector(oc, importConsumerComponent)
 	// #421's Jobs: the import CronJob calls the processor; the retention Job sets ClickHouse's TTL over
 	// the native protocol (#616).
 	analyticsImport := oramaCloudComponentSelector(oc, analyticsImportComponent)
@@ -364,6 +365,14 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			oramaCloudIngressPolicy("allow-dashboard-internal-ingress", dashboard, ingressFrom(indexBuilder, 3000)),
 		),
 		sandboxAllowance(
+			"The import consumer calls the dashboard's private get-source and status routes (operator#446).",
+			oramaCloudEgressPolicy("allow-import-consumer-egress", importConsumer, egressTo(dashboard, 3000)),
+		),
+		sandboxAllowance(
+			"Dashboard accepts the import consumer's private API calls (operator#446).",
+			oramaCloudIngressPolicy("allow-dashboard-import-consumer-ingress", dashboard, ingressFrom(importConsumer, 3000)),
+		),
+		sandboxAllowance(
 			"DISCO accepts HTTP and embeddings requests from index builder.",
 			oramaCloudIngressPolicy("allow-disco-ingress", disco, ingressFrom(indexBuilder, 8080, 50051)),
 		),
@@ -549,6 +558,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			embeddings,
 			searchWorkers,
 			cnpgPods,
+			importConsumer,
 		)...)
 		if len(prod1Hosts) > 0 {
 			allowances = append(allowances, migrationProd1Allowance(publicPeers, migration, prod1Hosts))
@@ -564,6 +574,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			"allow-embeddings-public-https",
 			"allow-search-workers-public-https",
 			"allow-controldb-primary-replication",
+			"allow-import-consumer-public-https",
 		}
 		if len(prod1Hosts) > 0 {
 			publicPolicyNames = append(publicPolicyNames, migrationProd1PolicyName)
@@ -662,6 +673,7 @@ func oramaCloudPublicInternetAllowances(
 	embeddings metav1.LabelSelector,
 	searchWorkers metav1.LabelSelector,
 	cnpgPods metav1.LabelSelector,
+	importConsumer metav1.LabelSelector,
 ) []oramav1alpha1.NetworkSandboxPolicy {
 	return []oramav1alpha1.NetworkSandboxPolicy{
 		sandboxAllowance(
@@ -699,6 +711,10 @@ func oramaCloudPublicInternetAllowances(
 		sandboxAllowance(
 			"A read-region CloudNativePG replica reaches its configured primary Postgres endpoint on the public network; this path is inferred from spec.peers.postgresEndpoint.",
 			oramaCloudEgressPolicy("allow-controldb-primary-replication", cnpgPods, publicEgressRule(publicPeers, 5432)),
+		),
+		sandboxAllowance(
+			"The import consumer reads SQS and S3 and writes the engine's public writer host over public HTTPS (operator#446).",
+			oramaCloudEgressPolicy("allow-import-consumer-public-https", importConsumer, publicEgressRule(publicPeers, 443)),
 		),
 	}
 }

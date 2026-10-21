@@ -258,6 +258,68 @@ type ComponentsSpec struct {
 	// kept for API compatibility; setting it has no effect.
 	OramasearchApp ToggleWithHost `json:"oramasearchApp,omitempty"`
 	SearchWorkers  Toggle         `json:"searchWorkers,omitempty"` // index-manager hosted-search serving workers
+	// ImportConsumer runs the import consumer in the stack: it reads the S3 bucket the crawler and
+	// file uploads write to, through an SQS queue fed by the bucket's object-created events, in
+	// place of Prod 1's Fargate task per object (operator#446). It requires the dashboard.
+	// +optional
+	ImportConsumer ImportConsumerSpec `json:"importConsumer,omitempty"`
+}
+
+// ImportConsumerSpec configures the <cr>-import-consumer Deployment (operator#446). It runs the
+// consumer's image (oramasearch/airbyte-fargate-consumer) in its queue-worker mode: it long-polls
+// QueueURL and, for each object-created event, runs the same import the Fargate task ran for that
+// object (get-source, engine writes with the project write key, the crawl and file status
+// callbacks), calling the stack's own dashboard with the dashboard's PRIVATE_API_KEY as x-api-key.
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || !self.enabled || (has(self.image) && size(self.image) > 0)",message="importConsumer.image is required when the import consumer is enabled"
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || !self.enabled || (has(self.queueURL) && size(self.queueURL) > 0)",message="importConsumer.queueURL is required when the import consumer is enabled"
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || !self.enabled || (has(self.bucket) && size(self.bucket) > 0)",message="importConsumer.bucket is required when the import consumer is enabled"
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || !self.enabled || (has(self.awsCredentialsSecretRef) && has(self.awsCredentialsSecretRef.name) && size(self.awsCredentialsSecretRef.name) > 0)",message="importConsumer.awsCredentialsSecretRef is required when the import consumer is enabled"
+type ImportConsumerSpec struct {
+	// Enabled runs the consumer. Off by default: Prod 1's Fargate task and this consumer must never
+	// both import the same objects, so it is turned on only once the queue exists and the Fargate
+	// path is stopped (docs/cloud-v1-import-consumer.md).
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Image is the consumer's image, a full reference (oramasearch/airbyte-fargate-consumer:<tag>).
+	// There is no default: no image of it is published to Docker Hub yet.
+	// +optional
+	Image string `json:"image,omitempty"`
+	// QueueURL is the SQS queue the bucket's object-created events are delivered to.
+	// +kubebuilder:validation:Pattern=`^https://sqs\.[a-z0-9-]+\.amazonaws\.com/[0-9]{12}/[A-Za-z0-9_-]{1,80}$`
+	// +optional
+	QueueURL string `json:"queueURL,omitempty"`
+	// Bucket is the S3 bucket the consumer reads (Prod 1's airbyte-exports-prod). An event for any
+	// other bucket is logged and dropped.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`
+	// +optional
+	Bucket string `json:"bucket,omitempty"`
+	// Region is the AWS region of the queue and the bucket.
+	// +kubebuilder:default="us-east-1"
+	// +kubebuilder:validation:Pattern=`^[a-z]{2}(-[a-z]+)+-[0-9]$`
+	// +optional
+	Region string `json:"region,omitempty"`
+	// AWSCredentialsSecretRef names the Secret, in this resource's namespace, holding
+	// AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for an IAM user allowed to read the bucket and
+	// to receive, delete and extend messages on the queue, and nothing else.
+	// +optional
+	AWSCredentialsSecretRef *corev1.LocalObjectReference `json:"awsCredentialsSecretRef,omitempty"`
+	// Concurrency is how many objects one replica imports at once, each in its own process, as the
+	// Fargate path ran one task per object.
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=16
+	// +optional
+	Concurrency int32 `json:"concurrency,omitempty"`
+	// Replicas of the consumer Deployment. SQS hands each message to one receiver at a time.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+	// Resources overrides the consumer's pod resources. Each import process's heap is sized from the
+	// memory limit and Concurrency.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // EngineSpec configures the OramaCore engine.

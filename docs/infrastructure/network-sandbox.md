@@ -275,6 +275,7 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-cache-ingress`, `allow-analytics-ingress`, `allow-search-ingress` | Each store admits only its listed client component selectors on 6379, 8123 or 8108. |
 | `allow-writer-ingress`, `allow-reader-ingress` | OramaCore admits only the dashboard, workers, analytics processor and named hosted-search clients on its service ports. |
 | `allow-dashboard-internal-ingress`, `allow-disco-ingress`, `allow-openai-decrypter-ingress`, `allow-harvest-master-ingress` | Index builder reaches each orchestration API on its declared port. |
+| `allow-import-consumer-egress`, `allow-dashboard-import-consumer-ingress` | The import consumer ([#446](https://github.com/oramasearch/orama-operator/issues/446)) reaches the dashboard on 3000 for get-source and the status callbacks, and the dashboard admits it; nothing else in the stack. |
 | `allow-writer-jwks-egress`, `allow-dashboard-jwks-ingress` | Only while `engine.writer.jwt` is set and its JWKS URL's host is this stack's dashboard Service (`<cr>-dashboard`, alone or qualified with the namespace, `.svc` and the cluster domain): the writer reaches dashboard 3000 for `/api/.well-known/jwks.json`. Readers get neither rule. An external JWKS URL renders neither and goes out through `allow-engine-public-internet`. |
 | `allow-harvest-mongo-ingress`, `allow-selenium-ingress`, `allow-keycloak-ingress` | HARVEST reaches its Mongo and browser; dashboard reaches Keycloak. |
 | `allow-cnpg-operator-ingress`, `allow-cnpg-apiserver-egress` | CloudNativePG manages control DB through 8000/5432 and its selected pods/jobs reach the API. |
@@ -284,6 +285,7 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-engine-public-internet` | Writer/readers reach public IPv4 and IPv6 addresses on any TCP port for customer JavaScript hook URLs. Private, link-local, metadata, carrier-grade NAT, API-server, node-address and pod-CIDR destinations are excluded after DNS resolution. |
 | `allow-dashboard-public-https`, `allow-workers-public-https`, `allow-index-builder-public-https`, `allow-harvest-public-https`, `allow-embeddings-public-https`, `allow-search-workers-public-https` | Selected application components reach public HTTPS for their configured providers and downloads. |
 | `allow-selenium-public-internet` | Selenium reaches public TCP 80/443 for customer-requested crawls. |
+| `allow-import-consumer-public-https` | The import consumer reaches public TCP 443 for SQS, S3 and the engine's public writer host, which get-source names as `writer_url` ([#446](https://github.com/oramasearch/orama-operator/issues/446)). |
 | `allow-controldb-primary-replication` | A read-region CNPG cluster reaches its configured primary on public TCP 5432. |
 
 Workers' public APIs, embeddings and hosted-search model/provider downloads, dashboard vendor

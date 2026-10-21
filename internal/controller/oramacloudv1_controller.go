@@ -112,6 +112,9 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"idp", r.reconcileIdP},
 		{"cloudflare", r.reconcileCloudflare},
 		{"demoSeed", r.reconcileDemoSeed},
+		// Last, so a configuration error in it (a missing AWS Secret) never keeps another component
+		// from being reconciled (operator#446).
+		{"import-consumer", r.reconcileImportConsumer},
 	}
 	for _, s := range steps {
 		if err := s.fn(ctx, &oc); err != nil {
