@@ -350,6 +350,13 @@ func validateIngressHosts(oc *oramav1alpha1.OramaCloudV1) error {
 
 // ---- workers + dashboard reconcilers ----
 
+// The dashboard variables the operator derives (#572). NEXT_PUBLIC_APP_URL takes effect at runtime
+// only in an image built without it: next build inlines a NEXT_PUBLIC_* value set at build time.
+const (
+	dashboardAppURLEnv           = "NEXT_PUBLIC_APP_URL"
+	dashboardPlacementClusterEnv = "ORAMACORE_PLACEMENT_CLUSTER_ID"
+)
+
 func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	w := oc.Spec.Components.Workers
 	if !w.Enabled {
@@ -363,10 +370,17 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 	if img == "" {
 		img = componentImage(oc, "workers", "orama-workers") // one bundled image for all CF workers
 	}
+	// Third-party keys from their own Secrets (#571): the LLM providers' apiKeySecretRefs and
+	// sentryDSNSecretRef. Checked before the Deployment is touched; each wins over the workers
+	// Secret's envFrom, and a changed one rolls the workers.
+	refs := componentKeyRefs(oc, "workers")
+	if err := r.checkKeyRefs(ctx, oc, refs); err != nil {
+		return err
+	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "workers", image: img, port: 8080, replicas: w.Replicas,
-		env:               []corev1.EnvVar{masterAPIKeyEnv(oc)},
-		credentialSecrets: []string{masterKey},
+		env:               append([]corev1.EnvVar{masterAPIKeyEnv(oc)}, keyRefEnv(refs)...),
+		credentialSecrets: append([]string{masterKey}, keyRefSecrets(refs)...),
 		resources:         resourcesOr(w.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }
@@ -408,12 +422,26 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	img := componentImage(oc, "dashboard", "dashboard")
 	// The master key (#307), the CNPG-generated credentials for the dashboard's control-DB client,
 	// and, where the cache runs, the serverless-redis-http shim's URL and token for its Upstash
-	// client (#562); then the user's dashboard.env (#311), which may replace any but the owned ones.
+	// client (#562), then the derived values below; then the user's dashboard.env (#311), which may
+	// replace any but the owned ones.
 	env := []corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}
 	credentialSecrets := []string{masterKey}
 	if redisHTTPRuns(oc) {
 		env = append(env, redisCacheEnv(oc)...)
 		credentialSecrets = append(credentialSecrets, redisHTTPSecretName(oc))
+	}
+	// Derived values (#572): the public origin from the stack's own host (never an extra host), and
+	// the c1 row the cluster-row Job recorded, so new projects go to it. Both are explicit entries, so
+	// a value left in a dashboard.envFrom source is ignored; dashboard.env may still replace them.
+	if d.Host != "" {
+		env = append(env, corev1.EnvVar{Name: dashboardAppURLEnv, Value: "https://" + d.Host})
+	}
+	rowID, err := r.clusterRowID(ctx, oc)
+	if err != nil {
+		return err
+	}
+	if rowID != "" {
+		env = append(env, corev1.EnvVar{Name: dashboardPlacementClusterEnv, Value: rowID})
 	}
 	// The dashboard never migrates the control DB: the operator's PostgresSchema owns the
 	// schema (operator#40). A second Drizzle migrate collides with those objects (Postgres 42710).

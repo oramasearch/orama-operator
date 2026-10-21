@@ -201,7 +201,9 @@ type CloudflareSpec struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// APITokenSecretRef references the Secret holding the Cloudflare **control-plane** API
 	// credentials as three keys: `token` (the account API token), `zoneID`, and `accountID`.
-	// This token provisions DNS, Load Balancing, Workers KV, and R2 buckets.
+	// This token provisions DNS, Load Balancing, Workers KV, and R2 buckets. index-builder reads
+	// its CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from `token` and `accountID` here, so it
+	// writes to the KV namespaces this token created; a missing key fails the ingestion step.
 	// +optional
 	APITokenSecretRef *corev1.LocalObjectReference `json:"apiTokenSecretRef,omitempty"`
 	// R2SecretRef references a SEPARATE Secret holding the Cloudflare **R2 (S3-compatible)
@@ -403,6 +405,24 @@ type WorkersSpec struct {
 	// sensible per-component default (workload hardening, #18).
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// SentryDSNSecretRef takes the workers' SENTRY_DSN from a key of a Secret in the CR's namespace
+	// instead of <cr>-workers-secret. The operator reads it and never creates or changes it; a
+	// missing Secret or key fails the workers step and Ready names it. The workers' OPENAI_API_KEY,
+	// GROQ_API_KEY and ANTHROPIC_API_KEY come from the same providers' spec.llm.providers[].apiKeySecretRef
+	// as the engine's.
+	// +optional
+	SentryDSNSecretRef *SecretKeyRef `json:"sentryDSNSecretRef,omitempty"`
+}
+
+// SecretKeyRef is one key of a Secret in the OramaCloudV1's namespace: a third-party key the
+// operator reads and never creates or changes.
+type SecretKeyRef struct {
+	// Name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Key of the Secret that holds the value.
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
 }
 
 // ControlDBSpec is the control-plane Postgres: a DataStoreSpec plus this stack's values for the
