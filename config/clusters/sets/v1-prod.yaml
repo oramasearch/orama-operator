@@ -44,8 +44,10 @@
 #                                                        or MASTER_API_KEY: the operator owns them and refuses them.
 #                                                        Every member of this set is production (its clusters'
 #                                                        purpose tag), so its dashboard is not rendered unless
-#                                                        CRON_SECRET, STRIPE_WEBHOOK_SECRET and STRIPE_SECRET_KEY
-#                                                        come from a Secret like this one, crons on or off (#794).
+#                                                        CRON_SECRET and STRIPE_WEBHOOK_SECRET come from a Secret
+#                                                        like this one, crons on or off (#794), and its Stripe key
+#                                                        comes from components.dashboard.stripeSecretKeySecretRef
+#                                                        (#802, under Blocked below).
 # v1-us: nothing copied. Its master key is generated (#615) until the US migration names Prod 1's.
 #
 #   Not copied: AIRBYTE_WEBHOOK_SECRET and every AIRBYTE_* (Airbyte removed, bridge decisions 2026-10-16
@@ -108,6 +110,14 @@
 #     openai-decrypter, index-manager apps/index-builder/src/embeddings/openai.ts; openai-decrypter gets
 #     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder),
 #     REDIS_CACHE_TOKEN (the serverless-redis-http shim, decisions #12a, not built), QSTASH_TOKEN (workers).
+#   The dashboard's Stripe key (#802, LSR-140): an operator with #802 refuses a production dashboard
+#     whose STRIPE_SECRET_KEY is not a live restricted key (rk_live_) from
+#     components.dashboard.stripeSecretKeySecretRef. Lake bills in the same Stripe account, so the
+#     dashboard must not hold the account's full key. Steve or Juan creates the restricted key in Stripe
+#     with the permissions in docs/components.md ("The dashboard's Stripe key"), and a Secret for it in
+#     orama-system (consent). Then, in one change: add it to v1-eu's `secrets`, set
+#     components.dashboard.stripeSecretKeySecretRef to its name and key, and take STRIPE_SECRET_KEY out
+#     of v1-prod-dashboard-env (a second key beside the reference is refused).
 #   Third-party keys: the workers' SENTRY_DSN now takes a reference (components.workers.sentryDSNSecretRef,
 #     #571), but its source Secret does not exist yet; creating it in orama-system is Steve's consent.
 #     index-builder's ABLY_API_KEY and APIFY_TOKEN and harvest-master's GITHUB_PAT and GHCR_TOKEN still

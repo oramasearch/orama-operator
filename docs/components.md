@@ -1442,12 +1442,15 @@ member cluster's `purpose` tag as the label `orama.cloud/purpose` on every pass
 ([infrastructure/README.md](infrastructure/README.md)). There is no field or flag for it. On a
 production stack (`dashboard_production.go`):
 
-- `CRON_SECRET`, `STRIPE_WEBHOOK_SECRET` and `STRIPE_SECRET_KEY` must each come from the user's own
-  Secrets: a `dashboard.envFrom` Secret or a `dashboard.env` `secretKeyRef`, resolved with the same
-  precedence as the container's environment. A literal, a ConfigMap, or a value in the operator's
+- `CRON_SECRET` and `STRIPE_WEBHOOK_SECRET` must each come from the user's own Secrets: a
+  `dashboard.envFrom` Secret or a `dashboard.env` `secretKeyRef`, resolved with the same precedence as
+  the container's environment. A literal, a ConfigMap, or a value in the operator's
   `<cr>-dashboard-secret` does not count.
 - Each value must be non-empty and must not be any placeholder `componentSecretData` seeds.
 - `CRON_SECRET` is required whether or not the crons are enabled: the routes are served either way.
+- `STRIPE_SECRET_KEY` must come from `dashboard.stripeSecretKeySecretRef` and be a live-mode restricted
+  key (`rk_live_`): never the account's full secret key, never a test-mode key
+  ([below](#the-dashboards-stripe-key-a-restricted-key-of-its-own-802)).
 - The operator seeds no placeholder for these three into `<cr>-dashboard-secret`. One seeded earlier
   stays in that Secret and is never read, because the user's source wins.
 
@@ -1455,6 +1458,47 @@ Otherwise the dashboard step fails before the Deployment is written, with `Ready
 (`ReconcileError`) naming each missing setting and never a value. A fresh stack gets no dashboard; a
 running one keeps its last template until the settings are there. A stack that is not production
 (no set, or a `nonprod` set) is unchanged.
+
+### The dashboard's Stripe key: a restricted key of its own ([#802](https://github.com/oramasearch/orama-operator/issues/802))
+
+The dashboard calls Stripe with `STRIPE_SECRET_KEY` (`src/lib/stripe/client.ts`). Lake bills in the same
+Stripe account (lake `docs/deployment/stripe.md`), so the account's full secret key in the dashboard
+would let a compromised dashboard change Lake's billing objects: mark Lake invoices paid out of band,
+refund, delete webhook endpoints (finding LSR-140 of the Lake pre-launch security review).
+
+`spec.components.dashboard.stripeSecretKeySecretRef` (`{name, key}`) gives the dashboard its Stripe key
+from a Secret of its own, by an explicit `secretKeyRef` listed in the credentials hash, so a rotated key
+rolls the dashboard. While it is set, `STRIPE_SECRET_KEY` in `dashboard.env` or in any
+`dashboard.envFrom` source is refused, so no second key sits beside it, and `<cr>-dashboard-secret` gets
+no placeholder for it. On a production instance it is required and must hold a live-mode restricted key
+(`rk_live_`); the operator checks the prefix only, never the permissions, which only Stripe knows.
+
+**The restricted key the dashboard needs.** Every Stripe call in the dashboard (`cloud-migration` with
+the Clerk build, `thatjuan/issue-187-clerk-dashboard` at `f7b6859`; the review's
+`thatjuan/stripe-customer-orphans` makes the same calls less `subscriptions.create`):
+
+| Stripe resource | Access | Calls |
+|---|---|---|
+| Customers | Write | `customers.create` (`src/lib/stripe/subscriptions.ts`), `customers.retrieve` (also in the webhook) |
+| Checkout Sessions | Write | `checkout.sessions.create` (`src/app/api/checkout/create-session/route.ts`), `checkout.sessions.retrieve` with `line_items` (webhook) |
+| Subscriptions | Write | `subscriptions.create`, `subscriptions.retrieve`; `subscriptionItems.create`, `.update`, `.del` and `.createUsageRecord` (`src/lib/stripe/subscriptions.ts`, `src/lib/billing/consumption-tracking.ts`, `src/app/api/subscriptions/addons/update/route.ts`, `src/app/api/projects/[id]/delete/route.ts`) |
+| Prices | Read | `prices.retrieve` (webhook) |
+| Products | Read | `products.retrieve` (webhook) |
+| Invoices | Read | the `latest_invoice` expansion on `subscriptions.create` |
+| PaymentIntents | Read | the `latest_invoice.payment_intent` expansion |
+| PaymentMethods | Read | the `invoice_settings.default_payment_method` expansion on `customers.retrieve` |
+| Everything else | None | in particular Invoices write, Refunds, Charges, Payouts, Webhook Endpoints, Credit Notes, Billing Meters |
+
+The webhook signature is checked with `STRIPE_WEBHOOK_SECRET`, which is the endpoint's signing secret,
+not an API permission. Stripe documents no separate permission for an expansion; the three Read rows are
+the objects the expansions return, kept as the minimum until a test-mode run shows Stripe accepts the
+calls without them.
+
+**What a restricted key does not solve.** Stripe grants a restricted key by resource, not by object, so
+this key can still read and write every customer and subscription in the account, Lake's included. It
+removes the invoice, refund and webhook-endpoint authority the finding names; separating the products
+fully needs a separate Stripe account for each (the finding's fallback). Creating the key, and any
+account split, are done in Stripe by Steve or Juan, outside this repository.
 
 ### The dashboard's scheduled jobs
 

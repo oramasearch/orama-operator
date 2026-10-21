@@ -460,6 +460,7 @@ the rest of its environment from Secrets and ConfigMaps in the instance's namesp
 |---|---|---|
 | `envFrom` | `[]EnvFromSource` | Secrets (`secretRef`) and ConfigMaps (`configMapRef`), each with an optional `prefix` and `optional`. Appended after the operator's own sources (`<cr>-config`, `<cr>-dashboard-secret`, `<cr>-jwt`), so a key here overrides the shared ConfigMap and the seeded dashboard Secret, and a later entry overrides an earlier one. |
 | `env` | `[]EnvVar` | Variables as in a container: a `value`, or `valueFrom` with `secretKeyRef`, `configMapKeyRef`, `fieldRef` or `resourceFieldRef`. Appended after the operator's explicit env; an entry with the same name as an operator variable replaces it, and for a name listed twice the last entry wins, so each name appears once. |
+| `stripeSecretKeySecretRef` | `{name, key}` | The dashboard's `STRIPE_SECRET_KEY` from a key of a Secret in the instance's namespace: a Stripe **restricted key** with only the permissions the dashboard uses ([components.md](components.md#the-dashboards-stripe-key-a-restricted-key-of-its-own-802)), never the account's full secret key. Read, never created or changed; an explicit `secretKeyRef` env entry, listed in the credentials hash, so a changed value rolls the dashboard. A missing Secret, key or value fails the dashboard step. While it is set, `STRIPE_SECRET_KEY` is refused in `env` and in every `envFrom` source. **Required on a production instance** (one its set labels `orama.cloud/purpose: production`), holding a live-mode restricted key (`rk_live_`); a full key (`sk_`) or a test-mode key is refused ([#802](https://github.com/oramasearch/orama-operator/issues/802)). |
 
 ```yaml
 spec:
@@ -483,7 +484,8 @@ spec:
 **Refused variables.** `DATABASE_URL`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`,
 `POSTGRES_PASSWORD`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`,
 `JWT_ISSUER` and `MASTER_API_KEY` belong to the operator (the control DB, the generated `<cr>-jwt`, the
-operator's JWT issuer, and `spec.masterAPIKeySecretRef`). Naming one in `env`, or carrying one as a key of an `envFrom` source after
+operator's JWT issuer, and `spec.masterAPIKeySecretRef`), and so does `STRIPE_SECRET_KEY` while
+`stripeSecretKeySecretRef` is set. Naming one in `env`, or carrying one as a key of an `envFrom` source after
 its `prefix` (`prefix: JWT_` with key `PRIVATE_KEY` is `JWT_PRIVATE_KEY`), fails the reconcile, even
 when a later entry would shadow it and even when the source is `optional`.
 
@@ -513,6 +515,10 @@ selected key rolls the dashboard. Metadata changes and unselected keys of a sele
 not. The annotation holds a hash only; values are written nowhere else. With no Secret or ConfigMap
 reference the annotation is absent, so a dashboard with neither field set keeps the template it had
 before these fields existed.
+
+**On a production instance** the dashboard also needs `CRON_SECRET` and `STRIPE_WEBHOOK_SECRET` from
+the user's own Secrets and `stripeSecretKeySecretRef` with a live restricted key, or it is not
+rendered ([components.md](components.md#a-production-dashboard-needs-its-production-authentication-settings-794)).
 
 How the environment Secret reaches each cluster is in
 [components.md](components.md#the-dashboards-environment).

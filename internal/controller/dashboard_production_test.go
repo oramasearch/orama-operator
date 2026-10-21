@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,11 +22,24 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
-// productionAuth is a complete set of production authentication values, none of them a placeholder.
+// productionAuth is a complete set of production authentication values from the user's own Secret,
+// none of them a placeholder. The Stripe key comes from its own reference (stripeKeySecret, #802).
 var productionAuth = map[string]string{
 	"CRON_SECRET":           "prod-cron-0001",
 	"STRIPE_WEBHOOK_SECRET": "whsec_prod0001",
-	"STRIPE_SECRET_KEY":     "rk_live_prod0001",
+}
+
+// restrictedLiveKey is a live-mode Stripe restricted key, as the dashboard's reference must hold.
+const restrictedLiveKey = "rk_live_prod0001"
+
+// stripeKeySecret is the dashboard's restricted Stripe key Secret, holding value.
+func stripeKeySecret(value string) *corev1.Secret {
+	return secretOf("dashboard-stripe", map[string]string{"STRIPE_SECRET_KEY": value})
+}
+
+// withStripeRef points the dashboard at stripeKeySecret.
+func withStripeRef(d *oramav1alpha1.DashboardSpec) {
+	d.StripeSecretKeySecretRef = &oramav1alpha1.SecretKeyRef{Name: "dashboard-stripe", Key: "STRIPE_SECRET_KEY"}
 }
 
 // withAuth is productionAuth with changes; an empty value deletes the key.
@@ -70,6 +84,7 @@ func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T)
 	}
 	envFrom := func(d *oramav1alpha1.DashboardSpec) {
 		d.EnvFrom = []corev1.EnvFromSource{secretSource("dashboard-env")}
+		withStripeRef(d)
 	}
 	cases := map[string]tc{
 		// The committed v1-us member: a public dashboard with no dashboard env at all, so the
@@ -78,15 +93,15 @@ func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T)
 			want: []string{
 				"CRON_SECRET (the cron routes' bearer) is not set by a dashboard.envFrom Secret or a dashboard.env secretKeyRef",
 				"STRIPE_WEBHOOK_SECRET (the Stripe webhook signature) is not set",
-				"STRIPE_SECRET_KEY (the Stripe API key) is not set",
+				"STRIPE_SECRET_KEY (the Stripe API key) is not set by spec.components.dashboard.stripeSecretKeySecretRef",
 			}},
 		"seeded placeholders copied into the user's Secret": {dash: envFrom,
 			objects: []client.Object{secretOf("dashboard-env", withAuth(map[string]string{
-				"STRIPE_WEBHOOK_SECRET": "dev-stripe-webhook-secret", "STRIPE_SECRET_KEY": "dev-stripe-secret-key"}))},
-			want: []string{
-				"STRIPE_WEBHOOK_SECRET (the Stripe webhook signature) is an operator placeholder",
-				"STRIPE_SECRET_KEY (the Stripe API key) is an operator placeholder",
-			}},
+				"STRIPE_WEBHOOK_SECRET": "dev-stripe-webhook-secret"}))},
+			want: []string{"STRIPE_WEBHOOK_SECRET (the Stripe webhook signature) is an operator placeholder"}},
+		"the seeded Stripe placeholder behind the reference": {dash: envFrom,
+			objects: []client.Object{secretOf("dashboard-env", productionAuth), stripeKeySecret("dev-stripe-secret-key")},
+			want:    []string{"STRIPE_SECRET_KEY (the Stripe API key) in Secret orama-system/dashboard-stripe key STRIPE_SECRET_KEY is not a live-mode restricted key"}},
 		"another component's placeholder": {dash: envFrom,
 			objects: []client.Object{secretOf("dashboard-env", withAuth(map[string]string{"CRON_SECRET": "dev-harvest-signature"}))},
 			want:    []string{"CRON_SECRET (the cron routes' bearer) is an operator placeholder"}},
@@ -96,7 +111,7 @@ func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T)
 			want:    []string{"CRON_SECRET (the cron routes' bearer) is not set"}},
 		"empty CRON_SECRET": {dash: envFrom,
 			objects: []client.Object{secretOf("dashboard-env", map[string]string{"CRON_SECRET": "",
-				"STRIPE_WEBHOOK_SECRET": productionAuth["STRIPE_WEBHOOK_SECRET"], "STRIPE_SECRET_KEY": productionAuth["STRIPE_SECRET_KEY"]})},
+				"STRIPE_WEBHOOK_SECRET": productionAuth["STRIPE_WEBHOOK_SECRET"]})},
 			want: []string{"CRON_SECRET (the cron routes' bearer) is empty"}},
 		"a literal in dashboard.env": {dash: func(d *oramav1alpha1.DashboardSpec) {
 			envFrom(d)
@@ -110,7 +125,7 @@ func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T)
 		// A value written into the operator's own component Secret by hand does not count: it is
 		// where the placeholders live, and ensureComponentSecret keeps whatever is there.
 		"values only in the operator's component Secret": {
-			objects: []client.Object{secretOf("v1-dashboard-secret", productionAuth)},
+			objects: []client.Object{secretOf("v1-dashboard-secret", withAuth(map[string]string{"STRIPE_SECRET_KEY": restrictedLiveKey}))},
 			want:    []string{"CRON_SECRET (the cron routes' bearer) is not set", "STRIPE_SECRET_KEY (the Stripe API key) is not set"}},
 		"optional selector to a missing key": {dash: func(d *oramav1alpha1.DashboardSpec) {
 			envFrom(d)
@@ -129,6 +144,9 @@ func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T)
 			t.Run(label, func(t *testing.T) {
 				// A running stack: rendered before it was marked production, as v1-us is today.
 				objs := append([]client.Object{dashOC(nil)}, c.objects...)
+				if !slices.ContainsFunc(objs, func(o client.Object) bool { return o.GetName() == "dashboard-stripe" }) {
+					objs = append(objs, stripeKeySecret(restrictedLiveKey))
+				}
 				h := newEngineHarness(t, objs...)
 				var dep *appsv1.Deployment
 				if existing {
@@ -158,7 +176,7 @@ func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T)
 						t.Errorf("Ready message %q does not contain %q", ready.Message, want)
 					}
 				}
-				for _, v := range []string{"prod-cron-0001", "whsec_prod0001", "rk_live_prod0001", "dev-stripe", "whsec_literal"} {
+				for _, v := range []string{"prod-cron-0001", "whsec_prod0001", restrictedLiveKey, "dev-stripe", "whsec_literal"} {
 					if strings.Contains(ready.Message, v) || strings.Contains(err.Error(), v) {
 						t.Errorf("the error holds the value %q", v)
 					}
@@ -186,7 +204,6 @@ func TestProductionDashboardRendersWithItsProductionAuthentication(t *testing.T)
 			d.Env = []corev1.EnvVar{
 				secretKeyEnv("CRON_SECRET", "dashboard-env", "CRON_SECRET"),
 				secretKeyEnv("STRIPE_WEBHOOK_SECRET", "dashboard-env", "STRIPE_WEBHOOK_SECRET"),
-				secretKeyEnv("STRIPE_SECRET_KEY", "dashboard-env", "STRIPE_SECRET_KEY"),
 			}
 		},
 		"a later Secret replaces an earlier placeholder": func(d *oramav1alpha1.DashboardSpec) {
@@ -194,7 +211,8 @@ func TestProductionDashboardRendersWithItsProductionAuthentication(t *testing.T)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newEngineHarness(t, prodDashOC(dash), secretOf("dashboard-env", productionAuth),
+			h := newEngineHarness(t, prodDashOC(func(d *oramav1alpha1.DashboardSpec) { dash(d); withStripeRef(d) }),
+				secretOf("dashboard-env", productionAuth), stripeKeySecret(restrictedLiveKey),
 				secretOf("old", map[string]string{"STRIPE_WEBHOOK_SECRET": "dev-stripe-webhook-secret"}))
 			h.mustRun()
 			dep := h.dashboard()
@@ -207,13 +225,16 @@ func TestProductionDashboardRendersWithItsProductionAuthentication(t *testing.T)
 					t.Errorf("effective %s is not the production value", k)
 				}
 			}
+			if env["STRIPE_SECRET_KEY"] != restrictedLiveKey {
+				t.Error("effective STRIPE_SECRET_KEY is not the restricted key")
+			}
 			sec := &corev1.Secret{}
 			if !h.get("v1-dashboard-secret", sec) {
 				t.Fatal("the dashboard component Secret was not created")
 			}
-			for _, v := range dashboardProductionAuthEnv {
-				if _, seeded := sec.Data[v.name]; seeded {
-					t.Errorf("a production stack's v1-dashboard-secret was seeded with %s", v.name)
+			for _, name := range dashboardProductionUnseeded() {
+				if _, seeded := sec.Data[name]; seeded {
+					t.Errorf("a production stack's v1-dashboard-secret was seeded with %s", name)
 				}
 			}
 		})
@@ -294,5 +315,123 @@ func TestAnOramaCloudV1SetLabelsEachInstanceWithItsClusterPurpose(t *testing.T) 
 	}
 	if _, ok := memberLabels(memberRequest{Owner: "LakeSet.x"})[instancePurposeLabel]; ok {
 		t.Error("a request with no purpose wrote the label")
+	}
+}
+
+// LSR-140: a production dashboard holds a live-mode restricted Stripe key from its own reference,
+// never the account's full secret key nor a test-mode key. Each refusal leaves no Deployment, names
+// the field, and prints no value.
+func TestProductionDashboardRequiresARestrictedLiveStripeKey(t *testing.T) {
+	envFrom := func(d *oramav1alpha1.DashboardSpec) {
+		d.EnvFrom = []corev1.EnvFromSource{secretSource("dashboard-env")}
+	}
+	for name, c := range map[string]struct {
+		dash   func(*oramav1alpha1.DashboardSpec)
+		stripe string
+		inEnv  bool // the key is in the dashboard env Secret, not its own
+		want   string
+	}{
+		// v1-eu today: the account's full key in v1-prod-dashboard-env, no reference.
+		"the full key in the dashboard env, no reference": {dash: envFrom, stripe: "sk_live_full0001", inEnv: true,
+			want: "STRIPE_SECRET_KEY (the Stripe API key) is not set by spec.components.dashboard.stripeSecretKeySecretRef: a production dashboard holds a restricted live key (rk_live_)"},
+		"the full live key behind the reference": {dash: func(d *oramav1alpha1.DashboardSpec) { envFrom(d); withStripeRef(d) }, stripe: "sk_live_full0001",
+			want: "STRIPE_SECRET_KEY (the Stripe API key) in Secret orama-system/dashboard-stripe key STRIPE_SECRET_KEY is not a live-mode restricted key (rk_live_): a full secret key or a test-mode key is refused"},
+		"a test-mode secret key": {dash: func(d *oramav1alpha1.DashboardSpec) { envFrom(d); withStripeRef(d) }, stripe: "sk_test_full0001",
+			want: "is not a live-mode restricted key"},
+		"a test-mode restricted key": {dash: func(d *oramav1alpha1.DashboardSpec) { envFrom(d); withStripeRef(d) }, stripe: "rk_test_restricted0001",
+			want: "is not a live-mode restricted key"},
+		"a reference to a missing Secret": {dash: func(d *oramav1alpha1.DashboardSpec) {
+			envFrom(d)
+			d.StripeSecretKeySecretRef = &oramav1alpha1.SecretKeyRef{Name: "absent", Key: "STRIPE_SECRET_KEY"}
+		}, want: "STRIPE_SECRET_KEY: Secret orama-system/absent (spec.components.dashboard.stripeSecretKeySecretRef) does not exist"},
+		"a reference to a missing key": {dash: func(d *oramav1alpha1.DashboardSpec) {
+			envFrom(d)
+			d.StripeSecretKeySecretRef = &oramav1alpha1.SecretKeyRef{Name: "dashboard-stripe", Key: "other"}
+		}, stripe: restrictedLiveKey, want: "STRIPE_SECRET_KEY: Secret orama-system/dashboard-stripe (spec.components.dashboard.stripeSecretKeySecretRef) has no key other"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			objs := []client.Object{prodDashOC(c.dash), secretOf("dashboard-env", productionAuth)}
+			switch {
+			case c.inEnv:
+				objs[1] = secretOf("dashboard-env", withAuth(map[string]string{"STRIPE_SECRET_KEY": c.stripe}))
+			case c.stripe != "":
+				objs = append(objs, stripeKeySecret(c.stripe))
+			}
+			h := newEngineHarness(t, objs...)
+			err := h.run()
+			if err == nil {
+				t.Fatal("Reconcile rendered a production dashboard without a restricted live Stripe key")
+			}
+			ready := meta.FindStatusCondition(h.stored().Status.Conditions, "Ready")
+			if ready == nil || ready.Status != metav1.ConditionFalse || !strings.Contains(ready.Message, c.want) {
+				t.Fatalf("Ready = %+v, want False containing %q", ready, c.want)
+			}
+			if c.stripe != "" && (strings.Contains(ready.Message, c.stripe) || strings.Contains(err.Error(), c.stripe)) {
+				t.Error("the error holds the Stripe key")
+			}
+			if h.dashboard() != nil {
+				t.Error("a refused production reconcile created the dashboard Deployment")
+			}
+		})
+	}
+}
+
+// The reference works on every stack: the dashboard reads STRIPE_SECRET_KEY by an explicit
+// secretKeyRef, the operator seeds no placeholder for it, a changed value rolls the dashboard, and no
+// second Stripe key may sit beside it. A nonproduction stack may use a test-mode key.
+func TestDashboardStripeKeyReference(t *testing.T) {
+	ref := func(d *oramav1alpha1.DashboardSpec) { withStripeRef(d) }
+	h := newEngineHarness(t, dashOC(ref), stripeKeySecret("rk_test_restricted0001"))
+	h.mustRun()
+	dep := h.dashboard()
+	if dep == nil {
+		t.Fatal("the dashboard was not rendered")
+	}
+	c := dep.Spec.Template.Spec.Containers[0]
+	want := secretKeyEnv("STRIPE_SECRET_KEY", "dashboard-stripe", "STRIPE_SECRET_KEY")
+	if !slices.ContainsFunc(c.Env, func(e corev1.EnvVar) bool {
+		return e.Name == want.Name && e.ValueFrom != nil && *e.ValueFrom.SecretKeyRef == *want.ValueFrom.SecretKeyRef
+	}) {
+		t.Fatalf("env %+v has no STRIPE_SECRET_KEY secretKeyRef to dashboard-stripe", c.Env)
+	}
+	if got := h.effectiveEnv(c)["STRIPE_SECRET_KEY"]; got != "rk_test_restricted0001" {
+		t.Error("effective STRIPE_SECRET_KEY is not the referenced key")
+	}
+	sec := &corev1.Secret{}
+	h.get("v1-dashboard-secret", sec)
+	if _, seeded := sec.Data["STRIPE_SECRET_KEY"]; seeded {
+		t.Error("v1-dashboard-secret was seeded with STRIPE_SECRET_KEY beside the reference")
+	}
+	if !slices.Contains(keyRefSecretsReadBy(h.stored()), "dashboard-stripe") {
+		t.Error("the referenced Secret is not watched")
+	}
+	before := dep.Spec.Template.Annotations[credentialsHashKey]
+	h.setSecret("dashboard-stripe", "STRIPE_SECRET_KEY", "rk_test_restricted0002")
+	h.mustRun()
+	if after := h.dashboard().Spec.Template.Annotations[credentialsHashKey]; after == before || after == "" {
+		t.Error("a changed Stripe key did not roll the dashboard")
+	}
+
+	for name, dash := range map[string]func(*oramav1alpha1.DashboardSpec){
+		"in dashboard.env": func(d *oramav1alpha1.DashboardSpec) {
+			ref(d)
+			d.Env = []corev1.EnvVar{{Name: "STRIPE_SECRET_KEY", Value: "sk_live_full0001"}}
+		},
+		"in a dashboard.envFrom Secret": func(d *oramav1alpha1.DashboardSpec) {
+			ref(d)
+			d.EnvFrom = []corev1.EnvFromSource{secretSource("dashboard-env")}
+		},
+	} {
+		t.Run("a second key "+name, func(t *testing.T) {
+			h := newEngineHarness(t, dashOC(dash), stripeKeySecret("rk_test_restricted0001"),
+				secretOf("dashboard-env", map[string]string{"STRIPE_SECRET_KEY": "sk_live_full0001"}))
+			err := h.run()
+			if err == nil || !strings.Contains(err.Error(), "sets STRIPE_SECRET_KEY, which the operator owns (it comes from spec.components.dashboard.stripeSecretKeySecretRef") {
+				t.Fatalf("want the second Stripe key refused, got %v", err)
+			}
+			if strings.Contains(err.Error(), "sk_live_full0001") {
+				t.Error("the error holds the key")
+			}
+		})
 	}
 }

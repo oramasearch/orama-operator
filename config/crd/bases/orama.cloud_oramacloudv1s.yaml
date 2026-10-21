@@ -1136,6 +1136,28 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      stripeSecretKeySecretRef:
+                        description: |-
+                          StripeSecretKeySecretRef takes the dashboard's STRIPE_SECRET_KEY from a key of a Secret in the
+                          CR's namespace (operator#802): a Stripe restricted key holding only the permissions the dashboard
+                          uses (docs/components.md lists them), never the account's full secret key. The operator reads it
+                          and never creates or changes it; a missing Secret, key or value fails the dashboard step. While it
+                          is set, STRIPE_SECRET_KEY in env or in an envFrom source fails the reconcile, so no second key
+                          sits beside it. A production instance (one its set labels orama.cloud/purpose=production)
+                          requires it, with a live-mode restricted key (rk_live_).
+                        properties:
+                          key:
+                            description: Key of the Secret that holds the value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
                     required:
                     - enabled
                     type: object

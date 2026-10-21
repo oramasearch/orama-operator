@@ -424,8 +424,13 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if err != nil {
 		return err
 	}
+	// The restricted Stripe key (#802) is read before the Deployment is touched, like the user's env.
+	stripeRefs := componentKeyRefs(oc, "dashboard")
+	if err := r.checkKeyRefs(ctx, oc, stripeRefs); err != nil {
+		return err
+	}
 	// A production instance's dashboard is not written without its production authentication
-	// settings (dashboard_production.go, #794).
+	// settings and its restricted live Stripe key (dashboard_production.go, #794, #802).
 	if err := r.checkDashboardProductionAuth(ctx, oc, sources); err != nil {
 		return err
 	}
@@ -441,6 +446,10 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	// replace any but the owned ones.
 	env := append([]corev1.EnvVar{masterAPIKeyEnv(oc)}, dashboardDBEnv(oc)...)
 	credentialSecrets := append([]string{masterKey}, dashboardDBSecrets(oc)...)
+	// The restricted Stripe key from its own Secret (#802): an explicit entry, which dashboard.env
+	// cannot replace (validateDashboardEnv refuses STRIPE_SECRET_KEY while the reference is set).
+	env = append(env, keyRefEnv(stripeRefs)...)
+	credentialSecrets = append(credentialSecrets, keyRefSecrets(stripeRefs)...)
 	if redisHTTPRuns(oc) {
 		env = append(env, redisCacheEnv(oc)...)
 		credentialSecrets = append(credentialSecrets, redisHTTPSecretName(oc))

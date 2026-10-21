@@ -309,8 +309,8 @@ func (r *OramaCloudV1Reconciler) ensureComponentSecret(ctx context.Context, oc *
 	// A production dashboard takes these from the user's own Secrets only (dashboard_production.go,
 	// #794): no placeholder is seeded for them.
 	if component == "dashboard" && !dashboardSeedsAuthPlaceholders(oc) {
-		for _, v := range dashboardProductionAuthEnv {
-			delete(data, v.name)
+		for _, name := range dashboardProductionUnseeded() {
+			delete(data, name)
 		}
 	}
 	name := componentSecretName(oc, component)

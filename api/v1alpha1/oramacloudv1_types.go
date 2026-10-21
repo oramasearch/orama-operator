@@ -680,6 +680,15 @@ type DashboardSpec struct {
 	// the e2e canary (operator#17). Off unless enabled; requires the dashboard enabled.
 	// +optional
 	Crons DashboardCronsSpec `json:"crons,omitempty"`
+	// StripeSecretKeySecretRef takes the dashboard's STRIPE_SECRET_KEY from a key of a Secret in the
+	// CR's namespace (operator#802): a Stripe restricted key holding only the permissions the dashboard
+	// uses (docs/components.md lists them), never the account's full secret key. The operator reads it
+	// and never creates or changes it; a missing Secret, key or value fails the dashboard step. While it
+	// is set, STRIPE_SECRET_KEY in env or in an envFrom source fails the reconcile, so no second key
+	// sits beside it. A production instance (one its set labels orama.cloud/purpose=production)
+	// requires it, with a live-mode restricted key (rk_live_).
+	// +optional
+	StripeSecretKeySecretRef *SecretKeyRef `json:"stripeSecretKeySecretRef,omitempty"`
 }
 
 // DashboardCronsSpec turns on the dashboard's three scheduled calls, with Prod 1's fixed schedules:

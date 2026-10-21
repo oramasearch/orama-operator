@@ -26,7 +26,9 @@ import (
 //     spec.llm.providers[].apiKeySecretRef the engine reads, and SENTRY_DSN from
 //     spec.components.workers.sentryDSNSecretRef;
 //   - index-builder: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from `token` and `accountID` of
-//     spec.cloudflare.apiTokenSecretRef, the token that already creates the KV namespaces it writes.
+//     spec.cloudflare.apiTokenSecretRef, the token that already creates the KV namespaces it writes;
+//   - dashboard: STRIPE_SECRET_KEY from spec.components.dashboard.stripeSecretKeySecretRef, a Stripe
+//     restricted key with only the permissions the dashboard uses (#802; dashboard_production.go).
 //
 // Each reference renders an explicit secretKeyRef env entry, which wins over the component Secret's
 // envFrom, and its Secret joins the workload's credentialSecrets, so a changed value rolls it. The
@@ -69,6 +71,11 @@ func componentKeyRefs(oc *oramav1alpha1.OramaCloudV1, component string) []keyRef
 			refs = append(refs,
 				keyRef{env: "CLOUDFLARE_API_TOKEN", secret: ref.Name, key: "token", field: field},
 				keyRef{env: "CLOUDFLARE_ACCOUNT_ID", secret: ref.Name, key: "accountID", field: field})
+		}
+	case "dashboard":
+		if ref := oc.Spec.Components.Dashboard.StripeSecretKeySecretRef; ref != nil {
+			refs = append(refs, keyRef{env: "STRIPE_SECRET_KEY", secret: ref.Name, key: ref.Key,
+				field: "spec.components.dashboard.stripeSecretKeySecretRef"})
 		}
 	}
 	return refs
@@ -122,8 +129,8 @@ func (r *OramaCloudV1Reconciler) checkKeyRefs(ctx context.Context, oc *oramav1al
 	return nil
 }
 
-// keyRefSecretsReadBy is the referenced third-party key Secrets of oc's enabled workers and
-// index-builder, for the Secret watch (secretsReadBy).
+// keyRefSecretsReadBy is the referenced third-party key Secrets of oc's enabled workers,
+// index-builder and dashboard, for the Secret watch (secretsReadBy).
 func keyRefSecretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
 	var names []string
 	if oc.Spec.Components.Workers.Enabled {
@@ -131,6 +138,9 @@ func keyRefSecretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
 	}
 	if oc.Spec.Components.Ingestion.Enabled {
 		names = append(names, keyRefSecrets(componentKeyRefs(oc, "index-builder"))...)
+	}
+	if oc.Spec.Components.Dashboard.Enabled {
+		names = append(names, keyRefSecrets(componentKeyRefs(oc, "dashboard"))...)
 	}
 	return names
 }
