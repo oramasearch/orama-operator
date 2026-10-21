@@ -120,11 +120,12 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 	wantZettaEnv := []corev1.EnvVar{
 		{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"},
 		{Name: "MALLOC_ARENA_MAX", Value: "2"},
-		{Name: "ZETTA_EGRESS_ALLOW", Value: "*"},
+		{Name: "ZETTA_EGRESS_ALLOW", Value: "api.example.com:443"},
 	}
-	if got := serviceZettaEnv(lake); !reflect.DeepEqual(got, wantZettaEnv) {
+	if got := serviceZettaEnv(lake, "api.example.com:443"); !reflect.DeepEqual(got, wantZettaEnv) {
 		t.Errorf("service and workspace Zetta env = %v", got)
 	}
+	wantZettaEnv[2].Value = ""
 	if got := lakeDataPlaneZettaEnv(lake); !reflect.DeepEqual(got, wantZettaEnv) {
 		t.Errorf("data-plane Zetta env = %v", got)
 	}
@@ -186,42 +187,48 @@ func TestASpecImageOverridesItsDefault(t *testing.T) {
 	if got := lakeDataPlaneZettaEnv(lake); !reflect.DeepEqual(got, []corev1.EnvVar{
 		{Name: "MALLOC_ARENA_MAX", Value: "4"},
 		{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"},
-		{Name: "ZETTA_EGRESS_ALLOW", Value: "*"},
+		{Name: "ZETTA_EGRESS_ALLOW", Value: ""},
 	}) {
 		t.Fatalf("a spec Zetta variable did not override its default: %v", got)
 	}
 }
 
 // Lake/prod states every image and both memory variables; the defaults change none of them and add
-// only ZETTA_EGRESS_ALLOW, which a Lake/prod Zetta needs once its engine denies egress by default
-// (zetta#75).
+// only ZETTA_EGRESS_ALLOW, the engine's own egress allowlist (zetta#75, operator#724).
 func TestLakeProdIsUnchangedByTheDefaults(t *testing.T) {
 	lake := bareLake()
 	zettaEnv := []corev1.EnvVar{{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"}, {Name: "MALLOC_ARENA_MAX", Value: "2"}}
 	lake.Spec.Zetta.Env = zettaEnv
 	lake.Spec.Services.ZettaEnv = zettaEnv
-	want := append(append([]corev1.EnvVar(nil), zettaEnv...), corev1.EnvVar{Name: "ZETTA_EGRESS_ALLOW", Value: "*"})
-	if !reflect.DeepEqual(lakeDataPlaneZettaEnv(lake), want) || !reflect.DeepEqual(serviceZettaEnv(lake), want) {
+	want := append(append([]corev1.EnvVar(nil), zettaEnv...), corev1.EnvVar{Name: "ZETTA_EGRESS_ALLOW", Value: ""})
+	if !reflect.DeepEqual(lakeDataPlaneZettaEnv(lake), want) || !reflect.DeepEqual(serviceZettaEnv(lake, ""), want) {
 		t.Fatalf("stated Zetta env gained more than ZETTA_EGRESS_ALLOW: %v", lakeDataPlaneZettaEnv(lake))
 	}
 }
 
-// Every Zetta a Lake owns hands egress to its namespace's NetworkSandbox (zetta#75): the engine
-// denies outside connections by default, so without ZETTA_EGRESS_ALLOW=* a workspace's declared
-// Connections, EgressRules and internetEgress would be refused inside the process. A spec that
-// names the variable keeps its own allowlist.
-func TestLakeZettasHandEgressToTheNetworkSandbox(t *testing.T) {
+// Every Zetta a Lake owns carries its own egress allowlist (zetta#75, operator#724): the data plane
+// denies everything (its namespace allows it nothing outside), a service or workspace Zetta gets
+// the list rendered from its namespace, and a spec that names the variable keeps its own.
+func TestLakeZettasCarryTheirEgressAllowlist(t *testing.T) {
 	lake := bareLake()
-	for name, env := range map[string][]corev1.EnvVar{
-		"data plane":         lakeDataPlaneZettaEnv(lake),
-		"service, workspace": serviceZettaEnv(lake),
+	for name, check := range map[string]struct {
+		env  []corev1.EnvVar
+		want string
+	}{
+		"data plane":         {lakeDataPlaneZettaEnv(lake), ""},
+		"service, workspace": {serviceZettaEnv(lake, "*:443"), "*:443"},
 	} {
-		if got := findEnv(env, "ZETTA_EGRESS_ALLOW"); got == nil || got.Value != "*" {
-			t.Errorf("%s Zetta ZETTA_EGRESS_ALLOW = %+v, want *", name, got)
+		if got := findEnv(check.env, "ZETTA_EGRESS_ALLOW"); got == nil || got.Value != check.want {
+			t.Errorf("%s Zetta ZETTA_EGRESS_ALLOW = %+v, want %q", name, got, check.want)
+		}
+	}
+	for _, variable := range serviceZettaEnv(lake, "") {
+		if variable.Value == "*" {
+			t.Fatalf("a Lake Zetta still turns its egress control off: %+v", variable)
 		}
 	}
 	lake.Spec.Services.ZettaEnv = []corev1.EnvVar{{Name: "ZETTA_EGRESS_ALLOW", Value: "*.snowflakecomputing.com:443"}}
-	env := serviceZettaEnv(lake)
+	env := serviceZettaEnv(lake, "*:443")
 	count := 0
 	for _, variable := range env {
 		if variable.Name == "ZETTA_EGRESS_ALLOW" {

@@ -877,7 +877,11 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 		cluster.Spec.Image = serviceZettaImage(lake)
 		cluster.Spec.PullSecretName = lake.Spec.PullSecretName
 		cluster.Spec.Resources = serviceZettaResources(lake)
-		cluster.Spec.Env = serviceZettaEnv(lake)
+		egressAllow, egressErr := workspaceZettaEgressAllow(ctx, r.Client, namespace, svc.ID, cluster.Spec.Env)
+		if egressErr != nil {
+			logf.FromContext(ctx).Error(egressErr, "Zetta egress allowlist kept or denied", "service", svc.ID)
+		}
+		cluster.Spec.Env = serviceZettaEnv(lake, egressAllow)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.ProvisionOperatorSchema = &operatorSchema
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)

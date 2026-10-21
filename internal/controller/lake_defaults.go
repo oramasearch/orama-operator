@@ -59,15 +59,11 @@ var lakeDefaultLibrary = []oramav1alpha1.LakeLibraryAgent{
 // managed Zetta services) unless the spec's env for that Zetta names the variable: glibc returns
 // freed memory above 64 MiB and keeps two arenas, so a Zetta stays inside its memory limit.
 //
-// ZETTA_EGRESS_ALLOW=* hands outbound egress to the namespace's NetworkSandbox. The engine denies
-// every outside connection by default (zetta#75, its docs/governance/egress-policy.md); in a Lake
-// the default-deny NetworkSandbox, its Connections and EgressRules and the workspace's
-// internetEgress already decide what a Zetta may reach, outside the process, so the engine's own
-// allowlist must not refuse what they allow.
+// ZETTA_EGRESS_ALLOW follows them (zetta#75, operator#724): rendered for each Zetta from what its
+// namespace's NetworkSandbox allows it (lake_zetta_egress.go), unless the spec's env names it.
 var lakeDefaultZettaEnv = []corev1.EnvVar{
 	{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"},
 	{Name: "MALLOC_ARENA_MAX", Value: "2"},
-	{Name: "ZETTA_EGRESS_ALLOW", Value: "*"},
 }
 
 // lakeDataPlaneZettaImage is the image of the Lake's own data-plane Zetta.
@@ -99,14 +95,18 @@ func withLakeDefaultZettaEnv(spec []corev1.EnvVar) []corev1.EnvVar {
 	return env
 }
 
-// lakeDataPlaneZettaEnv is the env of the Lake's own data-plane Zetta.
+// lakeDataPlaneZettaEnv is the env of the Lake's own data-plane Zetta. Its egress allowlist is
+// empty (loopback only): the Lake namespace's NetworkSandbox lets its pods reach cluster DNS and
+// the other nodes of the same cluster and nothing else (reconcileLakeNetworkSandbox), and neither
+// goes through the engine's HTTP client.
 func lakeDataPlaneZettaEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
-	return withLakeDefaultZettaEnv(lake.Spec.Zetta.Env)
+	return withZettaEgressAllow(withLakeDefaultZettaEnv(lake.Spec.Zetta.Env), zettaEgressDeny)
 }
 
-// serviceZettaEnv is the env of every managed Zetta service and every workspace Zetta.
-func serviceZettaEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
-	return withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv)
+// serviceZettaEnv is the env of every managed Zetta service and every workspace Zetta, with the
+// egress allowlist rendered from its workspace namespace (workspaceZettaEgressAllow).
+func serviceZettaEnv(lake *oramav1alpha1.Lake, egressAllow string) []corev1.EnvVar {
+	return withZettaEgressAllow(withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv), egressAllow)
 }
 
 // lakeAppsRuntimeImage is the image runtime-mode apps run.
