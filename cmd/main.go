@@ -14,7 +14,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -64,11 +63,16 @@ func main() {
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       leaderElectionID,
 	}
-	// WATCH_NAMESPACE scopes the manager's cache to one namespace — lets an operator run against a
-	// SHARED cluster (e.g. a locally-run controller reconciling only a demo namespace) without touching
-	// CRs in other namespaces. Empty = watch all namespaces (the in-cluster default).
-	if ns := os.Getenv("WATCH_NAMESPACE"); ns != "" {
-		mgrOpts.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{ns: {}}}
+	// The cache leaves out Helm's release Secrets and every managedFields (memory.go, operator#677).
+	// WATCH_NAMESPACE scopes it to one namespace — lets an operator run against a SHARED cluster
+	// (e.g. a locally-run controller reconciling only a demo namespace) without touching CRs in
+	// other namespaces. Empty = watch all namespaces (the in-cluster default).
+	mgrOpts.Cache = managerCacheOptions(os.Getenv("WATCH_NAMESPACE"))
+	// The Go runtime's soft memory limit, from the container's (memory.go, principle 8).
+	if limit, err := applyGoMemoryLimit(); err != nil {
+		setupLog.Error(err, "the Go memory limit is not set")
+	} else if limit > 0 {
+		setupLog.Info("Go memory limit set from the container's", "bytes", limit)
 	}
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOpts)
 	if err != nil {
