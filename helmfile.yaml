@@ -70,7 +70,9 @@ repositories:
 
 releases:
   # ---- platform operators (building blocks the v1 operator reconciles against) ----
-  - name: cloudnative-pg
+  # The release is named cnpg, as on the managing cluster and in every leaf's ClusterHelmRelease
+  # (releaseName: cnpg). Under another name, a sync would install a second CloudNativePG (operator#753).
+  - name: cnpg
     namespace: cnpg-system
     chart: cnpg/cloudnative-pg
     version: 0.29.0   # operator 1.30.0; the same pin every leaf's ClusterHelmRelease has

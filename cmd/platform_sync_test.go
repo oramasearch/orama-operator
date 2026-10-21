@@ -30,6 +30,9 @@ import (
 
 // platformRelease is one chart release, described the same way whichever path it came from.
 type platformRelease struct {
+	// Release is the Helm release name. Two paths that install the same chart under different
+	// release names would leave a cluster with two copies of it (operator#753).
+	Release    string
 	Repository string
 	Chart      string
 	Version    string
@@ -132,7 +135,7 @@ func helmfilePlatform(t *testing.T) map[string]platformRelease {
 		if release.Version == "" {
 			t.Errorf("helmfile.yaml: release %s has no version. A leaf's ClusterHelmRelease is always pinned, so an unpinned release here cannot be the same as a leaf's", release.Name)
 		}
-		entry := platformRelease{Repository: repositories[repo], Chart: chart, Version: release.Version, Namespace: release.Namespace, Values: map[string]any{}}
+		entry := platformRelease{Release: release.Name, Repository: repositories[repo], Chart: chart, Version: release.Version, Namespace: release.Namespace, Values: map[string]any{}}
 		for _, values := range release.Values {
 			mergeValues(entry.Values, values)
 		}
@@ -168,8 +171,9 @@ func leafPlatform(t *testing.T, path string) map[string]platformRelease {
 			Name string `json:"name"`
 		} `json:"metadata"`
 		Spec struct {
-			Namespace string `json:"namespace"`
-			Chart     struct {
+			Namespace   string `json:"namespace"`
+			ReleaseName string `json:"releaseName"`
+			Chart       struct {
 				Repository string `json:"repository"`
 				Name       string `json:"name"`
 				Version    string `json:"version"`
@@ -199,6 +203,7 @@ func leafPlatform(t *testing.T, path string) map[string]platformRelease {
 	releases := map[string]platformRelease{}
 	for _, r := range resources {
 		entry := platformRelease{
+			Release:    r.Spec.ReleaseName,
 			Repository: r.Spec.Chart.Repository, Chart: r.Spec.Chart.Name, Version: r.Spec.Chart.Version,
 			Namespace: r.Spec.Namespace, Values: r.Spec.Values, CRDURLs: r.Spec.CRDURLs,
 		}

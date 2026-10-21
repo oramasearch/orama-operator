@@ -99,7 +99,7 @@ sample does not enable a control DB. ingress-nginx supplies external access for 
 samples; the minimal engine sample below does not expose an Ingress.
 
 ```sh
-helmfile -l name=cloudnative-pg -l name=ingress-nginx sync --wait --concurrency 1
+helmfile -l name=cnpg -l name=ingress-nginx sync --wait --concurrency 1
 ```
 
 ### Service operators (lake managed services)
