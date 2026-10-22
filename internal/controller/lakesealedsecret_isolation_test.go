@@ -205,10 +205,9 @@ func TestLakeSourceSealsOnlyToItsOwnNamespace(t *testing.T) {
 		WithStatusSubresource(lake, resource).
 		Build()
 	reconciler := &LakeSealedSecretReconciler{
-		Client:              kubernetesClient,
-		Scheme:              scheme,
-		LakeURL:             server.URL,
-		ServiceAccountToken: "projected-token",
+		Client:  kubernetesClient,
+		Scheme:  scheme,
+		LakeURL: server.URL,
 	}
 	if _, err := reconcileSealedSecretIn(t, reconciler, "app", resource.Name); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -278,10 +277,9 @@ func TestLakeSealedSecretStatusNeverCarriesThePlaintext(t *testing.T) {
 		WithStatusSubresource(lake, resource).
 		Build()
 	reconciler := &LakeSealedSecretReconciler{
-		Client:              kubernetesClient,
-		Scheme:              scheme,
-		LakeURL:             server.URL,
-		ServiceAccountToken: "projected-token",
+		Client:  kubernetesClient,
+		Scheme:  scheme,
+		LakeURL: server.URL,
 	}
 	if _, err := reconcileSealedSecretIn(t, reconciler, "app", resource.Name); err != nil {
 		t.Fatalf("reconcile: %v", err)
