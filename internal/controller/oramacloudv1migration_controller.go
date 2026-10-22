@@ -528,7 +528,7 @@ func migrationJob(m *oramav1alpha1.OramaCloudV1Migration, target *migrationTarge
 	}
 	security := hardenedSecurityContext()
 	security.ReadOnlyRootFilesystem = boolPtr(true)
-	return &batchv1.Job{
+	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: run.jobName, Namespace: m.Namespace, Labels: lbls},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            int32Ptr(0),
@@ -575,6 +575,8 @@ func migrationJob(m *oramav1alpha1.OramaCloudV1Migration, target *migrationTarge
 			},
 		},
 	}
+	boundV1PodStorage(&job.Spec.Template.Spec)
+	return job
 }
 
 // migrationWaitScript waits up to ten minutes for the migration role to sign in. psql takes the

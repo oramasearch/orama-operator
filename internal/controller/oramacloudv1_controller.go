@@ -36,7 +36,7 @@ type OramaCloudV1Reconciler struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets;persistentvolumeclaims;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets;persistentvolumeclaims;serviceaccounts;limitranges,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
@@ -88,6 +88,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		name string
 		fn   func(context.Context, *oramav1alpha1.OramaCloudV1) error
 	}{
+		{"ephemeral-storage", r.reconcileV1StorageDefaults},
 		{"bootstrap", r.reconcileBootstrap},    // shared config + generated credentials first
 		{"originTLS", r.reconcileOriginIssuer}, // the Issuer every Ingress below requests from (#457)
 		{"engine", r.reconcileEngine},
@@ -152,6 +153,7 @@ func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.LimitRange{}).
 		Owns(&corev1.Secret{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&networkingv1.Ingress{}).

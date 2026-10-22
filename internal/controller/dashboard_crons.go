@@ -294,6 +294,7 @@ func (r *OramaCloudV1Reconciler) upsertCronJob(ctx context.Context, oc *oramav1a
 		spec.AutomountServiceAccountToken = boolPtr(false)
 		spec.ImagePullSecrets = imagePullSecrets(oc)
 		pod(spec)
+		boundV1PodStorage(spec)
 		return controllerutil.SetControllerReference(oc, cj, r.Scheme)
 	})
 	return err

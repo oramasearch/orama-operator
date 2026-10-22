@@ -72,6 +72,7 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 			},
 		},
 	}
+	boundV1PodStorage(&job.Spec.Template.Spec)
 	if err := controllerutil.SetControllerReference(oc, job, r.Scheme); err != nil {
 		return err
 	}

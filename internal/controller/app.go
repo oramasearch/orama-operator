@@ -213,6 +213,7 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: annotations},
 			Spec:       podSpec,
 		}
+		boundV1PodStorage(&dep.Spec.Template.Spec)
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
 	}); err != nil {
 		return err

@@ -213,6 +213,7 @@ func controlDBClusterRowJob(oc *oramav1alpha1.OramaCloudV1) *batchv1.Job {
 			}},
 		},
 	}
+	boundV1PodStorage(&template.Spec)
 	raw, _ := json.Marshal(template) // a PodTemplateSpec always marshals
 	sum := sha256.Sum256(raw)
 	return &batchv1.Job{
