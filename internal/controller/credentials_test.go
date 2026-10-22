@@ -733,7 +733,7 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			steady("an unchanged reconcile")
 			h.setSecret("unrelated", "X", "2")
 			steady("an unrelated Secret change")
-			for _, name := range []string{"v1-cache-auth", "v1-redis-http", "v1-broker-admin", "v1-broker-users", "v1-broker-harvest", "v1-analytics-api-key", testMasterSecret} {
+			for _, name := range []string{"v1-cache-auth", "v1-redis-http", "v1-broker-admin", "v1-broker-users", "v1-broker-harvest", "v1-harvest-sign", "v1-harvest-notification", "v1-analytics-api-key", testMasterSecret} {
 				sec := h.secret(name)
 				sec.Labels = map[string]string{"touched": "yes"}
 				data := map[string][]byte{}
@@ -765,6 +765,12 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			rolled("a broker user password change", []string{"reader", "writer"})
 			h.setSecret("v1-broker-harvest", "password", "rotatedharvest0123")
 			rolled("a harvest password change", []string{"harvest-master"})
+			// HARVEST's control key is index-builder's and harvest-master's; its notification key is
+			// harvest-master's alone.
+			h.setSecret("v1-harvest-sign", harvestSignKey, "rotatedharvestsign0123")
+			rolled("a HARVEST control key change", []string{"harvest-master", "index-builder"})
+			h.setSecret("v1-harvest-notification", harvestNotificationKey, "rotatedharvestnotification0123")
+			rolled("a HARVEST notification key change", []string{"harvest-master"})
 			h.setSecret(testMasterSecret, "MASTER_API_KEY", "rotated-master-0123")
 			rolled("a master key change", masterReaders)
 			// Only the reader-only config reads the analytics key; the writer never does.

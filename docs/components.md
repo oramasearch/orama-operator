@@ -266,6 +266,8 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 | `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL`, redis-http `SRH_CONNECTION_STRING` |
 | `<cr>-redis-http` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where the cache runs locally | redis-http `SRH_TOKEN`, dashboard `REDIS_CACHE_TOKEN` ([below](#the-upstash-rest-shim-redis_httpgo-562)) |
 | `<cr>-hpes` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | HPES `API_KEY`, index-builder `ORAMA_EMBEDDINGS_BEARER` ([below](#hpes-index-builders-embeddings-hpesgo-574)) |
+| `<cr>-harvest-sign` | `HARVEST_SIGN` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | index-builder `HARVEST_SIGN` (sent as `Authorization: Bearer`), harvest-master `HARVEST_SIGNATURE` (checked): one value under two names ([below](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo)) |
+| `<cr>-harvest-notification` | `NOTIFICATION_SIGNATURE` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | harvest-master `NOTIFICATION_SIGNATURE` only ([below](#app-compute--ingestion--workers--dashboard--docs-appgo-ingestiongo)) |
 | `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, reader-only config only), analytics-processor render-config (every `oramacores` entry's `api_key`) |
 | `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`), index-builder, workers, dashboard, the e2e runner; never a reader ([#795](https://github.com/oramasearch/orama-operator/issues/795)) |
 
@@ -342,7 +344,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
   `<cr>-broker-admin` the broker; `<cr>-broker-users` the writer and readers; `<cr>-broker-harvest`
   harvest-master; `<cr>-cache-auth` the cache,
-  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-analytics-api-key` the readers on the reader-only config
+  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-harvest-sign` harvest-master and index-builder; `<cr>-harvest-notification` harvest-master; `<cr>-analytics-api-key` the readers on the reader-only config
   and analytics-processor, never the writer; the master key the writer, index-builder, workers and
   dashboard, never a reader. analytics-processor's hash also covers its component
   Secret (ClickHouse password) and `<cr>-controldb-app` (the Postgres URI). Metadata changes roll
@@ -1117,6 +1119,25 @@ host is set)**.
   calls ([below](#hpes-index-builders-embeddings-hpesgo-574)); when `harvest` is on, also the
   HARVEST **master** Deployment, a **Mongo** StatefulSet (record store), and a **Selenium** grid
   Deployment.
+- **harvest-master** (`ingestion.go`) — HARVEST's job API on 8080. It refuses to start without
+  `HARVEST_SIGNATURE` of at least 32 characters, and signs job status notifications with
+  `NOTIFICATION_SIGNATURE`. Both come by `secretKeyRef` from Secrets the bootstrap step generates
+  once where ingestion runs, never replaced:
+  - `HARVEST_SIGNATURE` ← `<cr>-harvest-sign` key `HARVEST_SIGN`, the same key index-builder sends
+    as `Authorization: Bearer` (its `HARVEST_SIGN`). One value, two names, so the two cannot drift.
+  - `NOTIFICATION_SIGNATURE` ← `<cr>-harvest-notification`, an independent key that only
+    harvest-master holds. The receiver of a notification is the URL in the job's own configuration,
+    and nothing in the stack sets one: the dashboard sends none, and the operator sets no
+    `NOTIFICATION_ALLOWED_ORIGINS`, so harvest-master sends no notification.
+  - **No `PODMAN_API_HOST`.** harvest-master starts crawler worker containers through a Podman
+    (Docker-compatible) API, and no such API runs in the cluster, because the crawler worker is not
+    spawned here yet ([#12](https://github.com/oramasearch/orama-operator/issues/12)). The operator
+    does not point it at an endpoint that does not exist. A harvest-master that requires the
+    variable at startup needs HARVEST to let it start without one.
+
+  `HARVEST_SIGN` is no longer seeded as a `dev-*` placeholder into index-builder's or
+  harvest-master's component Secret; one an older Secret still holds is shadowed by the explicit
+  entry.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
 - **Third-party keys from their own Secrets** ([#571](https://github.com/oramasearch/orama-operator/issues/571),
