@@ -631,11 +631,53 @@ forcing function (see the production-migration principle in `CLAUDE.md`) — nev
 Coverage is tracked by [operator#44](https://github.com/oramasearch/orama-operator/issues/44).
 Sample: [`../config/samples/e2e-test.yaml`](../config/samples/e2e-test.yaml).
 
+The ConfigMap carries three scripts: `functional.sh` (the engine sections), `lib.sh` (the HTTP and
+assertion helpers both use) and `control-plane.sh` (sections 21-24, the control plane around the
+engine), plus `config.json`, which names the target's writer and reader, its in-cluster dashboard
+(`http://<target>-dashboard:3000`, or none), whether its writer verifies dashboard write tokens
+(`engine.writer.jwt`), and its edge worker Services (the workers bundle and the four hosted-search
+workers, each only when enabled). The runner's pod carries the target's labels with component `e2e`,
+so the stack's network sandbox applies to it and admits it to exactly those Services
+([`network-sandbox.md`](infrastructure/network-sandbox.md)).
+
+The control-plane sections ([#61](https://github.com/oramasearch/orama-operator/issues/61),
+[#63](https://github.com/oramasearch/orama-operator/issues/63)):
+
+- **21. Dashboard.** The JWKS holds RSA public keys and no private member. `/api/user/jwt` refuses a
+  scope other than `write`, a missing or wrong private API key, and a project's key for another
+  tenant's collection, never with a token and never with a 2xx. Session routes refuse a caller with no
+  session or a forged `_orama_session` cookie (including `indexes/<id>/update` and `airbyte/*`,
+  [dashboard#106](https://github.com/oramasearch/dashboard/issues/106)); `/api/private/v1/get-job`
+  refuses a caller without `PRIVATE_API_KEY`; the CSRF guard refuses a foreign `Origin` (403) and a
+  non-JSON body (415); the Stripe webhook refuses an unsigned or badly signed event.
+- **22. Write tokens** (needs the fixture). A token for the fixture project is RS256, has `sub` = the
+  project, `scope` `write`, the plan cap `lmt.max_doc_count`, at most ten minutes of life, an issuer,
+  the project's writer URL as audience and a `kid` in the JWKS. On the writer it is accepted on its
+  own collection, refused on another tenant's collection with nothing landing there, and refused when
+  its payload is tampered with, when unsigned (`alg: none`) and when garbage; one document past the
+  plan cap is refused with 402 (skipped when the cap needs more than 2000 inserts). With
+  `readerSessionCookie`, a member with read access only gets no private API key, is refused on a
+  write route, and is refused on another tenant's project.
+- **23. Edge workers.** Each in-cluster worker answers `/health` and refuses a call without its key
+  and with a wrong one (segmenter `X-API-KEY`, openai-decrypter `x-api-key`, telemetry, large-index and
+  index-shared `api-key`). A 2xx always fails, so the decrypter's `200 {}` on every failure and the
+  segmenter's fail-open are caught once the routes run in-cluster; the scaffold's explicit 501 "not yet
+  wired in-cluster" is skipped and names [#6](https://github.com/oramasearch/orama-operator/issues/6).
+  secure-proxy, worker-mcp and worker-telemetry run on Cloudflare, not in the stack, and are listed as
+  skipped.
+- **24. Expired write token** (needs the fixture). The token minted right after liveness is refused
+  with 401 and an expiry message once its `exp` plus the writer's 60-second leeway has passed. The
+  suite waits for that, at most `E2E_JWT_EXPIRY_MAX_WAIT` seconds (default 900).
+
+Every credential stays in a variable; failure messages replace `privateApiKey`, `apiKey`,
+`readerApiKey`, `writerApiKey` and `jwt` values before logging a body.
+
 | Field | Purpose |
 |---|---|
 | `spec.targetRef` | Name of the `OramaCloudV1` to test (same namespace); the Job points at `<targetRef>-writer` / `-reader`, and its runner takes `MASTER_API_KEY` from the target's `spec.masterAPIKeySecretRef` when the Job is created. Until the target exists and sets that reference the test stays `Pending` and is checked again every 20 seconds. An existing Job is immutable and keeps the reference it was created with. |
 | `spec.image` | **Runner base image** (default `alpine:3.20`). Must provide `sh` + a package manager — the Job installs curl+jq into it, then runs the embedded suite. Override only with another curl/jq-capable base. |
 | `spec.pullSecretName` | Pull secret authenticating image pulls (also avoids Docker Hub anon rate limits). |
+| `spec.dashboardFixtureSecretRef.name` | Optional. A Secret in the test's namespace for the write-token sections (22, 24): `collectionID`, `indexID` and `apiKey` (a dashboard project of the target that the suite may write to, and its private API key, as in the e2e canary's Secret), required and non-empty; `readerSessionCookie`, optional, the `_orama_session` cookie of a member with read access only to that project (it lasts seven days). The runner reads each key through a `secretKeyRef`; none reaches the ConfigMap. Until the Secret exists with the three keys the test stays `Pending`. Omitted, sections 22 and 24 are skipped with the reason. |
 | `status.phase` | `Pending \| Running \| Succeeded \| Failed` (from the Job). `kubectl get ocv1e2e`. |
 
 ## `OramaCloudV1Migration` (separate CRD, namespaced) — one Prod 1 team copied into a stack

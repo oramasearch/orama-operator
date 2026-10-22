@@ -329,6 +329,11 @@ Production runs no e2e suites because none is created there
   clean-slate collection+index and asserts **every critical OramaCore function in variations**
   (search modes/filters/facets/sort/group, CRUD/upsert/delete, replication canary, batch-get, KV,
   hooks, merchandising, MCP, answer/RAG; never the analytics export, which erases readers' events).
+  It sources `assets/e2e-lib.sh` (helpers) and `assets/e2e-control-plane.sh` (sections 21-24: the
+  dashboard's JWKS, write tokens, RBAC and CSRF guards, the edge workers' auth, the expired token;
+  [#61](https://github.com/oramasearch/orama-operator/issues/61), [#63](https://github.com/oramasearch/orama-operator/issues/63)),
+  whose local harness is `e2e_control_plane_script_test.go`. The write-token sections need
+  `spec.dashboardFixtureSecretRef` and otherwise skip with the reason.
   **~70 assertions; must stay `fail=0`.** Editing
   the script requires re-running the operator (the script is embedded at compile time). Coverage +
   the per-subsystem backlog are tracked under

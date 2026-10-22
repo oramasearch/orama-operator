@@ -60,6 +60,27 @@ spec:
                 items:
                   type: string
                 type: array
+              dashboardFixtureSecretRef:
+                description: |-
+                  DashboardFixtureSecretRef names a Secret in the test's namespace describing a dashboard project
+                  of the target that the suite may write to, so it can check the dashboard's write tokens end to
+                  end: keys collectionID, indexID and apiKey (the project's private API key, as in the e2e
+                  canary's Secret) are required. The optional key readerSessionCookie is the `_orama_session`
+                  cookie of a member holding only read access to that project, for the wrong-role checks.
+                  Omitted, the suite skips its write-token, plan, expiry and role checks and says why. The Job
+                  reads the Secret through its environment; nothing from it lands in the ConfigMap.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               image:
                 default: alpine:3.20
                 description: |-

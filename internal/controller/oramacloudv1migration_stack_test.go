@@ -311,3 +311,72 @@ func TestMigrationEnqueuesItsTargetStack(t *testing.T) {
 		t.Fatalf("a non-migration mapped to %v", got)
 	}
 }
+
+// The OramaCloudV1E2ETest runner's pod (operator#61, #63) is inside the stack's sandbox and reaches
+// exactly what it tests: the writer, the readers, the dashboard and the edge workers, each of which
+// admits it. It gets no path out of the namespace.
+func TestStackSandboxAdmitsTheE2ERunner(t *testing.T) {
+	oc := migrationTestStack(nil)
+	pod := e2eRunnerLabels(oc, "suite")
+	sandbox := migrationSandbox(t, oc)
+
+	if !migrationSelects(t, &sandbox.Spec.PodSelector, pod) {
+		t.Fatal("the e2e runner is outside the stack's sandbox")
+	}
+	if dns := allowanceByName(t, sandbox, "allow-dns-egress"); !migrationSelects(t, &dns.Spec.PodSelector, pod) {
+		t.Fatal("allow-dns-egress does not select the e2e runner")
+	}
+	egress := allowanceByName(t, sandbox, "allow-e2e-egress")
+	if !migrationSelects(t, &egress.Spec.PodSelector, pod) || migrationSelects(t, &egress.Spec.PodSelector, labelsFor(oc, "dashboard")) {
+		t.Fatal("allow-e2e-egress selects the wrong pods")
+	}
+	type path struct {
+		component string
+		port      int32
+	}
+	var got []path
+	for _, rule := range egress.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.IPBlock != nil || peer.NamespaceSelector != nil {
+				t.Fatalf("allow-e2e-egress leaves the namespace: %+v", peer)
+			}
+			target := ""
+			for _, c := range append([]string{"writer", "reader", "dashboard", "workers"}, searchWorkerNames...) {
+				if migrationSelects(t, peer.PodSelector, labelsFor(oc, c)) {
+					if target == "" {
+						target = c
+					} else {
+						target = "search-workers" // the one rule that selects the four hosted-search workers
+					}
+				}
+			}
+			if target == "" {
+				t.Fatalf("allow-e2e-egress reaches %+v", peer.PodSelector)
+			}
+			for _, p := range rule.Ports {
+				got = append(got, path{target, p.Port.IntVal})
+			}
+		}
+	}
+	want := []path{{"writer", 8080}, {"reader", 80}, {"dashboard", 3000}, {"workers", 8080}, {"search-workers", 8080}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("e2e egress = %v, want %v", got, want)
+	}
+	for name, targets := range map[string][]string{
+		"allow-writer-e2e-ingress":    {"writer"},
+		"allow-reader-e2e-ingress":    {"reader"},
+		"allow-dashboard-e2e-ingress": {"dashboard"},
+		"allow-workers-e2e-ingress":   append([]string{"workers"}, searchWorkerNames...),
+	} {
+		ingress := allowanceByName(t, sandbox, name)
+		for _, c := range targets {
+			if !migrationSelects(t, &ingress.Spec.PodSelector, labelsFor(oc, c)) {
+				t.Errorf("%s does not select %s", name, c)
+			}
+		}
+		if len(ingress.Spec.Ingress) != 1 || !migrationSelects(t, ingress.Spec.Ingress[0].From[0].PodSelector, pod) ||
+			migrationSelects(t, ingress.Spec.Ingress[0].From[0].PodSelector, labelsFor(oc, "dashboard")) {
+			t.Errorf("%s does not admit only the e2e runner: %+v", name, ingress.Spec)
+		}
+	}
+}
