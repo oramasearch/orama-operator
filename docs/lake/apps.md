@@ -292,7 +292,7 @@ controller and, in a separate rule, only the owning Lake pod in its exact namesp
 labelled pod and declared port. The Lake rule pairs with its sandbox's exact-backend egress for
 proxying; port changes update both ends. Neither rule adds general operator access or selects
 another app. The policy carries a component justification annotation. Synchronized apps can reach the Lake
-Service for source, workspace reads and event publication; their scoped Zetta bearer is validated
+pod, on its API (container) port only (operator#711), for source, workspace reads and event publication; their scoped Zetta bearer is validated
 by Lake, not sent directly to Zetta. Before the workspace activates declared connections, each
 service binding keeps its compatibility rule selecting that service ID. Afterwards those binding
 rules are removed and paired `Connection` allowances are the only app-to-workload paths; see
@@ -403,6 +403,11 @@ The regression files are `lake_apps_test.go` (row lifecycle, rollback, isolation
 writes), `lake_apps_pgx_test.go` (SQL and concurrent row changes), `lake_apps_dns_test.go`
 (wildcard ownership and ingress class), `lake_apps_notify_test.go` (listener and polling gates),
 and `lakeapp_tokens_test.go` (credential ownership, unbinding, DNS finalization and event HTTP).
+`lakeapp_isolation_test.go` pins the isolation rules a tenant's app runs under: restricted pod
+security and no Kubernetes token, egress only to cluster DNS, the Lake's API port and the app's own
+workspace, ingress only from ingress-nginx and the owning Lake, no workspace Kubernetes API or
+operator allowance selecting an app, and Lake-protected identity headers set from Lake's answer.
+The security review behind them is [`../security/deep-search-711-tenant-app.md`](../security/deep-search-711-tenant-app.md).
 The Services/Stores shared-Secret regression additionally verifies ID aliases and their withdrawal.
 
 The field-by-field reference is in [`../crd-reference.md`](../crd-reference.md#lakeapp-separate-crd-namespaced--one-deployed-app).
