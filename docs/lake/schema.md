@@ -22,6 +22,58 @@ The adjacent `lake-schema.source.json` records the repository, path, commit, and
 `TestLakeSchemaPinnedBytes` checks every embedded byte against that digest during ordinary tests;
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
+## Control database roles (LSR-218)
+
+CNPG keeps the bootstrap owner `lake` and its `lake-<name>-controldb-app` Secret for schema,
+grant and restore/rehearsal Jobs. Runtime clients never use that Secret. Two CNPG managed roles
+have separate, stable basic-auth Secrets, each with `username`, `password` and `uri`:
+
+| Role | Secret | Access |
+|---|---|---|
+| `lake_runtime` | `lake-<name>-controldb-lake-runtime` | Lake's named application tables; desired columns on apps, builds and workspaces; observations read-only except the compatibility writers below |
+| `lake_operator` | `lake-<name>-controldb-lake-operator` | Named desired-state tables read-only, operator status tables and observed columns writable, order claim/state columns and event inserts |
+
+Both roles have bounded connections and no superuser, database creation, role creation,
+replication, role inheritance or RLS bypass. Neither can change table definitions, disable
+triggers, create objects in `public`, create temporary tables, truncate tables or edit migration
+records. Direct operator reads of users, sessions, credentials and identity tables are denied;
+tunnel reconciliation gets only `id` and `email` through the owner-created
+`lake_operator_tunnel_users` view. New tables receive no default runtime privileges.
+
+The owner applies `assets/lake-control-db-grants.sql` through another owned `PostgresSchema`,
+`lake-<name>-controldb-grants`, after the pinned Lake schema is Applied. This policy is separate
+from the byte-identical vendored upstream schema; it adds no numbered Lake migration. Its version
+includes both schema and grant contents, and `applyEveryVersion` ensures policy changes are
+applied even when the schema's migration guards already exist. Lake rollout and every desired-state
+poll require current successful schema and grant status, including generation and condition.
+Missing runtime Secrets block startup; no runtime path falls back to the owner. A digest of the
+runtime URI on the pod template rolls Lake once when a lost Secret is recreated or its password
+changes; operator polls and listeners reread their own credential when reconnecting.
+
+Upgrading preserves the database owner and existing data. The grant Job prepares the restricted
+roles before the Deployment switches credentials. Existing Lake pods retain their old credentials
+until Kubernetes completes their rollout; this change does not revoke the owner's migration login.
+The operator's polling, notification listeners, volume-snapshot controller and remote paid-order
+reader all switch to `lake_operator`. Restore and failover rehearsals remain maintenance operations.
+
+Compatibility work remains in Lake (`src/control/postgres_store.cpp`, tracked by operator#813):
+`methodology_run_status`, `methodology_deployment_status`, `workload_resources` and `app_transfer`
+retain explicitly named `SELECT`, `INSERT`, `UPDATE` grants because Lake still implements these
+writers. Lake also clears `apps.token_hashes_json` for token rotation, so that desired operation
+remains writable. The companion change must move methodology delete acknowledgements and token
+rotation requests into desired state for the operator to acknowledge, remove Lake's resource/traffic
+writers, then revoke these grants. Tenant row isolation remains application-enforced; these roles
+do not introduce per-customer row-level security.
+
+`TestLakeControlDBPrivilegesAgainstPostgres` uses a disposable database and real non-owner logins.
+It checks denied DDL, trigger changes, migration writes, status writes, identity/session reads,
+future-table access, allowed workspace creation and status updates, trigger enforcement, and every
+operator query's privileges. Run with `LAKE_ROLES_TEST_POSTGRES_URI` set to an isolated test server
+whose admin can create roles and databases; the test drops only roles and the database it creates.
+`TestLakeControlDBRolesAndGrantsGate` checks CNPG roles, stable credentials, required environment
+references, pending/failed/stale grant status blocking rollout, and one rollout after credential
+recovery followed by a quiet reconcile.
+
 ## Migration and rollout ordering
 
 Migrations `0091_account_deletion` (lake#810, lake#1014), `0092_saml_sign_in` (lake#836, lake#1019)
@@ -217,6 +269,9 @@ When lake adds a migration:
    The hash includes the guard. Confirm the entire combined SQL remains safe to reapply and that
    the guard becomes visible only after the migration commits. Add the guard to the Postgres
    rehearsal verification query and extend the schema proof for the migration's actual effects.
+   Review `lake-control-db-grants.sql` alongside new tables and columns. Add each required
+   runtime permission explicitly; new tables have no runtime access by default. Keep observed
+   columns operator-only and extend the role proof for any new operator query.
 3. Run `python3 hack/check-lake-schema.py` to compare against the pinned upstream bytes. It exits
    unsuccessfully on a digest or byte mismatch. To check a local lake checkout instead, pass its
    `db/schema.sql` path. Keep the source record, SQL, guard, tests, and matching documentation in

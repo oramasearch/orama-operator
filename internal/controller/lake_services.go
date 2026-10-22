@@ -188,7 +188,7 @@ type LakeServiceStore interface {
 	Close(ctx context.Context) error
 }
 
-// LakeServiceStoreOpener connects a LakeServiceStore with the uri from the control DB app Secret.
+// LakeServiceStoreOpener connects a LakeServiceStore with the uri from the control DB operator Secret.
 type LakeServiceStoreOpener func(ctx context.Context, uri string) (LakeServiceStore, error)
 
 type lakeServiceSpec struct {
@@ -381,18 +381,18 @@ func foreignServiceMessage(kind, namespace, name string) string {
 func (r *LakeReconciler) reconcileLakeServices(ctx context.Context, lake *oramav1alpha1.Lake, namespace string, labels map[string]string) bool {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	var app corev1.Secret
-	secretName := lakeControlDB(lake.Name) + "-app"
+	secretName := lakeRoleSecret(lake.Name, lakeOperatorRole)
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, &app); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("control rows deferred: control DB app Secret not created yet", "secret", secretName)
+			log.Info("control rows deferred: control DB operator Secret not created yet", "secret", secretName)
 		} else {
-			log.Error(err, "control rows deferred: cannot read the control DB app Secret", "secret", secretName)
+			log.Error(err, "control rows deferred: cannot read the control DB operator Secret", "secret", secretName)
 		}
 		return false
 	}
 	uri := string(app.Data["uri"])
 	if uri == "" {
-		log.Info("control rows deferred: control DB app Secret has no uri yet", "secret", secretName)
+		log.Info("control rows deferred: control DB operator Secret has no uri yet", "secret", secretName)
 		return false
 	}
 	passCtx, cancel := context.WithTimeout(ctx, servicePassTimeout)

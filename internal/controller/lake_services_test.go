@@ -371,7 +371,7 @@ func serviceTestLake() *oramav1alpha1.Lake {
 
 func controlDBAppSecretForTest(lake string, uri string) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: lakeControlDB(lake) + "-app", Namespace: testServiceNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: lakeRoleSecret(lake, lakeOperatorRole), Namespace: testServiceNamespace},
 		Data:       map[string][]byte{"uri": []byte(uri)},
 	}
 }
@@ -1057,7 +1057,11 @@ func TestLakeServicesDeploymentMountAndEnv(t *testing.T) {
 				applyLakeSchemaForWorkloadTest(t, c, s, lake)
 			}
 			store := &fakeServiceStore{}
-			r := &LakeReconciler{Client: c, Scheme: s, ServiceStores: store.opener()}
+			var openedURI string
+			r := &LakeReconciler{Client: c, Scheme: s, ServiceStores: func(ctx context.Context, uri string) (LakeServiceStore, error) {
+				openedURI = uri
+				return store.opener()(ctx, uri)
+			}}
 			result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "prod"}})
 			if err != nil {
 				t.Fatalf("reconcile: %v", err)
@@ -1096,8 +1100,15 @@ func TestLakeServicesDeploymentMountAndEnv(t *testing.T) {
 				if result.RequeueAfter != defaultDeploymentSyncInterval {
 					t.Fatalf("requeue = %v, want the services poll interval", result.RequeueAfter)
 				}
-				if store.opened != 0 {
-					t.Fatal("store opened before the control DB app Secret exists")
+				var operatorCredential corev1.Secret
+				if err := c.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: lakeRoleSecret(lake.Name, lakeOperatorRole)}, &operatorCredential); err != nil {
+					t.Fatal(err)
+				}
+				if store.opened != 1 || openedURI != string(operatorCredential.Data["uri"]) {
+					t.Fatal("services must use the reconciled operator credential after schema and grants apply")
+				}
+				if err := c.Get(context.Background(), client.ObjectKey{Namespace: testServiceNamespace, Name: lakeControlDB(lake.Name) + "-app"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+					t.Fatal("runtime polling must not require an owner credential")
 				}
 			} else if _, found := env["LAKE_SERVICE_DIR"]; found || mounted || volume {
 				t.Fatal("services wired into a lake without its control Postgres")

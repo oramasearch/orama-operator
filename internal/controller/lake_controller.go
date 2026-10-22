@@ -325,6 +325,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, fmt.Errorf("reconcile control db schema: %w", err)
 	}
 
+	if err := r.reconcileLakeControlDBGrants(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile control DB grants: %w", err)
+	}
+
 	// Hold both first startup and updates until the desired schema has finished applying.
 	// Keep an existing Deployment intact while the replacement migration Job runs.
 	schemaPhase, schemaVersion, schemaReadiness := r.lakeSchemaStatus(ctx, &lake, ns)
@@ -685,6 +689,17 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 			Namespace: namespace,
 		},
 	}
+	runtimeCredentialHash := ""
+	if lakePostgresEnabled(lake) {
+		var credential corev1.Secret
+		if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: lakeRoleSecret(lake.Name, lakeRuntimeRole)}, &credential); err != nil {
+			return nil, fmt.Errorf("read runtime database credential: %w", err)
+		}
+		if len(credential.Data["uri"]) == 0 {
+			return nil, fmt.Errorf("runtime database credential has no URI")
+		}
+		runtimeCredentialHash = fmt.Sprintf("%x", sha256.Sum256(credential.Data["uri"]))
+	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
 		deployment.Labels = labels
 		deployment.Spec.Replicas = &replicas
@@ -692,6 +707,15 @@ func (r *LakeReconciler) reconcileLakeDeployment(
 		deployment.Spec.Strategy = strategy
 		deployment.Spec.Template.ObjectMeta.Labels = withLabels(labels, lakeInstancePodLabels(lake))
 		setLakePaymentsSecretHash(&deployment.Spec.Template.ObjectMeta, payments.Hash)
+		// Secret recovery changes CNPG's password; replace pods that still hold its old env value.
+		if runtimeCredentialHash == "" {
+			delete(deployment.Spec.Template.Annotations, lakeRuntimeCredentialHashKey)
+		} else {
+			if deployment.Spec.Template.Annotations == nil {
+				deployment.Spec.Template.Annotations = map[string]string{}
+			}
+			deployment.Spec.Template.Annotations[lakeRuntimeCredentialHashKey] = runtimeCredentialHash
+		}
 		deployment.Spec.Template.Spec = corev1.PodSpec{
 			// ndots:2, so the full Service names lake dials resolve on the first query.
 			DNSConfig: lakePodDNSConfig(),
@@ -1221,8 +1245,8 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 				Key:                  "key",
 			}},
 		})
-		optional := true
-		secret := lakeControlDB(lake.Name) + "-app"
+		optional := false
+		secret := lakeRoleSecret(lake.Name, lakeRuntimeRole)
 		ref := func(key string) *corev1.EnvVarSource {
 			return &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: secret},
@@ -1407,6 +1431,9 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 		}
 		return deleteIfExists(ctx, r.Client, cluster)
 	}
+	if err := r.reconcileLakeRoleSecrets(ctx, lake, ns, lbls); err != nil {
+		return err
+	}
 	instances := int64(1)
 	if lake.Spec.Postgres.Instances != nil {
 		instances = int64(*lake.Spec.Postgres.Instances)
@@ -1423,6 +1450,7 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 		}
 		spec := map[string]interface{}{
 			"instances": instances,
+			"managed":   map[string]interface{}{"roles": lakeManagedRoles(lake)},
 			"storage":   storage,
 			"bootstrap": map[string]interface{}{
 				"initdb": map[string]interface{}{"database": lakeControlDBName, "owner": lakeControlDBName},

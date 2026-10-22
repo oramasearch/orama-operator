@@ -55,7 +55,7 @@ func lakeDeploymentReadiness(deployment *appsv1.Deployment, desired int32) lakeC
 }
 
 // Mirror the schema's reported status while checking that it applies to the current desired schema.
-func (r *LakeReconciler) lakeSchemaStatus(
+func (r *LakeReconciler) lakeControlDBSchemaStatus(
 	ctx context.Context,
 	lake *oramav1alpha1.Lake,
 	namespace string,

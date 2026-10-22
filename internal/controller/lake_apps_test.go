@@ -150,7 +150,7 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 		}
 	}
 	credentials := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: lakeControlDB(lake.Name) + "-app", Namespace: "lake"},
+		ObjectMeta: metav1.ObjectMeta{Name: lakeRoleSecret(lake.Name, lakeOperatorRole), Namespace: "lake"},
 		Data:       map[string][]byte{"uri": []byte("postgresql://test:private@localhost/lake")},
 	}
 	connections := &corev1.Secret{

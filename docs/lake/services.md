@@ -97,7 +97,7 @@ The Lake reconciler polls, once the Lake's schema has applied (the tables come w
 `sqlite` and `0027_analytics_services` adds `duckdb` and `polars`), at the Lake's `spec.deploySync.interval` (default `15s`, floor `1s`) — the
 cadence the workspace poll used. Each poll (`internal/controller/lake_services.go`):
 
-1. reads Secret `lake-<lake>-controldb-app` key `uri` (the CloudNativePG application Secret of
+1. reads Secret `lake-<lake>-controldb-lake-operator` key `uri` (the operator-role Secret of
    the Lake's control DB). A missing Secret or an empty `uri` means "not yet": it is logged and the
    poll ends. It connects with pgx (one connection per poll, closed at the end, 30-second bound on
    the whole pass).

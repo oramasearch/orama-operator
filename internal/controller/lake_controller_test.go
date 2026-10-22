@@ -951,8 +951,8 @@ func TestLakeReconcileControlDB(t *testing.T) {
 		env[0].ValueFrom.SecretKeyRef.Name != "lake-hello-admin" || env[1].Value != lakeStorePath ||
 		env[2].Value == "" || env[3].Value == "" ||
 		kek.ValueFrom.SecretKeyRef.Name != "lake-hello-instance-kek" || kek.ValueFrom.SecretKeyRef.Key != "key" ||
-		uri.ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-app" || uri.ValueFrom.SecretKeyRef.Key != "uri" ||
-		uri.ValueFrom.SecretKeyRef.Optional == nil || !*uri.ValueFrom.SecretKeyRef.Optional {
+		uri.ValueFrom.SecretKeyRef.Name != "lake-hello-controldb-lake-runtime" || uri.ValueFrom.SecretKeyRef.Key != "uri" ||
+		uri.ValueFrom.SecretKeyRef.Optional == nil || *uri.ValueFrom.SecretKeyRef.Optional {
 		t.Errorf("env = %+v", env)
 	}
 	var admin corev1.Secret

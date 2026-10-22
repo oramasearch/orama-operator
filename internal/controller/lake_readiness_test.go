@@ -53,6 +53,7 @@ func newLakeReadinessFixture(t *testing.T) *lakeReadinessFixture {
 	}
 	f.reconcile()
 	f.schema("Applied")
+	applyLakeSchemaForWorkloadTest(t, c, scheme, lake)
 	f.reconcile()
 	pvc := &corev1.PersistentVolumeClaim{}
 	f.get("lake-readiness-store", pvc)

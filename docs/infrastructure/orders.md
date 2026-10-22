@@ -50,7 +50,7 @@ The management cluster's operator already holds each leaf's admin kubeconfig: th
 `KubernetesCluster` controller writes it to `orama-system/<cluster>-kubeconfig`, and the set and
 `OramaOperator` controllers use it to apply resources there. The order poll uses the same kubeconfig:
 
-1. reads the member Lake's control DB Secret on the leaf, `lake-<member>-controldb-app` in the
+1. reads the member Lake's control DB Secret on the leaf, `lake-<member>-controldb-lake-operator` in the
    member's namespace (its `uri`; the value is used in memory and never logged or written);
 2. finds the running primary pod of the Lake's CloudNativePG cluster (`cnpg.io/instanceRole=primary`);
 3. opens a **port-forward through the leaf's API server** to that pod's port 5432, on `127.0.0.1` and
