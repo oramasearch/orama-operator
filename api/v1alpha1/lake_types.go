@@ -441,9 +441,9 @@ type LakeServicesSpec struct {
 
 	// ZettaEnv is copied to every managed Zetta service's and workspace Zetta's OramaZettaCluster
 	// spec.env, followed by the operator's default Zetta env for every name it does not set
-	// (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864, MALLOC_ARENA_MAX=2, ZETTA_EGRESS_ALLOW=*, which
-	// leaves egress to the namespace's NetworkSandbox). Operator-managed Zetta environment names
-	// remain reserved and are reported by each child cluster when ignored.
+	// (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864, MALLOC_ARENA_MAX=2, and ZETTA_EGRESS_ALLOW rendered
+	// from what the Zetta's workspace NetworkSandbox allows it). Operator-managed Zetta environment
+	// names remain reserved and are reported by each child cluster when ignored.
 	// +optional
 	ZettaEnv []corev1.EnvVar `json:"zettaEnv,omitempty"`
 
@@ -701,9 +701,9 @@ type LakeZettaSpec struct {
 
 	// Env is copied to the owned OramaZettaCluster spec.env, followed by the operator's default Zetta
 	// env for every name it does not set (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864,
-	// MALLOC_ARENA_MAX=2, ZETTA_EGRESS_ALLOW=*, which leaves egress to the namespace's
-	// NetworkSandbox). Operator-managed Zetta environment names remain reserved and are reported by
-	// the child cluster when ignored.
+	// MALLOC_ARENA_MAX=2, and an empty ZETTA_EGRESS_ALLOW, which denies all egress as the Lake
+	// namespace's NetworkSandbox does). Operator-managed Zetta environment names remain reserved and
+	// are reported by the child cluster when ignored.
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 

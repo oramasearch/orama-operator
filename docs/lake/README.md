@@ -157,12 +157,14 @@ leaves it off), and every Lake runs the same features whatever its value
 | `agent-experiments` | `spec.agents.library[key]` | `oramasearch/agent-experiments:v0.1.0` |
 
 Every Zetta a Lake owns also gets `ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864`,
-`MALLOC_ARENA_MAX=2` and `ZETTA_EGRESS_ALLOW=*` unless its env (`spec.zetta.env`,
+`MALLOC_ARENA_MAX=2` and `ZETTA_EGRESS_ALLOW` unless its env (`spec.zetta.env`,
 `spec.services.zettaEnv`) names the variable. The engine denies outbound connections by default
 ([zetta#75](https://github.com/oramasearch/zetta/issues/75), zetta's
-`docs/governance/egress-policy.md`); `*` leaves what a Lake's Zetta may reach to its namespace's
-default-deny NetworkSandbox (DNS, the Lake API, declared Connections and EgressRules, and
-`internetEgress`), so the two never disagree. Setting the variable in the spec env narrows it. The agent model defaults to `gpt-5.5` (`spec.agents.model`). An app without its own host
+`docs/governance/egress-policy.md`), and the operator mirrors what the namespace's default-deny
+NetworkSandbox allows each Zetta into its allowlist: the EgressRules and Connections it carries for
+that Zetta and the workspace's `internetEgress` (`*:443`); the data-plane Zetta gets an empty list
+([#724](https://github.com/oramasearch/orama-operator/issues/724),
+[egress rules](../infrastructure/egress-rules.md#a-lake-zettas-own-allowlist-defense-in-depth)). The agent model defaults to `gpt-5.5` (`spec.agents.model`). An app without its own host
 is `<app>.<spec.apps.wildcard>`, and an empty wildcard uses the Lake's `spec.host`
 (`myapp.lake-dev.oramadev.net`); HTTPS on those two-level names needs a certificate per zone
 ([#515](https://github.com/oramasearch/orama-operator/issues/515)).

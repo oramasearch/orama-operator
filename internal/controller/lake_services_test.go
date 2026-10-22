@@ -563,7 +563,7 @@ func TestServicesZettaCreateAndReadyGating(t *testing.T) {
 		cluster.Spec.PullSecretName != "oramasearch-dockerhub" || len(cluster.Spec.Env) != 3 ||
 		cluster.Spec.Env[0].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || cluster.Spec.Env[0].Value != "134217728" ||
 		cluster.Spec.Env[1].Name != "MALLOC_ARENA_MAX" || cluster.Spec.Env[1].Value != "2" ||
-		cluster.Spec.Env[2].Name != "ZETTA_EGRESS_ALLOW" || cluster.Spec.Env[2].Value != "*" {
+		cluster.Spec.Env[2].Name != "ZETTA_EGRESS_ALLOW" || cluster.Spec.Env[2].Value != "" {
 		t.Fatalf("unexpected zetta service spec: %+v", cluster.Spec)
 	}
 	endpoint := "http://prod-svc-111111111111-zetta.lake.svc.cluster.local:4800"

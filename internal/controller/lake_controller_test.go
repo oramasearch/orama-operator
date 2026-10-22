@@ -765,7 +765,7 @@ func TestLakeReconcileZettaDataPlane(t *testing.T) {
 		// The spec's variable first, then the default it does not name (operator#539).
 		len(zetta.Spec.Env) != 3 || zetta.Spec.Env[0].Name != "MALLOC_ARENA_MAX" || zetta.Spec.Env[0].Value != "2" ||
 		zetta.Spec.Env[1].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || zetta.Spec.Env[1].Value != "67108864" ||
-		zetta.Spec.Env[2].Name != "ZETTA_EGRESS_ALLOW" || zetta.Spec.Env[2].Value != "*" ||
+		zetta.Spec.Env[2].Name != "ZETTA_EGRESS_ALLOW" || zetta.Spec.Env[2].Value != "" ||
 		// The Lake's Zetta is its deployment control plane (operator#557).
 		zetta.Spec.ProvisionOperatorSchema == nil || !*zetta.Spec.ProvisionOperatorSchema {
 		t.Errorf("Zetta spec = %+v", zetta.Spec)
