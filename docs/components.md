@@ -1432,6 +1432,21 @@ each user's `crontab -l`, `/etc/crontab`, `/etc/cron.d`, `/etc/cron.*`) is still
 | `analytics-processor.aggregator.timer` | `OnUnitActiveSec=5min` | as above | Analytics aggregation | Moved: the same Job runs `POST /aggregate2`, the aggregator binary's code, after each import ([#421](https://github.com/oramasearch/orama-operator/pull/421), parity; [#576](https://github.com/oramasearch/orama-operator/issues/576)) |
 | CloudWatch agent, SSM agent (from `user_data`), Grafana Alloy and node_exporter | daemons, not schedules | oramacore-aws `terraform/modules/orama-crons/main.tf`, the scripts' headers | Host metrics and shipping, remote shell | Dropped with the host: Prod 2's monitoring is in-cluster ([#15](https://github.com/oramasearch/orama-operator/issues/15)) |
 
+## Import consumer (`import_consumer.go`, [#446](https://github.com/oramasearch/orama-operator/issues/446))
+
+`spec.components.importConsumer` runs `<cr>-import-consumer`, a Deployment of
+`oramasearch/airbyte-fargate-consumer` in its queue-worker mode (`run -A src/sqs-worker.ts`). It
+replaces Prod 1's EventBridge rule and Fargate task per object: the worker long-polls an SQS queue fed
+by the import bucket's object-created events and runs the consumer's unchanged one-object import for
+each, against this stack's dashboard (`http://<cr>-dashboard:3000`) with the dashboard's own
+`PRIVATE_API_KEY` as `x-api-key`, and writes to the engine with the project write key from
+get-source. AWS credentials come from `awsCredentialsSecretRef`; the queue, the event delivery and
+the IAM user are AWS resources the operator does not create. Off by default and the last step of the
+reconcile. Network: `allow-import-consumer-egress` (dashboard 3000), `allow-dashboard-import-consumer-ingress`
+and `allow-import-consumer-public-https` (SQS, S3 and the public writer host on 443). Field reference:
+[crd-reference.md](crd-reference.md#speccomponentsimportconsumer); design, the AWS prerequisites and
+the switch: [cloud-v1-import-consumer.md](cloud-v1-import-consumer.md).
+
 ## Analytics import (`gaps.go`)
 
 Each reader logs search events and serves them once through `GET /v1/analytics`, which returns

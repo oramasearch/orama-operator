@@ -186,6 +186,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
 | `analyticsProcessor` | `resources`, `import.{enabled,suspend}` | analytics-processor (readers' search events → ClickHouse) + its scheduled import |
+| `importConsumer` | `enabled`, `image`, `queueURL`, `bucket`, `region`, `awsCredentialsSecretRef`, `concurrency`, `replicas`, `resources` | the import consumer, reading the S3 import bucket through SQS ([below](#speccomponentsimportconsumer)) |
 
 `engine.reader.replicas` is the fixed number of readers (0 or unset → 3), each with its own data
 volume (`10Gi` unless `engine.reader.storage` says otherwise, [below](#component-storage)). There is no autoscaler and no autoscaling field: `engine.reader.hpa`
@@ -214,6 +215,40 @@ a negative reader count removes the CronJob (suspended or not) and fails the rec
 component's failure cannot leave an old schedule running. `import.enabled: false` removes the
 CronJob; `analyticsProcessor.enabled: false` removes the CronJob and the processor's Deployment,
 Service, ConfigMap and retention Job, and reports no import error.
+
+### `spec.components.importConsumer`
+
+The import consumer ([operator#446](https://github.com/oramasearch/orama-operator/issues/446)): one
+Deployment, `<cr>-import-consumer`, running `oramasearch/airbyte-fargate-consumer` in its queue-worker
+mode in place of Prod 1's Fargate task per object. Design, the AWS resources it needs (none created by
+the operator) and the switch: [`cloud-v1-import-consumer.md`](cloud-v1-import-consumer.md).
+
+| Field | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Runs the consumer. Requires the dashboard. Off until the Fargate path is stopped: the two must never import the same objects. `false` removes the Deployment, Service and PDB. |
+| `image` | none | The consumer's image, a full reference. Required when enabled; there is no default because no image is published yet. |
+| `queueURL` | none | The SQS queue the bucket's object-created events go to, `https://sqs.<region>.amazonaws.com/<account>/<name>`. Required when enabled. |
+| `bucket` | none | The S3 bucket (`airbyte-exports-prod`). Events for any other bucket are dropped. Required when enabled. |
+| `region` | `us-east-1` | The queue's and bucket's AWS region (`AWS_REGION`). |
+| `awsCredentialsSecretRef` | none | `{name}` of a Secret in the CR's namespace with non-empty `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Required when enabled. A change to it rolls the consumer; creating it retries the reconcile. |
+| `concurrency` | `2` (1–16) | Objects one replica imports at once, each in its own process (`WORKER_CONCURRENCY`). |
+| `replicas` | `1` (1–10) | Deployment replicas; SQS gives each message to one receiver at a time. |
+| `resources` | requests 256Mi / 100m, memory limit 1536Mi | The container's resources. Each import process's V8 heap (`IMPORT_MAX_OLD_SPACE_MB`) is three quarters of the memory limit less 128Mi, divided by `concurrency`, at least 64Mi. |
+
+What the pod gets: `SQS_QUEUE_URL`, `S3_BUCKET`, `AWS_REGION`, the two AWS keys by `secretKeyRef`,
+`DASHBOARD_URL=http://<cr>-dashboard:3000`, `PRIVATE_API_KEY` by `secretKeyRef` from **the same
+Secret key the dashboard reads it from** (`dashboard.env` wins and must be a `secretKeyRef`, else the
+last `dashboard.envFrom` Secret holding it, as for `CRON_SECRET`), `WORKER_CONCURRENCY`,
+`IMPORT_MAX_OLD_SPACE_MB`, `PORT=8080` and `NODE_ENV=production`; no `envFrom`. Args
+`run -A src/sqs-worker.ts`; TCP probes on 8080; a 600-second termination grace period so imports in
+flight finish on a rollout.
+
+The CRD refuses an enabled consumer without `image`, `queueURL`, `bucket` or
+`awsCredentialsSecretRef`, a malformed queue URL or bucket name, and an out-of-range `concurrency` or
+`replicas`. The reconcile repeats those checks and also fails, with `Ready=False`
+(`ReconcileError`) naming `import-consumer`, when the dashboard is disabled, when the dashboard has no
+`PRIVATE_API_KEY` from a Secret, or when a Secret or key is missing. It is the last component step, so
+such an error never keeps another component from being reconciled. No value is ever in an error.
 
 ### Extra hosts (`extraHosts`)
 
