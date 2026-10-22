@@ -354,12 +354,12 @@ func lakeSets(prodSecrets, nonprodSecrets []string) []client.Object {
 	set := func(name, cluster, member string, secrets []string) *oramav1alpha1.LakeSet {
 		return &oramav1alpha1.LakeSet{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec: oramav1alpha1.ManagedSetSpec{
+			Spec: oramav1alpha1.LakeSetSpec{ManagedSetSpec: oramav1alpha1.ManagedSetSpec{
 				Template:       *rawJSON(`{"image":"oramasearch/lake:v0.3.1"}`),
 				Secrets:        refs(secrets),
 				Clusters:       []oramav1alpha1.SetMember{{ClusterRef: cluster, Name: member, Spec: rawJSON(`{"host":"` + member + `.lake.example"}`)}},
 				DeletionPolicy: oramav1alpha1.SetDeletionRetain,
-			},
+			}},
 		}
 	}
 	objects := append(managedCluster("orama-nonprod-cluster-01", "westus2", "nonprod"),
