@@ -282,7 +282,7 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-engine-public-internet` | Writer/readers reach public IPv4 and IPv6 addresses on any TCP port for customer JavaScript hook URLs. Private, link-local, metadata, carrier-grade NAT, API-server, node-address and pod-CIDR destinations are excluded after DNS resolution. |
 | `allow-dashboard-public-https`, `allow-workers-public-https`, `allow-index-builder-public-https`, `allow-harvest-public-https`, `allow-embeddings-public-https`, `allow-search-workers-public-https` | Selected application components reach public HTTPS for their configured providers and downloads. |
 | `allow-selenium-public-internet` | Selenium reaches public TCP 80/443 for customer-requested crawls. |
-| `allow-import-consumer-public-https` | The import consumer reaches public TCP 443 for SQS, S3 and the engine's public writer host, which get-source names as `writer_url` ([#446](https://github.com/oramasearch/orama-operator/issues/446)). |
+| `allow-import-consumer-public-https` | The import consumer reaches public TCP 443 for the stack's R2 uploads bucket and the engine's public writer host, which get-source names as `writer_url` ([#446](https://github.com/oramasearch/orama-operator/issues/446)). |
 | `allow-controldb-primary-replication` | A read-region CNPG cluster reaches its configured primary on public TCP 5432. |
 
 Workers' public APIs, embeddings and hosted-search model/provider downloads, dashboard vendor

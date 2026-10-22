@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -35,6 +37,9 @@ type fakeR2 struct {
 	tokens   map[string]map[string]any // id -> create body
 	revoked  []string
 	minted   int
+	config   map[string]json.RawMessage
+	puts     map[string]int
+	fail     string
 	requests []string
 }
 
@@ -48,6 +53,34 @@ func (f *fakeR2) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
 	path := strings.TrimPrefix(r.URL.Path, "/accounts/acct")
 	switch {
+	case strings.HasSuffix(path, "/cors") || strings.HasSuffix(path, "/lifecycle"):
+		if f.fail == r.Method+" "+path {
+			http.Error(w, `{"success":false,"errors":[{"message":"configuration denied"}]}`, http.StatusForbidden)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			body := f.config[path]
+			if body == nil {
+				if strings.HasSuffix(path, "/cors") {
+					http.Error(w, `{"success":false,"errors":[{"code":10059,"message":"The CORS configuration does not exist."}]}`, http.StatusNotFound)
+				} else {
+					http.Error(w, `{"success":false,"errors":[{"message":"The lifecycle configuration does not exist."}]}`, http.StatusNotFound)
+				}
+				return
+			}
+			fmt.Fprintf(w, `{"success":true,"result":%s}`, body)
+		case http.MethodPut:
+			var body json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				f.t.Error(err)
+			}
+			f.config[path] = body
+			f.puts[path]++
+			fmt.Fprint(w, `{"success":true}`)
+		default:
+			f.t.Errorf("unexpected configuration method %s", r.Method)
+		}
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/r2/buckets/"):
 		if !f.buckets[strings.TrimPrefix(path, "/r2/buckets/")] {
 			http.Error(w, `{"success":false}`, http.StatusNotFound)
@@ -91,7 +124,7 @@ func newR2Fixture(t *testing.T, bucket *oramav1alpha1.CloudflareR2Bucket) (*Clou
 	scheme := backupTestScheme(t)
 	account := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cloudflare", Namespace: "backups"}, Data: map[string][]byte{"token": []byte("account-token"), "accountID": []byte("acct")}}
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&oramav1alpha1.CloudflareR2Bucket{}).WithObjects(account, bucket).Build()
-	cf := &fakeR2{t: t, buckets: map[string]bool{}, tokens: map[string]map[string]any{}}
+	cf := &fakeR2{t: t, config: map[string]json.RawMessage{}, puts: map[string]int{}, buckets: map[string]bool{}, tokens: map[string]map[string]any{}}
 	server := httptest.NewServer(cf)
 	t.Cleanup(server.Close)
 	return &CloudflareR2BucketReconciler{Client: kube, Scheme: scheme, APIBase: server.URL}, kube, cf
@@ -198,5 +231,155 @@ func TestR2BucketDeletionPolicy(t *testing.T) {
 				t.Fatalf("resource not released: %v", err)
 			}
 		})
+	}
+}
+
+// Configured buckets converge once and compare provider ordering/defaults by their meaning.
+func TestR2BucketCORSAndExpiry(t *testing.T) {
+	b := testR2Bucket(oramav1alpha1.BucketDeletionDelete, false)
+	days := int32(7)
+	b.Spec.ExpireAfterDays = &days
+	b.Spec.CORS = []oramav1alpha1.CloudflareR2CORSRule{
+		{AllowedOrigins: []string{"https://app.example", "https://extra.example"}, AllowedMethods: []string{"PUT", "GET"}, AllowedHeaders: []string{"X-Upload", "Content-Type"}, MaxAgeSeconds: 3600},
+		{AllowedOrigins: []string{"https://other.example"}, AllowedMethods: []string{"PUT"}},
+	}
+	r, kube, cf := newR2Fixture(t, b)
+	const corsPath = "/r2/buckets/lake-backups/cors"
+	const lifecyclePath = "/r2/buckets/lake-backups/lifecycle"
+	other := `{"id":"multipart-default","enabled":true,"conditions":{"prefix":""},"abortMultipartUploadsTransition":{"condition":{"type":"Age","maxAge":604800}}}`
+	cf.config[lifecyclePath] = json.RawMessage(`{"rules":[` + other + `]}`)
+	reconcileR2(t, r, b)
+	var gotCORS, wantCORS any
+	if err := json.Unmarshal(cf.config[corsPath], &gotCORS); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{"rules":[{"allowed":{"origins":["https://app.example","https://extra.example"],"methods":["PUT","GET"],"headers":["X-Upload","Content-Type"]},"maxAgeSeconds":3600},{"allowed":{"origins":["https://other.example"],"methods":["PUT"]}}]}`), &wantCORS); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotCORS, wantCORS) {
+		t.Fatalf("CORS body = %v", gotCORS)
+	}
+	var gotLifecycle, wantLifecycle any
+	_ = json.Unmarshal(cf.config[lifecyclePath], &gotLifecycle)
+	_ = json.Unmarshal([]byte(`{"rules":[`+other+`,{"id":"orama-expire","enabled":true,"conditions":{"prefix":""},"deleteObjectsTransition":{"condition":{"type":"Age","maxAge":604800}}}]}`), &wantLifecycle)
+	if !reflect.DeepEqual(gotLifecycle, wantLifecycle) {
+		t.Fatalf("lifecycle body = %v", gotLifecycle)
+	}
+	reconcileR2(t, r, b)
+	if cf.puts[corsPath] != 1 || cf.puts[lifecyclePath] != 1 {
+		t.Fatalf("steady PUT counts = %v", cf.puts)
+	}
+
+	// Cloudflare may reorder rules and sets, assign CORS IDs, and emit empty optional fields.
+	cf.config[corsPath] = json.RawMessage(`{"rules":[{"id":"generated-2","allowed":{"origins":["https://other.example"],"methods":["PUT"],"headers":[]},"exposeHeaders":[],"maxAgeSeconds":0},{"id":"generated-1","allowed":{"origins":["https://extra.example","https://app.example"],"methods":["GET","PUT"],"headers":["content-type","x-upload"]},"exposeHeaders":[],"maxAgeSeconds":3600}]}`)
+	cf.config[lifecyclePath] = json.RawMessage(`{"rules":[{"id":"orama-expire","enabled":true,"conditions":{"prefix":""},"deleteObjectsTransition":{"condition":{"maxAge":604800,"type":"Age","date":""}},"abortMultipartUploadsTransition":null,"storageClassTransitions":[]},` + other + `]}`)
+	reconcileR2(t, r, b)
+	if cf.puts[corsPath] != 1 || cf.puts[lifecyclePath] != 1 {
+		t.Fatalf("normalized PUT counts = %v", cf.puts)
+	}
+
+	// Drift is repaired while preserving unrelated lifecycle rules.
+	days = 8
+	b.Spec.ExpireAfterDays = &days
+	b.Spec.CORS[0].AllowedOrigins = []string{"https://new.example"}
+	if err := kube.Update(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	reconcileR2(t, r, b)
+	if cf.puts[corsPath] != 2 || cf.puts[lifecyclePath] != 2 || !strings.Contains(string(cf.config[lifecyclePath]), "691200") || !strings.Contains(string(cf.config[lifecyclePath]), "multipart-default") {
+		t.Fatalf("drift repair PUT counts = %v", cf.puts)
+	}
+
+	// Removing the fields leaves existing provider configuration alone.
+	b.Spec.CORS, b.Spec.ExpireAfterDays = nil, nil
+	if err := kube.Update(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	before := len(cf.requests)
+	reconcileR2(t, r, b)
+	for _, request := range cf.requests[before:] {
+		if strings.HasSuffix(request, "/cors") || strings.HasSuffix(request, "/lifecycle") {
+			t.Fatalf("unset fields called %s", request)
+		}
+	}
+}
+
+func TestR2BucketUnsetConfigurationMakesNoCalls(t *testing.T) {
+	b := testR2Bucket(oramav1alpha1.BucketDeletionRetain, true)
+	r, _, cf := newR2Fixture(t, b)
+	reconcileR2(t, r, b)
+	reconcileR2(t, r, b)
+	if slices.ContainsFunc(cf.requests, func(request string) bool {
+		return strings.HasSuffix(request, "/cors") || strings.HasSuffix(request, "/lifecycle")
+	}) {
+		t.Fatalf("unset configuration made new calls: %v", cf.requests)
+	}
+}
+
+func TestR2BucketConfigurationFailureReportsNotReady(t *testing.T) {
+	for _, endpoint := range []string{"cors", "lifecycle"} {
+		for _, method := range []string{http.MethodGet, http.MethodPut} {
+			t.Run(method+" "+endpoint, func(t *testing.T) {
+				b := testR2Bucket(oramav1alpha1.BucketDeletionDelete, false)
+				days := int32(7)
+				b.Spec.ExpireAfterDays = &days
+				b.Spec.CORS = []oramav1alpha1.CloudflareR2CORSRule{{AllowedOrigins: []string{"https://app.example"}, AllowedMethods: []string{"PUT"}}}
+				r, kube, cf := newR2Fixture(t, b)
+				reconcileR2(t, r, b)
+				// Force PUTs to repair drift after an initially Ready bucket.
+				cf.config = map[string]json.RawMessage{}
+				cf.fail = method + " /r2/buckets/lake-backups/" + endpoint
+				_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(b)})
+				if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "configuration denied") {
+					t.Fatalf("error = %v", err)
+				}
+				if err := kube.Get(context.Background(), client.ObjectKeyFromObject(b), b); err != nil {
+					t.Fatal(err)
+				}
+				if b.Status.Ready || !b.Status.Created || b.Status.Message != err.Error() {
+					t.Fatalf("status = %+v", b.Status)
+				}
+				version := b.ResourceVersion
+				_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(b)})
+				if err := kube.Get(context.Background(), client.ObjectKeyFromObject(b), b); err != nil {
+					t.Fatal(err)
+				}
+				if b.ResourceVersion != version {
+					t.Fatal("unchanged failure rewrote status")
+				}
+				cf.fail = ""
+				reconcileR2(t, r, b)
+				if !b.Status.Ready {
+					t.Fatal("did not recover")
+				}
+			})
+		}
+	}
+}
+
+// A new bucket has no configuration: Cloudflare returns 404 until the first PUT.
+func TestR2BucketInitialConfigurationAfterNotFound(t *testing.T) {
+	b := testR2Bucket(oramav1alpha1.BucketDeletionDelete, false)
+	days := int32(7)
+	b.Spec.ExpireAfterDays = &days
+	b.Spec.CORS = []oramav1alpha1.CloudflareR2CORSRule{{AllowedOrigins: []string{"https://app.example"}, AllowedMethods: []string{"PUT"}, AllowedHeaders: []string{"*"}, MaxAgeSeconds: 3600}}
+	r, _, cf := newR2Fixture(t, b)
+	reconcileR2(t, r, b)
+	if !b.Status.Ready {
+		t.Fatalf("fresh bucket is not Ready: %+v", b.Status)
+	}
+	var configurationRequests []string
+	for _, request := range cf.requests {
+		if strings.HasSuffix(request, "/cors") || strings.HasSuffix(request, "/lifecycle") {
+			configurationRequests = append(configurationRequests, request)
+		}
+	}
+	want := []string{"GET /accounts/acct/r2/buckets/lake-backups/cors", "PUT /accounts/acct/r2/buckets/lake-backups/cors", "GET /accounts/acct/r2/buckets/lake-backups/lifecycle", "PUT /accounts/acct/r2/buckets/lake-backups/lifecycle"}
+	if !slices.Equal(configurationRequests, want) {
+		t.Fatalf("initial configuration requests = %v", configurationRequests)
+	}
+	reconcileR2(t, r, b)
+	if cf.puts["/r2/buckets/lake-backups/cors"] != 1 || cf.puts["/r2/buckets/lake-backups/lifecycle"] != 1 {
+		t.Fatalf("steady configuration PUT counts = %v", cf.puts)
 	}
 }

@@ -34,7 +34,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy); unwired, so its `host` and `extraHosts` are API-only (checked for duplicates, never served) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
 | **cloudflare** | `internal/controller/cloudflare.go`, `cloudflarednsrecord_controller.go` | owned DNS child CRs; create marked records, reconcile only owned or legacy-ID records, and check ownership before cleanup | 🟡 **implemented**; HTTP/fake-client and local API-server tests pass; Lake and `oramadev.net` live proof pending approval |
-| **cloudflare-r2** | `internal/controller/cloudflarer2bucket_controller.go` | an R2 bucket from a `CloudflareR2Bucket`; with `spec.credentials` an account API token scoped to the bucket and its S3 credentials in an owned Secret; on deletion the token is revoked and, with `deletionPolicy: Delete` only, the bucket deleted | 🟡 **implemented**; fake-API tested ([#453](https://github.com/oramasearch/orama-operator/issues/453)) |
+| **cloudflare-r2** | `internal/controller/cloudflarer2bucket_controller.go` | an R2 bucket from a `CloudflareR2Bucket`, optional CORS and object expiry; with `spec.credentials` an account API token scoped to the bucket and its S3 credentials in an owned Secret; on deletion the token is revoked and, with `deletionPolicy: Delete` only, the bucket deleted | 🟡 **implemented**; fake-API tested ([#453](https://github.com/oramasearch/orama-operator/issues/453)) |
 | **backups** | `internal/controller/backupschedule_controller.go`, `backup_controller.go`, `internal/backup/` | `BackupSchedule` → one `Backup` per cron tick with retention; `Backup` → a restricted, credential-free Job from the operator's own image (`/manager backup`), an owned `NetworkPolicy` and a copy of the bucket's scoped credentials; status from the Job's termination message; objects deleted with the Backup. Mechanisms: ClickHouse (`BACKUP ... TO S3`); Postgres and the rest refused until built | 🟡 **implemented**, not yet applied to a cluster — see [`backups.md`](backups.md) ([#453](https://github.com/oramasearch/orama-operator/issues/453)) |
 | **cloudflare-lb** | `internal/controller/cloudflareloadbalancer_controller.go` | global **Load Balancer** + **Origin Pool(s)** + **Health Monitor** via the CF Load Balancing API, from an owned `CloudflareLoadBalancer` CRD (finalizer teardown) | 🟡 **implemented** ([#73](https://github.com/oramasearch/orama-operator/issues/73); not live-tested — needs LB enabled on the account; live-node origins are [#74](https://github.com/oramasearch/orama-operator/issues/74)) |
 | **idp** (keycloak) | `internal/controller/idp.go` | Keycloak `Deployment` + Service (when `idp.provider=keycloak`) | ✅ **done** (validated on AKS) |
@@ -1620,18 +1620,25 @@ each user's `crontab -l`, `/etc/crontab`, `/etc/cron.d`, `/etc/cron.*`) is still
 
 ## Import consumer (`import_consumer.go`, [#446](https://github.com/oramasearch/orama-operator/issues/446))
 
-`spec.components.importConsumer` runs `<cr>-import-consumer`, a Deployment of
-`oramasearch/airbyte-fargate-consumer` in its queue-worker mode (`run -A src/sqs-worker.ts`). It
-replaces Prod 1's EventBridge rule and Fargate task per object: the worker long-polls an SQS queue fed
-by the import bucket's object-created events and runs the consumer's unchanged one-object import for
-each, against this stack's dashboard (`http://<cr>-dashboard:3000`) with the dashboard's own
-`PRIVATE_API_KEY` as `x-api-key`, and writes to the engine with the project write key from
-get-source. AWS credentials come from `awsCredentialsSecretRef`; the queue, the event delivery and
-the IAM user are AWS resources the operator does not create. Off by default and the last step of the
-reconcile. Network: `allow-import-consumer-egress` (dashboard 3000), `allow-dashboard-import-consumer-ingress`
-and `allow-import-consumer-public-https` (SQS, S3 and the public writer host on 443). Field reference:
-[crd-reference.md](crd-reference.md#speccomponentsimportconsumer); design, the AWS prerequisites and
-the switch: [cloud-v1-import-consumer.md](cloud-v1-import-consumer.md).
+`spec.components.importConsumer` runs `<cr>-import-consumer` as one replica of
+`oramasearch/airbyte-fargate-consumer`, with `run -A src/bucket-worker.ts`. The worker lists the
+stack's `<cr>-uploads` R2 bucket every ten seconds and imports objects against its own dashboard
+Service with the dashboard's Secret-backed `PRIVATE_API_KEY`. `Recreate` stops the old worker before
+starting its replacement, because duplicate-import protection is process-local. Concurrency sizes
+the child imports and their memory caps; the consumer waits for all bucket credential keys.
+
+Cloudflare and the dashboard enabled create the owned uploads bucket with PUT CORS for the dashboard
+host and extra hosts, seven-day object expiry and `Delete` policy for staging objects. The dashboard,
+crawler and consumer share a bucket-scoped token in `<cr>-uploads-r2`; the dashboard's explicit
+variables override its envFrom placeholders when the Secret exists. Dashboard references are optional
+so bucket provisioning cannot block its startup; the consumer requires every key. Secret creation or
+rotation rolls the dashboard and consumer. The crawler mapping is ready for operator#12's future Job
+template. Legacy index and backup buckets are unchanged.
+
+The consumer is off by default and last in reconciliation. Network policies allow its dashboard
+calls on 3000 and public HTTPS for R2 and the public writer host. Field reference:
+[crd-reference.md](crd-reference.md#speccomponentsimportconsumer); bucket configuration, environment
+mappings and cutover: [cloud-v1-import-consumer.md](cloud-v1-import-consumer.md).
 
 ## Analytics import (`gaps.go`)
 

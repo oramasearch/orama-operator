@@ -713,7 +713,7 @@ func oramaCloudPublicInternetAllowances(
 			oramaCloudEgressPolicy("allow-controldb-primary-replication", cnpgPods, publicEgressRule(publicPeers, 5432)),
 		),
 		sandboxAllowance(
-			"The import consumer reads SQS and S3 and writes the engine's public writer host over public HTTPS (operator#446).",
+			"The import consumer reads the stack's R2 uploads bucket and writes the engine's public writer host over public HTTPS (operator#446).",
 			oramaCloudEgressPolicy("allow-import-consumer-public-https", importConsumer, publicEgressRule(publicPeers, 443)),
 		),
 	}

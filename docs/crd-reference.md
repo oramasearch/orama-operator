@@ -187,7 +187,7 @@ no way to turn it off; without the token the reconcile fails rather than serving
 | `disco` | `enabled` | DISCO semantic cache |
 | `workers` | `image`, `replicas` | the CF workers, bundled into one image |
 | `analyticsProcessor` | `resources`, `import.{enabled,suspend}` | analytics-processor (readers' search events → ClickHouse) + its scheduled import |
-| `importConsumer` | `enabled`, `image`, `queueURL`, `bucket`, `region`, `awsCredentialsSecretRef`, `concurrency`, `replicas`, `resources` | the import consumer, reading the S3 import bucket through SQS ([below](#speccomponentsimportconsumer)) |
+| `importConsumer` | `enabled`, `image`, `concurrency`, `resources` | the import consumer, listing the stack's R2 uploads bucket ([below](#speccomponentsimportconsumer)) |
 
 `engine.reader.replicas` is the fixed number of readers (0 or unset → 3), each with its own data
 volume (`10Gi` unless `engine.reader.storage` says otherwise, [below](#component-storage)). There is no autoscaler and no autoscaling field: `engine.reader.hpa`
@@ -219,37 +219,30 @@ Service, ConfigMap and retention Job, and reports no import error.
 
 ### `spec.components.importConsumer`
 
-The import consumer ([operator#446](https://github.com/oramasearch/orama-operator/issues/446)): one
-Deployment, `<cr>-import-consumer`, running `oramasearch/airbyte-fargate-consumer` in its queue-worker
-mode in place of Prod 1's Fargate task per object. Design, the AWS resources it needs (none created by
-the operator) and the switch: [`cloud-v1-import-consumer.md`](cloud-v1-import-consumer.md).
+One Deployment, `<cr>-import-consumer`, runs `deno run -A src/bucket-worker.ts` from the configured
+`oramasearch/airbyte-fargate-consumer` image. It lists the stack's R2 uploads bucket every ten seconds.
+Bucket provisioning, credential mappings and cutover: [cloud-v1-import-consumer.md](cloud-v1-import-consumer.md).
 
 | Field | Default | Purpose |
 |---|---|---|
-| `enabled` | `false` | Runs the consumer. Requires the dashboard. Off until the Fargate path is stopped: the two must never import the same objects. `false` removes the Deployment, Service and PDB. |
-| `image` | none | The consumer's image, a full reference. Required when enabled; there is no default because no image is published yet. |
-| `queueURL` | none | The SQS queue the bucket's object-created events go to, `https://sqs.<region>.amazonaws.com/<account>/<name>`. Required when enabled. |
-| `bucket` | none | The S3 bucket (`airbyte-exports-prod`). Events for any other bucket are dropped. Required when enabled. |
-| `region` | `us-east-1` | The queue's and bucket's AWS region (`AWS_REGION`). |
-| `awsCredentialsSecretRef` | none | `{name}` of a Secret in the CR's namespace with non-empty `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Required when enabled. A change to it rolls the consumer; creating it retries the reconcile. |
-| `concurrency` | `2` (1–16) | Objects one replica imports at once, each in its own process (`WORKER_CONCURRENCY`). |
-| `replicas` | `1` (1–10) | Deployment replicas; SQS gives each message to one receiver at a time. |
-| `resources` | requests 256Mi / 100m, memory limit 1536Mi | The container's resources. Each import process's V8 heap (`IMPORT_MAX_OLD_SPACE_MB`) is three quarters of the memory limit less 128Mi, divided by `concurrency`, at least 64Mi. |
+| `enabled` | `false` | Runs the consumer. Requires Cloudflare and the dashboard enabled. `false` removes the Deployment, Service and PDB. |
+| `image` | none | Full image reference containing `src/bucket-worker.ts`. Required when enabled. |
+| `concurrency` | `2` (1–16) | Objects the single worker imports at once, each in its own process (`WORKER_CONCURRENCY`). |
+| `resources` | requests 256Mi / 100m, memory limit 1536Mi | Each import's heap (`IMPORT_MAX_OLD_SPACE_MB`) is three quarters of the memory limit less 128Mi, divided by concurrency, at least 64Mi. |
 
-What the pod gets: `SQS_QUEUE_URL`, `S3_BUCKET`, `AWS_REGION`, the two AWS keys by `secretKeyRef`,
-`DASHBOARD_URL=http://<cr>-dashboard:3000`, `PRIVATE_API_KEY` by `secretKeyRef` from **the same
-Secret key the dashboard reads it from** (`dashboard.env` wins and must be a `secretKeyRef`, else the
-last `dashboard.envFrom` Secret holding it, as for `CRON_SECRET`), `WORKER_CONCURRENCY`,
-`IMPORT_MAX_OLD_SPACE_MB`, `PORT=8080` and `NODE_ENV=production`; no `envFrom`. Args
-`run -A src/sqs-worker.ts`; TCP probes on 8080; a 600-second termination grace period so imports in
-flight finish on a rollout.
+The Deployment always has one replica and uses `Recreate`: the worker's duplicate-import protection
+is local to one process. Its bucket connection uses `S3_ENDPOINT`, `S3_BUCKET`, `AWS_REGION`,
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, all from `<cr>-uploads-r2` by `secretKeyRef`.
+`DASHBOARD_URL=http://<cr>-dashboard:3000`; `PRIVATE_API_KEY` comes from the same Secret key the
+dashboard reads (`dashboard.env` wins over `dashboard.envFrom`). The remaining environment is
+`WORKER_CONCURRENCY`, `IMPORT_MAX_OLD_SPACE_MB`, `POLL_INTERVAL_SECONDS=10`, `PORT=8080` and
+`NODE_ENV=production`, without `envFrom`. TCP probes check 8080; termination grace is 600 seconds.
+Bucket credential or API key rotation rolls the worker.
 
-The CRD refuses an enabled consumer without `image`, `queueURL`, `bucket` or
-`awsCredentialsSecretRef`, a malformed queue URL or bucket name, and an out-of-range `concurrency` or
-`replicas`. The reconcile repeats those checks and also fails, with `Ready=False`
-(`ReconcileError`) naming `import-consumer`, when the dashboard is disabled, when the dashboard has no
-`PRIVATE_API_KEY` from a Secret, or when a Secret or key is missing. It is the last component step, so
-such an error never keeps another component from being reconciled. No value is ever in an error.
+Admission refuses an enabled consumer without an image, Cloudflare or the dashboard, and concurrency
+outside 1–16. Reconciliation repeats the dependency checks, requires all five bucket Secret keys and
+a Secret-backed dashboard API key, and reports configuration errors through `Ready=False`
+(`ReconcileError`) naming `import-consumer`. This last step leaves other components able to reconcile.
 
 ### Extra hosts (`extraHosts`)
 
@@ -944,8 +937,16 @@ The operator cannot adopt that existing record.
 | `spec.deletionPolicy` | **Required, no default.** `Delete` deletes the bucket from Cloudflare with the resource; `Retain` keeps the bucket and every object in it. Backup buckets use `Retain` ([`backups.md`](backups.md#the-bucket)). |
 | `spec.credentials.secretName` | When set, the operator mints an account-owned API token granting *Workers R2 Storage Bucket Item Write* on this bucket alone and writes its S3 credentials here (keys `accessKeyId`, `secretAccessKey`, `endpoint`, `bucket`, `region`), owned by this resource. A lost Secret is replaced by a new token; the old one is revoked. Removing `spec.credentials` revokes the token and deletes the Secret. |
 | `spec.credentials.allowedNamespaces` | Other namespaces whose `Backup`s may use the bucket. |
+| `spec.cors` | Optional list of `{allowedOrigins, allowedMethods, allowedHeaders?, maxAgeSeconds?}`. Replaces the whole bucket CORS configuration when set; omission leaves it alone. Methods: GET, PUT, POST, DELETE, HEAD; max age 0–86400 seconds. Compared by effective settings before writing. |
+| `spec.expireAfterDays` | Optional integer, minimum 1. Owns lifecycle rule `orama-expire`, deleting objects after this many days; other lifecycle rules are preserved. Omission leaves lifecycle alone. |
 | `status.created`, `status.ready`, `status.message` | Bucket exists; everything reconciled; otherwise Cloudflare's refusal (written only on change). |
 | `status.credentialsTokenID`, `status.credentialsSecret` | The bucket token's id (also the S3 access key id, not a secret) and the Secret holding the credentials. |
+
+A Cloudflare-enabled stack with the dashboard enabled owns `<cr>-uploads`, with credentials in
+`<cr>-uploads-r2`, PUT CORS for the dashboard host and extra hosts, seven-day expiry, and deletion
+policy `Delete` because these objects are import staging. The dashboard, crawler and import consumer
+share the one bucket-scoped token. The dashboard's references are optional to preserve startup before
+provisioning succeeds; when the Secret appears its credential hash rolls the dashboard onto R2. See [cloud-v1-import-consumer.md](cloud-v1-import-consumer.md).
 
 On deletion the finalizer revokes the bucket token whatever the policy, and deletes the bucket only
 with `Delete`.
