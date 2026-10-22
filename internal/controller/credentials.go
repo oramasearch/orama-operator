@@ -79,6 +79,8 @@ func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 		return []string{"username", "password"}
 	case cacheAuthSecretName(oc):
 		return []string{"password"}
+	case redisHTTPSecretName(oc):
+		return []string{redisHTTPTokenKey}
 	case analyticsKeySecretName(oc):
 		return []string{analyticsKeyEnvName}
 	case generatedMasterAPIKeySecretName(oc):
@@ -157,7 +159,9 @@ func secretKeyEnv(name, secret, key string) corev1.EnvVar {
 // random 48-character hex ANALYTICS_API_KEY, on every stack, and <cr>-master-api-key, a random
 // 48-character hex MASTER_API_KEY, on a stack that names no master key Secret and has a consumer of
 // it (#615). The generated master key is never replaced: the c1 cluster row keeps the key it was
-// inserted with (#447). An existing Secret, generated or
+// inserted with (#447). Where the cache runs it also creates <cr>-redis-http, the 64-character hex
+// token (32 random bytes) the serverless-redis-http shim requires and the dashboard sends (#562).
+// An existing Secret, generated or
 // supplied, is never changed. Each one is then read back, so a Secret that won a create race is the
 // one checked: a missing, empty or unsupported value fails the reconcile, naming the Secret and key.
 // Elsewhere a broker or cache client's Secret must come through the set's secrets list.
@@ -167,27 +171,37 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		local  bool
 		name   string
 		values func(pass string) map[string][]byte
+		// nbytes is the random bytes behind the hex value; 0 means 24 (48 characters).
+		nbytes int
 	}{
-		{storeLocal(oc, c.Broker), brokerAdminSecretName(oc), func(p string) map[string][]byte {
+		{local: storeLocal(oc, c.Broker), name: brokerAdminSecretName(oc), values: func(p string) map[string][]byte {
 			return map[string][]byte{"username": []byte(brokerAdminUser), "password": []byte(p)}
 		}},
-		{storeLocal(oc, c.Cache), cacheAuthSecretName(oc), func(p string) map[string][]byte {
+		{local: storeLocal(oc, c.Cache), name: cacheAuthSecretName(oc), values: func(p string) map[string][]byte {
 			return map[string][]byte{"password": []byte(p)}
+		}},
+		// The shim runs wherever the cache does (redisHTTPRuns), so its token follows the cache.
+		{local: redisHTTPRuns(oc), name: redisHTTPSecretName(oc), nbytes: 32, values: func(t string) map[string][]byte {
+			return map[string][]byte{redisHTTPTokenKey: []byte(t)}
 		}},
 		// The readers and analytics-processor are its only consumers, but it does not follow either:
 		// re-enabling the processor or ClickHouse finds the same key.
-		{true, analyticsKeySecretName(oc), func(k string) map[string][]byte {
+		{local: true, name: analyticsKeySecretName(oc), values: func(k string) map[string][]byte {
 			return map[string][]byte{analyticsKeyEnvName: []byte(k)}
 		}},
 		// Only when the CR names no master key Secret; a named one is supplied, never created.
-		{masterAPIKeyGenerated(oc), generatedMasterAPIKeySecretName(oc), func(k string) map[string][]byte {
+		{local: masterAPIKeyGenerated(oc), name: generatedMasterAPIKeySecretName(oc), values: func(k string) map[string][]byte {
 			return map[string][]byte{masterAPIKeyEnvName: []byte(k)}
 		}},
 	} {
 		if !s.local {
 			continue
 		}
-		pass, err := randHex(24)
+		nbytes := s.nbytes
+		if nbytes == 0 {
+			nbytes = 24
+		}
+		pass, err := randHex(nbytes)
 		if err != nil {
 			return fmt.Errorf("generate %s: %w", s.name, err)
 		}

@@ -109,6 +109,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	broker := oramaCloudComponentSelector(oc, "broker")
 	controlDB := oramaCloudComponentSelector(oc, "controldb")
 	cache := oramaCloudComponentSelector(oc, "cache")
+	redisHTTP := oramaCloudComponentSelector(oc, redisHTTPComponent)
 	analytics := oramaCloudComponentSelector(oc, "analytics")
 	search := oramaCloudComponentSelector(oc, "search")
 	dashboard := oramaCloudComponentSelector(oc, "dashboard")
@@ -195,12 +196,13 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"The dashboard uses control Postgres, cache, analytics, search, OramaCore and Keycloak.",
+			"The dashboard uses control Postgres, cache, its REST shim, analytics, search, OramaCore and Keycloak.",
 			oramaCloudEgressPolicy(
 				"allow-dashboard-egress",
 				dashboard,
 				egressTo(controlDB, 5432),
 				egressTo(cache, 6379),
+				egressTo(redisHTTP, redisHTTPPort),
 				egressTo(analytics, 8123),
 				egressTo(search, 8108),
 				egressTo(writer, 8080),
@@ -306,12 +308,20 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			oramaCloudEgressPolicy("allow-controldb-cluster-row-egress", clusterRowJob, egressTo(cnpgPods, 5432)),
 		),
 		sandboxAllowance(
-			"Cache accepts Redis clients from dashboard, index builder, workers and HARVEST.",
+			"Cache accepts Redis clients from dashboard, index builder, workers, HARVEST and the REST shim.",
 			oramaCloudIngressPolicy(
 				"allow-cache-ingress",
 				cache,
-				ingressFrom(oramaCloudComponentSelector(oc, "dashboard", "index-builder", "workers", "harvest-master"), 6379),
+				ingressFrom(oramaCloudComponentSelector(oc, "dashboard", "index-builder", "workers", "harvest-master", redisHTTPComponent), 6379),
 			),
+		),
+		sandboxAllowance(
+			"The serverless-redis-http shim connects to the cache (#562).",
+			oramaCloudEgressPolicy("allow-redis-http-egress", redisHTTP, egressTo(cache, 6379)),
+		),
+		sandboxAllowance(
+			"The serverless-redis-http shim accepts the dashboard's Upstash REST calls, and no one else's (#562).",
+			oramaCloudIngressPolicy("allow-redis-http-ingress", redisHTTP, ingressFrom(dashboard, redisHTTPPort)),
 		),
 		sandboxAllowance(
 			"ClickHouse accepts analytics writes and reads from dashboard, analytics processor, DISCO and hosted-search workers.",

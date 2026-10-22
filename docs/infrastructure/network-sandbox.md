@@ -258,7 +258,8 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 |---|---|
 | `allow-dns-egress` | Stack workloads reach CoreDNS over UDP/TCP 53. |
 | `allow-engine-egress`, `allow-broker-ingress`, `allow-embeddings-ingress` | Writer/readers reach their RabbitMQ replication stream on 5552 and the engine-owned embeddings gRPC service on 50051, which preserves writes, replication and vector searches; broker also accepts workers/HARVEST AMQP 5672; embeddings also accepts DISCO. |
-| `allow-dashboard-egress` | Dashboard reaches control DB 5432, cache 6379, ClickHouse 8123, Typesense 8108, writer 8080, readers 80/8080 and Keycloak 8080. |
+| `allow-dashboard-egress` | Dashboard reaches control DB 5432, cache 6379, the redis-http shim 80, ClickHouse 8123, Typesense 8108, writer 8080, readers 80/8080 and Keycloak 8080. |
+| `allow-redis-http-egress`, `allow-redis-http-ingress` | The serverless-redis-http shim reaches only the cache on 6379 (and `allow-cache-ingress` admits it), and admits only the dashboard on 80 ([#562](https://github.com/oramasearch/orama-operator/issues/562)). |
 | `allow-workers-egress` | Bundled workers reach broker 5672, cache 6379 and OramaCore writer/readers. |
 | `allow-analytics-processor-egress` | Analytics processor reaches ClickHouse 8123, writer 8080, every reader 8080 (it pulls their search events, #419 and #421) and control DB 5432. |
 | `allow-analytics-import-egress`, `allow-analytics-processor-ingress` | The analytics import CronJob (#421) calls the analytics processor on 8080, and the processor admits only it there. |

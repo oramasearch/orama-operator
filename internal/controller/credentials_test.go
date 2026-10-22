@@ -735,7 +735,7 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			steady("an unchanged reconcile")
 			h.setSecret("unrelated", "X", "2")
 			steady("an unrelated Secret change")
-			for _, name := range []string{"v1-cache-auth", "v1-broker-admin", "v1-analytics-api-key", testMasterSecret} {
+			for _, name := range []string{"v1-cache-auth", "v1-redis-http", "v1-broker-admin", "v1-analytics-api-key", testMasterSecret} {
 				sec := h.secret(name)
 				sec.Labels = map[string]string{"touched": "yes"}
 				data := map[string][]byte{}
@@ -754,7 +754,10 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			steady("metadata edits and rewritten data")
 
 			h.setSecret("v1-cache-auth", "password", "rotatedcache0123")
-			rolled("a cache password change", []string{"cache", "harvest-master", "index-builder"})
+			rolled("a cache password change", []string{"cache", "harvest-master", "index-builder", "redis-http"})
+			// The shim requires the token and the dashboard sends it (#562).
+			h.setSecret("v1-redis-http", "token", "rotatedredishttp0123")
+			rolled("a redis-http token change", []string{"dashboard", "redis-http"})
 			h.setSecret("v1-broker-admin", "password", "rotatedbroker0123")
 			rolled("a broker password change", []string{"broker", "harvest-master", "reader", "writer"})
 			h.setSecret(testMasterSecret, "MASTER_API_KEY", "rotated-master-0123")
@@ -828,6 +831,7 @@ func TestRequestsForSecretCredentials(t *testing.T) {
 	check("orama-system", "other", "orama-system/c")
 	check("orama-system", "a-broker-admin", "orama-system/a")
 	check("orama-system", "c-cache-auth", "orama-system/c")
+	check("orama-system", "d-redis-http", "orama-system/d")
 	check("orama-system", "a-analytics-api-key", "orama-system/a")
 	check("orama-system", "unrelated")
 	check("elsewhere", "shared", "elsewhere/a")

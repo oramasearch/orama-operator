@@ -393,7 +393,8 @@ func TestOCV1StorageFailureIsolationRetryAndReady(t *testing.T) {
 	oc.Spec.Components.Cache = oramav1alpha1.DataStoreSpec{Enabled: true, Storage: storageSpec("20Gi", "")}
 	oc.Spec.Components.Search = oramav1alpha1.DataStoreSpec{Enabled: true, Storage: storageSpec("30Gi", "")}
 	r, writes := storageFake(t, oc)
-	for _, provision := range []func(context.Context, *oramav1alpha1.OramaCloudV1) error{r.reconcileCache, r.reconcileSearch} {
+	// The cache brings its REST shim (#562), a Deployment that must be ready too.
+	for _, provision := range []func(context.Context, *oramav1alpha1.OramaCloudV1) error{r.reconcileCache, r.reconcileRedisHTTP, r.reconcileSearch} {
 		if err := provision(ctx, oc); err != nil {
 			t.Fatal(err)
 		}
@@ -405,6 +406,11 @@ func TestOCV1StorageFailureIsolationRetryAndReady(t *testing.T) {
 		if err := r.Status().Update(ctx, sts); err != nil {
 			t.Fatal(err)
 		}
+	}
+	shim := storageGet(t, r, &appsv1.Deployment{}, oc.Namespace, "v1-redis-http")
+	shim.Status.ReadyReplicas = 1
+	if err := r.Status().Update(ctx, shim); err != nil {
+		t.Fatal(err)
 	}
 	writes.fail = "data-v1-cache-0"
 	reconcile := func() ctrl.Result {

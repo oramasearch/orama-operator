@@ -93,6 +93,7 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{"controlDB", r.reconcileControlDB},
 		{"pgadmin", r.reconcilePgAdmin}, // pgAdmin4 web (admin UI for the control-DB)
 		{"cache", r.reconcileCache},
+		{"redis-http", r.reconcileRedisHTTP}, // the Upstash REST shim in front of the cache (#562)
 		{"broker", r.reconcileBroker},
 		{"analytics", r.reconcileAnalytics},
 		{"search", r.reconcileSearch},
