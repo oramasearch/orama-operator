@@ -46,9 +46,9 @@ type ZettaClusterE2ETestReconciler struct {
 //+kubebuilder:rbac:groups=orama.cloud,resources=zettaclustere2etests,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=zettaclustere2etests/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get
-//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
+//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
+//+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 //+kubebuilder:rbac:groups=core,resources=pods/log,verbs=get
 
 func (r *ZettaClusterE2ETestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

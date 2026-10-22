@@ -67,7 +67,7 @@ type lakeDelivery struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakesealedsecrets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakesealedsecrets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile delivers the declared secret without persisting plaintext outside the Secret.
 func (r *LakeSealedSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

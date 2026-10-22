@@ -108,10 +108,10 @@ type OramaCloudV1MigrationReconciler struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1migrations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1migrations/finalizers,verbs=update
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s;postgresschemas,verbs=get;list;watch
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 
 // migrationRun is one Job of a migration: a step (or the removal), whether it writes, and its
 // attempt. Each distinct run is one Job, run once.

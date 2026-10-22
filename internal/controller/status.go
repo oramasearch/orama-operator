@@ -124,7 +124,7 @@ const (
 // read, so the detail flips between the ready count ("0/1") and the count with the cause
 // ("0/1; <cause>") until the reader stops crashing.
 //
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 func (r *OramaCloudV1Reconciler) readerRefusalCause(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) string {
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(oc.Namespace), client.MatchingLabels(labelsFor(oc, "reader"))); err != nil {

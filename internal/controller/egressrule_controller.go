@@ -46,10 +46,10 @@ type EgressRuleReconciler struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=egressrules/finalizers,verbs=update
 // +kubebuilder:rbac:groups=orama.cloud,resources=networksandboxes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakeapps;lakes,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes;endpoints,verbs=get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *EgressRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

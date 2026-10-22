@@ -124,12 +124,12 @@ type OramaZettaClusterReconciler struct {
 //+kubebuilder:rbac:groups=orama.cloud,resources=lakes,verbs=get;list;watch
 //+kubebuilder:rbac:groups=orama.cloud,resources=lakeenvironments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters/finalizers,verbs=update
-//+kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch
+//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
+//+kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // Zetta data PVCs of an absent Lake service are deleted by the services poll (lake_services.go).
-//+kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;delete
+//+kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch
 // ORAMA_OPERATOR_ID (operator#106): a single uncached GET of the kube-system Namespace for its UID — `get`
 // only, never list/watch, so the operator holds no cluster-wide Namespace informer.
 //+kubebuilder:rbac:groups="",resources=namespaces,verbs=get
@@ -1091,3 +1091,6 @@ func (r *OramaZettaClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&oramav1alpha1.CloudflareDNSRecord{}).
 		Complete(r)
 }
+
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;create;patch,resourceNames=orama-operator-workloads
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=bind,resourceNames=orama-operator-workloads

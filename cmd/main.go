@@ -9,11 +9,14 @@ import (
 	"flag"
 	"os"
 
+	"github.com/oramasearch/orama-operator/internal/namespaceaccess"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -79,6 +82,23 @@ func main() {
 		setupLog.Error(err, "the Go memory limit is not set")
 	} else if limit > 0 {
 		setupLog.Info("Go memory limit set from the container's", "bytes", limit)
+	}
+	// All local controller writes pass through the namespace access bootstrap. Remote leaf
+	// clients retain their independent installation credential and chart-managed RBAC.
+	mgrOpts.NewClient = func(config *rest.Config, options client.Options) (client.Client, error) {
+		c, err := client.New(config, options)
+		if err != nil {
+			return nil, err
+		}
+		direct, err := client.New(config, client.Options{Scheme: options.Scheme, Mapper: options.Mapper})
+		if err != nil {
+			return nil, err
+		}
+		account := os.Getenv("OPERATOR_SERVICE_ACCOUNT")
+		if account == "" {
+			account = "orama-operator"
+		}
+		return namespaceaccess.Wrap(c, direct, os.Getenv("POD_NAMESPACE"), account), nil
 	}
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOpts)
 	if err != nil {

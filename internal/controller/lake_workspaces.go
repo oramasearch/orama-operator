@@ -120,8 +120,9 @@ func (r *LakeWorkspacesReconciler) apiReader() client.Reader {
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramazettaclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=egressrules,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=serviceaccounts;secrets;resourcequotas;limitranges;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=services;endpoints;nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts;secrets;resourcequotas;limitranges;persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=endpoints;nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 

@@ -3,6 +3,11 @@
 What the operator creates per component, and reconciler status. Update this as each
 reconciler lands.
 
+The manager grants Secret and core workload writes per managed namespace, repairs the fixed
+RoleBinding before writes, and enforces namespace ownership and pinned Karpenter exceptions through
+native admission. Lake and Cloud v1 report missing namespace authorization as `Degraded` without
+removing workloads. See [manager permissions and upgrade order](operations/manager-permissions.md).
+
 App transfer metering (`internal/controller/lake_app_transfer.go`) scrapes pods only in the platform
 `ingress-nginx` namespace and verifies their controller references through the named
 `ingress-nginx-controller` Deployment or DaemonSet, including ReplicaSet and controller UIDs.

@@ -111,8 +111,9 @@ type zettaTunnelMeshReconciler struct {
 	Now            func() time.Time
 }
 
-// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=pods;nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
 var zettaTunnelMeshRequest = reconcile.Request{NamespacedName: client.ObjectKey{Namespace: zettaTunnelMeshNamespace, Name: zettaTunnelMeshName}}
 

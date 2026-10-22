@@ -334,6 +334,8 @@ func TestChartKarpenterRBACMatchesBundle(t *testing.T) {
 			want["rolebindings"] = append(want["rolebindings"], key.Name)
 		}
 	}
+	want["clusterroles"] = append(want["clusterroles"], "orama-operator-workloads")
+	want["rolebindings"] = append(want["rolebindings"], "orama-operator-workloads")
 	want["customresourcedefinitions"] = append([]string(nil), karpenterCRDNames...)
 	scoped := map[string]bool{"create": true, "update": true, "patch": true, "delete": true, "bind": true, "escalate": true, "*": true}
 

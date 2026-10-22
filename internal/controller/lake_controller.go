@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
+	"github.com/oramasearch/orama-operator/internal/namespaceaccess"
 )
 
 // LakeReconciler reconciles a Lake object into a Namespace, a Deployment, a Service, a
@@ -178,18 +179,18 @@ type lakeBackupConfig struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create
-// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;patch;create;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 // +kubebuilder:rbac:groups="",resources=nodes/proxy,verbs=get
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -243,6 +244,18 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		log.Info("created namespace", "namespace", ns)
 	} else if !apierrors.IsAlreadyExists(err) {
 		return ctrl.Result{}, fmt.Errorf("create namespace %q: %w", ns, err)
+	}
+
+	if err := namespaceaccess.EnsureNamespace(ctx, r.Client, ns); err != nil {
+		before := lake.DeepCopy()
+		lake.Status.Phase = "Degraded"
+		apimeta.SetStatusCondition(&lake.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "NamespaceAccessRequired", Message: err.Error(), ObservedGeneration: lake.Generation})
+		if !apiequality.Semantic.DeepEqual(before.Status, lake.Status) {
+			if statusErr := r.Status().Patch(ctx, &lake, client.MergeFrom(before)); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+		}
+		return ctrl.Result{RequeueAfter: lakeStatusRequeue}, nil
 	}
 
 	labels := map[string]string{

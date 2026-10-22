@@ -64,7 +64,7 @@ type AksClusterReconciler struct {
 //+kubebuilder:rbac:groups=orama.cloud,resources=aksclusters,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=aksclusters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=orama.cloud,resources=aksclusters/finalizers,verbs=update
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *AksClusterReconciler) azure() *azureClient {
 	if r.Azure == nil {
