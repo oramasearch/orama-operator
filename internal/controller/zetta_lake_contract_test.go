@@ -331,7 +331,7 @@ func TestLakeDomainsTheOperatorRefuses(t *testing.T) {
 		row("a", testLakeHost),
 		row("a", "Not_A_Host"),
 		row("b", "docs.example.com"),
-	})
+	}, lakeDomainGuard{})
 	if got := plan.active[platformEnvironmentKey("r", "a")]; len(got) != 1 || got[0].Host != "shop.example.com" {
 		t.Errorf("environment a domains = %+v", got)
 	}
@@ -339,7 +339,7 @@ func TestLakeDomainsTheOperatorRefuses(t *testing.T) {
 		t.Errorf("environment b domains = %+v", got)
 	}
 	for key, want := range map[string]string{
-		"r\nb\nshop.example.com": "another environment",
+		"r\nb\nshop.example.com": "claimed by another environment",
 		"r\na\n" + testLakeHost:  "the Lake's own host",
 		"r\na\nNot_A_Host":       "not a lowercase DNS name",
 	} {
