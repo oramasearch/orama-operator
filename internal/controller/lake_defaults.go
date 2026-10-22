@@ -58,9 +58,16 @@ var lakeDefaultLibrary = []oramav1alpha1.LakeLibraryAgent{
 // lakeDefaultZettaEnv is added to every Zetta a Lake owns (its data plane, its workspaces and its
 // managed Zetta services) unless the spec's env for that Zetta names the variable: glibc returns
 // freed memory above 64 MiB and keeps two arenas, so a Zetta stays inside its memory limit.
+//
+// ZETTA_EGRESS_ALLOW=* hands outbound egress to the namespace's NetworkSandbox. The engine denies
+// every outside connection by default (zetta#75, its docs/governance/egress-policy.md); in a Lake
+// the default-deny NetworkSandbox, its Connections and EgressRules and the workspace's
+// internetEgress already decide what a Zetta may reach, outside the process, so the engine's own
+// allowlist must not refuse what they allow.
 var lakeDefaultZettaEnv = []corev1.EnvVar{
 	{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"},
 	{Name: "MALLOC_ARENA_MAX", Value: "2"},
+	{Name: "ZETTA_EGRESS_ALLOW", Value: "*"},
 }
 
 // lakeDataPlaneZettaImage is the image of the Lake's own data-plane Zetta.

@@ -74,8 +74,9 @@ spec:
     maxServices: 20          # 0 = no limit
     zettaImage: oramasearch/zetta:<tag>
     zettaEnv:                # copied to every Zetta service, including the workspace-owned cluster; the
-                             # operator adds ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864 and
-                             # MALLOC_ARENA_MAX=2 for each name the list does not set
+                             # operator adds ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864,
+                             # MALLOC_ARENA_MAX=2 and ZETTA_EGRESS_ALLOW=* for each name the
+                             # list does not set
       - { name: ZETTA_MALLOC_TRIM_THRESHOLD_BYTES, value: "134217728" }
       - { name: MALLOC_ARENA_MAX, value: "2" }
     sqliteImage: oramasearch/lake-sqlite:<tag>   # optional; the chart's lakeServices.sqliteImage otherwise
