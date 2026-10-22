@@ -228,6 +228,7 @@ func componentSecretData(component string) map[string]string {
 	case "pgadmin": // pgAdmin4 web login (PGADMIN_DEFAULT_EMAIL is non-secret, set in the Deployment env)
 		return map[string]string{"PGADMIN_DEFAULT_PASSWORD": "dev-pgadmin-password"}
 	case "index-builder": // writes Typesense, embeds via HPES, Ably progress, CF KV, decrypter, DISCO
+		// ORAMA_EMBEDDINGS_BEARER is not seeded: it comes from the generated <cr>-hpes (#574).
 		// index-builder's EnvSchema (src/utils.ts) requires 27 vars at boot; the secret
 		// carries the credential-shaped ones (envFrom exposes each key as its env var). The
 		// external ones (Apify/Ably) are dummies until real tokens are provisioned (operator#747);
@@ -235,7 +236,6 @@ func componentSecretData(component string) map[string]string {
 		// then not seeded (#571). Non-secret URLs/constants are set as plain env in reconcileIngestion.
 		return map[string]string{
 			"TYPESENSE_API_KEY":           "dev-typesense-api-key",
-			"ORAMA_EMBEDDINGS_BEARER":     "dev-hpes-bearer",
 			"ABLY_API_KEY":                "sandbox.dummy:sandboxdummyablysecret000000",
 			"API_SECRET":                  "dev-index-builder-api-secret",
 			"DEPLOYMENT_API_API_KEY":      "dev-deployment-api-key",

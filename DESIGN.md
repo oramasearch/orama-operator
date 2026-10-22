@@ -162,7 +162,7 @@ install uses `role=primary` with everything enabled.
 | index-builder (Cloud Run) | **Deployment** | our operator |
 | Cloudflare Workers | **one bundled image** → single `Deployment` | our operator |
 | Cloudflare DNS + Load Balancing | reconciled via the **CF API** (not in-cluster) | our operator |
-| HPES embeddings | `Deployment` (GPU optional) | our operator |
+| HPES embeddings | `Deployment` on CPU, ClusterIP only, index-builder its only client ([#574](https://github.com/oramasearch/orama-operator/issues/574)) | our operator |
 | DISCO semantic cache | `StatefulSet` + gRPC embeddings | our operator |
 | Dashboard (Vercel/Next.js) | `Deployment` + Ingress | our operator |
 | docs.orama.com (Vercel/Next.js+Fumadocs) | `Deployment` + Ingress | our operator |

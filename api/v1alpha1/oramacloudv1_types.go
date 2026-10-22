@@ -388,6 +388,11 @@ type IngestionSpec struct {
 	// Selenium keep their own defaults.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// HPESResources overrides the resources of HPES (embeddings-server-py), the embeddings server
+	// index-builder calls, which runs whenever ingestion runs (#574). When unset the operator requests
+	// 7Gi and 2 CPUs with a 10Gi memory limit, sized for the six models it loads, on CPU.
+	// +optional
+	HPESResources *corev1.ResourceRequirements `json:"hpesResources,omitempty"`
 }
 
 // WorkersSpec configures the ported Cloudflare Workers, bundled into ONE image and

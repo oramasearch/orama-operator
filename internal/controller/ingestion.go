@@ -40,7 +40,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 			image:             componentImage(oc, "index-builder", "index-builder"),
 			port:              8080,
 			env:               append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
-			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey}, keyRefSecrets(refs)...),
+			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey, hpesSecretName(oc)}, keyRefSecrets(refs)...),
 			resources:         resourcesOr(ing.Resources, resourceReqs("256Mi", "100m", "768Mi")),
 		}); err != nil {
 			return err
@@ -99,8 +99,8 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 
 // indexBuilderEnv provides the non-secret half of index-builder's EnvSchema (in-cluster URLs +
 // constants + the CF KV namespace IDs from the owned KV CRs). Credential-shaped vars come via the
-// component Secret (envFrom), except MASTER_API_KEY (spec.masterAPIKeySecretRef) and the Redis
-// password (<cr>-cache-auth), which REDIS_URL references. Nothing connects eagerly at boot, so
+// component Secret (envFrom), except MASTER_API_KEY (spec.masterAPIKeySecretRef), the Redis
+// password (<cr>-cache-auth), which REDIS_URL references, and the HPES bearer (<cr>-hpes, #574). Nothing connects eagerly at boot, so
 // present+valid env → healthy; external endpoints (Apify) are placeholders until real provisioning.
 func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 	n := oc.Name
@@ -120,9 +120,11 @@ func (r *OramaCloudV1Reconciler) indexBuilderEnv(ctx context.Context, oc *oramav
 		{Name: "APIFY_DATASET_ENDPOINT", Value: "https://api.apify.com/v2/datasets/placeholder/items"},
 		{Name: "REDIS_URL", Value: redisURL(oc)},
 		pgURIEnv(oc, "DATABASE_URL"), // CNPG-generated URI (real password), not a placeholder (#32)
-		{Name: "ORAMA_EMBEDDINGS_URL", Value: "http://" + n + "-disco:50051"},
 		{Name: "DISCO_URL", Value: "http://" + n + "-disco:8080"},
 		{Name: "DISCO_PEERS", Value: ""},
+		// ORAMA_EMBEDDINGS_URL and ORAMA_EMBEDDINGS_BEARER: the stack's own HPES (#574).
+		{Name: embeddingsURLEnv, Value: hpesURL(oc)},
+		secretKeyEnv(embeddingsBearerEnv, hpesSecretName(oc), hpesTokenKey),
 		{Name: "DECRYPTER_BASE_URL", Value: "http://" + n + "-openai-decrypter:8080"},
 		{Name: "HARVEST_MASTER_ENDPOINT", Value: "http://" + n + "-harvest-master:8080"},
 		{Name: "REST_API_AUTHORIZATION_HEADER_PRIVATE_KEY_PATH", Value: "/etc/index-builder/rest-api-private-key.pem"},

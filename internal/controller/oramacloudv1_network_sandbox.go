@@ -110,6 +110,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	controlDB := oramaCloudComponentSelector(oc, "controldb")
 	cache := oramaCloudComponentSelector(oc, "cache")
 	redisHTTP := oramaCloudComponentSelector(oc, redisHTTPComponent)
+	hpes := oramaCloudComponentSelector(oc, hpesComponent)
 	analytics := oramaCloudComponentSelector(oc, "analytics")
 	search := oramaCloudComponentSelector(oc, "search")
 	dashboard := oramaCloudComponentSelector(oc, "dashboard")
@@ -245,13 +246,14 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			oramaCloudEgressPolicy("allow-analytics-retention-egress", analyticsRetention, egressTo(analytics, 9000)),
 		),
 		sandboxAllowance(
-			"Index builder uses dashboard, cache, control Postgres, DISCO, search, decrypter and HARVEST APIs.",
+			"Index builder uses dashboard, cache, control Postgres, HPES, DISCO, search, decrypter and HARVEST APIs.",
 			oramaCloudEgressPolicy(
 				"allow-index-builder-egress",
 				indexBuilder,
 				egressTo(dashboard, 3000),
 				egressTo(cache, 6379),
 				egressTo(controlDB, 5432),
+				egressTo(hpes, hpesPort),
 				egressTo(disco, 8080, 50051),
 				egressTo(search, 8108),
 				egressTo(openAIDecrypter, 8080),
@@ -364,6 +366,10 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		sandboxAllowance(
 			"DISCO accepts HTTP and embeddings requests from index builder.",
 			oramaCloudIngressPolicy("allow-disco-ingress", disco, ingressFrom(indexBuilder, 8080, 50051)),
+		),
+		sandboxAllowance(
+			"HPES accepts index-builder's embedding requests, and no one else's; it sends nothing but DNS (#574).",
+			oramaCloudIngressPolicy("allow-hpes-ingress", hpes, ingressFrom(indexBuilder, hpesPort)),
 		),
 		sandboxAllowance(
 			"OpenAI decrypter accepts index-builder requests.",

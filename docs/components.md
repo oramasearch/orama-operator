@@ -263,6 +263,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
 | `<cr>-broker-admin` | `username` (`orama`), `password` | the bootstrap step, where the broker runs locally | broker `rabbitmq.conf` and boot definitions, writer and reader transport config, harvest-master `AMQP_HOST`, `RabbitMQTopology` (`adminSecretRef`) |
 | `<cr>-cache-auth` | `password` | the bootstrap step, where the cache runs locally | Redis `--requirepass`, harvest-master `REDIS_HOST`, index-builder `REDIS_URL`, redis-http `SRH_CONNECTION_STRING` |
 | `<cr>-redis-http` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where the cache runs locally | redis-http `SRH_TOKEN`, dashboard `REDIS_CACHE_TOKEN` ([below](#the-upstash-rest-shim-redis_httpgo-562)) |
+| `<cr>-hpes` | `token` (64 hex characters, 32 random bytes) | the bootstrap step, where ingestion runs | HPES `API_KEY`, index-builder `ORAMA_EMBEDDINGS_BEARER` ([below](#hpes-index-builders-embeddings-hpesgo-574)) |
 | `<cr>-analytics-api-key` | `ANALYTICS_API_KEY` | the bootstrap step, on every stack | readers' render-config (`reader_side.analytics.api_key`, reader-only config only), analytics-processor render-config (every `oramacores` entry's `api_key`) |
 | `spec.masterAPIKeySecretRef` | `key`, default `MASTER_API_KEY` | supplied (the set's `secrets` list); never created or changed | writer render-config (`writer_side.master_api_key`; the reader-only config has none), index-builder, workers, dashboard, the e2e runner |
 
@@ -310,7 +311,7 @@ connects with, and no value is in a ConfigMap, pod spec, annotation, status or l
   shared with the LLM key hash). The controller maps every Secret event, owned or copied, to each CR
   in the namespace that reads it (`requestsForSecret`), so a changed value rolls only its consumers:
   `<cr>-broker-admin` the broker, writer, readers and harvest-master; `<cr>-cache-auth` the cache,
-  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-analytics-api-key` the readers on the reader-only config
+  harvest-master, index-builder and redis-http; `<cr>-redis-http` redis-http and the dashboard; `<cr>-hpes` HPES and index-builder; `<cr>-analytics-api-key` the readers on the reader-only config
   and analytics-processor, never the writer; the master key the writer (and readers on the combined
   image), index-builder, workers and dashboard. analytics-processor's hash also covers its component
   Secret (ClickHouse password) and `<cr>-controldb-app` (the Postgres URI). Metadata changes roll
@@ -932,9 +933,10 @@ and a `maxUnavailable: 0` PDB) — see [Workload hardening](#workload-hardening-
 A generic `reconcileApp` provisions a stateless **Deployment + Service (+ Ingress if a
 host is set)**.
 
-- **ingestion** — `index-builder` Deployment (was Cloud Run); when `harvest` is on,
-  also the HARVEST **master** Deployment, a **Mongo** StatefulSet (record store), and a
-  **Selenium** grid Deployment.
+- **ingestion** — `index-builder` Deployment (was Cloud Run) and HPES, the embeddings server it
+  calls ([below](#hpes-index-builders-embeddings-hpesgo-574)); when `harvest` is on, also the
+  HARVEST **master** Deployment, a **Mongo** StatefulSet (record store), and a **Selenium** grid
+  Deployment.
 - **workers** — the ported CF workers as **one bundled image** → a single Deployment
   (`workers.replicas`, image via `workers.image` or `spec.images.overrides.workers`).
 - **Third-party keys from their own Secrets** ([#571](https://github.com/oramasearch/orama-operator/issues/571),
@@ -1244,6 +1246,47 @@ protocol, in front of the stack's own Redis (bridge decisions of 2026-10-17, 7).
   `/pipeline`, `/multi-exec` with `Authorization: Bearer <token>`), not command paths such as
   `/set/<key>/<value>`. A probe by hand is
   `curl -s -H "Authorization: Bearer $REDIS_CACHE_TOKEN" -H 'Content-Type: application/json' -d '["SET","probe","1"]' $REDIS_CACHE_URL`.
+
+### HPES, index-builder's embeddings (`hpes.go`, [#574](https://github.com/oramasearch/orama-operator/issues/574))
+
+index-builder embeds documents through HPES (`embeddings-server-py`); Prod 1 calls it at
+`ai.orama.run`. The stack runs its own (bridge decisions of 2026-10-16, 3, and 2026-10-17, 5 and 9).
+It is not the engine's embeddings sidecar (`<cr>-embeddings`, `oramacore-ai-server`), which is a
+different program and is unchanged.
+
+- **When.** Whenever ingestion runs. No toggle of its own; disabling ingestion removes the
+  Deployment and Service and keeps the bearer.
+- **Bearer.** `<cr>-hpes`, key `token`: 64 hex characters (32 random bytes), generated once by the
+  bootstrap step like the other [credentials](#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo),
+  never rotated by the reconcile and never removed by a teardown. HPES reads it as `API_KEY`;
+  index-builder sends it as `ORAMA_EMBEDDINGS_BEARER`. Both are explicit `secretKeyRef` entries, and
+  both carry the Secret in their credentials hash, so a new value rolls both. `<cr>-index-builder-secret`
+  no longer seeds the `dev-hpes-bearer` placeholder; a value an older Secret still holds is shadowed.
+- **Deployment and Service** `<cr>-hpes`, port 8787, one replica, ClusterIP, no Ingress, no DNS
+  record and no public host. CPU only, on the stack's ordinary nodes: no GPU request, node selector
+  or toleration. Default resources 7Gi and 2 CPUs requested with a 10Gi limit, sized for the six
+  models of the `all` group (bge small, base and large; multilingual-e5 small, base and large: about
+  1.4 billion float32 parameters, ~5.7 GB loaded); `ingestion.hpesResources` replaces them. Env:
+  `API_KEY`, `EXECUTION_PROVIDERS=CPUExecutionProvider`, `MODELS_GROUP=all` (Prod 1's unit loads
+  `all`, so every model a copied index names is there), `HOST=0.0.0.0`, `HTTP_PORT=8787`,
+  `TOTAL_THREADS=4` (matched to the CPU request; the server requires an even value). The server's
+  gRPC listener (50051) starts but is not exposed.
+- **Probes** are TCP on 8787. The server checks the bearer on every route, `/health` included, so an
+  HTTP probe would need the bearer in the pod spec; it loads every model before it listens, so an
+  open port means the models are loaded.
+- **Image.** `componentImage(oc, "hpes", "embeddings-server-py")`: `spec.images.overrides["hpes"]`
+  wins, and production pins `oramasearch/embeddings-server-py:cpu-<sha>` by digest there. That image is
+  built by [embeddings-server-py#9](https://github.com/oramasearch/embeddings-server-py/issues/9) with
+  its models cached at build time, so the pod downloads nothing at start.
+- **index-builder.** `ORAMA_EMBEDDINGS_URL=http://<cr>-hpes:8787/v1/embeddings_b64`. Its client
+  (index-manager `apps/index-builder/src/embeddings/oramaai.ts`, `fetchEmbeddings`) posts to the URL
+  exactly as given and decodes base64 float32 vectors when the URL ends in `_b64`; the server's
+  `/v1/embeddings_b64` answers `{embeddings, dimensions}`, which is the shape the client reads. The
+  bare `/v1/embeddings` answers an OpenAI-shaped `{data: [...]}` the client does not read. It
+  replaces the old `http://<cr>-disco:50051`, which pointed at DISCO, a component `v1-prod` disables.
+- **Network.** Only index-builder reaches HPES, on 8787 (`allow-hpes-ingress`, and HPES in
+  `allow-index-builder-egress`). HPES has no egress allowance beyond the stack-wide DNS rule and no
+  public-internet allowance.
 
 ### The dashboard's scheduled jobs
 
