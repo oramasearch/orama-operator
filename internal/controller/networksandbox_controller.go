@@ -34,6 +34,14 @@ const (
 	networkSandboxCommentAnnotation = "orama.cloud/network-policy-comment"
 )
 
+// cloudMetadataDenyCIDRs are the addresses every untrusted pod is denied on every port with a
+// Cilium egressDeny: the cloud instance metadata service, Azure's host-service address (WireServer)
+// and the IPv6 metadata counterpart. On AKS-managed Cilium an ipBlock exclusion alone did not stop
+// metadata traffic (docs/infrastructure/network-sandbox.md#mandatory-cloud-metadata-deny).
+func cloudMetadataDenyCIDRs() []interface{} {
+	return []interface{}{"169.254.169.254/32", "168.63.129.16/32", "fd00:ec2::254/128"}
+}
+
 var ciliumNetworkPolicyGVK = schema.GroupVersionKind{
 	Group:   "cilium.io",
 	Version: "v2",
@@ -270,11 +278,7 @@ func reconcileSandboxCiliumPolicies(
 	metadataDeny := map[string]interface{}{
 		"egressDeny": []interface{}{
 			map[string]interface{}{
-				"toCIDR": []interface{}{
-					"169.254.169.254/32",
-					"168.63.129.16/32",
-					"fd00:ec2::254/128",
-				},
+				"toCIDR": cloudMetadataDenyCIDRs(),
 			},
 		},
 	}
