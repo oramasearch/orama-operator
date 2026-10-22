@@ -235,3 +235,10 @@ kubectl --context orama-production-cluster-01 diff -f config/clusters/ -R
 ```
 
 Empty output means they match.
+
+AKS access migration (LSR-219) is deliberately not enabled in these deployed resources. Before
+creating another cluster, populate `provider.yaml` with the actual managing egress CIDRs and
+workload identity principal object UUID under `spec.aks.access`. Migrate one existing cluster at
+a time by committing `spec.access.enforce: true` in its `cluster.yaml`, then applying with Steve's
+consent, following [the migration procedure](../../docs/infrastructure/operations.md#aks-api-access-migration-lsr-219).
+The operator reports existing insecure access without cutting off their legacy management.

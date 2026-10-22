@@ -64,6 +64,15 @@ spec:
           spec:
             description: KubernetesClusterSpec is the cluster that is wanted.
             properties:
+              access:
+                description: Access authorizes migration of existing API access settings.
+                properties:
+                  enforce:
+                    description: |-
+                      Enforce explicitly permits reconciling security settings onto an existing cluster.
+                      New clusters always use secure access regardless of this field.
+                    type: boolean
+                type: object
               deletionPolicy:
                 description: |-
                   DeletionPolicy is required and has no default: whoever writes the resource chooses whether
@@ -74,7 +83,7 @@ spec:
                 type: string
               kubeconfigSecretRef:
                 description: |-
-                  KubeconfigSecretRef is where the cluster's admin kubeconfig is written (key `kubeconfig`).
+                  KubeconfigSecretRef is where the cluster's identity-only kubeconfig is written (key `kubeconfig`).
                   Defaults to a Secret named <name>-kubeconfig in the provider's credentials namespace.
                 properties:
                   name:
@@ -300,8 +309,8 @@ spec:
                 description: Endpoint is the address of the cluster's API server.
                 type: string
               kubeconfigSecretRef:
-                description: KubeconfigSecretRef is where the admin kubeconfig was
-                  written.
+                description: KubeconfigSecretRef is where the identity-only kubeconfig
+                  was written.
                 properties:
                   name:
                     minLength: 1

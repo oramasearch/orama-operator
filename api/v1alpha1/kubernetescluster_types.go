@@ -98,8 +98,34 @@ type ClusterNodePool struct {
 	Sysctls NodeSysctls `json:"sysctls,omitempty"`
 }
 
+// ClusterAccessSettings authorizes migration of an existing cluster's API access.
+type ClusterAccessSettings struct {
+	// Enforce explicitly permits reconciling security settings onto an existing cluster.
+	// New clusters always use secure access regardless of this field.
+	// +optional
+	Enforce bool `json:"enforce,omitempty"`
+}
+
+// AksProviderAccess defines the managing identity and networks allowed to administer AKS.
+type AksProviderAccess struct {
+	// PrincipalID is the workload identity's service principal object ID, not its client ID.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="principalID is immutable"
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+	// +optional
+	PrincipalID string `json:"principalID,omitempty"`
+	// AuthorizedIPRanges contains the managing cluster's public egress IPv4 CIDRs.
+	// Missing ranges, noncanonical CIDRs and prefixes broader than /8 are refused at reconcile.
+	// +kubebuilder:validation:MaxItems=200
+	// +listType=set
+	// +optional
+	AuthorizedIPRanges []string `json:"authorizedIPRanges,omitempty"`
+}
+
 // KubernetesClusterSpec is the cluster that is wanted.
 type KubernetesClusterSpec struct {
+	// Access authorizes migration of existing API access settings.
+	// +optional
+	Access ClusterAccessSettings `json:"access,omitempty"`
 	// ProviderRef names the KubernetesClusterProvider that provisions this cluster. Immutable.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="providerRef is immutable"
@@ -119,7 +145,7 @@ type KubernetesClusterSpec struct {
 	// DeletionPolicy is required and has no default: whoever writes the resource chooses whether
 	// deleting it destroys the cluster (Delete) or leaves it running (Retain).
 	DeletionPolicy ClusterDeletionPolicy `json:"deletionPolicy"`
-	// KubeconfigSecretRef is where the cluster's admin kubeconfig is written (key `kubeconfig`).
+	// KubeconfigSecretRef is where the cluster's identity-only kubeconfig is written (key `kubeconfig`).
 	// Defaults to a Secret named <name>-kubeconfig in the provider's credentials namespace.
 	// +optional
 	KubeconfigSecretRef *ClusterSecretReference `json:"kubeconfigSecretRef,omitempty"`
@@ -160,7 +186,7 @@ type KubernetesClusterStatus struct {
 	// KubernetesVersion is the version the cluster is running.
 	// +optional
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
-	// KubeconfigSecretRef is where the admin kubeconfig was written.
+	// KubeconfigSecretRef is where the identity-only kubeconfig was written.
 	// +optional
 	KubeconfigSecretRef *ClusterSecretReference `json:"kubeconfigSecretRef,omitempty"`
 	// NodePools reports each pool.
@@ -214,7 +240,11 @@ type KubernetesClusterList struct {
 
 // AksProviderSettings is what an AKS provider needs: the account, and the settings that have no
 // provider-neutral equivalent. Every cluster that points at the provider gets them.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.access) || !has(oldSelf.access.principalID) || (has(self.access) && has(self.access.principalID) && self.access.principalID == oldSelf.access.principalID)",message="access principalID cannot be changed or removed"
 type AksProviderSettings struct {
+	// Access is required before creating or migrating a cluster.
+	// +optional
+	Access AksProviderAccess `json:"access,omitempty"`
 	// SubscriptionID is the Azure subscription clusters are created in.
 	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F-]{36}$`
 	SubscriptionID string `json:"subscriptionID"`

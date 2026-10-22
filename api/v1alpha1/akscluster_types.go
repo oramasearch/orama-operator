@@ -50,8 +50,30 @@ type AksNodePool struct {
 	Sysctls NodeSysctls `json:"sysctls,omitempty"`
 }
 
+// AksClusterAccess is the desired access policy and permission to migrate an existing cluster.
+type AksClusterAccess struct {
+	// Enforce explicitly permits security updates to an existing cluster.
+	// New clusters are always secured.
+	// +optional
+	Enforce bool `json:"enforce,omitempty"`
+	// PrincipalID is the managing workload identity's service principal object ID.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="principalID is immutable"
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+	// +optional
+	PrincipalID string `json:"principalID,omitempty"`
+	// AuthorizedIPRanges contains managing egress IPv4 CIDRs, each /8 or narrower.
+	// +kubebuilder:validation:MaxItems=200
+	// +listType=set
+	// +optional
+	AuthorizedIPRanges []string `json:"authorizedIPRanges,omitempty"`
+}
+
 // AksClusterSpec is one AKS managed cluster.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.access) || !has(oldSelf.access.principalID) || (has(self.access) && has(self.access.principalID) && self.access.principalID == oldSelf.access.principalID)",message="access principalID cannot be changed or removed"
 type AksClusterSpec struct {
+	// Access is required before creating or migrating a cluster.
+	// +optional
+	Access AksClusterAccess `json:"access,omitempty"`
 	// SubscriptionID, ResourceGroup and Location say where the cluster lives. Immutable.
 	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F-]{36}$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="subscriptionID is immutable"
@@ -92,7 +114,7 @@ type AksClusterSpec struct {
 	// DeletionPolicy is required: Delete destroys the managed cluster and its resource group,
 	// Retain leaves both.
 	DeletionPolicy ClusterDeletionPolicy `json:"deletionPolicy"`
-	// KubeconfigSecretRef is where the admin kubeconfig is written (key `kubeconfig`).
+	// KubeconfigSecretRef is where the identity-only kubeconfig is written (key `kubeconfig`).
 	KubeconfigSecretRef ClusterSecretReference `json:"kubeconfigSecretRef"`
 	// +optional
 	Tags map[string]string `json:"tags,omitempty"`
@@ -131,6 +153,10 @@ type AksOperationStatus struct {
 
 // AksClusterStatus is what Azure reports.
 type AksClusterStatus struct {
+	// AccessSecured is sticky after secure creation or a successful identity cutover. Clearing
+	// spec.access.enforce never permits returning to legacy credentials or insecure settings.
+	// +optional
+	AccessSecured bool `json:"accessSecured,omitempty"`
 	// Phase is Pending, Provisioning, Ready, Degraded or Deleting.
 	// +optional
 	Phase string `json:"phase,omitempty"`
@@ -159,7 +185,8 @@ type AksClusterStatus struct {
 	// delete it.
 	// +optional
 	CreatedResourceGroup bool `json:"createdResourceGroup,omitempty"`
-	// KubeconfigWritten is true once the admin kubeconfig Secret holds a credential.
+	// KubeconfigWritten is true once the connection Secret is delivered; legacy credentials
+	// remain only for an existing cluster awaiting its explicit migration.
 	// +optional
 	KubeconfigWritten bool `json:"kubeconfigWritten,omitempty"`
 	// +optional

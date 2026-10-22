@@ -214,7 +214,7 @@ func observeLeafState(status *oramav1alpha1.OramaOperatorStatus, state leafOpera
 	status.ReadyReplicas = state.ReadyReplicas
 }
 
-// clusterKubeconfig returns the admin kubeconfig of the named KubernetesCluster. When the cluster
+// clusterKubeconfig returns the identity-only kubeconfig of the named KubernetesCluster. When the cluster
 // is not ready to be reached it returns a sentence saying what is being waited for.
 func (r *OramaOperatorReconciler) clusterKubeconfig(ctx context.Context, name string) ([]byte, string, error) {
 	return managedClusterKubeconfig(ctx, r.Client, name)
@@ -232,8 +232,15 @@ func managedClusterKubeconfig(ctx context.Context, r client.Client, name string)
 	if !cluster.DeletionTimestamp.IsZero() {
 		return nil, "KubernetesCluster " + name + " is being deleted", nil
 	}
+	access, err := managedClusterAccessFor(ctx, r, &cluster)
+	if err != nil {
+		return nil, "", err
+	}
+	if access.waiting != "" {
+		return nil, access.waiting, nil
+	}
 	ref := cluster.Status.KubeconfigSecretRef
-	if cluster.Status.Phase != clusterPhaseReady || ref == nil {
+	if (cluster.Status.Phase != clusterPhaseReady && !access.legacy) || ref == nil {
 		phase := cluster.Status.Phase
 		if phase == "" {
 			phase = clusterPhasePending
@@ -250,6 +257,11 @@ func managedClusterKubeconfig(ctx context.Context, r client.Client, name string)
 	kubeconfig := sec.Data[kubeconfigSecretKey]
 	if len(kubeconfig) == 0 {
 		return nil, "", fmt.Errorf("kubeconfig Secret %s/%s has no %q key", ref.Namespace, ref.Name, kubeconfigSecretKey)
+	}
+	if access.validate != nil {
+		if err := access.validate(kubeconfig); err != nil {
+			return nil, "", err
+		}
 	}
 	return kubeconfig, "", nil
 }

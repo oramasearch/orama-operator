@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -47,6 +49,7 @@ type fakeAzure struct {
 	tokenForms     []map[string]string
 	groups         map[string]bool
 	clusters       map[string]*azureManagedCluster
+	roles          map[string]json.RawMessage
 	operations     map[string]*azureOperation // by cluster name; none means Azure answers 404
 	operationsDown bool                       // the latest-operation read answers 500
 	rejectToken    bool
@@ -55,7 +58,12 @@ type fakeAzure struct {
 
 func newFakeAzure(t *testing.T) *fakeAzure {
 	t.Helper()
-	f := &fakeAzure{t: t, groups: map[string]bool{}, clusters: map[string]*azureManagedCluster{}, operations: map[string]*azureOperation{}}
+	token := filepath.Join(t.TempDir(), "projected-token")
+	if err := os.WriteFile(token, []byte("fake-projected-jwt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(azureFederatedTokenFileEnv, token)
+	f := &fakeAzure{roles: map[string]json.RawMessage{}, t: t, groups: map[string]bool{}, clusters: map[string]*azureManagedCluster{}, operations: map[string]*azureOperation{}}
 	f.server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.server.Close)
 	return f
@@ -128,10 +136,23 @@ func (f *fakeAzure) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "":
 		respond(http.StatusOK, map[string]string{"subscriptionId": testSubscription})
-	case strings.Contains(path, "/managedClusters/") && strings.HasSuffix(path, "/listClusterAdminCredential"):
-		respond(http.StatusOK, map[string]any{"kubeconfigs": []map[string]string{{
-			"name": "clusterAdmin", "value": base64.StdEncoding.EncodeToString([]byte(testKubeconfig)),
-		}}})
+	case strings.Contains(path, "/providers/Microsoft.Authorization/roleAssignments/"):
+		if r.Method == http.MethodGet {
+			value, ok := f.roles[path]
+			if !ok {
+				notFound()
+				return
+			}
+			respond(http.StatusOK, value)
+		} else if r.Method == http.MethodPut {
+			f.roles[path] = append(json.RawMessage(nil), body...)
+			respond(http.StatusCreated, json.RawMessage(body))
+		}
+	case strings.Contains(path, "/managedClusters/") && strings.HasSuffix(path, "/listClusterUserCredential"):
+		name := strings.TrimSuffix(path, "/listClusterUserCredential")
+		name = name[strings.LastIndex(name, "/")+1:]
+		encoded := base64.StdEncoding.EncodeToString([]byte(fakeAksUserKubeconfig(name)))
+		respond(http.StatusOK, map[string]any{"kubeconfigs": []map[string]string{{"name": "clusterUser", "value": encoded}}})
 	case strings.Contains(path, "/managedClusters/") && strings.HasSuffix(path, "/operations/latest"):
 		name := strings.TrimSuffix(path[strings.Index(path, "/managedClusters/")+len("/managedClusters/"):], "/operations/latest")
 		if r.URL.Query().Get("api-version") != azureAPIOperations {
@@ -245,6 +266,7 @@ func testAksCluster(policy oramav1alpha1.ClusterDeletionPolicy) *oramav1alpha1.A
 	return &oramav1alpha1.AksCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "orama-nonprod-cluster-01"},
 		Spec: oramav1alpha1.AksClusterSpec{
+			Access:               testAksAccess(),
 			SubscriptionID:       testSubscription,
 			ResourceGroup:        "orama-nonprod-cluster-01_group",
 			Location:             "westus2",
@@ -283,8 +305,8 @@ func getAks(t *testing.T, c client.Client, name string) *oramav1alpha1.AksCluste
 
 func TestAksClusterIsCreatedObservedAndItsKubeconfigDelivered(t *testing.T) {
 	azure := newFakeAzure(t)
-	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
-	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(false))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client(), AccessCheck: allowFakeAksAccess}
 	name := "orama-nonprod-cluster-01"
 
 	// First pass: the finalizer, the resource group and the create request.
@@ -349,8 +371,8 @@ func TestAksClusterIsCreatedObservedAndItsKubeconfigDelivered(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "orama-system", Name: name + "-kubeconfig"}, &kubeconfig); err != nil {
 		t.Fatalf("kubeconfig Secret: %v", err)
 	}
-	if string(kubeconfig.Data[kubeconfigSecretKey]) != testKubeconfig {
-		t.Fatalf("kubeconfig Secret holds %q", kubeconfig.Data[kubeconfigSecretKey])
+	if err := validateAksIdentityKubeconfig(kubeconfig.Data[kubeconfigSecretKey], azureCredentials{TenantID: "tenant-1", ClientID: "client-1"}, "https://"+cluster.Status.FQDN+":443"); err != nil {
+		t.Fatalf("kubeconfig is not identity-only: %v", err)
 	}
 	if !metav1.IsControlledBy(&kubeconfig, cluster) {
 		t.Fatal("the kubeconfig Secret is not owned by the AksCluster")
@@ -365,7 +387,7 @@ func TestAksClusterIsCreatedObservedAndItsKubeconfigDelivered(t *testing.T) {
 		t.Fatalf("a steady cluster wrote its status: resourceVersion %s -> %s", before, after)
 	}
 	if got := azure.count("POST /subscriptions/"); got != credentialFetches {
-		t.Fatalf("the admin credential was fetched again: %d -> %d", credentialFetches, got)
+		t.Fatalf("the user connection metadata was fetched again: %d -> %d", credentialFetches, got)
 	}
 	if got := azure.count("POST "); got != credentialFetches+1 {
 		t.Fatalf("expected one token request across every reconcile, saw %d", got-credentialFetches)
@@ -374,8 +396,8 @@ func TestAksClusterIsCreatedObservedAndItsKubeconfigDelivered(t *testing.T) {
 
 func TestAksClusterDeleteDestroysTheClusterAndTheGroupItCreated(t *testing.T) {
 	azure := newFakeAzure(t)
-	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
-	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(false))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client(), AccessCheck: allowFakeAksAccess}
 	name := "orama-nonprod-cluster-01"
 	reconcileAks(t, r, name)
 	azure.setState(name, "Succeeded")
@@ -415,8 +437,8 @@ func TestAksClusterDeleteDestroysTheClusterAndTheGroupItCreated(t *testing.T) {
 
 func TestAksClusterRetainLeavesTheClusterRunning(t *testing.T) {
 	azure := newFakeAzure(t)
-	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionRetain), azureCredentialsSecret(true))
-	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionRetain), azureCredentialsSecret(false))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client(), AccessCheck: allowFakeAksAccess}
 	name := "orama-nonprod-cluster-01"
 	reconcileAks(t, r, name)
 	azure.setState(name, "Succeeded")
@@ -442,8 +464,8 @@ func TestAksClusterDoesNotDeleteAGroupItDidNotCreate(t *testing.T) {
 	azure := newFakeAzure(t)
 	azure.groups["orama-nonprod-cluster-01_group"] = true // made by a person, before the operator
 	azure.deleteFinishes = true
-	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
-	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(false))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client(), AccessCheck: allowFakeAksAccess}
 	name := "orama-nonprod-cluster-01"
 	reconcileAks(t, r, name)
 	if getAks(t, c, name).Status.CreatedResourceGroup {
@@ -467,7 +489,7 @@ func TestAksClusterDoesNotDeleteAGroupItDidNotCreate(t *testing.T) {
 func TestAksClusterWaitsForCredentialsAndHoldsADeleteWithoutThem(t *testing.T) {
 	azure := newFakeAzure(t)
 	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete))
-	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client(), AccessCheck: allowFakeAksAccess}
 	name := "orama-nonprod-cluster-01"
 
 	reconcileAks(t, r, name)
@@ -494,8 +516,8 @@ func TestAksClusterWaitsForCredentialsAndHoldsADeleteWithoutThem(t *testing.T) {
 
 func TestAksClusterReportsWhatTheSpecAsksForThatTheClusterLacks(t *testing.T) {
 	azure := newFakeAzure(t)
-	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionRetain), azureCredentialsSecret(true))
-	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionRetain), azureCredentialsSecret(false))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client(), AccessCheck: allowFakeAksAccess}
 	name := "orama-nonprod-cluster-01"
 	reconcileAks(t, r, name)
 	azure.setState(name, "Succeeded")
@@ -551,8 +573,8 @@ func TestATagNameAzureWouldRefuseIsRefusedBeforeAzureIsCalled(t *testing.T) {
 	azure := newFakeAzure(t)
 	concrete := testAksCluster(oramav1alpha1.ClusterDeletionDelete)
 	concrete.Spec.Tags = map[string]string{"orama.cloud/role": "leaf"}
-	c := clusterTestClient(t, concrete, azureCredentialsSecret(true))
-	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	c := clusterTestClient(t, concrete, azureCredentialsSecret(false))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client(), AccessCheck: allowFakeAksAccess}
 	reconcileAks(t, r, concrete.Name)
 	got := getAks(t, c, concrete.Name)
 	if got.Status.Phase != clusterPhaseDegraded || !strings.Contains(got.Status.Message, `"orama.cloud/role"`) {
@@ -635,6 +657,7 @@ func testProvider() *oramav1alpha1.KubernetesClusterProvider {
 			Type:                 oramav1alpha1.KubernetesClusterProviderAKS,
 			CredentialsSecretRef: oramav1alpha1.ClusterSecretReference{Name: "azure", Namespace: "orama-system"},
 			AKS: &oramav1alpha1.AksProviderSettings{
+				Access:         oramav1alpha1.AksProviderAccess{PrincipalID: testAksAccess().PrincipalID, AuthorizedIPRanges: testAksAccess().AuthorizedIPRanges},
 				SubscriptionID: testSubscription, ResourceGroupSuffix: "_group", SKUTier: "Standard",
 				Network:        oramav1alpha1.AksNetworkSettings{Plugin: "azure", PluginMode: "overlay", Dataplane: "cilium", Policy: "cilium"},
 				UpgradeChannel: "patch", NodeOSUpgradeChannel: "NodeImage", OSDiskSizeGB: 256,
@@ -676,7 +699,7 @@ func getKC(t *testing.T, c client.Client, name string) *oramav1alpha1.Kubernetes
 }
 
 func TestKubernetesClusterProvisionsTheConcreteKindItsProviderNames(t *testing.T) {
-	c := clusterTestClient(t, testKubernetesCluster(), testProvider(), azureCredentialsSecret(true))
+	c := clusterTestClient(t, testKubernetesCluster(), testProvider(), azureCredentialsSecret(false))
 	r := &KubernetesClusterReconciler{Client: c, Scheme: clusterTestScheme(t)}
 	name := "orama-nonprod-cluster-01"
 	reconcileKC(t, r, name)
@@ -793,7 +816,7 @@ func TestKubernetesClusterWaitsForItsProviderAndRefusesAnInvalidSpec(t *testing.
 }
 
 func TestKubernetesClusterDeletionWaitsForTheConcreteResource(t *testing.T) {
-	c := clusterTestClient(t, testKubernetesCluster(), testProvider(), azureCredentialsSecret(true))
+	c := clusterTestClient(t, testKubernetesCluster(), testProvider(), azureCredentialsSecret(false))
 	r := &KubernetesClusterReconciler{Client: c, Scheme: clusterTestScheme(t)}
 	name := "orama-nonprod-cluster-01"
 	reconcileKC(t, r, name)
@@ -904,8 +927,8 @@ func TestKubernetesClusterProviderReportsRefusedCredentials(t *testing.T) {
 // KubernetesCluster that owns it, and in the operator's log once.
 func TestAksClusterReportsAzuresOperationProgressAndErrors(t *testing.T) {
 	azure := newFakeAzure(t)
-	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
-	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(false))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client(), AccessCheck: allowFakeAksAccess}
 	name := "orama-nonprod-cluster-01"
 
 	reconcileAks(t, r, name) // creates
@@ -977,8 +1000,8 @@ func TestAksClusterReportsAzuresOperationProgressAndErrors(t *testing.T) {
 // returned, so it is logged and retried. It is never skipped to keep the reconcile quiet.
 func TestAksClusterReturnsAnErrorWhenTheOperationCannotBeRead(t *testing.T) {
 	azure := newFakeAzure(t)
-	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(true))
-	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	c := clusterTestClient(t, testAksCluster(oramav1alpha1.ClusterDeletionDelete), azureCredentialsSecret(false))
+	r := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client(), AccessCheck: allowFakeAksAccess}
 	name := "orama-nonprod-cluster-01"
 	reconcileAks(t, r, name)
 
@@ -1036,3 +1059,29 @@ func TestAksClustersAlwaysEnforceNetworkPolicyWithCilium(t *testing.T) {
 		}
 	}
 }
+
+func testAksAccess() oramav1alpha1.AksClusterAccess {
+	return oramav1alpha1.AksClusterAccess{PrincipalID: "12345678-1234-1234-1234-123456789012", AuthorizedIPRanges: []string{"203.0.113.10/32"}}
+}
+
+func fakeAksUserKubeconfig(name string) string {
+	return fmt.Sprintf("apiVersion: v1\nkind: Config\ncurrent-context: user\ncontexts:\n- name: user\n  context:\n    cluster: aks\n    user: user\nclusters:\n- name: aks\n  cluster:\n    server: https://%s-dns-abc123.hcp.westus2.azmk8s.io:443\n    certificate-authority-data: Y2E=\nusers:\n- name: user\n  user:\n    exec:\n      apiVersion: client.authentication.k8s.io/v1beta1\n      command: kubelogin\n      args: [get-token]\n", name)
+}
+
+func TestAksUserKubeconfigHasNoStoredCredential(t *testing.T) {
+	raw := []byte(fakeAksUserKubeconfig("example"))
+	clean, err := aksIdentityKubeconfig(raw, azureCredentials{TenantID: "tenant", ClientID: "client"}, "https://example-dns-abc123.hcp.westus2.azmk8s.io:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := clientcmd.Load(clean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := config.AuthInfos["identity"]
+	if auth == nil || auth.Exec != nil || auth.ClientCertificateData != nil || auth.Token != "" || auth.AuthProvider == nil || auth.AuthProvider.Name != aksIdentityProvider {
+		t.Fatal("stored credential in AKS kubeconfig")
+	}
+}
+
+func allowFakeAksAccess(context.Context, []byte) error { return nil }

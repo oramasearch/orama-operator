@@ -1764,18 +1764,19 @@ manages others by holding these resources.
 | Field | Meaning |
 |---|---|
 | `spec.providerRef` | Name of the `KubernetesClusterProvider`. Immutable. |
+| `spec.access.enforce` | Default false. Explicitly permits security migration of an existing cluster; new clusters always use secure access. See [migration](infrastructure/operations.md#aks-api-access-migration-lsr-219). |
 | `spec.region` | The provider's name for the region, such as `westus2`. Immutable. |
 | `spec.kubernetesVersion` | `1.35` or `1.35.8`. |
 | `spec.nodePools[]` | `name`, `role` (`system` or `user`), `machineSize` (the provider's word, such as `Standard_D8as_v7`), and either `count` or `minCount` with `maxCount` (which turns on the provider's autoscaling between the two; `count` is then the starting size). Optional `zones`, `labels`, `taints`, `sysctls`. At least one pool must be `system`, with at least one node. |
 | `spec.nodePools[].sysctls` | Optional map of Linux kernel names to integer values or string ranges, for example `{vm.max_map_count: 4194304}`. Boolean settings use integer `0` or `1`. The provider validates names, types and values; AKS refuses unsupported settings before provisioning. Only explicitly configured settings are checked for drift. See [node sysctls](infrastructure/node-sysctls.md) for supported settings and rollout limits. |
 | `spec.deletionPolicy` | **Required, no default.** `Delete` destroys the real cluster when the resource is deleted; `Retain` leaves it running. Clusters are ephemeral, so whoever writes the resource chooses. |
-| `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written (key `kubeconfig`). Default: `<name>-kubeconfig` in the namespace of the provider's credentials Secret. |
+| `spec.kubeconfigSecretRef` | Where the identity-only kubeconfig is written (key `kubeconfig`). Default: `<name>-kubeconfig` in the namespace of the provider's credentials Secret. |
 | `spec.tags` | Attached to the cluster where the provider supports them. **For an AKS provider a tag name cannot contain `<`, `>`, `%`, `&`, `\`, `?` or `/`**, so a Kubernetes-style name such as `orama.cloud/role` is refused: the cluster is `Degraded` with the tag named, and Azure is never called. At most 50 tags, names up to 512 characters, values up to 256. |
 | `status.phase` | `Pending`, `Provisioning`, `Ready`, `Degraded` or `Deleting`, summarized from the concrete resource. `kubectl get kcluster` (the short name `kc` belongs to Strimzi's `KafkaConnect`). |
 | `status.concreteRef` | The concrete resource, as `AksCluster/<name>`. |
 | `status.endpoint` / `.kubernetesVersion` / `.nodePools[]` | The API server's address, the version running, and each pool's state, count and the provider's `error` for it. |
 | `status.message` | Why the cluster is not `Ready`, in the provider's words, copied from the concrete resource. A column of `kubectl get kcluster`. |
-| `status.kubeconfigSecretRef` | Set once the kubeconfig Secret holds a credential. |
+| `status.kubeconfigSecretRef` | Set once the kubeconfig Secret is delivered (legacy credentials remain only before an explicit migration). |
 | `Ready` / `InSync` conditions | Carried across from the concrete resource. |
 
 A cluster whose spec is invalid in a way the schema cannot express (no system pool, `minCount`
@@ -1793,6 +1794,8 @@ requires a different one means pointing a `KubernetesCluster` at a different pro
 |---|---|
 | `spec.type` | `aks`. Immutable. |
 | `spec.credentialsSecretRef` | `{name, namespace}` of the Secret the operator authenticates with. For `aks`: keys `tenantID` and `clientID`, plus `clientSecret` for a service principal. **Without `clientSecret` the operator uses workload identity**: it exchanges its projected service-account token for an Azure token, so no long-lived secret exists. |
+| `spec.aks.access.principalID` | Managing workload identity service principal object UUID. Immutable once set; required for creating or migrating clusters. |
+| `spec.aks.access.authorizedIPRanges` | 1–200 canonical managing egress IPv4 CIDRs, each /8 or narrower. Required for creating or migrating clusters; no public-all default. |
 | `spec.aks.subscriptionID` | The Azure subscription clusters are created in. |
 | `spec.aks.resourceGroupPrefix` / `.resourceGroupSuffix` | Each cluster's resource group is `<prefix><cluster name><suffix>`. The suffix defaults to `_group`. |
 | `spec.aks.skuTier` | `Free`, `Standard` (default) or `Premium`. |
@@ -1812,25 +1815,31 @@ directly, as the Cloudflare and Clerk controllers call theirs: there is no Azure
 
 | Field | Meaning |
 |---|---|
+| `spec.access` | `principalID` and `authorizedIPRanges` come from the provider; `enforce` comes from `KubernetesCluster.spec.access.enforce`. Direct `AksCluster` resources use the same validation and migration gate. |
 | `spec.subscriptionID` / `.resourceGroup` / `.location` | Where the cluster lives. Immutable. |
 | `spec.clusterName` | The managed cluster's name in Azure. Default: the resource's name. |
 | `spec.credentialsSecretRef` | The Azure credentials Secret, as on the provider. |
 | `spec.kubernetesVersion`, `.skuTier`, `.network`, `.upgradeChannel`, `.nodeOSUpgradeChannel`, `.workloadIdentity` | As on the provider and the abstract kind. |
 | `spec.nodePools[]` | `name`, `mode` (`System` or `User`), `vmSize`, `count`, `enableAutoScaling` with `minCount` and `maxCount`, `osDiskSizeGB`, `availabilityZones`, `nodeLabels`, `nodeTaints`, `sysctls`. Sysctls use the same Linux names and value types as `KubernetesCluster`; they map to Azure `linuxOSConfig.sysctls` on creation. Unsupported settings produce `Degraded` / `InvalidSysctls` and `InSync=False` before any Azure request. |
 | `spec.deletionPolicy` | Required. `Delete` deletes the managed cluster, then the resource group **if the operator created it**; `Retain` deletes nothing. |
-| `spec.kubeconfigSecretRef` | Where the admin kubeconfig is written. The Secret is owned by the `AksCluster`. |
+| `spec.kubeconfigSecretRef` | Where the identity-only kubeconfig is written. The Secret is owned by the `AksCluster`. |
 | `status.phase` / `.provisioningState` / `.powerState` | The operator's phase, and Azure's own words. `kubectl get aks`. |
 | `status.resourceID`, `.fqdn`, `.kubernetesVersion`, `.nodeResourceGroup`, `.oidcIssuerURL`, `.nodePools[]` | What Azure reports. |
 | `status.operation` | The latest operation Azure ran on the cluster, read from `operations/latest` on every reconcile: `id` (to quote to Azure support), `status` (Azure's progress line while it runs, such as `CreatingAgentPools: 0/1 nodes completed`, then `Succeeded`, `Failed` or `Canceled`), `startTime`, `endTime`, and `error` (`code: message`, followed by the causes Azure nests under it). The `Operation` column of `kubectl get aks`. |
 | `status.provisioningError`, `.nodePools[].error` | The provisioning error Azure reports on the cluster and on each pool. |
 | `status.message` | Why the cluster is not `Ready`, in Azure's words: the provisioning state, the operation's progress, and every error Azure reports on the operation, the cluster and each pool. The same text is the `Ready` condition's message and is copied to the `KubernetesCluster`. `kubectl get aks -o wide`, `kubectl get kcluster`. A failure is also logged by the operator as an error, once per distinct failure. |
 | `status.createdResourceGroup` | True when the operator created the resource group, and so may delete it. |
-| `status.kubeconfigWritten` | True once the kubeconfig Secret holds a credential. |
-| `InSync` condition | False when the spec asks for something the cluster does not have. **This version reports the difference and does not act on it**: a cluster is not changed after it is created. Configured sysctls report the pool, kernel name and desired/reported values; an omitted Azure value is reported as unknown, without guessing an OS default. `Ready` still describes provisioning. Removing a sysctl from the resource stops managing it and does not reset the live setting. |
+| `status.accessSecured` | Sticky after secure creation or successful identity cutover. Once true, access drift is repaired and legacy authentication is never restored, even if `spec.access.enforce` is cleared. |
+| `status.kubeconfigWritten` | True once the kubeconfig Secret is delivered. Secure clusters store only endpoint, CA and workload-identity metadata. |
+| `InSync` condition | False when the spec asks for something the cluster does not have. Pool/version drift is observed only. Insecure API access is `Degraded/InsecureAccess`; applying security settings to an existing cluster requires `spec.access.enforce: true`. Configured sysctls report the pool, kernel name and desired/reported values; an omitted Azure value is reported as unknown, without guessing an OS default. `Ready` still describes provisioning. Removing a sysctl from the resource stops managing it and does not reset the live setting. |
 
-What a reconcile does: register the finalizer; ensure the resource group; create the managed
-cluster if it is absent; poll every 30 seconds until Azure reports `Succeeded`; fetch the admin
-credential once and write the kubeconfig Secret; then re-read the cluster every five minutes.
+A reconcile registers the finalizer, observes Azure and creates a missing cluster only with
+validated secure access. Once Azure reports `Succeeded`, it reconciles a cluster-scoped Azure
+RBAC assignment, fetches user connection metadata, verifies workload-identity access and writes
+an identity-only kubeconfig. An existing insecure cluster retains its legacy management credential
+until its resource explicitly sets `spec.access.enforce: true`; migration changes only security
+settings and preserves Azure's other properties. It polls every 30 seconds while provisioning,
+then every five minutes.
 Status is written only when it changes. On deletion with `Delete`, the resource is held until
 Azure reports the cluster gone; if the credentials are missing, it is held and says so, so a
 running cluster is never orphaned silently.
