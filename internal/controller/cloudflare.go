@@ -70,6 +70,29 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 		}
 	}
 
+	if dashboard := oc.Spec.Components.Dashboard; dashboard.Enabled {
+		bucket := &oramav1alpha1.CloudflareR2Bucket{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-uploads", Namespace: oc.Namespace}}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, bucket, func() error {
+			origins := []string{"https://" + dashboard.Host}
+			for _, host := range dashboard.ExtraHosts {
+				origins = append(origins, "https://"+host)
+			}
+			days := int32(7)
+			bucket.Spec = oramav1alpha1.CloudflareR2BucketSpec{
+				SecretRef: secretName, Name: oc.Name + "-uploads",
+				// Staging objects are deleted after import or after 7 days; the bucket goes with the stack.
+				DeletionPolicy: oramav1alpha1.BucketDeletionDelete,
+				Credentials:    &oramav1alpha1.CloudflareR2BucketCredentials{SecretName: oc.Name + "-uploads-r2"},
+				CORS: []oramav1alpha1.CloudflareR2CORSRule{{AllowedOrigins: origins,
+					AllowedMethods: []string{"PUT"}, AllowedHeaders: []string{"*"}, MaxAgeSeconds: 3600}},
+				ExpireAfterDays: &days,
+			}
+			return controllerutil.SetControllerReference(oc, bucket, r.Scheme)
+		}); err != nil {
+			return err
+		}
+	}
+
 	// Cloudflare Load Balancing (Pools / Monitors / Load Balancers) is a PAID add-on that must be
 	// enabled on the account before its API will accept requests — the operator cannot enable billing
 	// for you. Surface clear guidance in the log so users know the one manual step to take (as seen in

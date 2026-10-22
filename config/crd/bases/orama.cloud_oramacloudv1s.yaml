@@ -1588,33 +1588,9 @@ spec:
                     type: object
                   importConsumer:
                     description: |-
-                      ImportConsumer runs the import consumer in the stack: it reads the S3 bucket the crawler and
-                      file uploads write to, through an SQS queue fed by the bucket's object-created events, in
-                      place of Prod 1's Fargate task per object (operator#446). It requires the dashboard.
+                      ImportConsumer lists the stack's R2 uploads bucket and imports files and crawl exports
+                      through this stack's dashboard. It requires the dashboard and Cloudflare enabled.
                     properties:
-                      awsCredentialsSecretRef:
-                        description: |-
-                          AWSCredentialsSecretRef names the Secret, in this resource's namespace, holding
-                          AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for an IAM user allowed to read the bucket and
-                          to receive, delete and extend messages on the queue, and nothing else.
-                        properties:
-                          name:
-                            default: ""
-                            description: |-
-                              Name of the referent.
-                              This field is effectively required, but due to backwards compatibility is
-                              allowed to be empty. Instances of this type with an empty value here are
-                              almost certainly wrong.
-                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                            type: string
-                        type: object
-                        x-kubernetes-map-type: atomic
-                      bucket:
-                        description: |-
-                          Bucket is the S3 bucket the consumer reads (Prod 1's airbyte-exports-prod). An event for any
-                          other bucket is logged and dropped.
-                        pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
-                        type: string
                       concurrency:
                         default: 2
                         description: |-
@@ -1625,35 +1601,13 @@ spec:
                         minimum: 1
                         type: integer
                       enabled:
-                        description: |-
-                          Enabled runs the consumer. Off by default: Prod 1's Fargate task and this consumer must never
-                          both import the same objects, so it is turned on only once the queue exists and the Fargate
-                          path is stopped (docs/cloud-v1-import-consumer.md).
+                        description: Enabled runs the consumer against this stack's
+                          own uploads bucket. Off by default.
                         type: boolean
                       image:
-                        description: |-
-                          Image is the consumer's image, a full reference (oramasearch/airbyte-fargate-consumer:<tag>).
-                          There is no default: no image of it is published to Docker Hub yet.
+                        description: Image is the consumer's full image reference
+                          with src/bucket-worker.ts. No default.
                         type: string
-                      queueURL:
-                        description: QueueURL is the SQS queue the bucket's object-created
-                          events are delivered to.
-                        pattern: ^https://sqs\.[a-z0-9-]+\.amazonaws\.com/[0-9]{12}/[A-Za-z0-9_-]{1,80}$
-                        type: string
-                      region:
-                        default: us-east-1
-                        description: Region is the AWS region of the queue and the
-                          bucket.
-                        pattern: ^[a-z]{2}(-[a-z]+)+-[0-9]$
-                        type: string
-                      replicas:
-                        default: 1
-                        description: Replicas of the consumer Deployment. SQS hands
-                          each message to one receiver at a time.
-                        format: int32
-                        maximum: 10
-                        minimum: 1
-                        type: integer
                       resources:
                         description: |-
                           Resources overrides the consumer's pod resources. Each import process's heap is sized from the
@@ -1715,19 +1669,6 @@ spec:
                         is enabled
                       rule: '!has(self.enabled) || !self.enabled || (has(self.image)
                         && size(self.image) > 0)'
-                    - message: importConsumer.queueURL is required when the import
-                        consumer is enabled
-                      rule: '!has(self.enabled) || !self.enabled || (has(self.queueURL)
-                        && size(self.queueURL) > 0)'
-                    - message: importConsumer.bucket is required when the import consumer
-                        is enabled
-                      rule: '!has(self.enabled) || !self.enabled || (has(self.bucket)
-                        && size(self.bucket) > 0)'
-                    - message: importConsumer.awsCredentialsSecretRef is required
-                        when the import consumer is enabled
-                      rule: '!has(self.enabled) || !self.enabled || (has(self.awsCredentialsSecretRef)
-                        && has(self.awsCredentialsSecretRef.name) && size(self.awsCredentialsSecretRef.name)
-                        > 0)'
                   ingestion:
                     description: IngestionSpec configures the ingest path (index-builder
                       as a plain Deployment + HARVEST).
@@ -2594,6 +2535,16 @@ spec:
             required:
             - region
             type: object
+            x-kubernetes-validations:
+            - message: importConsumer requires cloudflare.enabled
+              rule: '!has(self.components) || !has(self.components.importConsumer)
+                || !has(self.components.importConsumer.enabled) || !self.components.importConsumer.enabled
+                || (has(self.cloudflare) && has(self.cloudflare.enabled) && self.cloudflare.enabled)'
+            - message: importConsumer requires the dashboard enabled
+              rule: '!has(self.components) || !has(self.components.importConsumer)
+                || !has(self.components.importConsumer.enabled) || !self.components.importConsumer.enabled
+                || (has(self.components.dashboard) && has(self.components.dashboard.enabled)
+                && self.components.dashboard.enabled)'
           status:
             description: OramaCloudV1Status is the observed state.
             properties:

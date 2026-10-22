@@ -9,9 +9,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
+	"slices"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -106,6 +110,9 @@ func (r *CloudflareR2BucketReconciler) Reconcile(ctx context.Context, req ctrl.R
 	err = cfEnsureR2Bucket(ctx, r.apiBase(), token, accountID, b.Spec.Name)
 	if err == nil {
 		desired.Created = true
+		err = r.reconcileBucketConfiguration(ctx, &b, token, accountID)
+	}
+	if err == nil {
 		err = r.reconcileCredentials(ctx, &b, &desired, token, accountID)
 	}
 	if err != nil {
@@ -124,6 +131,142 @@ func (r *CloudflareR2BucketReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 	}
 	return ctrl.Result{}, err
+}
+
+type cfR2CORSRule struct {
+	Allowed struct {
+		Origins []string `json:"origins"`
+		Methods []string `json:"methods"`
+		Headers []string `json:"headers,omitempty"`
+	} `json:"allowed"`
+	ExposeHeaders []string `json:"exposeHeaders,omitempty"`
+	MaxAgeSeconds int32    `json:"maxAgeSeconds,omitempty"`
+}
+
+type cfR2CORS struct {
+	Rules []cfR2CORSRule `json:"rules"`
+}
+
+type cfR2LifecycleTransition struct {
+	Condition struct {
+		Type   string `json:"type"`
+		MaxAge int64  `json:"maxAge,omitempty"`
+		Date   string `json:"date,omitempty"`
+	} `json:"condition"`
+}
+
+type cfR2LifecycleRule struct {
+	ID         string `json:"id"`
+	Enabled    bool   `json:"enabled"`
+	Conditions struct {
+		Prefix string `json:"prefix"`
+	} `json:"conditions"`
+	DeleteObjectsTransition         *cfR2LifecycleTransition `json:"deleteObjectsTransition,omitempty"`
+	AbortMultipartUploadsTransition *cfR2LifecycleTransition `json:"abortMultipartUploadsTransition,omitempty"`
+	StorageClassTransitions         []json.RawMessage        `json:"storageClassTransitions,omitempty"`
+}
+
+// canonicalCORS compares effective rules, ignoring provider-assigned IDs, set ordering, and
+// omitted versus empty optional arrays. Header names are case-insensitive.
+func canonicalCORS(config cfR2CORS) []string {
+	set := func(values []string, headers bool) []string {
+		values = slices.Clone(values)
+		if headers {
+			for i := range values {
+				values[i] = strings.ToLower(values[i])
+			}
+		}
+		slices.Sort(values)
+		return slices.Compact(values)
+	}
+	rules := make([]string, 0, len(config.Rules))
+	for _, rule := range config.Rules {
+		rule.Allowed.Origins = set(rule.Allowed.Origins, false)
+		rule.Allowed.Methods = set(rule.Allowed.Methods, false)
+		rule.Allowed.Headers = set(rule.Allowed.Headers, true)
+		rule.ExposeHeaders = set(rule.ExposeHeaders, true)
+		encoded, _ := json.Marshal(rule)
+		rules = append(rules, string(encoded))
+	}
+	slices.Sort(rules)
+	return slices.Compact(rules)
+}
+
+// reconcileBucketConfiguration touches only explicitly requested settings. Other lifecycle rules
+// are kept verbatim because only orama-expire belongs to the operator.
+func (r *CloudflareR2BucketReconciler) reconcileBucketConfiguration(ctx context.Context, b *oramav1alpha1.CloudflareR2Bucket, token, accountID string) error {
+	base := fmt.Sprintf("%s/accounts/%s/r2/buckets/%s", r.apiBase(), accountID, b.Spec.Name)
+	if b.Spec.CORS != nil {
+		desired := cfR2CORS{Rules: make([]cfR2CORSRule, 0, len(b.Spec.CORS))}
+		for _, rule := range b.Spec.CORS {
+			converted := cfR2CORSRule{MaxAgeSeconds: rule.MaxAgeSeconds}
+			converted.Allowed.Origins, converted.Allowed.Methods, converted.Allowed.Headers = rule.AllowedOrigins, rule.AllowedMethods, rule.AllowedHeaders
+			desired.Rules = append(desired.Rules, converted)
+		}
+		var current struct {
+			Result cfR2CORS `json:"result"`
+		}
+		// https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/cors/methods/get/
+		if err := cfDo(ctx, token, http.MethodGet, base+"/cors", nil, &current); err != nil && !cfR2ConfigurationMissing(err) {
+			return err
+		}
+		if !slices.Equal(canonicalCORS(current.Result), canonicalCORS(desired)) {
+			// https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/cors/methods/update/
+			if err := cfDo(ctx, token, http.MethodPut, base+"/cors", desired, nil); err != nil {
+				return err
+			}
+		}
+	}
+	if b.Spec.ExpireAfterDays != nil {
+		desired := cfR2LifecycleRule{ID: "orama-expire", Enabled: true, DeleteObjectsTransition: &cfR2LifecycleTransition{}}
+		desired.DeleteObjectsTransition.Condition.Type = "Age"
+		desired.DeleteObjectsTransition.Condition.MaxAge = int64(*b.Spec.ExpireAfterDays) * 86400
+		var current struct {
+			Result struct {
+				Rules []json.RawMessage `json:"rules"`
+			} `json:"result"`
+		}
+		// https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/lifecycle/methods/get/
+		if err := cfDo(ctx, token, http.MethodGet, base+"/lifecycle", nil, &current); err != nil && !cfR2ConfigurationMissing(err) {
+			return err
+		}
+		index := -1
+		for i, raw := range current.Result.Rules {
+			var rule cfR2LifecycleRule
+			if err := json.Unmarshal(raw, &rule); err != nil {
+				return err
+			}
+			if rule.ID != desired.ID {
+				continue
+			}
+			if len(rule.StorageClassTransitions) == 0 {
+				rule.StorageClassTransitions = nil
+			}
+			if reflect.DeepEqual(rule, desired) {
+				return nil
+			}
+			index = i
+			break
+		}
+		raw, err := json.Marshal(desired)
+		if err != nil {
+			return err
+		}
+		if index < 0 {
+			current.Result.Rules = append(current.Result.Rules, raw)
+		} else {
+			current.Result.Rules[index] = raw
+		}
+		// https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/lifecycle/methods/update/
+		return cfDo(ctx, token, http.MethodPut, base+"/lifecycle", current.Result, nil)
+	}
+	return nil
+}
+
+// cfR2ConfigurationMissing recognizes buckets with no CORS or lifecycle configuration yet.
+func cfR2ConfigurationMissing(err error) bool {
+	var apiErr *cfAPIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 }
 
 // reconcileCredentials keeps the bucket-scoped token and its Secret, or removes both when

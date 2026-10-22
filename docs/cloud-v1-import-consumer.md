@@ -1,106 +1,96 @@
-# The Cloud v1 import consumer in the cluster
+# The Cloud v1 uploads bucket and import consumer
 
-[operator#446](https://github.com/oramasearch/orama-operator/issues/446). Decision: Juan, 2026-10-13,
-on [orama-bridge#160](https://github.com/oramasearch/orama-bridge/issues/160): *"After the cutover the
-consumer moves into the cluster and keeps reading the same bucket."* Epic:
-[orama-bridge#137](https://github.com/oramasearch/orama-bridge/issues/137).
+[orama-bridge#240](https://github.com/oramasearch/orama-bridge/issues/240) moves uploads and crawl
+exports to a Cloudflare R2 bucket provisioned by the operator. The dashboard signs upload URLs
+([#238](https://github.com/oramasearch/orama-bridge/issues/238)); the consumer discovers objects by
+listing the bucket ([#239](https://github.com/oramasearch/orama-bridge/issues/239)).
 
-Status: implemented in the operator and in the consumer's queue-worker mode, tested with fakes. Not
-running anywhere: no image is published, and the AWS resources below do not exist yet.
+## The stack's bucket
 
-## What it replaces
+With Cloudflare and the dashboard enabled, every `OramaCloudV1` owns a `CloudflareR2Bucket` named
+`<cr>-uploads`. Its account token comes from the stack's Cloudflare Secret (`token`, `accountID`).
+The bucket controller mints a token scoped to this one bucket, with permission to read, write, list
+and delete objects, and writes `<cr>-uploads-r2` with keys `endpoint`, `bucket`, `region` (`auto`),
+`accessKeyId` and `secretAccessKey`. The dashboard, crawler and consumer share this bucket token.
+The account token remains with the bucket controller.
 
-On Prod 1, crawls and file uploads land as objects in the S3 bucket `airbyte-exports-prod`
-(account `007522357987`, `us-east-1`). An EventBridge rule on object creation starts one ECS Fargate
-task of `airbyte-fargate-consumer` per object, with `S3_BUCKET` and `S3_KEY` set. The task:
+The bucket permits browser `PUT` requests from `https://<dashboard.host>` and every
+`https://<dashboard.extraHosts>` origin, with any request header and a 3600-second preflight cache.
+The browser and customer scripts upload directly to `https://<accountID>.r2.cloudflarestorage.com`.
+These requests bypass the stack's ingress and Cloudflare proxy request-size limit; a single R2 PUT
+supports up to 5 GiB. The dashboard's upload limit remains 100 MiB.
 
-1. asks the dashboard where the object goes: `GET <DASHBOARD_URL>/api/private/v1/get-source?sourceId=<index>`;
-2. writes the documents to the engine writer that answer names (`cluster.writer_url`), with the
-   project's write key (`Authorization: Bearer <write_api_key>`), through a temporary index and
-   `replace-index` for a full refresh;
-3. reports progress back: `update-crawl-status` for crawls, `update-file-status` (`indexing`, then
-   `synced` or `failed`) for uploads;
-4. sends `PRIVATE_API_KEY` as `x-api-key` on every dashboard call.
+Objects are import staging. The consumer deletes them after import; an `orama-expire` lifecycle rule
+expires remaining objects after seven days, including uploads that are never imported. The bucket's
+`deletionPolicy` is `Delete`, so it goes with the stack. `<cr>-legacy-indexes` is unchanged; backup
+buckets and archives have their own policies.
 
-The source is [`oramasearch/airbyte-fargate-consumer`](https://github.com/oramasearch/airbyte-fargate-consumer)
-(private; default branch `develop`).
+The bucket controller reads CORS and lifecycle settings before writing and writes only on a change.
+A 404 means the configuration has not been set yet, so the controller writes the desired settings.
+CORS is the whole desired configuration; lifecycle updates preserve rules other than `orama-expire`.
+Removing either optional field leaves that provider configuration alone. Existing bucket resources
+without these fields make no new CORS or lifecycle API calls. The account token needs the same
+Workers R2 Storage edit permission as bucket creation; a refused configuration call makes the bucket
+not Ready and records the Cloudflare error.
 
-## What runs instead
+## Credential wiring
 
-`spec.components.importConsumer` on an `OramaCloudV1` runs one Deployment, `<cr>-import-consumer`,
-from the same image in its queue-worker mode (`deno run -A src/sqs-worker.ts`, added in
-[airbyte-fargate-consumer#13](https://github.com/oramasearch/airbyte-fargate-consumer/pull/13)). It
-long-polls an SQS queue that receives the bucket's object-created events and, for each object, runs
-the unchanged `src/main.ts` in its own process with `S3_BUCKET` and `S3_KEY` set. Steps 1 to 4 above
-are the same code; only the trigger changes. Two differences, both deliberate:
+Every variable below uses a `secretKeyRef` into `<cr>-uploads-r2`.
 
-- `DASHBOARD_URL` is the stack's own dashboard Service, `http://<cr>-dashboard:3000`, not
-  `https://app.orama.com`, so the consumer cannot reach Prod 1 while DNS moves.
-- `PRIVATE_API_KEY` is read from the same Secret key the dashboard takes it from
-  (`dashboard.env` or `dashboard.envFrom`, resolved as for `CRON_SECRET`), so the key the consumer
-  sends is always the key the dashboard checks. There is no second reference to keep in step.
+| Secret key | Dashboard | Crawler worker (boto3) | Import consumer |
+|---|---|---|---|
+| `endpoint` | `S3_ENDPOINT` | `AWS_ENDPOINT_URL_S3` | `S3_ENDPOINT` |
+| `bucket` | `S3_BUCKET` | `S3_BUCKET_NAME` | `S3_BUCKET` |
+| `region` | `S3_BUCKET_REGION` | `AWS_DEFAULT_REGION` | `AWS_REGION` |
+| `accessKeyId` | `AWS_ACCESS_KEY_VALUE` | `AWS_ACCESS_KEY_ID` | `AWS_ACCESS_KEY_ID` |
+| `secretAccessKey` | `AWS_SECRET_ACCESS_KEY_VALUE` | `AWS_SECRET_ACCESS_KEY` | `AWS_SECRET_ACCESS_KEY` |
 
-Queue handling, in the consumer (`src/lib/sqs-worker.ts`): a message is deleted once its object has
-been imported, whether the import succeeded or failed (the Fargate path runs each object once and
-never retries, and a failed import has already reported `failed`); its visibility is extended while
-the import runs; an import killed because the pod is stopping leaves the message for redelivery; a
-message that is not an object-created event for the configured bucket is logged and deleted.
+The dashboard's explicit `env` entries override placeholders in `dashboard.envFrom` when the bucket
+Secret is present. Its five references are optional, so a missing bucket Secret leaves the envFrom
+values available and does not prevent the dashboard from starting. The bucket Secret joins the
+dashboard and consumer credential hashes, so rotating it rolls their pods. The crawler worker is not spawned yet ([operator#12](https://github.com/oramasearch/orama-operator/issues/12));
+its Job template should use `uploadsBucketEnv(oc, crawlerUploadsEnv)`. Boto3 reads the endpoint
+variable directly and uses its default addressing.
 
+## The bucket worker
+
+`spec.components.importConsumer` runs `<cr>-import-consumer`, a Deployment using the configured
+private `oramasearch/airbyte-fargate-consumer` image, with `deno run -A src/bucket-worker.ts`.
+It lists `<cr>-uploads` every ten seconds and runs the per-object import for new files and crawl
+exports. A curl upload starts an import when the object appears, without an `upload-complete` call.
+No AWS queue, event rule or IAM user is needed for this stack.
+
+The worker has exactly one replica and uses the `Recreate` deployment strategy, so a rollout stops
+the old worker before starting its replacement. Duplicate-import protection lives within one
+process. `concurrency` (default two, range 1–16) controls simultaneous imports within that process.
+Each child process gets a V8 heap cap derived from the container memory limit less the worker's
+128 MiB share: three quarters of the remainder divided by concurrency, at least 64 MiB.
+
+The other environment variables are:
+
+- `DASHBOARD_URL=http://<cr>-dashboard:3000`, the stack's own Service.
+- `PRIVATE_API_KEY`, from the same Secret key the dashboard reads through `dashboard.env` or
+  `dashboard.envFrom`, sent as `x-api-key` on get-source and status callbacks.
+- `WORKER_CONCURRENCY`, `IMPORT_MAX_OLD_SPACE_MB`, `POLL_INTERVAL_SECONDS=10`, `PORT=8080`, and
+  `NODE_ENV=production`.
+
+The worker asks get-source for the destination, writes documents with the project's write key and
+reports file or crawl status to the dashboard. TCP probes use the health listener on 8080. A
+600-second termination grace period lets imports finish; interrupted objects remain for discovery
+by the next worker. Public HTTPS egress already covers R2 and the engine's public writer host.
+
+The consumer is off by default and requires an image, Cloudflare and the dashboard enabled. Both
+admission and reconciliation enforce these dependencies. Reconciliation waits for all five bucket
+Secret keys and a Secret-backed dashboard API key. Configuration errors report `Ready=False`
+(`ReconcileError`) in the last component step, so other components can still reconcile.
+
+## Cutover
+
+Prod 1's Fargate rule keeps importing Prod 1's AWS bucket for Prod 1. The two systems use separate
+buckets. Once `app.orama.com` serves Prod 2, the dashboard signs links for `<cr>-uploads`, so new
+uploads reach R2 and its bucket consumer. No new dashboard uploads reach Prod 1's bucket after that
+switch; its existing staging objects were already imported and need no migration.
+
+Release, image selection, set changes and live upload verification happen after the code is merged.
 Field reference: [crd-reference.md](crd-reference.md#speccomponentsimportconsumer). Network paths:
 [network-sandbox.md](infrastructure/network-sandbox.md#orama-cloud-v1-stack-namespace).
-
-## What must exist in AWS first — not created by the operator, and not created by this change
-
-Prod 1's AWS account is read-only for the migration (Juan, 2026-10-07): nothing below has been
-created or changed. Each item needs its owner's explicit approval, and is recorded in the bridge's
-`docs/projects/orama-cloud-v1/production-changes.md` when done. Owner: **Juan** (Prod 1 AWS,
-`oramacore-aws` / `terraform-aws`), with **Steve** approving the cost and the new IAM user.
-
-| # | Resource | Exact shape | Why |
-|---|---|---|---|
-| 1 | SQS queue, e.g. `orama-prod2-import` in `us-east-1`, account `007522357987` | Standard queue (not FIFO). Visibility timeout 300 s (the worker extends it while an import runs). Message retention 4 days or more. Receive wait time 20 s. SSE with the SQS-owned key. | The consumer's input. Its URL is `spec.components.importConsumer.queueURL`. |
-| 2 | Dead-letter queue, e.g. `orama-prod2-import-dlq`, and a redrive policy on queue 1 | `maxReceiveCount` 5. | A message the worker cannot even delete (a crash loop) stops coming back and stays visible for inspection. The worker deletes failed imports itself, so in normal operation the DLQ stays empty. |
-| 3 | The bucket's events delivered to queue 1 | **Either** (a) a new EventBridge rule on the default bus with the same event pattern as the existing Fargate rule (source `aws.s3`, detail-type `Object Created`, `detail.bucket.name` = `airbyte-exports-prod`, and the same key filter if it has one), targeting queue 1 with the event as the message body; **or** (b) an S3 event notification on `airbyte-exports-prod` for `s3:ObjectCreated:*` (same prefix filter as the Fargate rule) to queue 1. (a) is preferred: EventBridge delivery is already on for the bucket, it adds a rule without touching the bucket's configuration, and it delivers the key exactly as the Fargate task receives it. The worker reads both message shapes. | Without it the queue stays empty. |
-| 4 | Queue policy on queue 1 | Allow `sqs:SendMessage` from principal `events.amazonaws.com` (for (a)) or `s3.amazonaws.com` (for (b)), with `aws:SourceArn` = the rule's ARN (a) or `arn:aws:s3:::airbyte-exports-prod` (b) and `aws:SourceAccount` = `007522357987`. | SQS refuses the delivery otherwise. |
-| 5 | IAM user, e.g. `orama-prod2-import-consumer`, with one access key | Inline policy, nothing else: `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:ChangeMessageVisibility`, `sqs:GetQueueAttributes` on queue 1's ARN; `s3:GetObject` on `arn:aws:s3:::airbyte-exports-prod/*`. Add `s3:ListBucket` on the bucket and `s3:DeleteObject` on its objects only if Airbyte sources are kept (they are being removed, bridge decisions of 2026-10-16, 12a). | The consumer's identity. An access key, because the AKS clusters have no AWS workload identity. |
-| 6 | The key, stored | The key pair goes into the migration credential file on Steve's host (`~/.config/orama-migration/prod2/secrets.json`, entry e.g. `prod2-import-consumer-aws`, fields `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`), with its export in `env.sh` and its row in the ledger, per the umbrella `CLAUDE.md`; never in 1Password, never in a repository. From there it reaches the cluster as Secret `v1-prod-import-consumer-aws` through the set's copied Secrets, like the other `v1-prod-*` Secrets. | `spec.components.importConsumer.awsCredentialsSecretRef`. |
-| 7 | The image | `oramasearch/airbyte-fargate-consumer` on Docker Hub, **created private before the first push** (org rule), built from the consumer's merged queue-worker change and tagged; `spec.components.importConsumer.image` names it. No such Docker Hub repository exists today (checked 2026-10-21). | The operator has no default image for the consumer. |
-
-The Fargate rule's exact event pattern and key filter are in `terraform-aws`
-`environments/prod/main.tf`; read them from there (or from the live rule, read-only) when writing
-item 3, so both paths match the same objects.
-
-**A warning about the consumer repository.** `airbyte-fargate-consumer` has an enabled GitHub
-Actions workflow (`.github/workflows/deploy.yml`) that, on every push to `develop` or `main`, builds
-the image, pushes it to ECR in account `007522357987` and deploys a new task definition to the ECS
-service. Merging the queue-worker change into `develop` therefore changes Prod 1's ECS deployment,
-even though the Fargate command is unchanged. Merge it only with Juan's approval for that Prod 1
-change, or after the workflow question is settled (the org has no CI; disabling it is Steve's call).
-
-## The switch
-
-The Fargate path and this consumer must never both import the same objects: each object would be
-imported twice, written to the engine twice and reported to the dashboard twice. So:
-
-1. Items 1 to 7 exist; the Secret and the image are in place. The consumer stays `enabled: false`.
-2. Stop the Fargate path's trigger for the bucket (disable the EventBridge rule's ECS target), and in
-   the same change start delivery to queue 1 (item 3). Prod 1 AWS change: Juan's approval.
-3. Set `enabled: true` in the set file (`config/clusters/sets/v1-prod.yaml`, member `v1-eu`), apply
-   that file, and commit it.
-4. Check: `<cr>-import-consumer` is `Ready`; a test upload reaches `synced` in the dashboard; the
-   queue's `ApproximateNumberOfMessagesVisible` returns to zero; the DLQ is empty.
-
-Objects written between steps 2 and 3 wait in the queue and are imported when the consumer starts.
-Rolling back is the reverse: `enabled: false`, then the Fargate target back on.
-
-This is after the cutover (the issue's own condition). Until then the Fargate task keeps running and
-follows `app.orama.com` to Prod 2.
-
-## Open question for Juan and Steve
-
-Decision 12a of 2026-10-16 (Steve's rule: only Clerk, Cloudflare and Resend stay outside the
-cluster; "data and processing: none stay outside") came after Juan's decision of 2026-10-13 that the
-consumer keeps reading the S3 bucket. This design keeps S3 and SQS in AWS, as #446 says. If 12a means
-the bucket itself must move (for example to an R2 bucket the operator already provisions, or an
-in-cluster object store), the consumer's queue reading is what changes; the Deployment, the key
-handling and the network paths stay. That is a decision for Juan and Steve, not made here.

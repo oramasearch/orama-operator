@@ -56,6 +56,41 @@ spec:
               CloudflareR2BucketSpec is the desired state of an R2 bucket. The API token + account come
               from the referenced Secret (keys `token` + `accountID`).
             properties:
+              cors:
+                description: CORS, when set, replaces the bucket's whole CORS configuration.
+                  Unset leaves it alone.
+                items:
+                  description: CloudflareR2CORSRule allows browser requests from the
+                    listed origins.
+                  properties:
+                    allowedHeaders:
+                      items:
+                        type: string
+                      type: array
+                    allowedMethods:
+                      items:
+                        enum:
+                        - GET
+                        - PUT
+                        - POST
+                        - DELETE
+                        - HEAD
+                        type: string
+                      type: array
+                    allowedOrigins:
+                      items:
+                        type: string
+                      type: array
+                    maxAgeSeconds:
+                      format: int32
+                      maximum: 86400
+                      minimum: 0
+                      type: integer
+                  required:
+                  - allowedMethods
+                  - allowedOrigins
+                  type: object
+                type: array
               credentials:
                 description: |-
                   Credentials, when set, has the operator mint an API token scoped to this one bucket (object
@@ -87,6 +122,13 @@ spec:
                 - Delete
                 - Retain
                 type: string
+              expireAfterDays:
+                description: |-
+                  ExpireAfterDays deletes objects this many days after they were written through the
+                  operator-owned lifecycle rule "orama-expire". Unset leaves lifecycle rules alone.
+                format: int32
+                minimum: 1
+                type: integer
               name:
                 description: Name is the R2 bucket name.
                 type: string
