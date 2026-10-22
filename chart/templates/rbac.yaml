@@ -41,6 +41,8 @@ rules:
       - cloudflareloadbalancers
       - rabbitmqtopologies
       - postgresschemas
+      - backupschedules
+      - backups
       - clerkapplications
       - lakes
       - lakee2etests
@@ -106,6 +108,9 @@ rules:
       - cloudflarednsrecords/finalizers
       - cloudflarekvnamespaces/finalizers
       - cloudflarer2buckets/finalizers
+      - backupschedules/status
+      - backups/status
+      - backups/finalizers
       - cloudflareloadbalancers/finalizers
       - postgresschemas/finalizers
       - clerkapplications/status

@@ -61,6 +61,9 @@ func (r *OramaCloudV1Reconciler) reconcileCloudflare(ctx context.Context, oc *or
 		bucket := &oramav1alpha1.CloudflareR2Bucket{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-legacy-indexes", Namespace: oc.Namespace}}
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, bucket, func() error {
 			bucket.Spec.SecretRef, bucket.Spec.Name = secretName, oc.Name+"-legacy-indexes"
+			// The index-builder's working bucket, rebuilt from the engine: it goes with the stack,
+			// as it always has (operator#453 made the policy explicit).
+			bucket.Spec.DeletionPolicy = oramav1alpha1.BucketDeletionDelete
 			return controllerutil.SetControllerReference(oc, bucket, r.Scheme)
 		}); err != nil {
 			return err
