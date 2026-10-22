@@ -37,16 +37,27 @@ const (
 	zettaPeerPort = 7777 // peer replication + signal plane + blob transfer (always mTLS — shared join token)
 	zettaAPIPort  = 4800 // MCP + REST + model/index serving (one HTTP server)
 	zettaDataDir  = "/data"
+
+	// The shared cluster join token, mounted from Secret <name>-zetta-cluster as a read-only file
+	// (oramasearch/zetta#770). The engine reads ZETTA_CLUSTER_TOKEN_FILE in preference to the
+	// ZETTA_CLUSTER_TOKEN variable, so the token need not sit in the process environment (readable
+	// through /proc/<pid>/environ and inherited by every child the node runs).
+	zettaClusterTokenVolume    = "cluster-token"
+	zettaClusterTokenMountPath = "/run/secrets/zetta-cluster"
+	zettaClusterTokenFile      = zettaClusterTokenMountPath + "/token"
+	// 0440: owner root, group fsGroup (10001, the zetta user's group), no access for others.
+	zettaClusterTokenFileMode int32 = 0o440
 )
 
 var zettaManagedEnvNames = map[string]struct{}{
-	"HOST_IP":             {},
-	"POD_NAME":            {},
-	"ZETTA_ADMIN_TOKEN":   {},
-	"ZETTA_ADVERTISE_MAP": {},
-	"ZETTA_CLUSTER_TOKEN": {},
-	"ZETTA_HOST_NETWORK":  {},
-	zettaSeedEnv:          {},
+	"HOST_IP":                  {},
+	"POD_NAME":                 {},
+	"ZETTA_ADMIN_TOKEN":        {},
+	"ZETTA_ADVERTISE_MAP":      {},
+	"ZETTA_CLUSTER_TOKEN":      {},
+	"ZETTA_CLUSTER_TOKEN_FILE": {},
+	"ZETTA_HOST_NETWORK":       {},
+	zettaSeedEnv:               {},
 	// The engine's own provisioning env (src/main.cpp, #749): ZETTA_SEED_PEER adds --peer seeds and
 	// ZETTA_DATA_DIR moves the data dir. The operator owns both (peers are validated, /data is the PVC), so
 	// spec.env may not set them (operator#279).
@@ -776,6 +787,13 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 		// Shared cluster join token → the mTLS cluster identity. Injected into EVERY node (incl. node-0):
 		// the engine derives the cluster CA from it, so all nodes trust each other and form ONE cluster.
 		// Without a SHARED token each node mints its own → different CA → cluster-of-one (operator#92).
+		// oramasearch/zetta#770: the engine reads the token from this read-only file (the Secret volume
+		// below) in preference to the environment, refuses to start if the two disagree, and scrubs
+		// ZETTA_CLUSTER_TOKEN from its environment once read so no child process inherits it.
+		{Name: "ZETTA_CLUSTER_TOKEN_FILE", Value: zettaClusterTokenFile},
+		// Kept for Zetta images that predate zetta#770 and ignore ZETTA_CLUSTER_TOKEN_FILE: without it they
+		// would mint their own token and split the cluster. Remove once every image in use reads the file
+		// (operator#721).
 		{Name: "ZETTA_CLUSTER_TOKEN", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: z.Name + "-zetta-cluster"}, Key: "token"}}},
 	}
@@ -816,6 +834,16 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 		Spec: corev1.PodSpec{
 			ImagePullSecrets:             pull,
 			AutomountServiceAccountToken: &noToken,
+			// The cluster join token as a read-only file (oramasearch/zetta#770), readable by the zetta
+			// user through fsGroup and by no one else.
+			Volumes: []corev1.Volume{{
+				Name: zettaClusterTokenVolume,
+				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+					SecretName:  z.Name + "-zetta-cluster",
+					Items:       []corev1.KeyToPath{{Key: "token", Path: "token"}},
+					DefaultMode: int32Ptr(zettaClusterTokenFileMode),
+				}},
+			}},
 			// The image runs zetta as uid 10001; fsGroup makes the mounted PVC group-writable so the
 			// node can create /data/security (mints its cluster cert/token) etc. Azure/most CSI disks
 			// mount root-owned, so a non-root node needs this. OnRootMismatch avoids walking all data
@@ -840,8 +868,11 @@ func (r *OramaZettaClusterReconciler) mutateZettaStatefulSet(z *oramav1alpha1.Or
 					{Name: "peer", ContainerPort: zettaPeerPort},
 					{Name: "api", ContainerPort: zettaAPIPort},
 				},
-				VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: zettaDataDir}},
-				Resources:    resources,
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "data", MountPath: zettaDataDir},
+					{Name: zettaClusterTokenVolume, MountPath: zettaClusterTokenMountPath, ReadOnly: true},
+				},
+				Resources: resources,
 				SecurityContext: &corev1.SecurityContext{
 					AllowPrivilegeEscalation: &noPrivilegeEscalation,
 					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},

@@ -107,6 +107,40 @@ func TestZettaStatefulSetInjectsSharedClusterToken(t *testing.T) {
 		t.Errorf("cluster token Secret key = %q, want %q", got, "token")
 	}
 
+	// oramasearch/zetta#770: the token is also a read-only file from the same Secret, which the engine
+	// prefers over the environment variable (and then scrubs the variable from its own environment).
+	file := findEnv(c.Env, "ZETTA_CLUSTER_TOKEN_FILE")
+	if file == nil || file.Value != "/run/secrets/zetta-cluster/token" {
+		t.Fatalf("ZETTA_CLUSTER_TOKEN_FILE = %+v, want /run/secrets/zetta-cluster/token", file)
+	}
+	var mount *corev1.VolumeMount
+	for i := range c.VolumeMounts {
+		if c.VolumeMounts[i].Name == "cluster-token" {
+			mount = &c.VolumeMounts[i]
+		}
+	}
+	if mount == nil || mount.MountPath != "/run/secrets/zetta-cluster" || !mount.ReadOnly {
+		t.Fatalf("cluster-token mount = %+v, want read-only at /run/secrets/zetta-cluster", mount)
+	}
+	var volume *corev1.Volume
+	for i := range sts.Spec.Template.Spec.Volumes {
+		if sts.Spec.Template.Spec.Volumes[i].Name == "cluster-token" {
+			volume = &sts.Spec.Template.Spec.Volumes[i]
+		}
+	}
+	if volume == nil || volume.Secret == nil {
+		t.Fatalf("cluster-token volume = %+v, want a Secret volume", volume)
+	}
+	if volume.Secret.SecretName != "z0-zetta-cluster" {
+		t.Errorf("cluster-token volume Secret = %q, want z0-zetta-cluster", volume.Secret.SecretName)
+	}
+	if len(volume.Secret.Items) != 1 || volume.Secret.Items[0].Key != "token" || volume.Secret.Items[0].Path != "token" {
+		t.Errorf("cluster-token volume items = %+v, want token -> token", volume.Secret.Items)
+	}
+	if volume.Secret.DefaultMode == nil || *volume.Secret.DefaultMode != 0o440 {
+		t.Errorf("cluster-token file mode = %v, want 0440 (owner and the fsGroup only)", volume.Secret.DefaultMode)
+	}
+
 	if findEnv(c.Env, "ZETTA_CLUSTER_PLAINTEXT") != nil {
 		t.Error("ZETTA_CLUSTER_PLAINTEXT env still present — the plaintext mode was removed as a security hole")
 	}
