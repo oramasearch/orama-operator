@@ -450,6 +450,25 @@ the operator creates, so a component is run *well*, not just *running*. The help
   crash-loops on `chown: Operation not permitted`. The stronger `runAsNonRoot` /
   `readOnlyRootFilesystem` are **deliberately not** blanket
   (they break images that expect root or write to `/`) — rolled out per-component with testing.
+- **Cloud v1 pod identity (LSR-212).** Every directly managed workload uses a dedicated
+  ServiceAccount named after its Deployment, StatefulSet, Job or CronJob. The account is owned by
+  the workload's CR, disables token automount, and receives no RoleBinding or ClusterRoleBinding.
+  Every pod template also sets `automountServiceAccountToken: false` and `enableServiceLinks: false`;
+  components discover dependencies through the operator's explicit URLs and DNS. A foreign account
+  with the same name blocks workload creation or update. Account changes trigger reconciliation,
+  which restores the tokenless settings and recreates a deleted account.
+  This covers apps (including pgAdmin, Keycloak and ingestion), embeddings, writers, readers with
+  either image layout and Envoy, stores, dashboard and analytics CronJobs, demo seed, analytics
+  retention, cluster-row insertion, migration steps and the Cloud v1 E2E runner. `PostgresSchema`
+  applies the same settings to schema Jobs for Cloud v1 and its other consumers. CNPG owns its
+  database instance identities and Kubernetes API permissions; the operator does not override them.
+  Deployments and StatefulSets roll when the template changes, and CronJobs use the settings for
+  future runs. Existing immutable one-shot Jobs keep their identity until completion, including
+  retries; a security rollout never restarts a running migration or repeats its database writes.
+  This change preserves image users, PVC ownership, namespace admission labels and node placement.
+  Running stores as fixed non-root users requires a separate data migration with volume ownership
+  preparation, startup validation and recovery proof before stricter namespace admission. Dedicated
+  Cloud v1 nodes or required placement isolation from Lake also remain follow-up work.
 - **Graceful shutdown.** `terminationGracePeriodSeconds` per component — stores default **60s**
   (headroom for the SIGTERM flush: AOF fsync, part checkpoint, queue persist), stateless apps **30s**,
   the writer keeps **300s** (index flush). App containers get a `preStop` **`sleep 5`** drain so they

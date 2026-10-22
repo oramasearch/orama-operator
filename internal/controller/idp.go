@@ -44,6 +44,9 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 		return nil
 	}
 	name := oc.Name + "-demo-seed"
+	if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, oc, name, labelsFor(oc, "demo-seed")); err != nil {
+		return err
+	}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, &batchv1.Job{}); err == nil {
 		return nil // already created
 	} else if !apierrors.IsNotFound(err) {
@@ -73,6 +76,7 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 		},
 	}
 	boundV1PodStorage(&job.Spec.Template.Spec)
+	cloudV1PodIdentity(&job.Spec.Template.Spec, name)
 	if err := controllerutil.SetControllerReference(oc, job, r.Scheme); err != nil {
 		return err
 	}

@@ -104,6 +104,7 @@ type OramaCloudV1MigrationReconciler struct {
 	APIReader client.Reader
 }
 
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1migrations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1migrations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1migrations/finalizers,verbs=update
@@ -433,6 +434,9 @@ func (r *OramaCloudV1MigrationReconciler) startJob(ctx context.Context, m *orama
 		return err
 	}
 	job := migrationJob(m, target, run)
+	if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, m, job.Name, job.Labels); err != nil {
+		return err
+	}
 	if err := controllerutil.SetControllerReference(m, job, r.Scheme); err != nil {
 		return err
 	}
@@ -539,6 +543,8 @@ func migrationJob(m *oramav1alpha1.OramaCloudV1Migration, target *migrationTarge
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
 					AutomountServiceAccountToken: boolPtr(false),
+					EnableServiceLinks:           boolPtr(false),
+					ServiceAccountName:           run.jobName,
 					ImagePullSecrets:             migrationPullSecrets(m, oc),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot:   boolPtr(true),
@@ -691,6 +697,9 @@ func (r *OramaCloudV1MigrationReconciler) activeJob(ctx context.Context, m *oram
 // followJob records a run's Job: Running (or Removing) until it finishes, then its outcome. An
 // applied seed that succeeded sets the Seeded condition, a removal that succeeded Removed.
 func (r *OramaCloudV1MigrationReconciler) followJob(ctx context.Context, m *oramav1alpha1.OramaCloudV1Migration, status *oramav1alpha1.OramaCloudV1MigrationStatus, run migrationRun, job *batchv1.Job) error {
+	if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, m, job.Name, job.Labels); err != nil {
+		return err
+	}
 	if status.JobName != run.jobName {
 		status.Result, status.StartedAt, status.CompletedAt = nil, nil, nil
 	}
@@ -1044,6 +1053,7 @@ func (r *OramaCloudV1MigrationReconciler) requestsForTarget(ctx context.Context,
 func (r *OramaCloudV1MigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.OramaCloudV1Migration{}).
+		Owns(&corev1.ServiceAccount{}).
 		Owns(&batchv1.Job{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Watches(&oramav1alpha1.OramaCloudV1{}, handler.EnqueueRequestsFromMapFunc(r.requestsForTarget)).

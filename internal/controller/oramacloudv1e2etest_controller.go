@@ -81,6 +81,7 @@ type OramaCloudV1E2ETestReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1e2etests,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1e2etests/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -236,6 +237,10 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 		masterKey = masterAPIKeyEnv(target)
 	}
 
+	if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, &t, jobName, map[string]string{"orama.cloud/e2e": t.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 1. The suite's config.json (plain — the collection key is a test-only credential) + the
 	//    embedded functional suite script.
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: t.Namespace}}
@@ -293,6 +298,9 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 			}
 			boundV1PodStorage(&job.Spec.Template.Spec)
 		}
+		if !exists {
+			cloudV1PodIdentity(&job.Spec.Template.Spec, jobName)
+		}
 		return controllerutil.SetControllerReference(&t, job, r.Scheme)
 	})
 	if err != nil {
@@ -337,6 +345,7 @@ func (r *OramaCloudV1E2ETestReconciler) e2eWaiting(ctx context.Context, t *orama
 func (r *OramaCloudV1E2ETestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.OramaCloudV1E2ETest{}).
+		Owns(&corev1.ServiceAccount{}).
 		Owns(&batchv1.Job{}).
 		Owns(&corev1.ConfigMap{}).
 		Complete(r)

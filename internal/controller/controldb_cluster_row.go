@@ -216,6 +216,8 @@ func controlDBClusterRowJob(oc *oramav1alpha1.OramaCloudV1) *batchv1.Job {
 	boundV1PodStorage(&template.Spec)
 	raw, _ := json.Marshal(template) // a PodTemplateSpec always marshals
 	sum := sha256.Sum256(raw)
+	// Identity changes apply to new Jobs without replaying existing one-shot database writes.
+	cloudV1PodIdentity(&template.Spec, controlDBClusterRowJobName(oc))
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: controlDBClusterRowJobName(oc), Namespace: oc.Namespace, Labels: lbls,
 			Annotations: map[string]string{clusterRowHashKey: hex.EncodeToString(sum[:])}},
@@ -250,6 +252,9 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBClusterRow(ctx context.Contex
 		return nil
 	}
 	want := controlDBClusterRowJob(oc)
+	if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, oc, want.Name, want.Labels); err != nil {
+		return err
+	}
 	job := &batchv1.Job{}
 	err := r.Get(ctx, client.ObjectKeyFromObject(want), job)
 	switch {

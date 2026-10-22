@@ -46,6 +46,7 @@ type PostgresSchemaReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=postgresschemas,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=postgresschemas/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -102,6 +103,7 @@ func (r *PostgresSchemaReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 func (r *PostgresSchemaReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.PostgresSchema{}).
+		Owns(&corev1.ServiceAccount{}).
 		Owns(&batchv1.Job{}).
 		Complete(r)
 }
@@ -122,6 +124,9 @@ func (r *PostgresSchemaReconciler) connectionSecretPresent(ctx context.Context, 
 // The immutable spec is set only on creation; foreground deletion prevents overlapping applies.
 func (r *PostgresSchemaReconciler) ensureMigrationJob(ctx context.Context, ps *oramav1alpha1.PostgresSchema) (*batchv1.Job, error) {
 	name := ps.Name + "-migrate"
+	if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, ps, name, pgMigrationPodLabels(ps)); err != nil {
+		return nil, err
+	}
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ps.Namespace}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(job), job); err == nil {
 		if !metav1.IsControlledBy(job, ps) {
@@ -247,8 +252,11 @@ echo "postgres-schema: done"`
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls},
 			Spec: corev1.PodSpec{
-				RestartPolicy:    corev1.RestartPolicyNever,
-				ImagePullSecrets: ps.Spec.ImagePullSecrets,
+				RestartPolicy:                corev1.RestartPolicyNever,
+				ServiceAccountName:           ps.Name + "-migrate",
+				AutomountServiceAccountToken: boolPtr(false),
+				EnableServiceLinks:           boolPtr(false),
+				ImagePullSecrets:             ps.Spec.ImagePullSecrets,
 				Containers: []corev1.Container{{
 					Name:            "migrate",
 					Image:           image, // ships psql
