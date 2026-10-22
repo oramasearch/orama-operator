@@ -2152,10 +2152,17 @@ field reference: the `Lake` section of [`crd-reference.md`](crd-reference.md). T
 the Orama Cloud v1 stack: it deploys `oramasearch/lake`, the hosted service of the liquid project,
 and reuses this operator's CNPG, PostgresSchema and Cloudflare DNS paths.
 
+The deployment control plane accepts only each Lake's independent deploy bearer. The install chart
+owns a private cert-manager CA, Issuers and serving Certificate, projects only the serving Secret into
+the manager, and restricts its HTTPS port to labelled caller pods in labelled namespaces. These
+resources ship identically everywhere; metrics and health ports remain reachable. Migration and
+client trust details: [`control-plane/README.md`](control-plane/README.md).
+
 | Creates | Name | Owned | Notes |
 |---|---|---|---|
 | Namespace | `spec.namespace` | no | blind Create, AlreadyExists ignored; never deleted |
 | Secret | `lake-<name>-admin` | yes | admin bearer token, 64 hex, minted once |
+| Secret | `lake-<name>-deploy` | yes | independent deployment bearer, minted once, read only by the operator control plane and never injected into Lake |
 | Secret | `lake-<name>-instance-kek` | yes | root wrapping key for lake's customer KEKs, minted once while Postgres is enabled |
 | Secret | `lake-<name>-sealing-key` | yes | active and retained X25519 private keys; public recipient is published in Lake status and injected into lake |
 | PersistentVolumeClaim | `spec.store.existingClaim` or `lake-<name>-store` | only the generated claim | generated once from size/class/modes and preserved across store spec changes; mounted at `/var/lib/lake/store` |

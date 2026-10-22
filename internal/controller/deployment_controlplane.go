@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -47,6 +48,8 @@ type DeploymentControlPlane struct {
 	Client      client.Client
 	APIReader   client.Reader
 	BindAddress string
+	CertFile    string
+	KeyFile     string
 	ZettaURL    string
 	Now         func() time.Time
 	Log         logr.Logger
@@ -120,6 +123,10 @@ type mcpToolCall struct {
 
 // Start runs the control-plane server with the manager lifecycle.
 func (s *DeploymentControlPlane) Start(ctx context.Context) error {
+	tlsConfig, err := s.tlsConfig()
+	if err != nil {
+		return err
+	}
 	server := &http.Server{
 		Addr:              s.BindAddress,
 		Handler:           s.Handler(),
@@ -127,10 +134,11 @@ func (s *DeploymentControlPlane) Start(ctx context.Context) error {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
+		TLSConfig:         tlsConfig,
 	}
 	result := make(chan error, 1)
 	go func() {
-		result <- server.ListenAndServe()
+		result <- server.ListenAndServeTLS("", "")
 	}()
 	select {
 	case err := <-result:
@@ -150,6 +158,19 @@ func (s *DeploymentControlPlane) Start(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+// tlsConfig requires a valid serving key pair before opening the listener and reloads the
+// projected Secret on each handshake so cert-manager renewal needs no manager restart.
+func (s *DeploymentControlPlane) tlsConfig() (*tls.Config, error) {
+	load := func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		certificate, err := tls.LoadX509KeyPair(s.CertFile, s.KeyFile)
+		return &certificate, err
+	}
+	if _, err := load(nil); err != nil {
+		return nil, fmt.Errorf("deployment control-plane TLS certificate: %w", err)
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: load}, nil
 }
 
 // NeedLeaderElection keeps the read/write API available on every manager replica. Zetta appends and
@@ -300,18 +321,18 @@ func (s *DeploymentControlPlane) authenticate(ctx context.Context, authorization
 	for i := range lakes.Items {
 		lake := &lakes.Items[i]
 		var secret corev1.Secret
-		key := client.ObjectKey{Namespace: lakeWorkloadNamespace(lake), Name: lakeAdminSecret(lake.Name)}
+		key := client.ObjectKey{Namespace: lakeWorkloadNamespace(lake), Name: lakeDeploySecret(lake.Name)}
 		if err := s.reader().Get(ctx, key, &secret); err != nil {
 			continue
 		}
 		candidate := secret.Data["token"]
-		if subtle.ConstantTimeCompare(candidate, []byte(token)) == 1 {
+		if len(candidate) > 0 && subtle.ConstantTimeCompare(candidate, []byte(token)) == 1 {
 			authenticated = lake.DeepCopy()
 			break
 		}
 	}
 	if authenticated == nil {
-		return nil, &capabilityError{Status: http.StatusUnauthorized, Code: "unauthorized", Message: "environment token was rejected", Path: "/authorization"}
+		return nil, &capabilityError{Status: http.StatusUnauthorized, Code: "unauthorized", Message: "deployment token was rejected", Path: "/authorization"}
 	}
 	host := lakeRowHost(authenticated)
 	if host == "" {
@@ -355,10 +376,10 @@ func (s *DeploymentControlPlane) authenticate(ctx context.Context, authorization
 func bearerToken(authorization string) (string, error) {
 	parts := strings.SplitN(authorization, " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
-		return "", fmt.Errorf("a bearer environment token is required")
+		return "", fmt.Errorf("a bearer deployment token is required")
 	}
 	if strings.ContainsAny(parts[1], " \t\r\n") {
-		return "", fmt.Errorf("the bearer environment token is malformed")
+		return "", fmt.Errorf("the bearer deployment token is malformed")
 	}
 	return parts[1], nil
 }
@@ -695,9 +716,9 @@ func (s *DeploymentControlPlane) appendDeployment(ctx context.Context, target *d
 }
 
 // deploymentRequester is the requested_by of a row written through this contract. The contract
-// authenticates the Lake's admin token, not a person, so the requester is that token's Lake.
+// authenticates a Lake-scoped deployment token, so the requester is that token's Lake.
 func deploymentRequester(lake *oramav1alpha1.Lake) string {
-	return "lake-admin-token/" + lake.Name
+	return "lake-deploy-token/" + lake.Name
 }
 
 // desiredDeploymentRow is the desired row of a deployment in lake's shape (operator#560): keyed by

@@ -66,7 +66,7 @@ only documents them: on a Zetta where the table exists the statement answers "al
 | `lake` | The Lake's public host | Same |
 | `repository`, `environment`, `kind`, `change`, `image` | The deployment | Copied from the desired row |
 | `deployment_id` | The action ID (`deployment-<hash>`) | Same |
-| `requested_by` | `lake-admin-token/<lake>`: the contract authenticates the Lake's admin token, not a person | Copied |
+| `requested_by` | `lake-deploy-token/<lake>`: the contract authenticates the Lake's deployment token, not a person | Copied |
 | `requested_at` | When it was requested | Copied |
 | `phase` | `Pending` | `Progressing`, `Ready`, `Degraded` or `TornDown` |
 | `namespace` | Empty | The workload Namespace `lake-<lake>-env-<hash>` (lake's log page queries Loki by it) |

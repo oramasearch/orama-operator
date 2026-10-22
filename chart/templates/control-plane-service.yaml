@@ -8,7 +8,8 @@ spec:
   selector:
     app.kubernetes.io/name: {{ .Chart.Name }}
   ports:
-    - name: http
+    - name: https
+      appProtocol: https
       port: {{ .Values.controlPlane.service.port }}
       targetPort: control-plane
       protocol: TCP

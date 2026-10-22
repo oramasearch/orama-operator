@@ -137,7 +137,7 @@ What the install requires, and who makes it true:
 | A chart whose CRDs and RBAC match the image | The chart is published with every image to the private repository `oramasearch/orama-operator-chart` (`hack/pushchart`), and `OramaOperator` pulls the one for `spec.version`. A release `v0.1.0` has the chart `0.1.0`; a build `dev-83242f9` has `0.0.0-dev-83242f9`. |
 | CRDs applied on every upgrade (Helm applies `crds/` only on first install) | Both kinds server-side apply the chart's CRDs before every install and upgrade. |
 | A default StorageClass and the volume snapshot CRDs | AKS provides both. |
-| ingress-nginx, cert-manager and the service operators | A `ClusterHelmRelease` each, when the leaf needs them. cert-manager before K8ssandra is `dependsOn`. |
+| ingress-nginx, cert-manager and the service operators | A `ClusterHelmRelease` each. cert-manager is required on every cluster for the manager's deployment HTTPS; the chart's required-CRD annotation gates leaf installation, and helmfile's `needs` orders management installation. cert-manager before K8ssandra is `dependsOn`. |
 
 The chart, its CRDs and its values are the same for every cluster; `OramaOperator` sets only the
 image and its pull secret.

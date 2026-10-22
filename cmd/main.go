@@ -41,10 +41,13 @@ func main() {
 	}
 	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage, lakeDuckDBImage, lakePolarsImage string
 	var zettaTunnelImage, cloudflaredImage string
+	var controlPlaneCertFile, controlPlaneKeyFile string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.StringVar(&controlPlaneAddr, "control-plane-bind-address", ":8090", "deployment control-plane endpoint")
+	flag.StringVar(&controlPlaneCertFile, "control-plane-cert-file", "/var/run/orama/control-plane/tls.crt", "deployment control-plane TLS certificate")
+	flag.StringVar(&controlPlaneKeyFile, "control-plane-key-file", "/var/run/orama/control-plane/tls.key", "deployment control-plane TLS private key")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "enable leader election")
 	flag.StringVar(&lakeSQLiteImage, "lake-sqlite-image", controller.DefaultLakeSQLiteImage,
 		"the lake-sqlite image for a Lake's sqlite services when its spec.services.sqliteImage is empty")
@@ -523,6 +526,8 @@ func main() {
 			Client:      mgr.GetClient(),
 			APIReader:   mgr.GetAPIReader(),
 			BindAddress: controlPlaneAddr,
+			CertFile:    controlPlaneCertFile,
+			KeyFile:     controlPlaneKeyFile,
 			Log:         ctrl.Log.WithName("deployment-control-plane"),
 		}); err != nil {
 			setupLog.Error(err, "unable to create deployment control plane")
