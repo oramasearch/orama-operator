@@ -154,6 +154,14 @@ failed Kubernetes status write. Multiple owned candidates are an error. Conflict
 invalid marker lengths and missing credentials set `ready: false` and retry after
 five minutes, preserving ownership fields. Missing credentials never trigger API calls.
 
+**`CloudflareTunnel` follows the same create-only rule** (operator#585). Its CNAME carries the marker
+`orama-operator:<namespace>/<name>` (recorded as `status.dnsRecordOwnerComment`); a record already at
+the tunnel's hostname without that marker is refused with an error naming operator#585 and never
+repointed; teardown deletes the record only while the marker is still on it. A record tracked before
+the change (no recorded marker) keeps its earlier cleanup. Tests:
+`TestCloudflareTunnelNeverAdoptsARecordItDidNotCreate`,
+`TestCloudflareTunnelDeletesOnlyARecordStillCarryingItsMarker`.
+
 Pre-upgrade `status.recordID` without `status.ownerComment` retains legacy ownership
 by ID. Matching records receive only reads; changes to type, content, proxying or TTL
 receive one update preserving the existing comment. Legacy records never gain an

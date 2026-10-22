@@ -333,42 +333,54 @@ type cfTunnelDNSRecord struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Content string `json:"content"`
+	Comment string `json:"comment"`
+}
+
+// cfTunnelOwnerMarker is the comment that marks a CNAME as this tunnel's (operator#585), the same
+// shape CloudflareDNSRecord uses.
+func cfTunnelOwnerMarker(tunnel *oramav1alpha1.CloudflareTunnel) string {
+	return "orama-operator:" + tunnel.Namespace + "/" + tunnel.Name
 }
 
 func (r *CloudflareTunnelReconciler) ensureDNSRecord(ctx context.Context, tunnel *oramav1alpha1.CloudflareTunnel, account cloudflareAccount, hostname string) error {
+	if tunnel.Status.DNSRecordID != "" {
+		return nil
+	}
+	// Create only (operator#585), as CloudflareDNSRecord does: the zone also holds Lake's records
+	// and Prod 1's live hosts, so a record found at the name is never repointed. One that carries
+	// this tunnel's marker is its own (the status was lost) and is taken back; any other refuses.
 	content := tunnel.Status.TunnelID + ".cfargotunnel.com"
-	body := map[string]any{"type": "CNAME", "name": hostname, "content": content, "proxied": true,
-		"comment": "Orama tunnel grant " + tunnel.Spec.GrantID}
-	id := tunnel.Status.DNSRecordID
-	if id == "" {
-		var listed cfEnvelope[[]cfTunnelDNSRecord]
-		listURL := fmt.Sprintf("%s/zones/%s/dns_records?type=CNAME&name=%s", r.api(), account.ZoneID, url.QueryEscape(hostname))
-		if err := cfDo(ctx, account.Token, http.MethodGet, listURL, nil, &listed); err != nil {
-			return err
+	marker := cfTunnelOwnerMarker(tunnel)
+	if len(marker) > 100 {
+		return fmt.Errorf("Cloudflare DNS ownership comment is %d characters; maximum is 100 (namespace/name must be at most 85)", len(marker))
+	}
+	var listed cfEnvelope[[]cfTunnelDNSRecord]
+	listURL := fmt.Sprintf("%s/zones/%s/dns_records?name=%s", r.api(), account.ZoneID, url.QueryEscape(hostname))
+	if err := cfDo(ctx, account.Token, http.MethodGet, listURL, nil, &listed); err != nil {
+		return err
+	}
+	id := ""
+	for _, record := range listed.Result {
+		if record.Name != hostname {
+			continue
 		}
-		for _, record := range listed.Result {
-			if record.Name == hostname {
-				id = record.ID
-				if record.Content != content {
-					if err := cfDo(ctx, account.Token, http.MethodPut, fmt.Sprintf("%s/zones/%s/dns_records/%s", r.api(), account.ZoneID, id), body, nil); err != nil {
-						return err
-					}
-				}
-				break
-			}
+		if record.Comment != marker {
+			return fmt.Errorf("a DNS record already exists at %s without this tunnel's ownership marker %q; refusing to change it (operator#585)", hostname, marker)
 		}
+		id = record.ID
 	}
 	if id == "" {
+		body := map[string]any{"type": "CNAME", "name": hostname, "content": content, "proxied": true, "comment": marker}
 		var created cfEnvelope[cfTunnelDNSRecord]
 		if err := cfDo(ctx, account.Token, http.MethodPost, fmt.Sprintf("%s/zones/%s/dns_records", r.api(), account.ZoneID), body, &created); err != nil {
 			return err
 		}
 		id = created.Result.ID
 	}
-	if id == "" || id == tunnel.Status.DNSRecordID {
+	if id == "" {
 		return nil
 	}
-	tunnel.Status.DNSRecordID = id
+	tunnel.Status.DNSRecordID, tunnel.Status.DNSRecordOwnerComment = id, marker
 	return r.Status().Update(ctx, tunnel)
 }
 
@@ -571,11 +583,12 @@ func (r *CloudflareTunnelReconciler) teardown(ctx context.Context, tunnel *orama
 		}
 	}
 	if id := tunnel.Status.DNSRecordID; id != "" {
-		err := cfDo(ctx, account.Token, http.MethodDelete, fmt.Sprintf("%s/zones/%s/dns_records/%s", r.api(), account.ZoneID, id), nil, nil)
-		if err != nil && !cfNotFound(err) {
+		// Deleted only while it still carries the marker (operator#585); a record tracked before
+		// markers keeps its earlier cleanup. One whose marker is gone is left in place.
+		if _, err := cfDeleteOwnedDNSRecord(ctx, r.api(), account.Token, account.ZoneID, id, tunnel.Status.DNSRecordOwnerComment); err != nil {
 			return false, err
 		}
-		tunnel.Status.DNSRecordID = ""
+		tunnel.Status.DNSRecordID, tunnel.Status.DNSRecordOwnerComment = "", ""
 		if err := r.Status().Update(ctx, tunnel); err != nil {
 			return false, err
 		}

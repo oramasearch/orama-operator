@@ -197,6 +197,12 @@ spec:
                 description: DNSRecordID is the CNAME that points the hostname at
                   the tunnel.
                 type: string
+              dnsRecordOwnerComment:
+                description: |-
+                  DNSRecordOwnerComment is the ownership marker the operator wrote on that record
+                  (orama-operator:<namespace>/<name>, operator#585). The record is deleted only while it still
+                  carries it; empty for a record tracked before markers, which keeps its earlier cleanup.
+                type: string
               endpoint:
                 description: Endpoint is the Access-protected hostname.
                 type: string
