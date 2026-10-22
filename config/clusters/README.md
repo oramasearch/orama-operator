@@ -24,8 +24,8 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 |---|---|
 | [`provider.yaml`](provider.yaml) | `KubernetesClusterProvider/azure-orama`: the Azure subscription and defaults every cluster is created with. |
 | `<cluster>/cluster.yaml` | The `KubernetesCluster`: region, version, node pools, `purpose` tag, deletion policy. |
-| `<cluster>/platform.yaml` | One `ClusterHelmRelease` per chart the cluster runs, in install order. |
-| `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs, and the pull Secret copied to it. A nonprod cluster names its own (`orama-system/oramasearch-dockerhub-nonprod`, copied as `oramasearch-dockerhub`); a Secret production uses is refused for it (orama-operator#832). |
+| `<cluster>/platform.yaml` | One `ClusterHelmRelease` per chart the cluster runs, in install order, each with the SHA-256 of its archive (and of any separate CRD manifest), the same pins as [`platform-charts.yaml`](../../platform-charts.yaml) (orama-operator#808). |
+| `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs with its image digest and chart digest, and the pull Secret copied to it. A nonprod cluster names its own (`orama-system/oramasearch-dockerhub-nonprod`, copied as `oramasearch-dockerhub`); a Secret production uses is refused for it (orama-operator#832). |
 | `sets/lake-<purpose>.yaml` | A `LakeSet`: the Lake instances of that purpose, and the end-to-end runs against them (`spec.e2eTests`). |
 | `sets/v1-<purpose>.yaml` | An `OramaCloudV1Set`: the Orama Cloud v1 instances of that purpose, and the Prod 1 teams being copied into them. |
 

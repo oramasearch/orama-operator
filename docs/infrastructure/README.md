@@ -125,8 +125,8 @@ kubeconfig Secret its `KubernetesCluster` wrote:
 
 | Kind | What it is |
 |---|---|
-| `ClusterHelmRelease` | One Helm chart release on a managed cluster, at a pinned version: chart repository or OCI, values, `dependsOn` other releases, `requiredCRDs`, `crdURLs`. One per helmfile entry. |
-| `OramaOperator` | The cluster's own Orama operator at a named version. Changing `spec.version` upgrades the leaf, CRDs first. |
+| `ClusterHelmRelease` | One Helm chart release on a managed cluster, at a pinned version and archive digest: chart repository or OCI, values, `dependsOn` other releases, `requiredCRDs`, `crdURLs` with their digests. One per helmfile entry. |
+| `OramaOperator` | The cluster's own Orama operator at a named version, image digest and chart digest. Changing `spec.version` (with both digests) upgrades the leaf, CRDs first. |
 
 What the install requires, and who makes it true:
 
@@ -142,6 +142,16 @@ What the install requires, and who makes it true:
 The chart, its CRDs and its values are the same for every cluster; `OramaOperator` sets only the
 image and its pull secret.
 
+**Everything is installed by the digest of its bytes, not only by its version**
+([orama-operator#808](https://github.com/oramasearch/orama-operator/issues/808)). A version is
+what a publisher says an artifact is, and a compromised chart repository, GitHub tag or Docker Hub
+account can move it. So each chart archive (`spec.chart.sha256`; an OCI chart's chart layer), each
+separately-shipped CRD manifest (`spec.crdSHA256`), the operator image (`spec.imageDigest`, run
+as `<repository>:<version>@<digest>`) and the operator's chart (`spec.chartSHA256`) carries a
+`sha256:` pin. Bytes that differ are refused before they are read or applied, and a resource
+without its pins is `Degraded` with reason `NotPinned` and does not reach the cluster. The
+helmfile path checks the same pins (below).
+
 Both kinds report what the leaf says. A release that is not ready lists each Deployment,
 StatefulSet or DaemonSet that is not rolled out and what its pods report (an image that cannot be
 pulled, a container that keeps exiting, a pod that cannot be scheduled). A refusal by the chart
@@ -152,8 +162,9 @@ removing an operator never deletes what it was running. A `ClusterHelmRelease` t
 on is not uninstalled until they are gone.
 
 A chart whose CRDs are shipped apart from it (TiDB's `crd.yaml`, which the helmfile applies with a
-presync hook) names them in `spec.crdURLs`. Each is applied server-side before the chart, on every
-install and upgrade, and may hold nothing but CustomResourceDefinitions.
+presync hook) names them in `spec.crdURLs`, each with its digest in `spec.crdSHA256`. Each is
+applied server-side before the chart, on every install and upgrade, and may hold nothing but
+CustomResourceDefinitions.
 
 A release is installed with its namespace as the default for resources whose manifest names none.
 Helm otherwise puts them wherever the kubeconfig says: K8ssandra's Deployments landed in `default`
@@ -302,8 +313,8 @@ that knowledge is 1000% clear in the docs"*.
 |---|---|---|
 | **Installed by** | A person or agent running `helmfile` from this repository, with Steve's consent | The management cluster's operator |
 | **Described in** | [`helmfile.yaml`](../../helmfile.yaml) | [`config/clusters/<cluster>/`](../../config/clusters/README.md): `platform.yaml` (`ClusterHelmRelease`) and `operator.yaml` (`OramaOperator`) |
-| **Platform charts** | The helmfile's releases | One `ClusterHelmRelease` per chart |
-| **The Orama operator** | The helmfile's `orama-operator` release, from `./chart` | `OramaOperator`, from the chart published for that version |
+| **Platform charts** | The helmfile's releases, each the archive `hack/stagecharts` staged after checking it against its pin in [`platform-charts.yaml`](../../platform-charts.yaml) | One `ClusterHelmRelease` per chart, with the same pin |
+| **The Orama operator** | The helmfile's `orama-operator` release, from `./chart`, whose default image is the leaves' version at its digest | `OramaOperator`, from the chart published for that version, at its digests |
 | **Why this path** | It is the cluster the managing operator runs on, so it must exist before any operator can install anything | The operator can reach it, so no person has to |
 
 **The two descriptions must say the same thing**: the same charts, at the same chart versions, in
@@ -315,9 +326,10 @@ management cluster.
 
 | When you change | You also change |
 |---|---|
-| A release in `helmfile.yaml` (version, values, a new chart, a removed chart) | The matching `ClusterHelmRelease` in **every** `config/clusters/*/platform.yaml` |
-| A `ClusterHelmRelease` in any `platform.yaml` | `helmfile.yaml`, and every other cluster's `platform.yaml` |
-| The operator version on the leaves (`config/clusters/*/operator.yaml`) | The management cluster is rolled to the same version, through the helmfile path |
+| A release in `helmfile.yaml` (version, values, a new chart, a removed chart) | The matching `ClusterHelmRelease` in **every** `config/clusters/*/platform.yaml`, and its pin in `platform-charts.yaml` |
+| A chart version or a pin in `platform-charts.yaml` | The staged archive `helmfile.yaml` names, and `spec.chart.sha256` (or `spec.crdSHA256`) in every `platform.yaml` |
+| A `ClusterHelmRelease` in any `platform.yaml` | `helmfile.yaml` and `platform-charts.yaml`, and every other cluster's `platform.yaml` |
+| The operator version on the leaves (`config/clusters/*/operator.yaml`, with its `imageDigest` and `chartSHA256`) | `operator.image.tag` in `chart/values.yaml` (`<version>@<imageDigest>`), and the management cluster is rolled to it through the helmfile path |
 | Anything in `chart/` (values, RBAC, CRDs) | Nothing more: both paths install the same chart |
 
 **Neither path is ever replaced by a command typed at a cluster.** A `helm upgrade` run by hand
@@ -326,17 +338,29 @@ against the management cluster is not the helmfile path: it is state outside the
 cluster, change `helmfile.yaml`, merge it, and apply the helmfile with Steve's consent.
 
 **What holds it:** [`cmd/platform_sync_test.go`](../../cmd/platform_sync_test.go) reads
-`helmfile.yaml` and every `config/clusters/*/platform.yaml` and fails if a chart, version,
-namespace, value, dependency or separately-shipped CRD manifest is in one and not the other, if a
-helmfile release is unpinned, or if the leaves' `OramaOperator` versions differ from one another.
+`helmfile.yaml`, `platform-charts.yaml` and every `config/clusters/*/platform.yaml` and fails if a
+chart, version, pin, namespace, value, dependency or separately-shipped CRD manifest is in one and
+not the other, if a helmfile release installs anything but a pinned, staged archive (or helmfile
+lists a chart repository to download from), if the leaves' `OramaOperator` versions or digests
+differ from one another, or if `chart/values.yaml`'s image is not theirs.
+
+**Applying the helmfile** is always two commands, from the repository root:
+`go run ./hack/stagecharts && helmfile apply`. helmfile cannot check a digest, so it is given no
+chart repository and installs only the local files in `.platform-charts/`. `hack/stagecharts`
+downloads what is missing there, checks every file (new or already staged) against its pin, and
+exits non-zero on any mismatch, so helmfile never runs on bytes that are not the pinned ones.
+`-offline` checks what is staged and downloads nothing, for a host that cannot reach the chart
+repositories.
 
 **Two things the test cannot see**, which a person has to keep true:
 
 - **Whether the management cluster actually runs what `helmfile.yaml` says.** Nothing reconciles
   the helmfile; it is applied when someone applies it. After a change, apply it (with consent) and
   check `helm list -A` on the management cluster against the file.
-- **The management cluster's operator version.** It is whatever was last rolled onto it, and is
-  not written in a file. It must be the version in `config/clusters/*/operator.yaml`.
+- **The management cluster's operator version.** The helmfile path installs `chart/values.yaml`'s
+  image, which the test keeps equal to the leaves', but a roll with another tag (a `dev-<sha>`
+  build) is whatever was last rolled onto it, and is not written in a file. It must be the version
+  in `config/clusters/*/operator.yaml`.
 
 Closing both would mean the management cluster describing itself with the same resources a leaf
 has. That is not built.

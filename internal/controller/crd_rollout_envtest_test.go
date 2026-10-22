@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -170,18 +171,21 @@ func TestRemovingACRDFieldIsInvisibleToTheOperatorStillRunning(t *testing.T) {
 }
 
 func TestTheOperatorCRDsArePrunedOnlyOnceTheNewVersionRunsAlone(t *testing.T) {
+	newDigest, oldDigest := "sha256:"+strings.Repeat("1", 64), "sha256:"+strings.Repeat("0", 64)
 	for _, tc := range []struct {
 		name  string
 		state leafOperatorState
 		want  bool
 	}{
-		{"rolled out", leafOperatorState{Image: "docker.io/oramasearch/orama-operator:dev-new", Replicas: 1, ReadyReplicas: 1}, true},
-		{"an old pod still runs", leafOperatorState{Image: "docker.io/oramasearch/orama-operator:dev-new", Replicas: 1, ReadyReplicas: 1, oldPods: 1}, false},
-		{"not ready", leafOperatorState{Image: "docker.io/oramasearch/orama-operator:dev-new", Replicas: 1}, false},
-		{"another version", leafOperatorState{Image: "docker.io/oramasearch/orama-operator:dev-old", Replicas: 1, ReadyReplicas: 1}, false},
+		{"rolled out", leafOperatorState{Image: "docker.io/oramasearch/orama-operator:dev-new@" + newDigest, Replicas: 1, ReadyReplicas: 1}, true},
+		{"an old pod still runs", leafOperatorState{Image: "docker.io/oramasearch/orama-operator:dev-new@" + newDigest, Replicas: 1, ReadyReplicas: 1, oldPods: 1}, false},
+		{"not ready", leafOperatorState{Image: "docker.io/oramasearch/orama-operator:dev-new@" + newDigest, Replicas: 1}, false},
+		{"another version", leafOperatorState{Image: "docker.io/oramasearch/orama-operator:dev-old@" + newDigest, Replicas: 1, ReadyReplicas: 1}, false},
+		{"the version, other bytes", leafOperatorState{Image: "docker.io/oramasearch/orama-operator:dev-new@" + oldDigest, Replicas: 1, ReadyReplicas: 1}, false},
+		{"the version, unpinned", leafOperatorState{Image: "docker.io/oramasearch/orama-operator:dev-new", Replicas: 1, ReadyReplicas: 1}, false},
 		{"no Deployment", leafOperatorState{}, false},
 	} {
-		if got := tc.state.rolledOut("dev-new"); got != tc.want {
+		if got := tc.state.rolledOut(pinnedImageTag("dev-new", newDigest)); got != tc.want {
 			t.Errorf("%s: rolledOut = %t, want %t", tc.name, got, tc.want)
 		}
 	}

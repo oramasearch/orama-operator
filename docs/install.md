@@ -268,7 +268,9 @@ Image selection is independent of the manager chart values:
   `oramasearch/oramacore-ai-server:latest` on CPU, or `oramasearch/oramacore-ai-server-cuda:latest`
   on GPU. They do not use the global `spec.images.tag`. §3 pins both through `overrides`.
 - `spec.images.overrides` maps component keys to full image references and wins over defaults.
-  The manager image is selected only by `operator.image.repository` and `operator.image.tag`.
+  The manager image is selected only by `operator.image.repository` and `operator.image.tag`, and
+  the tag carries the image's digest, `<tag>@sha256:<64 hex>`; the chart refuses a tag without it
+  ([orama-operator#808](https://github.com/oramasearch/orama-operator/issues/808)).
 
 Component Secrets are named `v1-<component>-secret` (for example, `v1-engine-secret`). The
 operator seeds missing keys with development values while preserving existing values. Supply
@@ -282,9 +284,9 @@ registry access.
 
 ## Installation and upgrade gotchas
 
-- **Mutable image tags:** the default `IfNotPresent` may reuse a cached tag. Use the immutable
-  published operator tag obtained in the prerequisites; inspect running pods' `imageID` after an
-  upgrade. Changing pull policy does not supply registry access. Mutable-tag behavior is tracked
+- **Mutable image tags:** the manager runs by its digest, so a tag moved to other bytes is never
+  pulled for it; give `operator.image.tag` as `<tag>@<digest>` from the prerequisites. Changing
+  pull policy does not supply registry access. Mutable-tag behavior of the other images is tracked
   separately in [#103](https://github.com/oramasearch/orama-operator/issues/103).
 - **Existing CRDs:** Helm installs files under `crds/` on first installation but does not upgrade
   them. Apply the CRDs widened before an upgrade that changes them, and `chart/crds/` exactly once

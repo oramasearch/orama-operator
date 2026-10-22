@@ -26,6 +26,19 @@ type OramaOperatorSpec struct {
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`
 	Version string `json:"version"`
 
+	// ImageDigest is the digest of the operator image at Version. The cluster's operator runs
+	// <imageRepository>:<version>@<imageDigest>, so a tag moved to other bytes is never run. It
+	// is required: the operator is not installed without it (orama-operator#808). The schema
+	// leaves it optional only so a resource written before the field existed stays readable.
+	// +optional
+	ImageDigest SHA256Digest `json:"imageDigest,omitempty"`
+
+	// ChartSHA256 is the digest of the chart layer of the operator chart published for Version.
+	// A chart with other bytes is refused before anything in it is read. Required, like
+	// ImageDigest.
+	// +optional
+	ChartSHA256 SHA256Digest `json:"chartSHA256,omitempty"`
+
 	// Namespace is where the operator is installed on the cluster.
 	// +kubebuilder:default=orama-system
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="namespace cannot be changed"

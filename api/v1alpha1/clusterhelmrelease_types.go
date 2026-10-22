@@ -23,6 +23,13 @@ type ClusterHelmChart struct {
 	// pinned, and changing this is how it is upgraded.
 	// +kubebuilder:validation:MinLength=1
 	Version string `json:"version"`
+	// SHA256 is the digest of the chart archive the repository serves for this version: the .tgz
+	// of a chart repository, or the chart layer of an OCI chart (not its manifest). An archive
+	// with other bytes is refused before anything in it is read, and a release without SHA256 is
+	// not installed (orama-operator#808). The schema leaves it optional only so a resource
+	// written before the field existed stays readable.
+	// +optional
+	SHA256 SHA256Digest `json:"sha256,omitempty"`
 	// CredentialsSecretRef names a Secret on this cluster for a private chart: either a
 	// kubernetes.io/dockerconfigjson Secret with an entry for the repository's host, or one with
 	// `username` and `password` keys.
@@ -70,12 +77,22 @@ type ClusterHelmReleaseSpec struct {
 
 	// CRDURLs are https URLs of manifests holding CRDs the chart ships apart from itself (TiDB's
 	// crd.yaml). Each is applied server-side before the chart, on every install and upgrade, and
-	// may hold only CustomResourceDefinitions. Pin the URL to a version.
+	// may hold only CustomResourceDefinitions. Each needs its digest in CRDSHA256.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:items:Pattern=`^https://`
 	CRDURLs []string `json:"crdURLs,omitempty"`
+
+	// CRDSHA256 is the digest of each manifest in CRDURLs, by URL. A manifest with other bytes is
+	// refused before any of it is applied, and a release whose CRDURLs lack a digest is not
+	// installed (orama-operator#808).
+	// +optional
+	CRDSHA256 map[string]SHA256Digest `json:"crdSHA256,omitempty"`
 }
+
+// SHA256Digest is the SHA-256 of an artifact's bytes, as sha256:<64 lowercase hex digits>.
+// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+type SHA256Digest string
 
 // ClusterHelmReleaseStatus is what the cluster has.
 type ClusterHelmReleaseStatus struct {

@@ -11,11 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/oramasearch/orama-operator/internal/platformcharts"
 )
 
 // THE RULE (CLAUDE.md, "Two installation paths, one result"): the management cluster is installed
@@ -25,8 +28,12 @@ import (
 // that a management cluster and a leaf are effectively the same cluster. Steve, 2026-10-13: "both
 // the helmfile and the operator need to be kept in sync".
 //
-// This test is what keeps them in step. It fails when a chart, a version, a namespace, a value, a
-// dependency or a separately-shipped CRD manifest is in one and not the other.
+// This test is what keeps them in step. It fails when a chart, a version, a pin, a namespace, a
+// value, a dependency or a separately-shipped CRD manifest is in one and not the other.
+//
+// helmfile cannot check a digest, so its path installs local archives staged by hack/stagecharts
+// against the pins in platform-charts.yaml (orama-operator#808). Its releases are read through
+// those pins: the archive a release names is the chart, version and digest it installs.
 
 // platformRelease is one chart release, described the same way whichever path it came from.
 type platformRelease struct {
@@ -36,11 +43,16 @@ type platformRelease struct {
 	Repository string
 	Chart      string
 	Version    string
+	SHA256     string
 	Namespace  string
 	Values     map[string]any
 	DependsOn  []string // chart names
 	CRDURLs    []string
+	CRDSHA256  map[string]string
 }
+
+// The directory hack/stagecharts stages into, as helmfile.yaml names it.
+const stagedDir = "./.platform-charts/"
 
 func readYAML(t *testing.T, path string, into any) {
 	t.Helper()
@@ -88,7 +100,8 @@ func mergeValues(into, from map[string]any) {
 	}
 }
 
-// helmfilePlatform reads the third-party releases of helmfile.yaml, by chart name.
+// helmfilePlatform reads the third-party releases of helmfile.yaml, by chart name, each as the
+// pinned archive it installs.
 func helmfilePlatform(t *testing.T) map[string]platformRelease {
 	t.Helper()
 	var helmfile struct {
@@ -113,29 +126,46 @@ func helmfilePlatform(t *testing.T) map[string]platformRelease {
 		} `json:"releases"`
 	}
 	readYAML(t, filepath.Join("..", "helmfile.yaml"), &helmfile)
-	repositories := map[string]string{}
-	for _, repository := range helmfile.Repositories {
-		repositories[repository.Name] = repository.URL
+	if len(helmfile.Repositories) > 0 {
+		t.Errorf("helmfile.yaml lists chart repositories %v: helmfile would download charts whose bytes nothing checks. Pin the chart in platform-charts.yaml and install its staged archive", helmfile.Repositories)
+	}
+	pins, err := platformcharts.Load(filepath.Join("..", "platform-charts.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archives := map[string]platformcharts.Chart{} // staged archive path -> its pin
+	crdFiles := map[string]platformcharts.CRD{}   // staged CRD manifest path -> its pin
+	for _, chart := range pins.Charts {
+		archives[stagedDir+chart.Archive()] = chart
+		for _, crd := range chart.CRDs {
+			crdFiles[stagedDir+chart.CRDFile(crd)] = crd
+		}
 	}
 	releaseChart := map[string]string{} // release name -> chart name, to resolve `needs`
 	for _, release := range helmfile.Releases {
-		if repo, chart, ok := strings.Cut(release.Chart, "/"); ok && repositories[repo] != "" {
-			releaseChart[release.Name] = chart
+		if pin, ok := archives[release.Chart]; ok {
+			releaseChart[release.Name] = pin.Name
 		}
 	}
+	installed := map[string]bool{} // pinned archives and CRD manifests some release installs
 	releases := map[string]platformRelease{}
 	for _, release := range helmfile.Releases {
-		repo, chart, ok := strings.Cut(release.Chart, "/")
-		if !ok || repositories[repo] == "" {
-			continue // ./chart: the operator itself, which a leaf gets through OramaOperator
+		if release.Chart == "./chart" {
+			continue // the operator itself, which a leaf gets through OramaOperator
 		}
+		pin, ok := archives[release.Chart]
+		if !ok {
+			t.Errorf("helmfile.yaml: release %s installs %s, which is not an archive pinned in platform-charts.yaml and staged in %s", release.Name, release.Chart, stagedDir)
+			continue
+		}
+		installed[release.Chart] = true
 		if release.Installed != nil && !*release.Installed {
 			continue
 		}
-		if release.Version == "" {
-			t.Errorf("helmfile.yaml: release %s has no version. A leaf's ClusterHelmRelease is always pinned, so an unpinned release here cannot be the same as a leaf's", release.Name)
+		if release.Version != "" {
+			t.Errorf("helmfile.yaml: release %s sets version %s; the staged archive it names, and its pin, say which version it installs", release.Name, release.Version)
 		}
-		entry := platformRelease{Release: release.Name, Repository: repositories[repo], Chart: chart, Version: release.Version, Namespace: release.Namespace, Values: map[string]any{}}
+		entry := platformRelease{Release: release.Name, Repository: pin.Repository, Chart: pin.Name, Version: pin.Version, SHA256: pin.SHA256, Namespace: release.Namespace, Values: map[string]any{}}
 		for _, values := range release.Values {
 			mergeValues(entry.Values, values)
 		}
@@ -148,12 +178,35 @@ func helmfilePlatform(t *testing.T) map[string]platformRelease {
 		}
 		for _, hook := range release.Hooks {
 			for _, arg := range hook.Args {
-				if strings.HasPrefix(arg, "https://") {
-					entry.CRDURLs = append(entry.CRDURLs, arg)
+				switch {
+				case strings.HasPrefix(arg, "https://"), strings.HasPrefix(arg, "http://"):
+					t.Errorf("helmfile.yaml: release %s's hook reads %s, whose bytes nothing checks. Pin it in platform-charts.yaml and apply the staged file", release.Name, arg)
+				case strings.HasPrefix(arg, stagedDir):
+					crd, ok := crdFiles[arg]
+					if !ok {
+						t.Errorf("helmfile.yaml: release %s's hook applies %s, which platform-charts.yaml does not pin", release.Name, arg)
+						continue
+					}
+					installed[arg] = true
+					entry.CRDURLs = append(entry.CRDURLs, crd.URL)
+					if entry.CRDSHA256 == nil {
+						entry.CRDSHA256 = map[string]string{}
+					}
+					entry.CRDSHA256[crd.URL] = crd.SHA256
 				}
 			}
 		}
-		releases[chart] = entry
+		releases[pin.Name] = entry
+	}
+	for file := range archives {
+		if !installed[file] {
+			t.Errorf("platform-charts.yaml pins %s, which no release in helmfile.yaml installs", file)
+		}
+	}
+	for file := range crdFiles {
+		if !installed[file] {
+			t.Errorf("platform-charts.yaml pins the CRD manifest staged as %s, which no hook in helmfile.yaml applies", file)
+		}
 	}
 	return releases
 }
@@ -177,10 +230,12 @@ func leafPlatform(t *testing.T, path string) map[string]platformRelease {
 				Repository string `json:"repository"`
 				Name       string `json:"name"`
 				Version    string `json:"version"`
+				SHA256     string `json:"sha256"`
 			} `json:"chart"`
-			Values    map[string]any `json:"values"`
-			DependsOn []string       `json:"dependsOn"`
-			CRDURLs   []string       `json:"crdURLs"`
+			Values    map[string]any    `json:"values"`
+			DependsOn []string          `json:"dependsOn"`
+			CRDURLs   []string          `json:"crdURLs"`
+			CRDSHA256 map[string]string `json:"crdSHA256"`
 		} `json:"spec"`
 	}
 	var resources []resource
@@ -204,8 +259,8 @@ func leafPlatform(t *testing.T, path string) map[string]platformRelease {
 	for _, r := range resources {
 		entry := platformRelease{
 			Release:    r.Spec.ReleaseName,
-			Repository: r.Spec.Chart.Repository, Chart: r.Spec.Chart.Name, Version: r.Spec.Chart.Version,
-			Namespace: r.Spec.Namespace, Values: r.Spec.Values, CRDURLs: r.Spec.CRDURLs,
+			Repository: r.Spec.Chart.Repository, Chart: r.Spec.Chart.Name, Version: r.Spec.Chart.Version, SHA256: r.Spec.Chart.SHA256,
+			Namespace: r.Spec.Namespace, Values: r.Spec.Values, CRDURLs: r.Spec.CRDURLs, CRDSHA256: r.Spec.CRDSHA256,
 		}
 		if entry.Values == nil {
 			entry.Values = map[string]any{}
@@ -227,6 +282,9 @@ func normalized(release platformRelease) platformRelease {
 	}
 	if len(release.CRDURLs) == 0 {
 		release.CRDURLs = nil
+	}
+	if len(release.CRDSHA256) == 0 {
+		release.CRDSHA256 = nil
 	}
 	// Through JSON, so a number written 1 and one written 1.0 compare equal.
 	raw, _ := json.Marshal(release.Values)
@@ -268,34 +326,60 @@ func TestHelmfileAndEveryLeafInstallTheSamePlatform(t *testing.T) {
 	}
 }
 
-// Every cluster runs the same operator version: the OramaOperator resources must agree with each
-// other. (The management cluster's own version is whatever was last rolled onto it from the
-// helmfile path; it is not in a file yet, which docs/infrastructure/README.md records as a gap.)
-func TestEveryLeafRunsTheSameOperatorVersion(t *testing.T) {
+// Every cluster runs the same operator: the OramaOperator resources must agree with each other on
+// the version and the digests it is installed by, and the chart's default image, which helmfile's
+// path installs on the management cluster, is that version at that digest. (A management cluster
+// rolled by hand with another tag is not in a file yet, which docs/infrastructure/README.md
+// records as a gap.)
+func TestEveryClusterRunsTheSameOperatorVersion(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "config", "clusters", "*", "operator.yaml"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("found no config/clusters/*/operator.yaml: %v", err)
 	}
-	versions := map[string][]string{}
+	type operatorSpec struct {
+		Version         string `json:"version"`
+		ImageDigest     string `json:"imageDigest"`
+		ChartSHA256     string `json:"chartSHA256"`
+		ImageRepository string `json:"imageRepository"`
+		Values          any    `json:"values"`
+	}
+	versions := map[operatorSpec][]string{}
+	var leaf operatorSpec
 	for _, path := range files {
 		var operator struct {
-			Spec struct {
-				Version         string `json:"version"`
-				ImageRepository string `json:"imageRepository"`
-				Values          any    `json:"values"`
-			} `json:"spec"`
+			Spec operatorSpec `json:"spec"`
 		}
 		readYAML(t, path, &operator)
-		key := operator.Spec.ImageRepository + ":" + operator.Spec.Version
-		versions[key] = append(versions[key], filepath.Base(filepath.Dir(path)))
 		if operator.Spec.Values != nil {
 			t.Errorf("%s sets spec.values: an operator must not be configured differently on one cluster (CLAUDE.md rule 11)", path)
+			operator.Spec.Values = nil
 		}
+		for field, digest := range map[string]string{"imageDigest": operator.Spec.ImageDigest, "chartSHA256": operator.Spec.ChartSHA256} {
+			if !digestPattern.MatchString(digest) {
+				t.Errorf("%s: spec.%s %q is not a sha256 digest; the operator is installed only by its pins (orama-operator#808)", path, field, digest)
+			}
+		}
+		leaf = operator.Spec
+		versions[operator.Spec] = append(versions[operator.Spec], filepath.Base(filepath.Dir(path)))
 	}
 	if len(versions) != 1 {
 		t.Errorf("the managed clusters do not all run the same operator: %v", versions)
 	}
+
+	var chartValues struct {
+		Operator struct {
+			Image struct{ Repository, Tag string } `json:"image"`
+		} `json:"operator"`
+	}
+	readYAML(t, filepath.Join("..", "chart", "values.yaml"), &chartValues)
+	image := chartValues.Operator.Image
+	if want := leaf.Version + "@" + leaf.ImageDigest; image.Repository != leaf.ImageRepository || image.Tag != want {
+		t.Errorf("chart/values.yaml installs %s:%s on the management cluster, and the leaves run %s:%s. Change both together",
+			image.Repository, image.Tag, leaf.ImageRepository, want)
+	}
 }
+
+var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // operator#719: on every cluster, ingress-nginx takes the client address from CF-Connecting-IP only
 // for connections from Cloudflare's published ranges, so a sender that reaches the ingress directly

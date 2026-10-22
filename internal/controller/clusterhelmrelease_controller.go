@@ -71,6 +71,24 @@ func (r *ClusterHelmReleaseReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 	}
 
+	// The chart and its CRD manifests are installed only by the digests of their bytes
+	// (orama-operator#808). A release without them is refused as written, before the cluster is
+	// reached; editing the resource brings it back.
+	source := chartSource{Repository: rel.Spec.Chart.Repository, Name: rel.Spec.Chart.Name, Version: rel.Spec.Chart.Version, SHA256: string(rel.Spec.Chart.SHA256)}
+	crdPins := map[string]string{}
+	for url, digest := range rel.Spec.CRDSHA256 {
+		crdPins[url] = string(digest)
+	}
+	request := helmReleaseRequest{
+		Release: rel.Spec.ReleaseName, Namespace: rel.Spec.Namespace, Chart: source,
+		RequiredCRDs: rel.Spec.RequiredCRDs, CRDURLs: rel.Spec.CRDURLs, CRDSHA256: crdPins,
+	}
+	if err := requireReleasePins(request); err != nil {
+		setClusterStatus(&rel.Status.Phase, &rel.Status.Message, &rel.Status.Conditions,
+			rel.Generation, clusterPhaseDegraded, "NotPinned", err.Error())
+		return settle(ctrl.Result{}, r.writeStatus(ctx, &rel, observed))
+	}
+
 	kubeconfig, waiting, err := managedClusterKubeconfig(ctx, r.Client, rel.Spec.ClusterRef)
 	if err != nil {
 		return r.fail(ctx, &rel, observed, "ClusterUnreadable", err)
@@ -89,23 +107,18 @@ func (r *ClusterHelmReleaseReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return settle(ctrl.Result{}, r.writeStatus(ctx, &rel, observed))
 	}
 
-	source := chartSource{Repository: rel.Spec.Chart.Repository, Name: rel.Spec.Chart.Name, Version: rel.Spec.Chart.Version}
 	if ref := rel.Spec.Chart.CredentialsSecretRef; ref != nil {
-		if source.User, source.Pass, err = r.chartCredentials(ctx, *ref, source); err != nil {
+		if request.Chart.User, request.Chart.Pass, err = r.chartCredentials(ctx, *ref, source); err != nil {
 			return r.fail(ctx, &rel, observed, "CredentialsUnusable", err)
 		}
 	}
-	var values map[string]any
 	if rel.Spec.Values != nil && len(rel.Spec.Values.Raw) > 0 {
-		if err := json.Unmarshal(rel.Spec.Values.Raw, &values); err != nil {
+		if err := json.Unmarshal(rel.Spec.Values.Raw, &request.Values); err != nil {
 			return r.fail(ctx, &rel, observed, "InvalidValues", fmt.Errorf("spec.values must be an object: %w", err))
 		}
 	}
 
-	state, err := r.installer().EnsureRelease(ctx, kubeconfig, helmReleaseRequest{
-		Release: rel.Spec.ReleaseName, Namespace: rel.Spec.Namespace, Chart: source, Values: values,
-		RequiredCRDs: rel.Spec.RequiredCRDs, CRDURLs: rel.Spec.CRDURLs,
-	})
+	state, err := r.installer().EnsureRelease(ctx, kubeconfig, request)
 	rel.Status.ChartVersion, rel.Status.AppVersion = state.ChartVersion, state.AppVersion
 	rel.Status.Revision, rel.Status.ReleaseStatus = int32(state.Revision), state.Status
 	rel.Status.Workloads, rel.Status.ReadyWorkloads = int32(state.Workloads), int32(state.ReadyWorkloads)

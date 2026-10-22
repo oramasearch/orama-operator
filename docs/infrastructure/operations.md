@@ -45,7 +45,7 @@ kubectl --kubeconfig /tmp/nonprod.kubeconfig get nodes
 | `KubernetesClusterProvider` | `kcp` | A cloud account and the defaults clusters are created with. |
 | `KubernetesCluster` | `kcluster` | A cluster: region, version, node pools, `purpose`. Creates an `AksCluster` (`aks`). |
 | `ClusterHelmRelease` | `chr` | One pinned chart release on a managed cluster. |
-| `OramaOperator` | `ooperator` | The managed cluster's own operator, at a version. |
+| `OramaOperator` | `ooperator` | The managed cluster's own operator, at a version and its image and chart digests. |
 | `LakeSet` | `lset` | Lake instances on managed clusters, from one template. |
 | `OramaCloudV1Set` | `ocv1set` | Orama Cloud v1 instances on managed clusters, from one template. |
 | `LakeOrderSource` | `lorders` | Provisions the paid lake.live orders a `LakeSet`'s Lakes record ([orders](orders.md)). |
@@ -102,8 +102,11 @@ Every cluster runs the same operator version (rule 11 in [`CLAUDE.md`](../../CLA
    image, publishes the chart and rolls it from the operator checkout's current commit, and prints
    the tag, `dev-<sha>`. It publishes the chart for the same tag, without which a managed cluster cannot
    install that version.
-2. Set that version on every `OramaOperator`, in `config/clusters/<cluster>/operator.yaml`, and apply.
-   Each managed cluster's operator is upgraded with its CRDs widened first and applied exactly once
+2. Set that version on every `OramaOperator`, in `config/clusters/<cluster>/operator.yaml`, with
+   its two digests (orama-operator#808): `imageDigest`, the image's manifest digest for that tag,
+   and `chartSHA256`, the chart layer `go run ./hack/pushchart` prints as `chartSHA256:`. Put the
+   same version and image digest in `chart/values.yaml` (`operator.image.tag: <version>@<digest>`),
+   and apply. Each managed cluster's operator is upgraded with its CRDs widened first and applied exactly once
    the new version runs alone (both paths do this the same way:
    [`../operations/crd-rollout.md`](../operations/crd-rollout.md#removing-or-changing-a-field-crds-in-two-steps-around-the-roll)).
    The management cluster (step 1) and the leaves (this step) must end on the same version: they
@@ -124,13 +127,19 @@ Every cluster runs the same operator version (rule 11 in [`CLAUDE.md`](../../CLA
    cluster's operator installs on each **leaf**.
 
 Make the same change in both (`version`, values, a new or removed chart), in one pull request.
+A new version needs a new pin: download the archive (`helm pull <repo>/<chart> --version <v>`),
+take its `sha256sum` (for these repositories it equals the `digest` in their `index.yaml`), and
+put it in `platform-charts.yaml` and in `spec.chart.sha256` of every `platform.yaml`; rename the
+staged archive in `helmfile.yaml` (`./.platform-charts/<chart>-<version>.tgz`). A separate CRD
+manifest's pin goes in the chart's `crds` in `platform-charts.yaml` and in `spec.crdSHA256`.
 `go test ./cmd/ -run Helmfile` fails while they differ. Then:
 
 - apply each `platform.yaml` to the managing cluster: the operator upgrades the leaves;
 - apply the helmfile to the management cluster, **with Steve's consent**
-  (`helmfile -l name=<release> sync`), and check `helm list -A` there against the file.
+  (`go run ./hack/stagecharts && helmfile -l name=<release> sync`), and check `helm list -A`
+  there against the file.
 
-Edit the `ClusterHelmRelease` (`spec.chart.version`, `spec.values`) and
+Edit the `ClusterHelmRelease` (`spec.chart.version` with its `sha256`, `spec.values`) and
 apply. Read the chart's release notes for CRD changes first. `dependsOn` orders installs
 (cert-manager before K8ssandra); `crdURLs` names CRDs a chart ships in a separate file (TiDB).
 
@@ -245,6 +254,8 @@ only after every cluster is cut over.
 | A Lake member stays `Progressing` with "PersistentVolumeClaim … is not bound" | A Lake's store defaults to `ReadWriteMany`, which a disk-backed storage class cannot provide | State `store.accessModes: [ReadWriteOnce]` in the template. A claim's access mode cannot be changed, so the claim that never bound has to be replaced, and the operator does not do that yet: **ask Steve before deleting it**, on any cluster |
 | `OramaOperator` is `Pending`: "the cluster lacks CRDs this operator version needs" | CloudNativePG is not on the cluster yet | Apply its `ClusterHelmRelease`; the operator installs by itself afterwards |
 | `OramaOperator` is `Degraded`, reason `ProductionCredential`: "… is a production credential and is never copied to a nonprod cluster" | Its `imagePullSecretRef` names a Secret production uses (a production set lists it, a production `OramaOperator` names it, or it is labelled `orama.cloud/purpose` for another purpose); nothing was copied to the cluster (orama-operator#832) | Name the cluster's own Secret in `config/clusters/<cluster>/operator.yaml`, copied under the old name with `imagePullSecretAs`, and apply the file. Creating that Secret on the managing cluster is Steve's |
+| `OramaOperator` or `ClusterHelmRelease` is `Degraded`, reason `NotPinned`: "… is required: the artifact is installed only by the SHA-256 of its bytes" | The resource has no digest for its image, chart or CRD manifest; nothing reached the cluster (orama-operator#808) | Add the pin to the file in `config/clusters/` (see *Upgrade the operator* and *Add or upgrade a platform chart*) and apply it |
+| `OramaOperator` or `ClusterHelmRelease` is `Degraded`: "… is refused: its SHA-256 is …, and the pin is …" | The repository serves other bytes for that version than were pinned: a republished chart, or a wrong pin. Nothing was installed | Find out which. A pin changes only after checking why the upstream bytes changed |
 | `OramaOperator` is `Degraded`: the chart cannot be pulled | The chart for that version was not published | `go run ./hack/pushchart -version <tag>` from the commit the image was built from |
 | A set member is `Pending`: "does not have the Lake kind" | The cluster's operator is not installed or not `Ready` | Fix the `OramaOperator` first |
 | A `ClusterHelmRelease` is `Degraded` with "pre-upgrade hooks failed … timed out", and its Helm revision climbs | A chart's hook (the ClickHouse operator's CRD-install Job) outlasted Helm's timeout while the new cluster was still pulling images. Fixed 2026-10-12: hooks get ten minutes, where they had 30 seconds | Nothing, on a current operator. It recovers once the hook's image is on the node; check `helm history` on the cluster shows a final `deployed` |

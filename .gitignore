@@ -4,3 +4,5 @@ cover.out
 *.test
 .DS_Store
 vendor/
+# Chart archives and CRD manifests staged and verified for helmfile.yaml (hack/stagecharts)
+/.platform-charts/

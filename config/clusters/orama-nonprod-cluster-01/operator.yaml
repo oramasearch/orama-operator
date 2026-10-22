@@ -15,3 +15,7 @@ spec:
   imageRepository: oramasearch/orama-operator
   namespace: orama-system
   version: v0.7.3
+  # The image and the chart published for the version, by the digests of their bytes
+  # (orama-operator#808). Both change with the version.
+  imageDigest: sha256:ce339674a3a0cea4e9809786adca45451a95d62dd79f6ac69b8c0aa3b7ec37dc
+  chartSHA256: sha256:62364e3eb1df7d90ea97f9b0d9b19c38b250e66c6c8c5a88d890ff15d6770f2f
