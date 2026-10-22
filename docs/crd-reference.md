@@ -679,6 +679,7 @@ which applies it labelled `orama.cloud/managed-by-set` with `targetRef` set to t
 | `status.message`, `.startedAt`, `.completedAt`, `.observedGeneration` | The last transition's explanation and the last Job's times. |
 | `status.conditions[Seeded]` | `True` once an applied seed succeeded under this resource; `catchUp` and `verify` need it. Never cleared. |
 | `status.conditions[TargetWritten]` | `True` once an applied seed or catch-up started; deletion with `removeOnDelete` then removes the team. Never cleared. |
+| `status.conditions[Removed]` | `True` once the removal on deletion succeeded; it never runs again, even once its Job is gone. Never cleared. |
 
 Print columns: Target, Step, Apply, Phase, Age. Status is written only on a real transition.
 
