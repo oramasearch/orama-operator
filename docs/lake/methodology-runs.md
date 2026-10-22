@@ -76,6 +76,14 @@ Each run gets, in the Lake's namespace `lake-<lake>-methodology-runs`:
   link-local and reserved ranges, so never the cluster, its nodes or the metadata service), and
   `methodology-serve-ingress` (serve pods, [below](#serving-a-model): ingress from lake's pods only,
   on port 8080). Nothing else admits ingress; a run's pods admit none.
+- **Both ends need a rule.** Lake's own pods are isolated too, by the Lake's NetworkSandbox
+  ([network sandbox](../infrastructure/network-sandbox.md#lake-instance-namespace)), so each path
+  out of this namespace has its other half there: `allow-methodology-ingress-to-lake` admits this
+  namespace's stage and collect pods (and a served model's stage pod) to lake's container port, and
+  `allow-lake-to-methodology-serve` lets lake reach serve pods on 8080. Without the first, every
+  stage pod's calls time out and every run fails with *could not bring the data in* (lake#802).
+  `TestLakeNetworkSandboxAdmitsOnlyItsMethodologyTransferPods` checks that the two halves name the
+  same pods and port.
 
 **Every pod** runs as uid/gid 10001 with `fsGroup` 10001 (which owns the work volume), a read-only
 root filesystem with a 1Gi `/tmp`, all capabilities dropped, `RuntimeDefault` seccomp, no privilege
@@ -104,7 +112,7 @@ reads of that run's image only.
 | `Running` | the sandbox Job exists; `started_at` is set once its container has started |
 | `Collecting` | the code finished (any outcome); `finished_at` and `exit_code` are set and the sandbox's resources are written to `workload_resources` again (they were first written before its Job was created) |
 | `Succeeded` | collect succeeded and the code exited 0 |
-| `Failed` | the build failed or was cancelled (*the methodology's image build failed: \<build message\>*), there was no build, the stage failed (*could not bring the data in*), the code exited non-zero (*the methodology's code exited with N*) or ran past its time limit (*… ran past its time limit (N seconds)*), or collect failed (*could not report the result to Lake*) |
+| `Failed` | the build failed or was cancelled (*the methodology's image build failed: \<build message\>*), there was no build, the stage failed (*could not bring the data in*), the code exited non-zero (*the methodology's code exited with N*) or ran past its time limit (*… ran past its time limit (N seconds)*), or collect failed (*could not report the result to Lake*). A stage or collect failure adds what its pod said: its termination message, which is the tail of its log when it wrote none (*could not bring the data in: stage failed: methodology_run_input could not reach Lake: timed out*), else how it ended (*OOMKilled*), else the Job's own condition; at most 1 KiB, its end kept. It is read before the run's objects, and so the pod, are removed |
 | `Stopped` | lake set `desired = absent` before the run finished |
 
 A failed code is still collected, so its findings reach lake. `started_at` and `finished_at` are

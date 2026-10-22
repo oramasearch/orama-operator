@@ -405,7 +405,7 @@ func (r *LakeReconciler) reconcileMethodologyDeployment(ctx context.Context, lak
 	stageDone := stage == nil || stage.Status.Succeeded > 0
 	if stage != nil && stage.Status.Failed > 0 {
 		message := "could not bring the model in"
-		if detail := jobFailureMessage(stage); detail != "" {
+		if detail := r.methodologyJobFailure(ctx, stage); detail != "" {
 			message += ": " + detail
 		}
 		return fail(message)

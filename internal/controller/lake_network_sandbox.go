@@ -202,6 +202,21 @@ func (r *LakeReconciler) reconcileLakeNetworkSandbox(
 				[]networkingv1.NetworkPolicyEgressRule{{To: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: workspaceNamespaces, PodSelector: &metav1.LabelSelector{}}}, Ports: tcpPorts(zettaAPIPort, agentPort)}},
 			),
 		),
+		sandboxAllowance(
+			"Lake sends predictions to its served methodology models' serve pods, the other half of methodology-serve-ingress (lake#690, lake#802).",
+			networkPolicy(
+				"allow-lake-to-methodology-serve",
+				lakeSelector,
+				[]networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+				nil,
+				[]networkingv1.NetworkPolicyEgressRule{{To: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: namespaceNameSelector(methodologyRunsNamespace(lake.Name)),
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						methodologyRunLakeLabel: lake.Name, methodologyRunRoleLabel: methodologyRoleServe,
+					}},
+				}}, Ports: tcpPorts(methodologyServePort)}},
+			),
+		),
 	}
 	allowances = append(allowances, lakeInternalIngressAllowances(lake, lakeSelector, cnpgSelector, zettaSelector, agentSelector, schemaSelector)...)
 	allowances = append(allowances, lakeWorkspaceServiceAllowances(lakeSelector, workspaceNamespaces)...)
@@ -403,6 +418,13 @@ func lakeInternalIngressAllowances(
 			[]networkingv1.NetworkPolicyPeer{{
 				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{buildLakeLabel: lake.Name}},
 				PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{buildLakeLabel: lake.Name, "app.kubernetes.io/name": "lake-builder"}},
+			}}, int32(lakeContainerPort(lake))},
+		// The other half of methodology-transfer, the egress policy in the methodology-runs
+		// namespace (lake#802): without it the stage pod's calls time out and every run fails.
+		{"allow-methodology-ingress-to-lake", "Methodology stage and collect pods (runs and served models) page data in from, and report results to, their owning Lake; Lake never dials them.", lakePods,
+			[]networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: namespaceNameSelector(methodologyRunsNamespace(lake.Name)),
+				PodSelector:       methodologyTransferPods(lake),
 			}}, int32(lakeContainerPort(lake))},
 	}
 	policies := make([]oramav1alpha1.NetworkSandboxPolicy, 0, len(paths))
