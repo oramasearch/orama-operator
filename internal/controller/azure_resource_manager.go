@@ -419,6 +419,16 @@ type azureAutoUpgrade struct {
 func azureManagedClusterBody(cluster *oramav1alpha1.AksCluster) (azureManagedCluster, error) {
 	spec := cluster.Spec
 	name := aksClusterAzureName(cluster)
+	// Workspace isolation is network policy, so every cluster enforces it with Cilium (operator#699).
+	// The CRD refuses anything else; this catches a resource stored before that rule.
+	for field, value := range map[string]*string{"dataplane": &spec.Network.Dataplane, "policy": &spec.Network.Policy} {
+		if *value == "" {
+			*value = "cilium"
+		}
+		if *value != "cilium" {
+			return azureManagedCluster{}, fmt.Errorf("spec.network.%s is %q; every cluster enforces network policy with cilium (operator#699)", field, *value)
+		}
+	}
 	rbac := true
 	body := azureManagedCluster{
 		Location: spec.Location,
