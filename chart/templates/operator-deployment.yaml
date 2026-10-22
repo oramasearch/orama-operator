@@ -24,7 +24,8 @@ spec:
       {{- end }}
       containers:
         - name: manager
-          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
+          # Only by the image's digest (orama-operator#808): a tag without one renders nothing.
+          image: "{{ .Values.operator.image.repository }}:{{ required "operator.image.tag must be <version>@sha256:<64 hex digits>: the operator image is installed only by its digest (orama-operator#808)" (regexFind "^[A-Za-z0-9_][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}$" (toString .Values.operator.image.tag)) }}"
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           args:
             - --leader-elect

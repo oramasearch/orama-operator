@@ -1,10 +1,15 @@
-# The private operator manager image. For a fresh install, obtain a published immutable tag
-# and registry access, then set operator.imagePullSecrets to a Secret in the release namespace.
-# See docs/install.md for prerequisites and docs/development.md for remote BuildKit publication.
+# The private operator manager image. For a fresh install, obtain registry access, then set
+# operator.imagePullSecrets to a Secret in the release namespace. See docs/install.md for
+# prerequisites and docs/development.md for remote BuildKit publication.
 operator:
   image:
     repository: oramasearch/orama-operator
-    tag: v1-sandbox
+    # The version and the image's digest, <version>@sha256:<64 hex>. The chart refuses a tag
+    # without the digest, so the pod runs the pinned bytes whatever the tag later names
+    # (orama-operator#808). The default is the version every leaf runs (config/clusters/*/
+    # operator.yaml), so helmfile's path installs the same operator; cmd/platform_sync_test.go
+    # keeps the two equal.
+    tag: v0.7.3@sha256:ce339674a3a0cea4e9809786adca45451a95d62dd79f6ac69b8c0aa3b7ec37dc
     pullPolicy: IfNotPresent
   # Pull secret(s) for the PRIVATE manager image, e.g. [{ name: oramasearch-dockerhub }].
   # Empty emits no imagePullSecrets; fresh nodes need registry access for the private default.

@@ -29,6 +29,12 @@ import (
 
 const leafName = "orama-nonprod-cluster-01"
 
+// Pins the fakes are given; the installer's own checks of real bytes are in artifact_pins_test.go.
+var (
+	testImageDigest = "sha256:" + strings.Repeat("a", 64)
+	testChartSHA256 = "sha256:" + strings.Repeat("b", 64)
+)
+
 // fakeLeaf stands in for a managed cluster. It records what it was asked to do.
 type fakeLeaf struct {
 	operatorRequests []leafOperatorRequest
@@ -103,6 +109,8 @@ func testOramaOperator(version string) *oramav1alpha1.OramaOperator {
 		Spec: oramav1alpha1.OramaOperatorSpec{
 			ClusterRef:         leafName,
 			Version:            version,
+			ImageDigest:        oramav1alpha1.SHA256Digest(testImageDigest),
+			ChartSHA256:        oramav1alpha1.SHA256Digest(testChartSHA256),
 			ImagePullSecretRef: oramav1alpha1.ClusterSecretReference{Name: "oramasearch-dockerhub", Namespace: "orama-system"},
 			Values:             &apiextensionsv1.JSON{Raw: []byte(`{"operator":{"replicas":2},"clusterManagement":{"enabled":true}}`)},
 		},
@@ -148,7 +156,7 @@ func TestOramaOperatorWaitsForItsCluster(t *testing.T) {
 func TestOramaOperatorInstallsTheVersionAndFollowsTheLeaf(t *testing.T) {
 	leaf := &fakeLeaf{operatorState: leafOperatorState{
 		InstalledVersion: "dev-83242f9", ChartVersion: "0.0.0-dev-83242f9", Revision: 1, ReleaseStatus: "deployed",
-		Image: "oramasearch/orama-operator:dev-83242f9", Replicas: 2, ReadyReplicas: 0,
+		Image: "oramasearch/orama-operator:dev-83242f9@" + testImageDigest, Replicas: 2, ReadyReplicas: 0,
 		PodProblem: "container manager ImagePullBackOff: pull access denied",
 	}}
 	c := leafTestClient(t, append(readyLeaf(), testOramaOperator("dev-83242f9"), dockerHubSecret())...)
@@ -162,7 +170,8 @@ func TestOramaOperatorInstallsTheVersionAndFollowsTheLeaf(t *testing.T) {
 	if leaf.kubeconfigs[0] != "leaf-kubeconfig" {
 		t.Fatalf("reached the cluster with %q", leaf.kubeconfigs[0])
 	}
-	if req.Namespace != "orama-system" || req.Chart.Repository != defaultLeafChartRepository || req.Chart.Version != "0.0.0-dev-83242f9" {
+	if req.Namespace != "orama-system" || req.Chart.Repository != defaultLeafChartRepository || req.Chart.Version != "0.0.0-dev-83242f9" ||
+		req.Chart.SHA256 != testChartSHA256 || req.ImageDigest != testImageDigest {
 		t.Fatalf("request: %+v", req)
 	}
 	if req.Chart.User != "steveorama" || req.Chart.Pass != "hub-token" || req.PullSecret.Name != "oramasearch-dockerhub" {
@@ -170,7 +179,8 @@ func TestOramaOperatorInstallsTheVersionAndFollowsTheLeaf(t *testing.T) {
 	}
 	operatorValues := req.Values["operator"].(map[string]any)
 	image := operatorValues["image"].(map[string]any)
-	if image["repository"] != "oramasearch/orama-operator" || image["tag"] != "dev-83242f9" || operatorValues["replicas"] != float64(2) {
+	// The digest rides in the tag, so a chart published before it existed pins the image too.
+	if image["repository"] != "oramasearch/orama-operator" || image["tag"] != "dev-83242f9@"+testImageDigest || operatorValues["replicas"] != float64(2) {
 		t.Fatalf("values: %+v", req.Values)
 	}
 	if req.Values["clusterManagement"].(map[string]any)["enabled"] != true {
@@ -283,7 +293,7 @@ func testRelease(name string, dependsOn ...string) *oramav1alpha1.ClusterHelmRel
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: oramav1alpha1.ClusterHelmReleaseSpec{
 			ClusterRef: leafName, ReleaseName: strings.TrimPrefix(name, "nonprod-"), Namespace: name + "-system",
-			Chart:     oramav1alpha1.ClusterHelmChart{Repository: "https://cloudnative-pg.github.io/charts", Name: "cloudnative-pg", Version: "0.29.0"},
+			Chart:     oramav1alpha1.ClusterHelmChart{Repository: "https://cloudnative-pg.github.io/charts", Name: "cloudnative-pg", Version: "0.29.0", SHA256: oramav1alpha1.SHA256Digest(testChartSHA256)},
 			Values:    &apiextensionsv1.JSON{Raw: []byte(`{"replicaCount":1}`)},
 			DependsOn: dependsOn,
 		},
@@ -319,7 +329,8 @@ func TestClusterHelmReleaseInstallsAndReportsItsWorkloads(t *testing.T) {
 		t.Fatalf("got %v, %v", result, err)
 	}
 	req := leaf.releaseRequests[0]
-	if req.Release != "cnpg" || req.Namespace != "nonprod-cnpg-system" || req.Chart.Version != "0.29.0" || req.Chart.Name != "cloudnative-pg" || req.Values["replicaCount"] != float64(1) {
+	if req.Release != "cnpg" || req.Namespace != "nonprod-cnpg-system" || req.Chart.Version != "0.29.0" || req.Chart.Name != "cloudnative-pg" ||
+		req.Chart.SHA256 != testChartSHA256 || req.Values["replicaCount"] != float64(1) {
 		t.Fatalf("request: %+v", req)
 	}
 	rel := getRelease(t, c, "nonprod-cnpg")
@@ -390,6 +401,44 @@ func TestClusterHelmReleaseOrdersInstallAndUninstallByDependsOn(t *testing.T) {
 	}
 	if got := strings.Join(leaf.removedReleases, ","); got != "nonprod-k8ssandra-system/k8ssandra,nonprod-cert-manager-system/cert-manager" {
 		t.Fatalf("uninstall order: %s", got)
+	}
+}
+
+// A resource without the digests of what it installs is refused as written, and the cluster is
+// not reached (orama-operator#808).
+func TestAnUnpinnedResourceIsRefusedBeforeTheClusterIsReached(t *testing.T) {
+	noImageDigest := testOramaOperator("v0.7.3")
+	noImageDigest.Spec.ImageDigest = ""
+	noChartPin := testOramaOperator("v0.7.3")
+	noChartPin.Spec.ChartSHA256 = ""
+	for name, operator := range map[string]*oramav1alpha1.OramaOperator{"spec.imageDigest": noImageDigest, "spec.chartSHA256": noChartPin} {
+		leaf := &fakeLeaf{}
+		c := leafTestClient(t, append(readyLeaf(), operator, dockerHubSecret())...)
+		r := &OramaOperatorReconciler{Client: c, Scheme: clusterTestScheme(t), Installer: leaf}
+		if _, err := reconcileOperator(t, r); err != nil {
+			t.Fatalf("%s: a resource as written is not an error to retry: %v", name, err)
+		}
+		got := getOperator(t, c)
+		if got.Status.Phase != clusterPhaseDegraded || !strings.Contains(got.Status.Message, name+" is required") || len(leaf.operatorRequests) != 0 {
+			t.Fatalf("without %s: status %+v, %d installs", name, got.Status, len(leaf.operatorRequests))
+		}
+	}
+
+	noChartSHA := testRelease("nonprod-cnpg")
+	noChartSHA.Spec.Chart.SHA256 = ""
+	noCRDPin := testRelease("nonprod-tidb")
+	noCRDPin.Spec.CRDURLs = []string{"https://example.invalid/crd.yaml"}
+	for name, want := range map[*oramav1alpha1.ClusterHelmRelease]string{noChartSHA: "the SHA-256 of chart", noCRDPin: "the SHA-256 of CRD manifest https://example.invalid/crd.yaml is required"} {
+		leaf := &fakeLeaf{}
+		c := leafTestClient(t, append(readyLeaf(), name)...)
+		r := &ClusterHelmReleaseReconciler{Client: c, Scheme: clusterTestScheme(t), Installer: leaf}
+		if _, err := reconcileRelease(t, r, name.Name); err != nil {
+			t.Fatalf("%s: %v", name.Name, err)
+		}
+		got := getRelease(t, c, name.Name)
+		if got.Status.Phase != clusterPhaseDegraded || !strings.Contains(got.Status.Message, want) || len(leaf.releaseRequests) != 0 {
+			t.Fatalf("%s: status %+v, %d installs", name.Name, got.Status, len(leaf.releaseRequests))
+		}
 	}
 }
 

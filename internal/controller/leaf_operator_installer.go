@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -68,11 +67,13 @@ const (
 
 // chartSource says where a chart is. Repository is either a classic chart repository
 // (https://...), with Name the chart in it, or an OCI repository holding the chart
-// (oci://host/path, or host/path), with Name unused. Version is always pinned.
+// (oci://host/path, or host/path), with Name unused. Version is always given, and SHA256 is the
+// digest of the archive's bytes (an OCI chart's chart layer), which the archive must have.
 type chartSource struct {
 	Repository string
 	Name       string
 	Version    string
+	SHA256     string
 	User       string
 	Pass       string
 }
@@ -97,8 +98,9 @@ type helmReleaseRequest struct {
 	// RequiredCRDs are checked on the cluster before the chart is installed or upgraded.
 	RequiredCRDs []string
 	// CRDURLs are manifests of CRDs a chart ships apart from itself. They are applied before the
-	// chart, on every install and upgrade.
-	CRDURLs []string
+	// chart, on every install and upgrade, each only with the digest CRDSHA256 has for it.
+	CRDURLs   []string
+	CRDSHA256 map[string]string
 }
 
 // helmReleaseState is what the cluster has.
@@ -129,11 +131,12 @@ type leafReleaseInstaller interface {
 
 // leafOperatorRequest is what the target cluster's operator should be.
 type leafOperatorRequest struct {
-	Namespace  string
-	Version    string // the operator version: the image tag
-	Chart      chartSource
-	Values     map[string]any
-	PullSecret *corev1.Secret // the management cluster's copy; nil copies nothing
+	Namespace   string
+	Version     string // the operator version: the image tag
+	ImageDigest string // the digest of the image at that version, which the cluster runs
+	Chart       chartSource
+	Values      map[string]any
+	PullSecret  *corev1.Secret // the management cluster's copy; nil copies nothing
 }
 
 // leafOperatorState is what the target cluster's operator is.
@@ -197,9 +200,10 @@ func leafChartVersion(version string) string {
 func LeafChartVersion(version string) string { return leafChartVersion(version) }
 
 // leafOperatorValues are the chart values for the cluster's operator: what the resource asks
-// for, under what this controller sets (the image and its pull secret). Nothing else differs
-// from any other cluster's operator: every cluster runs the same one, with the same kinds.
-func leafOperatorValues(extra map[string]any, imageRepository, version, pullSecretName string) map[string]any {
+// for, under what this controller sets (the image, pinned by its digest, and its pull secret).
+// Nothing else differs from any other cluster's operator: every cluster runs the same one, with
+// the same kinds.
+func leafOperatorValues(extra map[string]any, imageRepository, version, imageDigest, pullSecretName string) map[string]any {
 	values := map[string]any{}
 	if extra != nil {
 		// A copy through JSON, so the caller's map is never written and every number is a float64,
@@ -215,7 +219,7 @@ func leafOperatorValues(extra map[string]any, imageRepository, version, pullSecr
 	if image == nil {
 		image = map[string]any{}
 	}
-	image["repository"], image["tag"] = imageRepository, version
+	image["repository"], image["tag"] = imageRepository, pinnedImageTag(version, imageDigest)
 	operator["image"] = image
 	if pullSecretName != "" {
 		operator["imagePullSecrets"] = []any{map[string]any{"name": pullSecretName}}
@@ -365,15 +369,33 @@ func helmConfiguration(getter *kubeconfigGetter, namespace string) (*action.Conf
 	return config, nil
 }
 
-// fetchChart downloads a chart, once per source for the life of the process: a pinned chart
-// version does not change.
+// fetchChart downloads a chart, once per source and pin for the life of the process: the bytes a
+// pin names do not change.
 func (h *helmLeafInstaller) fetchChart(source chartSource) (*chart.Chart, error) {
+	if err := requirePin("the SHA-256 of chart "+source.String(), source.SHA256); err != nil {
+		return nil, err
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	key := source.String()
+	key := source.String() + "@" + source.SHA256
 	if cached, ok := h.charts[key]; ok {
 		return cached, nil
 	}
+	data, err := downloadChartArchive(source)
+	if err != nil {
+		return nil, err
+	}
+	loaded, err := loadPinnedChart(source.String(), source.Version, source.SHA256, data)
+	if err != nil {
+		return nil, err
+	}
+	h.charts[key] = loaded
+	return loaded, nil
+}
+
+// downloadChartArchive downloads a chart's archive: from an OCI repository the chart layer, and
+// from a chart repository the .tgz its index names. Nothing in it is read here.
+func downloadChartArchive(source chartSource) ([]byte, error) {
 	// Helm keeps registry credentials and repository indexes in files. They go in a directory
 	// made for this download and removed after it.
 	work, err := os.MkdirTemp("", "orama-operator-helm-")
@@ -387,7 +409,6 @@ func (h *helmLeafInstaller) fetchChart(source chartSource) (*chart.Chart, error)
 	if err != nil {
 		return nil, fmt.Errorf("helm registry client: %w", err)
 	}
-	var loaded *chart.Chart
 	if source.oci() {
 		ref := strings.TrimPrefix(source.Repository, "oci://") + ":" + source.Version
 		if source.User != "" {
@@ -400,30 +421,40 @@ func (h *helmLeafInstaller) fetchChart(source chartSource) (*chart.Chart, error)
 		if err != nil {
 			return nil, fmt.Errorf("the chart %s cannot be pulled (is it published at this version, and may the credentials read it?): %w", ref, err)
 		}
-		if loaded, err = loader.LoadArchive(bytes.NewReader(pulled.Chart.Data)); err != nil {
-			return nil, fmt.Errorf("the chart %s cannot be loaded: %w", ref, err)
-		}
-	} else {
-		settings := cli.New()
-		settings.RepositoryCache = filepath.Join(work, "cache")
-		settings.RepositoryConfig = filepath.Join(work, "repositories.yaml")
-		// An Install is only the holder of the download options here; nothing is installed by it.
-		locate := action.NewInstall(new(action.Configuration))
-		locate.SetRegistryClient(rc)
-		locate.RepoURL, locate.Version = source.Repository, source.Version
-		locate.Username, locate.Password = source.User, source.Pass
-		path, err := locate.LocateChart(source.Name, settings)
-		if err != nil {
-			return nil, fmt.Errorf("the chart %s cannot be downloaded: %w", source, err)
-		}
-		if loaded, err = loader.Load(path); err != nil {
-			return nil, fmt.Errorf("the chart %s cannot be loaded: %w", source, err)
-		}
+		return pulled.Chart.Data, nil
 	}
-	if loaded.Metadata.Version != source.Version {
-		return nil, fmt.Errorf("the chart at %s says it is version %s", source, loaded.Metadata.Version)
+	settings := cli.New()
+	settings.RepositoryCache = filepath.Join(work, "cache")
+	settings.RepositoryConfig = filepath.Join(work, "repositories.yaml")
+	// An Install is only the holder of the download options here; nothing is installed by it.
+	locate := action.NewInstall(new(action.Configuration))
+	locate.SetRegistryClient(rc)
+	locate.RepoURL, locate.Version = source.Repository, source.Version
+	locate.Username, locate.Password = source.User, source.Pass
+	path, err := locate.LocateChart(source.Name, settings)
+	if err != nil {
+		return nil, fmt.Errorf("the chart %s cannot be downloaded: %w", source, err)
 	}
-	h.charts[key] = loaded
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("the chart %s cannot be read: %w", source, err)
+	}
+	return data, nil
+}
+
+// loadPinnedChart reads a chart archive whose bytes are the pinned ones, and which says it is the
+// version asked for. what names the archive, for the messages.
+func loadPinnedChart(what, version, digest string, data []byte) (*chart.Chart, error) {
+	if err := VerifySHA256(data, digest); err != nil {
+		return nil, fmt.Errorf("the chart %s is refused: %w", what, err)
+	}
+	loaded, err := loader.LoadArchive(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("the chart %s cannot be loaded: %w", what, err)
+	}
+	if loaded.Metadata.Version != version {
+		return nil, fmt.Errorf("the chart at %s says it is version %s", what, loaded.Metadata.Version)
+	}
 	return loaded, nil
 }
 
@@ -445,25 +476,13 @@ func missingCRDs(ctx context.Context, c client.Client, names []string) ([]string
 	return missing, nil
 }
 
-// applyCRDManifestURL downloads a manifest and server-side applies the CRDs in it. Anything in
-// the manifest that is not a CustomResourceDefinition is refused: this is for a chart's CRDs and
-// nothing else.
-func applyCRDManifestURL(ctx context.Context, c client.Client, url string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// applyCRDManifestURL downloads a manifest, refuses it unless its bytes are the pinned ones, and
+// server-side applies the CRDs in it. Anything in the manifest that is not a
+// CustomResourceDefinition is refused: this is for a chart's CRDs and nothing else.
+func applyCRDManifestURL(ctx context.Context, c client.Client, url, digest string) error {
+	data, err := DownloadPinnedManifest(ctx, url, digest)
 	if err != nil {
-		return fmt.Errorf("CRD manifest %s: %w", url, err)
-	}
-	response, err := (&http.Client{Timeout: 2 * time.Minute}).Do(request)
-	if err != nil {
-		return fmt.Errorf("CRD manifest %s cannot be downloaded: %w", url, err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("CRD manifest %s cannot be downloaded: HTTP %d", url, response.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
-	if err != nil {
-		return fmt.Errorf("CRD manifest %s cannot be read: %w", url, err)
+		return err
 	}
 	return applyCRDDocuments(ctx, c, url, data)
 }
@@ -618,7 +637,8 @@ func releaseVersionOf(values map[string]any) string {
 	operator, _ := values["operator"].(map[string]any)
 	image, _ := operator["image"].(map[string]any)
 	tag, _ := image["tag"].(string)
-	return tag
+	version, _, _ := strings.Cut(tag, "@") // the digest pinnedImageTag adds
+	return version
 }
 
 func releaseState(rel *release.Release) helmReleaseState {
@@ -640,6 +660,10 @@ func releaseState(rel *release.Release) helmReleaseState {
 // ensureRelease brings one release to the chart version and values asked for, installing or
 // upgrading only when they differ from what is deployed, then reports its workloads.
 func (h *helmLeafInstaller) ensureRelease(ctx context.Context, getter *kubeconfigGetter, c client.Client, req helmReleaseRequest, operatorChart bool) (helmReleaseState, error) {
+	// Refused even when the cluster already has the release: nothing unpinned is kept as Ready.
+	if err := requireReleasePins(req); err != nil {
+		return helmReleaseState{}, err
+	}
 	config, err := helmConfiguration(getter, req.Namespace)
 	if err != nil {
 		return helmReleaseState{}, err
@@ -651,8 +675,11 @@ func (h *helmLeafInstaller) ensureRelease(ctx context.Context, getter *kubeconfi
 	}
 	state := releaseState(current)
 
+	// A release installed from other chart bytes than the pin's, or before releases recorded
+	// theirs, is upgraded from the pinned archive.
 	upToDate := !missing && state.Status == string(release.StatusDeployed) &&
-		state.ChartVersion == req.Chart.Version && sameValues(current.Config, req.Values)
+		state.ChartVersion == req.Chart.Version && sameValues(current.Config, req.Values) &&
+		current.Labels[chartPinLabel] == chartPinLabelValue(req.Chart.SHA256)
 	if !upToDate {
 		chrt, err := h.fetchChart(req.Chart)
 		if err != nil {
@@ -669,7 +696,7 @@ func (h *helmLeafInstaller) ensureRelease(ctx context.Context, getter *kubeconfi
 			return state, nil
 		}
 		for _, url := range req.CRDURLs {
-			if err := applyCRDManifestURL(ctx, c, url); err != nil {
+			if err := applyCRDManifestURL(ctx, c, url, req.CRDSHA256[url]); err != nil {
 				return state, err
 			}
 		}
@@ -686,6 +713,7 @@ func (h *helmLeafInstaller) ensureRelease(ctx context.Context, getter *kubeconfi
 			install.ReleaseName, install.Namespace = req.Release, req.Namespace
 			install.CreateNamespace = true
 			install.SkipCRDs = true
+			install.Labels = map[string]string{chartPinLabel: chartPinLabelValue(req.Chart.SHA256)}
 			install.Timeout = leafHookTimeout
 			installed, err := install.RunWithContext(ctx, chrt, req.Values)
 			if err != nil {
@@ -696,6 +724,7 @@ func (h *helmLeafInstaller) ensureRelease(ctx context.Context, getter *kubeconfi
 			upgrade := action.NewUpgrade(config)
 			upgrade.Namespace = req.Namespace
 			upgrade.SkipCRDs = true
+			upgrade.Labels = map[string]string{chartPinLabel: chartPinLabelValue(req.Chart.SHA256)}
 			upgrade.MaxHistory = 10
 			upgrade.Timeout = leafHookTimeout
 			upgraded, err := upgrade.RunWithContext(ctx, req.Release, chrt, req.Values)
@@ -827,6 +856,9 @@ func observeWorkloads(ctx context.Context, c client.Client, rel *release.Release
 // Ensure installs the operator: the namespace and pull secret first, then the release, which is
 // not installed while a CRD the operator's chart declares as required is missing.
 func (h *helmLeafInstaller) Ensure(ctx context.Context, kubeconfig []byte, req leafOperatorRequest) (leafOperatorState, error) {
+	if err := requirePin("the operator image's digest", req.ImageDigest); err != nil {
+		return leafOperatorState{}, err
+	}
 	getter, c, err := leafClients(kubeconfig, req.Namespace)
 	if err != nil {
 		return leafOperatorState{}, err
@@ -845,7 +877,7 @@ func (h *helmLeafInstaller) Ensure(ctx context.Context, kubeconfig []byte, req l
 	if err != nil || len(rel.MissingCRDs) > 0 {
 		return state, err
 	}
-	if state, err = observeLeafOperator(ctx, c, req.Namespace, state); err != nil || !state.rolledOut(req.Version) {
+	if state, err = observeLeafOperator(ctx, c, req.Namespace, state); err != nil || !state.rolledOut(pinnedImageTag(req.Version, req.ImageDigest)) {
 		return state, err
 	}
 	// The requested version has replaced every pod of the old one, so nothing still running reads
@@ -858,10 +890,11 @@ func (h *helmLeafInstaller) Ensure(ctx context.Context, kubeconfig []byte, req l
 	return state, err
 }
 
-// rolledOut reports whether the operator's Deployment runs only the version asked for: every pod is
-// of the current template, ready, and the template's image is that version.
-func (s leafOperatorState) rolledOut(version string) bool {
-	return s.oldPods == 0 && s.Replicas > 0 && s.ReadyReplicas >= s.Replicas && strings.HasSuffix(s.Image, ":"+version)
+// rolledOut reports whether the operator's Deployment runs only the image asked for: every pod is
+// of the current template, ready, and the template's image has that tag (pinnedImageTag's
+// version@digest).
+func (s leafOperatorState) rolledOut(tag string) bool {
+	return s.oldPods == 0 && s.Replicas > 0 && s.ReadyReplicas >= s.Replicas && strings.HasSuffix(s.Image, ":"+tag)
 }
 
 // observeLeafOperator reads the operator's Deployment on the leaf and, when its pods are not

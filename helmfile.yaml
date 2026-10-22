@@ -14,6 +14,8 @@
 #
 #   change here                      ->  change every config/clusters/*/platform.yaml
 #   change a ClusterHelmRelease      ->  change this file
+#   a chart version or a pin         ->  platform-charts.yaml (the pins this file installs
+#                                        by) and every config/clusters/*/platform.yaml
 #   new operator version on a leaf   ->  the same version on the management cluster
 #
 # cmd/platform_sync_test.go fails when they differ. docs/infrastructure/README.md, "Two
@@ -21,8 +23,16 @@
 # ======================================================================================
 #
 # Composition layer: platform operators (upstream OSS charts) + the v1 operator.
-# Usage: helmfile apply    (installs everything in order)
-#        helmfile -l app=orama-operator apply   (just our operator)
+# Usage, from the repository root:
+#        go run ./hack/stagecharts && helmfile apply    (installs everything in order)
+#        helmfile -l app=orama-operator apply           (just our operator)
+#
+# Every third-party chart, and TiDB's CRD manifest, is installed from a local copy whose bytes
+# were checked against its SHA-256 pin in platform-charts.yaml (orama-operator#808): helmfile
+# cannot check a digest, so it is given no chart repository to download from. hack/stagecharts
+# downloads what is missing into .platform-charts/, checks every file there against its pin
+# (with -offline it only checks), and fails on any mismatch. Stage before every apply. The
+# operator's own image is pinned by its digest in chart/values.yaml.
 #
 # Platform operators we depend on:
 #   - CloudNativePG  — REQUIRED. The control DB is a CNPG `Cluster` CR + managed roles +
@@ -50,32 +60,13 @@
 # The release namespaces below (and cnpg-system) are the peers of the workspace NetworkPolicies in
 # internal/controller/lake_workspace_datastore_policies.go (operator#268); move one, change both.
 
-repositories:
-  - name: cnpg
-    url: https://cloudnative-pg.github.io/charts
-  - name: ingress-nginx
-    url: https://kubernetes.github.io/ingress-nginx
-  - name: strimzi
-    url: https://strimzi.io/charts/
-  - name: altinity
-    url: https://helm.altinity.com
-  - name: pingcap
-    url: https://charts.pingcap.com/
-  - name: k8ssandra
-    url: https://helm.k8ssandra.io/stable
-  - name: jetstack
-    url: https://charts.jetstack.io
-  - name: valkey
-    url: https://valkey.io/valkey-helm
-
 releases:
   # ---- platform operators (building blocks the v1 operator reconciles against) ----
   # The release is named cnpg, as on the managing cluster and in every leaf's ClusterHelmRelease
   # (releaseName: cnpg). Under another name, a sync would install a second CloudNativePG (operator#753).
   - name: cnpg
     namespace: cnpg-system
-    chart: cnpg/cloudnative-pg
-    version: 0.29.0   # operator 1.30.0; the same pin every leaf's ClusterHelmRelease has
+    chart: ./.platform-charts/cloudnative-pg-0.29.0.tgz   # operator 1.30.0; the same pin every leaf's ClusterHelmRelease has
     installed: true   # REQUIRED — control DB is a CNPG Cluster CR + managed roles
 
   # ingress-nginx is being replaced by zetta-tunnel's ingress gateway, which the operator itself runs
@@ -89,8 +80,7 @@ releases:
   - name: ingress-nginx
     namespace: ingress-nginx
     createNamespace: true
-    chart: ingress-nginx/ingress-nginx
-    version: 4.15.1   # the same pin every leaf's ClusterHelmRelease has
+    chart: ./.platform-charts/ingress-nginx-4.15.1.tgz   # the same pin every leaf's ClusterHelmRelease has
     installed: true
     set:
       - name: controller.service.type
@@ -138,8 +128,7 @@ releases:
   - name: cert-manager
     namespace: cert-manager
     createNamespace: true
-    chart: jetstack/cert-manager
-    version: v1.21.2
+    chart: ./.platform-charts/cert-manager-v1.21.2.tgz
     labels:
       tier: service-operators
     set:
@@ -149,8 +138,7 @@ releases:
   - name: strimzi
     namespace: strimzi-system
     createNamespace: true
-    chart: strimzi/strimzi-kafka-operator
-    version: 1.2.0
+    chart: ./.platform-charts/strimzi-kafka-operator-1.2.0.tgz
     labels:
       tier: service-operators
     set:
@@ -167,8 +155,7 @@ releases:
   - name: clickhouse-operator
     namespace: clickhouse-system
     createNamespace: true
-    chart: altinity/altinity-clickhouse-operator
-    version: 0.27.4
+    chart: ./.platform-charts/altinity-clickhouse-operator-0.27.4.tgz
     labels:
       tier: service-operators
     # An empty watch.namespaces.include means the operator's OWN namespace only in 0.27.4 (it logs
@@ -184,12 +171,12 @@ releases:
   - name: tidb-operator
     namespace: tidb-admin
     createNamespace: true
-    chart: pingcap/tidb-operator
-    version: v1.6.6
+    chart: ./.platform-charts/tidb-operator-v1.6.6.tgz
     labels:
       tier: service-operators
     # clusterScoped defaults to true. The chart does not carry the CRDs: apply the release's
-    # own crd.yaml, server-side (the TidbCluster CRD is too large for client-side apply).
+    # own crd.yaml, staged and checked against its pin, server-side (the TidbCluster CRD is too
+    # large for client-side apply).
     hooks:
       - events: ["presync"]
         showlogs: true
@@ -199,13 +186,12 @@ releases:
           - --server-side
           - --force-conflicts
           - -f
-          - https://raw.githubusercontent.com/pingcap/tidb-operator/v1.6.6/manifests/crd.yaml
+          - ./.platform-charts/tidb-operator-v1.6.6-crd.yaml
 
   - name: k8ssandra-operator
     namespace: k8ssandra-operator
     createNamespace: true
-    chart: k8ssandra/k8ssandra-operator
-    version: 1.33.0
+    chart: ./.platform-charts/k8ssandra-operator-1.33.0.tgz
     labels:
       tier: service-operators
     needs:
@@ -219,8 +205,7 @@ releases:
   - name: valkey-operator
     namespace: valkey-operator-system
     createNamespace: true
-    chart: valkey/valkey-operator
-    version: 0.6.0
+    chart: ./.platform-charts/valkey-operator-0.6.0.tgz
     labels:
       tier: service-operators
 

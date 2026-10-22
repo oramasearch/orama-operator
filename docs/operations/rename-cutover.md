@@ -27,7 +27,7 @@ export CUTOVER_CONTEXT=orama-production-cluster-01
 export CUTOVER_NAMESPACE=orama-system
 export FORMER_RELEASE=orama-cloud-v1-operator
 export CURRENT_RELEASE=orama-operator
-export OPERATOR_IMAGE_TAG=<immutable-tag>
+export OPERATOR_IMAGE_TAG=<tag>@sha256:<digest>   # the chart runs the image only by its digest
 export CUTOVER_RECORDS="$(mktemp -d)"
 ```
 

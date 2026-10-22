@@ -1,0 +1,48 @@
+# The chart archives and CRD manifests helmfile.yaml installs, pinned by the SHA-256 of their bytes
+# (orama-operator#808). helmfile cannot check a digest, so it never downloads a chart: it installs
+# the archives `go run ./hack/stagecharts` put in .platform-charts/ after checking each against its
+# pin here. Each release in helmfile.yaml names its staged archive, <name>-<version>.tgz, and the
+# TiDB hook its staged manifest, <name>-<version>-<file name>.
+#
+# These are the same pins every config/clusters/*/platform.yaml gives its ClusterHelmRelease
+# (spec.chart.sha256, spec.crdSHA256): change a version or a pin here and there together, in the
+# same pull request. cmd/platform_sync_test.go fails when they differ.
+#
+# A pin is the sha256 of the archive the repository serves for that version (helm pull, then
+# sha256sum), which for these repositories is also the `digest` their index.yaml lists.
+charts:
+  - name: cloudnative-pg
+    repository: https://cloudnative-pg.github.io/charts
+    version: 0.29.0
+    sha256: sha256:668e065ff53508d58238788fd35b355a925060843629a951df0e6a9362e6d32f
+  - name: ingress-nginx
+    repository: https://kubernetes.github.io/ingress-nginx
+    version: 4.15.1
+    sha256: sha256:3eff0bd18151d6e6b1c441463410571443dda1ac78292cb189346628de784f0c
+  - name: cert-manager
+    repository: https://charts.jetstack.io
+    version: v1.21.2
+    sha256: sha256:73a56e1728edd6c99f1f31082618c3259d279a76b7ebd3d4bdc5475c2442d34a
+  - name: strimzi-kafka-operator
+    repository: https://strimzi.io/charts/
+    version: 1.2.0
+    sha256: sha256:0f8a50b2f19bd99482f9fd6e17cf42902f72f9e594a136813ac3f0b7af422efd
+  - name: altinity-clickhouse-operator
+    repository: https://helm.altinity.com
+    version: 0.27.4
+    sha256: sha256:b06241f34f07ebc611090edc4be036a4d4d1c680f82f4df1c5496cc808cb7a13
+  - name: tidb-operator
+    repository: https://charts.pingcap.com/
+    version: v1.6.6
+    sha256: sha256:4b223f79a00cf73998d9ad8341eace64aa947cf51cc108f29d76f2de02867bb4
+    crds:
+      - url: https://raw.githubusercontent.com/pingcap/tidb-operator/v1.6.6/manifests/crd.yaml
+        sha256: sha256:2161e0789cf415dc29ebbcc1a8a0b9818dc3d076eef2796b7834e95679d2d32e
+  - name: k8ssandra-operator
+    repository: https://helm.k8ssandra.io/stable
+    version: 1.33.0
+    sha256: sha256:322ae9c577be75d18abef0a94c0d4a2aa3a58667b36dda45cbdedd9730a9aa02
+  - name: valkey-operator
+    repository: https://valkey.io/valkey-helm
+    version: 0.6.0
+    sha256: sha256:78c23f630a7e6910ad208c182ff1f6a2d6df9d612a89806c8b2b7f9535ed8783

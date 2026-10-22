@@ -87,6 +87,20 @@ func (r *OramaOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
+	// The image and the chart are installed only by the digests of their bytes
+	// (orama-operator#808). A resource without them is refused as written, before the cluster is
+	// reached; editing it brings it back.
+	for _, pin := range []struct{ what, digest string }{
+		{"spec.imageDigest", string(operator.Spec.ImageDigest)},
+		{"spec.chartSHA256", string(operator.Spec.ChartSHA256)},
+	} {
+		if err := requirePin(pin.what, pin.digest); err != nil {
+			setClusterStatus(&operator.Status.Phase, &operator.Status.Message, &operator.Status.Conditions,
+				operator.Generation, clusterPhaseDegraded, "NotPinned", err.Error())
+			return settle(ctrl.Result{}, r.writeStatus(ctx, &operator, observed))
+		}
+	}
+
 	kubeconfig, waiting, err := r.clusterKubeconfig(ctx, operator.Spec.ClusterRef)
 	if err != nil {
 		return r.fail(ctx, &operator, observed, "ClusterUnreadable", err)
@@ -150,11 +164,12 @@ func (r *OramaOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	chartVersion := leafChartVersion(operator.Spec.Version)
 
 	state, err := r.installer().Ensure(ctx, kubeconfig, leafOperatorRequest{
-		Namespace:  namespace,
-		Version:    operator.Spec.Version,
-		Chart:      chartSource{Repository: chartRepository, Version: chartVersion, User: user, Pass: pass},
-		Values:     leafOperatorValues(extra, imageRepository, operator.Spec.Version, pullSecret.Name),
-		PullSecret: pullSecret,
+		Namespace:   namespace,
+		Version:     operator.Spec.Version,
+		ImageDigest: string(operator.Spec.ImageDigest),
+		Chart:       chartSource{Repository: chartRepository, Version: chartVersion, SHA256: string(operator.Spec.ChartSHA256), User: user, Pass: pass},
+		Values:      leafOperatorValues(extra, imageRepository, operator.Spec.Version, string(operator.Spec.ImageDigest), pullSecret.Name),
+		PullSecret:  pullSecret,
 	})
 	observeLeafState(&operator.Status, state)
 	if err != nil {
@@ -171,7 +186,7 @@ func (r *OramaOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.writeStatus(ctx, &operator, observed))
 	}
 
-	wantImage := imageRepository + ":" + operator.Spec.Version
+	wantImage := imageRepository + ":" + pinnedImageTag(operator.Spec.Version, string(operator.Spec.ImageDigest))
 	if state.Replicas > 0 && state.ReadyReplicas >= state.Replicas && state.Image == wantImage {
 		setClusterStatus(&operator.Status.Phase, &operator.Status.Message, &operator.Status.Conditions,
 			operator.Generation, clusterPhaseReady, "Running", "")

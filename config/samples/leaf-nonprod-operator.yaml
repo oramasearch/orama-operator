@@ -16,6 +16,7 @@ spec:
     repository: https://cloudnative-pg.github.io/charts
     name: cloudnative-pg
     version: 0.29.0             # operator 1.30.0, what the management cluster runs
+    sha256: sha256:668e065ff53508d58238788fd35b355a925060843629a951df0e6a9362e6d32f  # the archive's bytes
 ---
 apiVersion: orama.cloud/v1alpha1
 kind: OramaOperator
@@ -23,7 +24,10 @@ metadata:
   name: orama-nonprod-cluster-01
 spec:
   clusterRef: orama-nonprod-cluster-01
-  version: dev-0000000          # the operator version the leaf runs; its chart must be published
+  version: v0.7.3               # the operator version the leaf runs; its chart must be published
+  # The image and the chart published for that version, by the digests of their bytes.
+  imageDigest: sha256:ce339674a3a0cea4e9809786adca45451a95d62dd79f6ac69b8c0aa3b7ec37dc
+  chartSHA256: sha256:62364e3eb1df7d90ea97f9b0d9b19c38b250e66c6c8c5a88d890ff15d6770f2f
   imagePullSecretRef:
     name: oramasearch-dockerhub
     namespace: orama-system

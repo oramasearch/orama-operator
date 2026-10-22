@@ -69,6 +69,13 @@ spec:
                 description: ChartRepository is the OCI repository holding the operator's
                   chart, one tag per version.
                 type: string
+              chartSHA256:
+                description: |-
+                  ChartSHA256 is the digest of the chart layer of the operator chart published for Version.
+                  A chart with other bytes is refused before anything in it is read. Required, like
+                  ImageDigest.
+                pattern: ^sha256:[0-9a-f]{64}$
+                type: string
               clusterRef:
                 description: |-
                   ClusterRef names the KubernetesCluster the operator is installed onto. The cluster is
@@ -79,6 +86,14 @@ spec:
                 - message: clusterRef cannot be changed; create another OramaOperator
                     for another cluster
                   rule: self == oldSelf
+              imageDigest:
+                description: |-
+                  ImageDigest is the digest of the operator image at Version. The cluster's operator runs
+                  <imageRepository>:<version>@<imageDigest>, so a tag moved to other bytes is never run. It
+                  is required: the operator is not installed without it (orama-operator#808). The schema
+                  leaves it optional only so a resource written before the field existed stays readable.
+                pattern: ^sha256:[0-9a-f]{64}$
+                type: string
               imagePullSecretAs:
                 description: |-
                   ImagePullSecretAs is the name the pull Secret is copied under on the target cluster, which

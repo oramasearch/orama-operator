@@ -6,6 +6,7 @@ spec:
   chart:
     name: cloudnative-pg
     repository: https://cloudnative-pg.github.io/charts
+    sha256: sha256:668e065ff53508d58238788fd35b355a925060843629a951df0e6a9362e6d32f
     version: 0.29.0
   clusterRef: orama-production-cluster-02
   namespace: cnpg-system
@@ -21,6 +22,7 @@ spec:
   chart:
     name: ingress-nginx
     repository: https://kubernetes.github.io/ingress-nginx
+    sha256: sha256:3eff0bd18151d6e6b1c441463410571443dda1ac78292cb189346628de784f0c
     version: 4.15.1
   clusterRef: orama-production-cluster-02
   namespace: ingress-nginx
@@ -64,6 +66,7 @@ spec:
   chart:
     name: cert-manager
     repository: https://charts.jetstack.io
+    sha256: sha256:73a56e1728edd6c99f1f31082618c3259d279a76b7ebd3d4bdc5475c2442d34a
     version: v1.21.2
   clusterRef: orama-production-cluster-02
   namespace: cert-manager
@@ -80,6 +83,7 @@ spec:
   chart:
     name: strimzi-kafka-operator
     repository: https://strimzi.io/charts/
+    sha256: sha256:0f8a50b2f19bd99482f9fd6e17cf42902f72f9e594a136813ac3f0b7af422efd
     version: 1.2.0
   clusterRef: orama-production-cluster-02
   namespace: strimzi-system
@@ -98,6 +102,7 @@ spec:
   chart:
     name: altinity-clickhouse-operator
     repository: https://helm.altinity.com
+    sha256: sha256:b06241f34f07ebc611090edc4be036a4d4d1c680f82f4df1c5496cc808cb7a13
     version: 0.27.4
   clusterRef: orama-production-cluster-02
   namespace: clickhouse-system
@@ -119,6 +124,7 @@ spec:
   chart:
     name: k8ssandra-operator
     repository: https://helm.k8ssandra.io/stable
+    sha256: sha256:322ae9c577be75d18abef0a94c0d4a2aa3a58667b36dda45cbdedd9730a9aa02
     version: 1.33.0
   clusterRef: orama-production-cluster-02
   dependsOn:
@@ -137,8 +143,11 @@ spec:
   chart:
     name: tidb-operator
     repository: https://charts.pingcap.com/
+    sha256: sha256:4b223f79a00cf73998d9ad8341eace64aa947cf51cc108f29d76f2de02867bb4
     version: v1.6.6
   clusterRef: orama-production-cluster-02
+  crdSHA256:
+    https://raw.githubusercontent.com/pingcap/tidb-operator/v1.6.6/manifests/crd.yaml: sha256:2161e0789cf415dc29ebbcc1a8a0b9818dc3d076eef2796b7834e95679d2d32e
   crdURLs:
   - https://raw.githubusercontent.com/pingcap/tidb-operator/v1.6.6/manifests/crd.yaml
   namespace: tidb-admin
@@ -152,6 +161,7 @@ spec:
   chart:
     name: valkey-operator
     repository: https://valkey.io/valkey-helm
+    sha256: sha256:78c23f630a7e6910ad208c182ff1f6a2d6df9d612a89806c8b2b7f9535ed8783
     version: 0.6.0
   clusterRef: orama-production-cluster-02
   namespace: valkey-operator-system

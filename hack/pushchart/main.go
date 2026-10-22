@@ -99,6 +99,9 @@ func push(chartDir, version, repository string) error {
 		return fmt.Errorf("push %s: %w", ref, err)
 	}
 	fmt.Printf("pushed %s (operator %s) %s\n", ref, version, result.Manifest.Digest)
+	// The pin an OramaOperator names in spec.chartSHA256 (orama-operator#808): the chart layer's
+	// digest, which is the SHA-256 of the archive.
+	fmt.Printf("chartSHA256: %s\n", result.Chart.Digest)
 	return nil
 }
 

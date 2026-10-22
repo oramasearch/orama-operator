@@ -1845,11 +1845,13 @@ How it fits: [`infrastructure/README.md`](infrastructure/README.md#installing-it
 | `spec.clusterRef` | The `KubernetesCluster` to install onto. Immutable. The release waits while the cluster is not `Ready`. |
 | `spec.releaseName`, `spec.namespace` | The Helm release and its namespace on that cluster. Immutable. The namespace is created when absent. |
 | `spec.chart.repository`, `.name`, `.version` | A chart repository (`https://...`) with the chart's `name`, or an OCI repository (`oci://...`) holding the chart. `version` is required; changing it upgrades the release. |
+| `spec.chart.sha256` | Required. `sha256:<64 hex>` of the chart archive served for that version: the `.tgz` of a chart repository (for the charts here, the `digest` its `index.yaml` lists), or the chart layer of an OCI chart, not its manifest. The archive is refused before anything in it is read when its bytes differ, and a release without the pin is `Degraded` with reason `NotPinned` and nothing is installed ([orama-operator#808](https://github.com/oramasearch/orama-operator/issues/808)). The release records the pin as the Helm label `orama.cloud/chart-sha256`, so a pin changed at the same version is installed. Optional in the schema only so resources written before it stay readable. |
 | `spec.chart.credentialsSecretRef` | For a private chart: a `kubernetes.io/dockerconfigjson` Secret with an entry for the repository's host, or a Secret with `username` and `password`. |
 | `spec.values` | The chart's values. |
 | `spec.dependsOn[]` | Other `ClusterHelmRelease` names, on the same cluster, that must be `Ready` first. A release others depend on is not uninstalled until they are deleted. |
 | `spec.requiredCRDs[]` | CRDs that must exist on the cluster before this chart is installed or upgraded. |
 | `spec.crdURLs[]` | `https://` URLs of manifests holding CRDs the chart ships apart from itself. Applied server-side before the chart on every install and upgrade; a manifest holding anything but CustomResourceDefinitions is refused. |
+| `spec.crdSHA256` | Required for every `crdURLs` entry: a map from the URL to `sha256:<64 hex>` of the manifest's bytes. A manifest with other bytes, or over 64 MiB, is refused before any of it is applied; a URL without a pin makes the release `NotPinned`. |
 | `status.phase` | `Pending` (waiting for the cluster, a dependency or a CRD), `Installing`, `Ready`, `Degraded` or `Deleting`. |
 | `status.chartVersion`, `.appVersion`, `.revision`, `.releaseStatus` | The release on the cluster, in Helm's words. |
 | `status.workloads`, `.readyWorkloads` | The release's Deployments, StatefulSets and DaemonSets, and how many are rolled out. |
@@ -1863,11 +1865,13 @@ Short name `ooperator`. Reconciled wherever it is created.
 |---|---|
 | `spec.clusterRef` | The `KubernetesCluster` to install onto. Immutable. |
 | `spec.version` | The operator version the cluster runs: the image tag, and the chart published with it. Changing it upgrades the cluster's operator, CRDs first. |
+| `spec.imageDigest` | Required. `sha256:<64 hex>` of the image at that version. The leaf's operator runs `<imageRepository>:<version>@<imageDigest>` (given to the chart as the tag, so a chart published before the field existed pins the image too), and `Ready` needs that exact reference. Without it, or without `chartSHA256`, the resource is `Degraded` with reason `NotPinned` and the cluster is not reached ([orama-operator#808](https://github.com/oramasearch/orama-operator/issues/808)). |
+| `spec.chartSHA256` | Required. `sha256:<64 hex>` of the chart layer of the operator chart published for that version; `go run ./hack/pushchart` prints it. A chart with other bytes is refused before it is read. |
 | `spec.namespace` | Default `orama-system`. Immutable. |
 | `spec.imagePullSecretRef` | A `kubernetes.io/dockerconfigjson` Secret on the management cluster. Copied to the leaf for the image pull, and used to pull the chart. A Secret production uses is never copied to a cluster that is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). |
 | `spec.imagePullSecretAs` | The name of the copy on the leaf, which the leaf's operator pulls with. Default: `imagePullSecretRef`'s name. Lets a cluster get its own credential under the name of the one it replaces, so the old copy is overwritten in place. |
 | `spec.imageRepository`, `spec.chartRepository` | Defaults `oramasearch/orama-operator` and `registry-1.docker.io/oramasearch/orama-operator-chart`. |
-| `spec.values` | Chart values for the cluster's operator. The image and its pull secret are set by the controller and win; nothing else differs from any other cluster's operator. |
+| `spec.values` | Chart values for the cluster's operator. The image (pinned by its digest) and its pull secret are set by the controller and win; nothing else differs from any other cluster's operator. |
 | `status.phase` | `Pending` (waiting for the cluster, or for prerequisites), `Installing`, `Ready`, `Degraded` or `Deleting`. |
 | `status.installedVersion`, `.chartVersion`, `.revision`, `.releaseStatus` | The Helm release on the leaf. |
 | `status.image`, `.replicas`, `.readyReplicas` | The operator's Deployment on the leaf. `Ready` needs every replica ready on the image asked for. |

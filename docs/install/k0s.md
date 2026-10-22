@@ -98,7 +98,7 @@ helm upgrade --install cloudnative-pg cnpg/cloudnative-pg \
 helm upgrade --install orama-operator /absolute/path/to/orama-operator/chart \
   --namespace orama-system \
   --set operator.image.repository=oramasearch/orama-operator \
-  --set operator.image.tag=<immutable-tag> \
+  --set operator.image.tag=<tag>@sha256:<digest> \
   --set 'operator.imagePullSecrets[0].name=oramasearch-dockerhub' \
   --wait \
   --timeout 15m

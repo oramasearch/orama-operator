@@ -17,6 +17,7 @@ cmd/main.go          # the manager entrypoint
 config/crd|samples/  # generated CRDs + example CRs (generated and committed)
 chart/               # the install Helm chart (operator + CRDs + RBAC; the ClusterRole is hand-maintained)
 helmfile.yaml        # composition: platform operators + this chart
+platform-charts.yaml # the SHA-256 pins of the charts helmfile.yaml installs (hack/stagecharts)
 docs/                # this guide, the CRD reference, the component reconcilers, the Lake CR
 DESIGN.md            # architecture + decision log + open questions
 CLAUDE.md            # working rules (incl. docs discipline)
@@ -165,10 +166,13 @@ make helm-package   # copy generated CRDs into the chart + package
 
 ### Obtain or publish the operator image
 
-Installations need a **published immutable operator tag** compatible with this checkout's CRDs
-and RBAC, plus permission to pull its private repository. Obtain both from the Orama release
-maintainer before following [install.md](install.md). The chart's `v1-sandbox` default is mutable;
-it is not a release recommendation. This guide does not assert that any new tag is published.
+Installations need a **published operator tag and its image digest** compatible with this
+checkout's CRDs and RBAC, plus permission to pull its private repository. Obtain them from the
+Orama release maintainer before following [install.md](install.md). The chart runs the image only
+by its digest: `operator.image.tag` is `<tag>@sha256:<64 hex>`, and a tag without one fails to
+render ([orama-operator#808](https://github.com/oramasearch/orama-operator/issues/808)). The
+chart's default is the release every leaf runs (`config/clusters/*/operator.yaml`). This guide
+does not assert that any new tag is published.
 
 The development machine does not run Docker (bridge decision 33). Native build and verification:
 
@@ -208,8 +212,10 @@ buildctl --addr "$BUILDKIT_HOST" --tlsdir "$BUILDKIT_TLS_DIR" build \
 
 For arm64 nodes, use `linux/arm64` and `TARGETARCH=arm64` with a builder that supports that
 platform. BuildKit uses this repo's `Dockerfile` on the remote builder and pushes directly to the
-registry. Record the successful push's digest and confirm the installation identity can pull it
-before distributing the tag. If builder or publishing access is unavailable, obtain the published
+registry. Record the successful push's digest, the `<tag>@<digest>` every installation is given,
+and confirm the installation identity can pull it before distributing the tag. `go run
+./hack/pushchart -version <tag>` publishes the chart for the tag and prints its `chartSHA256:`,
+the pin an `OramaOperator` needs beside `imageDigest`. If builder or publishing access is unavailable, obtain the published
 image from the release maintainer instead; a native `go build` alone does not publish an image.
 The image carries two binaries: `/manager`, and `/mesh-projector` (`cmd/mesh-projector`), the
 node-local half of zetta-tunnel's mesh that the mesh DaemonSet runs beside the agent
