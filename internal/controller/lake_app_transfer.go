@@ -20,7 +20,9 @@ import (
 
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -44,9 +46,12 @@ import (
 // counts whole; a pod or series it has not seen counts whole when it appeared after the operator
 // started, and is the baseline otherwise. Only numbers are written.
 
-// RBAC: pods get/list (already granted for workload resources, lake_workload_resources.go).
+// RBAC: pods, namespaces and controller workloads are already readable.
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 
 const (
+	appTransferIngressNamespace  = "ingress-nginx"
+	appTransferIngressController = "ingress-nginx-controller"
 	// appTransferMetricsPort is ingress-nginx's metrics port.
 	appTransferMetricsPort = 10254
 	// appTransferRetention is how long app_transfer rows are kept; lake charges an hour within
@@ -60,8 +65,8 @@ const (
 	ingressNginxResponseBytes = "nginx_ingress_controller_response_size"
 )
 
-// ingressControllerPodLabels select the ingress-nginx controller pods in any namespace: the
-// labels its Helm chart puts on them.
+// ingressControllerPodLabels narrow discovery within the platform namespace; ownership is
+// checked separately before any metrics request.
 var ingressControllerPodLabels = client.MatchingLabels{
 	"app.kubernetes.io/name":      "ingress-nginx",
 	"app.kubernetes.io/component": "controller",
@@ -207,15 +212,78 @@ func (r *LakeReconciler) lakeAppIngresses(ctx context.Context, lake *oramav1alph
 	if err := r.reader().List(ctx, &apps, client.InNamespace(lakeNamespace(lake))); err != nil {
 		return nil, err
 	}
+	workspaces := map[string]corev1.Namespace{}
 	out := map[ingressKey]oramav1alpha1.LakeAppSync{}
 	for i := range apps.Items {
 		app := &apps.Items[i]
-		if app.Spec.LakeRef != lake.Name || app.Spec.Sync == nil || app.Spec.Sync.ID == "" || app.Spec.Sync.WorkspaceID == "" {
+		if !metav1.IsControlledBy(app, lake) || app.Spec.LakeRef != lake.Name || app.Spec.Sync == nil || app.Spec.Sync.ID == "" || app.Spec.Sync.WorkspaceID == "" || app.Spec.Sync.CustomerID == "" {
+			continue
+		}
+		name := lakeAppNamespace(app)
+		if name == lakeNamespace(lake) {
+			continue
+		}
+		namespace, known := workspaces[name]
+		if !known {
+			if err := r.reader().Get(ctx, client.ObjectKey{Name: name}, &namespace); client.IgnoreNotFound(err) != nil {
+				return nil, err
+			}
+			workspaces[name] = namespace
+		}
+		if namespace.Labels[workspaceLakeLabel] != lake.Name ||
+			namespace.Labels[workspaceManagedByLabel] != "orama-operator" ||
+			namespace.Labels[workspaceLabel] != app.Spec.Sync.WorkspaceID ||
+			namespace.Labels[workspaceCustomerLabel] != app.Spec.Sync.CustomerID {
 			continue
 		}
 		out[ingressKey{lakeAppNamespace(app), lakeAppWorkloadObjectName(app)}] = *app.Spec.Sync
 	}
 	return out, nil
+}
+
+// platformIngressControllerPod follows controller references by UID, including the ReplicaSet
+// hop of a Deployment. A matching label or an unrelated controller is insufficient.
+func (r *LakeReconciler) platformIngressControllerPod(ctx context.Context, pod *corev1.Pod) (bool, error) {
+	if pod.Namespace != appTransferIngressNamespace {
+		return false, nil
+	}
+	owner := metav1.GetControllerOf(pod)
+	if owner == nil || owner.APIVersion != appsv1.SchemeGroupVersion.String() || owner.UID == "" {
+		return false, nil
+	}
+	if owner.Kind == "ReplicaSet" {
+		var rs appsv1.ReplicaSet
+		if err := r.reader().Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: owner.Name}, &rs); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+		if rs.UID != owner.UID {
+			return false, nil
+		}
+		owner = metav1.GetControllerOf(&rs)
+	}
+	if owner == nil || owner.APIVersion != appsv1.SchemeGroupVersion.String() || owner.UID == "" || owner.Name != appTransferIngressController {
+		return false, nil
+	}
+	var controller client.Object
+	switch owner.Kind {
+	case "Deployment":
+		// Deployments own ReplicaSets, never pods directly.
+		if metav1.GetControllerOf(pod).Kind != "ReplicaSet" {
+			return false, nil
+		}
+		controller = &appsv1.Deployment{}
+	case "DaemonSet":
+		if metav1.GetControllerOf(pod).Kind != "DaemonSet" {
+			return false, nil
+		}
+		controller = &appsv1.DaemonSet{}
+	default:
+		return false, nil
+	}
+	if err := r.reader().Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: owner.Name}, controller); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	return controller.GetUID() == owner.UID, nil
 }
 
 // reconcileAppTransfer is one pass. A failed read of the apps or the controller pods writes
@@ -228,7 +296,7 @@ func (r *LakeReconciler) reconcileAppTransfer(ctx context.Context, lake *oramav1
 		return fmt.Errorf("list apps: %w", err)
 	}
 	var pods corev1.PodList
-	if err := r.reader().List(ctx, &pods, ingressControllerPodLabels); err != nil {
+	if err := r.reader().List(ctx, &pods, client.InNamespace(appTransferIngressNamespace), ingressControllerPodLabels); err != nil {
 		return fmt.Errorf("list ingress controller pods: %w", err)
 	}
 	started, previous := r.appTransfer.begin(lake.UID, now)
@@ -241,6 +309,13 @@ func (r *LakeReconciler) reconcileAppTransfer(ctx context.Context, lake *oramav1
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.Status.Phase != corev1.PodRunning || pod.Status.PodIP == "" {
+			continue
+		}
+		trusted, err := r.platformIngressControllerPod(ctx, pod)
+		if err != nil {
+			return fmt.Errorf("verify ingress controller pod %s: %w", pod.Name, err)
+		}
+		if !trusted {
 			continue
 		}
 		counters, found, err := r.scrapeIngressController(ctx, pod)

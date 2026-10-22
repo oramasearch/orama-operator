@@ -153,6 +153,10 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
     verbs: ["*"]
+  # Verify the platform ingress controller's pod ownership before reading billing counters.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["services", "configmaps", "secrets", "persistentvolumeclaims", "serviceaccounts", "resourcequotas", "limitranges"]
     verbs: ["*"]

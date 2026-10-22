@@ -3,6 +3,13 @@
 What the operator creates per component, and reconciler status. Update this as each
 reconciler lands.
 
+App transfer metering (`internal/controller/lake_app_transfer.go`) scrapes pods only in the platform
+`ingress-nginx` namespace and verifies their controller references through the named
+`ingress-nginx-controller` Deployment or DaemonSet, including ReplicaSet and controller UIDs.
+It accepts only this Lake's owned apps in matching workspace/customer namespaces; ownership
+lookup errors stop the pass before writing usage. Read-only ReplicaSet RBAC ships on every
+cluster. See [app transfer](lake/app-transfer.md) for the counter and retry rules.
+
 **Status summary.** All component reconcilers are implemented and validated on AKS: every
 component (engine, control-plane Postgres, the four data stores, ingestion, workers, dashboard,
 DISCO, IdP, demoSeed) reconciles into the right topology and owner-GCs on delete. The Cloudflare
