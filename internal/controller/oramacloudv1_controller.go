@@ -17,6 +17,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -31,6 +32,7 @@ type OramaCloudV1Reconciler struct {
 	Scheme            *runtime.Scheme
 	APIReader         client.Reader
 	OperatorNamespace string
+	Recorder          record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=orama.cloud,resources=oramacloudv1s,verbs=get;list;watch;create;update;patch;delete
@@ -47,7 +49,7 @@ type OramaCloudV1Reconciler struct {
 
 // Reconcile provisions enabled components in dependency order, applies storage intent, and
 // rolls up workload readiness independently of storage configuration acceptance.
-func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, reconcileErr error) {
 	l := log.FromContext(ctx)
 
 	var oc oramav1alpha1.OramaCloudV1
@@ -82,6 +84,23 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.reconcileNetworkSandbox(ctx, &oc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile network sandbox: %w", err)
 	}
+
+	// Keep the shared reconciler immutable: simultaneous reconciles may use different policies.
+	var rejectedImages []string
+	imagesReported := false
+	local := *r
+	r = &local
+	if oc.Spec.Images.RequireDigests {
+		r.Client = imageEnforcingClient{Client: r.Client, violations: &rejectedImages}
+	}
+	defer func() {
+		if imagesReported {
+			return
+		}
+		if err := r.reportCloudV1Images(ctx, &oc, rejectedImages...); err != nil && reconcileErr == nil {
+			reconcileErr = r.reconcileFailed(ctx, &oc, "images", err)
+		}
+	}()
 
 	// Reconcile each component in order. Add new component reconcilers to this list.
 	steps := []struct {
@@ -128,6 +147,12 @@ func (r *OramaCloudV1Reconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Owns() events cover most transitions; the requeue is also the backstop for CNPG readiness,
 	// PVC creation and storage retries even after workloads become Ready.
 	managedStorage := r.reconcileStorage(ctx, &oc)
+	// Enforced legacy image failures must precede readiness; otherwise each pass would flip a
+	// steady stack from Ready/Provisioning to Degraded and back before reporting the same error.
+	imagesReported = true
+	if err := r.reportCloudV1Images(ctx, &oc, rejectedImages...); err != nil {
+		return ctrl.Result{}, r.reconcileFailed(ctx, &oc, "images", err)
+	}
 	if r.applyReadiness(ctx, &oc, masterKey) && !managedStorage {
 		return ctrl.Result{}, nil
 	}
@@ -147,6 +172,9 @@ func (r *OramaCloudV1Reconciler) reconcileFailed(ctx context.Context, oc *oramav
 
 // SetupWithManager wires the controller and the child resources it owns.
 func (r *OramaCloudV1Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("oramacloudv1")
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.OramaCloudV1{}).
 		Owns(&appsv1.StatefulSet{}).

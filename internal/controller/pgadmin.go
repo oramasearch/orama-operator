@@ -18,7 +18,7 @@ import (
 
 // pgAdminImage is the official, maintained pgAdmin4 web image (pinned for determinism). No
 // custom build needed — it's the canonical upstream image, reused like clickhouse/postgres/redis.
-const pgAdminImage = "dpage/pgadmin4:8.14"
+const pgAdminImage = "dpage/pgadmin4:8.14@sha256:8a68677a97b8c8d1427dc915672a26d2c4a04376916a68256f53d669d6171be7"
 
 // reconcilePgAdmin runs pgAdmin4 (web) as a Deployment + ClusterIP Service (NO ingress) so an
 // operator can read/write the control-DB via kubectl port-forward. The control-DB server is
@@ -54,7 +54,7 @@ func (r *OramaCloudV1Reconciler) reconcilePgAdmin(ctx context.Context, oc *orama
 
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "pgadmin",
-		image:     pgAdminImage,
+		image:     storeImage(oc, "pgadmin", pgAdminImage),
 		port:      80,
 		env: []corev1.EnvVar{
 			{Name: "PGADMIN_DEFAULT_EMAIL", Value: "steve@orama.com"}, // pgAdmin rejects non-TLD domains (.local)

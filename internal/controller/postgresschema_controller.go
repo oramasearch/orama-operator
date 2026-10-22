@@ -135,7 +135,9 @@ func (r *PostgresSchemaReconciler) ensureMigrationJob(ctx context.Context, ps *o
 		if !job.DeletionTimestamp.IsZero() {
 			return nil, nil
 		}
-		if job.Annotations[pgSchemaVersionAnnotation] != ps.Spec.Version || !pgMigrationScopeCurrent(ps, job) {
+		desiredImage := pgMigrationJobSpec(ps).Template.Spec.Containers[0].Image
+		obsoleteImage := job.Status.Succeeded == 0 && (len(job.Spec.Template.Spec.Containers) == 0 || job.Spec.Template.Spec.Containers[0].Image != desiredImage)
+		if job.Annotations[pgSchemaVersionAnnotation] != ps.Spec.Version || !pgMigrationScopeCurrent(ps, job) || obsoleteImage {
 			policy := metav1.DeletePropagationForeground
 			options := &client.DeleteOptions{
 				PropagationPolicy: &policy,
@@ -216,8 +218,8 @@ func pgMigrationJobSpec(ps *oramav1alpha1.PostgresSchema) batchv1.JobSpec {
 		guard = "crawler_configs"
 	}
 	image := ps.Spec.Image
-	if image == "" {
-		image = "postgres:16-alpine"
+	if image == "" || image == "postgres:16-alpine" {
+		image = pinnedPostgres16Image
 	}
 	schemaFile := "/migrations/" + ps.Spec.SchemaConfigMapRef.Key
 	guardCheck := `if psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.` + guard + `')" | grep -q ` + guard + `; then

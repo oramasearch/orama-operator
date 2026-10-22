@@ -1404,6 +1404,9 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 		}
 		return deleteIfExists(ctx, r.Client, cluster)
 	}
+	if err := r.ensureLakeRehearsalSecret(ctx, lake, ns, lbls); err != nil {
+		return err
+	}
 	instances := int64(1)
 	if lake.Spec.Postgres.Instances != nil {
 		instances = int64(*lake.Spec.Postgres.Instances)
@@ -1420,10 +1423,14 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 		}
 		spec := map[string]interface{}{
 			"instances": instances,
+			"managed":   map[string]interface{}{"roles": []interface{}{lakeRehearsalRole(lakeRehearsalSecretName(lake))}},
 			"storage":   storage,
 			"bootstrap": map[string]interface{}{
 				"initdb": map[string]interface{}{"database": lakeControlDBName, "owner": lakeControlDBName},
 			},
+		}
+		if lake.Spec.Postgres.Image != "" {
+			spec["imageName"] = lake.Spec.Postgres.Image
 		}
 		if backup.Enabled && backup.Valid {
 			spec["backup"] = map[string]interface{}{
@@ -1638,7 +1645,7 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 			// exists iff the whole (idempotent) file applied, and a new migration = a new guard, so
 			// the next Job re-runs the file and adds only what is missing.
 			GuardTable: lakeSchemaGuardTable,
-			Image:      "postgres:18-alpine",
+			Image:      pinnedPostgres18Image,
 		}
 		return controllerutil.SetControllerReference(lake, ps, r.Scheme)
 	})

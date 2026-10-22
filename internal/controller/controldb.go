@@ -179,6 +179,9 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 			"managed": map[string]interface{}{"roles": []interface{}{
 				migrationManagedRole(oc, len(migrations) > 0), dashboardManagedRole(oc)}},
 		}
+		if image := oc.Spec.Images.Overrides["controldb"]; image != "" {
+			spec["imageName"] = image
+		}
 		// The storage pass owns changes to existing storage; ordinary spec rendering
 		// must retain the class, grown size, and any other CNPG storage keys.
 		if cluster.GetResourceVersion() != "" {
@@ -277,9 +280,8 @@ func (r *OramaCloudV1Reconciler) ensureMigrationRoleSecret(ctx context.Context, 
 // DB's PostgresSchema Job and the cluster-row Job run. Unset, both run defaultPostgresClientImage.
 const postgresClientImageKey = "postgres-client"
 
-// defaultPostgresClientImage is the public upstream image both Jobs ran before the key existed, kept
-// as the default so an unpinned stack does not change. Production pins a private digest in its set.
-const defaultPostgresClientImage = "postgres:16-alpine"
+// defaultPostgresClientImage pins the upstream psql helper. Production may override its mirror.
+const defaultPostgresClientImage = pinnedPostgres16Image
 
 // postgresClientImage resolves the control DB's psql image like the data stores (storeImage): the
 // postgres-client override wins, else the upstream default.

@@ -652,6 +652,12 @@ spec:
                       Enabled provisions the CNPG Cluster. Default true. Setting it false tears the cluster
                       down (disable is not "leave running"), which deletes its data.
                     type: boolean
+                  image:
+                    description: |-
+                      Image selects the CNPG-compatible Postgres image. Empty keeps CNPG's default. Restore and
+                      upgrade rehearsals require the running source image to be pinned by SHA-256 digest.
+                    pattern: ^.+@sha256:[a-f0-9]{64}$
+                    type: string
                   instances:
                     default: 1
                     description: Instances is the CNPG instance count (1 = single

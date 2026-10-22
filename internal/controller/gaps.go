@@ -93,7 +93,7 @@ const (
 	analyticsImportSchedule  = "*/5 * * * *"
 	analyticsImportTimeZone  = "Etc/UTC"
 	analyticsImportComponent = "analytics-import"
-	analyticsImportImage     = "curlimages/curl:8.10.1"
+	analyticsImportImage     = pinnedCurlImage
 )
 
 // analyticsImportScript is what each import Job runs: POST /import, then POST /aggregate2, the

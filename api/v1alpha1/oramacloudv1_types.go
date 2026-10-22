@@ -137,6 +137,11 @@ type IDPSpec struct {
 
 // ImagesSpec sets default and per-component images.
 type ImagesSpec struct {
+	// RequireDigests rejects rendered workload images without a SHA-256 digest. Disabled by default
+	// during the production rollout; ImagesPinned reports mutable selections without blocking.
+	// +optional
+	RequireDigests bool `json:"requireDigests,omitempty"`
+
 	// +kubebuilder:default="oramasearch"
 	Registry string `json:"registry,omitempty"`
 	// +kubebuilder:default="latest"

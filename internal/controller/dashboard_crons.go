@@ -44,7 +44,7 @@ const (
 	// dashboardCronsImage is the curl image when spec.images.overrides["dashboard-crons"] is unset: a
 	// full reference, not resolved against the stack's registry and tag. It runs as curl_user, which
 	// is uid 100, gid 101 in this image; the numbers are set explicitly so runAsNonRoot can check them.
-	dashboardCronsImage = "curlimages/curl:8.10.1"
+	dashboardCronsImage = pinnedCurlImage
 	curlUID, curlGID    = 100, 101
 	// The canary image runs as root by default; the pod runs it as this conventional non-root user.
 	canaryUID = 65532

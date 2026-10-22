@@ -354,6 +354,9 @@ spec:
       enabled: true
       manageDNS: true
     images:
+      # LSR-214: warn on tag-only selections without blocking this live set. Enable after all
+      # application/helper overrides, including controldb, have reviewed digests; see docs/development.md.
+      requireDigests: false
       # Both members' combined OramaCore engine: v1.2.39 plus oramacore#340 and #341, which serve
       # GET /health/ready, the readers' readiness probe since #506 (#597). Built from
       # oramacore 9d8ed373 into the private oramasearch/oramacore-cloud-v1. Neither member sets

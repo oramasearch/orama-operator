@@ -24,12 +24,17 @@ import (
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
 
+const (
+	rehearsalTestSourceImage = "ghcr.io/cloudnative-pg/postgresql:18.1@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	rehearsalTestTargetImage = "ghcr.io/cloudnative-pg/postgresql:19.0@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+)
+
 func TestLakeRestoreRehearsalTestsBackupAndRestore(t *testing.T) {
 	fixture := newRehearsalFixture(t, "restore", 1)
 	scratch := advanceScratchRehearsalToReadyCluster(t, fixture)
-	assertRecoveryCluster(t, scratch, "backup-20260905", "ghcr.io/cloudnative-pg/postgresql:18.1")
+	assertRecoveryCluster(t, scratch, "backup-20260905", rehearsalTestSourceImage)
 
-	setCNPGClusterReady(t, fixture.client, scratch, "postgres-1", "ghcr.io/cloudnative-pg/postgresql:18.1")
+	setCNPGClusterReady(t, fixture.client, scratch, "postgres-1", rehearsalTestSourceImage)
 	reconcileRehearsal(t, fixture)
 	job := getRehearsalJob(t, fixture, "verify", fixture.scratchNamespace())
 	container := job.Spec.Template.Spec.Containers[0]
@@ -69,7 +74,7 @@ func TestLakeRestoreRehearsalFailureLeavesEvidenceUntested(t *testing.T) {
 		t.Fatal(err)
 	}
 	scratch := advanceScratchRehearsalToReadyCluster(t, fixture)
-	setCNPGClusterReady(t, fixture.client, scratch, "postgres-1", "ghcr.io/cloudnative-pg/postgresql:18.1")
+	setCNPGClusterReady(t, fixture.client, scratch, "postgres-1", rehearsalTestSourceImage)
 	reconcileRehearsal(t, fixture)
 	job := getRehearsalJob(t, fixture, "verify", fixture.scratchNamespace())
 	completeJob(t, fixture.client, job, false)
@@ -90,7 +95,7 @@ func TestLakeRestoreRehearsalFailureLeavesEvidenceUntested(t *testing.T) {
 func TestLakeUpgradeRehearsalUpdatesScratchCloneFirst(t *testing.T) {
 	fixture := newRehearsalFixture(t, "upgrade", 2)
 	scratch := advanceScratchRehearsalToReadyCluster(t, fixture)
-	setCNPGClusterReady(t, fixture.client, scratch, "postgres-1", "ghcr.io/cloudnative-pg/postgresql:18.1")
+	setCNPGClusterReady(t, fixture.client, scratch, "postgres-1", rehearsalTestSourceImage)
 	reconcileRehearsal(t, fixture)
 
 	if err := fixture.client.Get(context.Background(), client.ObjectKeyFromObject(scratch), scratch); err != nil {
@@ -115,7 +120,7 @@ func TestLakeUpgradeRehearsalUpdatesScratchCloneFirst(t *testing.T) {
 	assertScratchObjectsDeleted(t, fixture)
 }
 
-func TestLakeFailoverRehearsalSwitchesPrimaryAndTestsAppSecret(t *testing.T) {
+func TestLakeFailoverRehearsalSwitchesPrimaryAndTestsReadOnlySecret(t *testing.T) {
 	fixture := newRehearsalFixture(t, "failover", 2)
 	lake := getRehearsalLake(t, fixture)
 	lake.Status.DataServices = []oramav1alpha1.LakeDataServiceStatus{{
@@ -145,11 +150,11 @@ func TestLakeFailoverRehearsalSwitchesPrimaryAndTestsAppSecret(t *testing.T) {
 	if target != "lake-test-controldb-2" || phase != "Switchover in progress" {
 		t.Fatalf("switchover status = %+v", cluster.Object["status"])
 	}
-	setCNPGClusterReady(t, fixture.client, cluster, "lake-test-controldb-2", "ghcr.io/cloudnative-pg/postgresql:18.1")
+	setCNPGClusterReady(t, fixture.client, cluster, "lake-test-controldb-2", rehearsalTestSourceImage)
 	reconcileRehearsal(t, fixture)
 	job := getRehearsalJob(t, fixture, lakeRehearsalJobName(fixture.name), "lake-test")
 	container := job.Spec.Template.Spec.Containers[0]
-	if !jobEnvSecretIs(container.Env, "PGPASSWORD", "lake-test-controldb-app") {
+	if !jobEnvSecretIs(container.Env, "PGPASSWORD", "lake-test-controldb-rehearsal") {
 		t.Fatalf("failover verification env = %+v", container.Env)
 	}
 	completeJob(t, fixture.client, job, true)
@@ -216,7 +221,7 @@ func newRehearsalFixture(t *testing.T, operation string, instances int32) *rehea
 			},
 		},
 	}
-	targetImage := "ghcr.io/cloudnative-pg/postgresql:19.0"
+	targetImage := rehearsalTestTargetImage
 	rehearsal := &oramav1alpha1.LakeRestoreRehearsal{
 		ObjectMeta: metav1.ObjectMeta{Name: operation + "-test", UID: types.UID(operation + "-uid")},
 		Spec: oramav1alpha1.LakeRestoreRehearsalSpec{
@@ -228,7 +233,7 @@ func newRehearsalFixture(t *testing.T, operation string, instances int32) *rehea
 		},
 	}
 	sourceCluster := testCNPGCluster("lake-test", "lake-test-controldb", int64(instances))
-	setCNPGStatus(sourceCluster, "lake-test-controldb-1", "ghcr.io/cloudnative-pg/postgresql:18.1", instances)
+	setCNPGStatus(sourceCluster, "lake-test-controldb-1", rehearsalTestSourceImage, instances)
 	backup := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": "postgresql.cnpg.io/v1",
 		"kind":       "Backup",
@@ -255,9 +260,9 @@ func newRehearsalFixture(t *testing.T, operation string, instances int32) *rehea
 		},
 	}
 	app := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "lake-test-controldb-app", Namespace: "lake-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "lake-test-controldb-rehearsal", Namespace: "lake-test"},
 		Data: map[string][]byte{
-			"username": []byte("lake"),
+			"username": []byte(lakeRehearsalRoleName),
 			"password": []byte("password"),
 		},
 	}

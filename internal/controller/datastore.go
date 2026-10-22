@@ -138,7 +138,7 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 			for _, f := range templates {
 				mounts = append(mounts, corev1.VolumeMount{Name: "rendered-config", MountPath: def.configMount + "/" + f, SubPath: f, ReadOnly: true})
 			}
-			initContainers = append(initContainers, storeRenderConfigInit(templates, def.templateEnv))
+			initContainers = append(initContainers, storeRenderConfigInit(oc, templates, def.templateEnv))
 			// The init container renders only at pod start, so a template change must roll the pod.
 			annotations[configHashKey] = configFilesHash(data)
 		}
@@ -214,7 +214,7 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 // storeRenderConfigInit renders a store's config templates from the ConfigMap (/tmpl) into the
 // rendered-config emptyDir (/rendered), filling each __VAR__ placeholder from the variable of the
 // same name (renderSubstitutions; values are escaped, never evaluated).
-func storeRenderConfigInit(files []string, env []corev1.EnvVar) corev1.Container {
+func storeRenderConfigInit(oc *oramav1alpha1.OramaCloudV1, files []string, env []corev1.EnvVar) corev1.Container {
 	vars := make([]string, 0, len(env))
 	for _, e := range env {
 		vars = append(vars, e.Name)
@@ -229,7 +229,7 @@ func storeRenderConfigInit(files []string, env []corev1.EnvVar) corev1.Container
 	}
 	return corev1.Container{
 		Name:    "render-config",
-		Image:   "busybox:1.37",
+		Image:   storeImage(oc, "busybox", "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"),
 		Command: []string{"sh", "-c", b.String()},
 		Env:     env,
 		VolumeMounts: []corev1.VolumeMount{
@@ -265,7 +265,7 @@ func storeImage(oc *oramav1alpha1.OramaCloudV1, component, def string) string {
 func (r *OramaCloudV1Reconciler) reconcileCache(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Cache, dataStoreDef{
 		component:         "cache",
-		image:             "redis:7-alpine",
+		image:             "redis:7-alpine@sha256:892022f9f18c26c92c30e15194d132f90044af87b94a491a75429bbc3982eab1",
 		ports:             []corev1.ContainerPort{{Name: "redis", ContainerPort: 6379}},
 		dataPath:          "/data",
 		env:               []corev1.EnvVar{redisPasswordEnvVar(oc)},
@@ -334,7 +334,7 @@ func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav
 	advertised := oc.Name + "-broker." + oc.Namespace + ".svc.cluster.local"
 	if err := r.reconcileDataStore(ctx, oc, oc.Spec.Components.Broker, dataStoreDef{
 		component: "broker",
-		image:     "rabbitmq:3.13-management",
+		image:     "rabbitmq:3.13-management@sha256:e582c0bc7766f3342496d8485efb5a1df782b5ce3886ad017e2eaae442311f69",
 		ports: []corev1.ContainerPort{
 			{Name: "amqp", ContainerPort: 5672},
 			{Name: "management", ContainerPort: 15672},
@@ -624,7 +624,7 @@ const clickhouseMemoryXML = `<clickhouse>
 
 // clickhouseImage is the analytics ClickHouse server's default image. The analytics retention Job
 // runs its clickhouse-client (reconcileAnalyticsRetention).
-const clickhouseImage = "clickhouse/clickhouse-server:24.8"
+const clickhouseImage = "clickhouse/clickhouse-server:24.8@sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b"
 
 func (r *OramaCloudV1Reconciler) reconcileAnalytics(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Analytics, dataStoreDef{
@@ -651,7 +651,7 @@ func (r *OramaCloudV1Reconciler) reconcileSearch(ctx context.Context, oc *oramav
 	// TYPESENSE_API_KEY from the shared Secret (via envFrom).
 	return r.reconcileDataStore(ctx, oc, oc.Spec.Components.Search, dataStoreDef{
 		component: "search",
-		image:     "typesense/typesense:0.25.2",
+		image:     "typesense/typesense:0.25.2@sha256:1ddbb28a52b0b8be31237ec718df1c9bc895c5626b26c10fa3f340f684e81488",
 		ports:     []corev1.ContainerPort{{Name: "http", ContainerPort: 8108}},
 		dataPath:  "/data",
 		// Right-size (#18): generous default; override via spec.components.search.resources.

@@ -2460,6 +2460,11 @@ spec:
                   registry:
                     default: oramasearch
                     type: string
+                  requireDigests:
+                    description: |-
+                      RequireDigests rejects rendered workload images without a SHA-256 digest. Disabled by default
+                      during the production rollout; ImagesPinned reports mutable selections without blocking.
+                    type: boolean
                   tag:
                     default: latest
                     type: string

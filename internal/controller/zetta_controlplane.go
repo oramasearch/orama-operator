@@ -113,7 +113,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaControlPlane(ctx context.Con
 	}
 	b.WriteString("echo 'zetta control-plane: schema applied'\n")
 	script := b.String()
-	schemaSum := sha256.Sum256([]byte(script))
+	schemaSum := sha256.Sum256([]byte(script + "\n" + pinnedCurlImage))
 	schemaVersion := fmt.Sprintf("sha256:%x", schemaSum[:6])
 
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: z.Namespace}}
@@ -148,7 +148,7 @@ func (r *OramaZettaClusterReconciler) reconcileZettaControlPlane(ctx context.Con
 						RestartPolicy: corev1.RestartPolicyNever,
 						Containers: []corev1.Container{{
 							Name:    "schema",
-							Image:   "curlimages/curl:8.10.1",
+							Image:   pinnedCurlImage,
 							Command: []string{"sh", "-c", "sh /schema/apply.sh"},
 							// The seeded admin bearer — auth is mandatory (zetta#799), so the schema curls must
 							// authenticate. Read from Secret <name>-zetta-admin (always provisioned before this Job).

@@ -59,7 +59,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **lake managed services** | `internal/controller/lake_services.go`, `internal/controller/lake_services_pgx.go`, `internal/controller/lake_controller.go` | on every Lake: polls lake's `services` table over pgx at `spec.deploySync.interval`; owns Zetta, Postgres and catalog service resources, connection delivery, comparison-gated status, deletion and `spec.services.maxServices`, except that it skips the workspace-owned `zetta_service_id`. Workspace synchronization has its own listener and quota. Catalog kinds use their upstream operators; SQLite, DuckDB and Polars use operator-owned wrappers | 🟡 **implemented** (liquid-bridge decisions 46 and 47; #219); fake-store/client, alternating-poll envtest and pgx coverage, selected live service proof, catalog-schema validation — see [`lake/services.md`](lake/services.md) |
 | **lake methodology runs** | `internal/controller/lake_methodology_runs.go`, `internal/controller/lake_methodology_runs_pgx.go` | on every Lake, with `spec.methodologies.runtimeImage` or the operator's default: reads `methodology_runs` rows with their image build, waits for the build, then runs a stage, a sandbox and a collect Job sharing a per-run PVC in the restricted, default-deny namespace `lake-<name>-methodology-runs`; generates the run's `lmr.` credential (only its SHA-256 is written) and a pull Secret for the built image; the sandbox has no credential, token, service links or network unless granted (public internet only); counts each run and served model against its workspace's ResourceQuota and LimitRange through a never-scheduled reservation pod `<slug>-quota` in the workspace's namespace (Queued while there is no room, #799) and caps them all with ResourceQuota `methodology-ceiling`; writes phases, exit code and the sandbox's start and finish to `methodology_run_status` on change, the sandbox's resources to `workload_resources`, and removes the run's objects when it ends | 🟡 **implemented** ([#291](https://github.com/oramasearch/orama-operator/issues/291), [lake#655](https://github.com/oramasearch/lake/issues/655)); fake-client and pgx contract coverage; live run waits for lake#655 and the runtime image — see [`lake/methodology-runs.md`](lake/methodology-runs.md) |
 | **lake workload resources** | `internal/controller/lake_workload_resources.go`, `internal/controller/lake_workload_resources_pgx.go` | on the control-rows poll, at most every 30 seconds per Lake: one `workload_resources` row in the Lake's control Postgres per workspace engine, managed service, app, build, agent launch and agent cron run (lake#658), holding the effective CPU and memory requests (request, else limit; init containers, sidecars and overhead as Kubernetes counts them), GPUs, GPU class (GPU feature discovery's product label, normalized) and VRAM of its scheduled pods; written only on change; a job's row is written from its Job as soon as the Job exists, a finished build or job keeps its values with `pods` 0, and a finished run with no row is backfilled from the pod spec the operator schedules it with (lake#658); rows of objects lake no longer has are deleted | 🟡 **implemented** ([lake#643](https://github.com/oramasearch/lake/issues/643), [lake#658](https://github.com/oramasearch/lake/issues/658)); fake-client and pgx contract coverage; a live run on dev waits for the lake side of lake#643 — see [`lake/workload-resources.md`](lake/workload-resources.md) |
-| **lake Postgres rehearsals** | `internal/controller/lakerestorerehearsal_controller.go` | from one cluster-scoped `LakeRestoreRehearsal`: isolated CNPG backup recovery and data verification for restore; scratch image update then verification for upgrade; CNPG primary switchover then application-Secret connection verification for failover; terminal cleanup and Lake evidence update | ✅ **implemented** — see [`lake/data-services/postgres.md`](lake/data-services/postgres.md) |
+| **lake Postgres rehearsals** | `internal/controller/lakerestorerehearsal_controller.go` | from one cluster-scoped `LakeRestoreRehearsal`: isolated CNPG backup recovery and data verification for restore; scratch image update then verification for upgrade; CNPG primary switchover then read-only-role connection verification for failover; terminal cleanup and Lake evidence update | ✅ **implemented** — see [`lake/data-services/postgres.md`](lake/data-services/postgres.md) |
 | **lake sealed-secret delivery** | `internal/controller/lakesealedsecret_controller.go` | from one namespaced `LakeSealedSecret`: an owned, cluster-bound Kubernetes Secret labelled `lake.orama.cloud/sealed: "true"`; literal ciphertext opens locally, while lake and dynamic references call lake's mint capability authenticated by the Lake's admin bearer alone (the operator's Kubernetes token is never sent, #791) | 🟡 **implemented**; literal delivery and LakeEnvironment consumption with local delivery owners are complete and tested against both k0s admission policies, while lake/dynamic delivery awaits lake's `mint_sealed_secret` leaf |
 | **deployment control plane** | `internal/controller/deployment_controlplane.go` | authenticated liquid REST `/v1` and MCP server; appends immutable Zetta history, desired rows in lake's shape and audit entries, validates sealed-secret references, and reads reconciled `LakeEnvironment` status | ✅ **implemented** ([#142](https://github.com/oramasearch/orama-operator/issues/142)); REST/MCP, drift, Zetta-double and envtest coverage — see [`control-plane/README.md`](control-plane/README.md) |
 
@@ -535,6 +535,46 @@ volume limits, then use a disposable pod with small declared budgets and a finit
 scratch write. Keep it alive for kubelet accounting, confirm eviction identifies the exceeded
 storage budget, and check that neighboring workloads remain Ready and the node has no DiskPressure.
 This rollout check requires the usual approval for cluster changes.
+
+## Workload image integrity (LSR-214)
+
+Fixed Cloud v1 upstream defaults (stores, BusyBox, Envoy, Selenium, Keycloak, pgAdmin and the
+E2E shell) select multi-platform manifest digests. The shared psql and curl defaults in
+`helper_images.go` also cover Lake schema and restore verification, Zetta schema provisioning,
+Cloud v1 schema/cluster-row/migration Jobs, dashboard CronJobs, analytics import and demo seed.
+Zetta's schema Job version includes its image digest, so upgrading the helper replaces an old
+Job even when its SQL is unchanged. PostgresSchema admission defaults to the pinned psql image;
+the runtime also upgrades the old literal `postgres:16-alpine` default to that digest.
+An unfinished schema Job on the obsolete image is replaced in foreground before another
+transaction runs; completed schema Jobs keep their existing audit record. Existing rehearsal
+verifiers on owner credentials or tagged images are replaced before verification continues.
+
+Cloud v1 reports `ImagesPinned=False`, reason `ImagesNotPinned`, and a Warning event for mutable
+images on owned workloads, including init containers, sidecars, child `WORKER_IMAGE` values,
+PostgresSchemas and an implicit CNPG image. The warning preserves readiness and reconciliation
+for live production while reviewed application digests are prepared. Stable warnings write no
+status and emit no repeated event; they clear once every owned selection is pinned.
+
+Set `spec.images.requireDigests: true` after configuring reviewed digests. The operator then
+checks complete rendered objects before create, update and patch, and rejects mutable selections;
+existing immutable tagged Jobs also keep enforcement degraded until they complete and are
+replaced through their normal lifecycle. Cloud v1 migration Jobs and new E2E Jobs apply the target stack's policy.
+The release-manifest check always rejects tags; see [development.md](development.md#release-image-check).
+Digest pinning fixes content identity, not publisher trust: review provenance before changing a pin.
+
+The existing override map accepts `busybox`, `envoy`, `selenium`, `keycloak`, `pgadmin`, `demo-seed`
+and `controldb` as well as `postgres-client`, `dashboard-crons`, `analytics-import` and component
+keys. `controldb` sets CNPG `spec.imageName`; unset preserves CNPG's default and reports an
+unpinned selection. Setting it on a running database requests CNPG's normal image rollout.
+Private mirrors must expose the same binaries and use the mirror's own reviewed manifest digest.
+
+Every Lake declares a separate CNPG `lake_rehearsal` login, backed by the owned
+`<control-db>-rehearsal` basic-auth Secret. It inherits only `pg_read_all_data`, has four
+connections, and has no superuser, DDL/admin, replication or RLS-bypass privilege. Restore and
+upgrade copy this credential into scratch, where CNPG manages the same role even for older
+backups. Failover uses it in the Lake namespace. Verification also sets transaction read-only
+mode and never receives the application owner's Secret. Restore/upgrade refuse mutable source
+or target images before copying any credential; configure the source through `Lake.spec.postgres.image`.
 
 ## engine (`internal/controller/engine.go`)
 

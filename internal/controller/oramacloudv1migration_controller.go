@@ -434,6 +434,11 @@ func (r *OramaCloudV1MigrationReconciler) startJob(ctx context.Context, m *orama
 		return err
 	}
 	job := migrationJob(m, target, run)
+	if target.oc.Spec.Images.RequireDigests {
+		if err := validateWorkloadImages(job); err != nil {
+			return err
+		}
+	}
 	if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, m, job.Name, job.Labels); err != nil {
 		return err
 	}
