@@ -76,8 +76,11 @@ const (
 	methodologyTransferPolicy  = "methodology-transfer"
 	methodologySandboxInternet = "methodology-sandbox-internet"
 
-	methodologyCLI              = "/opt/orama/bin/methodology"
-	methodologyWorkPath         = "/work"
+	methodologyCLI      = "/opt/orama/bin/methodology"
+	methodologyWorkPath = "/work"
+	// methodologySafeWorkingDir is where a pod that holds the run credential starts: its own
+	// emptyDir, never the work volume the sandbox can write.
+	methodologySafeWorkingDir   = "/tmp"
 	methodologyCredentialDir    = "/var/run/orama"
 	methodologyCredentialFile   = "credential"
 	methodologyPullUser         = "methodology-run"
@@ -401,6 +404,17 @@ func methodologyPod(image string, command []string, env []corev1.EnvVar, resourc
 	if pullSecret != "" {
 		pullSecrets = []corev1.LocalObjectReference{{Name: pullSecret}}
 	}
+	workingDir := ""
+	if credentialSecret != "" {
+		// A pod that holds the credential (stage, collect, model stage) must never import code the
+		// sandbox wrote. The runtime starts with `python3 -m`, which puts the working directory
+		// first on the module path, and the image's working directory is /work, the volume the
+		// sandbox writes: a planted /work/orama_methodology or /work/json.py would run with the
+		// credential and the transfer pod's network (orama-operator#714). Start in this pod's own
+		// /tmp and tell Python not to add the working directory at all.
+		workingDir = methodologySafeWorkingDir
+		env = append(append([]corev1.EnvVar(nil), env...), corev1.EnvVar{Name: "PYTHONSAFEPATH", Value: "1"})
+	}
 	return corev1.PodSpec{
 		RestartPolicy:                corev1.RestartPolicyNever,
 		ImagePullSecrets:             pullSecrets,
@@ -420,6 +434,7 @@ func methodologyPod(image string, command []string, env []corev1.EnvVar, resourc
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			Command:         command,
 			Env:             env,
+			WorkingDir:      workingDir,
 			Resources:       resources,
 			VolumeMounts:    mounts,
 			SecurityContext: &corev1.SecurityContext{
