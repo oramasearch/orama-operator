@@ -156,7 +156,8 @@ func deploymentControlPlaneObjects(includeSecret bool) []client.Object {
 	objects := []client.Object{
 		lake,
 		zetta,
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeAdminSecret("prod"), Namespace: "lake"}, Data: map[string][]byte{"token": []byte("environment-token")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeAdminSecret("prod"), Namespace: "lake"}, Data: map[string][]byte{"token": []byte("instance-admin-token")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeDeploySecret("prod"), Namespace: "lake"}, Data: map[string][]byte{"token": []byte("environment-token")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "control-zetta-admin", Namespace: "lake"}, Data: map[string][]byte{"token": []byte("zetta-token")}},
 	}
 	if !includeSecret {

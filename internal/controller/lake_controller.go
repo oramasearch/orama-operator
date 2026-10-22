@@ -267,6 +267,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeAdminToken(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile admin token: %w", err)
 	}
+	if err := r.reconcileLakeDeployToken(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile deployment token: %w", err)
+	}
 	if err := r.reconcileLakeInstanceKek(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile instance KEK: %w", err)
 	}

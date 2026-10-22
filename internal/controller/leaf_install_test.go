@@ -467,6 +467,7 @@ func TestTheChartDeclaresTheCRDsTheManagerNeedsToStart(t *testing.T) {
 	}
 	for _, gvk := range []struct{ plural, group string }{
 		{"scheduledbackups", cnpgScheduledBackupGVK.Group}, {"clusters", cnpgClusterGVK.Group}, {"backups", cnpgBackupGVK.Group},
+		{"certificates", "cert-manager.io"}, {"issuers", "cert-manager.io"},
 	} {
 		if name := gvk.plural + "." + gvk.group; !has(name) {
 			t.Errorf("chart/Chart.yaml annotation %s does not list %s", requiredCRDsAnnotation, name)

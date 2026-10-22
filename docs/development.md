@@ -226,8 +226,14 @@ The standard loop: run the manager **out-of-cluster** against your current kube-
 using your kubeconfig creds (no in-cluster deploy needed to iterate):
 
 ```sh
-make run           # = go run ./cmd/main.go
+go run ./cmd --control-plane-bind-address=""
 ```
+
+This disables the deployment listener for the local reconciler loop. To exercise that listener,
+provide a TLS certificate and key with `--control-plane-cert-file` and `--control-plane-key-file`;
+the server has no plaintext mode. The chart projects cert-manager's serving Secret at
+`/var/run/orama/control-plane` on every cluster. The deployment credential, TLS renewal, and chart
+NetworkPolicy tests run without a cluster; see [control-plane/README.md](control-plane/README.md).
 
 **Run only ONE manager at a time.** The metrics server binds `:8080` and the deployment control plane
 binds `:8090`; a second manager (or a stale/wedged one left running) fails with
