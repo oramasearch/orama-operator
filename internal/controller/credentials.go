@@ -89,6 +89,10 @@ func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 		return []string{redisHTTPTokenKey}
 	case hpesSecretName(oc):
 		return []string{hpesTokenKey}
+	case harvestSignSecretName(oc):
+		return []string{harvestSignKey}
+	case harvestNotificationSecretName(oc):
+		return []string{harvestNotificationKey}
 	case analyticsKeySecretName(oc):
 		return []string{analyticsKeyEnvName}
 	case generatedMasterAPIKeySecretName(oc):
@@ -180,7 +184,9 @@ func secretKeyEnv(name, secret, key string) corev1.EnvVar {
 // inserted with (#447). Where the cache runs it also creates <cr>-redis-http, the 64-character hex
 // token (32 random bytes) the serverless-redis-http shim requires and the dashboard sends (#562).
 // Where ingestion runs it creates <cr>-hpes, the 64-character hex bearer HPES requires and
-// index-builder sends (#574).
+// index-builder sends (#574), and HARVEST's two keys, each 64 hex characters: <cr>-harvest-sign,
+// the control key index-builder sends and harvest-master checks, and <cr>-harvest-notification,
+// harvest-master's own notification signing key.
 // An existing Secret, generated or
 // supplied, is never changed. Each one is then read back, so a Secret that won a create race is the
 // one checked: a missing, empty or unsupported value fails the reconcile, naming the Secret and key.
@@ -214,6 +220,14 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		// HPES runs wherever ingestion does (hpesRuns), so its bearer follows ingestion (#574).
 		{local: hpesRuns(oc), name: hpesSecretName(oc), nbytes: 32, values: func(t string) map[string][]byte {
 			return map[string][]byte{hpesTokenKey: []byte(t)}
+		}},
+		// HARVEST's keys follow ingestion too: index-builder reads the control key even where
+		// harvest is off, and both keep their values while harvest-master is away.
+		{local: c.Ingestion.Enabled, name: harvestSignSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
+			return map[string][]byte{harvestSignKey: []byte(k)}
+		}},
+		{local: c.Ingestion.Enabled, name: harvestNotificationSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
+			return map[string][]byte{harvestNotificationKey: []byte(k)}
 		}},
 		// The readers and analytics-processor are its only consumers, but it does not follow either:
 		// re-enabling the processor or ClickHouse finds the same key.

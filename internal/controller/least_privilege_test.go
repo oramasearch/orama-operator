@@ -269,8 +269,8 @@ func TestHarvestMasterSignsInAsHarvest(t *testing.T) {
 	if !regexp.MustCompile(`^[0-9a-f]{48}$`).Match(harvest.Data["password"]) {
 		t.Error("the harvest password is not 48 generated hex characters")
 	}
-	if want := secretDataHash(harvest, cache); tmpl.Annotations[credentialsHashKey] != want {
-		t.Error("harvest-master's credentials hash is not its broker and cache Secrets'")
+	if want := secretDataHash(harvest, cache, h.secret("v1-harvest-sign"), h.secret("v1-harvest-notification")); tmpl.Annotations[credentialsHashKey] != want {
+		t.Error("harvest-master's credentials hash is not its broker, cache and HARVEST key Secrets'")
 	}
 
 	before := h.templates()

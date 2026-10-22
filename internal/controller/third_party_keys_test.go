@@ -82,7 +82,7 @@ func TestThirdPartyKeysComeFromTheirOwnSecrets(t *testing.T) {
 			},
 			map[string]string{"CLOUDFLARE_API_TOKEN": "cf-token-real", "CLOUDFLARE_ACCOUNT_ID": "cf-account-real"},
 			[]string{"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"},
-			[]string{"TYPESENSE_API_KEY", "HARVEST_SIGN", "ABLY_API_KEY", "APIFY_TOKEN"}},
+			[]string{"TYPESENSE_API_KEY", "API_SECRET", "ABLY_API_KEY", "APIFY_TOKEN"}},
 	} {
 		t.Run(tc.component, func(t *testing.T) {
 			dep := &appsv1.Deployment{}
