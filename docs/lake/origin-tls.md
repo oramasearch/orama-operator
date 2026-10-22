@@ -157,7 +157,9 @@ on only when it is safe, in this order:
   wildcard one level above it), orders one: `type: advanced`, hosts *apex, the host, and for a
   wildcard its base name*, TXT validation (Cloudflare adds the records itself on a zone it serves),
   Let's Encrypt, 90 days, renewed by Cloudflare. A pending pack is not ordered again; a deleted,
-  expired, failed or timed-out one is. The operator never deletes a pack. The zone must have
+  expired, failed or timed-out one is, and a pack ordered earlier in the same pass counts as live:
+  hosts are taken in sorted order, so the apps wildcard's pack covers the app hosts under it and one
+  reconcile orders one pack for them, not one per app. The operator never deletes a pack. The zone must have
   **Advanced Certificate Manager** (a paid Cloudflare subscription per zone); without it, or without
   the permission below, the `EdgeCertificateOrders` condition says so and the other steps go on. A
   zone whose hosts all have edge certificates makes no certificate API calls.
@@ -244,8 +246,8 @@ What a release containing this does on a cluster, in order (no step is done by h
 4. The Lakes see the zone's state and turn on the redirect and the client-certificate requirement.
 5. Always Use HTTPS waits until every proxied host has an edge certificate. App hosts two levels
    below the zone apex (`<app>.eu.lake.live`, `<app>.lake-dev.oramadev.net`) are not covered by
-   Universal SSL, so the zone policy orders an Advanced Certificate for each of them (step 4 of the
-   policy, lake#798), and this step waits until Cloudflare has validated and deployed them. That
+   Universal SSL, so the zone policy orders an Advanced Certificate for the apps wildcard, which
+   covers them (step 4 of the policy, lake#798), and this step waits until Cloudflare has validated and deployed them. That
    needs Advanced Certificate Manager on the zone and Zone > SSL and Certificates > Edit on the
    token; until both are in place the `EdgeCertificateOrders` condition says which is missing.
    Meanwhile nginx redirects every Lake host the edge has

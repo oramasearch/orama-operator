@@ -464,6 +464,37 @@ func TestZonePolicyOrdersEdgeCertificatesForDeepHosts(t *testing.T) {
 	}
 }
 
+// A Lake's app hosts have their own proxied records under its apps wildcard, and "*.x" sorts before
+// them. The wildcard's pack, ordered first in the pass, covers them, so one reconcile places exactly
+// one order instead of one per app host.
+func TestZonePolicyWildcardOrderCoversItsAppHosts(t *testing.T) {
+	zone := &fakeCloudflareZone{
+		settings: map[string]string{"ssl": "strict", "tls_client_auth": "on", "always_use_https": "off"},
+		records: append(zoneRecords(),
+			cfDNSRecord{Type: "A", Name: "alpha.eu.lake.live", Content: "74.158.44.177", Proxied: true},
+			cfDNSRecord{Type: "A", Name: "beta.eu.lake.live", Content: "74.158.44.177", Proxied: true},
+			cfDNSRecord{Type: "A", Name: "gamma.eu.lake.live", Content: "74.158.44.177", Proxied: true}),
+		name:  "lake.live",
+		packs: []cfCertificatePack{{ID: "universal", Type: "universal", Hosts: []string{"lake.live", "*.lake.live"}, Status: "active"}},
+	}
+	prober := fakeEdgeProber{edgeInvalid: map[string]bool{
+		"orama-edge-probe.eu.lake.live": true, "alpha.eu.lake.live": true, "beta.eu.lake.live": true, "gamma.eu.lake.live": true,
+	}}
+	_, _, reconcile := newZonePolicyFixture(t, zone, prober)
+	policy := reconcile()
+	if got, want := fmt.Sprint(zone.orders), "[[lake.live *.eu.lake.live eu.lake.live]]"; got != want {
+		t.Fatalf("orders = %s, want %s", got, want)
+	}
+	if !strings.Contains(policy.Status.Message, "edge certificate ordered for *.eu.lake.live;") {
+		t.Errorf("message = %q", policy.Status.Message)
+	}
+	// The next pass finds the pending pack covering every host and orders nothing.
+	reconcile()
+	if len(zone.orders) != 1 {
+		t.Errorf("orders = %v", zone.orders)
+	}
+}
+
 // A token that may not order certificates, or a zone without Advanced Certificate Manager, is
 // reported on the condition; the zone's other settings still advance.
 func TestZonePolicyReportsARefusedCertificateOrder(t *testing.T) {

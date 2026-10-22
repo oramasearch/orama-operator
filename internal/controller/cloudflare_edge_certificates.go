@@ -184,6 +184,10 @@ func (r *CloudflareZonePolicyReconciler) orderEdgeCertificates(ctx context.Conte
 	if err != nil {
 		return condition(false, "CertificatesUnreadable", cfErrorMessage("list the zone's edge certificates", err, cfPermissionCertificatesEdit))
 	}
+	// A pack ordered in this pass covers the candidates after it, as a listed pending pack does.
+	// Candidates are sorted, so an apps wildcard ("*.eu.lake.live") comes before the app hosts under
+	// it, which have their own proxied records; without this each of them would get a pack of its
+	// own in the same pass.
 	var pending, ordered []string
 	for _, name := range candidates {
 		covered := false
@@ -204,7 +208,8 @@ func (r *CloudflareZonePolicyReconciler) orderEdgeCertificates(ctx context.Conte
 		if len(ordered) >= edgeCertificateOrderLimit {
 			break
 		}
-		if err := r.orderCertificatePack(ctx, token, zoneID, edgeCertificateHosts(name, apex)); err != nil {
+		hosts := edgeCertificateHosts(name, apex)
+		if err := r.orderCertificatePack(ctx, token, zoneID, hosts); err != nil {
 			message := cfErrorMessage("order an edge certificate for "+name, err, cfPermissionCertificatesEdit)
 			if !cfDenied(err) {
 				message += " (an Advanced Certificate needs the zone to have Advanced Certificate Manager)"
@@ -213,6 +218,7 @@ func (r *CloudflareZonePolicyReconciler) orderEdgeCertificates(ctx context.Conte
 		}
 		logf.FromContext(ctx).Info("edge certificate ordered", "zone", zoneID, "host", name)
 		ordered = append(ordered, name)
+		packs = append(packs, cfCertificatePack{Type: "advanced", Hosts: hosts, Status: "initializing"})
 	}
 	if len(ordered) > 0 {
 		return condition(false, "Ordered", fmt.Sprintf("edge certificate ordered for %s; Cloudflare validates and deploys it", strings.Join(ordered, ", ")))
