@@ -378,7 +378,7 @@ func TestAnalyticsProcessorRendersControlDBURIAndEscapesSecrets(t *testing.T) {
 // hardened securityContext (#18) and exits the container. The operator must run envoy directly (its
 // own Command) so the entrypoint's chown never runs.
 func TestEnvoySidecarBypassesEntrypointChown(t *testing.T) {
-	c := envoySidecar()
+	c := envoySidecar(&oramav1alpha1.OramaCloudV1{})
 	if len(c.Command) == 0 || c.Command[0] != "envoy" {
 		t.Errorf("envoy sidecar Command=%v, want it to exec `envoy` directly (bypass /docker-entrypoint.sh, whose chown fails as non-root)", c.Command)
 	}

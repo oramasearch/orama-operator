@@ -504,7 +504,12 @@ What a set does for each member, in order:
    `OramaOperator` is installed). Otherwise the member is `Pending` and says which is missing.
 2. **Creates the member's namespace and writes its Secrets** into it, before the instance: an
    instance whose pull secret or credentials are absent starts failing.
-3. **Applies the instance**, labelled `orama.cloud/managed-by-set: <Kind>.<set>`.
+3. **Applies the instance**, labelled `orama.cloud/managed-by-set: <Kind>.<set>` and
+   `orama.cloud/purpose: <the cluster's purpose tag>` (`nonprod` or `production`). The set writes
+   both on every pass, so the purpose is the set's to decide, never a field of the instance's own. An
+   instance's reconciler reads it: a production `OramaCloudV1`'s dashboard is not rendered without its
+   production authentication settings
+   ([`components.md`](../components.md#a-production-dashboard-needs-its-production-authentication-settings-794)).
 4. **Reports what the cluster says**: the version running, and the instance's own reasons when it is
    not `Ready` (for a Lake, every condition that is not met, such as a store that cannot be
    provisioned). What the cluster's API server refuses (a field the kind does not accept) is on the

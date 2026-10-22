@@ -13,11 +13,26 @@ and writes the failure message and completion timestamp to the Postgres row.
   `completed`.
 - The operator ClusterRole includes `lakerestorerehearsals`, scratch Namespace lifecycle, Jobs,
   Secrets, CNPG `clusters`, `clusters/status`, and `backups`.
-- `targetImage` for an upgrade is a published CloudNativePG-compatible PostgreSQL operand image.
+- Restore and upgrade require the source Cluster's running image to use a reviewed SHA-256 digest.
+  Set `Lake.spec.postgres.image` to the approved CNPG-compatible image before rehearsing. Empty
+  keeps CNPG's default for compatibility; changing the field requests CNPG's normal image rollout.
+- `targetImage` for an upgrade is a published CNPG-compatible image pinned by SHA-256 digest.
 
 Never run a rehearsal against `Lake/prod` on AKS unless that operation is deliberately approved.
 Use the disposable k0s or `kind` cluster described in the work order when its R2 Secret is
 available.
+
+## Verification credential
+
+The Lake manages `lake_rehearsal` through CNPG's `managed.roles`, with membership only in
+`pg_read_all_data`, no administrative or write privileges, no RLS bypass, and four connections.
+Its password is generated once in `<control-db>-rehearsal`. Scratch recovery declares the same
+role with the copied credential, so a backup taken before the role existed can still be verified.
+All verification Jobs use this role and transaction read-only mode, and wait for CNPG to apply
+the login before querying. A missing Secret or role
+leaves the rehearsal pending or fails its Job; the controller never falls back to the owner.
+Restore/upgrade validate source and target pins before copying credentials. The verifier image
+itself is pinned in `internal/controller/helper_images.go`.
 
 ## Restore
 
@@ -36,10 +51,10 @@ spec:
   from: latest
 ```
 
-The controller creates `lake-rehearsal-<name>-<hash>`, copies the object-store and application
-Secrets into it, and creates a one-instance CNPG `Cluster` named `postgres`. Recovery uses the
+The controller creates `lake-rehearsal-<name>-<hash>`, copies the object-store Secret and dedicated read-only rehearsal credential
+into it, and creates a one-instance CNPG `Cluster` named `postgres`. Recovery uses the
 Lake's exact object-store destination, the original Barman server name, and the selected backup ID.
-After CNPG is healthy, a `postgres:18-alpine` Job queries all schema guard tables and the newest
+After CNPG is healthy, a digest-pinned `postgres:18-alpine` Job queries all schema guard tables and the newest
 `schema_migrations` version in both live and recovered databases, including
 `services_guard` from `0024_services`, `service_catalog_guard` from `0025_service_catalog`,
 `sqlite_services_guard` from `0026_sqlite_services`, `analytics_services_guard` from
@@ -73,21 +88,19 @@ spec:
   service: postgres
   operation: upgrade
   from: latest
-  targetImage: ghcr.io/cloudnative-pg/postgresql:18.2
+  targetImage: ghcr.io/cloudnative-pg/postgresql:18.2@sha256:<reviewed-64-hex-digest>
 ```
 
-Success marks only `upgrade` as `tested`; it does not change the live Cluster image. Apply a live
-image change through the Lake specification only after the reviewed operator API exposes that
-production control.
+Success marks only `upgrade` as `tested`; it does not change the live Cluster image. Apply a reviewed live image change through `Lake.spec.postgres.image`, with the usual production approval.
 
 ## Failover
 
 Failover is available only when `spec.postgres.instances` is at least 2. The controller reads
 CNPG's healthy instance list, selects a non-primary instance deterministically, and requests the
 same status transition as `kubectl cnpg promote`. It waits until CNPG reports that target as the
-healthy current primary, then runs a Job in the Lake namespace using the existing CNPG application
+healthy current primary, then runs a Job in the Lake namespace using the dedicated read-only rehearsal
 Secret and `-rw` Service. The query checks that the schema remains reachable through the
-application connection contract and that `schema_migrations` holds every migration the vendored lake
+read-only connection contract and that `schema_migrations` holds every migration the vendored lake
 schema records.
 
 ```yaml

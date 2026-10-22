@@ -31,7 +31,7 @@ const (
 	oramacorePort  = 8080
 	envoyPort      = 80
 	envoyAdminPort = 9901
-	envoyImage     = "envoyproxy/envoy:v1.31.2"
+	envoyImage     = "envoyproxy/envoy:v1.31.2@sha256:c56804e9fc8d5184c45862ad851173a925ff383151cb94156f86bed047da29bc"
 
 	// OramaCore handles SIGTERM gracefully (drains HTTP, then force-commits BOTH
 	// sides to disk — oramacore/src/lib.rs, web_server/mod.rs). The writer's commit
@@ -556,7 +556,7 @@ func waitForBrokerInit(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	broker := oc.Name + "-broker"
 	return corev1.Container{
 		Name:            "wait-for-broker",
-		Image:           "busybox:1.37",
+		Image:           storeImage(oc, "busybox", "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"),
 		Command:         []string{"sh", "-c", "until nc -z " + broker + " 5552; do echo 'waiting for broker stream :5552'; sleep 2; done"},
 		SecurityContext: hardenedSecurityContext(), // workload hardening baseline (#18)
 	}
@@ -585,7 +585,7 @@ func renderConfigInit(oc *oramav1alpha1.OramaCloudV1, side engineSide) corev1.Co
 	}
 	return corev1.Container{
 		Name:    "render-config",
-		Image:   "busybox:1.37",
+		Image:   storeImage(oc, "busybox", "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"),
 		Command: []string{"sh", "-c", renderConfigScript(oc, side)},
 		Env:     append(env, llmKeySecretEnv(oc)...),
 		EnvFrom: envFromFor(oc, "engine"),
@@ -718,7 +718,7 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 		// sidecar, so N readers no longer each load the model into RAM.
 		containers := []corev1.Container{c}
 		if useEnvoy {
-			containers = append(containers, envoySidecar())
+			containers = append(containers, envoySidecar(oc))
 		}
 		podSpec := corev1.PodSpec{
 			ImagePullSecrets:              imagePullSecrets(oc),
@@ -910,10 +910,10 @@ func engineConfigAnnotations(s engineSide, envoyBootstrap, llmSecretHash, creden
 // render-config init container renders.
 const configHashKey = "orama.cloud/config-hash"
 
-func envoySidecar() corev1.Container {
+func envoySidecar(oc *oramav1alpha1.OramaCloudV1) corev1.Container {
 	return corev1.Container{
 		Name:  "envoy",
-		Image: envoyImage,
+		Image: storeImage(oc, "envoy", envoyImage),
 		// Run envoy directly, bypassing the image's /docker-entrypoint.sh. Under the non-root hardened
 		// securityContext (#18) that entrypoint's `chown /dev/stdout` fails ("Operation not permitted")
 		// and the container exits 1 (the reader then never reaches 2/2). envoy needs no root; -c points

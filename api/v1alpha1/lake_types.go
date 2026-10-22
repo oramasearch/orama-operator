@@ -650,6 +650,12 @@ type LakeSealingSpec struct {
 
 // LakePostgresSpec describes the control-plane Postgres for a Lake.
 type LakePostgresSpec struct {
+	// Image selects the CNPG-compatible Postgres image. Empty keeps CNPG's default. Restore and
+	// upgrade rehearsals require the running source image to be pinned by SHA-256 digest.
+	// +kubebuilder:validation:Pattern=`^.+@sha256:[a-f0-9]{64}$`
+	// +optional
+	Image string `json:"image,omitempty"`
+
 	// Enabled provisions the CNPG Cluster. Default true. Setting it false tears the cluster
 	// down (disable is not "leave running"), which deletes its data.
 	// +kubebuilder:default=true

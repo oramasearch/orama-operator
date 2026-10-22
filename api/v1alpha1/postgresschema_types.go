@@ -47,7 +47,7 @@ type PostgresSchemaSpec struct {
 	// +optional
 	ApplyEveryVersion bool `json:"applyEveryVersion,omitempty"`
 	// Image is the psql-carrying image used to run the migration Job.
-	// +kubebuilder:default="postgres:16-alpine"
+	// +kubebuilder:default="postgres:16-alpine@sha256:deb28ee471183cb0c303113dac9b2433c51eeeeb678def7af9a9ec5820367815"
 	// +optional
 	Image string `json:"image,omitempty"`
 

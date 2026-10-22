@@ -140,7 +140,7 @@ func TestDashboardCronsRenderProd1Schedules(t *testing.T) {
 			t.Fatalf("%s: %d containers", name, len(pod.Containers))
 		}
 		c := pod.Containers[0]
-		if c.Image != "curlimages/curl:8.10.1" || len(c.Command) != 3 || c.Command[0] != "/bin/sh" || c.Command[2] != dashboardCronScript(w[1]) {
+		if c.Image != pinnedCurlImage || len(c.Command) != 3 || c.Command[0] != "/bin/sh" || c.Command[2] != dashboardCronScript(w[1]) {
 			t.Errorf("%s: image %q command %q", name, c.Image, c.Command)
 		}
 		wantEnv := []corev1.EnvVar{secretKeyEnv("CRON_SECRET", "dash-env", "CRON_SECRET")}

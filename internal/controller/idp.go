@@ -28,7 +28,7 @@ func (r *OramaCloudV1Reconciler) reconcileIdP(ctx context.Context, oc *oramav1al
 	// shared ConfigMap and KC_BOOTSTRAP_ADMIN_PASSWORD from the shared Secret (envFrom).
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "keycloak",
-		image:     "quay.io/keycloak/keycloak:26.0",
+		image:     storeImage(oc, "keycloak", "quay.io/keycloak/keycloak:26.0@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858"),
 		port:      8080,
 		args:      []string{"start-dev"},
 		// JVM — Keycloak's image derives its heap from the container limit (MaxRAMPercentage), so this
@@ -64,7 +64,7 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 					RestartPolicy:    corev1.RestartPolicyOnFailure,
 					Containers: []corev1.Container{{
 						Name:  "seed",
-						Image: "curlimages/curl:8.10.1",
+						Image: storeImage(oc, "demo-seed", pinnedCurlImage),
 						// Placeholder: real seed creates a demo project + index + docs via
 						// the dashboard/OramaCore API once the engine is Ready.
 						Command:         []string{"sh", "-c", "echo 'demo-seed placeholder: create a demo project+index+docs via the API'"},

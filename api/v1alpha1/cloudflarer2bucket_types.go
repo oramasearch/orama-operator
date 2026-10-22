@@ -37,6 +37,27 @@ type CloudflareR2BucketSpec struct {
 	// deleted, whatever the deletion policy.
 	// +optional
 	Credentials *CloudflareR2BucketCredentials `json:"credentials,omitempty"`
+	// CORS, when set, replaces the bucket's whole CORS configuration. Unset leaves it alone.
+	// +optional
+	CORS []CloudflareR2CORSRule `json:"cors,omitempty"`
+	// ExpireAfterDays deletes objects this many days after they were written through the
+	// operator-owned lifecycle rule "orama-expire". Unset leaves lifecycle rules alone.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	ExpireAfterDays *int32 `json:"expireAfterDays,omitempty"`
+}
+
+// CloudflareR2CORSRule allows browser requests from the listed origins.
+type CloudflareR2CORSRule struct {
+	AllowedOrigins []string `json:"allowedOrigins"`
+	// +kubebuilder:validation:items:Enum=GET;PUT;POST;DELETE;HEAD
+	AllowedMethods []string `json:"allowedMethods"`
+	// +optional
+	AllowedHeaders []string `json:"allowedHeaders,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=86400
+	// +optional
+	MaxAgeSeconds int32 `json:"maxAgeSeconds,omitempty"`
 }
 
 // CloudflareR2BucketCredentials asks for S3 credentials scoped to the bucket.

@@ -77,10 +77,12 @@ func drainPreStop() *corev1.Lifecycle {
 
 // appDef describes a stateless app run as a Deployment (+ Service, + optional Ingress).
 type appDef struct {
-	component   string
-	image       string
-	port        int32
-	replicas    int32
+	component string
+	image     string
+	port      int32
+	replicas  int32
+	// recreate stops the previous pod before replacing a worker whose claims are process-local.
+	recreate    bool
 	env         []corev1.EnvVar
 	args        []string
 	ingressHost string
@@ -174,6 +176,9 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
 		dep.Labels = lbls
 		dep.Spec.Replicas = int32Ptr(replicas)
+		if def.recreate {
+			dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+		}
 		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 		podSpec := corev1.PodSpec{
 			ImagePullSecrets:              imagePullSecrets(oc),
@@ -424,6 +429,16 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if err != nil {
 		return err
 	}
+	// The restricted Stripe key (#802) is read before the Deployment is touched, like the user's env.
+	stripeRefs := componentKeyRefs(oc, "dashboard")
+	if err := r.checkKeyRefs(ctx, oc, stripeRefs); err != nil {
+		return err
+	}
+	// A production instance's dashboard is not written without its production authentication
+	// settings and its restricted live Stripe key (dashboard_production.go, #794, #802).
+	if err := r.checkDashboardProductionAuth(ctx, oc, sources); err != nil {
+		return err
+	}
 	// The dashboard signs in to the control DB as its own role (#99): until that role's grants
 	// apply, the Deployment is left as it is.
 	if ready, err := r.dashboardRoleReady(ctx, oc); err != nil || !ready {
@@ -436,9 +451,17 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	// replace any but the owned ones.
 	env := append([]corev1.EnvVar{masterAPIKeyEnv(oc)}, dashboardDBEnv(oc)...)
 	credentialSecrets := append([]string{masterKey}, dashboardDBSecrets(oc)...)
+	// The restricted Stripe key from its own Secret (#802): an explicit entry, which dashboard.env
+	// cannot replace (validateDashboardEnv refuses STRIPE_SECRET_KEY while the reference is set).
+	env = append(env, keyRefEnv(stripeRefs)...)
+	credentialSecrets = append(credentialSecrets, keyRefSecrets(stripeRefs)...)
 	if redisHTTPRuns(oc) {
 		env = append(env, redisCacheEnv(oc)...)
 		credentialSecrets = append(credentialSecrets, redisHTTPSecretName(oc))
+	}
+	if oc.Spec.Cloudflare.Enabled {
+		env = append(env, dashboardUploadsBucketEnv(oc)...)
+		credentialSecrets = append(credentialSecrets, oc.Name+"-uploads-r2")
 	}
 	// Derived values (#572): the public origin from the stack's own host (never an extra host), and
 	// the c1 row the cluster-row Job recorded, so new projects go to it. Both are explicit entries, so

@@ -20,7 +20,7 @@ type OramaCloudV1E2ETestSpec struct {
 	// (assets/e2e-functional.sh). It must provide `sh`; the Job installs curl + jq into it
 	// before running the suite. Default is a pinned alpine (has apk). Override only with
 	// another curl/jq-capable base.
-	// +kubebuilder:default="alpine:3.20"
+	// +kubebuilder:default="alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 	Image string `json:"image,omitempty"`
 
 	// Args passed to the test container.

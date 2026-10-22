@@ -23,6 +23,39 @@ CLAUDE.md            # working rules (incl. docs discipline)
 Makefile             # standard kubebuilder targets (manifests/build/docker/helm)
 ```
 
+## Release image check
+
+Run the image gate on the fully rendered workload YAML before publishing a release:
+
+```sh
+go run ./cmd/check-image-digests < rendered-workloads.yaml
+```
+
+The command exits nonzero for mutable or malformed image references in Deployments, StatefulSets,
+DaemonSets, Jobs, CronJobs, Pods, PostgresSchemas and CNPG Clusters, including init containers,
+sidecars, ephemeral containers and HARVEST's `WORKER_IMAGE`. It reads multi-document YAML/JSON and
+Kubernetes Lists, rejects empty or unrendered input, checks only executable specs, and prints field paths rather than credential
+values. A digest must be a valid repository reference ending in a SHA-256 digest.
+
+Run this against reconciled workload output; set-file `images.overrides` alone cannot prove that
+all defaults and newly added containers are pinned. A passing gate establishes immutable content
+selection. Digest approval and registry provenance remain part of release review. Refresh helper
+pins by reading the tag's multi-platform manifest digest from its registry and reviewing the change
+with the rendered-workload test. Current fixed upstream pins were read on 2026-10-22.
+
+Live Cloud v1 starts in warning mode (`images.requireDigests` absent or false). After reviewing
+and configuring all component/helper digests, including `images.overrides.controldb`, set
+`images.requireDigests: true` on the instance or set member specification to enforce the same gate
+on operator writes. Production set values leave enforcement off until those images are available;
+`ImagesPinned=False` and the `ImagesNotPinned` Warning event identify the remaining workloads.
+The operator installation and controllers are identical on every cluster.
+
+The focused proof is `go test ./internal/imagepolicy ./cmd/check-image-digests ./internal/controller
+-run 'TestPinned|TestMutableImages|TestReleaseCheck|TestCredentialHelpers|TestRehearsal|TestCloudV1Image|TestImageEnforcement'`.
+`TestRehearsalReadOnlyRoleAgainstPostgres` also checks real database privileges when
+`REHEARSAL_TEST_POSTGRES_URI` points to a disposable local PostgreSQL server; it creates and removes
+its own database and role. No cluster access is needed.
+
 ## Codegen (after editing `api/v1alpha1/*.go`)
 
 ```sh

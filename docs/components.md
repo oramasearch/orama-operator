@@ -34,7 +34,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **oramasearch-app** | `internal/controller/gaps.go` | `Deployment` + Service + `Ingress` — api.askorama.ai (legacy); unwired, so its `host` and `extraHosts` are API-only (checked for duplicates, never served) | 🟡 **modeled** ([#7](https://github.com/oramasearch/orama-operator/issues/7); image is a follow-up) |
 | **search-workers** | `internal/controller/gaps.go` | 4 CF-worker `Deployment`s (index-shared / large-index / openai-decrypter / telemetry) | 🟡 **modeled** ([#6](https://github.com/oramasearch/orama-operator/issues/6); images + CF-binding wiring are a follow-up) |
 | **cloudflare** | `internal/controller/cloudflare.go`, `cloudflarednsrecord_controller.go` | owned DNS child CRs; create marked records, reconcile only owned or legacy-ID records, and check ownership before cleanup | 🟡 **implemented**; HTTP/fake-client and local API-server tests pass; Lake and `oramadev.net` live proof pending approval |
-| **cloudflare-r2** | `internal/controller/cloudflarer2bucket_controller.go` | an R2 bucket from a `CloudflareR2Bucket`; with `spec.credentials` an account API token scoped to the bucket and its S3 credentials in an owned Secret; on deletion the token is revoked and, with `deletionPolicy: Delete` only, the bucket deleted | 🟡 **implemented**; fake-API tested ([#453](https://github.com/oramasearch/orama-operator/issues/453)) |
+| **cloudflare-r2** | `internal/controller/cloudflarer2bucket_controller.go` | an R2 bucket from a `CloudflareR2Bucket`, optional CORS and object expiry; with `spec.credentials` an account API token scoped to the bucket and its S3 credentials in an owned Secret; on deletion the token is revoked and, with `deletionPolicy: Delete` only, the bucket deleted | 🟡 **implemented**; fake-API tested ([#453](https://github.com/oramasearch/orama-operator/issues/453)) |
 | **backups** | `internal/controller/backupschedule_controller.go`, `backup_controller.go`, `internal/backup/` | `BackupSchedule` → one `Backup` per cron tick with retention; `Backup` → a restricted, credential-free Job from the operator's own image (`/manager backup`), an owned `NetworkPolicy` and a copy of the bucket's scoped credentials; status from the Job's termination message; objects deleted with the Backup. Mechanisms: ClickHouse (`BACKUP ... TO S3`); Postgres and the rest refused until built | 🟡 **implemented**, not yet applied to a cluster — see [`backups.md`](backups.md) ([#453](https://github.com/oramasearch/orama-operator/issues/453)) |
 | **cloudflare-lb** | `internal/controller/cloudflareloadbalancer_controller.go` | global **Load Balancer** + **Origin Pool(s)** + **Health Monitor** via the CF Load Balancing API, from an owned `CloudflareLoadBalancer` CRD (finalizer teardown) | 🟡 **implemented** ([#73](https://github.com/oramasearch/orama-operator/issues/73); not live-tested — needs LB enabled on the account; live-node origins are [#74](https://github.com/oramasearch/orama-operator/issues/74)) |
 | **idp** (keycloak) | `internal/controller/idp.go` | Keycloak `Deployment` + Service (when `idp.provider=keycloak`) | ✅ **done** (validated on AKS) |
@@ -59,7 +59,7 @@ wiring. The `Lake` CR is in production (`Lake/prod` on AKS); see the lake rows b
 | **lake managed services** | `internal/controller/lake_services.go`, `internal/controller/lake_services_pgx.go`, `internal/controller/lake_controller.go` | on every Lake: polls lake's `services` table over pgx at `spec.deploySync.interval`; owns Zetta, Postgres and catalog service resources, connection delivery, comparison-gated status, deletion and `spec.services.maxServices`, except that it skips the workspace-owned `zetta_service_id`. Workspace synchronization has its own listener and quota. Catalog kinds use their upstream operators; SQLite, DuckDB and Polars use operator-owned wrappers | 🟡 **implemented** (liquid-bridge decisions 46 and 47; #219); fake-store/client, alternating-poll envtest and pgx coverage, selected live service proof, catalog-schema validation — see [`lake/services.md`](lake/services.md) |
 | **lake methodology runs** | `internal/controller/lake_methodology_runs.go`, `internal/controller/lake_methodology_runs_pgx.go` | on every Lake, with `spec.methodologies.runtimeImage` or the operator's default: reads `methodology_runs` rows with their image build, waits for the build, then runs a stage, a sandbox and a collect Job sharing a per-run PVC in the restricted, default-deny namespace `lake-<name>-methodology-runs`; generates the run's `lmr.` credential (only its SHA-256 is written) and a pull Secret for the built image; the sandbox has no credential, token, service links or network unless granted (public internet only); counts each run and served model against its workspace's ResourceQuota and LimitRange through a never-scheduled reservation pod `<slug>-quota` in the workspace's namespace (Queued while there is no room, #799) and caps them all with ResourceQuota `methodology-ceiling`; writes phases, exit code and the sandbox's start and finish to `methodology_run_status` on change, the sandbox's resources to `workload_resources`, and removes the run's objects when it ends | 🟡 **implemented** ([#291](https://github.com/oramasearch/orama-operator/issues/291), [lake#655](https://github.com/oramasearch/lake/issues/655)); fake-client and pgx contract coverage; live run waits for lake#655 and the runtime image — see [`lake/methodology-runs.md`](lake/methodology-runs.md) |
 | **lake workload resources** | `internal/controller/lake_workload_resources.go`, `internal/controller/lake_workload_resources_pgx.go` | on the control-rows poll, at most every 30 seconds per Lake: one `workload_resources` row in the Lake's control Postgres per workspace engine, managed service, app, build, agent launch and agent cron run (lake#658), holding the effective CPU and memory requests (request, else limit; init containers, sidecars and overhead as Kubernetes counts them), GPUs, GPU class (GPU feature discovery's product label, normalized) and VRAM of its scheduled pods; written only on change; a job's row is written from its Job as soon as the Job exists, a finished build or job keeps its values with `pods` 0, and a finished run with no row is backfilled from the pod spec the operator schedules it with (lake#658); rows of objects lake no longer has are deleted | 🟡 **implemented** ([lake#643](https://github.com/oramasearch/lake/issues/643), [lake#658](https://github.com/oramasearch/lake/issues/658)); fake-client and pgx contract coverage; a live run on dev waits for the lake side of lake#643 — see [`lake/workload-resources.md`](lake/workload-resources.md) |
-| **lake Postgres rehearsals** | `internal/controller/lakerestorerehearsal_controller.go` | from one cluster-scoped `LakeRestoreRehearsal`: isolated CNPG backup recovery and data verification for restore; scratch image update then verification for upgrade; CNPG primary switchover then application-Secret connection verification for failover; terminal cleanup and Lake evidence update | ✅ **implemented** — see [`lake/data-services/postgres.md`](lake/data-services/postgres.md) |
+| **lake Postgres rehearsals** | `internal/controller/lakerestorerehearsal_controller.go` | from one cluster-scoped `LakeRestoreRehearsal`: isolated CNPG backup recovery and data verification for restore; scratch image update then verification for upgrade; CNPG primary switchover then read-only-role connection verification for failover; terminal cleanup and Lake evidence update | ✅ **implemented** — see [`lake/data-services/postgres.md`](lake/data-services/postgres.md) |
 | **lake sealed-secret delivery** | `internal/controller/lakesealedsecret_controller.go` | from one namespaced `LakeSealedSecret`: an owned, cluster-bound Kubernetes Secret labelled `lake.orama.cloud/sealed: "true"`; literal ciphertext opens locally, while lake and dynamic references call lake's mint capability authenticated by the Lake's admin bearer alone (the operator's Kubernetes token is never sent, #791) | 🟡 **implemented**; literal delivery and LakeEnvironment consumption with local delivery owners are complete and tested against both k0s admission policies, while lake/dynamic delivery awaits lake's `mint_sealed_secret` leaf |
 | **deployment control plane** | `internal/controller/deployment_controlplane.go` | authenticated liquid REST `/v1` and MCP server; appends immutable Zetta history, desired rows in lake's shape and audit entries, validates sealed-secret references, and reads reconciled `LakeEnvironment` status | ✅ **implemented** ([#142](https://github.com/oramasearch/orama-operator/issues/142)); REST/MCP, drift, Zetta-double and envtest coverage — see [`control-plane/README.md`](control-plane/README.md) |
 
@@ -535,6 +535,46 @@ volume limits, then use a disposable pod with small declared budgets and a finit
 scratch write. Keep it alive for kubelet accounting, confirm eviction identifies the exceeded
 storage budget, and check that neighboring workloads remain Ready and the node has no DiskPressure.
 This rollout check requires the usual approval for cluster changes.
+
+## Workload image integrity (LSR-214)
+
+Fixed Cloud v1 upstream defaults (stores, BusyBox, Envoy, Selenium, Keycloak, pgAdmin and the
+E2E shell) select multi-platform manifest digests. The shared psql and curl defaults in
+`helper_images.go` also cover Lake schema and restore verification, Zetta schema provisioning,
+Cloud v1 schema/cluster-row/migration Jobs, dashboard CronJobs, analytics import and demo seed.
+Zetta's schema Job version includes its image digest, so upgrading the helper replaces an old
+Job even when its SQL is unchanged. PostgresSchema admission defaults to the pinned psql image;
+the runtime also upgrades the old literal `postgres:16-alpine` default to that digest.
+An unfinished schema Job on the obsolete image is replaced in foreground before another
+transaction runs; completed schema Jobs keep their existing audit record. Existing rehearsal
+verifiers on owner credentials or tagged images are replaced before verification continues.
+
+Cloud v1 reports `ImagesPinned=False`, reason `ImagesNotPinned`, and a Warning event for mutable
+images on owned workloads, including init containers, sidecars, child `WORKER_IMAGE` values,
+PostgresSchemas and an implicit CNPG image. The warning preserves readiness and reconciliation
+for live production while reviewed application digests are prepared. Stable warnings write no
+status and emit no repeated event; they clear once every owned selection is pinned.
+
+Set `spec.images.requireDigests: true` after configuring reviewed digests. The operator then
+checks complete rendered objects before create, update and patch, and rejects mutable selections;
+existing immutable tagged Jobs also keep enforcement degraded until they complete and are
+replaced through their normal lifecycle. Cloud v1 migration Jobs and new E2E Jobs apply the target stack's policy.
+The release-manifest check always rejects tags; see [development.md](development.md#release-image-check).
+Digest pinning fixes content identity, not publisher trust: review provenance before changing a pin.
+
+The existing override map accepts `busybox`, `envoy`, `selenium`, `keycloak`, `pgadmin`, `demo-seed`
+and `controldb` as well as `postgres-client`, `dashboard-crons`, `analytics-import` and component
+keys. `controldb` sets CNPG `spec.imageName`; unset preserves CNPG's default and reports an
+unpinned selection. Setting it on a running database requests CNPG's normal image rollout.
+Private mirrors must expose the same binaries and use the mirror's own reviewed manifest digest.
+
+Every Lake declares a separate CNPG `lake_rehearsal` login, backed by the owned
+`<control-db>-rehearsal` basic-auth Secret. It inherits only `pg_read_all_data`, has four
+connections, and has no superuser, DDL/admin, replication or RLS-bypass privilege. Restore and
+upgrade copy this credential into scratch, where CNPG manages the same role even for older
+backups. Failover uses it in the Lake namespace. Verification also sets transaction read-only
+mode and never receives the application owner's Secret. Restore/upgrade refuse mutable source
+or target images before copying any credential; configure the source through `Lake.spec.postgres.image`.
 
 ## engine (`internal/controller/engine.go`)
 
@@ -1428,6 +1468,78 @@ different program and is unchanged.
   `allow-index-builder-egress`). HPES has no egress allowance beyond the stack-wide DNS rule and no
   public-internet allowance.
 
+### A production dashboard needs its production authentication settings ([#794](https://github.com/oramasearch/orama-operator/issues/794))
+
+The dashboard is internet-facing, and some of its routes are authenticated only by a shared value:
+the cron routes by `Authorization: Bearer $CRON_SECRET`, the Stripe webhook by a signature made with
+`STRIPE_WEBHOOK_SECRET`. The operator seeds `dev-*` placeholders for the Stripe pair into
+`<cr>-dashboard-secret` and keeps whatever that Secret holds, so a stack without its production values
+would serve those routes with a value anyone can read in this repository (finding LSR-132 of the Lake
+pre-launch security review).
+
+A stack is **production** when the `OramaCloudV1Set` that created it says so: the set writes its
+member cluster's `purpose` tag as the label `orama.cloud/purpose` on every pass
+([infrastructure/README.md](infrastructure/README.md)). There is no field or flag for it. On a
+production stack (`dashboard_production.go`):
+
+- `CRON_SECRET` and `STRIPE_WEBHOOK_SECRET` must each come from the user's own Secrets: a
+  `dashboard.envFrom` Secret or a `dashboard.env` `secretKeyRef`, resolved with the same precedence as
+  the container's environment. A literal, a ConfigMap, or a value in the operator's
+  `<cr>-dashboard-secret` does not count.
+- Each value must be non-empty and must not be any placeholder `componentSecretData` seeds.
+- `CRON_SECRET` is required whether or not the crons are enabled: the routes are served either way.
+- `STRIPE_SECRET_KEY` must come from `dashboard.stripeSecretKeySecretRef` and be a live-mode restricted
+  key (`rk_live_`): never the account's full secret key, never a test-mode key
+  ([below](#the-dashboards-stripe-key-a-restricted-key-of-its-own-802)).
+- The operator seeds no placeholder for these three into `<cr>-dashboard-secret`. One seeded earlier
+  stays in that Secret and is never read, because the user's source wins.
+
+Otherwise the dashboard step fails before the Deployment is written, with `Ready=False`
+(`ReconcileError`) naming each missing setting and never a value. A fresh stack gets no dashboard; a
+running one keeps its last template until the settings are there. A stack that is not production
+(no set, or a `nonprod` set) is unchanged.
+
+### The dashboard's Stripe key: a restricted key of its own ([#802](https://github.com/oramasearch/orama-operator/issues/802))
+
+The dashboard calls Stripe with `STRIPE_SECRET_KEY` (`src/lib/stripe/client.ts`). Lake bills in the same
+Stripe account (lake `docs/deployment/stripe.md`), so the account's full secret key in the dashboard
+would let a compromised dashboard change Lake's billing objects: mark Lake invoices paid out of band,
+refund, delete webhook endpoints (finding LSR-140 of the Lake pre-launch security review).
+
+`spec.components.dashboard.stripeSecretKeySecretRef` (`{name, key}`) gives the dashboard its Stripe key
+from a Secret of its own, by an explicit `secretKeyRef` listed in the credentials hash, so a rotated key
+rolls the dashboard. While it is set, `STRIPE_SECRET_KEY` in `dashboard.env` or in any
+`dashboard.envFrom` source is refused, so no second key sits beside it, and `<cr>-dashboard-secret` gets
+no placeholder for it. On a production instance it is required and must hold a live-mode restricted key
+(`rk_live_`); the operator checks the prefix only, never the permissions, which only Stripe knows.
+
+**The restricted key the dashboard needs.** Every Stripe call in the dashboard (`cloud-migration` with
+the Clerk build, `thatjuan/issue-187-clerk-dashboard` at `f7b6859`; the review's
+`thatjuan/stripe-customer-orphans` makes the same calls less `subscriptions.create`):
+
+| Stripe resource | Access | Calls |
+|---|---|---|
+| Customers | Write | `customers.create` (`src/lib/stripe/subscriptions.ts`), `customers.retrieve` (also in the webhook) |
+| Checkout Sessions | Write | `checkout.sessions.create` (`src/app/api/checkout/create-session/route.ts`), `checkout.sessions.retrieve` with `line_items` (webhook) |
+| Subscriptions | Write | `subscriptions.create`, `subscriptions.retrieve`; `subscriptionItems.create`, `.update`, `.del` and `.createUsageRecord` (`src/lib/stripe/subscriptions.ts`, `src/lib/billing/consumption-tracking.ts`, `src/app/api/subscriptions/addons/update/route.ts`, `src/app/api/projects/[id]/delete/route.ts`) |
+| Prices | Read | `prices.retrieve` (webhook) |
+| Products | Read | `products.retrieve` (webhook) |
+| Invoices | Read | the `latest_invoice` expansion on `subscriptions.create` |
+| PaymentIntents | Read | the `latest_invoice.payment_intent` expansion |
+| PaymentMethods | Read | the `invoice_settings.default_payment_method` expansion on `customers.retrieve` |
+| Everything else | None | in particular Invoices write, Refunds, Charges, Payouts, Webhook Endpoints, Credit Notes, Billing Meters |
+
+The webhook signature is checked with `STRIPE_WEBHOOK_SECRET`, which is the endpoint's signing secret,
+not an API permission. Stripe documents no separate permission for an expansion; the three Read rows are
+the objects the expansions return, kept as the minimum until a test-mode run shows Stripe accepts the
+calls without them.
+
+**What a restricted key does not solve.** Stripe grants a restricted key by resource, not by object, so
+this key can still read and write every customer and subscription in the account, Lake's included. It
+removes the invoice, refund and webhook-endpoint authority the finding names; separating the products
+fully needs a separate Stripe account for each (the finding's fallback). Creating the key, and any
+account split, are done in Stripe by Steve or Juan, outside this repository.
+
 ### The dashboard's scheduled jobs
 
 `spec.components.dashboard.crons` ([operator#17](https://github.com/oramasearch/orama-operator/issues/17),
@@ -1508,18 +1620,25 @@ each user's `crontab -l`, `/etc/crontab`, `/etc/cron.d`, `/etc/cron.*`) is still
 
 ## Import consumer (`import_consumer.go`, [#446](https://github.com/oramasearch/orama-operator/issues/446))
 
-`spec.components.importConsumer` runs `<cr>-import-consumer`, a Deployment of
-`oramasearch/airbyte-fargate-consumer` in its queue-worker mode (`run -A src/sqs-worker.ts`). It
-replaces Prod 1's EventBridge rule and Fargate task per object: the worker long-polls an SQS queue fed
-by the import bucket's object-created events and runs the consumer's unchanged one-object import for
-each, against this stack's dashboard (`http://<cr>-dashboard:3000`) with the dashboard's own
-`PRIVATE_API_KEY` as `x-api-key`, and writes to the engine with the project write key from
-get-source. AWS credentials come from `awsCredentialsSecretRef`; the queue, the event delivery and
-the IAM user are AWS resources the operator does not create. Off by default and the last step of the
-reconcile. Network: `allow-import-consumer-egress` (dashboard 3000), `allow-dashboard-import-consumer-ingress`
-and `allow-import-consumer-public-https` (SQS, S3 and the public writer host on 443). Field reference:
-[crd-reference.md](crd-reference.md#speccomponentsimportconsumer); design, the AWS prerequisites and
-the switch: [cloud-v1-import-consumer.md](cloud-v1-import-consumer.md).
+`spec.components.importConsumer` runs `<cr>-import-consumer` as one replica of
+`oramasearch/airbyte-fargate-consumer`, with `run -A src/bucket-worker.ts`. The worker lists the
+stack's `<cr>-uploads` R2 bucket every ten seconds and imports objects against its own dashboard
+Service with the dashboard's Secret-backed `PRIVATE_API_KEY`. `Recreate` stops the old worker before
+starting its replacement, because duplicate-import protection is process-local. Concurrency sizes
+the child imports and their memory caps; the consumer waits for all bucket credential keys.
+
+Cloudflare and the dashboard enabled create the owned uploads bucket with PUT CORS for the dashboard
+host and extra hosts, seven-day object expiry and `Delete` policy for staging objects. The dashboard,
+crawler and consumer share a bucket-scoped token in `<cr>-uploads-r2`; the dashboard's explicit
+variables override its envFrom placeholders when the Secret exists. Dashboard references are optional
+so bucket provisioning cannot block its startup; the consumer requires every key. Secret creation or
+rotation rolls the dashboard and consumer. The crawler mapping is ready for operator#12's future Job
+template. Legacy index and backup buckets are unchanged.
+
+The consumer is off by default and last in reconciliation. Network policies allow its dashboard
+calls on 3000 and public HTTPS for R2 and the public writer host. Field reference:
+[crd-reference.md](crd-reference.md#speccomponentsimportconsumer); bucket configuration, environment
+mappings and cutover: [cloud-v1-import-consumer.md](cloud-v1-import-consumer.md).
 
 ## Analytics import (`gaps.go`)
 

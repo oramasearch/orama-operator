@@ -412,7 +412,7 @@ func TestMigrationJobRendersTheToolContract(t *testing.T) {
 
 	// The wait signs in as the migration role through PG* variables, its password a secretKeyRef.
 	wait := pod.InitContainers[0]
-	if wait.Name != migrationWaitContainer || wait.Image != "postgres:16-alpine" || strings.Contains(strings.Join(wait.Command, " "), "postgresql://") {
+	if wait.Name != migrationWaitContainer || wait.Image != pinnedPostgres16Image || strings.Contains(strings.Join(wait.Command, " "), "postgresql://") {
 		t.Fatalf("wait container = %+v", wait)
 	}
 	if !reflect.DeepEqual(envNames(wait.Env), []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGCONNECT_TIMEOUT"}) ||

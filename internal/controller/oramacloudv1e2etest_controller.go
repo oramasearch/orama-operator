@@ -40,7 +40,7 @@ const (
 	e2eComponent = "e2e"
 	// e2eRunnerImage is the default runner: a minimal base that provides sh; the Job installs
 	// curl + jq into it and runs the mounted functional suite. Pinned for determinism.
-	e2eRunnerImage = "alpine:3.20"
+	e2eRunnerImage = "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 )
 
 // e2eFunctionalScript is the comprehensive functional suite (curl + jq) that exercises every
@@ -196,7 +196,7 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 	// The runner base image provides `sh`; the Job installs curl + jq and runs the mounted suite.
 	// spec.Image can override it (e.g. a pre-baked runner) but must contain sh + a package manager.
 	runner := t.Spec.Image
-	if runner == "" {
+	if runner == "" || runner == "alpine:3.20" {
 		runner = e2eRunnerImage
 	}
 	cmName := t.Name + "-e2e-config"
@@ -207,6 +207,7 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 	// An existing Job is immutable and keeps the reference it was created with.
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: t.Namespace}}
 	var masterKey corev1.EnvVar
+	requireDigests := false
 	err := r.Get(ctx, client.ObjectKeyFromObject(job), job)
 	exists := err == nil
 	if err != nil && !apierrors.IsNotFound(err) {
@@ -235,6 +236,7 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 			return r.e2eWaiting(ctx, &t, msg)
 		}
 		masterKey = masterAPIKeyEnv(target)
+		requireDigests = target.Spec.Images.RequireDigests
 	}
 
 	if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, &t, jobName, map[string]string{"orama.cloud/e2e": t.Name}); err != nil {
@@ -300,6 +302,11 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 		if !exists {
 			cloudV1PodIdentity(&job.Spec.Template.Spec, jobName)
+		}
+		if requireDigests {
+			if err := validateWorkloadImages(job); err != nil {
+				return err
+			}
 		}
 		return controllerutil.SetControllerReference(&t, job, r.Scheme)
 	})

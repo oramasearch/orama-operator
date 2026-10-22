@@ -349,8 +349,8 @@ func secretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
 	if name, _ := masterAPIKeyRef(oc); name != "" {
 		names = append(names, name)
 	}
-	if name := importConsumerAWSSecret(oc); name != "" {
-		names = append(names, name)
+	if oc.Spec.Cloudflare.Enabled && (oc.Spec.Components.Dashboard.Enabled || oc.Spec.Components.ImportConsumer.Enabled) {
+		names = append(names, oc.Name+"-uploads-r2")
 	}
 	if oc.Spec.Components.Engine.Enabled {
 		names = append(names, componentSecretName(oc, "engine"))

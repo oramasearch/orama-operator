@@ -39,6 +39,11 @@ const (
 	managedBySetLabel = "orama.cloud/managed-by-set"
 	// The tag on a KubernetesCluster that says what the cluster is for.
 	clusterPurposeTag = "purpose"
+	// The label a set puts on each instance it creates: its cluster's purpose tag (nonprod,
+	// production). The set writes it on every pass, so it is the set's to decide: an instance's own
+	// reconciler reads it (a production Cloud v1 dashboard needs its production authentication
+	// settings, operator#794), and an edit by hand is put back on the next pass.
+	instancePurposeLabel = "orama.cloud/purpose"
 )
 
 // managedSet is what LakeSet and OramaCloudV1Set have in common.
@@ -199,8 +204,10 @@ type memberRequest struct {
 	// ObjectNamespace is the instance's metadata.namespace; empty for a cluster-scoped kind.
 	ObjectNamespace string
 	Owner           string // the managedBySetLabel value
-	Spec            map[string]any
-	Secrets         []*corev1.Secret // already named as they are to be on the member's cluster
+	// Purpose is the member's cluster's purpose tag, written as the instancePurposeLabel.
+	Purpose string
+	Spec    map[string]any
+	Secrets []*corev1.Secret // already named as they are to be on the member's cluster
 }
 
 // memberState is what the cluster has.
@@ -290,13 +297,22 @@ func applyMemberWith(ctx context.Context, c client.Client, req memberRequest) (m
 		}
 	}
 	desired := memberObject(req)
-	desired.SetLabels(map[string]string{managedBySetLabel: req.Owner})
+	desired.SetLabels(memberLabels(req))
 	desired.Object["spec"] = req.Spec
 	if err := c.Patch(ctx, desired, client.Apply, client.FieldOwner(leafFieldOwner), client.ForceOwnership); err != nil {
 		// What the cluster has is left as it was, and returned with the refusal.
 		return memberState{Object: existing}, fmt.Errorf("the cluster refused %s %s: %w", req.Kind.Kind, req.Name, err)
 	}
 	return memberState{Object: desired}, nil
+}
+
+// memberLabels is the labels a set writes on an instance: whose it is, and what its cluster is for.
+func memberLabels(req memberRequest) map[string]string {
+	labels := map[string]string{managedBySetLabel: req.Owner}
+	if req.Purpose != "" {
+		labels[instancePurposeLabel] = req.Purpose
+	}
+	return labels
 }
 
 // DeleteMember deletes an instance this set created. One that is gone, or that is not this
@@ -479,6 +495,9 @@ func (r *managedSetReconciler) request(set managedSet, resolved resolvedMember) 
 	}
 	if r.kind.namespaced {
 		req.ObjectNamespace = resolved.namespace
+	}
+	if resolved.cluster != nil {
+		req.Purpose = resolved.cluster.Spec.Tags[clusterPurposeTag]
 	}
 	return req
 }
