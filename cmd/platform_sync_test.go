@@ -304,8 +304,13 @@ func TestIngressTrustsCloudflaresClientAddressOnlyFromCloudflare(t *testing.T) {
 	check := func(where string, release platformRelease) {
 		controller, _ := release.Values["controller"].(map[string]any)
 		config, _ := controller["config"].(map[string]any)
-		if config["use-forwarded-headers"] != "true" || config["forwarded-for-header"] != "CF-Connecting-IP" {
+		if config["enable-real-ip"] != "true" || config["forwarded-for-header"] != "CF-Connecting-IP" {
 			t.Errorf("%s: ingress-nginx config %v does not take the address from CF-Connecting-IP", where, config)
+		}
+		// use-forwarded-headers would also pass a sender's own X-Forwarded-Host, -Proto and -Port to
+		// every backend; only the client address is taken from Cloudflare.
+		if _, set := config["use-forwarded-headers"]; set {
+			t.Errorf("%s: ingress-nginx sets use-forwarded-headers, which trusts X-Forwarded-* from any sender", where)
 		}
 		cidrs, _ := config["proxy-real-ip-cidr"].(string)
 		for _, want := range []string{"173.245.48.0/20", "104.16.0.0/13", "172.64.0.0/13", "2606:4700::/32"} {
