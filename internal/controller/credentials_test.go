@@ -1117,3 +1117,46 @@ func TestAnalyticsKeyReadAndCreateErrors(t *testing.T) {
 		})
 	}
 }
+
+// #594: raising a credential's rotation generation writes a new password into its generated Secret,
+// records the generation, and rolls the store and every client that reads it; the same generation
+// changes nothing again, a lower one never rotates back, and the other credential is untouched.
+func TestCredentialRotationReplacesAGeneratedPasswordAndRollsItsReaders(t *testing.T) {
+	h := newEngineHarness(t, stackOC(nil), engineSecret())
+	h.mustRun()
+	broker, cache := h.secret("v1-broker-admin"), h.secret("v1-cache-auth")
+	brokerHash := h.templates()["broker"].Annotations[credentialsHashKey]
+
+	h.updateCR(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.CredentialRotation = &oramav1alpha1.CredentialRotation{Broker: 1}
+	})
+	h.mustRun()
+	rotated := h.secret("v1-broker-admin")
+	if string(rotated.Data["password"]) == string(broker.Data["password"]) || !hex48.Match(rotated.Data["password"]) {
+		t.Fatal("rotation did not write a new generated password")
+	}
+	if string(rotated.Data["username"]) != "orama" || rotated.Annotations[credentialRotationAnnotation] != "1" {
+		t.Fatalf("rotated Secret: username %q, generation %q", rotated.Data["username"], rotated.Annotations[credentialRotationAnnotation])
+	}
+	if h.templates()["broker"].Annotations[credentialsHashKey] == brokerHash {
+		t.Error("the broker did not roll onto the new password")
+	}
+	if got := h.secret("v1-cache-auth"); string(got.Data["password"]) != string(cache.Data["password"]) {
+		t.Error("rotating the broker changed the cache password")
+	}
+
+	h.mustRun()
+	if got := h.secret("v1-broker-admin"); got.ResourceVersion != rotated.ResourceVersion {
+		t.Error("the same generation rotated again")
+	}
+	h.updateCR(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.CredentialRotation = &oramav1alpha1.CredentialRotation{Broker: 0, Cache: 1}
+	})
+	h.mustRun()
+	if got := h.secret("v1-broker-admin"); string(got.Data["password"]) != string(rotated.Data["password"]) {
+		t.Error("a lower broker generation rotated back")
+	}
+	if got := h.secret("v1-cache-auth"); string(got.Data["password"]) == string(cache.Data["password"]) || got.Annotations[credentialRotationAnnotation] != "1" {
+		t.Error("the cache rotation did not write a new password")
+	}
+}

@@ -11,6 +11,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// CredentialRotation is one generation per generated store credential (#594).
+type CredentialRotation struct {
+	// Broker rotates <cr>-broker-admin's password.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Broker int64 `json:"broker,omitempty"`
+	// Cache rotates <cr>-cache-auth's password.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Cache int64 `json:"cache,omitempty"`
+}
+
 // OramaCloudV1Spec describes one regional deployment of the entire Orama Cloud v1
 // stack. One CR per cluster; region role selects the write path vs read tier.
 type OramaCloudV1Spec struct {
@@ -25,6 +37,13 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:validation:Enum=light;medium;heavy
 	// +kubebuilder:default=light
 	Profile string `json:"profile,omitempty"`
+
+	// CredentialRotation rotates the generated broker and Redis passwords (#594). Raising a
+	// generation above the one the credential Secret records makes the operator write a new
+	// password there; the broker re-imports its admin user on boot and every consumer rolls on the
+	// changed Secret, as for any credential change (#411). Lowering it never rotates back.
+	// +optional
+	CredentialRotation *CredentialRotation `json:"credentialRotation,omitempty"`
 
 	// IDP selects the identity provider for the dashboard / customer auth.
 	// +kubebuilder:default={provider: none}

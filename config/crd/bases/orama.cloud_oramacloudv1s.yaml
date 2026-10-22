@@ -2306,6 +2306,24 @@ spec:
                     - enabled
                     type: object
                 type: object
+              credentialRotation:
+                description: |-
+                  CredentialRotation rotates the generated broker and Redis passwords (#594). Raising a
+                  generation above the one the credential Secret records makes the operator write a new
+                  password there; the broker re-imports its admin user on boot and every consumer rolls on the
+                  changed Secret, as for any credential change (#411). Lowering it never rotates back.
+                properties:
+                  broker:
+                    description: Broker rotates <cr>-broker-admin's password.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  cache:
+                    description: Cache rotates <cr>-cache-auth's password.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                type: object
               demoSeed:
                 description: |-
                   DemoSeed, when true, has the operator seed a demo project + index so a
