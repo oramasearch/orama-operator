@@ -111,6 +111,31 @@ Steve's consent, and a set copies a member's Secret into its namespace. None exi
 | `stripe-live` | `lake` | live mode, for `lake-prod` |
 | `stripe-v1-dev` | `orama-system` | the `dev` sandbox, for `v1-dev` |
 
+### Moving a member to `spec.billing`
+
+Every `lake-nonprod` and `lake-prod` member bills today through a `spec.env` entry,
+`LAKE_BILLING: "on"`. A Lake's `spec.billing` ([`docs/lake/payments.md`](../../docs/lake/payments.md#billing-specbilling),
+[operator#662](https://github.com/oramasearch/orama-operator/issues/662)) is the typed switch that
+replaces it, and `spec.payments` requires `billing: {enabled: true}`. While a member has no
+`spec.billing` its `spec.env` entry still passes through, so nothing changes until its file moves.
+Each member moves with its own Stripe roll ([#641](https://github.com/oramasearch/orama-operator/issues/641),
+[#643](https://github.com/oramasearch/orama-operator/issues/643)), one member per pull request,
+applied with Steve's consent:
+
+```yaml
+# a member's spec, before
+env:
+- name: LAKE_BILLING
+  value: "on"
+# after: the env entry is removed
+billing: {enabled: true}
+```
+
+Once `spec.billing` is set, a leftover `spec.env` `LAKE_BILLING` is ignored and the operator logs that
+it is, so remove it in the same change. An on-prem or enterprise Lake leaves `spec.billing` unset.
+`Lake/prod` on the managing cluster bills with the manual provider and keeps its `spec.env` entry
+until it is retired (#536).
+
 Both v1 sets run the combined OramaCore engine from the private
 `oramasearch/oramacore-cloud-v1`, set by tag in each template's `images.overrides.oramacore`: v1.2.39
 plus oramacore#340 and #341, which serve `GET /health/ready`, the readers' readiness probe (#597).

@@ -286,6 +286,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile Clerk: %w", err)
 	}
+	if lakeSpecEnvBillingIgnored(&lake) {
+		log.Info("spec.env names LAKE_BILLING but spec.billing decides it; the spec.env entry is ignored, remove it",
+			"billing", lake.Spec.Billing.Enabled)
+	}
 	// Payments (spec.payments, lake_payments.go): before the Deployment, which reads its keys.
 	payments, err := r.reconcileLakePayments(ctx, &lake, ns, labels)
 	if err != nil {
@@ -1285,6 +1289,11 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 		for _, name := range lakeClerkEnvNames {
 			reserved[name] = struct{}{}
 		}
+	}
+	// With spec.billing the operator gives LAKE_BILLING (lake_billing.go); spec.env cannot.
+	if billing, owned := lakeBillingEnv(lake); owned {
+		env = append(env, billing...)
+		reserved[lakeBillingEnvName] = struct{}{}
 	}
 	// With spec.payments the operator gives the Stripe variables (lakePaymentsEnv); spec.env cannot.
 	if lake.Spec.Payments != nil {

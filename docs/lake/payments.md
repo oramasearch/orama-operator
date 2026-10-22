@@ -15,6 +15,7 @@ nonprod and a live key for production, and the endpoint was made by hand.
 ```yaml
 spec:
   host: testing.lake.example        # required with spec.payments
+  billing: {enabled: true}          # required with spec.payments
   payments:
     mode: test                      # test or live
     secretRef: {name: stripe}       # a Secret in spec.namespace
@@ -22,6 +23,42 @@ spec:
 
 The API server refuses `spec.payments` without `spec.host`, because the webhook endpoint is at
 `https://<host>/billing/stripe/webhook`.
+It also refuses `spec.payments` unless `spec.billing.enabled` is true (below): a Lake with billing
+off ignores its Stripe keys and answers the webhook 404, so the endpoint would fail every delivery.
+
+## Billing (`spec.billing`)
+
+[operator#662](https://github.com/oramasearch/orama-operator/issues/662). Whether a Lake bills at
+all is lake's `LAKE_BILLING` (lake `src/main.cpp`, `docs/api/billing.md`): on only when it is `on`,
+`true` or `1`. Off, lake registers no billing capabilities, builds no payment provider (Stripe keys
+are ignored), answers `/billing/stripe/webhook` 404 and shows no Billing page.
+
+```yaml
+spec:
+  billing:
+    enabled: true                   # LAKE_BILLING=on
+```
+
+| `spec.billing` | The Lake gets | `spec.env`'s `LAKE_BILLING` |
+|---|---|---|
+| `enabled: true` | `LAKE_BILLING=on` | Ignored, and the operator logs that it is |
+| `enabled: false` | No `LAKE_BILLING`: billing off | Ignored, and logged |
+| Unset | Nothing from the operator | Passed through unchanged |
+
+- **On-prem and enterprise installs leave it unset** (or `enabled: false`), and bill nothing.
+- **Billing does not need payments.** A Lake can bill through lake's manual provider with no
+  `spec.payments`; `Lake/prod` on the managing cluster does.
+- **Payments need billing**: the CEL rule above.
+- **Unset passes `spec.env` through** so nothing changes before each set file moves: a member that
+  bills through a `spec.env` entry keeps billing until its file says `billing: {enabled: true}`
+  ([`config/clusters/README.md`](../../config/clusters/README.md#moving-a-member-to-specbilling)).
+
+Billing is the same field on every Lake; it is not a feature switch in the sense of
+[every Lake runs every feature](README.md#every-lake-runs-every-feature). It says whether this
+install charges anyone, which is a property of the install, like `ingressEnabled`, and each Lake
+states its value in its own spec or set member.
+
+The code is `internal/controller/lake_billing.go`.
 
 The code is `internal/controller/lake_payments.go`. The payment kinds it uses are described in
 [`../infrastructure/payments.md`](../infrastructure/payments.md).
@@ -208,14 +245,16 @@ member:
 
 1. The environment's Secret exists on the managing cluster, namespace `lake`
    ([`config/clusters/README.md`](../../config/clusters/README.md)).
-2. In the set file, copy it into the member's namespace under one name and add the `payments` block;
-   remove the member's `LAKE_STRIPE_SECRET_KEY` and `LAKE_STRIPE_WEBHOOK_SECRET` entries, which
-   `spec.payments` would drop anyway:
+2. In the set file, copy it into the member's namespace under one name and add the `payments` block
+   and `billing: {enabled: true}`, which `spec.payments` requires; remove the member's
+   `LAKE_STRIPE_SECRET_KEY`, `LAKE_STRIPE_WEBHOOK_SECRET` and `LAKE_BILLING` entries, which
+   `spec.payments` and `spec.billing` would drop anyway:
 
    ```yaml
    # config/clusters/sets/lake-nonprod.yaml (excerpt)
    spec:
      template:
+       billing: {enabled: true}
        payments:
          mode: test
          secretRef: {name: stripe}

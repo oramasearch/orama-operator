@@ -164,6 +164,22 @@ spec:
                 items:
                   type: string
                 type: array
+              billing:
+                description: |-
+                  Billing turns Lake's billing on: the operator gives the Lake LAKE_BILLING=on (lake
+                  docs/api/billing.md). Off, the default, a Lake bills nothing and takes no payments: it
+                  registers no billing capabilities, builds no payment provider, and answers its Stripe webhook
+                  404. An on-prem or enterprise install leaves it unset. spec.payments needs it enabled; it can
+                  be enabled without spec.payments, for a Lake that bills through the manual provider. Set, it
+                  replaces a LAKE_BILLING entry in spec.env; unset, spec.env keeps whatever it says.
+                properties:
+                  enabled:
+                    description: Enabled gives the Lake LAKE_BILLING=on. False gives
+                      it no LAKE_BILLING, so billing is off.
+                    type: boolean
+                required:
+                - enabled
+                type: object
               builds:
                 description: |-
                   Builds runs one isolated rootless BuildKit Job for each queued row in lake's builds table.
@@ -1581,6 +1597,9 @@ spec:
             - message: 'spec.payments needs spec.host: the payment webhook endpoint
                 is https://<host>/billing/stripe/webhook'
               rule: '!has(self.payments) || (has(self.host) && size(self.host) > 0)'
+            - message: 'spec.payments needs spec.billing.enabled: a Lake with billing
+                off takes no payments'
+              rule: '!has(self.payments) || (has(self.billing) && self.billing.enabled)'
           status:
             description: status defines the observed state of Lake
             properties:

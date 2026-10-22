@@ -16,6 +16,7 @@ import (
 
 // LakeSpec defines the desired state of Lake.
 // +kubebuilder:validation:XValidation:rule="!has(self.payments) || (has(self.host) && size(self.host) > 0)",message="spec.payments needs spec.host: the payment webhook endpoint is https://<host>/billing/stripe/webhook"
+// +kubebuilder:validation:XValidation:rule="!has(self.payments) || (has(self.billing) && self.billing.enabled)",message="spec.payments needs spec.billing.enabled: a Lake with billing off takes no payments"
 type LakeSpec struct {
 	// Namespace the lake workloads are deployed into. Created if missing.
 	// +kubebuilder:default=lake-dev
@@ -208,6 +209,15 @@ type LakeSpec struct {
 	// +optional
 	Payments *LakePaymentsSpec `json:"payments,omitempty"`
 
+	// Billing turns Lake's billing on: the operator gives the Lake LAKE_BILLING=on (lake
+	// docs/api/billing.md). Off, the default, a Lake bills nothing and takes no payments: it
+	// registers no billing capabilities, builds no payment provider, and answers its Stripe webhook
+	// 404. An on-prem or enterprise install leaves it unset. spec.payments needs it enabled; it can
+	// be enabled without spec.payments, for a Lake that bills through the manual provider. Set, it
+	// replaces a LAKE_BILLING entry in spec.env; unset, spec.env keeps whatever it says.
+	// +optional
+	Billing *LakeBillingSpec `json:"billing,omitempty"`
+
 	// DeploySync configures how frequently this operator materializes desired deployment rows from
 	// its Zetta orama_control database into LakeEnvironment resources.
 	// +optional
@@ -243,6 +253,12 @@ type LakeClerkSpec struct {
 	// publishableKey, which then replaces the one derived from the instance's Frontend API host.
 	// A LakeSet copies it to every member with spec.secrets.
 	SecretKeySecretRef corev1.LocalObjectReference `json:"secretKeySecretRef"`
+}
+
+// LakeBillingSpec is whether a Lake bills.
+type LakeBillingSpec struct {
+	// Enabled gives the Lake LAKE_BILLING=on. False gives it no LAKE_BILLING, so billing is off.
+	Enabled bool `json:"enabled"`
 }
 
 // LakePaymentsSpec is the payment account a Lake bills through.
