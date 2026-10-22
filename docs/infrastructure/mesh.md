@@ -18,13 +18,23 @@ installation paths install the operator chart; the image is `networking.zettaTun
 | Object | What |
 |---|---|
 | Namespace `zetta-tunnel-mesh` | The agent's own system namespace, Pod Security `privileged`. Nothing else runs there. |
-| DaemonSet `zetta-tunnel-mesh` | On every node (tolerates every taint, `system-node-critical`), host network, no service-account token. |
+| DaemonSet `zetta-tunnel-mesh-<node key>`, one per node | Each pinned to its node by a required node affinity on `metadata.name` (tolerates every taint, `system-node-critical`), host network, no service-account token. `<node key>` is FNV-1a 64 of the node name in hex; the full name is in the `orama.cloud/mesh-node-name` annotation. A node joining gets its own; a node leaving takes its DaemonSet and Secret with it. |
 | — container `agent` | `zetta-tunnel mesh --configuration /run/zetta-mesh/mesh.json --health-listen 127.0.0.1:15020 --audit -`, privileged, root: entering pod network namespaces and installing nftables capture needs it (zetta-tunnel `docs/mesh.md`). Mounts the host's `/proc` and the projection read-only. Probes on `127.0.0.1:15020`, private to the node. |
-| — container `projector` | The operator's own image, `/mesh-projector`: restricted (non-root, no privilege escalation, no capabilities, read-only root). Reads this node's template from the mounted template Secrets, finds each enrolled pod's network namespace in the host's `/proc` (the lowest PID whose cgroup names the pod UID, systemd or cgroupfs layout), and publishes the agent's projection and certificate files into the shared in-memory directory, files first and `mesh.json` last, each by atomic rename. It has no credential and makes no API call. |
-| Secrets `mesh-templates-0` … `-15` | The node templates, sharded by a hash of the node name, with the workload certificates and keys and the workload CA certificate. Always present (possibly empty), mounted optional. |
+| — container `projector` | The operator's own image, `/mesh-projector`: restricted (non-root, no privilege escalation, no capabilities, read-only root). Reads this node's template from this node's Secret, the only one it mounts, finds each enrolled pod's network namespace in the host's `/proc` (the lowest PID whose cgroup names the pod UID, systemd or cgroupfs layout), and publishes the agent's projection and certificate files into the shared in-memory directory, files first and `mesh.json` last, each by atomic rename. It has no credential and makes no API call. |
+| Secret `mesh-node-<node key>`, one per node | That node's template, the certificates and private keys of the workloads on that node only, and the workload CA certificate. Always present (possibly empty), mounted optional and only by that node's agent. |
 | Secret `zetta-tunnel-mesh-pki` in the operator's namespace | The mesh's workload CA, minted once. Its key never leaves the operator's namespace. |
 
 Workloads stay under restricted Pod Security with no `NET_ADMIN`; only the agent is privileged.
+
+**A node receives only its own workloads' keys** (orama-operator#788, finding LSR-039 of the Lake
+pre-launch security review). The kubelet fetches a Secret only for a pod bound to its node that
+mounts it, and the node authorizer refuses it any other, so root on one node, by container escape,
+reads the private keys of the workloads on that node and no other's. Until #788 one DaemonSet
+mounted 16 shared Secrets (`mesh-templates-0` … `-15`) holding every node's keys, so one node
+exposed them all; the operator deletes that DaemonSet and those Secrets on its first pass. The
+agents of a node are restarted once by the change (the old DaemonSet goes before the new ones start,
+as both bind the same host ports). Test: `TestEachMeshNodeReceivesOnlyItsOwnWorkloadKeys`, over the
+rendered DaemonSets and the Secrets they mount.
 
 ## Enrolment, per namespace, through the NetworkSandbox
 
@@ -61,7 +71,7 @@ kubelet's Secret refresh, usually within a minute.
 | A pod not yet captured (enrolment race, new pod, restarted pod with a new network namespace) | Cilium allows only 15008 between enrolled pods; the application port is denied, and nothing listens on 15008 until the agent captures the pod. |
 | The agent crashes, is killed, or loses its projection or certificates | zetta-tunnel leaves the capture rules in place and closes listeners and sessions; redirected traffic finds no listener. On restart it rebinds the same listeners. |
 | The projector stops, or a template cannot be read | The last projection stays, and with it capture. |
-| A node joins | The DaemonSet runs there; its template appears with its first enrolled pod. Until then nothing there is captured and Cilium still refuses the application ports. |
+| A node joins | The operator creates its DaemonSet and Secret; its template appears with its first enrolled pod. Until then nothing there is captured and Cilium still refuses the application ports. |
 | Unenrolment | The operator stops projecting the namespace and stops narrowing its policies. zetta-tunnel never removes capture from a live namespace, so a pod enrolled before keeps refusing until it is replaced. |
 
 ## What blocks enrolling a real workspace today

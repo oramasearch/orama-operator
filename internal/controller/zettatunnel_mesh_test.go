@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -68,7 +69,7 @@ func markRendered(t *testing.T, kube client.Client, sandbox *oramav1alpha1.Netwo
 func readMeshTemplate(t *testing.T, kube client.Client, node string) (meshprojection.Template, map[string][]byte) {
 	t.Helper()
 	var shard corev1.Secret
-	if err := kube.Get(context.Background(), client.ObjectKey{Namespace: zettaTunnelMeshNamespace, Name: meshprojection.ShardSecret(meshprojection.Shard(node))}, &shard); err != nil {
+	if err := kube.Get(context.Background(), client.ObjectKey{Namespace: zettaTunnelMeshNamespace, Name: meshNodeSecret(node)}, &shard); err != nil {
 		t.Fatal(err)
 	}
 	var template meshprojection.Template
@@ -158,14 +159,14 @@ func TestMeshProjectsOnlyDeclaredPathsOfEnrolledPodsAfterTheirPoliciesAreRendere
 	if err := cert.CheckSignatureFrom(parseTestCertificate(t, files[zettaTunnelMeshCAFile])); err != nil {
 		t.Fatal("the workload certificate is not signed by the projected CA")
 	}
-	for i := 0; i < meshprojection.Shards; i++ {
+	for _, node := range []string{"node-a", "node-b"} {
 		var shard corev1.Secret
-		if err := kube.Get(ctx, client.ObjectKey{Namespace: zettaTunnelMeshNamespace, Name: meshprojection.ShardSecret(i)}, &shard); err != nil {
-			t.Fatalf("shard %d is missing, so the agent's mount would wait: %v", i, err)
+		if err := kube.Get(ctx, client.ObjectKey{Namespace: zettaTunnelMeshNamespace, Name: meshNodeSecret(node)}, &shard); err != nil {
+			t.Fatalf("node %s's Secret is missing, so its agent's mount would wait: %v", node, err)
 		}
 		for key, value := range shard.Data {
 			if strings.Contains(string(value), "PRIVATE KEY") && strings.HasSuffix(key, ".key") && strings.Contains(string(value), string(pki.Data["ca.key"])) {
-				t.Fatalf("the CA key leaked into shard %d", i)
+				t.Fatalf("the CA key leaked into node %s's Secret", node)
 			}
 		}
 	}
@@ -210,7 +211,7 @@ func TestMeshAgentIsPrivilegedInItsOwnNamespaceAndTheProjectorIsNot(t *testing.T
 	ctx := context.Background()
 	scheme := newLakeScheme(t)
 	kube := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "orama-system"}}).Build()
+		WithObjects(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "orama-system"}}, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}}).Build()
 	r := &zettaTunnelMeshReconciler{Client: kube, Scheme: scheme, OperatorNamespace: "orama-system", ProjectorImage: "oramasearch/orama-operator:test"}
 	if _, err := r.Reconcile(ctx, zettaTunnelMeshRequest); err != nil {
 		t.Fatal(err)
@@ -221,7 +222,7 @@ func TestMeshAgentIsPrivilegedInItsOwnNamespaceAndTheProjectorIsNot(t *testing.T
 		t.Fatalf("mesh namespace = %+v (%v)", namespace.Labels, err)
 	}
 	var daemonSet appsv1.DaemonSet
-	if err := kube.Get(ctx, client.ObjectKey{Namespace: zettaTunnelMeshNamespace, Name: zettaTunnelMeshName}, &daemonSet); err != nil {
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: zettaTunnelMeshNamespace, Name: meshNodeDaemonSet("node-a")}, &daemonSet); err != nil {
 		t.Fatal(err)
 	}
 	pod := daemonSet.Spec.Template.Spec
@@ -243,17 +244,29 @@ func TestMeshAgentIsPrivilegedInItsOwnNamespaceAndTheProjectorIsNot(t *testing.T
 		projector.Command[0] != "/mesh-projector" || projector.Image != "oramasearch/orama-operator:test" {
 		t.Fatalf("projector = %+v", projector)
 	}
-	shards := 0
+	var secrets []string
 	for _, volume := range pod.Volumes {
-		if volume.Secret != nil && strings.HasPrefix(volume.Secret.SecretName, "mesh-templates-") && *volume.Secret.Optional {
-			shards++
+		if volume.Secret != nil {
+			secrets = append(secrets, volume.Secret.SecretName)
 		}
 		if volume.HostPath != nil && volume.HostPath.Path != "/proc" {
 			t.Fatalf("the agent mounts host path %s", volume.HostPath.Path)
 		}
 	}
-	if shards != meshprojection.Shards {
-		t.Fatalf("%d template shards mounted, want %d", shards, meshprojection.Shards)
+	if len(secrets) != 1 || secrets[0] != meshNodeSecret("node-a") {
+		t.Fatalf("node-a's agent mounts Secrets %v, want only %s", secrets, meshNodeSecret("node-a"))
+	}
+	if got := daemonSetNodes(&daemonSet, []string{"node-a", "node-b"}); len(got) != 1 || got[0] != "node-a" {
+		t.Fatalf("node-a's agent can run on %v", got)
+	}
+	mounted := false
+	for _, mount := range projector.VolumeMounts {
+		if mount.Name == "template" && mount.MountPath == "/etc/zetta-mesh-templates/"+strconv.Itoa(meshprojection.Shard("node-a")) && mount.ReadOnly {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("the projector does not read node-a's Secret where it looks for its template: %+v", projector.VolumeMounts)
 	}
 }
 
@@ -367,12 +380,15 @@ func TestMeshEnvtestRendersMeshOnlyPoliciesAndAValidAgent(t *testing.T) {
 	if len(policy.Spec.Ingress[0].Ports) != 1 || policy.Spec.Ingress[0].Ports[0].Port.IntVal != zettaTunnelMeshInboundPort {
 		t.Fatalf("the API server holds %+v", policy.Spec.Ingress)
 	}
+	if err := kube.Create(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}}); err != nil {
+		t.Fatal(err)
+	}
 	mesh := &zettaTunnelMeshReconciler{Client: kube, APIReader: kube, Scheme: scheme, OperatorNamespace: "orama-system", ProjectorImage: "oramasearch/orama-operator:test"}
 	if _, err := mesh.Reconcile(ctx, zettaTunnelMeshRequest); err != nil {
 		t.Fatalf("the API server refused the mesh objects: %v", err)
 	}
 	var daemonSet appsv1.DaemonSet
-	if err := kube.Get(ctx, client.ObjectKey{Namespace: zettaTunnelMeshNamespace, Name: zettaTunnelMeshName}, &daemonSet); err != nil {
+	if err := kube.Get(ctx, client.ObjectKey{Namespace: zettaTunnelMeshNamespace, Name: meshNodeDaemonSet("node-a")}, &daemonSet); err != nil {
 		t.Fatal(err)
 	}
 	if len(daemonSet.Spec.Template.Spec.Containers) != 2 {
