@@ -49,6 +49,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # The container's memory limit in bytes; the operator gives the Go runtime a soft
+            # limit below it (cmd/memory.go, operator#677).
+            - name: OPERATOR_MEMORY_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: manager
+                  resource: limits.memory
           resources: {{- toYaml .Values.operator.resources | nindent 12 }}
           securityContext:
             runAsNonRoot: true
