@@ -11,6 +11,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +47,21 @@ const clusterRowReadyCondition = "ClusterRowReady"
 // succeeded and was built from another template (a new image override, writer host or key Secret)
 // is replaced at once.
 const clusterRowHashKey = "orama.cloud/cluster-row-hash"
+
+// clusterRowIDKey is the succeeded Job's annotation holding the id of the control DB's live c1 row,
+// or clusterRowNone when it has none (operator#572). The Job's script reads the id back after the
+// insert and writes it to its termination message (clusterRowTerminationPath); the operator copies it
+// onto the Job, the record it keeps, and gives it to the dashboard as ORAMACORE_PLACEMENT_CLUSTER_ID,
+// so the dashboard places new projects on the row the Job wrote without the operator reading the
+// database itself.
+const (
+	clusterRowIDKey           = "orama.cloud/cluster-row-id"
+	clusterRowNone            = "none"
+	clusterRowTerminationPath = "/dev/termination-log"
+)
+
+// clusterRowIDPattern is a Postgres uuid as text, lower-case.
+var clusterRowIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // controlDBClientLabel names a control DB client pod that is neither an application component nor a
 // PostgresSchema migration, so the network sandbox can admit it to control Postgres (operator#648).
@@ -120,7 +137,9 @@ func controlDBClusterRowEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 // controlDBClusterRowScript inserts the row only into an empty oramacore_clusters, soft-deleted rows
 // included, under a table lock so a concurrent writer cannot add a row between the check and the
 // insert. It is safe to run again: a second run finds the row and changes nothing, and a run cut off
-// mid-transaction (a database restart) rolls back whole. psql reads every value from the environment
+// mid-transaction (a database restart) rolls back whole. It then reads back the id of the newest live
+// row with the c1 prefix, inserted now or found, and writes it, or clusterRowNone, to its termination
+// message (#572). psql reads every value from the environment
 // through a backtick \set, so no value is in a process's argv or in the output.
 func controlDBClusterRowScript() string {
 	vars := []struct{ name, env string }{
@@ -135,7 +154,7 @@ func controlDBClusterRowScript() string {
 	return `set -eu
 echo "cluster-row: waiting for the database..."
 until psql "$DATABASE_URL" -c 'SELECT 1' >/dev/null 2>&1; do sleep 3; done
-inserted=$(psql "$DATABASE_URL" -X -q -tA -v ON_ERROR_STOP=1 <<'SQL'
+out=$(psql "$DATABASE_URL" -X -q -tA -v ON_ERROR_STOP=1 <<'SQL'
 ` + sets.String() + `BEGIN;
 LOCK TABLE oramacore_clusters IN SHARE ROW EXCLUSIVE MODE;
 WITH inserted AS (
@@ -147,13 +166,23 @@ WITH inserted AS (
   RETURNING 1
 ) SELECT count(*) FROM inserted;
 COMMIT;
+SELECT coalesce((SELECT id::text FROM oramacore_clusters WHERE cluster_prefix = :'prefix' AND deleted_at IS NULL
+  ORDER BY created_at DESC LIMIT 1), 'none');
 SQL
 )
+inserted=$(printf '%s\n' "$out" | sed -n 1p)
+row_id=$(printf '%s\n' "$out" | sed -n 2p)
 case "$inserted" in
   1) echo "cluster-row: inserted the $CLUSTER_PREFIX oramacore_clusters row (writer $CLUSTER_WRITER_URL)" ;;
   0) echo "cluster-row: oramacore_clusters already has a row; left unchanged" ;;
   *) echo "cluster-row: unexpected insert count: $inserted"; exit 1 ;;
-esac`
+esac
+case "$row_id" in
+  none) echo "cluster-row: no live $CLUSTER_PREFIX row; the dashboard places new projects on the newest row" ;;
+  ????????-????-????-????-????????????) echo "cluster-row: the $CLUSTER_PREFIX row is $row_id" ;;
+  *) echo "cluster-row: unexpected row id: $row_id"; exit 1 ;;
+esac
+printf '%s' "$row_id" > ` + clusterRowTerminationPath
 }
 
 // controlDBClusterRowJob is the Job that inserts the row, annotated with the hash of its pod
@@ -178,6 +207,9 @@ func controlDBClusterRowJob(oc *oramav1alpha1.OramaCloudV1) *batchv1.Job {
 				Env:             env,
 				Resources:       *resourceReqs("64Mi", "25m", "256Mi"),
 				SecurityContext: hardenedSecurityContext(),
+				// The row id the script writes (#572); the kubelet's default path, set explicitly.
+				TerminationMessagePath:   clusterRowTerminationPath,
+				TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 			}},
 		},
 	}
@@ -233,8 +265,10 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBClusterRow(ctx context.Contex
 		return err
 	case !metav1.IsControlledBy(job, oc):
 		return fmt.Errorf("cluster-row Job %s is not controlled by OramaCloudV1 %s", job.Name, oc.Name)
-	case !job.DeletionTimestamp.IsZero(), job.Status.Succeeded > 0:
+	case !job.DeletionTimestamp.IsZero():
 		return nil
+	case job.Status.Succeeded > 0:
+		return r.recordClusterRowID(ctx, job)
 	case job.Annotations[clusterRowHashKey] != want.Annotations[clusterRowHashKey],
 		jobFailed(job) && !time.Now().Before(clusterRowRetryAt(job)):
 		policy := metav1.DeletePropagationForeground
@@ -243,6 +277,74 @@ func (r *OramaCloudV1Reconciler) reconcileControlDBClusterRow(ctx context.Contex
 		return client.IgnoreNotFound(err)
 	}
 	return nil
+}
+
+// recordClusterRowID copies the row id a succeeded Job's pod reported onto the Job (clusterRowIDKey),
+// once. A succeeded Job whose pod reported no id (one built before #572, or whose pod is gone) is
+// replaced, foreground and with preconditions, so the next reconcile runs the script again: on a
+// control DB that has its row the run inserts nothing and only reports the id.
+func (r *OramaCloudV1Reconciler) recordClusterRowID(ctx context.Context, job *batchv1.Job) error {
+	if _, ok := job.Annotations[clusterRowIDKey]; ok {
+		return nil
+	}
+	id, err := r.clusterRowIDFromPods(ctx, job)
+	if err != nil {
+		return err
+	}
+	if id == "" {
+		policy := metav1.DeletePropagationForeground
+		err := r.Delete(ctx, job, &client.DeleteOptions{PropagationPolicy: &policy,
+			Preconditions: &metav1.Preconditions{UID: &job.UID, ResourceVersion: &job.ResourceVersion}})
+		return client.IgnoreNotFound(err)
+	}
+	patch := client.MergeFrom(job.DeepCopy())
+	if job.Annotations == nil {
+		job.Annotations = map[string]string{}
+	}
+	job.Annotations[clusterRowIDKey] = id
+	return r.Patch(ctx, job, patch)
+}
+
+// clusterRowIDFromPods is the row id, or clusterRowNone, that a succeeded pod of job wrote to its
+// termination message, or "" when no pod of the Job reported a valid one. Pods are listed uncached.
+func (r *OramaCloudV1Reconciler) clusterRowIDFromPods(ctx context.Context, job *batchv1.Job) (string, error) {
+	var pods corev1.PodList
+	if err := r.secretReader().List(ctx, &pods, client.InNamespace(job.Namespace), client.MatchingLabels{"job-name": job.Name}); err != nil {
+		return "", fmt.Errorf("list the pods of Job %s: %w", job.Name, err)
+	}
+	for _, p := range pods.Items {
+		if p.Status.Phase != corev1.PodSucceeded || !slices.ContainsFunc(p.OwnerReferences, func(o metav1.OwnerReference) bool { return o.UID == job.UID }) {
+			continue
+		}
+		for _, cs := range p.Status.ContainerStatuses {
+			t := cs.State.Terminated
+			if cs.Name != "cluster-row" || t == nil || t.ExitCode != 0 {
+				continue
+			}
+			if msg := strings.TrimSpace(t.Message); msg == clusterRowNone || clusterRowIDPattern.MatchString(msg) {
+				return msg, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// clusterRowID is the id of the stack's c1 row the cluster-row Job recorded (clusterRowIDKey), or ""
+// when the stack inserts no row, the Job has not recorded one yet, or the control DB has no live c1
+// row. The dashboard then gets no ORAMACORE_PLACEMENT_CLUSTER_ID and places new projects on the newest
+// row, which is the c1 row on a stack whose only row it is (bridge decision 9, 2026-10-16).
+func (r *OramaCloudV1Reconciler) clusterRowID(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (string, error) {
+	if !controlDBClusterRowApplies(oc) {
+		return "", nil
+	}
+	job := &batchv1.Job{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: controlDBClusterRowJobName(oc)}, job); err != nil {
+		return "", client.IgnoreNotFound(err)
+	}
+	if id := job.Annotations[clusterRowIDKey]; job.Status.Succeeded > 0 && clusterRowIDPattern.MatchString(id) {
+		return id, nil
+	}
+	return "", nil
 }
 
 // controlDBClusterRowPrerequisites reports whether the Job may be created: both public hosts are

@@ -29,12 +29,18 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 	// nothing eagerly (Redis/PG/DISCO/Ably are per-build), so present-and-valid env → healthy.
 	// It needs the master key, so it waits for spec.masterAPIKeySecretRef (masterAPIKeySecret).
 	if masterKey, ok := masterAPIKeySecret(oc); ok {
+		// CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from spec.cloudflare.apiTokenSecretRef
+		// (#571), checked before the Deployment is touched.
+		refs := componentKeyRefs(oc, "index-builder")
+		if err := r.checkKeyRefs(ctx, oc, refs); err != nil {
+			return err
+		}
 		if err := r.reconcileApp(ctx, oc, appDef{
 			component:         "index-builder",
 			image:             componentImage(oc, "index-builder", "index-builder"),
 			port:              8080,
-			env:               r.indexBuilderEnv(ctx, oc),
-			credentialSecrets: []string{cacheAuthSecretName(oc), masterKey},
+			env:               append(r.indexBuilderEnv(ctx, oc), keyRefEnv(refs)...),
+			credentialSecrets: append([]string{cacheAuthSecretName(oc), masterKey}, keyRefSecrets(refs)...),
 			resources:         resourcesOr(ing.Resources, resourceReqs("256Mi", "100m", "768Mi")),
 		}); err != nil {
 			return err

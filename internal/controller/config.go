@@ -230,9 +230,9 @@ func componentSecretData(component string) map[string]string {
 	case "index-builder": // writes Typesense, embeds via HPES, Ably progress, CF KV, decrypter, DISCO
 		// index-builder's EnvSchema (src/utils.ts) requires 27 vars at boot; the secret
 		// carries the credential-shaped ones (envFrom exposes each key as its env var). The
-		// external ones (Apify/Ably/CF/Sentry) are dummies until real tokens are provisioned
-		// (see the provisioning runbook + operator#28/#29). Non-secret URLs/constants are set
-		// as plain env in reconcileIngestion.
+		// external ones (Apify/Ably) are dummies until real tokens are provisioned (operator#747);
+		// the Cloudflare pair is taken from spec.cloudflare.apiTokenSecretRef when it is set and is
+		// then not seeded (#571). Non-secret URLs/constants are set as plain env in reconcileIngestion.
 		return map[string]string{
 			"TYPESENSE_API_KEY":           "dev-typesense-api-key",
 			"ORAMA_EMBEDDINGS_BEARER":     "dev-hpes-bearer",
@@ -288,11 +288,16 @@ func componentSecretData(component string) map[string]string {
 }
 
 // ensureComponentSecret creates a component's scoped secret (create-if-absent, dummy
-// values) if the component needs one. Returns whether the component has a secret.
+// values) if the component needs one. Returns whether the component has a secret. A key the
+// component takes from its own Secret reference (componentKeyRefs, #571) is not seeded: the
+// explicit secretKeyRef wins over envFrom, and a dev-* value beside it would only mislead.
 func (r *OramaCloudV1Reconciler) ensureComponentSecret(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, component string) (bool, error) {
 	data := componentSecretData(component)
 	if data == nil {
 		return false, nil
+	}
+	for _, ref := range componentKeyRefs(oc, component) {
+		delete(data, ref.env)
 	}
 	name := componentSecretName(oc, component)
 	existing := &corev1.Secret{}

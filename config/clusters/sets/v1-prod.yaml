@@ -33,7 +33,9 @@
 #                                                        (Juan, 2026-10-17; the bridge's secrets.md is corrected).
 #   v1-prod-llm-keys        OPENAI_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY, ANTHROPIC_API_KEY
 #                                                        engine, through llm.providers[].apiKeySecretRef
-#                                                        (engine_llm.go llmKeySecretEnv); third-party keys.
+#                                                        (engine_llm.go llmKeySecretEnv); the workers read
+#                                                        OPENAI_, GROQ_ and ANTHROPIC_API_KEY from the same
+#                                                        references (#571); third-party keys.
 #   v1-prod-dashboard-env   PRIVATE_API_KEY (= Prod 1: the import consumer sends it),
 #                           STRIPE_WEBHOOK_SECRET (= Prod 1: the app.orama.com Stripe endpoint signs with it),
 #                           STRIPE_SECRET_KEY, RESEND_API_KEY, SLACK_TOKEN, the Clerk server key
@@ -65,9 +67,15 @@
 #   POSTGRES_*, CLICKHOUSE_HOST/PORT, REDIS_*, RABBITMQ_*, TYPESENSE_HOST/PORT, ORAMACORE_*_URL
 #                                  <- v1-eu-config ConfigMap (config.go reconcileBootstrap)
 #   index-builder service URLs and Cloudflare KV namespace IDs <- ingestion.go indexBuilderEnv, owned KV CRs
+#   index-builder CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID <- cloudflare-api-token `token`, `accountID`
+#                                  through cloudflare.apiTokenSecretRef (#571)
+#   dashboard NEXT_PUBLIC_APP_URL  <- https://<components.dashboard.host> (#572; the image must be built
+#                                  without it)
+#   dashboard ORAMACORE_PLACEMENT_CLUSTER_ID <- the `c1` row's id the cluster-row Job records (#572)
+#   dashboard REDIS_CACHE_URL      <- http://v1-eu-redis-http, the serverless-redis-http shim (#562)
 #
-# Blocked (#570 generated credentials, #571 per-key third-party Secrets,
-# #572 derived dashboard values, #573 the stack's own ingress-nginx, #574 HPES, #575 no tunnel ingress,
+# Blocked (#570 generated credentials, #747 the remaining third-party keys,
+# #573 the stack's own ingress-nginx, #574 HPES, #575 no tunnel ingress,
 # #562 the Redis HTTP shim): required values this file cannot carry yet. Each needs its prerequisite first; none is
 # worked around here, and no internal password is copied to bypass a missing generator.
 #   Images: not pinned by digest, not mirrored privately, and not moved to exact version tags (Steve,
@@ -86,12 +94,10 @@
 #     openai-decrypter, index-manager apps/index-builder/src/embeddings/openai.ts; openai-decrypter gets
 #     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder), ORAMA_EMBEDDINGS_BEARER (HPES),
 #     REDIS_CACHE_TOKEN (the serverless-redis-http shim, decisions #12a, not built), QSTASH_TOKEN (workers).
-#   Third-party keys in mixed component Secrets: the workers' LLM keys and SENTRY_DSN, index-builder's
-#     ABLY_API_KEY, APIFY_TOKEN, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, harvest-master's GITHUB_PAT
-#     and GHCR_TOKEN sit in v1-eu-<component>-secret beside internal keys, so they cannot be copied
-#     without copying internal ones; they need a per-key Secret reference like llm.providers.
-#   Derived values the operator does not derive yet: NEXT_PUBLIC_APP_URL (from the dashboard host, and
-#     inlined at build time), ORAMACORE_PLACEMENT_CLUSTER_ID (the `c1` row, #447), REDIS_CACHE_URL (the shim).
+#   Third-party keys: the workers' SENTRY_DSN now takes a reference (components.workers.sentryDSNSecretRef,
+#     #571), but its source Secret does not exist yet; creating it in orama-system is Steve's consent.
+#     index-builder's ABLY_API_KEY and APIFY_TOKEN and harvest-master's GITHUB_PAT and GHCR_TOKEN still
+#     sit in v1-eu-<component>-secret beside internal keys; they wait on the decisions in #747.
 #   Outside services not settled by the bridge epic: AWS S3 for uploads (AWS_ACCESS_KEY_VALUE,
 #     AWS_SECRET_ACCESS_KEY_VALUE, S3_BUCKET*), Ably, Apify, QStash.
 #   Configuration values to read from Prod 1 and add to dashboard.env: S3_BUCKET, S3_BUCKET_REGION,

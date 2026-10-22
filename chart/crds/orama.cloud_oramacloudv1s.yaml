@@ -75,7 +75,9 @@ spec:
                     description: |-
                       APITokenSecretRef references the Secret holding the Cloudflare **control-plane** API
                       credentials as three keys: `token` (the account API token), `zoneID`, and `accountID`.
-                      This token provisions DNS, Load Balancing, Workers KV, and R2 buckets.
+                      This token provisions DNS, Load Balancing, Workers KV, and R2 buckets. index-builder reads
+                      its CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from `token` and `accountID` here, so it
+                      writes to the KV namespaces this token created; a missing key fails the ingestion step.
                     properties:
                       name:
                         default: ""
@@ -2081,6 +2083,26 @@ spec:
                               otherwise to an implementation-defined value. Requests cannot exceed Limits.
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
+                        type: object
+                      sentryDSNSecretRef:
+                        description: |-
+                          SentryDSNSecretRef takes the workers' SENTRY_DSN from a key of a Secret in the CR's namespace
+                          instead of <cr>-workers-secret. The operator reads it and never creates or changes it; a
+                          missing Secret or key fails the workers step and Ready names it. The workers' OPENAI_API_KEY,
+                          GROQ_API_KEY and ANTHROPIC_API_KEY come from the same providers' spec.llm.providers[].apiKeySecretRef
+                          as the engine's.
+                        properties:
+                          key:
+                            description: Key of the Secret that holds the value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
                         type: object
                     required:
                     - enabled

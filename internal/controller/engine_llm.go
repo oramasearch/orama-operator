@@ -336,5 +336,7 @@ func secretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
 		names = append(names, componentSecretName(oc, "engine"))
 		names = append(names, llmCustomSecretNames(oc)...)
 	}
+	// The workers' and index-builder's third-party key Secrets (#571).
+	names = append(names, keyRefSecretsReadBy(oc)...)
 	return names
 }
