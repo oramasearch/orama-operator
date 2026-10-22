@@ -231,7 +231,14 @@ On each pass, after the members have been applied, the set's controller takes ea
 2. **Checks the entry.** It refuses (`Blocked`, with the reason) a `spec.targetRef` that is not the
    member, a migration that would move to another member or namespace, a Secret named like one the
    stack gets from the set or its member, and one Secret name copied into one member from two
-   sources. Two migrations may share one Secret from one source.
+   sources. Two migrations may share one Secret from one source. Into a member whose cluster is not
+   `production` it also refuses a production credential: a Secret its `spec.source` names
+   (`databaseSecretRef`, `masterKeySecretRef`, `settings.credentialsSecretRef`), which is Prod 1's,
+   unless labelled `orama.cloud/purpose` with that cluster's purpose as a fixture; one a production
+   set lists; one labelled for another purpose
+   ([#787](https://github.com/oramasearch/orama-operator/issues/787),
+   [the rule](crd-reference.md#production-credentials-never-reach-a-nonprod-member)). Copying real
+   Prod 1 data therefore runs only into production members.
 3. **Copies its Secrets** into the member's namespace, the way a member's are copied, labelled
    `orama.cloud/managed-by-set: OramaCloudV1Set.<set>`.
 4. **Applies the migration**: server-side apply, field owner `orama-operator-management`, the same
