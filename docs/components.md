@@ -1127,6 +1127,13 @@ The contract is [`lake/origin-tls.md`](lake/origin-tls.md). What the reconcilers
   hand-supplied `spec.tls.secretName`). Two more Ingresses, `lake-<name>-apps-wildcard` and
   `lake-<name>-preview-wildcard`, request the wildcard certificates and answer unknown names with a
   permanent redirect to the Lake's host; they exist only with a `dnsSecretRef` (wildcards need DNS-01).
+- **Tenant app ingress credentials (LSR-208):** the shared ingress-nginx platform values create
+  a proxy-header ConfigMap and HTTP maps selecting `app` / `app-<12 hex>` Ingress locations.
+  Every app loses `Authorization`; a Cookie header containing a Lake control-session name is
+  dropped in full. Ordinary app cookies survive. Lake API/console, wildcard handlers, environments,
+  Cloud v1 and Zetta preserve their credentials. See [Lake apps](lake/apps.md#ingress-and-authentication)
+  for the naming contract and mixed-cookie compatibility change. Both installation paths carry
+  the same configuration; no per-Ingress snippets are enabled.
 - **`LakeAppReconciler`, `LakeEnvironmentReconciler`**: each host's certificate is issued in the Lake
   namespace (the wildcard's, or a `Certificate` `<host>-tls` owned by the app or environment) and
   copied next to the Ingress in the workspace namespace; the copies follow renewals and are removed

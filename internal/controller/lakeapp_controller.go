@@ -252,6 +252,8 @@ func lakeAppManagedName(app *oramav1alpha1.LakeApp, legacyName, suffix string) s
 	return name
 }
 
+// lakeAppWorkloadObjectName also identifies tenant app locations to ingress-nginx's credential
+// filter in helmfile.yaml and every platform.yaml. Keep its app/app-<12 hex> names in sync there.
 func lakeAppWorkloadObjectName(app *oramav1alpha1.LakeApp) string {
 	return lakeAppManagedName(app, lakeAppWorkloadName, "")
 }

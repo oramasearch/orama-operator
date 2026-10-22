@@ -52,6 +52,18 @@ Cloudflare therefore cannot choose its own address. Lake's order sheet counts `X
 `TestIngressTrustsCloudflaresClientAddressOnlyFromCloudflare` checks both. When Cloudflare publishes
 new ranges, update the list in all of them in one pull request.
 
+## Tenant app credential filtering
+
+While apps remain on ingress-nginx, `helmfile.yaml` and every `config/clusters/*/platform.yaml`
+set the same `controller.proxySetHeaders` and `controller.config.http-snippet`. The chart creates
+the custom proxy-header ConfigMap. The maps select the operator's reserved app Ingress names
+(`app` and `app-<12 hex>`), clear `Authorization`, and drop a Cookie header containing a Lake
+control-session cookie. All other locations retain their incoming credentials, including Lake's
+API/console and wildcard handlers. The auth subrequest to Lake retains the original cookies.
+No per-Ingress snippets or dynamic host lists are needed. The compatibility and naming contract is
+in [Lake apps](../lake/apps.md#ingress-and-authentication) (LSR-208). Any future app gateway must enforce the
+same credential filtering before it can serve apps.
+
 ## What it serves
 
 Every Ingress the operator writes (an `orama.cloud` resource controls it), **whatever its class**:
