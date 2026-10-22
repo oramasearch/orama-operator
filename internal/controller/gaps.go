@@ -422,7 +422,7 @@ func analyticsRetentionJob(oc *oramav1alpha1.OramaCloudV1, script, hash string) 
 		Resources:       *resourceReqs("128Mi", "10m", "256Mi"),
 		SecurityContext: hardenedSecurityContext(),
 	}
-	return &batchv1.Job{
+	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: analyticsRetentionName(oc), Namespace: oc.Namespace, Labels: lbls,
 			Annotations: map[string]string{analyticsRetentionHashKey: hash}},
 		Spec: batchv1.JobSpec{
@@ -440,6 +440,8 @@ func analyticsRetentionJob(oc *oramav1alpha1.OramaCloudV1, script, hash string) 
 			},
 		},
 	}
+	boundV1PodStorage(&job.Spec.Template.Spec)
+	return job
 }
 
 // reconcileOramasearchApp deploys the legacy api.askorama.ai app (#7).

@@ -462,6 +462,51 @@ baseline applied (probes, per-container securityContext, requests + memory limit
 caught the two capability exceptions above before merge (drop-ALL had crash-looped the stores on
 `chown` and would have broken Envoy/pgAdmin's `:80` bind).
 
+## Cloud v1 ephemeral storage (`oramacloudv1_ephemeral_storage.go`)
+
+Every Cloud v1 workload builder supplies positive `ephemeral-storage` requests and limits to
+all regular and init containers, after component resource overrides. The defaults are a `100Mi`
+request and a `1Gi` limit per container. The two embedding services (`embeddings` and `hpes`)
+have a `16Gi` default limit for model caches. Positive explicit storage overrides are retained;
+missing, zero or negative storage entries receive defaults. A request without a limit raises the
+default limit to at least the request; a limit below `100Mi` lowers the default request to that
+limit. CPU and memory overrides keep their existing behavior. CNPG's control DB gets explicit
+storage requests and limits; CNPG's helper containers inherit namespace defaults.
+
+Before provisioning components, the stack reconciles its owned `<cr>-ephemeral-storage`
+`LimitRange` in the stack's namespace. It supplies the same `100Mi`/`1Gi` defaults to future
+containers, including init containers and pods from child operators, and requires at least one
+byte for both request and limit. An explicit zero cannot bypass admission. The defaults apply
+to every new pod in that namespace, including unrelated workloads placed there. An existing
+foreign resource with that name blocks reconciliation; drift of the owned resource is repaired.
+Every cluster runs the same reconciliation; no platform installation values change.
+
+All `emptyDir` volumes in operator-rendered v1 PodSpecs have positive size limits: rendered config is `64Mi`, other
+previously unbounded scratch volumes (pgAdmin and migration `/tmp`) are `256Mi`. Existing explicit
+bounds, including the canary's memory-backed volume and `64Mi` temporary directory, are retained.
+Service containers mount rendered config read-only. The render-config and wait-for-broker init
+containers use read-only root filesystems and retain writable access to their output volume where
+needed. Application image roots stay writable because their runtime/cache/entrypoint requirements
+have not been verified with read-only roots; their writable layers and logs count toward the
+container storage limit. Engine bulk data and migration run state remain on PVCs.
+
+Pod template changes roll Deployments and StatefulSets normally. Existing Jobs keep immutable
+templates until their controller's normal replacement or retry path creates a new Job; completed
+Jobs stay as records. New Jobs and CronJob runs receive bounds, including admission defaults. Kubernetes schedules storage requests and the kubelet evicts pods whose containers exceed
+local storage limits or whose `emptyDir` volumes exceed their size limits. This is asynchronous accounting and eviction, not
+a filesystem write quota or a guarantee that shared nodes cannot experience transient pressure.
+Dedicated placement for strict availability isolation remains separate work.
+
+`TestV1RenderedStorageBounds` checks actual workload builders, including combined and side-only
+engines, Envoy, partial overrides, apps, stores and Jobs. `TestV1StorageAdmission` checks real
+LimitRanger defaulting and refusal of zero or inconsistent storage bounds in an isolated API server.
+It has no kubelet and does not prove eviction timing or behavior under node disk pressure.
+After rollout, validate on the `v1-dev` member: inspect admitted regular/init container bounds and
+volume limits, then use a disposable pod with small declared budgets and a finite over-budget
+scratch write. Keep it alive for kubelet accounting, confirm eviction identifies the exceeded
+storage budget, and check that neighboring workloads remain Ready and the node has no DiskPressure.
+This rollout check requires the usual approval for cluster changes.
+
 ## engine (`internal/controller/engine.go`)
 
 Driven by `spec.region.role`:

@@ -291,6 +291,7 @@ func (r *OramaCloudV1E2ETestReconciler) Reconcile(ctx context.Context, req ctrl.
 					},
 				},
 			}
+			boundV1PodStorage(&job.Spec.Template.Spec)
 		}
 		return controllerutil.SetControllerReference(&t, job, r.Scheme)
 	})

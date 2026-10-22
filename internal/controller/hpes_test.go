@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -68,17 +69,21 @@ func TestHPESServesIndexBuilderInTheStack(t *testing.T) {
 	}
 	// CPU only: no GPU request or limit, no GPU node selector or toleration.
 	for name := range c.Resources.Requests {
-		if name != corev1.ResourceMemory && name != corev1.ResourceCPU {
-			t.Errorf("HPES requests %s; it runs on CPU only", name)
+		if name != corev1.ResourceMemory && name != corev1.ResourceCPU && name != corev1.ResourceEphemeralStorage {
+			t.Errorf("HPES requests unexpected resource %s", name)
 		}
 	}
 	for name := range c.Resources.Limits {
-		if name != corev1.ResourceMemory {
-			t.Errorf("HPES limits %s; it runs on CPU only", name)
+		if name != corev1.ResourceMemory && name != corev1.ResourceEphemeralStorage {
+			t.Errorf("HPES limits unexpected resource %s", name)
 		}
 	}
 	if len(pod.NodeSelector) != 0 || len(pod.Tolerations) != 0 {
 		t.Errorf("HPES has node selector %v / tolerations %v; it runs on the stack's ordinary nodes", pod.NodeSelector, pod.Tolerations)
+	}
+	storageRequest, storageLimit := c.Resources.Requests[corev1.ResourceEphemeralStorage], c.Resources.Limits[corev1.ResourceEphemeralStorage]
+	if storageRequest.Cmp(resource.MustParse("100Mi")) != 0 || storageLimit.Cmp(resource.MustParse("16Gi")) != 0 {
+		t.Errorf("HPES storage request=%s limit=%s", storageRequest.String(), storageLimit.String())
 	}
 	if got := c.Resources.Requests.Memory().String() + "/" + c.Resources.Requests.Cpu().String() + "/" + c.Resources.Limits.Memory().String(); got != "7Gi/2/10Gi" {
 		t.Errorf("resources = %s, want 7Gi/2/10Gi", got)

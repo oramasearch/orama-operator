@@ -172,6 +172,10 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 		spec := map[string]interface{}{
 			"instances": int64(profileInstances(oc)),
 			"storage":   controlDBStorage(db.Storage),
+			"resources": map[string]interface{}{
+				"requests": map[string]interface{}{string(corev1.ResourceEphemeralStorage): v1EphemeralRequest},
+				"limits":   map[string]interface{}{string(corev1.ResourceEphemeralStorage): v1EphemeralLimit},
+			},
 			"managed": map[string]interface{}{"roles": []interface{}{
 				migrationManagedRole(oc, len(migrations) > 0), dashboardManagedRole(oc)}},
 		}

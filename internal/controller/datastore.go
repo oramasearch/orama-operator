@@ -188,6 +188,7 @@ func (r *OramaCloudV1Reconciler) provisionStatefulSet(ctx context.Context, oc *o
 		if sts.ResourceVersion == "" {
 			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(def.storage, defaultVolumeSize)}
 		}
+		boundV1PodStorage(&sts.Spec.Template.Spec)
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err
