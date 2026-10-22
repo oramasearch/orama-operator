@@ -25,10 +25,10 @@ import (
 func productionLakeSet(members ...oramav1alpha1.SetMember) *oramav1alpha1.LakeSet {
 	return &oramav1alpha1.LakeSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "lake-prod"},
-		Spec: oramav1alpha1.ManagedSetSpec{
+		Spec: oramav1alpha1.LakeSetSpec{ManagedSetSpec: oramav1alpha1.ManagedSetSpec{
 			Template: *rawJSON(`{"image":"oramasearch/lake:v0.1.0","ingressEnabled":true,"dnsSecretRef":{"name":"cloudflare-api-token-lake-live"}}`),
 			Clusters: members,
-		},
+		}},
 	}
 }
 

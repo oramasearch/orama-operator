@@ -403,19 +403,48 @@ capability in `/v1/openapi.json` or a page no step covers; the inventory is the 
 `docs/inventory.md`. Every step reports pass, fail or skip with a reason. It changes data only in
 the Lake it runs against, as its own test people, and deletes what it made where Lake allows.
 
-Create the test on the member's cluster (`orama-nonprod-cluster-01` for `lake-nonprod`), from
-[`../../config/samples/lake-e2e-test.yaml`](../../config/samples/lake-e2e-test.yaml) with the image
-tag filled in, and read the result:
+**The gate is declared in the set** ([#589](https://github.com/oramasearch/orama-operator/issues/589)).
+Every file in [`config/clusters/`](../../config/clusters/README.md) is applied to the managing
+cluster, but a `LakeE2ETest` runs on the cluster of the Lake it tests. So the `testing-gate` entry
+lives in `config/clusters/sets/lake-nonprod.yaml` under `spec.e2eTests`, and the managing cluster's
+operator applies it as a `LakeE2ETest` on `orama-nonprod-cluster-01` with `spec.member` filled in:
+
+```yaml
+spec:
+  e2eTests:
+  - name: testing-gate
+    member: testing
+    spec:
+      image: oramasearch/lake-e2e@sha256:<digest>   # by digest
+      runID: v0.4.0                                 # the release being gated
+      env:
+      - name: LAKE_E2E_CLERK_SECRET_KEY             # testing signs people in with Clerk
+        valueFrom: {secretKeyRef: {name: clerk-secret-key, key: secretKey}}
+```
+
+`clerk-secret-key` is already in `lake-testing`: the member's `secrets` copy `clerk-lake-testing` there
+under that name. The pull secret is the Lake's, `oramasearch-dockerhub`. Applying the set file starts
+a run; to run it again for the next release, change `runID`, apply the set file and commit it. Read
+the result from the managing cluster, and the reasons on the member's cluster:
 
 ```sh
-kubectl get lakee2e testing-gate                       # Phase, Pass, Fail, Skip
+kubectl --context orama-production-cluster-01 get lset lake-nonprod     # E2E column: testing-gate Failed 311/22/3
+kubectl --context orama-production-cluster-01 get lset lake-nonprod -o jsonpath='{.status.e2eTests}'
+# on orama-nonprod-cluster-01 (its kubeconfig is Secret orama-system/orama-nonprod-cluster-01-kubeconfig):
 kubectl get lakee2e testing-gate -o jsonpath='{.status.failed}'
 kubectl logs -n lake-testing job/testing-gate-e2e-<generation>
 ```
 
-To run it again (the next release), change `spec.runID` and apply the file again; nothing is
-deleted. The run's Job is `<name>-e2e-<generation>`; the previous run's Job is removed once the new
-run finishes. The fields are in [`../crd-reference.md`](../crd-reference.md#lakee2etest-separate-crd-cluster-scoped).
+The runner calls the Lake's in-cluster Service. The Lake's network sandbox lets it in with
+`allow-e2e-ingress-to-lake` ([`../infrastructure/network-sandbox.md`](../infrastructure/network-sandbox.md));
+the runner's own egress, to the public host and Clerk, is not sandboxed.
+
+A `LakeE2ETest` created directly on a cluster (from
+[`../../config/samples/lake-e2e-test.yaml`](../../config/samples/lake-e2e-test.yaml)) still works,
+for a cluster no set manages. The run's Job is `<name>-e2e-<generation>`; the previous run's Job is
+removed once the new run finishes. The fields are in
+[`../crd-reference.md`](../crd-reference.md#lakee2etest-separate-crd-cluster-scoped) and, for the
+set's entry, [`../crd-reference.md`](../crd-reference.md#lakeset-and-oramacloudv1set-separate-crds-cluster-scoped--instances-on-managed-clusters).
 
 ## Deploying the operator with Lake support
 

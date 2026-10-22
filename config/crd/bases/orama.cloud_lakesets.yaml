@@ -29,6 +29,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.e2eSummary
+      name: E2E
+      type: string
     - jsonPath: .status.message
       name: Message
       type: string
@@ -37,7 +40,8 @@ spec:
       openAPIV3Schema:
         description: |-
           LakeSet installs Lake instances onto clusters this one manages and keeps their versions and
-          settings as described: one template, and one member per instance per cluster.
+          settings as described: one template, and one member per instance per cluster. It also runs
+          lake's end-to-end suite against its members (spec.e2eTests).
         properties:
           apiVersion:
             description: |-
@@ -57,7 +61,8 @@ spec:
           metadata:
             type: object
           spec:
-            description: ManagedSetSpec is the shape LakeSet and OramaCloudV1Set share.
+            description: LakeSetSpec is a ManagedSetSpec plus the end-to-end runs
+              against its members.
             properties:
               clusters:
                 description: |-
@@ -132,6 +137,45 @@ spec:
                 - Retain
                 - Delete
                 type: string
+              e2eTests:
+                description: |-
+                  E2ETests run lake's end-to-end suite against members of this set: each becomes a
+                  LakeE2ETest named Name on its member's cluster, with spec.member set to this set and the
+                  member. It is the testing -> staging gate of a substantial lake release. Changing an entry's
+                  spec (spec.runID) runs the suite again; removing the entry deletes the test and its Job there.
+                items:
+                  description: SetE2ETest is one end-to-end run against one member.
+                  properties:
+                    member:
+                      description: Member names the set member (SetMember.Name) the
+                        suite runs against.
+                      maxLength: 40
+                      minLength: 1
+                      type: string
+                    name:
+                      description: |-
+                        Name is the LakeE2ETest's name on the member's cluster. LakeE2ETest is cluster-scoped, so it
+                        is unique on that cluster.
+                      maxLength: 52
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    spec:
+                      description: |-
+                        Spec is the LakeE2ETest's spec: image (by digest), runID, env, pullSecretName,
+                        timeoutSeconds. member is filled in from this set and Member, and targetRef is refused. A
+                        Secret it names (the Clerk key in env) must be in the member's namespace: give it to the
+                        member through the set's or the member's secrets.
+                      x-kubernetes-preserve-unknown-fields: true
+                  required:
+                  - member
+                  - name
+                  - spec
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               secrets:
                 description: |-
                   Secrets are copied from this cluster into every member's namespace before its instance is
@@ -167,9 +211,14 @@ spec:
             - clusters
             - template
             type: object
+            x-kubernetes-validations:
+            - message: every e2eTests[].member must name exactly one clusters[].name
+              rule: '!has(self.e2eTests) || self.e2eTests.all(t, self.clusters.exists_one(c,
+                c.name == t.member))'
           status:
-            description: ManagedSetStatus is the status LakeSet and OramaCloudV1Set
-              share.
+            description: |-
+              LakeSetStatus is a ManagedSetStatus plus the end-to-end runs. The set's phase does not depend
+              on them.
             properties:
               conditions:
                 description: 'Conditions: Ready.'
@@ -231,6 +280,61 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              e2eSummary:
+                description: |-
+                  E2ESummary is each declared run's phase and counts ("testing-gate Succeeded 336/0/0").
+                  Empty when the set declares none.
+                type: string
+              e2eTests:
+                description: |-
+                  E2ETests reports each declared run in the order the set lists them, then those still being
+                  removed.
+                items:
+                  description: SetE2ETestStatus is one end-to-end run as its member's
+                    cluster reports it.
+                  properties:
+                    cluster:
+                      description: Cluster is where it was applied. One removed from
+                        the set is deleted there.
+                      type: string
+                    fail:
+                      format: int32
+                      type: integer
+                    jobName:
+                      description: JobName is the Job of the latest run, in the member's
+                        namespace.
+                      type: string
+                    lakeRevision:
+                      description: LakeRevision is the revision of the Lake the latest
+                        run tested.
+                      type: string
+                    member:
+                      type: string
+                    message:
+                      type: string
+                    name:
+                      type: string
+                    pass:
+                      description: Pass, Fail and Skip count the latest run's steps.
+                      format: int32
+                      type: integer
+                    phase:
+                      description: |-
+                        Phase is the LakeE2ETest's own phase (Pending, Running, Succeeded, Failed), Pending while the
+                        set waits to apply it or its cluster has not started the latest run, Blocked when the set
+                        refuses to apply it, or Removing while it is being deleted. Message says why.
+                      type: string
+                    runID:
+                      description: RunID is the latest run's LAKE_E2E_RUN_ID.
+                      type: string
+                    skip:
+                      format: int32
+                      type: integer
+                  required:
+                  - member
+                  - name
+                  type: object
+                type: array
               memberStatuses:
                 description: MemberStatuses reports each member, in the order the
                   set lists them.

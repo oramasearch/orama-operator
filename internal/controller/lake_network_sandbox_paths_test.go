@@ -202,3 +202,36 @@ func TestLakeNetworkSandboxAdmitsOnlyItsMethodologyTransferPods(t *testing.T) {
 		t.Fatal("methodology-serve-ingress does not admit this Lake's pods")
 	}
 }
+
+// The LakeE2ETest runner is a Job in the Lake's namespace, labelled orama.cloud/lake-e2e, and calls
+// the Lake's in-cluster Service (LAKE_E2E_BASE_URL). The Lake's ingress is sandboxed, so without
+// this allowance every REST, MCP and liquid step times out (orama-operator#589). Only the runner's
+// pods in the Lake's own namespace are let in, on the Lake's port only.
+func TestLakeNetworkSandboxLetsItsE2ERunnerCallTheLake(t *testing.T) {
+	lake := serviceTestLake()
+	pods := lakePodSelector(lake)
+	policies := lakeInternalIngressAllowances(lake, pods, metav1.LabelSelector{}, metav1.LabelSelector{}, metav1.LabelSelector{}, metav1.LabelSelector{})
+	sandbox := &oramav1alpha1.NetworkSandbox{Spec: oramav1alpha1.NetworkSandboxSpec{Policies: policies}}
+	assertJustifiedNarrowAllowances(t, sandbox)
+	policy := allowanceByName(t, sandbox, "allow-e2e-ingress-to-lake")
+	if !reflect.DeepEqual(policy.Spec.PodSelector, pods) || len(policy.Spec.Egress) != 0 || len(policy.Spec.Ingress) != 1 {
+		t.Fatalf("e2e path is not ingress to the Lake only: %+v", policy.Spec)
+	}
+	rule := policy.Spec.Ingress[0]
+	if !reflect.DeepEqual(policyPorts(t, rule.Ports), []int32{int32(lakeContainerPort(lake))}) || len(rule.From) != 1 {
+		t.Fatalf("unexpected e2e ingress: %+v", rule)
+	}
+	peer := rule.From[0]
+	if peer.NamespaceSelector != nil || peer.IPBlock != nil || peer.PodSelector == nil {
+		t.Fatalf("e2e ingress reaches beyond the Lake's own namespace: %+v", peer)
+	}
+	// The runner's pod as the LakeE2ETest controller labels it.
+	test := &oramav1alpha1.LakeE2ETest{ObjectMeta: metav1.ObjectMeta{Name: "testing-gate"}, Spec: oramav1alpha1.LakeE2ETestSpec{TargetRef: lake.Name, Image: "oramasearch/lake-e2e@sha256:0"}}
+	job := (&LakeE2ETestReconciler{}).runnerJob(test, lake, lakeNamespace(lake), lakeE2EJobName(test))
+	if !selectorMatches(t, *peer.PodSelector, job.Spec.Template.Labels) {
+		t.Fatalf("the runner's pod %v cannot call its Lake", job.Spec.Template.Labels)
+	}
+	if selectorMatches(t, *peer.PodSelector, nil) || selectorMatches(t, *peer.PodSelector, map[string]string{"app.kubernetes.io/name": "anything"}) {
+		t.Fatal("e2e ingress lets in pods that are not the runner")
+	}
+}

@@ -42,6 +42,36 @@ type fakeMembers struct {
 	migrationErr      map[string]error          // by name: the cluster refuses the apply
 	deletedMigrations []memberRequest           // DeleteMigration calls
 	held              map[string]map[string]any // by name: still there while deleted, with this status
+
+	e2eApplied   []memberRequest           // ApplyE2ETest calls
+	e2eStatus    map[string]map[string]any // by name: the status its cluster reports
+	e2eGen       map[string]int64          // by name: its generation on the cluster (default 1)
+	e2eMissing   bool                      // the LakeE2ETest CRD is not on the cluster
+	e2eDeleted   []memberRequest           // DeleteE2ETest calls
+	e2eDeleteErr error
+}
+
+func (f *fakeMembers) ApplyE2ETest(_ context.Context, _ []byte, req memberRequest) (memberState, error) {
+	f.e2eApplied = append(f.e2eApplied, req)
+	if f.e2eMissing {
+		return memberState{MissingCRD: true}, nil
+	}
+	obj := memberObject(req)
+	gen := f.e2eGen[req.Name]
+	if gen == 0 {
+		gen = 1
+	}
+	obj.SetGeneration(gen)
+	obj.Object["spec"] = req.Spec
+	if status := f.e2eStatus[req.Name]; status != nil {
+		obj.Object["status"] = maps.Clone(status)
+	}
+	return memberState{Object: obj}, nil
+}
+
+func (f *fakeMembers) DeleteE2ETest(_ context.Context, _ []byte, req memberRequest) error {
+	f.e2eDeleted = append(f.e2eDeleted, req)
+	return f.e2eDeleteErr
 }
 
 func (f *fakeMembers) ApplyMember(_ context.Context, kubeconfig []byte, req memberRequest) (memberState, error) {
@@ -136,7 +166,7 @@ func rawJSON(text string) *apiextensionsv1.JSON { return &apiextensionsv1.JSON{R
 func nonprodLakeSet() *oramav1alpha1.LakeSet {
 	return &oramav1alpha1.LakeSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "lake-nonprod"},
-		Spec: oramav1alpha1.ManagedSetSpec{
+		Spec: oramav1alpha1.LakeSetSpec{ManagedSetSpec: oramav1alpha1.ManagedSetSpec{
 			Template: *rawJSON(`{"image":"oramasearch/lake:v0.1.0","postgres":{"instances":1,"storageSize":"50Gi"},"env":[{"name":"A","value":"1"},{"name":"B","value":"2"}]}`),
 			Secrets:  []oramav1alpha1.SetSecret{{Name: "oramasearch-dockerhub", Namespace: "lake"}, {Name: "lake-prod-openai", Namespace: "lake"}},
 			Clusters: []oramav1alpha1.SetMember{
@@ -146,7 +176,7 @@ func nonprodLakeSet() *oramav1alpha1.LakeSet {
 					Secrets: []oramav1alpha1.SetSecret{{Name: "staging-openai", Namespace: "lake", As: "lake-prod-openai"}}},
 			},
 			DeletionPolicy: oramav1alpha1.SetDeletionRetain,
-		},
+		}},
 	}
 }
 

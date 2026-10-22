@@ -210,8 +210,12 @@ operator ingress or access to other apps.
 | `allow-ingress-nginx` | ingress-nginx reaches only Lake's application port for its own Ingress and LakeApp auth subrequests. |
 | `allow-lake-clients-to-controldb`, `allow-lake-ingress-to-zetta`, `allow-lake-ingress-to-agents`, `allow-agent-ingress-to-lake` | Destination-side ingress matching the Lake, schema and library-agent egress rules above. Both isolated ends need a rule. |
 | `allow-build-ingress-to-lake` | Only this Lake's builder pods in its labelled build namespaces reach the Lake application port for source, registry and build events. |
+<<<<<<< HEAD
 | `allow-methodology-ingress-to-lake` | Only this Lake's methodology stage and collect pods (a run's, or a served model's stage), in its own `lake-<lake>-methodology-runs` namespace, reach the Lake application port to page data in and report results. The destination half of that namespace's `methodology-transfer` egress; never a sandbox or serve pod ([methodology runs](../lake/methodology-runs.md), lake#802). |
 | `allow-lake-to-methodology-serve` | Lake reaches only its served models' serve pods in that namespace on 8080 for predictions: the source half of `methodology-serve-ingress`. |
+=======
+| `allow-e2e-ingress-to-lake` | Only `LakeE2ETest` runner pods (label `orama.cloud/lake-e2e`) in the Lake's own namespace reach the Lake application port, for the suite's REST, MCP and liquid steps ([#589](https://github.com/oramasearch/orama-operator/issues/589)). The runner is not one of the Lake's pods, so its own egress (the public host, Clerk) is not sandboxed. |
+>>>>>>> 42638f7 (feat(lakeset): spec.e2eTests runs the Lake e2e gate on the member's cluster)
 | `allow-lake-to-workspace-postgres`, `allow-lake-to-workspace-kafka`, `allow-lake-to-workspace-clickhouse`, `allow-lake-to-workspace-tidb`, `allow-lake-to-workspace-cassandra`, `allow-lake-to-workspace-valkey` | Lake reaches vendor-labelled pods only in its workspace namespaces on 5432, 9092, 8123/9000, 4000, 9042 and 6379 respectively. |
 | `allow-lake-to-apps` | Lake egress to each of its declared LakeApp backend namespaces, exact app pod labels and configured container ports. App changes and deletion requeue Lake to update or remove these rules. |
 

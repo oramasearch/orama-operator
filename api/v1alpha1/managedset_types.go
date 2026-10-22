@@ -142,16 +142,98 @@ type ManagedSetStatus struct {
 //+kubebuilder:printcolumn:name="Members",type=integer,JSONPath=`.status.members`
 //+kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyMembers`
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="E2E",type=string,JSONPath=`.status.e2eSummary`
 //+kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
 
 // LakeSet installs Lake instances onto clusters this one manages and keeps their versions and
-// settings as described: one template, and one member per instance per cluster.
+// settings as described: one template, and one member per instance per cluster. It also runs
+// lake's end-to-end suite against its members (spec.e2eTests).
 type LakeSet struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ManagedSetSpec   `json:"spec,omitempty"`
-	Status ManagedSetStatus `json:"status,omitempty"`
+	Spec   LakeSetSpec   `json:"spec,omitempty"`
+	Status LakeSetStatus `json:"status,omitempty"`
+}
+
+// LakeSetSpec is a ManagedSetSpec plus the end-to-end runs against its members.
+// +kubebuilder:validation:XValidation:rule="!has(self.e2eTests) || self.e2eTests.all(t, self.clusters.exists_one(c, c.name == t.member))",message="every e2eTests[].member must name exactly one clusters[].name"
+type LakeSetSpec struct {
+	ManagedSetSpec `json:",inline"`
+	// E2ETests run lake's end-to-end suite against members of this set: each becomes a
+	// LakeE2ETest named Name on its member's cluster, with spec.member set to this set and the
+	// member. It is the testing -> staging gate of a substantial lake release. Changing an entry's
+	// spec (spec.runID) runs the suite again; removing the entry deletes the test and its Job there.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=16
+	E2ETests []SetE2ETest `json:"e2eTests,omitempty"`
+}
+
+// SetE2ETest is one end-to-end run against one member.
+type SetE2ETest struct {
+	// Name is the LakeE2ETest's name on the member's cluster. LakeE2ETest is cluster-scoped, so it
+	// is unique on that cluster.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=52
+	Name string `json:"name"`
+	// Member names the set member (SetMember.Name) the suite runs against.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=40
+	Member string `json:"member"`
+	// Spec is the LakeE2ETest's spec: image (by digest), runID, env, pullSecretName,
+	// timeoutSeconds. member is filled in from this set and Member, and targetRef is refused. A
+	// Secret it names (the Clerk key in env) must be in the member's namespace: give it to the
+	// member through the set's or the member's secrets.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Spec apiextensionsv1.JSON `json:"spec"`
+}
+
+// SetE2ETestStatus is one end-to-end run as its member's cluster reports it.
+type SetE2ETestStatus struct {
+	Name   string `json:"name"`
+	Member string `json:"member"`
+	// Cluster is where it was applied. One removed from the set is deleted there.
+	// +optional
+	Cluster string `json:"cluster,omitempty"`
+	// Phase is the LakeE2ETest's own phase (Pending, Running, Succeeded, Failed), Pending while the
+	// set waits to apply it or its cluster has not started the latest run, Blocked when the set
+	// refuses to apply it, or Removing while it is being deleted. Message says why.
+	// +optional
+	Phase string `json:"phase,omitempty"`
+	// +optional
+	Message string `json:"message,omitempty"`
+	// JobName is the Job of the latest run, in the member's namespace.
+	// +optional
+	JobName string `json:"jobName,omitempty"`
+	// RunID is the latest run's LAKE_E2E_RUN_ID.
+	// +optional
+	RunID string `json:"runID,omitempty"`
+	// LakeRevision is the revision of the Lake the latest run tested.
+	// +optional
+	LakeRevision string `json:"lakeRevision,omitempty"`
+	// Pass, Fail and Skip count the latest run's steps.
+	// +optional
+	Pass int32 `json:"pass,omitempty"`
+	// +optional
+	Fail int32 `json:"fail,omitempty"`
+	// +optional
+	Skip int32 `json:"skip,omitempty"`
+}
+
+// LakeSetStatus is a ManagedSetStatus plus the end-to-end runs. The set's phase does not depend
+// on them.
+type LakeSetStatus struct {
+	ManagedSetStatus `json:",inline"`
+	// E2ETests reports each declared run in the order the set lists them, then those still being
+	// removed.
+	// +optional
+	E2ETests []SetE2ETestStatus `json:"e2eTests,omitempty"`
+	// E2ESummary is each declared run's phase and counts ("testing-gate Succeeded 336/0/0").
+	// Empty when the set declares none.
+	// +optional
+	E2ESummary string `json:"e2eSummary,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -270,8 +352,8 @@ type OramaCloudV1SetList struct {
 }
 
 // SetSpec and SetStatus let one controller reconcile both kinds.
-func (s *LakeSet) SetSpec() *ManagedSetSpec     { return &s.Spec }
-func (s *LakeSet) SetStatus() *ManagedSetStatus { return &s.Status }
+func (s *LakeSet) SetSpec() *ManagedSetSpec     { return &s.Spec.ManagedSetSpec }
+func (s *LakeSet) SetStatus() *ManagedSetStatus { return &s.Status.ManagedSetStatus }
 
 func (s *OramaCloudV1Set) SetSpec() *ManagedSetSpec     { return &s.Spec.ManagedSetSpec }
 func (s *OramaCloudV1Set) SetStatus() *ManagedSetStatus { return &s.Status.ManagedSetStatus }

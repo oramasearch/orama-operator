@@ -83,6 +83,20 @@ spec:
     secrets:
     - {name: clerk-lake-testing, namespace: lake, as: clerk-secret-key}
   deletionPolicy: Retain
+  # The testing -> staging gate of a substantial lake release (orama-operator#589,
+  # docs/lake/README.md#service-e2e). Not active yet: oramasearch/lake-e2e has no image in Docker
+  # Hub, and the managing cluster's operator must know spec.e2eTests before this file carries it.
+  # When both are true, uncomment, put in the pushed image's digest, set runID to the release being
+  # gated, apply this file to the managing cluster with Steve's consent, and commit it.
+  # e2eTests:
+  # - name: testing-gate
+  #   member: testing
+  #   spec:
+  #     image: oramasearch/lake-e2e@sha256:<digest>
+  #     runID: "<release>"
+  #     env:
+  #     - name: LAKE_E2E_CLERK_SECRET_KEY
+  #       valueFrom: {secretKeyRef: {name: clerk-secret-key, key: secretKey}}
   secrets:
   - name: oramasearch-dockerhub
     namespace: lake
