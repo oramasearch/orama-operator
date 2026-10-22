@@ -19,7 +19,7 @@ The operator, not a separate chart, renders the gateway, because what the gatewa
 generated from the Ingresses the operator writes, and a separate chart would need its own private
 chart repository and a pull secret in its namespace that the platform layer cannot provide for a
 third-party chart. ingress-nginx stays a platform chart in `helmfile.yaml` and every
-`config/clusters/*/platform.yaml`, unchanged, until the cutover below is finished on every cluster;
+`config/clusters/*/platform.yaml` until the cutover below is finished on every cluster;
 then it is removed from all of them in one pull request (`cmd/platform_sync_test.go`).
 
 What the operator renders, on every cluster, in the namespace `zetta-tunnel-ingress` (restricted
@@ -37,6 +37,31 @@ Pod Security, its own `NetworkSandbox`):
 Every backend that admitted ingress-nginx now admits the gateway beside it: the Lake API
 (`allow-ingress-nginx`), Orama Cloud v1's dashboard and docs, and Lake environments. Lake apps do not
 (below).
+
+## Interim ingress-nginx hardening (LSR-268)
+
+Both installation paths explicitly set `controller.admissionWebhooks.enabled: false` and
+`controller.allowSnippetAnnotations: false` on the
+[pinned ingress-nginx chart](https://github.com/kubernetes/ingress-nginx/tree/helm-chart-4.15.1/charts/ingress-nginx/templates). The chart omits
+the admission webhook listener, Service, validation registration and certificate Jobs; Ingress
+annotations cannot inject nginx configuration snippets. Operator-managed `controller.config.http-snippet`
+maps still strip Lake credentials from app requests as described below. Kubernetes admission no
+longer validates Ingresses through nginx's webhook.
+
+This reduces exposure while the retirement finding
+[operator#820](https://github.com/oramasearch/orama-operator/issues/820) remains open. The gateway
+still lacks apps' authentication subrequests and byte metering, origin client-certificate
+verification, and Cloud v1's protected-route behavior. Removing nginx before those paths have a
+replacement would interrupt service or bypass their controls. The controller-replacement decision
+also needs to reconcile [operator#573](https://github.com/oramasearch/orama-operator/issues/573),
+which currently requires a dedicated ingress-nginx for each Cloud v1 stack. No cutover or live
+rollout is established by these configuration changes.
+
+`TestIngressDisablesAdmissionWebhooksAndSnippetAnnotations` checks the explicit settings in
+`helmfile.yaml` and every leaf's `platform.yaml`; the platform sync test checks the paths agree.
+Run `go test ./cmd -run 'TestIngress|TestHelmfileAndEveryLeafInstallTheSamePlatform' -count=1 -timeout=10m`.
+Retirement still requires the cutover checks below and removal of nginx from every installation
+path together.
 
 ## The client address ingress-nginx passes on (operator#719)
 
