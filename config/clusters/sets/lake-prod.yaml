@@ -83,6 +83,11 @@ spec:
       instances: 1
       storageSize: 10Gi
     pullSecretName: oramasearch-dockerhub
+    # Workspace and managed-service Zettas stay on the image the data-plane Zetta runs until a
+    # Zetta release is rolled on purpose: without this they would follow the operator's default
+    # (orama-operator#588) the moment a new operator rolls.
+    services:
+      zettaImage: oramasearch/zetta:main-4015ef76
     store:
       accessModes:
       - ReadWriteOnce
