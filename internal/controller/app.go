@@ -214,6 +214,10 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 			Spec:       podSpec,
 		}
 		boundV1PodStorage(&dep.Spec.Template.Spec)
+		cloudV1PodIdentity(&dep.Spec.Template.Spec, name)
+		if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, oc, name, lbls); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
 	}); err != nil {
 		return err

@@ -537,6 +537,10 @@ func (r *OramaCloudV1Reconciler) reconcileEmbeddings(ctx context.Context, oc *or
 			},
 		}
 		boundV1PodStorage(&dep.Spec.Template.Spec)
+		cloudV1PodIdentity(&dep.Spec.Template.Spec, name)
+		if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, oc, name, lbls); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
 	}); err != nil {
 		return err
@@ -644,6 +648,10 @@ func (r *OramaCloudV1Reconciler) reconcileWriter(ctx context.Context, oc *oramav
 			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(w.Storage, defaultVolumeSize)}
 		}
 		boundV1PodStorage(&sts.Spec.Template.Spec)
+		cloudV1PodIdentity(&sts.Spec.Template.Spec, name)
+		if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, oc, name, lbls); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err
@@ -735,6 +743,10 @@ func (r *OramaCloudV1Reconciler) reconcileReaders(ctx context.Context, oc *orama
 			sts.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{dataPVC(rd.Storage, readerDataSize)}
 		}
 		boundV1PodStorage(&sts.Spec.Template.Spec)
+		cloudV1PodIdentity(&sts.Spec.Template.Spec, name)
+		if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, oc, name, lbls); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(oc, sts, r.Scheme)
 	}); err != nil {
 		return err
