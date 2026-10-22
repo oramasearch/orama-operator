@@ -41,7 +41,7 @@ type ClerkApplicationReconciler struct {
 //+kubebuilder:rbac:groups=orama.cloud,resources=clerkapplications,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orama.cloud,resources=clerkapplications/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=orama.cloud,resources=clerkapplications/finalizers,verbs=update
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *ClerkApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var app oramav1alpha1.ClerkApplication

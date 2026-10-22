@@ -591,10 +591,10 @@ func pruneCRDs(ctx context.Context, c client.Client, chrt *chart.Chart) ([]strin
 func applyNamespaceAndPullSecret(ctx context.Context, c client.Client, namespace string, source *corev1.Secret) error {
 	ns := &corev1.Namespace{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
-		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: namespace, Labels: map[string]string{"app.kubernetes.io/managed-by": "orama-operator"}},
 	}
-	// The namespace is created when absent and otherwise left alone: its labels and annotations
-	// belong to whoever set them.
+	// New namespaces opt into manager workload grants. Existing namespaces are left alone:
+	// their ownership label must come from the committed deployment declaration.
 	if err := c.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("the cluster refused namespace %s: %w", namespace, err)
 	}

@@ -64,8 +64,8 @@ type LakeEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakesealedsecrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=orama.cloud,resources=cloudflarednsrecords,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=services;secrets;resourcequotas;limitranges,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services;secrets;resourcequotas;limitranges,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses;networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *LakeEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

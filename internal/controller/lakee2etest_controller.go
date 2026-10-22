@@ -59,8 +59,8 @@ type LakeE2ETestReconciler struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakee2etests,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakee2etests/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=lakes,verbs=get;list;watch
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods/log,verbs=get
 
 // Reconcile starts a run for each new spec generation once its Lake is ready, follows the run's

@@ -15,10 +15,9 @@ metadata:
   name: {{ include "operator.fullname" . }}-manager
   labels: {{- include "operator.labels" . | nindent 4 }}
 rules:
-  # The operator manages the app stack. Mirror of the +kubebuilder:rbac markers
-  # (`make manifests` → config/rbac/role.yaml) — the install-time union. Keep this in
-  # sync when a CRD/reconciler is added (the SA is enforced in-cluster, unlike a local
-  # `go run` with admin creds).
+  # Cluster-wide reads, CRs and platform control mirror the +kubebuilder:rbac markers.
+  # Secret and core workload mutations live in the separate namespaced grant below.
+  # Native admission additionally protects namespace opt-in and Karpenter bootstrap.
   - apiGroups: ["orama.cloud"]
     resources:
       - oramacloudv1s
@@ -152,14 +151,14 @@ rules:
     verbs: ["*"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
-    verbs: ["*"]
+    verbs: ["get", "list", "watch"]
   # Verify the platform ingress controller's pod ownership before reading billing counters.
   - apiGroups: ["apps"]
     resources: ["replicasets"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["services", "configmaps", "secrets", "persistentvolumeclaims", "serviceaccounts", "resourcequotas", "limitranges"]
-    verbs: ["*"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["endpoints"]
     verbs: ["get", "list", "watch"]
@@ -171,7 +170,7 @@ rules:
   # scheduled, in its workspace's namespace (orama-operator#799).
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "patch", "create", "delete"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
@@ -268,7 +267,7 @@ rules:
     verbs: ["*"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
-    verbs: ["*"]
+    verbs: ["get", "list", "watch"]
   # Elastic capacity (operator#69): the operator OWNS a Karpenter NodePool for the Zetta cluster and
   # reads the provider NodeClasses/NodeClaims + cluster Nodes for the provisioned-node status count.
   # karpenter.{sh,k8s.aws,azure.com} may be absent (bare-metal / no autoscaler) — the reconciler
@@ -293,7 +292,7 @@ rules:
   # (broad) permissions requires `bind` + `escalate` on roles/bindings (RBAC privilege-escalation
   # prevention) since the operator doesn't itself carry every node/pod grant. CRDs are applied but
   # never deleted (no `delete` — deleting a Karpenter CRD cascades to all NodePools/NodeClaims).
-  # (ServiceAccounts/Deployments/Services/PDBs the install also creates are already granted above.)
+  # Namespaced install mutations use the Karpenter Role below and the PDB grant above.
   # Every write, bind and escalate is scoped by resourceNames to the objects of the vendored Karpenter
   # bundle (karpenterControllerObjects / karpenterCRDNames in
   # internal/controller/zetta_capacity_install_render.go), so the operator cannot create, update or bind
@@ -325,6 +324,17 @@ rules:
     resources: ["rolebindings"]
     resourceNames: ["karpenter", "karpenter-dns"]
     verbs: ["create", "update", "patch", "delete"]
+  # Server-side apply addresses the fixed binding by name. Admission limits its role,
+  # subject and target namespace; the manager cannot opt an existing namespace in.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    resourceNames: ["orama-operator-workloads"]
+    verbs: ["get", "create", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["orama-operator-workloads"]
+    verbs: ["bind"]
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -366,6 +376,56 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "operator.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+
+---
+# Only RoleBindings in opted-in namespaces grant these rights. Never cluster-bind this role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: orama-operator-workloads
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "secrets", "persistentvolumeclaims", "serviceaccounts", "resourcequotas", "limitranges"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "patch", "create", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Karpenter keeps its existing namespace. No daemonset or Secret authority in kube-system.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orama-operator-karpenter-workloads
+  namespace: kube-system
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["karpenter"]
+    verbs: ["get", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts", "services"]
+    resourceNames: ["karpenter"]
+    verbs: ["get", "create", "patch", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orama-operator-karpenter-workloads
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orama-operator-karpenter-workloads
 subjects:
   - kind: ServiceAccount
     name: {{ .Values.serviceAccount.name }}

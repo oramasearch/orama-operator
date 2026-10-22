@@ -269,3 +269,12 @@ Result: the CRD installs, the sample CR is accepted, and the manager logs
 
 Commit + push this repo → bump the pointer in `orama-cloud-v1-bridge` → bump the
 pointer in the umbrella `orama-bridge` (fast-forward to `main`). No AI attribution.
+
+Manager permission changes require `TestManagerNamespaceAuthorization`,
+`TestKarpenterInstallEnvtest` and `TestLakeEnvironmentSealedDeliveryAdmission` with envtest assets
+and Helm. Regenerate the pinned admission policy with
+`python3 hack/generate-manager-admission.py` (PyYAML) after updating the Karpenter bundle.
+The chart and the generated manager role must keep sensitive workload writes namespaced.
+
+With envtest assets enabled, give the full controller package an explicit bounded deadline:
+`go test ./... -timeout 3600s`. Its native integration tests each start a real API server.

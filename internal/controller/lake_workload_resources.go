@@ -40,10 +40,10 @@ import (
 // same connection, at most once per workloadResourcesInterval, and writes a row only when its
 // numbers change.
 //
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list
-// +kubebuilder:rbac:groups="",resources=limitranges,verbs=get;list
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=limitranges,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
 const (
 	WorkloadKindWorkspace   = "workspace"
 	WorkloadKindService     = "service"

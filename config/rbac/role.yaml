@@ -15,12 +15,8 @@ rules:
   - serviceaccounts
   - services
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - ""
@@ -62,11 +58,8 @@ rules:
   resources:
   - pods
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
   - watch
 - apiGroups:
   - apiextensions.k8s.io
@@ -96,12 +89,8 @@ rules:
   - deployments
   - statefulsets
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - apps
@@ -117,12 +106,8 @@ rules:
   - cronjobs
   - jobs
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - cert-manager.io
@@ -587,3 +572,21 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  resourceNames:
+  - orama-operator-workloads
+  verbs:
+  - get
+  - create
+  - patch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  resourceNames:
+  - orama-operator-workloads
+  verbs:
+  - bind

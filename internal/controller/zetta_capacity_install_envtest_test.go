@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -44,7 +45,7 @@ func TestKarpenterInstallEnvtest(t *testing.T) {
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
 	}
-	environment.ControlPlane.GetAPIServer().Configure().Set("authorization-mode", "RBAC")
+	environment.ControlPlane.GetAPIServer().Configure().Set("authorization-mode", "RBAC").Set("enable-admission-plugins", "ValidatingAdmissionPolicy")
 	config, err := environment.Start()
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +148,7 @@ func testKarpenterInstallRBAC(ctx context.Context, t *testing.T, admin client.Cl
 	if err != nil {
 		t.Fatal(err)
 	}
+	installManagerAdmission(t, admin, operator)
 	r := &OramaZettaClusterReconciler{Client: operator, Scheme: scheme}
 
 	// Install, twice (create, then the steady-state apply), as the operator. Each pass renders afresh,
@@ -176,6 +178,44 @@ func testKarpenterInstallRBAC(ctx context.Context, t *testing.T, admin client.Cl
 		t.Errorf("installed ServiceAccount role ARN = %q", account.Annotations[installRoleARNAnnotation])
 	}
 	t.Log("operator identity installed the Karpenter CRDs and controller bundle with name-scoped bind/escalate")
+
+	// Named workload authority must not become a way to run an arbitrary program with
+	// Karpenter's broader ServiceAccount. Each rejected update leaves the installed pod intact.
+	var installed appsv1.Deployment
+	if err := admin.Get(ctx, client.ObjectKey{Namespace: karpenterNamespace, Name: karpenterControllerName}, &installed); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*appsv1.Deployment){
+		"replacement image": func(d *appsv1.Deployment) {
+			d.Spec.Template.Spec.Containers[0].Image = "example.invalid/token-reader:latest"
+		},
+		"replacement command": func(d *appsv1.Deployment) { d.Spec.Template.Spec.Containers[0].Command = []string{"/bin/sh"} },
+		"injected environment": func(d *appsv1.Deployment) {
+			d.Spec.Template.Spec.Containers[0].Env = append(d.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{Name: "AWS_ENDPOINT_URL", Value: "https://example.invalid"})
+		},
+		"sidecar": func(d *appsv1.Deployment) {
+			d.Spec.Template.Spec.Containers = append(d.Spec.Template.Spec.Containers, corev1.Container{Name: "token-reader", Image: "example.invalid/reader:latest"})
+		},
+		"host namespace": func(d *appsv1.Deployment) { d.Spec.Template.Spec.HostPID = true },
+		"injection annotation": func(d *appsv1.Deployment) {
+			d.Spec.Template.Annotations = map[string]string{"sidecar.istio.io/inject": "true"}
+		},
+	} {
+		d := installed.DeepCopy()
+		mutate(d)
+		if err := operator.Update(ctx, d); !apierrors.IsForbidden(err) {
+			t.Errorf("%s: %v, want Forbidden", name, err)
+		}
+	}
+
+	var pinnedRole rbacv1.ClusterRole
+	if err := admin.Get(ctx, client.ObjectKey{Name: "karpenter-core"}, &pinnedRole); err != nil {
+		t.Fatal(err)
+	}
+	pinnedRole.Labels["rbac.authorization.k8s.io/aggregate-to-view"] = "true"
+	if err := operator.Update(ctx, &pinnedRole); !apierrors.IsForbidden(err) {
+		t.Errorf("aggregate Karpenter permissions into view: %v, want Forbidden", err)
+	}
 
 	// Anything outside the bundle is forbidden to the same identity.
 	adminRef := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-admin"}

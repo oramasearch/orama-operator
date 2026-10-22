@@ -1,0 +1,14 @@
+# Apply only to orama-production-cluster-01, with Steve's consent, before the manager RBAC upgrade.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lake
+  labels:
+    app.kubernetes.io/managed-by: orama-operator
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orama-system
+  labels:
+    app.kubernetes.io/managed-by: orama-operator

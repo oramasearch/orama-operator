@@ -78,7 +78,7 @@ type StripeWebhookEndpointReconciler struct {
 // +kubebuilder:rbac:groups=orama.cloud,resources=stripewebhookendpoints/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=orama.cloud,resources=stripewebhookendpoints/finalizers,verbs=update
 // +kubebuilder:rbac:groups=orama.cloud,resources=paymentproviders,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *StripeWebhookEndpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

@@ -320,3 +320,8 @@ helm uninstall orama-operator -n orama-system
 Application PVCs are retained on CR deletion. Review retained storage before explicitly deleting
 any claim. The registry Secret created in §1 and the separately installed platform controllers
 also remain; remove them only when no remaining workloads need them.
+
+The chart requires Kubernetes 1.30+ for fail-closed manager admission policies. Before upgrading,
+apply the committed namespace ownership declarations to their named clusters with Steve's consent;
+see [manager permissions](operations/manager-permissions.md) for the upgrade order and retained
+node-proxy authority.

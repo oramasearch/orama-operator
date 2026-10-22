@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
+	"github.com/oramasearch/orama-operator/internal/namespaceaccess"
 )
 
 const k0sDeliveryContract = "cc922054ad10fd1991ab1077bb8a2c3bf3eeeae2"
@@ -112,6 +114,9 @@ func newEnvironmentAdmissionFixture(t *testing.T) *environmentAdmissionFixture {
 	if err := nodev1.AddToScheme(f.scheme); err != nil {
 		t.Fatal(err)
 	}
+	if err := rbacv1.AddToScheme(f.scheme); err != nil {
+		t.Fatal(err)
+	}
 	f.admin = admissionClient(t, config, f.scheme)
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -128,7 +133,7 @@ func newEnvironmentAdmissionFixture(t *testing.T) *environmentAdmissionFixture {
 func (f *environmentAdmissionFixture) installOperatorIdentity(t *testing.T, config *rest.Config) {
 	t.Helper()
 	f.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "orama-system"}})
-	f.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lake"}})
+	f.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lake", Labels: map[string]string{namespaceaccess.ManagedLabel: namespaceaccess.ManagedValue}}})
 	chart, err := exec.Command("helm", "template", "orama-operator", "../../chart", "--namespace", "orama-system", "--show-only", "templates/rbac.yaml").Output()
 	if err != nil {
 		t.Fatalf("render operator RBAC: %v", err)
@@ -141,6 +146,8 @@ func (f *environmentAdmissionFixture) installOperatorIdentity(t *testing.T, conf
 	operatorConfig := rest.AnonymousClientConfig(config)
 	operatorConfig.BearerToken = token.Status.Token
 	f.operator = admissionClient(t, operatorConfig, f.scheme)
+	installManagerAdmission(t, f.admin, f.operator)
+	f.operator = namespaceaccess.Wrap(f.operator, f.operator, "orama-system", "orama-operator")
 	f.reconciler = &LakeEnvironmentReconciler{Client: f.operator, Scheme: f.scheme}
 }
 
@@ -180,7 +187,7 @@ func (f *environmentAdmissionFixture) initializeAbsentControllers(t *testing.T) 
 	}
 	f.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: f.namespace}})
 	f.workspaceNamespace = "prod-ws-policy-proof"
-	f.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: f.workspaceNamespace}})
+	f.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: f.workspaceNamespace, Labels: map[string]string{namespaceaccess.ManagedLabel: namespaceaccess.ManagedValue}}})
 	noToken := false
 	f.create(t, &corev1.ServiceAccount{
 		ObjectMeta:                   metav1.ObjectMeta{Name: "default", Namespace: f.workspaceNamespace},

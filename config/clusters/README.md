@@ -235,3 +235,9 @@ kubectl --context orama-production-cluster-01 diff -f config/clusters/ -R
 ```
 
 Empty output means they match.
+
+Apply each [namespace ownership declaration](../namespace-ownership/) to the cluster named by its
+file, with Steve's consent, **before** rolling the manager permission upgrade. Then upgrade the
+operator through the management and leaf install paths. These target-cluster Namespace resources
+stay outside this directory so its recursive diff against management remains empty. See
+[manager permissions](../../docs/operations/manager-permissions.md) for the full rollout order.

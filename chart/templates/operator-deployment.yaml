@@ -17,6 +17,9 @@ spec:
         azure.workload.identity/use: "true"
         {{- end }}
     spec:
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
       serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- with .Values.operator.imagePullSecrets }}
       imagePullSecrets:
@@ -45,6 +48,8 @@ spec:
               containerPort: {{ .Values.controlPlane.service.port }}
               protocol: TCP
           env:
+            - name: OPERATOR_SERVICE_ACCOUNT
+              value: {{ .Values.serviceAccount.name | quote }}
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -57,7 +62,17 @@ spec:
                   containerName: manager
                   resource: limits.memory
           resources: {{- toYaml .Values.operator.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           securityContext:
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
             runAsNonRoot: true
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
