@@ -109,6 +109,23 @@ An occupied name belonging to a different owner or customer fails without adopti
 `name` is a DNS label. An empty row host becomes `<name>.<wildcard>`; a supplied host must be one
 label beneath that suffix. Lake is responsible for reserving unique app hosts.
 
+The operator also refuses, on its own and whatever lake accepted
+([#713](https://github.com/oramasearch/orama-operator/issues/713)), and marks the row `Failed`:
+
+- a host that is the Lake's own `spec.host`, its `LAKE_PUBLIC_HOST`, or its preview wildcard's base;
+- a host whose label is one of lake's built-in reserved names (`lake`, `www`, `api`, `app`, `apps`,
+  `admin`, `mcp`, `docs`, `status`, `mail`, `smtp`, `auth`, `login`, `sso`, `id`, `cdn`, `static`,
+  `assets`, `grafana`, `prometheus`, `argocd`, `registry`, `git`, `dev`, `staging`, `prod`, `test`)
+  or starts with `lake-` or `orama`. Lake checks these against the app's name only
+  ([lake#947](https://github.com/oramasearch/lake/issues/947)); a name in `LAKE_APPS_RESERVED_NAMES`
+  is lake's to refuse;
+- more than 100 replicas (lake's `app_replicas_check`);
+- a Zetta binding whose scopes are anything but `["read"]`.
+
+A synchronized app is placed only in a namespace labelled `orama.cloud/workspace=<row workspace>` and
+`orama.cloud/customer=<row customer>` by the workspaces reconciler, never in the Lake namespace;
+otherwise the LakeApp is `Degraded` with `NamespaceConflict`.
+
 ### Store mounts (lake#666)
 
 The sync reads lake's `store_mounts` rows for the app (with the `stores` they name) and writes them

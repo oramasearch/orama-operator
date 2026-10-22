@@ -331,8 +331,12 @@ func (r *LakeAppReconciler) reconcileLakeAppNamespace(ctx context.Context, app *
 		if err := r.reader().Get(ctx, client.ObjectKey{Name: name}, &existing); err != nil {
 			return fmt.Errorf("read workspace namespace %q: %w", name, err)
 		}
-		if existing.Labels[workspaceLabel] != app.Spec.Sync.WorkspaceID {
-			return fmt.Errorf("namespace %q is not owned by workspace %s", name, app.Spec.Sync.WorkspaceID)
+		// The namespace must be the workspace's own, labelled by the workspaces reconciler with the
+		// workspace and its customer, and never the Lake namespace: the operator decides this from
+		// the cluster, not from the row's workspace_namespace (#713).
+		if name == app.Namespace || existing.Labels[workspaceLabel] != app.Spec.Sync.WorkspaceID ||
+			existing.Labels[workspaceCustomerLabel] != app.Spec.Sync.CustomerID {
+			return fmt.Errorf("namespace %q is not owned by workspace %s of customer %s", name, app.Spec.Sync.WorkspaceID, app.Spec.Sync.CustomerID)
 		}
 		return nil
 	}

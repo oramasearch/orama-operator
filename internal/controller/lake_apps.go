@@ -335,7 +335,8 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 	if row.Desired != "running" && row.Desired != "stopped" {
 		return spec, errors.New("desired must be running, stopped or deleted")
 	}
-	if row.Port < 1 || row.Port > 65535 || row.Replicas < 0 {
+	// Lake's app_replicas_check allows 1 to 100; the operator holds the same ceiling itself (#713).
+	if row.Port < 1 || row.Port > 65535 || row.Replicas < 0 || row.Replicas > lakeAppMaxReplicas {
 		return spec, errors.New("app port or replicas is invalid")
 	}
 	if row.Desired == "stopped" {
@@ -362,6 +363,9 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 	if wildcard == "" || len(validation.IsDNS1123Subdomain(spec.Host)) != 0 || !strings.HasSuffix(spec.Host, "."+wildcard) || strings.Contains(strings.TrimSuffix(spec.Host, "."+wildcard), ".") {
 		return spec, errors.New("app host must be one label beneath the Lake apps wildcard")
 	}
+	if err := lakeAppHostNotPlatform(lake, spec.Host, wildcard); err != nil {
+		return spec, err
+	}
 	bindings, err := lakeAppRowBindings(row, services)
 	if err != nil {
 		return spec, err
@@ -378,6 +382,35 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 // lakeAppRowStores is the stores the app mounts, from store_mounts: a volume of the app's
 // workspace as its claim, a bucket as its connection and the Lake-namespace Secret its credential
 // was delivered to.
+// lakeAppMaxReplicas is lake's app_replicas_check ceiling (db/schema.sql, apps table).
+const lakeAppMaxReplicas = 100
+
+// lakeAppReservedLabels is lake's built-in reserved app names (reserved_name in
+// src/api/web_app_capabilities.cpp), plus the prefixes "lake-" and "orama" it also reserves. Lake
+// checks them against an app's name only, so an explicit host such as app.<wildcard> or
+// login.<wildcard> passed its intake (#713); the operator refuses them as the host's label.
+var lakeAppReservedLabels = map[string]bool{
+	"lake": true, "www": true, "api": true, "app": true, "apps": true, "admin": true, "mcp": true,
+	"docs": true, "status": true, "mail": true, "smtp": true, "auth": true, "login": true, "sso": true,
+	"id": true, "cdn": true, "static": true, "assets": true, "grafana": true, "prometheus": true,
+	"argocd": true, "registry": true, "git": true, "dev": true, "staging": true, "prod": true, "test": true,
+}
+
+// lakeAppHostNotPlatform refuses an app host that is a platform host: the Lake's own host or public
+// host, the preview wildcard's base, or a reserved label beneath the apps wildcard. A tenant's app
+// must never be routed, or certified, for a name Lake or the platform serves (#713).
+func lakeAppHostNotPlatform(lake *oramav1alpha1.Lake, host, wildcard string) error {
+	preview := strings.TrimPrefix(lake.Spec.PreviewWildcard, "*.")
+	if host == lake.Spec.Host || host == lakePublicHost(lake) || (preview != "" && host == preview) {
+		return errors.New("app host is a host of the Lake itself")
+	}
+	label := strings.TrimSuffix(host, "."+wildcard)
+	if lakeAppReservedLabels[label] || strings.HasPrefix(label, "lake-") || strings.HasPrefix(label, "orama") {
+		return fmt.Errorf("app host label %q is reserved for the platform", label)
+	}
+	return nil
+}
+
 func lakeAppRowStores(lake *oramav1alpha1.Lake, row *LakeAppRow, storeRows lakeAppStoreRows) []oramav1alpha1.LakeAppStoreMount {
 	resolved := withoutReservedPaths(
 		resolveStoreMounts(lake, storeRows.stores, storeRows.mounts, StoreMountKindApp, row.ID, row.CustomerID, row.WorkspaceID),
@@ -434,8 +467,10 @@ func lakeAppRowBindings(row *LakeAppRow, services []LakeService) (*oramav1alpha1
 	}
 	bindings := &oramav1alpha1.LakeAppBindings{ServiceNames: map[string]string{}}
 	if desired.Zetta != nil {
-		if len(desired.Zetta.Scopes) == 0 {
-			return nil, errors.New("zetta binding requires read scopes")
+		// Lake's normalized_bindings stores exactly [read]; the operator refuses anything else
+		// itself rather than mint a wider Zetta credential from a row (#713).
+		if scopes := sortedUnique(desired.Zetta.Scopes); len(scopes) != 1 || scopes[0] != "read" {
+			return nil, errors.New("zetta binding scopes must be [read]")
 		}
 		bindings.Zetta = &oramav1alpha1.LakeAppZettaBinding{CustomerID: row.CustomerID, Scopes: sortedUnique(desired.Zetta.Scopes)}
 	}

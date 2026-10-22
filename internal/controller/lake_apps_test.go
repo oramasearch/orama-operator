@@ -141,7 +141,7 @@ func newAppsSyncHarness(t *testing.T, kubeClient client.Client) *appsSyncHarness
 	for _, object := range []client.Object{
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lake"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
-			Name: testWorkspaceName, Labels: map[string]string{workspaceLabel: testWorkspaceID},
+			Name: testWorkspaceName, Labels: map[string]string{workspaceLabel: testWorkspaceID, workspaceCustomerLabel: testServiceCustomer},
 		}},
 		lake,
 	} {
