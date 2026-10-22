@@ -35,7 +35,8 @@ const (
 	// secretPurposeLabel on a Secret on the managing cluster names the one cluster purpose it may be
 	// copied into (`nonprod`, `production`). A Secret with it is never copied into a member whose
 	// cluster has another purpose.
-	secretPurposeLabel = "orama.cloud/purpose"
+	// The same key as instancePurposeLabel, which a set writes on the instances it creates.
+	secretPurposeLabel = instancePurposeLabel
 	// productionPurpose is the `purpose` tag of a production cluster.
 	productionPurpose = "production"
 )

@@ -424,6 +424,11 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if err != nil {
 		return err
 	}
+	// A production instance's dashboard is not written without its production authentication
+	// settings (dashboard_production.go, #794).
+	if err := r.checkDashboardProductionAuth(ctx, oc, sources); err != nil {
+		return err
+	}
 	// The dashboard signs in to the control DB as its own role (#99): until that role's grants
 	// apply, the Deployment is left as it is.
 	if ready, err := r.dashboardRoleReady(ctx, oc); err != nil || !ready {
