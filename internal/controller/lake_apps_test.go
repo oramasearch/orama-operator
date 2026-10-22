@@ -237,7 +237,7 @@ func TestLakeAppsEnvtestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	environment := &envtest.Environment{BinaryAssetsDirectory: assets, CRDDirectoryPaths: []string{crdPath}, ErrorIfCRDPathMissing: true}
+	environment := &envtest.Environment{BinaryAssetsDirectory: assets, CRDDirectoryPaths: []string{crdPath}, CRDs: certManagerTestCRDs(), ErrorIfCRDPathMissing: true}
 	config, err := environment.Start()
 	if err != nil {
 		t.Fatal(err)

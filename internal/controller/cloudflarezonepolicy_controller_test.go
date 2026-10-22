@@ -31,6 +31,8 @@ type fakeCloudflareZone struct {
 	mu       sync.Mutex
 	settings map[string]string
 	records  []cfDNSRecord
+	// name is the zone's name, answered at GET /zones/zone-1; empty answers 404.
+	name string
 	// deny maps "METHOD setting" (or "GET dns_records") to a 403.
 	deny    map[string]bool
 	patches []string
@@ -46,6 +48,16 @@ func (z *fakeCloudflareZone) handler(t *testing.T) http.Handler {
 		}
 		path := strings.TrimPrefix(r.URL.Path, "/zones/zone-1/")
 		switch {
+		case r.URL.Path == "/zones/zone-1" && r.Method == http.MethodGet:
+			if z.deny["GET zone"] {
+				http.Error(w, `{"success":false}`, http.StatusForbidden)
+				return
+			}
+			if z.name == "" {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"id": "zone-1", "name": z.name}})
 		case path == "dns_records" && r.Method == http.MethodGet:
 			if z.deny["GET dns_records"] {
 				http.Error(w, `{"success":false}`, http.StatusForbidden)
@@ -320,5 +332,49 @@ func TestEdgeProbeNames(t *testing.T) {
 	}
 	if fmt.Sprint(edgeOriginEncrypted("flexible"), edgeOriginEncrypted("full"), edgeOriginEncrypted("strict"), edgeOriginEncrypted("")) != "false true true false" {
 		t.Error("only full and strict reach the origin over TLS")
+	}
+}
+
+// The zone's name is reported for the Lakes' per-host choice of ACME solver (operator#632). A
+// token that may not read it is named, the zone's settings are still applied, and a name read
+// before is kept, so the Lakes never fall back from what they had.
+func TestZonePolicyReportsTheZoneName(t *testing.T) {
+	zone := &fakeCloudflareZone{
+		settings: map[string]string{"ssl": "strict", "tls_client_auth": "on", "always_use_https": "on"},
+		records:  zoneRecords(),
+		name:     "Lake.Live",
+	}
+	_, _, reconcile := newZonePolicyFixture(t, zone, fakeEdgeProber{})
+	policy := reconcile()
+	if policy.Status.Zone != "lake.live" || conditionStatus(policy, edgeConditionZoneName) != "True" || policy.Status.Phase != edgePhaseReady {
+		t.Fatalf("status = %+v", policy.Status)
+	}
+
+	zone.mu.Lock()
+	zone.deny = map[string]bool{"GET zone": true}
+	zone.mu.Unlock()
+	policy = reconcile()
+	if policy.Status.Zone != "lake.live" {
+		t.Errorf("a refused read forgot the zone's name: %+v", policy.Status)
+	}
+	if policy.Status.Phase != edgePhaseReady {
+		t.Errorf("a refused name read changed the phase: %s %q", policy.Status.Phase, policy.Status.Message)
+	}
+	for _, c := range policy.Status.Conditions {
+		if c.Type == edgeConditionZoneName && (c.Status != metav1.ConditionFalse || !strings.Contains(c.Message, cfPermissionZoneRead)) {
+			t.Errorf("ZoneName condition = %+v, want False naming %q", c, cfPermissionZoneRead)
+		}
+	}
+
+	// Never read: no name, and the settings are still applied.
+	fresh := &fakeCloudflareZone{
+		settings: map[string]string{"ssl": "full", "tls_client_auth": "off", "always_use_https": "off"},
+		records:  zoneRecords(),
+		deny:     map[string]bool{"GET zone": true},
+	}
+	_, _, reconcileFresh := newZonePolicyFixture(t, fresh, fakeEdgeProber{})
+	policy = reconcileFresh()
+	if policy.Status.Zone != "" || fresh.settings["ssl"] != "strict" || conditionStatus(policy, edgeConditionZoneName) != "False" {
+		t.Errorf("status = %+v settings = %v", policy.Status, fresh.settings)
 	}
 }

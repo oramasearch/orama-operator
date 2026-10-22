@@ -15,25 +15,69 @@ changes a zone's settings), `internal/controller/oramazettacluster_controller.go
 
 ```
 browser ──HTTPS (edge certificate)──▶ Cloudflare ──HTTPS, Full (strict), client certificate──▶ ingress-nginx ──▶ Lake / app / environment
-                                                     origin certificate: Let's Encrypt, DNS-01
+                                                     origin certificate: Let's Encrypt, DNS-01 in the Lake's zone, HTTP-01 elsewhere
 ```
 
 | Leg | What secures it | Where it comes from |
 |---|---|---|
 | Browser to Cloudflare | The edge certificate (Universal SSL covers the zone apex and one level below it) and **Always Use HTTPS** | The zone; Always Use HTTPS set by `CloudflareZonePolicy` |
 | Cloudflare to the origin | **Full (strict)**: TLS, with the origin's certificate verified | The zone mode, set by `CloudflareZonePolicy` once every origin certificate is valid |
-| The origin's certificate | Let's Encrypt, issued and renewed by cert-manager, DNS-01 through the Lake's `dnsSecretRef` | The Lake's `Issuer`; one certificate per host, or a wildcard |
+| The origin's certificate | Let's Encrypt, issued and renewed by cert-manager: DNS-01 through the Lake's `dnsSecretRef` for names in its zone, HTTP-01 for any other name | The Lake's `Issuer`; one certificate per host, or a wildcard (DNS-01 only) |
 | Only Cloudflare reaches the origin | **Authenticated origin pulls**: Cloudflare presents its client certificate, and every Lake Ingress requires it | The zone setting `tls_client_auth`, set by `CloudflareZonePolicy`; the requirement on each Ingress, set by the Lake once the zone has it |
 | Plain HTTP | Redirected to HTTPS by nginx on every Lake host, and by Cloudflare zone-wide once every host has an edge certificate | The Ingresses, once the zone's mode is Full or stricter |
 
 ## Certificates
 
-Each Lake with a `dnsSecretRef` owns a namespaced cert-manager **Issuer**
-`lake-<name>-letsencrypt` in its namespace: Let's Encrypt production, one DNS-01 solver through the
-Secret's `token` key. Each environment therefore uses its own zone's token: `lake.live` Lakes the
-`lake.live` token, nonprod Lakes the `oramadev.net` one. cert-manager writes the ACME account key
-into `lake-<name>-letsencrypt-account`. Wildcards need DNS-01, which is why there is no HTTP-01
-solver.
+Each Lake owns a namespaced cert-manager **Issuer** `lake-<name>-letsencrypt` in its namespace:
+Let's Encrypt production. cert-manager writes the ACME account key into
+`lake-<name>-letsencrypt-account`.
+
+### The solver is chosen per host ([operator#632](https://github.com/oramasearch/orama-operator/issues/632))
+
+A host whose zone has a DNS-01 credential is always solved with DNS-01; any other host with
+HTTP-01. The choice is made per host, from the Lake's `dnsSecretRef` and the zone its
+`EdgeZonePolicy` reads, never per cluster: every cluster runs the same code, and two Lakes on one
+cluster can differ only by their own `dnsSecretRef`.
+
+| The Lake | The Issuer's solvers | So |
+|---|---|---|
+| Has a `dnsSecretRef`, and its zone's name is known (`EdgeZonePolicy` `status.zone`) | DNS-01 through the Secret's `token`, with the selector `dnsZones: [<zone>]`; then HTTP-01 with no selector | The zone and every name under it (the Lake's host, apex, wildcards, apps and named environments in the zone) use DNS-01: cert-manager always prefers a solver whose `dnsZones` matches over one with no selector. A custom domain in another zone uses HTTP-01 |
+| Has a `dnsSecretRef`, zone not read yet (or never readable) | DNS-01 alone, no selector | Every name uses DNS-01, as before HTTP-01 existed. A name outside the zone cannot be issued until the zone is read |
+| Has no `dnsSecretRef` (an install that brings its own DNS) | HTTP-01 alone | Every host is issued through HTTP-01. The Lake renders no wildcard Ingress and asks for no wildcard certificate: wildcards need DNS-01 |
+
+Each environment therefore uses its own zone's token: `lake.live` Lakes the `lake.live` token,
+nonprod Lakes the `oramadev.net` one. The zone's name is read by `CloudflareZonePolicy` with
+`GET /zones/<zoneID>`, which needs Zone > Zone > Read; cert-manager's Cloudflare DNS-01 solver
+already needs the same permission to find a name's zone, so a token that issues certificates today
+has it. A token without it is named in the policy's `ZoneName` condition, and the Lake keeps DNS-01
+for every name.
+
+### HTTP-01: what must reach the origin
+
+Let's Encrypt fetches `http://<host>/.well-known/acme-challenge/<token>` on port 80. cert-manager
+answers it with a temporary Ingress of the Lake's ingress class (`spec.ingressClassName`, default
+`nginx`) in the Lake namespace, for that host and path only.
+
+- **On the origin nothing is needed.** ingress-nginx never redirects the challenge path to HTTPS
+  (its default `no-tls-redirect-locations` is `/.well-known/acme-challenge`), and the client
+  certificate of authenticated origin pulls is checked on HTTPS only, so a Lake Ingress with the
+  redirect and the requirement on does not block the challenge on port 80.
+- **The host's DNS must lead to this cluster's ingress controller on port 80.** That is the case
+  for a host that points at the load balancer directly (DNS only), which is how an install that
+  brings its own DNS and a custom domain in someone else's zone are normally set up.
+- **Behind a Cloudflare proxy it is not reliable, which is why no host in a zone the Lake has a
+  credential for ever uses it.** Cloudflare does not exempt the challenge path from Always Use
+  HTTPS; Let's Encrypt follows the redirect to HTTPS, and under Full (strict) Cloudflare then needs
+  a valid origin certificate for the host, which is the certificate being issued, and the origin
+  needs Cloudflare's client certificate once authenticated origin pulls are on. Every host in our
+  Cloudflare zones has the zone's credential and stays on DNS-01. A custom domain that its owner
+  proxies through their own Cloudflare zone must keep Always Use HTTPS off for it, or use their
+  zone's SSL mode Full (not strict), until its first certificate is issued; or point it at the
+  origin unproxied.
+- **Previews are not issued through HTTP-01.** Let's Encrypt allows 50 new certificates per
+  registered domain per week, so a certificate per preview would soon also block the Lake's other
+  hosts. A preview host that no preview wildcard certificate covers (a Lake without a
+  `dnsSecretRef`) stays on HTTP; its custom domains are still issued.
 
 | Ingress | Hosts | Certificate |
 |---|---|---|
@@ -63,13 +107,16 @@ solver.
 - **The wildcard Ingresses** make the origin present the wildcard certificate for any name under it,
   so the zone check below passes for the wildcard DNS record. A name with no app or environment is
   answered with a permanent redirect to `https://<host>/`; it never reaches a workload.
-- **No HTTP-only fallback.** A Lake with an Ingress but neither `dnsSecretRef` nor `tls.secretName`
-  fails its reconcile and says so; no Ingress is written. A public Zetta without `dnsSecretRef` fails
-  the same way. **Known gap:** apps and environments of a Lake without a `dnsSecretRef` (an install
-  that brings its own DNS) have no certificate source and stay on HTTP until HTTP-01 issuance is built.
-- **Hosts outside the Lake's zone** (a custom domain in another zone) cannot pass DNS-01 through the
-  Lake's token: the host's `Certificate` stays not ready and nginx serves it without a certificate,
-  as before. The DNS record for such a domain is not in the Lake's zone either.
+- **Every host has a certificate source.** A Lake with an Ingress and no `tls.secretName` has its
+  hosts issued by its Issuer, through DNS-01 or HTTP-01 as above; a Lake without a `dnsSecretRef` is
+  no longer refused. Until a certificate is issued ingress-nginx serves the host with its default
+  certificate and no redirect, as for any certificate not issued yet. A public Zetta without
+  `dnsSecretRef` still fails its reconcile (its Ingress has no HTTP-01 path yet).
+- **Hosts outside the Lake's zone** (a custom domain in another zone) are issued through HTTP-01
+  once the zone's name is known. The DNS record for such a domain is not in the Lake's zone; its
+  owner points it at the cluster.
+- **A Lake without a `dnsSecretRef` has no zone policy**, so its Ingresses get neither the redirect
+  nor the client-certificate requirement: the operator does not know what is in front of it.
 
 ## The zone: `EdgeProvider`, `EdgeZonePolicy`, `CloudflareZonePolicy`
 
@@ -118,6 +165,7 @@ On the zone, the API token in `dnsSecretRef` needs:
 |---|---|
 | Zone > DNS > Edit | DNS records (already required) and DNS-01 challenges; includes DNS Read, which lists the proxied records |
 | **Zone > Zone Settings > Edit** | Reading and setting `ssl`, `ssl_automatic_mode`, `tls_client_auth`, `always_use_https` |
+| Zone > Zone > Read | Reading the zone's name, so names outside it are issued through HTTP-01 ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)); cert-manager's DNS-01 solver already needs it |
 
 A token without Zone Settings is reported by name: the policy goes `Failed` with the message
 *"the API token may not read the zone's settings: add Zone > Zone Settings > Read (Edit includes it)

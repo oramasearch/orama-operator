@@ -79,6 +79,7 @@ const (
 	edgeConditionOriginTLSStrict    = "OriginTLSStrict"
 	edgeConditionOriginPulls        = "AuthenticatedOriginPulls"
 	edgeConditionAlwaysUseHTTPS     = "AlwaysUseHTTPS"
+	edgeConditionZoneName           = "ZoneName"
 
 	// edgeZoneRecheck is how often the zone is read and its hosts probed. A probe is a TLS
 	// handshake per proxied host; status is written only when something changes.
@@ -96,6 +97,7 @@ const (
 	cfPermissionSettingsRead = "Zone > Zone Settings > Read (Edit includes it)"
 	cfPermissionSettingsEdit = "Zone > Zone Settings > Edit"
 	cfPermissionDNSRead      = "Zone > DNS > Read (Edit includes it)"
+	// cfPermissionZoneRead ("Zone > Zone > Read") is declared with the host policy's permissions.
 )
 
 // edgeProber checks hosts with TLS handshakes. Tests replace it.
@@ -218,6 +220,26 @@ func (r *CloudflareZonePolicyReconciler) setting(ctx context.Context, token, zon
 
 func (r *CloudflareZonePolicyReconciler) setSetting(ctx context.Context, token, zoneID, name, value string) error {
 	return cfDo(ctx, token, http.MethodPatch, fmt.Sprintf("%s/zones/%s/settings/%s", r.api(), zoneID, name), map[string]string{"value": value}, nil)
+}
+
+type cfZoneResponse struct {
+	Result struct {
+		Name string `json:"name"`
+	} `json:"result"`
+}
+
+// zoneName reads the zone's name (its apex domain). cert-manager's Cloudflare DNS-01 solver needs
+// the same permission, Zone > Zone > Read, to find the zone of a name.
+func (r *CloudflareZonePolicyReconciler) zoneName(ctx context.Context, token, zoneID string) (string, error) {
+	var out cfZoneResponse
+	if err := cfDo(ctx, token, http.MethodGet, fmt.Sprintf("%s/zones/%s", r.api(), zoneID), nil, &out); err != nil {
+		return "", err
+	}
+	name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(out.Result.Name)), ".")
+	if name == "" {
+		return "", errors.New("the zone has no name")
+	}
+	return name, nil
 }
 
 type cfDNSRecordList struct {
@@ -355,7 +377,16 @@ func (r *CloudflareZonePolicyReconciler) observe(ctx context.Context, policy *or
 		failing = failing[:edgeZoneHostLimit]
 	}
 
+	// The zone's name, for the Lakes' per-host choice of ACME solver. A refused read does not stop
+	// the settings below; the last observed name is kept, and without one the Lakes keep DNS-01 for
+	// every name.
+	zoneName, zoneNameErr := r.zoneName(ctx, token, zone)
+	if zoneNameErr != nil {
+		zoneName = previous.Zone
+	}
+
 	status := oramav1alpha1.EdgeZonePolicyStatus{
+		Zone:              zoneName,
 		OriginClientCAPEM: cloudflareOriginPullCA,
 		ProxiedHosts:      int32(len(records)),
 		Hosts:             failing,
@@ -426,6 +457,18 @@ func (r *CloudflareZonePolicyReconciler) observe(ctx context.Context, policy *or
 		"the edge redirects plain HTTP to HTTPS",
 		"Always Use HTTPS waits until every proxied host has a valid edge certificate"))
 
+	zoneNameCondition := metav1.Condition{Type: edgeConditionZoneName, Status: metav1.ConditionTrue, Reason: "Read",
+		Message: "the zone's name is " + zoneName + "; names outside it are issued through HTTP-01"}
+	if zoneNameErr != nil {
+		zoneNameCondition.Status, zoneNameCondition.Reason = metav1.ConditionFalse, "Unreadable"
+		zoneNameCondition.Message = cfErrorMessage("read the zone's name", zoneNameErr, cfPermissionZoneRead) +
+			"; until it is read, every certificate of the zone's Lakes is issued through DNS-01"
+		if zoneName != "" {
+			zoneNameCondition.Message = cfErrorMessage("read the zone's name", zoneNameErr, cfPermissionZoneRead) +
+				"; the last observed name, " + zoneName + ", is kept"
+		}
+	}
+
 	switch {
 	case len(changeErrors) > 0:
 		status.Phase = edgePhaseFailed
@@ -444,7 +487,7 @@ func (r *CloudflareZonePolicyReconciler) observe(ctx context.Context, policy *or
 		}
 		status.Message = strings.Join(waiting, "; ")
 	}
-	status.Conditions = conditions
+	status.Conditions = append(conditions, zoneNameCondition)
 	return status
 }
 

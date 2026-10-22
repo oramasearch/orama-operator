@@ -39,7 +39,7 @@ type CloudflareEdgeProviderSpec struct {
 
 	// APITokenSecretRef names the API token in this namespace. What it must be allowed depends on
 	// the kinds that use the provider. An EdgeZonePolicy needs, on its zone: Zone > Zone Settings >
-	// Edit and Zone > DNS > Read (DNS > Edit includes it). An EdgeHostPolicy needs, on each host's
+	// Edit, Zone > DNS > Read (DNS > Edit includes it) and Zone > Zone > Read (the zone's name). An EdgeHostPolicy needs, on each host's
 	// zone: Zone > Zone > Read, Zone > Config Rules > Edit (API permission group "Config Settings
 	// Write", for originTLS) and Zone > Single Redirect > Edit ("Dynamic URL Redirects Write", for
 	// redirectToHTTPS). The operator never writes or logs it.
@@ -151,6 +151,12 @@ type EdgeZonePolicyStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
+	// Zone is the zone's name (its apex domain, such as lake.live) as the provider reports it. A
+	// Lake's Issuer solves DNS-01 for this zone and every name under it, and HTTP-01 for any other
+	// name; until the zone is known it solves DNS-01 for every name (operator#632).
+	// +optional
+	Zone string `json:"zone,omitempty"`
+
 	// OriginEncryption is the zone's observed mode: off, flexible, full or strict. An origin may
 	// redirect HTTP to HTTPS only when it is full or strict; under flexible that is a loop.
 	// +optional
@@ -181,7 +187,7 @@ type EdgeZonePolicyStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions: Credentials, OriginCertificates, EdgeCertificates, OriginTLSStrict,
-	// AuthenticatedOriginPulls, AlwaysUseHTTPS.
+	// AuthenticatedOriginPulls, AlwaysUseHTTPS, ZoneName.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -222,8 +228,8 @@ type CloudflareZonePolicySpec struct {
 	// +kubebuilder:validation:MinLength=1
 	ZoneID string `json:"zoneID"`
 
-	// APITokenSecretRef is the provider's token: Zone > Zone Settings > Edit and Zone > DNS > Read
-	// on the zone.
+	// APITokenSecretRef is the provider's token: Zone > Zone Settings > Edit, Zone > DNS > Read and
+	// Zone > Zone > Read on the zone.
 	APITokenSecretRef EdgeProviderSecretKeyRef `json:"apiTokenSecretRef"`
 }
 

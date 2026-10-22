@@ -1014,16 +1014,20 @@ operator (`EdgeZonePolicy`); see [Lake origin TLS](#lake-origin-tls-lake_origin_
 
 The contract is [`lake/origin-tls.md`](lake/origin-tls.md). What the reconcilers create:
 
-- **`LakeReconciler`**: with a `dnsSecretRef`, the `Issuer` `lake-<name>-letsencrypt` (DNS-01 through
-  the Secret's `token`), and an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for the
+- **`LakeReconciler`**: always the `Issuer` `lake-<name>-letsencrypt`, its solver chosen per host
+  ([#632](https://github.com/oramasearch/orama-operator/issues/632)): DNS-01 through the
+  `dnsSecretRef` Secret's `token` for names in its zone (`EdgeZonePolicy` `status.zone`), HTTP-01
+  through the Lake's ingress class for any other name, and HTTP-01 alone without a `dnsSecretRef`.
+  With a `dnsSecretRef`, also an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for the
   Secret's `zoneID`. Its Ingress `lake-<name>` gets `applyIngressTLS` for `host` and `apexHost` (or the
   hand-supplied `spec.tls.secretName`). Two more Ingresses, `lake-<name>-apps-wildcard` and
   `lake-<name>-preview-wildcard`, request the wildcard certificates and answer unknown names with a
-  permanent redirect to the Lake's host. No `dnsSecretRef` and no `tls.secretName`: the reconcile fails.
+  permanent redirect to the Lake's host; they exist only with a `dnsSecretRef` (wildcards need DNS-01).
 - **`LakeAppReconciler`, `LakeEnvironmentReconciler`**: each host's certificate is issued in the Lake
   namespace (the wildcard's, or a `Certificate` `<host>-tls` owned by the app or environment) and
   copied next to the Ingress in the workspace namespace; the copies follow renewals and are removed
-  with the host or the workload.
+  with the host or the workload. A preview host no preview wildcard covers is not issued
+  (`lakeIssuableHosts`).
 - **Every Lake Ingress** takes `ssl-redirect` and the client-certificate requirement from the
   `EdgeZonePolicy` status (`applyLakeEdgeAnnotations`): the redirect only when the edge reaches the
   origin over TLS and has a certificate for every host of the Ingress; the requirement
@@ -1031,7 +1035,7 @@ The contract is [`lake/origin-tls.md`](lake/origin-tls.md). What the reconcilers
   pulls on.
 - **`EdgeZonePolicyReconciler`** creates the owned `CloudflareZonePolicy` and copies its status;
   **`CloudflareZonePolicyReconciler`** reads the zone and its proxied records every ten minutes, probes
-  each host's origin and edge, and turns on Full, Full (strict), authenticated origin pulls and Always
+  each host's origin and edge, reports the zone's name (`status.zone`), and turns on Full, Full (strict), authenticated origin pulls and Always
   Use HTTPS in that order, each when its check passes. It never turns one off.
 - **`OramaZettaClusterReconciler`**: a public Zetta's Ingress gets its own `Issuer` `<name>-letsencrypt`
   from its `dnsSecretRef` and `applyIngressTLS`; without a `dnsSecretRef` the reconcile fails.
