@@ -86,7 +86,7 @@ spec:
           credentialsSecretRef: {name: v1-nonprod-prod1-settings-ssm}
   # Nonprod's own Secrets: none of these is one a production set copies (orama-operator#789). The
   # operator refuses to copy a production set's Secret into a nonprod member, and
-  # TestCommittedSetsNeverShareASecretAcrossPurposes fails on one. Each is copied under the name the
+  # TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes fails on one. Each is copied under the name the
   # stack already mounts, so the copy of the production Secret in v1-dev is overwritten in place.
   secrets:
   - name: oramasearch-dockerhub-nonprod       # a Docker Hub pull token for nonprod only

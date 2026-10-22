@@ -15,6 +15,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -105,6 +106,26 @@ func (r *OramaOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			err = fmt.Errorf("image pull Secret %s/%s does not exist on this cluster", ref.Namespace, ref.Name)
 		}
 		return r.fail(ctx, &operator, observed, "PullSecretUnavailable", err)
+	}
+	// A Secret production uses never reaches a cluster that is not production (orama-operator#832),
+	// by the same rule as a set's copies (managedset_secret_scope.go).
+	scope, err := operatorSecretScope(ctx, r.Client, operator.Spec.ClusterRef)
+	if err != nil {
+		return r.fail(ctx, &operator, observed, "ClusterUnreadable", err)
+	}
+	copyName := firstNonEmpty(operator.Spec.ImagePullSecretAs, ref.Name)
+	if refused := scope.refuse(oramav1alpha1.SetSecret{Name: ref.Name, Namespace: ref.Namespace}, copyName, pullSecret); refused != nil {
+		// The resource as written, not a fault to retry quickly: nothing reaches the cluster until
+		// the resource or the Secret's label is changed, and it is looked at again occasionally.
+		setClusterStatus(&operator.Status.Phase, &operator.Status.Message, &operator.Status.Conditions,
+			operator.Generation, clusterPhaseDegraded, "ProductionCredential", refused.Error())
+		return settle(ctrl.Result{RequeueAfter: leafOperatorSteadyRecheck}, r.writeStatus(ctx, &operator, observed))
+	}
+	// The copy on the cluster, under its own name there; the source is never written.
+	pullSecret = &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: copyName, Namespace: pullSecret.Namespace},
+		Type:       pullSecret.Type,
+		Data:       pullSecret.Data,
 	}
 	chartRepository := operator.Spec.ChartRepository
 	if chartRepository == "" {

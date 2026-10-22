@@ -235,11 +235,12 @@ func TestAMigrationsProd1CredentialsReachAProductionMember(t *testing.T) {
 	}
 }
 
-// TestCommittedSetsNeverShareASecretAcrossPurposes is the static form of the rule over the files in
-// config/clusters/sets (LSR-040's "statically list every Secret source per set and assert the prod
-// and nonprod sets are disjoint"). A set's purpose is its clusters' purpose tag, read from
-// config/clusters/<cluster>/cluster.yaml.
-func TestCommittedSetsNeverShareASecretAcrossPurposes(t *testing.T) {
+// TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes is the static form of the rule over
+// the files in config/clusters/sets and config/clusters/<cluster>/operator.yaml (LSR-040's
+// "statically list every Secret source per set and assert the prod and nonprod sets are disjoint",
+// and orama-operator#832 for the OramaOperators' pull Secrets). A set's purpose is its clusters'
+// purpose tag, read from config/clusters/<cluster>/cluster.yaml; an OramaOperator's is its cluster's.
+func TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes(t *testing.T) {
 	root := filepath.Join("..", "..", "config", "clusters")
 	purposeOf := map[string]string{}
 	clusterFiles, err := filepath.Glob(filepath.Join(root, "*", "cluster.yaml"))
@@ -294,6 +295,30 @@ func TestCommittedSetsNeverShareASecretAcrossPurposes(t *testing.T) {
 			}
 		}
 	}
+	operatorFiles, err := filepath.Glob(filepath.Join(root, "*", "operator.yaml"))
+	if err != nil || len(operatorFiles) == 0 {
+		t.Fatalf("no operator files: %v", err)
+	}
+	for _, file := range operatorFiles {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var operator oramav1alpha1.OramaOperator
+		if err := yaml.Unmarshal(raw, &operator); err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		purpose := purposeOf[operator.Spec.ClusterRef]
+		if purpose == "" {
+			t.Fatalf("%s: cluster %s has no cluster file with a purpose tag", file, operator.Spec.ClusterRef)
+		}
+		ref := operator.Spec.ImagePullSecretRef
+		key := ref.Namespace + "/" + ref.Name
+		if usedBy[key] == nil {
+			usedBy[key] = map[string][]string{}
+		}
+		usedBy[key][purpose] = append(usedBy[key][purpose], filepath.Join(filepath.Base(filepath.Dir(file)), "operator.yaml"))
+	}
 	var crossing []string
 	for source, purposes := range usedBy {
 		if len(purposes) > 1 {
@@ -302,7 +327,7 @@ func TestCommittedSetsNeverShareASecretAcrossPurposes(t *testing.T) {
 	}
 	sort.Strings(crossing)
 	if len(crossing) > 0 {
-		t.Fatalf("Secrets copied by sets of more than one purpose; nonprod gets its own:\n  %s", strings.Join(crossing, "\n  "))
+		t.Fatalf("Secrets copied by sets or OramaOperators of more than one purpose; nonprod gets its own:\n  %s", strings.Join(crossing, "\n  "))
 	}
 }
 

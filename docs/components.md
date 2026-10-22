@@ -1857,7 +1857,9 @@ instances onto managed clusters from one template, each member in its own namesp
 Before it copies a Secret into a member it refuses a production credential for a member whose cluster
 is not production (`managedset_secret_scope.go`, [#787](https://github.com/oramasearch/orama-operator/issues/787),
 [#789](https://github.com/oramasearch/orama-operator/issues/789);
-[the rule](crd-reference.md#production-credentials-never-reach-a-nonprod-member)).
+[the rule](crd-reference.md#production-credentials-never-reach-a-nonprod-member)). `OramaOperator`
+applies the same rule to the pull Secret it copies to the cluster it installs onto, and counts as
+production for the sets when its cluster is ([#832](https://github.com/oramasearch/orama-operator/issues/832)).
 An `OramaCloudV1Set` also applies its members' team migrations as `OramaCloudV1Migration`s
 (`managedset_migrations.go`, [#654](https://github.com/oramasearch/orama-operator/issues/654);
 [`cloud-v1-migration.md`](cloud-v1-migration.md#declared-in-the-set-oramacloudv1set)).
