@@ -152,7 +152,7 @@ func productionSecretSources(ctx context.Context, r *managedSetReconciler) (map[
 	sort.Slice(v1Sets.Items, func(i, j int) bool { return v1Sets.Items[i].Name < v1Sets.Items[j].Name })
 	for index := range lakeSets.Items {
 		set := &lakeSets.Items[index]
-		if err := addSet("LakeSet "+set.Name, &set.Spec, set.Status.Purpose); err != nil {
+		if err := addSet("LakeSet "+set.Name, &set.Spec.ManagedSetSpec, set.Status.Purpose); err != nil {
 			return nil, err
 		}
 	}
