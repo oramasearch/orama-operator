@@ -34,7 +34,7 @@ const testPeerID = "a0000000-0000-4000-8000-00000000000a"
 
 // peerCluster is one fake cluster with a namespace, its owned sandbox and a PeerConnection.
 type peerCluster struct {
-	kube client.Client
+	kube client.WithWatch
 	r    *PeerConnectionReconciler
 	ns   string
 	name string
@@ -341,6 +341,10 @@ func TestPeerConnectionRehearsalBetweenTwoClusters(t *testing.T) {
 		var secret corev1.Secret
 		if err := end.kube.Get(ctx, client.ObjectKey{Namespace: end.ns, Name: "eu-us-credentials"}, &secret); !apierrors.IsNotFound(err) {
 			t.Fatalf("credentials remain in %s (%v)", end.ns, err)
+		}
+		end.reconcile(t)
+		if err := end.kube.Get(ctx, client.ObjectKey{Namespace: end.ns, Name: "eu-us-gateway"}, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("PeerLink deletion left the gateway authorized in %s (%v)", end.ns, err)
 		}
 	}
 }
