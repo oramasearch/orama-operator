@@ -113,8 +113,84 @@ ai_server:
       default_model: "claude-sonnet-4-5"
 `
 
-// combinedRenderCommand is the render-config script of every engine pod without side-only images and
-// with the default providers.
+// combinedReaderConfigFixture is combined-reader.yaml for the same CR (#795, LSR-133): the combined
+// config with the writer's master key replaced by a key render-config generates, and both sections
+// signed in as oramacore-reader, the writer section producing to oramacore-reader-local.
+const combinedReaderConfigFixture = `http:
+  host: 0.0.0.0
+  port: 8080
+  allow_cors: true
+  with_prometheus: true
+log: {}
+writer_side:
+  output:
+    type: rabbitmq
+    host: v1-broker
+    port: 5552
+    user: oramacore-reader
+    password: '__BROKER_PASSWORD__'
+    v_host: /
+    stream_name: oramacore-reader-local
+    client_provided_name: oramacore-reader-local
+    producer_name: write
+` + v1HooksFixture + `  master_api_key: '__LOCAL_WRITER_KEY__'
+  config:
+    data_dir: /app/.data/writer
+    embedding_queue_limit: 50000
+    insert_batch_commit_size: 50000000
+    default_embedding_model: BGESmall
+    javascript_queue_limit: 500000
+    commit_interval: 1m
+reader_side:
+  input:
+    type: rabbitmq
+    host: v1-broker
+    port: 5552
+    user: oramacore-reader
+    password: '__BROKER_PASSWORD__'
+    v_host: /
+    stream_name: oramacore-operations
+    client_provided_name: oramacore-reader
+    consumer_name: reader
+` + v1HooksFixture + `  config:
+    data_dir: /app/.data/reader
+    insert_batch_commit_size: 50000000
+    commit_interval: 1m
+ai_server:
+  scheme: http
+  host: v1-embeddings
+  port: 50051
+  api_key: ""
+  max_connections: 15
+  total_threads: 12
+  embeddings:
+    default_model_group: small
+    dynamically_load_models: false
+    execution_providers:
+      - CPUExecutionProvider
+    total_threads: 8
+  llm:
+    local: false
+    host: "https://api.groq.com/openai/v1"
+    model: "openai/gpt-oss-120b"
+    api_key: '__GROQ_API_KEY__'
+  remote_llms:
+    - provider: openai
+      api_key: '__OPENAI_API_KEY__'
+      default_model: "gpt-5.2"
+    - provider: google
+      api_key: '__GOOGLE_API_KEY__'
+      default_model: "gemini-2.0-flash-001"
+    - provider: groq
+      api_key: '__GROQ_API_KEY__'
+      default_model: "openai/gpt-oss-120b"
+    - provider: anthropic
+      api_key: '__ANTHROPIC_API_KEY__'
+      default_model: "claude-sonnet-4-5"
+`
+
+// combinedRenderCommand is the render-config script of the writer without side-only images and with
+// the default providers.
 const combinedRenderCommand = `esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e 's/[\\&#]/\\&/g'; }; sed` +
 	` -e "s#__MASTER_API_KEY__#$(esc "${MASTER_API_KEY}")#g"` +
 	` -e "s#__BROKER_PASSWORD__#$(esc "${BROKER_PASSWORD}")#g"` +
@@ -123,6 +199,18 @@ const combinedRenderCommand = `esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e '
 	` -e "s#__GROQ_API_KEY__#$(esc "${GROQ_API_KEY}")#g"` +
 	` -e "s#__ANTHROPIC_API_KEY__#$(esc "${ANTHROPIC_API_KEY}")#g"` +
 	` /tmpl/config.yaml > /etc/oramacore/config.yaml`
+
+// combinedReaderRenderCommand is the readers' render-config script without side-only images and with
+// the default providers: it generates the local writer key and fills no master key.
+const combinedReaderRenderCommand = `esc() { printf '%s' "$1" | sed -e "s/'/''/g" -e 's/[\\&#]/\\&/g'; }; ` +
+	`LOCAL_WRITER_KEY=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'); sed` +
+	` -e "s#__LOCAL_WRITER_KEY__#$(esc "${LOCAL_WRITER_KEY}")#g"` +
+	` -e "s#__BROKER_PASSWORD__#$(esc "${BROKER_PASSWORD}")#g"` +
+	` -e "s#__OPENAI_API_KEY__#$(esc "${OPENAI_API_KEY}")#g"` +
+	` -e "s#__GOOGLE_API_KEY__#$(esc "${GOOGLE_API_KEY}")#g"` +
+	` -e "s#__GROQ_API_KEY__#$(esc "${GROQ_API_KEY}")#g"` +
+	` -e "s#__ANTHROPIC_API_KEY__#$(esc "${ANTHROPIC_API_KEY}")#g"` +
+	` /tmpl/combined-reader.yaml > /etc/oramacore/config.yaml`
 
 const (
 	testWriterImage = "oramasearch/oramacore-writer@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -342,7 +430,8 @@ func TestEngineImageSelection(t *testing.T) {
 	}
 }
 
-// Without both side overrides the engine renders the combined config, hashed like a side's.
+// Without both side overrides the writer renders the unchanged combined config and the readers the
+// combined reader config (#795), each hashed like a side's.
 func TestEngineWithoutSideImagesIsUnchanged(t *testing.T) {
 	for name, overrides := range map[string]map[string]string{
 		"nil":          nil,
@@ -358,18 +447,27 @@ func TestEngineWithoutSideImagesIsUnchanged(t *testing.T) {
 			if got := cm.Data["config.yaml"]; got != combinedConfigFixture {
 				t.Errorf("config.yaml changed from the captured rendering:\n%s", got)
 			}
-			if got, want := dataKeys(cm), []string{"config.yaml", "envoy.yaml"}; !reflect.DeepEqual(got, want) {
+			if got := cm.Data["combined-reader.yaml"]; got != combinedReaderConfigFixture {
+				t.Errorf("combined-reader.yaml changed from the captured rendering:\n%s", got)
+			}
+			if got, want := dataKeys(cm), []string{"combined-reader.yaml", "config.yaml", "envoy.yaml"}; !reflect.DeepEqual(got, want) {
 				t.Errorf("ConfigMap keys = %v, want %v", got, want)
 			}
-			for side, spec := range map[string]corev1.PodTemplateSpec{"writer": h.writer().Spec.Template, "reader": h.reader().Spec.Template} {
-				if got := container(spec.Spec, "oramacore").Image; got != "oramasearch/oramacore:latest" {
-					t.Errorf("%s image = %q, want the combined image", side, got)
+			for _, p := range []struct {
+				side, command, fixture string
+				spec                   corev1.PodTemplateSpec
+			}{
+				{"writer", combinedRenderCommand, combinedConfigFixture, h.writer().Spec.Template},
+				{"reader", combinedReaderRenderCommand, combinedReaderConfigFixture, h.reader().Spec.Template},
+			} {
+				if got := container(p.spec.Spec, "oramacore").Image; got != "oramasearch/oramacore:latest" {
+					t.Errorf("%s image = %q, want the combined image", p.side, got)
 				}
-				if got := renderInit(t, spec.Spec).Command[2]; got != combinedRenderCommand {
-					t.Errorf("%s render-config command = %q, want %q", side, got, combinedRenderCommand)
+				if got := renderInit(t, p.spec.Spec).Command[2]; got != p.command {
+					t.Errorf("%s render-config command = %q, want %q", p.side, got, p.command)
 				}
-				if got, want := spec.Annotations[configHashKey], templateSHA256(combinedConfigFixture); got != want {
-					t.Errorf("%s config hash = %q, want SHA-256 of config.yaml %q", side, got, want)
+				if got, want := p.spec.Annotations[configHashKey], templateSHA256(p.fixture); got != want {
+					t.Errorf("%s config hash = %q, want SHA-256 of its template %q", p.side, got, want)
 				}
 			}
 		})
@@ -791,14 +889,14 @@ func TestEngineModeTransitionsInPlace(t *testing.T) {
 	}
 
 	h.reconcile(oc)
-	expect("combined", []string{"config.yaml", "envoy.yaml"}, "oramasearch/oramacore:latest", "oramasearch/oramacore:latest", "config.yaml", "config.yaml")
+	expect("combined", []string{"combined-reader.yaml", "config.yaml", "envoy.yaml"}, "oramasearch/oramacore:latest", "oramasearch/oramacore:latest", "config.yaml", "combined-reader.yaml")
 	writerUID := h.writer().UID
 	withSideImages(oc)
 	h.reconcile(oc)
 	expect("separated", []string{"envoy.yaml", "reader.yaml", "writer.yaml"}, testWriterImage, testReaderImage, "writer.yaml", "reader.yaml")
 	oc.Spec.Images.Overrides = nil
 	h.reconcile(oc)
-	expect("combined again", []string{"config.yaml", "envoy.yaml"}, "oramasearch/oramacore:latest", "oramasearch/oramacore:latest", "config.yaml", "config.yaml")
+	expect("combined again", []string{"combined-reader.yaml", "config.yaml", "envoy.yaml"}, "oramasearch/oramacore:latest", "oramasearch/oramacore:latest", "config.yaml", "combined-reader.yaml")
 	if h.writer().UID != writerUID {
 		t.Error("the writer StatefulSet was recreated")
 	}
@@ -872,6 +970,15 @@ func TestRenderConfigInitRendersSelectedTemplate(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := strings.NewReplacer(pairs...).Replace(cm.Data[key])
+			// The combined reader's local writer key is generated by the script itself (#795), whatever
+			// the environment holds: 48 hex characters in place of its placeholder.
+			if strings.Contains(want, "__LOCAL_WRITER_KEY__") {
+				m := regexp.MustCompile(`master_api_key: '([0-9a-f]{48})'`).FindSubmatch(got)
+				if m == nil {
+					t.Fatalf("rendered %s has no generated local writer key:\n%s", key, got)
+				}
+				want = strings.Replace(want, "__LOCAL_WRITER_KEY__", string(m[1]), 1)
+			}
 			if string(got) != want {
 				t.Errorf("rendered %s =\n%s\nwant\n%s", key, got, want)
 			}

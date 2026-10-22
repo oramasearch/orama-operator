@@ -22,16 +22,16 @@ import (
 )
 
 // readyBrokerTopology is the RabbitMQTopology <name>-broker as the RabbitMQTopology controller leaves
-// it once the broker took every user: Ready for its generation, with the two engine users applied.
+// it once the broker took every user: Ready for its generation, with the engine users and harvest applied.
 // Tests that reconcile a whole stack with an in-cluster broker include it, since no topology
 // controller runs in them.
 func readyBrokerTopology(name string) *oramav1alpha1.RabbitMQTopology {
 	return &oramav1alpha1.RabbitMQTopology{
 		ObjectMeta: metav1.ObjectMeta{Name: name + "-broker", Namespace: "orama-system"},
 		Spec: oramav1alpha1.RabbitMQTopologySpec{Users: []oramav1alpha1.RabbitMQUser{
-			{Name: brokerWriterUser}, {Name: brokerReaderUser},
+			{Name: brokerWriterUser}, {Name: brokerReaderUser}, {Name: brokerHarvestUser},
 		}},
-		Status: oramav1alpha1.RabbitMQTopologyStatus{Users: 2, Conditions: []metav1.Condition{
+		Status: oramav1alpha1.RabbitMQTopologyStatus{Users: 3, Conditions: []metav1.Condition{
 			{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Reconciled", LastTransitionTime: metav1.Now()},
 		}},
 	}
@@ -46,9 +46,10 @@ func brokerUserOf(t *testing.T, doc, section, key string) string {
 	return user
 }
 
-// The writer signs in as oramacore-writer, a reader-only pod as oramacore-reader, and every pod of the
-// combined image, which also produces from the readers, as oramacore-writer (#99). Each takes its own
-// password from <cr>-broker-users; no engine pod reads the broker admin Secret.
+// The writer signs in as oramacore-writer and every reader pod, of either image, as oramacore-reader,
+// in every section of its config (#99, #795): the writer a combined reader starts produces as
+// oramacore-reader too, to its own stream. Each takes its own password from <cr>-broker-users; no
+// engine pod reads the broker admin Secret.
 func TestEngineSignsInAsItsOwnBrokerUser(t *testing.T) {
 	for _, tc := range []struct {
 		name                   string
@@ -56,7 +57,7 @@ func TestEngineSignsInAsItsOwnBrokerUser(t *testing.T) {
 		writerUser, readerUser string
 	}{
 		{"side-only images", withSideImages, brokerWriterUser, brokerReaderUser},
-		{"combined image", nil, brokerWriterUser, brokerWriterUser},
+		{"combined image", nil, brokerWriterUser, brokerReaderUser},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newEngineHarness(t, stackOC(tc.mut), engineSecret())
@@ -69,8 +70,8 @@ func TestEngineSignsInAsItsOwnBrokerUser(t *testing.T) {
 					t.Errorf("%s config still takes the broker user from a placeholder", side)
 				}
 				if section, key := "writer_side", "output"; strings.Contains(doc, section+":") {
-					if got := brokerUserOf(t, doc, section, key); got != brokerWriterUser {
-						t.Errorf("%s config writer_side.output.user = %q, want %q", side, got, brokerWriterUser)
+					if got := brokerUserOf(t, doc, section, key); got != want {
+						t.Errorf("%s config writer_side.output.user = %q, want %q", side, got, want)
 					}
 				}
 				if section, key := "reader_side", "input"; strings.Contains(doc, section+":") {
@@ -139,7 +140,7 @@ func TestEngineWaitsForBrokerUsers(t *testing.T) {
 	if !h.get("v1-broker", topo) {
 		t.Fatal("no topology")
 	}
-	topo.Status.Users = 2
+	topo.Status.Users = 3
 	apimeta.SetStatusCondition(&topo.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Reconciled"})
 	if err := h.cl.Update(context.Background(), topo); err != nil {
 		t.Fatal(err)
@@ -204,13 +205,15 @@ func rmqAllowed(t *testing.T, perms []oramav1alpha1.RabbitMQPermission, user str
 func TestBrokerUserPermissionsAreLeastPrivilege(t *testing.T) {
 	perms := brokerUserPermissions()
 	stream := brokerOperationsStream
+	local := brokerReaderLocalStream
 	needs := map[string][]rmqAction{
 		brokerWriterUser: {{"configure", stream}, {"write", stream}, {"read", stream}},
-		brokerReaderUser: {{"configure", stream}, {"read", stream}},
+		// The combined image's readers also declare and produce to oramacore-reader-local (#795).
+		brokerReaderUser: {{"configure", stream}, {"read", stream}, {"configure", local}, {"write", local}},
 	}
 	refused := map[string][]rmqAction{
-		brokerWriterUser: {},
-		brokerReaderUser: {{"write", stream}},
+		brokerWriterUser: {{"configure", local}, {"write", local}, {"read", local}},
+		brokerReaderUser: {{"write", stream}, {"read", local}},
 	}
 	// Neither may reach any other queue or exchange: HARVEST's queues, the default and amq.* exchanges,
 	// a name that only contains the stream's, or a name that a regexp without anchors would match.
@@ -248,6 +251,9 @@ func TestBrokerUserPermissionsAreLeastPrivilege(t *testing.T) {
 		t.Errorf("topology permissions = %+v, want %+v", topo.Spec.Permissions, perms)
 	}
 	for _, u := range topo.Spec.Users {
+		if u.Name == brokerHarvestUser {
+			continue // least_privilege_test.go
+		}
 		if u.PasswordSecretRef.Name != "v1-broker-users" || u.PasswordSecretRef.Key != brokerUserPasswordKey(u.Name) || len(u.Tags) != 0 {
 			t.Errorf("topology user %+v is not untagged with its password in v1-broker-users", u)
 		}

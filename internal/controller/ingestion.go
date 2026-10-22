@@ -54,26 +54,17 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 	// HARVEST crawler MASTER (Node/Express job API on :8080). The worker is a per-crawl one-shot
 	// the master spawns — running the worker as a Deployment CrashLoops (operator#12), so we run
 	// the master. Its worker-spawning (Podman → WORKER_IMAGE) still needs a k8s-Jobs port to crawl.
+	// It signs in to the broker as harvest (#824, LSR-134), so it is written only once the topology
+	// reports that user on the broker; until then a running harvest-master keeps its template.
 	n := oc.Name
-	if err := r.reconcileApp(ctx, oc, appDef{
-		component: "harvest-master",
-		image:     componentImage(oc, "harvest-master", "harvest-master"),
-		port:      8080,
-		// AMQP_HOST and REDIS_HOST are URLs whose credentials are $(VAR) references to the env
-		// entries before them, expanded by the kubelet from <cr>-broker-admin and <cr>-cache-auth.
-		env: append(brokerCredentialEnv(oc), redisPasswordEnvVar(oc),
-			corev1.EnvVar{Name: "APP_ENV", Value: "production"},
-			corev1.EnvVar{Name: "EXPRESS_PORT", Value: "8080"},
-			corev1.EnvVar{Name: "MONGODB_URL", Value: "mongodb://" + n + "-harvest-mongo:27017/harvest"},
-			corev1.EnvVar{Name: "AMQP_HOST", Value: amqpURL(oc)},
-			corev1.EnvVar{Name: "REDIS_HOST", Value: redisURL(oc)},
-			corev1.EnvVar{Name: "MASTER_URI", Value: "http://" + n + "-harvest-master:8080"},
-			corev1.EnvVar{Name: "WORKER_IMAGE", Value: componentImage(oc, "harvest", "harvest")},
-		),
-		credentialSecrets: []string{brokerAdminSecretName(oc), cacheAuthSecretName(oc)},
-		resources:         resourceReqs("128Mi", "50m", "512Mi"),
-	}); err != nil {
+	ready, err := r.brokerUsersReady(ctx, oc)
+	if err != nil {
 		return err
+	}
+	if ready {
+		if err := r.reconcileHarvestMaster(ctx, oc, n); err != nil {
+			return err
+		}
 	}
 
 	// HARVEST's record store (Mongo). Single-node StatefulSet + PVC + Service. Mongo 7 detects the
@@ -94,6 +85,28 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 		image:     "selenium/standalone-chromium:latest",
 		port:      4444,
 		resources: resourceReqs("512Mi", "100m", "1536Mi"),
+	})
+}
+
+// reconcileHarvestMaster owns the harvest-master Deployment and Service.
+func (r *OramaCloudV1Reconciler) reconcileHarvestMaster(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, n string) error {
+	return r.reconcileApp(ctx, oc, appDef{
+		component: "harvest-master",
+		image:     componentImage(oc, "harvest-master", "harvest-master"),
+		port:      8080,
+		// AMQP_HOST and REDIS_HOST are URLs whose credentials are $(VAR) references to the env
+		// entries before them, expanded by the kubelet from <cr>-broker-harvest and <cr>-cache-auth.
+		env: append(harvestBrokerEnv(oc), redisPasswordEnvVar(oc),
+			corev1.EnvVar{Name: "APP_ENV", Value: "production"},
+			corev1.EnvVar{Name: "EXPRESS_PORT", Value: "8080"},
+			corev1.EnvVar{Name: "MONGODB_URL", Value: "mongodb://" + n + "-harvest-mongo:27017/harvest"},
+			corev1.EnvVar{Name: "AMQP_HOST", Value: amqpURL(oc)},
+			corev1.EnvVar{Name: "REDIS_HOST", Value: redisURL(oc)},
+			corev1.EnvVar{Name: "MASTER_URI", Value: "http://" + n + "-harvest-master:8080"},
+			corev1.EnvVar{Name: "WORKER_IMAGE", Value: componentImage(oc, "harvest", "harvest")},
+		),
+		credentialSecrets: []string{brokerHarvestSecretName(oc), cacheAuthSecretName(oc)},
+		resources:         resourceReqs("128Mi", "50m", "512Mi"),
 	})
 }
 

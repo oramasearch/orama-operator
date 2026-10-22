@@ -75,16 +75,20 @@ func TestBrokerTopologyStreamRetentionMatchesOramaCore(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: "v1-broker", Namespace: "orama-system"}, topo); err != nil {
 		t.Fatalf("get RabbitMQTopology: %v", err)
 	}
-	if len(topo.Spec.Streams) != 1 {
-		t.Fatalf("streams=%d, want 1", len(topo.Spec.Streams))
+	// oramacore-operations, and oramacore-reader-local, which the combined image's readers declare
+	// with the same Create (#795).
+	if len(topo.Spec.Streams) != 2 || topo.Spec.Streams[0].Name != brokerOperationsStream || topo.Spec.Streams[1].Name != brokerReaderLocalStream {
+		t.Fatalf("streams=%+v, want %s and %s", topo.Spec.Streams, brokerOperationsStream, brokerReaderLocalStream)
 	}
-	if got := topo.Spec.Streams[0].MaxLengthBytes; got != brokerOperationsStreamMaxBytes {
-		t.Errorf("stream MaxLengthBytes=%d, want %d (must match OramaCore, else RabbitMQ 400s the redeclare and the reader can't auth)",
-			got, brokerOperationsStreamMaxBytes)
-	}
-	if got := topo.Spec.Streams[0].LeaderLocator; got != brokerOperationsStreamLeaderLocator {
-		t.Errorf("stream LeaderLocator=%q, want %q (OramaCore's second stream arg — a mismatch 400s the redeclare too)",
-			got, brokerOperationsStreamLeaderLocator)
+	for _, s := range topo.Spec.Streams {
+		if got := s.MaxLengthBytes; got != brokerOperationsStreamMaxBytes {
+			t.Errorf("stream %s MaxLengthBytes=%d, want %d (must match OramaCore, else RabbitMQ 400s the redeclare and the reader can't auth)",
+				s.Name, got, brokerOperationsStreamMaxBytes)
+		}
+		if got := s.LeaderLocator; got != brokerOperationsStreamLeaderLocator {
+			t.Errorf("stream %s LeaderLocator=%q, want %q (OramaCore's second stream arg — a mismatch 400s the redeclare too)",
+				s.Name, got, brokerOperationsStreamLeaderLocator)
+		}
 	}
 }
 
