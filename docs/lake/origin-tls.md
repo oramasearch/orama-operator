@@ -138,6 +138,12 @@ its apps' and its environments'):
 `"false"` is written rather than left out because ingress-nginx redirects every host that has a
 certificate by default.
 
+A host that requires the client certificate is never served by the zetta-tunnel ingress gateway,
+which verifies no client certificate: the projection refuses it on every Ingress that names it
+([`infrastructure/ingress.md`](../infrastructure/ingress.md#what-it-serves),
+[#798](https://github.com/oramasearch/orama-operator/issues/798)). Without that, the gateway's public
+load balancer would be a second origin without the requirement.
+
 ## Only Cloudflare reaches the origin: why authenticated origin pulls
 
 The choice was between restricting the ingress-nginx load balancer to Cloudflare's published IP
