@@ -1,0 +1,169 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: cloudflarehostpolicies.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: CloudflareHostPolicy
+    listKind: CloudflareHostPolicyList
+    plural: cloudflarehostpolicies
+    shortNames:
+    - cfhp
+    singular: cloudflarehostpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.originTLS
+      name: OriginTLS
+      type: string
+    - jsonPath: .spec.redirectToHTTPS
+      name: Redirect
+      type: boolean
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CloudflareHostPolicy applies an EdgeHostPolicy as Cloudflare rules identified by ref; it is the
+          only kind that calls the Cloudflare Rulesets API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CloudflareHostPolicySpec is an EdgeHostPolicy resolved against a cloudflare EdgeProvider. A
+              person never writes one.
+            properties:
+              accountId:
+                description: |-
+                  AccountID narrows the zone lookup to one Cloudflare account; empty searches every zone the
+                  token can read.
+                type: string
+              apiTokenSecretRef:
+                description: |-
+                  APITokenSecretRef is the provider's token. It needs, on each host's zone: Zone > Zone > Read
+                  (to find the zone), Zone > Config Rules > Edit (originTLS) and Zone > Single Redirect > Edit
+                  (redirectToHTTPS).
+                properties:
+                  key:
+                    description: Key is the key in the Secret's data.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the Secret's name.
+                    minLength: 1
+                    type: string
+                required:
+                - key
+                - name
+                type: object
+              hosts:
+                description: Hosts are the parent's hosts.
+                items:
+                  maxLength: 253
+                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
+                  type: string
+                maxItems: 100
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              originTLS:
+                description: OriginTLS is the parent's originTLS.
+                enum:
+                - strict
+                type: string
+              redirectToHTTPS:
+                description: RedirectToHTTPS is the parent's redirectToHTTPS.
+                type: boolean
+              ruleRefPrefix:
+                description: |-
+                  RuleRefPrefix identifies this policy's rules (orama-operator-<namespace>-<name>, set by the
+                  parent). The controller changes and deletes only the rules whose ref is <prefix>-tls or
+                  <prefix>-https.
+                maxLength: 64
+                minLength: 1
+                pattern: ^[a-z0-9][-a-z0-9]*$
+                type: string
+            required:
+            - apiTokenSecretRef
+            - hosts
+            - ruleRefPrefix
+            type: object
+          status:
+            description: CloudflareHostPolicyStatus is the zones' rules as last applied.
+            properties:
+              message:
+                description: Message explains a policy that is not ready.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation the status describes.
+                format: int64
+                type: integer
+              ready:
+                description: Ready is true when every zone is ready.
+                type: boolean
+              zones:
+                description: |-
+                  Zones are the zones holding our rules, sorted by zone ID. A zone stays listed until its
+                  rules are deleted.
+                items:
+                  description: CloudflareHostPolicyZoneStatus is one zone's rules.
+                  properties:
+                    configRuleID:
+                      description: ConfigRuleID is our rule in the http_config_settings
+                        phase, when originTLS is set.
+                      type: string
+                    message:
+                      description: Message explains a zone that is not ready.
+                      type: string
+                    ready:
+                      description: Ready is true when the zone's rules are in place
+                        and no other rule overrides them.
+                      type: boolean
+                    redirectRuleID:
+                      description: |-
+                        RedirectRuleID is our rule in the http_request_dynamic_redirect phase, when
+                        redirectToHTTPS is set.
+                      type: string
+                    zoneID:
+                      description: ZoneID is the Cloudflare zone.
+                      type: string
+                    zoneName:
+                      description: ZoneName is the zone's name.
+                      type: string
+                  required:
+                  - zoneID
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

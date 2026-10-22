@@ -989,10 +989,26 @@ operator (`EdgeZonePolicy`); see [Lake origin TLS](#lake-origin-tls-lake_origin_
   yet ([#573](https://github.com/oramasearch/orama-operator/issues/573)), so a stack's Ingresses
   still use `spec.components.ingressClassName` (default the platform's `nginx`). TLS renders on
   whichever class the Ingress has.
-- **Cloudflare.** Full (strict) is not turned on; the zones' SSL mode stays as it is (decision 15 of
-  2026-10-17). The HTTP to HTTPS redirect at the edge is declared by the operator
-  ([#527](https://github.com/oramasearch/orama-operator/issues/527),
-  [#528](https://github.com/oramasearch/orama-operator/issues/528)), never set by hand.
+- **Cloudflare.** The zones' SSL mode is never changed (decision 15 of 2026-10-17): the zones carry
+  Prod 1's hosts. Full (strict) and the HTTP to HTTPS redirect are per host, declared by an
+  `EdgeHostPolicy` ([#527](https://github.com/oramasearch/orama-operator/issues/527), below) as
+  Cloudflare rules the operator applies, never a rule set by hand. Wiring the Cloud v1 hosts into one,
+  each host only once its certificate is ready, is
+  [#528](https://github.com/oramasearch/orama-operator/issues/528).
+
+### Per-host edge rules (`edgehostpolicy_controller.go`, `cloudflarehostpolicy_controller.go`, [#527](https://github.com/oramasearch/orama-operator/issues/527))
+
+- **`EdgeHostPolicyReconciler`** resolves the `EdgeProvider` and keeps an owned `CloudflareHostPolicy`
+  of the same name (hosts, flags, the provider's account and token, the rule ref prefix
+  `orama-operator-<namespace>-<name>`), and copies its readiness back. It calls no vendor.
+- **`CloudflareHostPolicyReconciler`** groups the hosts by zone (longest suffix that is a zone the
+  token can read), and in each zone keeps at most two rules identified by ref: `<prefix>-tls` in
+  `http_config_settings` (`set_config` `ssl: strict`, appended last) and `<prefix>-https` in
+  `http_request_dynamic_redirect` (301 to HTTPS, inserted first). It creates a phase entrypoint only
+  when the zone has none, never `PUT`s an existing one, patches our rule only when it differs, deletes
+  it by ID only while its ref is ours, and reports (never moves) another rule that would override ours.
+  Its finalizer removes our rules on deletion; it rechecks every ten minutes. Contract:
+  [`crd-reference.md`](crd-reference.md#cloudflarehostpolicy-separate-crd-namespaced--an-edgehostpolicy-applied-as-cloudflare-rules).
 
 ### Lake origin TLS (`lake_origin_tls.go`, [#578](https://github.com/oramasearch/orama-operator/issues/578))
 

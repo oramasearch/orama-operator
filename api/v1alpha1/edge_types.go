@@ -39,7 +39,10 @@ type CloudflareEdgeProviderSpec struct {
 
 	// APITokenSecretRef names the API token in this namespace. What it must be allowed depends on
 	// the kinds that use the provider. An EdgeZonePolicy needs, on its zone: Zone > Zone Settings >
-	// Edit and Zone > DNS > Read (DNS > Edit includes it). The operator never writes or logs it.
+	// Edit and Zone > DNS > Read (DNS > Edit includes it). An EdgeHostPolicy needs, on each host's
+	// zone: Zone > Zone > Read, Zone > Config Rules > Edit (API permission group "Config Settings
+	// Write", for originTLS) and Zone > Single Redirect > Edit ("Dynamic URL Redirects Write", for
+	// redirectToHTTPS). The operator never writes or logs it.
 	APITokenSecretRef EdgeProviderSecretKeyRef `json:"apiTokenSecretRef"`
 }
 

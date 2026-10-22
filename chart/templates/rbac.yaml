@@ -61,6 +61,8 @@ rules:
       - edgeproviders
       - edgezonepolicies
       - cloudflarezonepolicies
+      - edgehostpolicies
+      - cloudflarehostpolicies
       - paymentproviders
       - paymentwebhookendpoints
       - stripewebhookendpoints
@@ -138,6 +140,9 @@ rules:
       - edgeproviders/status
       - edgezonepolicies/status
       - cloudflarezonepolicies/status
+      - edgehostpolicies/status
+      - cloudflarehostpolicies/status
+      - cloudflarehostpolicies/finalizers
       - paymentproviders/status
       - paymentwebhookendpoints/status
       - stripewebhookendpoints/status
