@@ -8,11 +8,12 @@ Job and pods to disappear. This is a metadata upgrade, not a schema version chan
 
 The operator vendors lake's `db/schema.sql` unchanged at
 `internal/controller/assets/lake-schema.sql`. The current source is
-[`oramasearch/lake` `dev` at commit 2b39c2f73145d79f4267d12529d7e2d1c76a6090](https://github.com/oramasearch/lake/blob/2b39c2f73145d79f4267d12529d7e2d1c76a6090/db/schema.sql),
-the merge of lake#864, through `0090_billing_contacts` (lake#857): `billing_contacts` and
-`billing_contacts_guard`. Before it, lake v0.3.0's `0089_cloud_orders`. Its SHA-256 is
-`93e4e099f7520187cce521bd97af243233c5fd27cb5cf397b38311d6c442d539`. Re-pin to lake's next release tag
-when it is cut.
+[`oramasearch/lake` tag v0.4.0, commit 9115632e254930381f6f08553b5111be40866a4c](https://github.com/oramasearch/lake/blob/9115632e254930381f6f08553b5111be40866a4c/db/schema.sql),
+through `0093_root_recovery_participants`: `0091_account_deletion` (`users.deleted_at`,
+`account_deletion_guard`), `0092_saml_sign_in` (`sso_saml_requests`, `sso_saml_assertions`,
+`saml_sign_in_guard`) and `0093_root_recovery_participants` (`pki_recovery_participants`,
+`root_recovery_participants_guard`). Before it, `0090_billing_contacts` at lake `dev` 2b39c2f7. Its
+SHA-256 is `1cf11ebf172c442a2bbb4077a2af667b48f712bab50ee5e37c3201569fd58a7d`.
 
 **Pin only a commit on lake `dev` or a release tag, never a pull request's branch.** Lake records a
 migration by name only, with no checksum, so a migration applied from a branch and changed before it
@@ -22,6 +23,12 @@ The adjacent `lake-schema.source.json` records the repository, path, commit, and
 `hack/check-lake-schema.py` independently downloads the pinned upstream file and compares bytes.
 
 ## Migration and rollout ordering
+
+Migrations `0091_account_deletion` (lake#810, lake#1014), `0092_saml_sign_in` (lake#836, lake#1019)
+and `0093_root_recovery_participants` (lake#934, lake#1038), all in lake v0.4.0, are additive. Their
+guards are `account_deletion_guard`, `saml_sign_in_guard` and `root_recovery_participants_guard`.
+Apply them before the lake v0.4.0 image rolls; the schema gate holds that image until they have
+applied.
 
 Migration `0090_billing_contacts` (lake#857, lake#864) adds `billing_contacts`, written by lake alone:
 one row per account with the email, name and address its invoices carry, with guard
