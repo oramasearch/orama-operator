@@ -478,20 +478,26 @@ func lakeAppRowEnvironment(row *LakeAppRow, spec *oramav1alpha1.LakeAppSpec) err
 	return lakeAppRowSecretEnvironment(row.SecretEnvRefs, spec)
 }
 
+// lakeAppRowSecretEnvironment reads an app row's secret_env_refs: an object of environment names to
+// lake-secret:// references, each naming one field of one secret in a lake secret mount (lake#625).
+// A plain Kubernetes Secret name, and the legacy array of Secret names, are refused (operator#492):
+// the LakeApp reads its Secrets from the Lake instance namespace, so a row naming one directly could
+// deliver any Secret there (the instance key, the control database credentials) into an app. Lake's
+// API never writes either form; only a row written some other way could hold one.
 func lakeAppRowSecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "null" {
 		return nil
 	}
 	if strings.HasPrefix(raw, "[") {
-		return lakeAppRowLegacySecretEnvironment(raw, spec)
+		return errors.New("secret_env_refs is a legacy array of Secret names, which is refused (operator#492): name each secret as lake-secret://<mount id>/<name>#<field>")
 	}
 	if !strings.HasPrefix(raw, "{") {
-		return errors.New("secret_env_refs must be an object of environment names to Secret references or a legacy array of Secret names")
+		return errors.New("secret_env_refs must be an object of environment names to lake-secret:// references")
 	}
 	secretEnvironment := map[string]string{}
 	if err := json.Unmarshal([]byte(raw), &secretEnvironment); err != nil {
-		return errors.New("secret_env_refs must be an object of environment names to Secret references or a legacy array of Secret names")
+		return errors.New("secret_env_refs must be an object of environment names to lake-secret:// references")
 	}
 	names := make([]string, 0, len(secretEnvironment))
 	for name := range secretEnvironment {
@@ -502,32 +508,22 @@ func lakeAppRowSecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) er
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if reference, ok, err := parseLakeSecretReference(secretEnvironment[name]); ok || err != nil {
-			if err != nil {
-				return fmt.Errorf("secret_env_refs reference for %q: %w", name, err)
-			}
-			// The lake secret is the source of truth (lake#625): the LakeApp controller owns a
-			// LakeSealedSecret that produces this Secret in the Lake namespace, then copies the field.
-			spec.SecretEnv = append(spec.SecretEnv, oramav1alpha1.LakeAppSecretEnvironmentVariable{
-				Name: name,
-				SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{
-					Name: lakeAppLakeSecretName(spec.Sync, reference),
-					Key:  reference.Field,
-				},
-				LakeSecret: &reference,
-			})
-			continue
+		reference, ok, err := parseLakeSecretReference(secretEnvironment[name])
+		if !ok {
+			return fmt.Errorf("secret_env_refs reference for %q names a Kubernetes Secret, which is refused (operator#492): use lake-secret://<mount id>/<name>#<field>", name)
 		}
-		secretName, key, err := lakeAppSecretReference(name, secretEnvironment[name])
 		if err != nil {
-			return err
+			return fmt.Errorf("secret_env_refs reference for %q: %w", name, err)
 		}
+		// The lake secret is the source of truth (lake#625): the LakeApp controller owns a
+		// LakeSealedSecret that produces this Secret in the Lake namespace, then copies the field.
 		spec.SecretEnv = append(spec.SecretEnv, oramav1alpha1.LakeAppSecretEnvironmentVariable{
 			Name: name,
 			SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{
-				Name: secretName,
-				Key:  key,
+				Name: lakeAppLakeSecretName(spec.Sync, reference),
+				Key:  reference.Field,
 			},
+			LakeSecret: &reference,
 		})
 	}
 	return nil
@@ -571,38 +567,6 @@ func lakeAppLakeSecretName(sync *oramav1alpha1.LakeAppSync, reference oramav1alp
 	}
 	secret := fmt.Sprintf("%x", sha256.Sum256([]byte(reference.Mount+"\x00"+reference.Name)))[:12]
 	return "app-" + hexID[:12] + "-lake-" + secret
-}
-
-func lakeAppRowLegacySecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) error {
-	if err := json.Unmarshal([]byte(raw), &spec.SecretRefs); err != nil {
-		return errors.New("secret_env_refs must be an object of environment names to Secret references or a legacy array of Secret names")
-	}
-	spec.SecretRefs = sortedUnique(spec.SecretRefs)
-	for _, name := range spec.SecretRefs {
-		if len(validation.IsDNS1123Subdomain(name)) != 0 {
-			return fmt.Errorf("secret_env_refs legacy Secret name %q is invalid", name)
-		}
-	}
-	return nil
-}
-
-func lakeAppSecretReference(environmentName, reference string) (string, string, error) {
-	parts := strings.Split(reference, "/")
-	if len(parts) > 2 || parts[0] == "" {
-		return "", "", fmt.Errorf("secret_env_refs reference for %q must be <secret-name> or <secret-name>/<key>", environmentName)
-	}
-	secretName := parts[0]
-	key := environmentName
-	if len(parts) == 2 {
-		key = parts[1]
-	}
-	if len(validation.IsDNS1123Subdomain(secretName)) != 0 {
-		return "", "", fmt.Errorf("secret_env_refs Secret name for %q is invalid", environmentName)
-	}
-	if len(validation.IsConfigMapKey(key)) != 0 {
-		return "", "", fmt.Errorf("secret_env_refs Secret key for %q is invalid", environmentName)
-	}
-	return secretName, key, nil
 }
 
 func sortedUnique(values []string) []string {

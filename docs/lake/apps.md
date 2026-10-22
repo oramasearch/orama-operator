@@ -47,19 +47,21 @@ old read cannot acknowledge a newer row or recreate a removed row. Unchanged obs
 nothing; `updated_at` changes on status transitions.
 
 `env_json` is a string-to-string JSON object. `secret_env_refs` is a JSON object whose keys are
-environment variable names and whose string values select Secrets in the Lake namespace. A value
-is `<secret-name>` to use the environment name as the Secret key, or `<secret-name>/<key>` to select
-a different key:
+environment variable names and whose values are **lake secret references only**
+([below](#lake-secret-references-lake625)). `{}`, SQL `NULL`, JSON `null`, and an empty decoded value
+request no secret environment variables. Environment names must pass Kubernetes `IsEnvVarName`.
+Invalid input makes the row `Failed` with a stable validation message and creates no invalid
+`LakeApp` update.
 
-```json
-{"API_KEY":"svc-creds/token","DB_URL":"db-secret"}
-```
-
-This renders `API_KEY` from key `token` in `svc-creds` and `DB_URL` from key `DB_URL` in
-`db-secret`. `{}`, SQL `NULL`, JSON `null`, and an empty decoded value request no secret
-environment variables. Environment names must pass Kubernetes `IsEnvVarName`, Secret names must
-be DNS-1123 subdomains, and keys must be valid Kubernetes Secret keys. Invalid input makes the row
-`Failed` with a stable validation message and creates no invalid `LakeApp` update.
+**Kubernetes Secret names are refused** (operator#492). A value that names a Secret
+(`<secret-name>` or `<secret-name>/<key>`), and the former JSON array of Secret names, make the row
+`Failed` with a message naming operator#492, and nothing reaches the app. The LakeApp reads its
+Secrets from the Lake instance namespace, so a row that named one directly could have delivered any
+Secret there into a tenant's app: the instance key `lake-prod-instance-kek`, the control database
+credentials, the payment keys. Lake's API never wrote either form (it accepts only `lake-secret://`
+references in the app's own workspace), so only a row written some other way could hold one. A
+`LakeApp` written by hand from a committed file may still use `spec.secretEnv[].secretKeyRef` and
+`spec.secretRefs`; only rows synchronized from Lake are restricted.
 
 ### Lake secret references (lake#625)
 
@@ -86,10 +88,8 @@ secrets](sealed-secrets.md#rotation-of-a-lake-source)), so a new version changes
 template's credential digest and the pods roll. Removing the reference deletes the
 `LakeSealedSecret`, its produced Secret and the copy.
 
-For one compatibility release, the operator also accepts the former JSON array of Secret names.
-Those whole Secrets retain their `envFrom` behavior through `spec.secretRefs`; new writers must use
-the object contract. Lake must authorize these references and detect secret env values before
-writing them; plaintext credentials belong in Secrets, never these JSON columns. `bindings_json` is:
+Lake must authorize these references and detect secret env values before writing them; plaintext
+credentials belong in lake's secret store, never these JSON columns. `bindings_json` is:
 
 ```json
 {"zetta":{"scopes":["read"]},"services":["22222222-2222-4222-8222-222222222222"]}
