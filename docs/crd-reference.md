@@ -1204,7 +1204,9 @@ topology (principle #3). See [`datastore-crds.md`](datastore-crds.md) for the fu
 `OramaCloudV1` creates + owns one `<cr>-broker` instance (in `reconcileBrokerTopology`) declaring the
 `/` vhost, the least-privilege per-service users `oramacore-writer` / `oramacore-reader` (passwords
 generated into `<cr>-broker-users`), their stream-scoped permissions, and the `oramacore-operations`
-replication stream. **Ordered readiness gating:** until the broker (and its `<cr>-broker-admin`
+replication stream. The engine signs in as those users and is written only once this resource reports
+`Ready` for its generation with every user applied
+([#99](https://github.com/oramasearch/orama-operator/issues/99)). **Ordered readiness gating:** until the broker (and its `<cr>-broker-admin`
 Secret) is reachable the reconciler is a safe no-op reporting `Ready=False (BrokerUnavailable /
 WaitingForCredentials)`, not an error. Sample:
 [`../config/samples/rabbitmqtopology.yaml`](../config/samples/rabbitmqtopology.yaml).

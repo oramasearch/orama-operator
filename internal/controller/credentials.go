@@ -77,6 +77,8 @@ func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 	switch secret {
 	case brokerAdminSecretName(oc):
 		return []string{"username", "password"}
+	case brokerUsersSecretName(oc):
+		return []string{brokerUserPasswordKey(brokerWriterUser), brokerUserPasswordKey(brokerReaderUser)}
 	case cacheAuthSecretName(oc):
 		return []string{"password"}
 	case redisHTTPSecretName(oc):

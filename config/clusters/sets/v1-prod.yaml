@@ -52,13 +52,16 @@
 # Generated (never copied, never shared between members):
 #   v1-eu-jwt               JWT_PRIVATE_KEY, JWT_PUBLIC_KEY   dashboard signs write tokens  (config.go ensureJWTSecrets)
 #   v1-eu-jwt-pub           JWT_PUBLIC_KEY                     engine verifies               (config.go ensureJWTSecrets)
-#   v1-eu-broker-admin      username, password                 broker, engine, harvest-master (credentials.go ensureCredentialSecrets)
-#   v1-eu-broker-users      writer-password, reader-password   RabbitMQTopology users         (datastore.go ensureBrokerSecrets)
+#   v1-eu-broker-admin      username, password                 broker, harvest-master          (credentials.go ensureCredentialSecrets)
+#   v1-eu-broker-users      writer-password, reader-password   RabbitMQTopology users; the writer and readers
+#                                                              sign in as them (#99)        (datastore.go ensureBrokerSecrets)
 #   v1-eu-cache-auth        password                           Redis, harvest-master, index-builder (credentials.go)
 #   v1-eu-hpes (#574)       token                              HPES API_KEY, index-builder ORAMA_EMBEDDINGS_BEARER
 #                                                              (credentials.go)
-#   v1-eu-controldb-app     uri, password                      CNPG: dashboard DATABASE_URL/POSTGRES_PASSWORD,
-#                                                              index-builder, analytics processor, PostgresSchema
+#   v1-eu-controldb-app     uri, password                      CNPG owner: index-builder, analytics processor,
+#                                                              PostgresSchema, cluster-row Job, pgAdmin
+#   v1-eu-controldb-dashboard username, password, uri          the dashboard role: dashboard DATABASE_URL/
+#                                                              POSTGRES_PASSWORD (#99, controldb_roles.go)
 #   v1-eu-analytics-api-key (#386)                             readers' reader_side.analytics and the analytics
 #                                                              processor only (credentials.go)
 #

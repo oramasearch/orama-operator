@@ -162,7 +162,7 @@ func TestHPESBearerChangeRollsHPESAndIndexBuilder(t *testing.T) {
 	if before["dashboard"].Annotations[credentialsHashKey] != after["dashboard"].Annotations[credentialsHashKey] {
 		t.Error("the dashboard rolled on the HPES bearer, which it does not read")
 	}
-	if !reflect.DeepEqual(secretsReadBy(stackOC(nil))[:4], []string{"v1-broker-admin", "v1-cache-auth", "v1-redis-http", "v1-hpes"}) {
+	if !reflect.DeepEqual(secretsReadBy(stackOC(nil))[:5], []string{"v1-broker-admin", "v1-broker-users", "v1-cache-auth", "v1-redis-http", "v1-hpes"}) {
 		t.Errorf("secretsReadBy does not map v1-hpes back to the CR: %v", secretsReadBy(stackOC(nil)))
 	}
 }

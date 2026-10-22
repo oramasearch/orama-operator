@@ -103,6 +103,13 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 	if err := r.ensureCredentialSecrets(ctx, oc); err != nil {
 		return err
 	}
+	// The engine's broker users' passwords (#99), before the engine step hashes them, so a fresh
+	// stack's writer and readers are written once, not again when the broker step creates them.
+	if storeLocal(oc, oc.Spec.Components.Broker) {
+		if err := r.ensureBrokerSecrets(ctx, oc); err != nil {
+			return fmt.Errorf("broker users Secret: %w", err)
+		}
+	}
 	return r.ensureJWTSecrets(ctx, oc)
 }
 

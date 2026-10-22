@@ -17,6 +17,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -362,14 +363,73 @@ func (r *OramaCloudV1Reconciler) reconcileBroker(ctx context.Context, oc *oramav
 func brokerAdminSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-broker-admin" }
 func brokerUsersSecretName(oc *oramav1alpha1.OramaCloudV1) string { return oc.Name + "-broker-users" }
 
+// The engine's per-service broker users (#99, principle 4). The writer, and every pod of the
+// combined image (which runs a producer in readers too), signs in as brokerWriterUser; a reader-only
+// pod signs in as brokerReaderUser, which may not write to the stream. Their passwords are the keys of
+// <cr>-broker-users (brokerUserPasswordKey).
+const (
+	brokerWriterUser = "oramacore-writer"
+	brokerReaderUser = "oramacore-reader"
+)
+
+// brokerUserPasswordKey is the <cr>-broker-users key holding a broker user's password.
+func brokerUserPasswordKey(user string) string {
+	if user == brokerReaderUser {
+		return "reader-password"
+	}
+	return "writer-password"
+}
+
+// brokerUserPermissions is what each engine user may do on the / vhost, as RabbitMQ regular
+// expressions over resource names: both may declare (configure) and read the replication stream,
+// which OramaCore's stream creator and consumer need, only the writer may publish to it, and neither
+// may touch any other queue or exchange.
+func brokerUserPermissions() []oramav1alpha1.RabbitMQPermission {
+	stream := "^" + brokerOperationsStream + "$"
+	return []oramav1alpha1.RabbitMQPermission{
+		{User: brokerWriterUser, VHost: "/", Configure: stream, Write: stream, Read: stream},
+		{User: brokerReaderUser, VHost: "/", Configure: stream, Write: "^$", Read: stream},
+	}
+}
+
+// engineBrokerPasswordEnv carries the password of the side's broker user from <cr>-broker-users into
+// render-config as BROKER_PASSWORD, which fills the template's __BROKER_PASSWORD__.
+func engineBrokerPasswordEnv(oc *oramav1alpha1.OramaCloudV1, side engineSide) corev1.EnvVar {
+	return secretKeyEnv(brokerPasswordEnv, brokerUsersSecretName(oc), brokerUserPasswordKey(side.brokerUser))
+}
+
+// brokerUsersReady reports whether the engine may be written: where the broker runs in this cluster,
+// its RabbitMQTopology must report Ready for its current generation with every user applied, so the
+// writer's and readers' users exist on the broker with the passwords in <cr>-broker-users. Where the
+// broker runs elsewhere, the stack's set supplies <cr>-broker-users and there is nothing to wait for.
+func (r *OramaCloudV1Reconciler) brokerUsersReady(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) (bool, error) {
+	if !storeLocal(oc, oc.Spec.Components.Broker) {
+		return true, nil
+	}
+	topo := &oramav1alpha1.RabbitMQTopology{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-broker"}, topo); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return brokerTopologyUsersApplied(topo), nil
+}
+
+// brokerTopologyUsersApplied reports whether a RabbitMQTopology's status says every user of its
+// current spec is on the broker: Ready for the current generation, with as many users as declared.
+func brokerTopologyUsersApplied(topo *oramav1alpha1.RabbitMQTopology) bool {
+	return topo.Status.ObservedGeneration == topo.Generation &&
+		topo.Status.Users == len(topo.Spec.Users) &&
+		apimeta.IsStatusConditionTrue(topo.Status.Conditions, "Ready")
+}
+
 // reconcileBrokerTopology creates + owns a RabbitMQTopology declaring the broker's vhost, the
 // least-privilege per-service users (oramacore-writer / oramacore-reader) with stream-scoped
 // permissions, and the oramacore-operations replication stream. It only manages topology where the
 // broker actually runs in-cluster; elsewhere it removes the CR (whose finalizer cleans the broker).
-//
-// Per the current decision the engine still authenticates as the shared admin user, so the
-// per-service users are declared-but-unused for now — the topology makes least-privilege ready to
-// adopt; wiring the engine's writer/reader to these users is the fast-follow (operator#40).
+// The engine signs in as these users (#99); the admin user in <cr>-broker-admin is for the broker
+// itself and this topology's management calls.
 func (r *OramaCloudV1Reconciler) reconcileBrokerTopology(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	topo := &oramav1alpha1.RabbitMQTopology{ObjectMeta: metav1.ObjectMeta{Name: oc.Name + "-broker", Namespace: oc.Namespace}}
 	if !storeLocal(oc, oc.Spec.Components.Broker) {
@@ -388,15 +448,10 @@ func (r *OramaCloudV1Reconciler) reconcileBrokerTopology(ctx context.Context, oc
 			AdminSecretRef: brokerAdminSecretName(oc),
 			VHosts:         []string{"/"},
 			Users: []oramav1alpha1.RabbitMQUser{
-				{Name: "oramacore-writer", PasswordSecretRef: oramav1alpha1.RabbitMQSecretKeyRef{Name: usersSecret, Key: "writer-password"}},
-				{Name: "oramacore-reader", PasswordSecretRef: oramav1alpha1.RabbitMQSecretKeyRef{Name: usersSecret, Key: "reader-password"}},
+				{Name: brokerWriterUser, PasswordSecretRef: oramav1alpha1.RabbitMQSecretKeyRef{Name: usersSecret, Key: brokerUserPasswordKey(brokerWriterUser)}},
+				{Name: brokerReaderUser, PasswordSecretRef: oramav1alpha1.RabbitMQSecretKeyRef{Name: usersSecret, Key: brokerUserPasswordKey(brokerReaderUser)}},
 			},
-			Permissions: []oramav1alpha1.RabbitMQPermission{
-				// writer produces to (and may declare) the stream; reader consumes from (and may
-				// declare) it. Both scoped to the exact stream — least-privilege (principle #4).
-				{User: "oramacore-writer", VHost: "/", Configure: "^" + brokerOperationsStream + "$", Write: "^" + brokerOperationsStream + "$", Read: "^" + brokerOperationsStream + "$"},
-				{User: "oramacore-reader", VHost: "/", Configure: "^" + brokerOperationsStream + "$", Write: "^$", Read: "^" + brokerOperationsStream + "$"},
-			},
+			Permissions: brokerUserPermissions(),
 			// Declare the stream with the SAME retention OramaCore uses on its own stream-protocol
 			// Create (x-max-length-bytes = 5 GB) — RabbitMQ rejects a redeclare whose properties differ,
 			// which would fail this reconcile before the reader/writer users are created (the reader then
@@ -422,7 +477,10 @@ func (r *OramaCloudV1Reconciler) ensureBrokerSecrets(ctx context.Context, oc *or
 	}
 	users := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: brokerUsersSecretName(oc), Namespace: oc.Namespace, Labels: labelsFor(oc, "broker")},
-		StringData: map[string]string{"writer-password": writerPass, "reader-password": readerPass},
+		Data: map[string][]byte{
+			brokerUserPasswordKey(brokerWriterUser): []byte(writerPass),
+			brokerUserPasswordKey(brokerReaderUser): []byte(readerPass),
+		},
 	}
 	return r.createSecretIfAbsent(ctx, oc, users)
 }

@@ -209,7 +209,8 @@ func TestControlDBMigrationRoleLoginFollowsMigrations(t *testing.T) {
 			t.Fatal(err)
 		}
 		roles, _, err := unstructured.NestedSlice(cluster.Object, "spec", "managed", "roles")
-		if err != nil || len(roles) != 1 {
+		// The migration role and the dashboard's (#99, controldb_roles_test.go).
+		if err != nil || len(roles) != 2 || roles[1].(map[string]interface{})["name"] != dashboardRole {
 			t.Fatalf("managed roles = %v (%v)", roles, err)
 		}
 		return roles[0].(map[string]interface{})
@@ -267,7 +268,9 @@ func TestControlDBMigrationGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := schemas[len(schemas)-1]
+	// The migration grants come after every schema that creates tables; only the dashboard's grants
+	// (#99) follow them.
+	last := schemas[len(schemas)-2]
 	if last.suffix != "-controldb-migration-grants" || !last.everyVersion || last.key != "migration-grants.sql" {
 		t.Fatalf("last schema = %+v", last)
 	}
@@ -295,7 +298,7 @@ func TestControlDBMigrationGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again[len(again)-1].sql != last.sql {
+	if again[len(again)-2].sql != last.sql {
 		t.Fatal("a Stripe price change changed the grants")
 	}
 }

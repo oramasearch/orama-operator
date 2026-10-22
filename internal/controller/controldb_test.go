@@ -339,7 +339,7 @@ func TestControlDBSchemaReadiness(t *testing.T) {
 	ctx := context.Background()
 	oc := newControlDBStack()
 	r, kube := newControlDBReconciler(t, oc)
-	if c := schemaComponent(t, r, oc); c.Ready || !strings.Contains(c.Detail, "0/4 applied; v1-controldb-schema not created yet") {
+	if c := schemaComponent(t, r, oc); c.Ready || !strings.Contains(c.Detail, "0/5 applied; v1-controldb-schema not created yet") {
 		t.Fatalf("missing base schema: %+v", c)
 	}
 	if err := r.reconcileControlDBMigrations(ctx, oc); err != nil {
@@ -347,7 +347,7 @@ func TestControlDBSchemaReadiness(t *testing.T) {
 	}
 	base, _ := getSchema(t, kube, oc, "-controldb-schema")
 	setSchemaStatus(t, kube, base, "Applied", base.Spec.Version, base.Generation)
-	if c := schemaComponent(t, r, oc); c.Ready || !strings.Contains(c.Detail, "1/4 applied; v1-controldb-schema-0008 not created yet") {
+	if c := schemaComponent(t, r, oc); c.Ready || !strings.Contains(c.Detail, "1/5 applied; v1-controldb-schema-0008 not created yet") {
 		t.Fatalf("missing 0008 schema: %+v", c)
 	}
 	if err := r.reconcileControlDBMigrations(ctx, oc); err != nil {
@@ -363,7 +363,7 @@ func TestControlDBSchemaReadiness(t *testing.T) {
 		t.Fatalf("stale 0008 schema reported ready: %+v", c)
 	}
 	setSchemaStatus(t, kube, ps, "Applied", ps.Spec.Version, ps.Generation)
-	if c := schemaComponent(t, r, oc); c.Ready || !strings.Contains(c.Detail, "2/4 applied; v1-controldb-reference-data not created yet") {
+	if c := schemaComponent(t, r, oc); c.Ready || !strings.Contains(c.Detail, "2/5 applied; v1-controldb-reference-data not created yet") {
 		t.Fatalf("missing reference data: %+v", c)
 	}
 	if err := r.reconcileControlDBMigrations(ctx, oc); err != nil {
@@ -371,7 +371,7 @@ func TestControlDBSchemaReadiness(t *testing.T) {
 	}
 	ref, _ := getSchema(t, kube, oc, "-controldb-reference-data")
 	setSchemaStatus(t, kube, ref, "Applied", ref.Spec.Version, ref.Generation)
-	if c := schemaComponent(t, r, oc); c.Ready || !strings.Contains(c.Detail, "3/4 applied; v1-controldb-migration-grants not created yet") {
+	if c := schemaComponent(t, r, oc); c.Ready || !strings.Contains(c.Detail, "3/5 applied; v1-controldb-migration-grants not created yet") {
 		t.Fatalf("missing migration grants: %+v", c)
 	}
 	if err := r.reconcileControlDBMigrations(ctx, oc); err != nil {
@@ -379,7 +379,15 @@ func TestControlDBSchemaReadiness(t *testing.T) {
 	}
 	grants, _ := getSchema(t, kube, oc, "-controldb-migration-grants")
 	setSchemaStatus(t, kube, grants, "Applied", grants.Spec.Version, grants.Generation)
-	if c := schemaComponent(t, r, oc); !c.Ready || c.Detail != "4/4 applied" {
+	if c := schemaComponent(t, r, oc); c.Ready || !strings.Contains(c.Detail, "4/5 applied; v1-controldb-dashboard-grants not created yet") {
+		t.Fatalf("missing dashboard grants: %+v", c)
+	}
+	if err := r.reconcileControlDBMigrations(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	dash, _ := getSchema(t, kube, oc, dashboardGrantsSchemaSuffix)
+	setSchemaStatus(t, kube, dash, "Applied", dash.Spec.Version, dash.Generation)
+	if c := schemaComponent(t, r, oc); !c.Ready || c.Detail != "5/5 applied" {
 		t.Fatalf("applied schemas: %+v", c)
 	}
 }

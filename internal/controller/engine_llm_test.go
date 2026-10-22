@@ -334,9 +334,9 @@ func TestLLMCustomKeySecretWiring(t *testing.T) {
 			LocalObjectReference: corev1.LocalObjectReference{Name: "llm-keys"}, Key: "ANTHROPIC_API_KEY"}}},
 	}
 	// The credentials come first: the master key (both sides run the combined config) and the
-	// broker admin user and password.
+	// password of oramacore-writer, which every combined pod signs in to the broker as (#99).
 	want = append([]corev1.EnvVar{secretKeyEnv("MASTER_API_KEY", testMasterSecret, "MASTER_API_KEY"),
-		secretKeyEnv("BROKER_USERNAME", "v1-broker-admin", "username"), secretKeyEnv("BROKER_PASSWORD", "v1-broker-admin", "password")}, want...)
+		secretKeyEnv("BROKER_PASSWORD", "v1-broker-users", "writer-password")}, want...)
 	cm := h.engineConfig()
 	for side, spec := range h.podTemplates() {
 		init := renderInit(t, spec.Spec)
