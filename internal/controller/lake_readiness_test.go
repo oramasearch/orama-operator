@@ -263,14 +263,15 @@ func TestLakeReadinessDeploymentCounts(t *testing.T) {
 		name   string
 		status appsv1.DeploymentStatus
 	}{
-		{"unobserved", appsv1.DeploymentStatus{ReadyReplicas: 2, UpdatedReplicas: 2, AvailableReplicas: 2}},
-		{"old replicas", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 2, AvailableReplicas: 2}},
-		{"partially updated", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 2, UpdatedReplicas: 1, AvailableReplicas: 2}},
-		{"unavailable", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 2, UpdatedReplicas: 2, AvailableReplicas: 1}},
-		{"unready", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 1, UpdatedReplicas: 2, AvailableReplicas: 2}},
-		// A surge rollout with the new pods ready while an old pod still runs is not done.
+		// One replica (operator#698).
+		{"unobserved", appsv1.DeploymentStatus{ReadyReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1}},
+		{"old replicas", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 1, AvailableReplicas: 1}},
+		{"not updated", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 1, UpdatedReplicas: 0, AvailableReplicas: 1}},
+		{"unavailable", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 0}},
+		{"unready", appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 0, UpdatedReplicas: 1, AvailableReplicas: 1}},
+		// A surge rollout with the new pod ready while the old pod still runs is not done.
 		{"old pod still serving", appsv1.DeploymentStatus{
-			ObservedGeneration: 2, Replicas: 3, ReadyReplicas: 3, UpdatedReplicas: 2, AvailableReplicas: 3,
+			ObservedGeneration: 2, Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 1, AvailableReplicas: 2,
 		}},
 	}
 	for _, tc := range cases {
@@ -278,17 +279,17 @@ func TestLakeReadinessDeploymentCounts(t *testing.T) {
 			f := newLakeReadinessFixture(t)
 			f.database(1, 1)
 			f.schema("Applied")
-			f.lake.Spec.Replicas = int32Ptr(2)
+			f.lake.Spec.Replicas = int32Ptr(1)
 			if err := f.client.Update(f.ctx, f.lake); err != nil {
 				t.Fatal(err)
 			}
-			f.deployment(2, tc.status)
+			f.deployment(1, tc.status)
 			f.reconcile()
 			f.expectState("Progressing", "DeploymentProgressing")
 			f.expectQuiet(lakeControlRowsRequeue)
 
-			f.deployment(2, appsv1.DeploymentStatus{
-				ObservedGeneration: 2, ReadyReplicas: 2, UpdatedReplicas: 2, AvailableReplicas: 2,
+			f.deployment(1, appsv1.DeploymentStatus{
+				ObservedGeneration: 2, ReadyReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1,
 			})
 			f.reconcile()
 			f.expectState("Ready", "LakeReady")

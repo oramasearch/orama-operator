@@ -476,10 +476,18 @@ Use immutable tags (the `v1-sandbox` + `IfNotPresent` stale-cache failure is doc
 
 ### Store volume
 
-The default store creates `lake-<name>-store` at `100Gi` with `ReadWriteMany`, because every
-Deployment replica mounts the same libliquid customer root. The storage class must actually
-support RWX. `ReadWriteOnce` is valid only with `spec.replicas: 1`; otherwise pods scheduled on
-different nodes cannot mount the shared claim. To use a pre-provisioned claim in the Lake
+The default store creates `lake-<name>-store` at `100Gi` with `ReadWriteMany`. The storage class
+must actually support RWX.
+
+**A Lake runs one replica** (operator#698). Lake is not stateless: one lake process owns the store
+root at a time, behind an exclusive `flock` (lake `docs/deployment/store-volume.md`). A second
+replica would never get the root, yet report Ready while it waited (by design, so a surge rollout can
+finish), take half the traffic and fail it with `503 store_unavailable` after 90 s; on a network
+filesystem without working `flock` two processes would corrupt a customer store (lake#467).
+`spec.replicas` therefore accepts only 0 or 1 (the CRD's maximum). A Lake stored with more, from
+before the maximum, runs one replica and its `Ready` condition is `Degraded` with reason
+`ReplicasRefused`. The access mode only decides the rollout: surge on RWX, `Recreate` on RWO
+unless `spec.rollout.overlapOnSharedStore`. To use a pre-provisioned claim in the Lake
 namespace, set `spec.store.existingClaim`; the operator mounts it without adopting, changing, or
 deleting it.
 
@@ -529,7 +537,7 @@ spec:
   image: oramasearch/lake:<tag>
   pullSecretName: oramasearch-dockerhub
   args: ["--listen", "0.0.0.0:4900", "--node", "prod"]
-  replicas: 3
+  replicas: 1
   resources:
     requests: { cpu: 250m, memory: 512Mi }
     limits: { memory: 2Gi }
@@ -650,10 +658,10 @@ done
 Before the change the first name takes about 18 ms and the trailing-dot name 2–7 ms; after it
 both take the trailing-dot time.
 
-When `spec.replicas` is greater than one, the operator creates `PodDisruptionBudget lake-<name>`
-with `maxUnavailable: 1`. It also defaults `spec.topologySpreadConstraints` to a soft
-`kubernetes.io/hostname` spread. Supply the field to replace that list; an explicit empty list
-disables the default. At one replica the operator removes the PDB and renders no default spread.
+A Lake runs one replica (above), so the operator renders no `PodDisruptionBudget` and no default
+topology spread; `spec.topologySpreadConstraints`, when set, is copied as given. (The code that
+creates a PDB and a soft `kubernetes.io/hostname` spread above one replica stays for when lake can
+share its store root.)
 
 The nginx Ingress always sets `proxy-body-size: 64m` and disables request and response buffering
 for Lake's bounded streaming transfers. Set `spec.tls.secretName` to a `kubernetes.io/tls` Secret
