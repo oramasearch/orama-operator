@@ -107,7 +107,7 @@ reads of that run's image only.
 | Phase | When |
 |---|---|
 | `Building` | the build is queued or running; no credential exists yet |
-| `Queued` | the image is built, but the run waits, with no credential and no object yet: its workspace already has `spec.methodologies.maxConcurrentRunsPerWorkspace` runs (default 2) `Staging`, `Running` or `Collecting` (*Queued: 2 of this workspace's methodology runs are running (the limit is 2); this run is next.*), or no node of its GPU class exists (above). Runs are admitted oldest first (lake's `created_at`), as places free, in the same pass a run ends |
+| `Queued` | the image is built, but the run waits, with no credential and no object yet: its workspace already has `spec.methodologies.maxConcurrentRunsPerWorkspace` runs (default 2) `Staging`, `Running` or `Collecting` (*Queued: 2 of this workspace's methodology runs are running (the limit is 2); this run is next.*), no node of its GPU class exists (above), or its workspace's quota has no room for it yet ([below](#counted-against-the-workspaces-quota)). Runs are admitted oldest first (lake's `created_at`), as places free, in the same pass a run ends |
 | `Staging` | the stage pod is bringing the data in; the credential and its digest exist |
 | `Running` | the sandbox Job exists; `started_at` is set once its container has started |
 | `Collecting` | the code finished (any outcome); `finished_at` and `exit_code` are set and the sandbox's resources are written to `workload_resources` again (they were first written before its Job was created) |
@@ -128,6 +128,47 @@ and the workload pass sets the live pod count while the pod runs and keeps the n
 At a terminal phase the credential digest is cleared (the credential stops resolving in lake) and
 the Jobs, their pods, the two Secrets and the work volume are deleted; the namespace and its
 policies stay. Status is written only when it changes.
+
+## Counted against the workspace's quota
+
+A run's and a served model's pods count against the workspace's own `ResourceQuota` and
+`LimitRange`, the same as its apps and services
+([orama-operator#799](https://github.com/oramasearch/orama-operator/issues/799), LSR-137). They
+cannot run in the workspace's namespace: its policies allow every pod lake, DNS, the internet and
+the workspace's services, and NetworkPolicies only add what they allow, so the code that is not
+trusted could not be kept off the network there. Kubernetes counts a pod only in its own namespace,
+so the operator reserves the room in the workspace's namespace instead:
+
+- **The reservation.** Before a run or a served model starts (before its credential, volume or any
+  pod), the operator creates Pod `<slug>-quota` in the workspace's namespace (`workspaces.namespace`).
+  It carries, per resource, the largest request and the largest limit of the pods that will run one
+  after another: the stage and collect pods' (100m/256Mi requests, 1 CPU/1Gi limits) and the run's or
+  serve pod's (requests equal to limits from the row). A scheduling gate
+  (`orama.cloud/methodology-quota-reservation`) holds it unscheduled for its whole life, so it uses
+  no node, pulls no image (`registry.k8s.io/pause:3.10`, never pulled) and is never metered. It is a
+  restricted pod, labelled with the run's or deployment's id and role `quota-reservation`, and
+  controlled by the Lake.
+- **Admission is the workspace's own.** The API server admits the reservation exactly as it admits
+  the workspace's apps and services: its `LimitRange` applies and its `ResourceQuota` counts it.
+  While the quota has no room the run or model waits `Queued` (*Queued: the workspace's resource
+  quota has no room for this run yet (exceeded quota: …); it starts when the workspace's other work
+  frees enough.*), and its place in the workspace's run queue goes to the next run. One larger than
+  the quota's whole hard limit fails (*the run asks for more than the workspace's whole quota allows
+  (requests.cpu 16 > 4)*), as does one the `LimitRange` refuses (*the workspace's limits refuse this
+  run: …*). A workspace with no namespace yet waits (*Queued: the workspace has no namespace yet*).
+- **It holds the room both ways.** While the reservation exists, the workspace's apps and services
+  see the room as used, and the methodology's own pods run in `lake-<lake>-methodology-runs`.
+- **Released with the run.** The reservation is deleted with the run's or model's other objects
+  (`Succeeded`, `Failed`, `Stopped`), and each pass deletes this Lake's reservations whose run or
+  model is no longer read (its workspace row went first, or a release failed before it settled).
+- **A run already under way keeps going.** A run or model that started before its reservation could
+  be made (one in flight when this operator version rolled out) is not stopped; its reservation is
+  made as soon as there is room.
+- **The ceiling.** The methodology-runs namespace carries ResourceQuota `methodology-ceiling`, a cap
+  on every workspace's methodologies together: `spec.methodologies.namespaceQuota`, or by default
+  `requests.cpu` 64, `requests.memory` and `limits.memory` 256Gi, `requests.nvidia.com/gpu` 8, `pods`
+  500, `persistentvolumeclaims` 200. Kubernetes refuses a methodology pod past it, and the Job or
+  Deployment retries until there is room; the run stays in its current phase meanwhile.
 
 ## Serving a model
 
@@ -154,7 +195,7 @@ the caller; nothing else can reach it.
 | Phase | When |
 |---|---|
 | `Building` | its image build is queued or running |
-| `Queued` | a GPU model with no node of its class in the cluster yet (*… the model is served when one is*) |
+| `Queued` | a GPU model with no node of its class in the cluster yet (*… the model is served when one is*), or no room for it in its workspace's quota yet ([above](#counted-against-the-workspaces-quota)) |
 | `Staging` | the stage Job is bringing the model in |
 | `Starting` | the serve Deployment exists and is not ready; `endpoint` is set |
 | `Ready` | a serve pod is ready; `ready_at` is set; the status stops changing |
@@ -180,14 +221,17 @@ times their CPU, memory, GPUs and GPU memory, as for any long-running workload.
 | `spec.methodologies.workVolumeSize` | each run's work volume and each served model's model volume, default `10Gi` |
 | `spec.methodologies.storageClassName` | its storage class, default the cluster's; it should bind on first use (`WaitForFirstConsumer`) for GPU placement |
 | `spec.methodologies.maxConcurrentRunsPerWorkspace` | how many of one workspace's runs may be staging, running or collecting at once, default `2`, at least 1; the rest wait `Queued` |
+| `spec.methodologies.namespaceQuota` | the hard limit of ResourceQuota `methodology-ceiling` on the methodology-runs namespace, the cap on every workspace's runs and served models together; empty uses the default [above](#counted-against-the-workspaces-quota) |
 
 Builds also accept the `METHODOLOGY_RUNTIME_IMAGE` and `METHODOLOGY_PACKAGES` build arguments (`BUILD_ARG_ALLOW`), which lake's
 generated methodology Dockerfile builds `FROM`.
 
 ## Limits and follow-ups
 
-- The cap is per workspace; there is no cap across a Lake's workspaces beyond what the cluster can
-  schedule.
+- The run cap is per workspace; across a Lake's workspaces the cap is the methodology-runs
+  namespace's ResourceQuota.
+- The work and model volumes are in the methodology-runs namespace and count against its ceiling
+  (`persistentvolumeclaims`), not against the workspace's storage quota.
 - A GPU class whose nodes an autoscaler creates only on demand (a pool scaled to zero) has no node
   to place the volume next to, so its runs stay `Queued` until a node of the class exists.
 - The NetworkPolicies need a CNI that enforces them (Cilium on the dev AKS cluster does).
@@ -197,6 +241,8 @@ generated methodology Dockerfile builds `FROM`.
 ```sh
 go test ./internal/controller/ -run 'Methodology|MethodologyCredentialPods|TheSandbox|AGranted|ARunSucceeds|AFailing|ACode|AStage|Stopping|ACancelled|RunsFail|TheWorkloadPass|AWorkspacesRuns|TheLakeSetsTheCap|AQueuedRun|AGPURun|ACPURun'
 go test ./internal/controller/ -run 'AServedModel|TheServePod|OnlyLakeReaches|AServerThatKeeps|Unpublishing|AGPUModel|DeploymentsAreSkipped'
+go test ./internal/controller/ -run 'WaitsForRoom|LargerThanItsWorkspaceQuota|WaitsForItsWorkspaceNamespace|LeftoverMethodologyReservations|CeilingQuota|ReservationResources'
+KUBEBUILDER_ASSETS=<envtest assets> go test ./internal/controller/ -run QuotaEnvtest   # real ResourceQuota, LimitRanger and PodSecurity admission
 LAKE_SERVICES_TEST_POSTGRES=1 LAKE_SERVICES_TEST_POSTGRES_URI=postgres://127.0.0.1:5432/postgres \
   go test ./internal/controller/ -run TestServicesPgxStoreAgainstPostgres   # checkMethodologyRunsPgx and checkMethodologyDeploymentsPgx
 ```

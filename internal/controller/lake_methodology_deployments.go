@@ -78,24 +78,27 @@ var (
 // LakeMethodologyDeployment is one methodology_deployments row joined to its image build and its
 // status row.
 type LakeMethodologyDeployment struct {
-	ID            string
-	CustomerID    string
-	WorkspaceID   string
-	MethodologyID string
-	ModelID       string
-	BuildID       string
-	Image         string
-	RuntimeImage  string
-	CPUMillis     int32
-	MemoryBytes   int64
-	GPUs          int32
-	GPUClass      string
-	Network       bool
-	Slug          string
-	Desired       string
-	Generation    int64
-	Build         *LakeMethodologyRunBuild
-	Status        *LakeMethodologyDeploymentStatus
+	ID          string
+	CustomerID  string
+	WorkspaceID string
+	// WorkspaceNamespace is the workspace's own namespace, where the served model's quota
+	// reservation goes (orama-operator#799); empty when the workspace has none.
+	WorkspaceNamespace string
+	MethodologyID      string
+	ModelID            string
+	BuildID            string
+	Image              string
+	RuntimeImage       string
+	CPUMillis          int32
+	MemoryBytes        int64
+	GPUs               int32
+	GPUClass           string
+	Network            bool
+	Slug               string
+	Desired            string
+	Generation         int64
+	Build              *LakeMethodologyRunBuild
+	Status             *LakeMethodologyDeploymentStatus
 }
 
 // LakeMethodologyDeploymentStatus is one methodology_deployment_status row, written only by the
@@ -378,6 +381,24 @@ func (r *LakeReconciler) reconcileMethodologyDeployment(ctx context.Context, lak
 		status.Phase, status.Message = DeploymentPhaseQueued, placement.Wait
 		return status, true, nil
 	}
+	// Its resources count against its workspace's quota (orama-operator#799), as a run's do.
+	reservation, err := r.reserveMethodologyQuota(ctx, lake, methodologyReservation{
+		Namespace: deployment.WorkspaceNamespace, Slug: deployment.Slug, IDLabel: methodologyDeploymentIDLabel,
+		ID: deployment.ID, Labels: methodologyDeploymentLabels(lake, deployment, ""),
+		Resources: methodologyDeploymentReservation(deployment), What: "model",
+	})
+	if err != nil {
+		return status, true, err
+	}
+	if !started {
+		switch {
+		case reservation.Fail != "":
+			return fail(reservation.Fail)
+		case reservation.Wait != "":
+			status.Phase, status.Message = DeploymentPhaseQueued, reservation.Wait
+			return status, true, nil
+		}
+	}
 
 	ns, err := namespace()
 	if err != nil {
@@ -511,7 +532,7 @@ func (r *LakeReconciler) removeMethodologyDeployment(ctx context.Context, lake *
 			return err
 		}
 	}
-	return nil
+	return r.releaseMethodologyQuota(ctx, lake, deployment.WorkspaceNamespace, deployment.Slug, methodologyDeploymentIDLabel, deployment.ID)
 }
 
 // reconcileLakeMethodologyDeployments applies one read of methodology_deployments and reports
@@ -591,6 +612,14 @@ func (r *LakeReconciler) reconcileLakeMethodologyDeployments(ctx context.Context
 		}
 		copied := status
 		deployment.Status = &copied
+	}
+	read := make(map[string]bool, len(deployments))
+	for i := range deployments {
+		read[deployments[i].ID] = true
+	}
+	if err := r.sweepMethodologyReservations(ctx, lake, methodologyDeploymentIDLabel, read); err != nil {
+		log.Error(err, "methodology deployment quota reservations sweep deferred")
+		changing = true
 	}
 	return changing
 }

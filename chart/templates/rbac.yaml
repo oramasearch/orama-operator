@@ -158,9 +158,11 @@ rules:
   # the final pushed digest and size into their respective status records.
   # Patch lake pods' orama.cloud/services-secret-version annotation so kubelet refreshes the
   # mounted services Secret at once (lake#197). Listed uncached: no pod informer.
+  # Create and delete a methodology run's or served model's quota reservation, a pod that is never
+  # scheduled, in its workspace's namespace (orama-operator#799).
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "patch"]
+    verbs: ["get", "list", "watch", "patch", "create", "delete"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]

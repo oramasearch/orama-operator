@@ -18,7 +18,8 @@ import (
 // listMethodologyDeploymentsSQL reads every deployment that still needs the operator: present
 // ones, and absent ones not yet reported Stopped or Failed at their generation or whose credential
 // digest is still set. Each comes with its image build's state.
-const listMethodologyDeploymentsSQL = `SELECT d.id::text, d.customer_id::text, d.workspace_id::text, d.methodology_id, d.model_id,
+const listMethodologyDeploymentsSQL = `SELECT d.id::text, d.customer_id::text, d.workspace_id::text, COALESCE(w.namespace, ''),
+       d.methodology_id, d.model_id,
        COALESCE(d.build_id::text, ''), d.image, d.runtime_image, d.cpu_millis, d.memory_bytes, d.gpus,
        d.gpu_class, d.network, d.slug, d.desired, d.generation,
        b.id IS NOT NULL, COALESCE(b.desired, ''), COALESCE(b.phase, ''), COALESCE(b.digest, ''),
@@ -27,6 +28,7 @@ const listMethodologyDeploymentsSQL = `SELECT d.id::text, d.customer_id::text, d
        COALESCE(ds.credential_sha256, ''), COALESCE(ds.endpoint, ''), COALESCE(ds.observed_generation, 0),
        ds.ready_at, ds.stopped_at
   FROM methodology_deployments d
+  LEFT JOIN workspaces w ON w.id = d.workspace_id
   LEFT JOIN builds b ON b.id = d.build_id
   LEFT JOIN methodology_deployment_status ds ON ds.deployment_id = d.id
  WHERE d.desired = 'present'
@@ -76,7 +78,7 @@ func (s *pgxServiceStore) ListMethodologyDeployments(ctx context.Context) ([]Lak
 		var build LakeMethodologyRunBuild
 		var status LakeMethodologyDeploymentStatus
 		var hasBuild, hasStatus bool
-		if err := rows.Scan(&deployment.ID, &deployment.CustomerID, &deployment.WorkspaceID, &deployment.MethodologyID,
+		if err := rows.Scan(&deployment.ID, &deployment.CustomerID, &deployment.WorkspaceID, &deployment.WorkspaceNamespace, &deployment.MethodologyID,
 			&deployment.ModelID, &deployment.BuildID, &deployment.Image, &deployment.RuntimeImage, &deployment.CPUMillis,
 			&deployment.MemoryBytes, &deployment.GPUs, &deployment.GPUClass, &deployment.Network, &deployment.Slug,
 			&deployment.Desired, &deployment.Generation,

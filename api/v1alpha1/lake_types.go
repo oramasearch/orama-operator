@@ -377,6 +377,14 @@ type LakeMethodologiesSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxConcurrentRunsPerWorkspace int32 `json:"maxConcurrentRunsPerWorkspace,omitempty"`
+
+	// NamespaceQuota is the hard limit of the ResourceQuota on the Lake's shared methodology-runs
+	// namespace: a ceiling on every workspace's runs and served models together, beside each
+	// workspace's own quota, which they count against (orama-operator#799). Empty uses the
+	// operator's default (requests.cpu 64, requests.memory and limits.memory 256Gi,
+	// requests.nvidia.com/gpu 8, pods 500, persistentvolumeclaims 200).
+	// +optional
+	NamespaceQuota corev1.ResourceList `json:"namespaceQuota,omitempty"`
 }
 
 // LakeBuildConcurrencySpec sets independent build concurrency limits.

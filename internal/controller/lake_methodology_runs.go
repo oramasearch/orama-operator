@@ -104,23 +104,26 @@ var (
 
 // LakeMethodologyRun is one methodology_runs row joined to its image build and its status row.
 type LakeMethodologyRun struct {
-	ID             string
-	CustomerID     string
-	WorkspaceID    string
-	MethodologyID  string
-	Mode           string
-	BuildID        string
-	Image          string
-	RuntimeImage   string
-	CPUMillis      int32
-	MemoryBytes    int64
-	GPUs           int32
-	GPUClass       string
-	TimeoutSeconds int32
-	Network        bool
-	Slug           string
-	Desired        string
-	Generation     int64
+	ID          string
+	CustomerID  string
+	WorkspaceID string
+	// WorkspaceNamespace is the workspace's own namespace (workspaces.namespace), where the run's
+	// quota reservation goes (orama-operator#799); empty when the workspace has none.
+	WorkspaceNamespace string
+	MethodologyID      string
+	Mode               string
+	BuildID            string
+	Image              string
+	RuntimeImage       string
+	CPUMillis          int32
+	MemoryBytes        int64
+	GPUs               int32
+	GPUClass           string
+	TimeoutSeconds     int32
+	Network            bool
+	Slug               string
+	Desired            string
+	Generation         int64
 	// Build is the joined builds row; nil when the run names no build or the row is gone.
 	Build  *LakeMethodologyRunBuild
 	Status *LakeMethodologyRunStatus
@@ -291,6 +294,10 @@ func (r *LakeReconciler) reconcileMethodologyNamespace(ctx context.Context, lake
 		}); err != nil {
 			return "", fmt.Errorf("reconcile NetworkPolicy %s/%s: %w", name, wanted.Name, err)
 		}
+	}
+	// The ceiling on every workspace's methodologies together (orama-operator#799).
+	if err := r.reconcileMethodologyCeiling(ctx, lake, name, labels); err != nil {
+		return "", err
 	}
 	return name, nil
 }
@@ -957,6 +964,7 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 		status.Phase, status.Message = MethodologyPhaseQueued, placement.Wait
 		return status, true, nil
 	}
+	underWay := started
 	if admitted, why := queue.admit(run); !admitted {
 		// A stage Job that already exists (a status write lost after it was created) is under way.
 		existing := &batchv1.Job{}
@@ -965,11 +973,33 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 		case err == nil && existing.Labels[methodologyRunIDLabel] == run.ID:
 			queue.active[run.WorkspaceID]++
 			queue.waiting[run.WorkspaceID]--
+			underWay = true
 		case err == nil || apierrors.IsNotFound(err):
 			status.Phase, status.Message = MethodologyPhaseQueued, why
 			return status, true, nil
 		default:
 			return status, true, err
+		}
+	}
+
+	// Its resources count against its workspace's quota (orama-operator#799): a run that has not
+	// started waits until its reservation is admitted. A run already under way keeps going; its
+	// reservation is made as soon as there is room.
+	reservation, err := r.reserveMethodologyQuota(ctx, lake, methodologyReservation{
+		Namespace: run.WorkspaceNamespace, Slug: run.Slug, IDLabel: methodologyRunIDLabel, ID: run.ID,
+		Labels: methodologyLabels(lake, run, ""), Resources: methodologyRunReservation(run), What: "run",
+	})
+	if err != nil {
+		return status, true, err
+	}
+	if !underWay {
+		switch {
+		case reservation.Fail != "":
+			return fail(reservation.Fail)
+		case reservation.Wait != "":
+			queue.active[run.WorkspaceID]--
+			status.Phase, status.Message = MethodologyPhaseQueued, reservation.Wait
+			return status, true, nil
 		}
 	}
 
@@ -1133,7 +1163,7 @@ func (r *LakeReconciler) removeMethodologyRun(ctx context.Context, lake *oramav1
 			return err
 		}
 	}
-	return nil
+	return r.releaseMethodologyQuota(ctx, lake, run.WorkspaceNamespace, run.Slug, methodologyRunIDLabel, run.ID)
 }
 
 // stopMethodologyRun ends an absent run: whichever pod is running stops, its objects go, and a
@@ -1241,6 +1271,14 @@ func (r *LakeReconciler) reconcileLakeMethodologyRuns(ctx context.Context, lake 
 		}
 		copied := status
 		run.Status = &copied
+	}
+	read := make(map[string]bool, len(runs))
+	for i := range runs {
+		read[runs[i].ID] = true
+	}
+	if err := r.sweepMethodologyReservations(ctx, lake, methodologyRunIDLabel, read); err != nil {
+		log.Error(err, "methodology run quota reservations sweep deferred")
+		changing = true
 	}
 	return changing
 }

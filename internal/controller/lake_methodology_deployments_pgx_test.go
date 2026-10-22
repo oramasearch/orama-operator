@@ -31,7 +31,7 @@ func checkMethodologyDeploymentsPgx(t *testing.T, ctx context.Context, tx pgx.Tx
 	}
 	deployment := deployments[0]
 	if deployment.ID != deploymentID || deployment.ModelID != "model-1" || deployment.CPUMillis != 1000 ||
-		deployment.MemoryBytes != 2<<30 || deployment.Slug != "md-f000000000d1" || deployment.Status != nil ||
+		deployment.MemoryBytes != 2<<30 || deployment.Slug != "md-f000000000d1" || deployment.WorkspaceNamespace != testWorkspaceName || deployment.Status != nil ||
 		deployment.Build == nil || deployment.Build.Phase != BuildPhaseSucceeded || deployment.Build.Target != testBuildTarget {
 		t.Fatalf("deployment = %+v (build %+v)", deployment, deployment.Build)
 	}

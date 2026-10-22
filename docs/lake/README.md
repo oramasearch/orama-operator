@@ -294,7 +294,10 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     `methodology_runs` row waits for its image build, then runs a stage, a sandbox and a collect pod
     in `lake-<name>-methodology-runs`: the sandbox carries no credential, no token and no network
     unless granted. A workspace runs at most `spec.methodologies.maxConcurrentRunsPerWorkspace`
-    (default 2) at once and the rest wait `Queued`, oldest first; a GPU run's stage pod, and so its
+    (default 2) at once and the rest wait `Queued`, oldest first; each run and served model counts
+    against its workspace's ResourceQuota and LimitRange through a never-scheduled reservation pod
+    in the workspace's namespace, and waits `Queued` while there is no room (orama-operator#799);
+    a GPU run's stage pod, and so its
     work volume, goes in a zone where its GPU class has nodes, or it waits `Queued` (orama-operator#293).
     Phases and the sandbox's start and finish go to `methodology_run_status`. A trained model a
     person publishes (`methodology_deployments`, lake#690) is staged by a Job with its own
