@@ -63,6 +63,31 @@ spec:
           spec:
             description: AksClusterSpec is one AKS managed cluster.
             properties:
+              access:
+                description: Access is required before creating or migrating a cluster.
+                properties:
+                  authorizedIPRanges:
+                    description: AuthorizedIPRanges contains managing egress IPv4
+                      CIDRs, each /8 or narrower.
+                    items:
+                      type: string
+                    maxItems: 200
+                    type: array
+                    x-kubernetes-list-type: set
+                  enforce:
+                    description: |-
+                      Enforce explicitly permits security updates to an existing cluster.
+                      New clusters are always secured.
+                    type: boolean
+                  principalID:
+                    description: PrincipalID is the managing workload identity's service
+                      principal object ID.
+                    pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: principalID is immutable
+                      rule: self == oldSelf
+                type: object
               clusterName:
                 description: ClusterName is the managed cluster's name in Azure. Defaults
                   to the resource's name.
@@ -91,8 +116,8 @@ spec:
                 - Retain
                 type: string
               kubeconfigSecretRef:
-                description: KubeconfigSecretRef is where the admin kubeconfig is
-                  written (key `kubeconfig`).
+                description: KubeconfigSecretRef is where the identity-only kubeconfig
+                  is written (key `kubeconfig`).
                 properties:
                   name:
                     minLength: 1
@@ -300,9 +325,18 @@ spec:
             - resourceGroup
             - subscriptionID
             type: object
+            x-kubernetes-validations:
+            - message: access principalID cannot be changed or removed
+              rule: '!has(oldSelf.access) || !has(oldSelf.access.principalID) || (has(self.access)
+                && has(self.access.principalID) && self.access.principalID == oldSelf.access.principalID)'
           status:
             description: AksClusterStatus is what Azure reports.
             properties:
+              accessSecured:
+                description: |-
+                  AccessSecured is sticky after secure creation or a successful identity cutover. Clearing
+                  spec.access.enforce never permits returning to legacy credentials or insecure settings.
+                type: boolean
               conditions:
                 description: 'Conditions: Ready, and InSync.'
                 items:
@@ -372,8 +406,9 @@ spec:
                 description: FQDN is the API server's host name.
                 type: string
               kubeconfigWritten:
-                description: KubeconfigWritten is true once the admin kubeconfig Secret
-                  holds a credential.
+                description: |-
+                  KubeconfigWritten is true once the connection Secret is delivered; legacy credentials
+                  remain only for an existing cluster awaiting its explicit migration.
                 type: boolean
               kubernetesVersion:
                 description: KubernetesVersion is the version Azure reports as current.

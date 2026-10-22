@@ -222,6 +222,11 @@ func aksClusterSpecFor(cluster *oramav1alpha1.KubernetesCluster, provider *orama
 		suffix = "_group"
 	}
 	spec := oramav1alpha1.AksClusterSpec{
+		Access: oramav1alpha1.AksClusterAccess{
+			Enforce:            cluster.Spec.Access.Enforce,
+			PrincipalID:        settings.Access.PrincipalID,
+			AuthorizedIPRanges: settings.Access.AuthorizedIPRanges,
+		},
 		SubscriptionID:       settings.SubscriptionID,
 		ResourceGroup:        settings.ResourceGroupPrefix + cluster.Name + suffix,
 		Location:             cluster.Spec.Region,

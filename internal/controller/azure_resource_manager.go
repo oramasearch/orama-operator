@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"sort"
@@ -21,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
@@ -125,7 +127,11 @@ func newAzureClient() *azureClient {
 // token returns a management-plane token for the credentials, reusing one that has more than two
 // minutes left.
 func (c *azureClient) token(ctx context.Context, creds azureCredentials) (string, error) {
-	key := creds.TenantID + "/" + creds.ClientID + "/" + creds.authMethod()
+	return c.tokenForScope(ctx, creds, azureARMScope)
+}
+
+func (c *azureClient) tokenForScope(ctx context.Context, creds azureCredentials, scope string) (string, error) {
+	key := creds.TenantID + "/" + creds.ClientID + "/" + creds.authMethod() + "/" + scope
 	c.mu.Lock()
 	if cached, ok := c.tokens[key]; ok && time.Until(cached.expires) > 2*time.Minute {
 		c.mu.Unlock()
@@ -136,7 +142,7 @@ func (c *azureClient) token(ctx context.Context, creds azureCredentials) (string
 	form := url.Values{
 		"grant_type": {"client_credentials"},
 		"client_id":  {creds.ClientID},
-		"scope":      {azureARMScope},
+		"scope":      {scope},
 	}
 	if creds.ClientSecret != "" {
 		form.Set("client_secret", creds.ClientSecret)
@@ -181,8 +187,8 @@ func (c *azureClient) token(ctx context.Context, creds azureCredentials) (string
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int64  `json:"expires_in"`
 	}
-	if err := json.Unmarshal(raw, &granted); err != nil || granted.AccessToken == "" {
-		return "", fmt.Errorf("azure: token response had no access_token")
+	if err := json.Unmarshal(raw, &granted); err != nil || granted.AccessToken == "" || granted.ExpiresIn <= 0 {
+		return "", fmt.Errorf("azure: token response had no usable access_token or expiry")
 	}
 	c.mu.Lock()
 	if c.tokens == nil {
@@ -352,6 +358,7 @@ type azureOperation struct {
 }
 
 type azureManagedCluster struct {
+	raw      map[string]json.RawMessage
 	ID       string            `json:"id,omitempty"`
 	Location string            `json:"location"`
 	Tags     map[string]string `json:"tags,omitempty"`
@@ -365,20 +372,33 @@ type azureManagedCluster struct {
 	Properties azureManagedClusterProperties `json:"properties"`
 }
 
+type azureAADProfile struct {
+	Managed         bool   `json:"managed"`
+	EnableAzureRBAC bool   `json:"enableAzureRBAC"`
+	TenantID        string `json:"tenantID,omitempty"`
+}
+
+type azureAPIServerAccess struct {
+	AuthorizedIPRanges []string `json:"authorizedIPRanges"`
+}
+
 type azureManagedClusterProperties struct {
-	ProvisioningState        string            `json:"provisioningState,omitempty"`
-	PowerState               *azurePowerState  `json:"powerState,omitempty"`
-	KubernetesVersion        string            `json:"kubernetesVersion,omitempty"`
-	CurrentKubernetesVersion string            `json:"currentKubernetesVersion,omitempty"`
-	DNSPrefix                string            `json:"dnsPrefix,omitempty"`
-	FQDN                     string            `json:"fqdn,omitempty"`
-	EnableRBAC               *bool             `json:"enableRBAC,omitempty"`
-	NodeResourceGroup        string            `json:"nodeResourceGroup,omitempty"`
-	AgentPoolProfiles        []azureAgentPool  `json:"agentPoolProfiles,omitempty"`
-	NetworkProfile           *azureNetwork     `json:"networkProfile,omitempty"`
-	OIDCIssuerProfile        *azureOIDCIssuer  `json:"oidcIssuerProfile,omitempty"`
-	SecurityProfile          *azureSecurity    `json:"securityProfile,omitempty"`
-	AutoUpgradeProfile       *azureAutoUpgrade `json:"autoUpgradeProfile,omitempty"`
+	DisableLocalAccounts     *bool                 `json:"disableLocalAccounts,omitempty"`
+	AADProfile               *azureAADProfile      `json:"aadProfile,omitempty"`
+	APIServerAccessProfile   *azureAPIServerAccess `json:"apiServerAccessProfile,omitempty"`
+	ProvisioningState        string                `json:"provisioningState,omitempty"`
+	PowerState               *azurePowerState      `json:"powerState,omitempty"`
+	KubernetesVersion        string                `json:"kubernetesVersion,omitempty"`
+	CurrentKubernetesVersion string                `json:"currentKubernetesVersion,omitempty"`
+	DNSPrefix                string                `json:"dnsPrefix,omitempty"`
+	FQDN                     string                `json:"fqdn,omitempty"`
+	EnableRBAC               *bool                 `json:"enableRBAC,omitempty"`
+	NodeResourceGroup        string                `json:"nodeResourceGroup,omitempty"`
+	AgentPoolProfiles        []azureAgentPool      `json:"agentPoolProfiles,omitempty"`
+	NetworkProfile           *azureNetwork         `json:"networkProfile,omitempty"`
+	OIDCIssuerProfile        *azureOIDCIssuer      `json:"oidcIssuerProfile,omitempty"`
+	SecurityProfile          *azureSecurity        `json:"securityProfile,omitempty"`
+	AutoUpgradeProfile       *azureAutoUpgrade     `json:"autoUpgradeProfile,omitempty"`
 	// Read only: Azure's account of what is wrong with the cluster.
 	Status *azureResourceStatus `json:"status,omitempty"`
 }
@@ -417,6 +437,13 @@ type azureAutoUpgrade struct {
 // azureManagedClusterBody is the create request for an AksCluster. It is a pure function of the
 // spec, so the same resource always asks Azure for the same cluster.
 func azureManagedClusterBody(cluster *oramav1alpha1.AksCluster) (azureManagedCluster, error) {
+	if err := validateAksAccess(cluster.Spec.Access); err != nil {
+		return azureManagedCluster{}, err
+	}
+	return azureManagedClusterSettingsBody(cluster)
+}
+
+func azureManagedClusterSettingsBody(cluster *oramav1alpha1.AksCluster) (azureManagedCluster, error) {
 	spec := cluster.Spec
 	name := aksClusterAzureName(cluster)
 	// Workspace isolation is network policy, so every cluster enforces it with Cilium (operator#699).
@@ -434,9 +461,12 @@ func azureManagedClusterBody(cluster *oramav1alpha1.AksCluster) (azureManagedClu
 		Location: spec.Location,
 		Tags:     spec.Tags,
 		Properties: azureManagedClusterProperties{
-			KubernetesVersion: spec.KubernetesVersion,
-			DNSPrefix:         name + "-dns",
-			EnableRBAC:        &rbac,
+			KubernetesVersion:      spec.KubernetesVersion,
+			DNSPrefix:              name + "-dns",
+			EnableRBAC:             &rbac,
+			DisableLocalAccounts:   &rbac,
+			AADProfile:             &azureAADProfile{Managed: true, EnableAzureRBAC: true},
+			APIServerAccessProfile: &azureAPIServerAccess{AuthorizedIPRanges: spec.Access.AuthorizedIPRanges},
 			NetworkProfile: &azureNetwork{
 				NetworkPlugin:     spec.Network.Plugin,
 				NetworkPluginMode: spec.Network.PluginMode,
@@ -580,12 +610,19 @@ func (c *azureClient) deleteResourceGroup(ctx context.Context, creds azureCreden
 
 // getManagedCluster returns nil, nil when the cluster does not exist.
 func (c *azureClient) getManagedCluster(ctx context.Context, creds azureCredentials, subscription, group, name string) (*azureManagedCluster, error) {
-	var found azureManagedCluster
-	_, err := c.do(ctx, creds, http.MethodGet, azureManagedClusterPath(subscription, group, name), azureAPIManagedClusters, nil, &found)
+	var raw json.RawMessage
+	_, err := c.do(ctx, creds, http.MethodGet, azureManagedClusterPath(subscription, group, name), azureAPIManagedClusters, nil, &raw)
 	if azureNotFound(err) {
 		return nil, nil
 	}
 	if err != nil {
+		return nil, err
+	}
+	var found azureManagedCluster
+	if err := json.Unmarshal(raw, &found); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &found.raw); err != nil {
 		return nil, err
 	}
 	return &found, nil
@@ -618,24 +655,46 @@ func (c *azureClient) deleteManagedCluster(ctx context.Context, creds azureCrede
 	return err
 }
 
-// adminKubeconfig fetches the cluster's admin credential.
-func (c *azureClient) adminKubeconfig(ctx context.Context, creds azureCredentials, subscription, group, name string) ([]byte, error) {
+// userKubeconfig fetches connection metadata; authentication is replaced with workload identity.
+func (c *azureClient) userKubeconfig(ctx context.Context, creds azureCredentials, subscription, group, name string) ([]byte, error) {
 	var listed struct {
 		Kubeconfigs []struct {
 			Name  string `json:"name"`
 			Value string `json:"value"`
 		} `json:"kubeconfigs"`
 	}
-	path := azureManagedClusterPath(subscription, group, name) + "/listClusterAdminCredential"
+	path := azureManagedClusterPath(subscription, group, name) + "/listClusterUserCredential"
 	if _, err := c.do(ctx, creds, http.MethodPost, path, azureAPIManagedClusters, nil, &listed); err != nil {
 		return nil, err
 	}
 	if len(listed.Kubeconfigs) == 0 || listed.Kubeconfigs[0].Value == "" {
-		return nil, fmt.Errorf("azure: the cluster returned no admin kubeconfig")
+		return nil, fmt.Errorf("azure: the cluster returned no user kubeconfig")
 	}
 	decoded, err := base64.StdEncoding.DecodeString(listed.Kubeconfigs[0].Value)
 	if err != nil {
-		return nil, fmt.Errorf("azure: the admin kubeconfig is not base64: %w", err)
+		return nil, fmt.Errorf("azure: the user kubeconfig is not base64: %w", err)
 	}
 	return decoded, nil
+}
+
+// validateAksAccess fails closed for old stored resources as well as new admissions.
+func validateAksAccess(access oramav1alpha1.AksClusterAccess) error {
+	if id, err := uuid.Parse(access.PrincipalID); err != nil || id == uuid.Nil || id.String() != strings.ToLower(access.PrincipalID) {
+		return fmt.Errorf("spec.access.principalID must be the workload identity service principal object UUID")
+	}
+	if len(access.AuthorizedIPRanges) == 0 || len(access.AuthorizedIPRanges) > 200 {
+		return fmt.Errorf("spec.access.authorizedIPRanges requires 1 to 200 managing egress IPv4 CIDRs")
+	}
+	seen := map[string]bool{}
+	for _, value := range access.AuthorizedIPRanges {
+		if seen[value] {
+			return fmt.Errorf("spec.access.authorizedIPRanges must contain distinct CIDRs")
+		}
+		seen[value] = true
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil || !prefix.Addr().Is4() || prefix.Bits() < 8 || prefix != prefix.Masked() {
+			return fmt.Errorf("spec.access.authorizedIPRanges requires canonical IPv4 CIDRs /8 or narrower")
+		}
+	}
+	return nil
 }

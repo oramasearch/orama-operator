@@ -270,11 +270,26 @@ fields are in [`crd-reference.md`](../crd-reference.md#kubernetescluster-separat
 | `KubernetesClusterProvider` | `kcp` | A vendor, an account and its credentials, plus the settings with no neutral equivalent |
 | `AksCluster` | `aks` | One AKS managed cluster; created and owned by a `KubernetesCluster` |
 
-What they do today: **create, observe and delete.** A `KubernetesCluster` becomes an `AksCluster`,
-which creates the resource group and the managed cluster in Azure, waits for it, and writes the
-admin kubeconfig to a Secret. Deleting the `KubernetesCluster` deletes the cluster when its
-`deletionPolicy` is `Delete`. They do not yet change a cluster after it exists, and they install
-nothing on it.
+A `KubernetesCluster` becomes an `AksCluster`, which creates the resource group and managed
+cluster, waits for Azure, and delivers an identity-only kubeconfig. New clusters disable local
+accounts, use managed Entra authentication with Azure RBAC, and restrict their API to the
+provider's configured managing egress ranges. Missing access configuration prevents creation.
+Deleting the resource honors `deletionPolicy`. Pool and version drift is observed only; security
+updates to existing clusters require that cluster's `spec.access.enforce: true`.
+
+The operator fetches `listClusterUserCredential`, retains only the API endpoint and CA, and
+replaces Azure's authentication configuration with its in-process workload-identity provider.
+Every shared managed-cluster consumer uses this provider: Helm releases, operator installation,
+sets, migrations, orders, e2e resources and peer links. Tokens are shared across leaf clients in memory by identity
+and audience, refreshed before expiry, and never written to the kubeconfig Secret. The Secret
+contains no bearer token, client key, client certificate or external command. This kubeconfig
+is for the operator; ordinary `kubectl` does not include its authentication provider.
+
+Existing insecure clusters report `Degraded` with `Ready=False/InsecureAccess` and a warning
+event on transition. Until their own `spec.access.enforce` is true, their existing kubeconfig
+continues to serve management operations; the controller does not fetch another admin
+credential or alter their Azure access. This explicit migration exception retains the finding's
+risk until each existing cluster is migrated. See [the migration procedure](operations.md#aks-api-access-migration-lsr-219).
 
 ### Seeing what the provider is doing, and what it refused
 
@@ -400,8 +415,11 @@ inside a condition, or if a flag or chart switch for controllers comes back.
 | Managed identity | `orama-operator-cluster-management`, in `orama-production-cluster-01_group` |
 | Federated credential | The existing cluster's OIDC issuer, subject `system:serviceaccount:orama-system:orama-operator` |
 
-The role cannot touch machines, networks, storage, identities or role assignments directly. It can
-act on any AKS cluster in the subscription, the existing one included.
+The historical role cannot touch machines, networks, storage, identities or role assignments
+directly. Secure AKS provisioning additionally requires `Microsoft.Authorization/roleAssignments/read`
+and `/write`, constrained by the account administrator to the AKS RBAC Cluster Admin role and the
+configured principal at managed-cluster scopes. The operator reconciles one deterministic assignment
+per cluster; it does not grant a subscription-wide Kubernetes administration role.
 
 ### Reaching Azure
 
@@ -413,7 +431,17 @@ class as an image pull secret.
   for the operator's ServiceAccount (`system:serviceaccount:orama-system:orama-operator`, issued
   by the management cluster's OIDC issuer) and a role assignment on the subscription. The
   credentials Secret holds only `tenantID` and `clientID`.
-- **Service principal:** the same Secret with a `clientSecret` as well.
+- **Service principal:** retained for observing/deleting legacy resources. Creating or migrating
+  a cluster and identity-based leaf administration require workload identity without `clientSecret`.
+
+Configure `spec.aks.access.principalID` with the workload identity service principal's object UUID
+(not the client/application ID) and `spec.aks.access.authorizedIPRanges` with the managing cluster's
+actual public egress IPv4 CIDRs. There must be 1–200 canonical ranges, each /8 or narrower; broad
+prefixes, IPv6 and host addresses without a prefix are refused. The principal ID is immutable once
+set. New clusters receive the Azure Kubernetes Service RBAC Cluster Admin role
+(`b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b`) at their own managed-cluster scope, needed to install
+cluster-wide CRDs and platform operators. A read of namespaces using the projected workload identity
+must succeed before the operator delivers or replaces a kubeconfig.
 
 ## Every cluster enforces network policy with Cilium (operator#699)
 

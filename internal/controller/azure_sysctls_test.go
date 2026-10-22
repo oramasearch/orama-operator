@@ -133,9 +133,9 @@ func TestClusterSysctlsAreCreatedAndDriftIsObservedWithoutWrites(t *testing.T) {
 		"vm.swappiness":         intstr.FromInt32(0),
 		"net.ipv4.tcp_tw_reuse": intstr.FromInt32(1),
 	}
-	c := clusterTestClient(t, abstract, testProvider(), azureCredentialsSecret(true))
+	c := clusterTestClient(t, abstract, testProvider(), azureCredentialsSecret(false))
 	kr := &KubernetesClusterReconciler{Client: c, Scheme: clusterTestScheme(t)}
-	ar := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
+	ar := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client(), AccessCheck: allowFakeAksAccess}
 	reconcileKC(t, kr, abstract.Name)
 	reconcileAks(t, ar, abstract.Name)
 	sent := azure.clusters[abstract.Name]
@@ -216,7 +216,7 @@ func TestClusterSysctlsRefusedBeforeProvisioning(t *testing.T) {
 	aks := testAksCluster(oramav1alpha1.ClusterDeletionRetain)
 	aks.Spec.NodePools[0].Sysctls = bad
 	aks.Status.Conditions = []metav1.Condition{{Type: clusterConditionInSync, Status: metav1.ConditionTrue, Reason: "InSync", LastTransitionTime: metav1.Now()}}
-	c = clusterTestClient(t, aks, azureCredentialsSecret(true))
+	c = clusterTestClient(t, aks, azureCredentialsSecret(false))
 	ar := &AksClusterReconciler{Client: c, Scheme: clusterTestScheme(t), Azure: azure.client()}
 	reconcileAks(t, ar, aks.Name)
 	gotAks := getAks(t, c, aks.Name)

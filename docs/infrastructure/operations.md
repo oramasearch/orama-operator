@@ -26,10 +26,15 @@ today, it says so, and that step is a question for Steve and a gap to close in t
 |---|---|
 | The managing cluster | `kubectl` context `orama-production-cluster-01` |
 | What is applied to it | [`config/clusters/`](../../config/clusters/README.md), one folder per managed cluster and one for the sets |
-| A managed cluster's admin kubeconfig | Secret `orama-system/<cluster>-kubeconfig` on the managing cluster, key `kubeconfig` |
+| A managed cluster's operator kubeconfig | Secret `orama-system/<cluster>-kubeconfig` on the managing cluster, key `kubeconfig` |
 | The operator's image and chart | `oramasearch/orama-operator:<tag>` and `oramasearch/orama-operator-chart:<chart version>`, both private |
 
-To use a managed cluster directly (read-only checks; changes go through the managing cluster):
+The following extraction works only for a legacy cluster awaiting access migration. A migrated
+cluster's Secret contains an operator-specific workload-identity provider, with no reusable
+credential; ordinary `kubectl` cannot use it. Human read access requires the person's own Entra
+identity and a separately authorized user kubeconfig.
+
+To inspect a legacy managed cluster (read-only checks; changes go through the managing cluster):
 
 ```sh
 kubectl --context orama-production-cluster-01 -n orama-system \
@@ -289,3 +294,45 @@ because AKS sets it only when a pool is created ([node-pool replacement](node-po
 Adding a pool to an existing resource is also drift-only in this controller version.
 A supported update or a recoverable replacement/drain lifecycle needs a separate operator
 design before existing pools can be rolled out. No cluster rollout is qualified by unit tests.
+
+## AKS API access migration (LSR-219)
+
+This is implemented and tested with fake Azure and a local TLS API, not applied to a live cluster.
+The committed provider has no verified managing egress ranges or principal object ID yet. Creating
+another cluster fails closed until those values are configured. Existing insecure clusters remain
+managed through their existing kubeconfigs and report `Degraded/InsecureAccess`; rolling the
+operator alone does not secure them or invalidate leaked certificates.
+
+1. Confirm the managing cluster's public egress IPv4 CIDRs, and include any leaf egress addresses
+   needed for self-management. Put those actual ranges and the managing workload identity's
+   service principal object UUID in `config/clusters/provider.yaml` as
+   `spec.aks.access.authorizedIPRanges` and `.principalID`. Never substitute `0.0.0.0/0` or guessed
+   addresses. The principal ID becomes immutable once set; each range is canonical, /8 or narrower.
+2. Confirm workload-identity federation for the operator ServiceAccount and a credentials Secret
+   containing `tenantID` and `clientID`, without `clientSecret`. The account administrator must
+   authorize role-assignment reads/writes constrained to the configured identity, the AKS RBAC
+   Cluster Admin role, and the managed clusters. The operator's historical provisioner role
+   lacks this permission. Its role reconciler creates the assignment before tightening access.
+3. With Steve's consent, apply the provider resource, then migrate the nonprod cluster first:
+   commit `spec.access.enforce: true` in that cluster's `cluster.yaml` and apply that file. This
+   explicitly permits security changes to that existing cluster. Do not set it on production
+   clusters until their egress reachability and identity authorization are verified.
+4. Observe `SecuringAccess` while Azure applies managed Entra, Azure RBAC, disabled local accounts
+   and authorized ranges. The controller retains Azure's pool/version and unknown properties.
+   It then reads user connection metadata and authenticates a namespace read with workload
+   identity. Only that successful check replaces the owned legacy kubeconfig with identity-only
+   metadata. Failures retain the previous Secret for recovery, report the cause and retry; an
+   enforced cluster's consumers do not fall back to its legacy certificate. Once secure,
+   `status.accessSecured` is sticky: clearing `enforce` never restores legacy access, and security
+   drift is repaired automatically.
+5. Confirm `Ready`, identity-based management and an owned kubeconfig without client certificate,
+   private key, bearer token or exec command. Then repeat the committed per-cluster change for
+   production, one cluster at a time, with Steve's consent.
+6. Obtain Steve's explicit approval for cluster-certificate rotation after disabling local
+   accounts on each existing cluster. [Microsoft requires rotation](https://learn.microsoft.com/en-us/azure/aks/local-accounts)
+   to revoke previously issued local certificates. The operator does not rotate certificates in
+   this change; deleting or replacing a Secret alone does not revoke copies already leaked.
+
+All clusters run the same operator, chart, CRDs, controllers and RBAC. This gate is a setting on
+the cluster resource; it is never an installation flag. Platform releases and chart values are
+unchanged by this access migration.

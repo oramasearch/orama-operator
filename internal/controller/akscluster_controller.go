@@ -6,6 +6,7 @@ Licensed under the Apache License, Version 2.0.
 package controller
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -41,7 +43,7 @@ const (
 	clusterConditionReady  = "Ready"
 	clusterConditionInSync = "InSync"
 
-	// kubeconfigSecretKey is the key the admin kubeconfig is written under.
+	// kubeconfigSecretKey is the key the identity-only kubeconfig is written under.
 	kubeconfigSecretKey = "kubeconfig"
 
 	aksPollInterval  = 30 * time.Second
@@ -52,13 +54,16 @@ const (
 // follows the operator's "external resource as an owned CRD" pattern: a finalizer registered
 // before any external state exists, create only when absent, status written only on change.
 //
-// This version does not change a cluster after it exists. When the spec asks for something the
-// cluster does not have, the InSync condition says what, and nothing is sent to Azure.
+// Pool/version drift is observed only. Security access settings are updated on an existing
+// cluster only when its own spec.access.enforce explicitly authorizes the migration.
 type AksClusterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	// Azure is the Azure Resource Manager client; nil uses the public cloud endpoints.
-	Azure *azureClient
+	Azure    *azureClient
+	Recorder record.EventRecorder
+	// AccessCheck overrides the read-only identity access probe in tests.
+	AccessCheck func(context.Context, []byte) error
 }
 
 //+kubebuilder:rbac:groups=orama.cloud,resources=aksclusters,verbs=get;list;watch;create;update;patch;delete
@@ -112,7 +117,7 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return settle(ctrl.Result{}, r.writeStatus(ctx, &cluster, observed))
 	}
 
-	body, err := azureManagedClusterBody(&cluster)
+	body, err := azureManagedClusterSettingsBody(&cluster)
 	if err != nil {
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhaseDegraded, "InvalidSysctls", err.Error())
@@ -125,27 +130,33 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return settle(ctrl.Result{}, r.writeStatus(ctx, &cluster, observed))
 	}
 
-	created, err := az.ensureResourceGroup(ctx, creds, spec.SubscriptionID, spec.ResourceGroup, spec.Location, spec.Tags)
-	if err != nil {
-		return r.fail(ctx, &cluster, observed, "ResourceGroupFailed", err)
-	}
-	if created {
-		// Recorded before anything else, so a later delete knows the group is the operator's.
-		cluster.Status.CreatedResourceGroup = true
-		if err := r.writeStatus(ctx, &cluster, observed); err != nil {
-			return settle(ctrl.Result{}, err)
-		}
-		observed = cluster.Status.DeepCopy()
-	}
-
 	found, err := az.getManagedCluster(ctx, creds, spec.SubscriptionID, spec.ResourceGroup, name)
 	if err != nil {
 		return r.fail(ctx, &cluster, observed, "ReadFailed", err)
 	}
 	if found == nil {
+		if err := validateAksAccess(spec.Access); err != nil {
+			return r.fail(ctx, &cluster, observed, "InvalidAccess", err)
+		}
+		if creds.ClientSecret != "" {
+			return r.fail(ctx, &cluster, observed, "WorkloadIdentityRequired", fmt.Errorf("AKS administration requires workload identity"))
+		}
+		created, err := az.ensureResourceGroup(ctx, creds, spec.SubscriptionID, spec.ResourceGroup, spec.Location, spec.Tags)
+		if err != nil {
+			return r.fail(ctx, &cluster, observed, "ResourceGroupFailed", err)
+		}
+		if created {
+			cluster.Status.CreatedResourceGroup = true
+			if err := r.writeStatus(ctx, &cluster, observed); err != nil {
+				return settle(ctrl.Result{}, err)
+			}
+			observed = cluster.Status.DeepCopy()
+		}
+		body.Properties.AADProfile.TenantID = creds.TenantID
 		if err := az.createManagedCluster(ctx, creds, spec.SubscriptionID, spec.ResourceGroup, name, body); err != nil {
 			return r.fail(ctx, &cluster, observed, "CreateFailed", err)
 		}
+		cluster.Status.AccessSecured = true
 		cluster.Status.ProvisioningState = "Creating"
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhaseProvisioning, "Creating", "Azure accepted the request to create the cluster")
@@ -164,9 +175,57 @@ func (r *AksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	switch state := found.Properties.ProvisioningState; state {
 	case "Succeeded":
+		drift := aksAccessDrift(&cluster, found, creds.TenantID)
+		if len(drift) == 0 && !spec.Access.Enforce && !cluster.Status.AccessSecured {
+			drift = append(drift, "workload-identity cutover requires spec.access.enforce")
+		}
+		if len(drift) > 0 {
+			message := strings.Join(drift, "; ")
+			if !spec.Access.Enforce && !cluster.Status.AccessSecured {
+				// Preserve pre-migration management until this cluster explicitly permits the cutover.
+				var delivered corev1.Secret
+				ref := spec.KubeconfigSecretRef
+				err := r.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, &delivered)
+				if err != nil && !apierrors.IsNotFound(err) {
+					return r.fail(ctx, &cluster, observed, "KubeconfigFailed", err)
+				}
+				cluster.Status.KubeconfigWritten = err == nil && len(delivered.Data[kubeconfigSecretKey]) > 0 && metav1.IsControlledBy(&delivered, &cluster)
+				if r.Recorder != nil && (observed.Phase != clusterPhaseDegraded || observed.Message != message) {
+					r.Recorder.Event(&cluster, corev1.EventTypeWarning, "InsecureAccess", message)
+				}
+				setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions, cluster.Generation, clusterPhaseDegraded, "InsecureAccess", message)
+				setInSync(&cluster.Status.Conditions, cluster.Generation, drift)
+				cluster.Status.ObservedGeneration = cluster.Generation
+				return settle(ctrl.Result{RequeueAfter: aksSteadyRecheck}, r.writeStatus(ctx, &cluster, observed))
+			}
+			cluster.Status.KubeconfigWritten = false
+			if err := validateAksAccess(spec.Access); err != nil {
+				return r.fail(ctx, &cluster, observed, "InvalidAccess", err)
+			}
+			if creds.ClientSecret != "" {
+				return r.fail(ctx, &cluster, observed, "WorkloadIdentityRequired", fmt.Errorf("AKS administration requires workload identity"))
+			}
+			scope := azureManagedClusterPath(spec.SubscriptionID, spec.ResourceGroup, name)
+			if err := az.ensureAksRole(ctx, creds, scope, spec.Access.PrincipalID); err != nil {
+				return r.fail(ctx, &cluster, observed, "AccessRoleFailed", err)
+			}
+			if err := az.enforceAksAccess(ctx, creds, scope, found, spec.Access); err != nil {
+				return r.fail(ctx, &cluster, observed, "AccessUpdateFailed", err)
+			}
+			setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions, cluster.Generation, clusterPhaseProvisioning, "SecuringAccess", "waiting for Azure to confirm secure API access")
+			cluster.Status.ObservedGeneration = cluster.Generation
+			return settle(ctrl.Result{RequeueAfter: aksPollInterval}, r.writeStatus(ctx, &cluster, observed))
+		}
+		if creds.ClientSecret != "" {
+			return r.fail(ctx, &cluster, observed, "WorkloadIdentityRequired", fmt.Errorf("AKS administration requires workload identity"))
+		}
+		if err := az.ensureAksRole(ctx, creds, azureManagedClusterPath(spec.SubscriptionID, spec.ResourceGroup, name), spec.Access.PrincipalID); err != nil {
+			return r.fail(ctx, &cluster, observed, "AccessRoleFailed", err)
+		}
 		if err := r.writeKubeconfig(ctx, &cluster, creds, name); err != nil {
 			return r.fail(ctx, &cluster, observed, "KubeconfigFailed", err)
 		}
+		cluster.Status.AccessSecured = true
 		cluster.Status.KubeconfigWritten = true
 		setClusterStatus(&cluster.Status.Phase, &cluster.Status.Message, &cluster.Status.Conditions,
 			cluster.Generation, clusterPhaseReady, "Provisioned", "")
@@ -377,38 +436,82 @@ func int32Value(v *int32) int32 {
 	return *v
 }
 
-// writeKubeconfig fetches the admin credential and writes it to the kubeconfig Secret, which the
-// AksCluster owns. The credential is never logged and never put in status.
+// writeKubeconfig delivers only public connection metadata and an in-process identity provider.
 func (r *AksClusterReconciler) writeKubeconfig(ctx context.Context, cluster *oramav1alpha1.AksCluster, creds azureCredentials, name string) error {
 	ref := cluster.Spec.KubeconfigSecretRef
 	existing := &corev1.Secret{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, existing)
-	if err == nil && len(existing.Data[kubeconfigSecretKey]) > 0 && cluster.Status.KubeconfigWritten {
-		// Already delivered. The admin credential does not change unless it is rotated, and
-		// re-fetching it on every reconcile would be an Azure call and a Secret write for nothing.
-		return nil
-	}
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
-	kubeconfig, err := r.azure().adminKubeconfig(ctx, creds, cluster.Spec.SubscriptionID, cluster.Spec.ResourceGroup, name)
+	endpoint := "https://" + cluster.Status.FQDN + ":443"
+	if err == nil {
+		if !metav1.IsControlledBy(existing, cluster) {
+			return fmt.Errorf("kubeconfig Secret is not owned by this AksCluster")
+		}
+		if validateAksIdentityKubeconfig(existing.Data[kubeconfigSecretKey], creds, endpoint) == nil {
+			return r.removeSupersededKubeconfigs(ctx, cluster)
+		}
+	}
+	cluster.Status.KubeconfigWritten = false
+	raw, err := r.azure().userKubeconfig(ctx, creds, cluster.Spec.SubscriptionID, cluster.Spec.ResourceGroup, name)
 	if err != nil {
+		return err
+	}
+	kubeconfig, err := aksIdentityKubeconfig(raw, creds, endpoint)
+	if err != nil {
+		return err
+	}
+	check := r.AccessCheck
+	if check == nil {
+		check = r.verifyIdentityAccess
+	}
+	if err := check(ctx, kubeconfig); err != nil {
 		return err
 	}
 	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: ref.Namespace}}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, sec, func() error {
+		if sec.ResourceVersion != "" && !metav1.IsControlledBy(sec, cluster) {
+			return fmt.Errorf("kubeconfig Secret is not owned by this AksCluster")
+		}
 		if sec.Data == nil {
 			sec.Data = map[string][]byte{}
 		}
+		if !bytes.Equal(sec.Data[kubeconfigSecretKey], kubeconfig) {
+			sec.Data[kubeconfigSecretKey] = kubeconfig
+		}
 		sec.Type = corev1.SecretTypeOpaque
-		sec.Data[kubeconfigSecretKey] = kubeconfig
 		if sec.Labels == nil {
 			sec.Labels = map[string]string{}
 		}
 		sec.Labels["orama.cloud/kubernetes-cluster"] = cluster.Name
 		return controllerutil.SetControllerReference(cluster, sec, r.Scheme)
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return r.removeSupersededKubeconfigs(ctx, cluster)
+}
+
+// Retiring a configured destination must not strand its old admin certificate in another
+// namespace. Only labeled Secrets owned by this exact cluster lose their superseded key.
+func (r *AksClusterReconciler) removeSupersededKubeconfigs(ctx context.Context, cluster *oramav1alpha1.AksCluster) error {
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.MatchingLabels{"orama.cloud/kubernetes-cluster": cluster.Name}); err != nil {
+		return err
+	}
+	ref := cluster.Spec.KubeconfigSecretRef
+	for i := range secrets.Items {
+		sec := &secrets.Items[i]
+		if (sec.Name == ref.Name && sec.Namespace == ref.Namespace) || !metav1.IsControlledBy(sec, cluster) || len(sec.Data[kubeconfigSecretKey]) == 0 {
+			continue
+		}
+		delete(sec.Data, kubeconfigSecretKey)
+		if err := r.Update(ctx, sec); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // credentials reads the Azure credentials Secret.
@@ -482,6 +585,7 @@ func setInSync(conditions *[]metav1.Condition, generation int64, drift []string)
 }
 
 func (r *AksClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("aks-access")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&oramav1alpha1.AksCluster{}).
 		Owns(&corev1.Secret{}).

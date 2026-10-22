@@ -1882,13 +1882,22 @@ cluster that runs `testing`.
 |---|---|---|
 | `KubernetesClusterReconciler` | `KubernetesCluster` (abstract) | One owned `AksCluster` when the provider has type `aks`; nothing else |
 | `KubernetesClusterProviderReconciler` | `KubernetesClusterProvider` | Nothing; it checks the credentials and holds the provider while a cluster uses it |
-| `AksClusterReconciler` | `AksCluster` (concrete) | In Azure: a resource group and a managed cluster. In the cluster: the owned kubeconfig Secret |
+| `AksClusterReconciler` | `AksCluster` (concrete) | In Azure: a resource group, managed cluster and cluster-scoped RBAC assignment. In Kubernetes: an owned identity-only kubeconfig Secret (legacy certificates retained until explicit migration) |
 
 - **The AKS controller and its `azure_*.go` helpers own Azure API behavior.** The abstract
   controller maps the neutral fields and the provider's settings onto an `AksCluster` with a pure
   function, so the same pair always produces the same concrete resource.
-- **Create, observe and delete only.** A cluster is not changed after it exists; the `InSync`
-  condition reports what differs. Node-pool `sysctls` pass from `KubernetesCluster` to
+- **Secure access on every new cluster (LSR-219).** Local accounts are disabled, managed Entra
+  and Azure RBAC enabled, and API ranges restricted to configured managing egress CIDRs. The
+  controller owns a deterministic cluster-scoped Azure RBAC assignment for the workload identity,
+  strips Azure user kubeconfigs to endpoint/CA and identity metadata, and confirms authenticated
+  access before replacing any legacy certificate and removing superseded owned copies. Secure
+  clusters never return to legacy access; security drift is repaired automatically. All
+  managed-cluster clients refresh tokens
+  in process. Existing insecure clusters report `Degraded/InsecureAccess` and one warning event
+  per transition, retaining legacy management until their resource sets `spec.access.enforce`.
+  See [migration](infrastructure/operations.md#aks-api-access-migration-lsr-219).
+- **Pool/version drift is observed only.** The `InSync` condition reports what differs. Node-pool `sysctls` pass from `KubernetesCluster` to
   `AksCluster`, are validated before any Azure call, and map to typed
   `linuxOSConfig.sysctls` fields using AKS API `2025-05-01`. Drift compares only explicit
   settings and reports unknown values when Azure omits them. It does not probe node kernels.

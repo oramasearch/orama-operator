@@ -62,6 +62,28 @@ spec:
               aks:
                 description: AKS holds the settings for type aks.
                 properties:
+                  access:
+                    description: Access is required before creating or migrating a
+                      cluster.
+                    properties:
+                      authorizedIPRanges:
+                        description: |-
+                          AuthorizedIPRanges contains the managing cluster's public egress IPv4 CIDRs.
+                          Missing ranges, noncanonical CIDRs and prefixes broader than /8 are refused at reconcile.
+                        items:
+                          type: string
+                        maxItems: 200
+                        type: array
+                        x-kubernetes-list-type: set
+                      principalID:
+                        description: PrincipalID is the workload identity's service
+                          principal object ID, not its client ID.
+                        pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                        type: string
+                        x-kubernetes-validations:
+                        - message: principalID is immutable
+                          rule: self == oldSelf
+                    type: object
                   network:
                     description: Network settings for every cluster of this provider.
                     properties:
@@ -154,6 +176,11 @@ spec:
                 required:
                 - subscriptionID
                 type: object
+                x-kubernetes-validations:
+                - message: access principalID cannot be changed or removed
+                  rule: '!has(oldSelf.access) || !has(oldSelf.access.principalID)
+                    || (has(self.access) && has(self.access.principalID) && self.access.principalID
+                    == oldSelf.access.principalID)'
               credentialsSecretRef:
                 description: |-
                   CredentialsSecretRef names the Secret the operator authenticates with. For type aks its
