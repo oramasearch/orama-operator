@@ -257,8 +257,9 @@ func secretEnv(name, secret, key string) corev1.EnvVar {
 		LocalObjectReference: corev1.LocalObjectReference{Name: secret}, Key: key}}}
 }
 
-// agentBaseEnv is what every agent pod is told: lake's address, the general OpenAI key, the model
-// and where traces go.
+// agentBaseEnv is what every agent pod is told: lake's address, the model and where traces go. It
+// carries no provider key (orama-operator#779): a tenant's agent calls models through lake's model
+// gateway with its own LAKE_TOKEN, and only the library agents add the key (libraryAgentEnv).
 func agentBaseEnv(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar {
 	model := agentModel(lake)
 	env := []corev1.EnvVar{
@@ -271,6 +272,14 @@ func agentBaseEnv(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar {
 		{Name: "PROJECT_MODEL", Value: model},
 		{Name: "AUTOSUGGEST_MODEL", Value: model},
 	}
+	return env
+}
+
+// libraryAgentEnv is a library agent's env: the base env and, when spec.agents.openaiSecretName is
+// set, Orama's provider key. Library agents are Orama's own code in the Lake's namespace; the key
+// is never given to a pod in a workspace namespace (orama-operator#779).
+func libraryAgentEnv(lake *oramav1alpha1.Lake, namespace string) []corev1.EnvVar {
+	env := agentBaseEnv(lake, namespace)
 	if lake.Spec.Agents.OpenAISecretName != "" {
 		env = append(env, secretEnv(openAIKeyName, lake.Spec.Agents.OpenAISecretName, openAIKeyName))
 	}
@@ -385,7 +394,7 @@ func (r *LakeReconciler) reconcileLakeLibraryAgents(ctx context.Context, lake *o
 		name := libraryAgentName(lake.Name, agent.Key)
 		wanted[name] = true
 		selector := map[string]string{"app.kubernetes.io/name": agent.Key, "app.kubernetes.io/instance": name}
-		env := append(agentBaseEnv(lake, namespace),
+		env := append(libraryAgentEnv(lake, namespace),
 			secretEnv("AGENT_SERVICE_TOKEN", lakeAgentServiceTokenSecret(lake.Name), agentServiceTokenKey),
 			// Its own credential on the agent bus, and the name it takes tasks under.
 			secretEnv("AGENT_BUS_TOKEN", lakeAgentBusSecret(lake.Name), agent.Key),
@@ -433,13 +442,42 @@ func (r *LakeReconciler) reconcileAgentWorkspaceSecrets(
 	workspaceID string,
 	serviceMode bool,
 ) error {
-	names := []string{lake.Spec.PullSecretName, lake.Spec.Agents.OpenAISecretName}
+	// Orama's provider key is not copied (orama-operator#779): the pods here run a tenant's agent,
+	// which reaches models through lake's model gateway. removeWorkspaceProviderKeyCopies deletes
+	// copies an earlier operator made.
+	names := []string{lake.Spec.PullSecretName}
 	if serviceMode {
 		names = append(names, lakeAgentServiceTokenSecret(lake.Name))
 	}
 	for _, name := range names {
 		if err := reconcileLakeSecretCopy(ctx, r.Client, r.Scheme, lake, workspaceID, namespace, name, labels); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// removeWorkspaceProviderKeyCopies deletes every copy of the Lake's provider key Secret
+// (spec.agents.openaiSecretName) that an earlier operator made in a workspace namespace
+// (orama-operator#779). It runs on every Lake reconcile, so the first reconcile after an operator
+// roll removes them. Only a Secret of that name, outside the Lake's namespace, controlled by this
+// Lake and labelled with a workspace is deleted: the operator's own copy, never a user's Secret.
+func (r *LakeReconciler) removeWorkspaceProviderKeyCopies(ctx context.Context, lake *oramav1alpha1.Lake) error {
+	name := lake.Spec.Agents.OpenAISecretName
+	if name == "" {
+		return nil
+	}
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.HasLabels{workspaceLabel}); err != nil {
+		return fmt.Errorf("list workspace Secrets: %w", err)
+	}
+	for i := range secrets.Items {
+		secret := &secrets.Items[i]
+		if secret.Name != name || secret.Namespace == lakeNamespace(lake) || !metav1.IsControlledBy(secret, lake) {
+			continue
+		}
+		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("remove the provider key copy from %s: %w", secret.Namespace, err)
 		}
 	}
 	return nil

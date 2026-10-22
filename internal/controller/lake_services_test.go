@@ -638,9 +638,6 @@ func TestWorkspaceDataPlaneRowsStayInTheirWorkspaceNamespace(t *testing.T) {
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 			Name: lake.Spec.PullSecretName, Namespace: testWorkspaceName,
 		}},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-			Name: lake.Spec.Agents.OpenAISecretName, Namespace: testWorkspaceName,
-		}},
 	}
 	for _, object := range objects {
 		if err := h.client.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
@@ -649,6 +646,10 @@ func TestWorkspaceDataPlaneRowsStayInTheirWorkspaceNamespace(t *testing.T) {
 		if object.GetLabels()[workspaceLabel] != testWorkspaceID {
 			t.Errorf("workspace object %T lacks workspace identity", object)
 		}
+	}
+	// Orama's provider key is never copied into a workspace namespace (orama-operator#779).
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: lake.Spec.Agents.OpenAISecretName}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Errorf("the provider key Secret was copied into the workspace namespace: %v", err)
 	}
 	wrongNamespace := []client.Object{
 		&oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{
