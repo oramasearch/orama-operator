@@ -38,9 +38,16 @@ const (
 	kafkaNodePoolSuffix = "-pool"
 	// kafkaUserSuffix names the KafkaUser, which is also its SCRAM username. A bare "app" would
 	// collide between two Kafka services of one namespace.
-	kafkaUserSuffix       = "-app"
-	kafkaSASLMechanism    = "SCRAM-SHA-512"
-	kafkaSecurityProtocol = "SASL_PLAINTEXT"
+	kafkaUserSuffix    = "-app"
+	kafkaSASLMechanism = "SCRAM-SHA-512"
+	// The client listener is TLS with SCRAM-SHA-512 (operator#770), so clients speak SASL_SSL and
+	// trust the Kafka's cluster CA, which the credential carries.
+	kafkaSecurityProtocol = "SASL_SSL"
+	// kafkaClusterCASuffix names the Secret in which Strimzi keeps the cluster CA certificate
+	// (key ca.crt). Strimzi sets the Kafka as its owner (clusterCa.generateSecretOwnerReference
+	// defaults to true), which is how the credential trusts it.
+	kafkaClusterCASuffix = "-cluster-ca-cert"
+	kafkaClusterCAKey    = "ca.crt"
 )
 
 type kafkaServiceKind struct{}
@@ -71,9 +78,16 @@ func (k kafkaServiceKind) build(in catalogService, _ string) []catalogResource {
 	cluster := map[string]string{strimziClusterLabel: in.name}
 	return []catalogResource{
 		{catalogObject: objects[0], fields: []serviceField{
+			// The client listener (operator#770): TLS with Strimzi's cluster CA, SCRAM-SHA-512, and
+			// networkPolicyPeers. Strimzi writes its own <name>-network-policy-kafka from these peers;
+			// with none it admits the listener from every source, which undoes the workspace's
+			// default-deny. The only peer is the owning Lake: the workspace's own pods reach the
+			// listener through the workspace's NetworkPolicies (same-namespace traffic until its
+			// Connections are enforced, then each Connection's path), like every other kind.
 			{path: []string{"spec", "kafka", "listeners"}, value: []interface{}{map[string]interface{}{
-				"name": kafkaListenerName, "port": int64(kafkaListenerPort), "type": "internal", "tls": false,
-				"authentication": map[string]interface{}{"type": "scram-sha-512"},
+				"name": kafkaListenerName, "port": int64(kafkaListenerPort), "type": "internal", "tls": true,
+				"authentication":     map[string]interface{}{"type": "scram-sha-512"},
+				"networkPolicyPeers": kafkaListenerPeers(in),
 			}}},
 			// Kafka's internal topics default to three replicas; with fewer brokers consumer
 			// groups and transactions never become available.
@@ -84,6 +98,9 @@ func (k kafkaServiceKind) build(in catalogService, _ string) []catalogResource {
 				"default.replication.factor":               brokers,
 				"min.insync.replicas":                      minInSync,
 			}},
+			// Kafka's own authorizer: a user may do only what its ACLs allow. Strimzi makes its own
+			// components (brokers, the entity operator) super users.
+			{path: []string{"spec", "kafka", "authorization"}, value: map[string]interface{}{"type": "simple"}},
 			// The entity operator's pod meets the `restricted` Pod Security Standard by what is
 			// written here, not by how Strimzi happens to be installed on the cluster.
 			{path: []string{"spec", "entityOperator"}, value: map[string]interface{}{
@@ -116,7 +133,56 @@ func (k kafkaServiceKind) build(in catalogService, _ string) []catalogResource {
 		}},
 		{catalogObject: objects[2], labels: cluster, fields: []serviceField{
 			{path: []string{"spec", "authentication"}, value: map[string]interface{}{"type": "scram-sha-512"}},
+			{path: []string{"spec", "authorization"}, value: map[string]interface{}{"type": "simple", "acls": kafkaUserACLs()}},
 		}},
+	}
+}
+
+// kafkaListenerPeers is the one peer the listener names: the owning Lake's pods in its namespace.
+func kafkaListenerPeers(in catalogService) []interface{} {
+	return []interface{}{map[string]interface{}{
+		"namespaceSelector": map[string]interface{}{"matchLabels": map[string]interface{}{
+			"kubernetes.io/metadata.name": lakeNamespace(in.lake),
+		}},
+		"podSelector": map[string]interface{}{"matchLabels": stringMapToInterface(lakePodSelector(in.lake).MatchLabels)},
+	}}
+}
+
+func stringMapToInterface(in map[string]string) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+// kafkaUserACLs scope the workspace's credential to its own topics (operator#770, operator#771).
+// The Kafka is this one service's, so its topics are the workspace's: every topic but Kafka's
+// internal ones (prefix "__", denied), its consumer groups and transactional ids. The user may
+// produce, consume, create, delete and configure its topics, and write idempotently. It holds
+// nothing else on the cluster: no ACL management (Alter), no broker configuration
+// (AlterConfigs), no inter-broker operations (ClusterAction), so it cannot raise its own rights.
+func kafkaUserACLs() []interface{} {
+	acl := func(kind, resourceType, name, pattern string, operations ...string) map[string]interface{} {
+		ops := make([]interface{}, 0, len(operations))
+		for _, op := range operations {
+			ops = append(ops, op)
+		}
+		resource := map[string]interface{}{"type": resourceType}
+		// The cluster resource has no name: Kafka has one, and Strimzi names it itself.
+		if name != "" {
+			resource["name"] = name
+			resource["patternType"] = pattern
+		}
+		return map[string]interface{}{"type": kind, "resource": resource, "operations": ops}
+	}
+	return []interface{}{
+		acl("allow", "topic", "*", "literal",
+			"Read", "Write", "Create", "Delete", "Describe", "DescribeConfigs", "AlterConfigs", "Alter"),
+		acl("deny", "topic", "__", "prefix", "All"),
+		acl("allow", "group", "*", "literal", "Read", "Describe", "Delete"),
+		acl("allow", "transactionalId", "*", "literal", "Write", "Describe"),
+		acl("allow", "cluster", "", "", "IdempotentWrite"),
 	}
 }
 
@@ -225,6 +291,8 @@ func (kafkaServiceKind) waitingReason(ctx context.Context, c client.Reader, in c
 
 // credential reads the Secret the User Operator writes for the KafkaUser: named by the user's
 // status.secret (its own name until then), key password. The Secret must be the KafkaUser's own.
+// It also carries the cluster CA certificate the listener's TLS chains to, from
+// <name>-cluster-ca-cert, which must be the Kafka's own.
 func (kafkaServiceKind) credential(ctx context.Context, c client.Reader, in catalogService, found map[string]*unstructured.Unstructured, _ string) ([]byte, string, error) {
 	user := found[strimziKafkaUserGVK.Kind]
 	if user == nil {
@@ -249,6 +317,10 @@ func (kafkaServiceKind) credential(ctx context.Context, c client.Reader, in cata
 	if password == "" {
 		return nil, "", nil
 	}
+	ca, refusal, err := kafkaClusterCA(ctx, c, in, found[strimziKafkaGVK.Kind])
+	if err != nil || refusal != "" || ca == "" {
+		return nil, refusal, err
+	}
 	credential, err := json.Marshal(struct {
 		Kind             string `json:"kind"`
 		Endpoint         string `json:"endpoint"`
@@ -257,8 +329,27 @@ func (kafkaServiceKind) credential(ctx context.Context, c client.Reader, in cata
 		Password         string `json:"password"`
 		SASLMechanism    string `json:"sasl_mechanism"`
 		SecurityProtocol string `json:"security_protocol"`
-	}{serviceKindKafka, kafkaBootstrap(in), kafkaBootstrap(in), username, password, kafkaSASLMechanism, kafkaSecurityProtocol})
+		CACertificate    string `json:"ca_certificate"`
+	}{serviceKindKafka, kafkaBootstrap(in), kafkaBootstrap(in), username, password, kafkaSASLMechanism, kafkaSecurityProtocol, ca})
 	return credential, "", err
+}
+
+// kafkaClusterCA reads the PEM cluster CA certificate of the Kafka, "" while it is not there yet.
+// During a CA renewal Strimzi keeps ca.crt the current certificate and the broker certificates are
+// re-signed in the same rolling update, so the credential follows on the next poll.
+func kafkaClusterCA(ctx context.Context, c client.Reader, in catalogService, kafka *unstructured.Unstructured) (string, string, error) {
+	if kafka == nil {
+		return "", "", nil
+	}
+	name := in.name + kafkaClusterCASuffix
+	secret, err := readServiceSecret(ctx, c, in.namespace, name)
+	if err != nil || secret == nil {
+		return "", "", err
+	}
+	if !hasOwnerUID(secret, kafka) {
+		return "", foreignServiceMessage("Secret", in.namespace, name), nil
+	}
+	return string(secret.Data[kafkaClusterCAKey]), "", nil
 }
 
 // podSelector: the Kafka's broker and controller pods.
