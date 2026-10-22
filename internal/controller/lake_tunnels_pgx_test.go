@@ -56,6 +56,7 @@ func TestTunnelGrantsPgxStoreAgainstPostgres(t *testing.T) {
 		"SET LOCAL search_path TO "+scratch+", pg_catalog",
 		`CREATE TABLE workspaces (id uuid PRIMARY KEY, namespace text NOT NULL DEFAULT '')`,
 		`CREATE TABLE users (id uuid PRIMARY KEY, email text)`,
+		`CREATE VIEW lake_operator_tunnel_users AS SELECT id, email FROM users`,
 		`CREATE TABLE network_tunnel_grants (
             id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
             customer_id uuid NOT NULL,

@@ -14,7 +14,7 @@ import (
 )
 
 // The pgx LakeServiceStore: lake's control Postgres, reached with the CloudNativePG application
-// Secret lake-<lake>-controldb-app key uri. One connection per poll, closed when the poll ends.
+// Secret lake-<lake>-controldb-lake-operator key uri. One connection per poll, closed when the poll ends.
 
 const serviceStoreConnectTimeout = 10 * time.Second
 

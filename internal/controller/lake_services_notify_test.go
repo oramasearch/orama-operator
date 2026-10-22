@@ -19,7 +19,7 @@ func TestServicesListenerWakesTheLakeOnNotify(t *testing.T) {
 	withServices := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod"},
 		Spec: oramav1alpha1.LakeSpec{Namespace: "lake", Services: oramav1alpha1.LakeServicesSpec{}}}
 	without := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "quiet"}, Spec: oramav1alpha1.LakeSpec{Namespace: "lake"}}
-	app := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeControlDB("prod") + "-app", Namespace: "lake"},
+	app := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeRoleSecret("prod", lakeOperatorRole), Namespace: "lake"},
 		Data: map[string][]byte{"uri": []byte("postgresql://lake@db/lake")}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(withServices, without, app).Build()
 
@@ -64,7 +64,7 @@ func TestBuildListenerRunsWhenServicesAreDisabled(t *testing.T) {
 	scheme := newLakeScheme(t)
 	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "builder"},
 		Spec: oramav1alpha1.LakeSpec{Namespace: "lake", Builds: oramav1alpha1.LakeBuildsSpec{}}}
-	app := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeControlDB("builder") + "-app", Namespace: "lake"},
+	app := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeRoleSecret("builder", lakeOperatorRole), Namespace: "lake"},
 		Data: map[string][]byte{"uri": []byte("postgresql://lake@build-db/lake")}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake, app).Build()
 	listened := make(chan string, 1)

@@ -226,7 +226,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
 9. **Control-plane Postgres** — CloudNativePG `Cluster` `lake-<name>-controldb`
    (`spec.postgres`: enabled by default, instances, storageSize 50Gi, storageClassName), the same
    unstructured path `OramaCloudV1` uses (`controldb.go`). Disabling tears it down **with its
-   data**.
+   data**. CNPG manages separate `lake_runtime` and `lake_operator` logins; Lake and operator
+   readers use their own credentials. The owner credential is reserved for schema and maintenance
+   Jobs ([role policy](schema.md#control-database-roles-lsr-218)).
 10. **Schema** — ConfigMap `lake-<name>-controldb-migrations` + `PostgresSchema`
    `lake-<name>-controldb-schema` applying `assets/lake-schema.sql` (vendored byte-identical from
    `oramasearch/lake` `db/schema.sql`), guard table = `methodology_deployments_guard` from
@@ -236,8 +238,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    so a migration that merges out of order (0067 after 0068 and 0069, #271) still applies. A changed hash automatically
    replaces the obsolete migration Job, waiting for its pods to stop. Deployment creation and
    updates wait for Applied at the desired version and generation; existing pods retain their
-   previous workload spec while the schema applies. Re-vendoring and native envtest proof are in
-   [schema.md](schema.md). Proper incremental migrations are #126.
+   previous workload spec while the schema applies. An owner-applied `PostgresSchema`
+   `lake-<name>-controldb-grants` follows the schema; current successful grants also gate rollout
+   and row reconciliation. Re-vendoring and native envtest proof are in [schema.md](schema.md). Proper incremental migrations are #126.
 11. **Control-plane backup** (opt-in: `spec.postgres.backup.enabled`) — CNPG Barman object-store
    configuration on `lake-<name>-controldb` plus an owned `ScheduledBackup`
    `lake-<name>-controldb-backup`. The R2/S3 Secret lives in `spec.namespace`; CNPG owns the
@@ -268,7 +271,7 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     controller runs Postgres procedures and updates the row; see
     [data services](data-services/README.md).
 15. **Managed services** — once the schema has applied, the operator polls the `services`
-    table in the control Postgres (pgx, Secret `lake-<name>-controldb-app` key `uri`) every
+    table in the control Postgres (pgx, Secret `lake-<name>-controldb-lake-operator` key `uri`) every
     `spec.deploySync.interval`. Each present service becomes `<name>-<slug>`: an `OramaZettaCluster`,
     a CloudNativePG `Cluster`, or, for the catalog kinds (liquid-bridge decision 47), a Strimzi
     `Kafka`, Altinity `ClickHouseInstallation`, `TidbCluster`, `K8ssandraCluster` or `ValkeyCluster`,
@@ -329,7 +332,8 @@ observations. `Ready=True` (`LakeReady`) requires all of the following:
 - The selected store PVC is Bound.
 - When Postgres is enabled, CNPG reports at least `spec.postgres.instances` ready instances
   (default 1), and the owned `PostgresSchema` reports `Applied` for its current generation with
-  `appliedVersion` matching the current vendored schema hash.
+  `appliedVersion` matching the current vendored schema hash; the owner-applied runtime grants
+  must also report current successful status before rollout or row reconciliation.
 - When Zetta is enabled, the owned cluster reports `Ready` with every desired node ready.
 - Enabled backup configuration is valid. Backup completion remains a separate `BackupReady`
   observation.

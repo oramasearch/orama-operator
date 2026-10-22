@@ -20,7 +20,7 @@ spec:
 ```
 
 Postgres must be enabled (otherwise the Lake's `FeaturesReady` condition says apps cannot run) and the Lake schema applied. The independent `lake-apps-sync` controller
-uses the Services DSN Secret, `lake-<lake>-controldb-app` key `uri`, one pgx connection per pass,
+uses the Services DSN Secret, `lake-<lake>-controldb-lake-operator` key `uri`, one pgx connection per pass,
 and the same 30-second pass bound. A leader-only listener uses `LISTEN lake_apps`; lake sends the
 app ID as the notification payload. Each notification wakes a full list, so a payload cannot select
 another tenant. A 60-second full list recovers lost notifications; Pending/Deploying apps and failed

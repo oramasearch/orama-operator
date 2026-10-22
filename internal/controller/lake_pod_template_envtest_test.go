@@ -89,6 +89,9 @@ func TestLakePodTemplateEnvtest(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconciler := &LakeReconciler{Client: kubeClient, Scheme: kubeClient.Scheme()}
+	if err := reconciler.reconcileLakeRoleSecrets(ctx, lake, "lake-dev", nil); err != nil {
+		t.Fatal(err)
+	}
 	labels := lakeTemplateLabels(lake)
 	sealing := lakeSealingMaterial{KID: "test-kid", PublicKey: make([]byte, 32)}
 	rwo := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
@@ -264,6 +267,9 @@ func lakeSpecChangeRollsOnce(t *testing.T, kubeClient client.Client, name string
 		t.Fatal(err)
 	}
 	reconciler := &LakeReconciler{Client: kubeClient, Scheme: kubeClient.Scheme()}
+	if err := reconciler.reconcileLakeRoleSecrets(ctx, lake, "lake-dev", nil); err != nil {
+		t.Fatal(err)
+	}
 	labels := lakeTemplateLabels(lake)
 	sealing := lakeSealingMaterial{KID: "test-kid", PublicKey: make([]byte, 32)}
 	key := client.ObjectKey{Namespace: "lake-dev", Name: "lake-" + name}

@@ -236,7 +236,7 @@ type forwardedPort struct {
 // openCloudOrderStoreThroughCluster is the production CloudOrderStoreOpener. The member's Lake
 // runs on a managed cluster, and its control Postgres has no address outside it. The operator
 // already holds that cluster's admin kubeconfig (its KubernetesCluster's), so it reads the
-// Lake's control DB app Secret there and opens a port-forward through the cluster's API server to
+// Lake's control DB operator Secret there and opens a port-forward through the cluster's API server to
 // the Postgres primary: the same path `kubectl port-forward` takes, with no Service, Ingress or
 // firewall rule added for it.
 func openCloudOrderStoreThroughCluster(ctx context.Context, c client.Client, member orderSourceMember) (CloudOrderStore, error) {
@@ -251,7 +251,7 @@ func openCloudOrderStoreThroughCluster(ctx context.Context, c client.Client, mem
 	if err != nil {
 		return nil, err
 	}
-	secretName := lakeControlDB(member.Name) + "-app"
+	secretName := lakeRoleSecret(member.Name, lakeOperatorRole)
 	var app corev1.Secret
 	if err := leaf.Get(ctx, client.ObjectKey{Namespace: member.Namespace, Name: secretName}, &app); err != nil {
 		return nil, fmt.Errorf("the control DB Secret %s/%s cannot be read on %s: %w", member.Namespace, secretName, member.ClusterRef, err)

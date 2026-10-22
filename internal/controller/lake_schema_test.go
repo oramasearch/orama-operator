@@ -64,6 +64,10 @@ func applyLakeSchemaForWorkloadTest(t *testing.T, c client.Client, s *runtime.Sc
 		t.Fatal(err)
 	}
 	setLakeSchemaAppliedForTest(t, c, client.ObjectKey{Namespace: ns, Name: lakeControlDB(lake.Name) + "-schema"})
+	if err := r.reconcileLakeControlDBGrants(context.Background(), lake, ns, nil); err != nil {
+		t.Fatal(err)
+	}
+	setLakeSchemaAppliedForTest(t, c, client.ObjectKey{Namespace: ns, Name: lakeControlDB(lake.Name) + "-grants"})
 }
 
 func setLakeSchemaAppliedForTest(t *testing.T, c client.Client, key client.ObjectKey) {
@@ -100,7 +104,7 @@ func TestLakeSchemaGatesWorkloadRollout(t *testing.T) {
 		t.Fatalf("Deployment exists before schema applies: %v", err)
 	}
 	t.Log("first startup: Deployment absent while schema is Pending")
-	setLakeSchemaAppliedForTest(t, c, schemaKey)
+	applyLakeSchemaForWorkloadTest(t, c, scheme, lake)
 	reconcileLake(t, c, scheme, lake.Name)
 	var deployment appsv1.Deployment
 	if err := c.Get(ctx, deploymentKey, &deployment); err != nil {
@@ -118,7 +122,7 @@ func TestLakeSchemaGatesWorkloadRollout(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertLakeSchemaBlocksUpdate(t, c, scheme, lake, schemaKey, deploymentKey)
-	setLakeSchemaAppliedForTest(t, c, schemaKey)
+	applyLakeSchemaForWorkloadTest(t, c, scheme, lake)
 	reconcileLake(t, c, scheme, lake.Name)
 	if err := c.Get(ctx, deploymentKey, &deployment); err != nil {
 		t.Fatal(err)

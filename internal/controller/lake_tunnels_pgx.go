@@ -31,7 +31,7 @@ const listTunnelGrantsSQL = `SELECT g.id::text, g.customer_id::text, g.workspace
        COALESCE(st.endpoint, ''), COALESCE(st.relay_ca_pem, ''), COALESCE(st.observed_generation, 0)
   FROM network_tunnel_grants g
   JOIN workspaces w ON w.id = g.workspace_id
-  LEFT JOIN users u ON u.id = g.user_id
+  LEFT JOIN lake_operator_tunnel_users u ON u.id = g.user_id
   LEFT JOIN network_tunnel_grant_status st ON st.grant_id = g.id
  WHERE NOT (COALESCE(st.phase, '') IN ('Expired', 'Revoked') AND st.observed_generation = g.generation)
  ORDER BY g.created_at, g.id`

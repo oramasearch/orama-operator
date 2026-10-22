@@ -1904,7 +1904,7 @@ for on lake.live (lake#831). Like every controller it runs on every cluster; it 
 
 | Reads | Writes on the management cluster | Writes in lake's control plane |
 |---|---|---|
-| Each member of the named `LakeSet`: its `cloud_orders` rows (`paid`, and the ones this source holds), through the member cluster's kubeconfig, the Lake's `lake-<name>-controldb-app` Secret there and a port-forward to the CNPG primary | Per order: a one-member `LakeSet` (`private_warehouse`, on the set's cluster in the region), or a `KubernetesCluster`, copies of the template cluster's `ClusterHelmRelease`s and `OramaOperator`, and the `LakeSet` on the new cluster (`dedicated_cluster`) | `state` (`provisioning`, `ready`, `failed`), `host`, `failure_reason`, `claimed_by`, `claimed_at`, and one `cloud_order_events` row per change, `actor = 'operator'` |
+| Each member of the named `LakeSet`: its `cloud_orders` rows (`paid`, and the ones this source holds), through the member cluster's kubeconfig, the Lake's `lake-<name>-controldb-lake-operator` Secret there and a port-forward to the CNPG primary | Per order: a one-member `LakeSet` (`private_warehouse`, on the set's cluster in the region), or a `KubernetesCluster`, copies of the template cluster's `ClusterHelmRelease`s and `OramaOperator`, and the `LakeSet` on the new cluster (`dedicated_cluster`) | `state` (`provisioning`, `ready`, `failed`), `host`, `failure_reason`, `claimed_by`, `claimed_at`, and one `cloud_order_events` row per change, `actor = 'operator'` |
 
 - **Exactly once.** The claim and every later move are single guarded statements
   (`WHERE state = 'paid'`; `WHERE state = 'provisioning' AND claimed_by = <source>`). `claimed_by`
@@ -1944,6 +1944,8 @@ client trust details: [`control-plane/README.md`](control-plane/README.md).
 | `OramaZettaCluster` | `lake-<name>-zetta` | yes | `spec.zetta`, including `env`; carries the operator schema as the Lake's deployment control plane (operator#557); deletion completes before the Lake finalizer is released |
 | CNPG `Cluster` | `lake-<name>-controldb` | yes (unstructured) | `spec.postgres`: instances, storageSize (50Gi), storageClassName; disable tears down **with data** |
 | ConfigMap + `PostgresSchema` | `lake-<name>-controldb-migrations`, `-schema` | yes | `assets/lake-schema.sql` vendored from `oramasearch/lake` `db/schema.sql`; guard = the newest migration's table (`workspace_volumes_guard`, `0069_workspace_volumes`); the Job also requires every migration the file records in `schema_migrations` (#271) |
+| Secrets | `lake-<name>-controldb-lake-runtime`, `-lake-operator` | yes | separate CNPG managed login credentials, stable across reconciles; runtime never receives the owner |
+| ConfigMap + `PostgresSchema` | `lake-<name>-controldb-grants` | yes | owner-applied runtime privilege policy after the pinned schema; current grants gate rollout and row reconciliation ([role policy](lake/schema.md#control-database-roles-lsr-218)) |
 | CNPG `ScheduledBackup` | `lake-<name>-controldb-backup` | yes (unstructured) | opt-in Barman R2/S3 backup; CNPG `Backup` resources are observed by `cnpg.io/cluster` label |
 | `LakeRestoreRehearsal` scratch resources | `lake-rehearsal-<name>-<hash>` | yes | temporary Namespace containing a recovered CNPG Cluster, copied credentials, and a verification Job; all are deleted after a terminal result |
 | Ingress + `CloudflareDNSRecord` | `lake-<name>`, `-dns` | yes | opt-in via `ingressEnabled` + `host` + `dnsSecretRef`, optional `tls.secretName`, and Lake streaming annotations |

@@ -24,7 +24,7 @@ func TestLakeAppsListenerWakesAppsOnlyLakeAndStops(t *testing.T) {
 	lake := &oramav1alpha1.Lake{ObjectMeta: metav1.ObjectMeta{Name: "prod"}, Spec: oramav1alpha1.LakeSpec{
 		Namespace: "lake", Apps: oramav1alpha1.LakeAppsSpec{},
 	}}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeControlDB("prod") + "-app", Namespace: "lake"}, Data: map[string][]byte{"uri": []byte("postgresql://db/lake")}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeRoleSecret("prod", lakeOperatorRole), Namespace: "lake"}, Data: map[string][]byte{"uri": []byte("postgresql://db/lake")}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lake, secret).Build()
 	listener := NewLakeAppsListener(c)
 	listener.Resync = 10 * time.Millisecond

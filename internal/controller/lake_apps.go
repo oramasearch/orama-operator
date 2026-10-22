@@ -82,7 +82,7 @@ func (r *LakeAppsReconciler) Reconcile(ctx context.Context, request ctrl.Request
 func (r *LakeAppsReconciler) pollLakeApps(ctx context.Context, lake *oramav1alpha1.Lake) bool {
 	log := logf.FromContext(ctx).WithValues("lake", lake.Name)
 	var secret corev1.Secret
-	key := client.ObjectKey{Namespace: lakeNamespace(lake), Name: lakeControlDB(lake.Name) + "-app"}
+	key := client.ObjectKey{Namespace: lakeNamespace(lake), Name: lakeRoleSecret(lake.Name, lakeOperatorRole)}
 	if err := r.Get(ctx, key, &secret); err != nil || len(secret.Data["uri"]) == 0 {
 		log.V(1).Info("apps deferred: control DB credential unavailable")
 		return false

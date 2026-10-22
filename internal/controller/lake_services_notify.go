@@ -162,7 +162,7 @@ func (l *LakeServicesListener) listen(ctx context.Context, lake *oramav1alpha1.L
 	}
 	for ctx.Err() == nil {
 		var app corev1.Secret
-		err := l.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: lakeControlDB(lake.Name) + "-app"}, &app)
+		err := l.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: lakeRoleSecret(lake.Name, lakeOperatorRole)}, &app)
 		if err == nil && len(app.Data["uri"]) > 0 {
 			err = listen(ctx, string(app.Data["uri"]), notify)
 		}

@@ -90,6 +90,12 @@ Set `LAKE_SCHEMA_TEST_POSTGRES=1` and `PGUSER` to your local role; the suite cre
 on `127.0.0.1:5432` and drops only those it created. With this opt-in, missing envtest assets are
 a failure. See [the schema proof and vendoring commands](lake/schema.md#verification).
 
+The Lake role proof (LSR-218) uses `LAKE_ROLES_TEST_POSTGRES_URI`, an admin URI for a disposable
+PostgreSQL server: `go test ./internal/controller -run TestLakeControlDBPrivilegesAgainstPostgres
+-count=1 -timeout 5m`. It creates and drops a database and three login roles, refuses pre-existing
+role names, and exercises actual permission denials and the operator's production queries.
+No cluster is used. See [the control-database role policy](lake/schema.md#control-database-roles-lsr-218).
+
 The Cloud v1 control DB's schema proof (`TestControlDBSchemasAgainstPostgres`, operator#378) needs
 `psql` 14 or later on `PATH` and `CONTROLDB_SCHEMA_TEST_POSTGRES_URI`, an admin URI to a disposable
 PostgreSQL 14 or later server (for example `postgres://postgres@127.0.0.1:5432/postgres`). It creates
