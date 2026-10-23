@@ -239,9 +239,16 @@ endpoint's finalizer releases it; Kubernetes API errors still retry. See
 
 ## Moving a member from `spec.env` to `spec.payments`
 
-The set files are changed by [operator#641](https://github.com/oramasearch/orama-operator/issues/641)
-and [operator#643](https://github.com/oramasearch/orama-operator/issues/643), not here. For each
-member:
+The nonprod set prepares all three members with their own `stripe-dev`, `stripe-testing` and
+`stripe-staging` sources ([operator#884](https://github.com/oramasearch/orama-operator/issues/884)).
+Each is copied as `lake-prod-stripe`, replacing the retained legacy data in place; the payment
+Secret reference uses that same name. Its template enables billing and test payments; the members
+no longer set the legacy billing or
+Stripe environment variables. Apply it only after all sources, including nonprod OpenAI and image
+pull credentials, exist and the apply is approved. Each Lake then creates its own endpoint and
+signing Secret through reconciliation; never create a shared webhook signing secret for the set.
+The production migration remains [operator#643](https://github.com/oramasearch/orama-operator/issues/643).
+For each member:
 
 1. The environment's Secret exists on the managing cluster, namespace `lake`
    ([`config/clusters/README.md`](../../config/clusters/README.md)).
