@@ -27,6 +27,7 @@ import (
 //     spec.components.workers.sentryDSNSecretRef;
 //   - index-builder: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from `token` and `accountID` of
 //     spec.cloudflare.apiTokenSecretRef, the token that already creates the KV namespaces it writes;
+//     ABLY_API_KEY from spec.components.ingestion.ablyKeySecretRef for deployment progress;
 //   - dashboard: STRIPE_SECRET_KEY from spec.components.dashboard.stripeSecretKeySecretRef, a Stripe
 //     restricted key with only the permissions the dashboard uses (#802; dashboard_production.go).
 //
@@ -66,6 +67,10 @@ func componentKeyRefs(oc *oramav1alpha1.OramaCloudV1, component string) []keyRef
 				field: "spec.components.workers.sentryDSNSecretRef"})
 		}
 	case "index-builder":
+		if ref := oc.Spec.Components.Ingestion.AblyKeySecretRef; ref != nil {
+			refs = append(refs, keyRef{env: "ABLY_API_KEY", secret: ref.Name, key: ref.Key,
+				field: "spec.components.ingestion.ablyKeySecretRef"})
+		}
 		if ref := oc.Spec.Cloudflare.APITokenSecretRef; ref != nil && ref.Name != "" {
 			const field = "spec.cloudflare.apiTokenSecretRef"
 			refs = append(refs,
