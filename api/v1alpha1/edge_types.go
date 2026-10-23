@@ -134,6 +134,17 @@ type EdgeZonePolicySpec struct {
 	// ZoneID is the provider's identifier of the DNS zone (Cloudflare: the zone ID).
 	// +kubebuilder:validation:MinLength=1
 	ZoneID string `json:"zoneID"`
+
+	// OriginPullSecretRef names a Secret in this namespace holding the zone's origin-pull CA
+	// certificate and client certificate (keys ca.crt, tls.crt, tls.key), distributed by the
+	// managing cluster: a LakeSet copies it into every member that serves the zone, so every cluster
+	// serving one zone presents and trusts the same CA (operator#633). When set, the operator uses
+	// that Secret only: it never creates a CA or a client certificate of its own for the zone, waits
+	// while the Secret is missing, and fails while its CA cannot be read. Unset, the operator keeps
+	// its own Secret orama-edge-origin-pull-<zone ID> in its namespace, created once. A Lake that a
+	// set manages sets it; nothing else needs to.
+	// +optional
+	OriginPullSecretRef *corev1.LocalObjectReference `json:"originPullSecretRef,omitempty"`
 }
 
 // EdgeZoneHostStatus is one proxied host that does not pass a check.
@@ -180,14 +191,14 @@ type EdgeZonePolicyStatus struct {
 	AuthenticatedOriginPulls bool `json:"authenticatedOriginPulls,omitempty"`
 
 	// ZoneOriginPulls is whether the edge presents the zone's own client certificate, signed by the
-	// operator's CA (zone-level authenticated origin pulls), rather than Cloudflare's certificate
+	// zone's origin-pull CA (zone-level authenticated origin pulls), rather than Cloudflare's certificate
 	// shared by every account.
 	// +optional
 	ZoneOriginPulls bool `json:"zoneOriginPulls,omitempty"`
 
 	// OriginClientCAPEM is what origins verify the edge's client certificate against: Cloudflare's
-	// global origin-pull CA and the operator's CA for the zone until the zone presents its own
-	// certificate, then the operator's CA alone.
+	// global origin-pull CA and the zone's origin-pull CA until the zone presents its own
+	// certificate, then the zone's CA alone.
 	// +optional
 	OriginClientCAPEM string `json:"originClientCAPEM,omitempty"`
 
@@ -253,6 +264,11 @@ type CloudflareZonePolicySpec struct {
 	// APITokenSecretRef is the provider's token: Zone > Zone Settings > Edit, Zone > DNS > Read,
 	// Zone > Zone > Read and Zone > SSL and Certificates > Edit on the zone.
 	APITokenSecretRef EdgeProviderSecretKeyRef `json:"apiTokenSecretRef"`
+
+	// OriginPullSecretRef is the EdgeZonePolicy's: the zone's distributed origin-pull Secret in this
+	// namespace. Unset, the operator's own per-cluster Secret.
+	// +optional
+	OriginPullSecretRef *corev1.LocalObjectReference `json:"originPullSecretRef,omitempty"`
 }
 
 // +kubebuilder:object:root=true

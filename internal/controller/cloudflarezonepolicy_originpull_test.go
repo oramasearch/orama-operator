@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -115,7 +116,7 @@ func TestZoneOriginPullsWaitUntilEveryOriginTrustsTheCA(t *testing.T) {
 		t.Fatalf("status = %+v", st)
 	}
 	_, secret := zoneCA(t, c)
-	if st.OriginClientCAPEM != cloudflareOriginPullCA+string(secret.Data["ca.crt"]) {
+	if st.OriginClientCAPEM != joinPEM(cloudflareOriginPullCA, string(secret.Data["ca.crt"])) || len(pemSubjects(t, st.OriginClientCAPEM)) != 2 {
 		t.Fatalf("bundle does not accept both CAs")
 	}
 	if conditionStatus(policy, edgeConditionZoneOriginPulls) != "False" || !strings.Contains(st.Message, "not yet: eu.lake.live") {
@@ -291,4 +292,90 @@ func TestOriginPullSecretName(t *testing.T) {
 	if got := originPullSecretName("bad/zone"); len(got) != len("orama-edge-origin-pull-")+32 {
 		t.Fatalf("name = %q", got)
 	}
+}
+
+// useDistributedSecret points the fixture's policy at the zone's distributed Secret.
+func useDistributedSecret(t *testing.T, c client.Client) {
+	t.Helper()
+	var policy oramav1alpha1.CloudflareZonePolicy
+	key := types.NamespacedName{Namespace: "lake", Name: "edge"}
+	if err := c.Get(context.Background(), key, &policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.OriginPullSecretRef = &corev1.LocalObjectReference{Name: originPullSecretName("zone-1")}
+	if err := c.Update(context.Background(), &policy); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The precedence on a member cluster: a policy naming a distributed Secret uses that Secret only.
+// While it is missing the zone stays on global pulls and nothing is minted, anywhere; once it is
+// there its client certificate is uploaded and its CA published; an unreadable CA fails, and the
+// Secret is never written.
+func TestADistributedOriginPullSecretIsTheOnlySource(t *testing.T) {
+	zone := strictZone()
+	c, r, reconcile := newZonePolicyFixture(t, zone, fakeEdgeProber{})
+	r.OperatorNamespace = "orama-system"
+	useDistributedSecret(t, c)
+
+	policy := reconcile()
+	var secrets corev1.SecretList
+	_ = c.List(context.Background(), &secrets)
+	if len(secrets.Items) != 1 || len(zone.clientCerts) != 0 || zone.zoneAOP {
+		t.Fatalf("minted or uploaded without the distributed Secret: %d secrets, patches %v", len(secrets.Items), zone.patches)
+	}
+	if policy.Status.ZoneOriginPulls || !policy.Status.AuthenticatedOriginPulls || policy.Status.OriginClientCAPEM != cloudflareOriginPullCA ||
+		!strings.Contains(policy.Status.Message, "managing cluster's set copies here") {
+		t.Fatalf("status = %+v", policy.Status)
+	}
+
+	// The managing cluster's Secret, copied here as a set copies it.
+	managing := fakeClientWith(t)
+	source, _, err := ensureOriginPullSecret(context.Background(), managing, "orama-system", "zone-1", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := distributedOriginPullCopy(source)
+	copy.Namespace = "lake"
+	if err := c.Create(context.Background(), copy); err != nil {
+		t.Fatal(err)
+	}
+	policy = reconcile()
+	if len(zone.clientCerts) != 1 || zone.clientCerts[0].Certificate != string(source.Data["tls.crt"]) || !zone.zoneAOP {
+		t.Fatalf("zone certs = %+v", zone.clientCerts)
+	}
+	if !policy.Status.ZoneOriginPulls || policy.Status.OriginClientCAPEM != string(source.Data["ca.crt"]) {
+		t.Fatalf("status = %+v", policy.Status)
+	}
+
+	// A leaf due for renewal is not renewed here: the managing cluster renews it.
+	r.Now = func() time.Time { return time.Now().Add(originPullLeafLifetime - originPullRenewBefore + time.Hour) }
+	var before corev1.Secret
+	_ = c.Get(context.Background(), client.ObjectKeyFromObject(copy), &before)
+	reconcile()
+	var after corev1.Secret
+	_ = c.Get(context.Background(), client.ObjectKeyFromObject(copy), &after)
+	if after.ResourceVersion != before.ResourceVersion || len(zone.clientCerts) != 1 {
+		t.Fatal("a member cluster wrote the distributed Secret or uploaded a leaf of its own")
+	}
+	r.Now = nil
+
+	after.Data["ca.crt"] = []byte("not a certificate")
+	if err := c.Update(context.Background(), &after); err != nil {
+		t.Fatal(err)
+	}
+	policy = reconcile()
+	if policy.Status.Phase != edgePhaseFailed || !strings.Contains(policy.Status.Message, "ca.crt is not a CA certificate") ||
+		policy.Status.OriginClientCAPEM != string(source.Data["ca.crt"]) {
+		t.Fatalf("status = %+v", policy.Status)
+	}
+	_ = c.List(context.Background(), &secrets)
+	if len(secrets.Items) != 2 {
+		t.Fatalf("a CA was minted for an unreadable distributed one: %d secrets", len(secrets.Items))
+	}
+}
+
+func fakeClientWith(t *testing.T) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().WithScheme(newLakeScheme(t)).Build()
 }

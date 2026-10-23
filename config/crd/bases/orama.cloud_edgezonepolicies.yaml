@@ -87,6 +87,28 @@ spec:
               policies may name one zone (one per Lake); they ask for the same settings. Deleting a policy
               changes nothing in the zone.
             properties:
+              originPullSecretRef:
+                description: |-
+                  OriginPullSecretRef names a Secret in this namespace holding the zone's origin-pull CA
+                  certificate and client certificate (keys ca.crt, tls.crt, tls.key), distributed by the
+                  managing cluster: a LakeSet copies it into every member that serves the zone, so every cluster
+                  serving one zone presents and trusts the same CA (operator#633). When set, the operator uses
+                  that Secret only: it never creates a CA or a client certificate of its own for the zone, waits
+                  while the Secret is missing, and fails while its CA cannot be read. Unset, the operator keeps
+                  its own Secret orama-edge-origin-pull-<zone ID> in its namespace, created once. A Lake that a
+                  set manages sets it; nothing else needs to.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               providerRef:
                 description: ProviderRef names an EdgeProvider in this namespace.
                 properties:
@@ -220,8 +242,8 @@ spec:
               originClientCAPEM:
                 description: |-
                   OriginClientCAPEM is what origins verify the edge's client certificate against: Cloudflare's
-                  global origin-pull CA and the operator's CA for the zone until the zone presents its own
-                  certificate, then the operator's CA alone.
+                  global origin-pull CA and the zone's origin-pull CA until the zone presents its own
+                  certificate, then the zone's CA alone.
                 type: string
               originEncryption:
                 description: |-
@@ -246,7 +268,7 @@ spec:
               zoneOriginPulls:
                 description: |-
                   ZoneOriginPulls is whether the edge presents the zone's own client certificate, signed by the
-                  operator's CA (zone-level authenticated origin pulls), rather than Cloudflare's certificate
+                  zone's origin-pull CA (zone-level authenticated origin pulls), rather than Cloudflare's certificate
                   shared by every account.
                 type: boolean
             type: object

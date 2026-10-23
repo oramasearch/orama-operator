@@ -80,6 +80,22 @@ spec:
                 - key
                 - name
                 type: object
+              originPullSecretRef:
+                description: |-
+                  OriginPullSecretRef is the EdgeZonePolicy's: the zone's distributed origin-pull Secret in this
+                  namespace. Unset, the operator's own per-cluster Secret.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               zoneID:
                 description: ZoneID is the Cloudflare zone.
                 minLength: 1
@@ -198,8 +214,8 @@ spec:
               originClientCAPEM:
                 description: |-
                   OriginClientCAPEM is what origins verify the edge's client certificate against: Cloudflare's
-                  global origin-pull CA and the operator's CA for the zone until the zone presents its own
-                  certificate, then the operator's CA alone.
+                  global origin-pull CA and the zone's origin-pull CA until the zone presents its own
+                  certificate, then the zone's CA alone.
                 type: string
               originEncryption:
                 description: |-
@@ -224,7 +240,7 @@ spec:
               zoneOriginPulls:
                 description: |-
                   ZoneOriginPulls is whether the edge presents the zone's own client certificate, signed by the
-                  operator's CA (zone-level authenticated origin pulls), rather than Cloudflare's certificate
+                  zone's origin-pull CA (zone-level authenticated origin pulls), rather than Cloudflare's certificate
                   shared by every account.
                 type: boolean
             type: object

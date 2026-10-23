@@ -472,8 +472,9 @@ func main() {
 	// Sets (operator#391): Lake and OramaCloudV1 instances installed onto managed clusters from
 	// one template, with their versions and settings kept as described.
 	if err = (&controller.LakeSetReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LakeSet")
 		os.Exit(1)

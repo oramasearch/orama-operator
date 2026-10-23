@@ -1082,10 +1082,11 @@ lake#798), and Always Use HTTPS, each done only when its check passes, and never
 |---|---|
 | `spec.providerRef.name` | An `EdgeProvider` in this namespace. |
 | `spec.zoneID` | The provider's zone identifier (Cloudflare: the zone ID). |
+| `spec.originPullSecretRef.name` | Optional. A Secret in this namespace with the zone's origin-pull CA certificate and client certificate (`ca.crt`, `tls.crt`, `tls.key`), copied here by the managing cluster's `LakeSet` so every cluster serving the zone presents and trusts one CA ([operator#633](https://github.com/oramasearch/orama-operator/issues/633)). When set, this Secret is the only source: the operator never creates a CA or client certificate for the zone, waits while the Secret is missing, and fails while its CA cannot be read. Unset: the operator's own Secret `orama-edge-origin-pull-<zone ID>` in its namespace, created once. A Lake that a set manages sets it to `orama-edge-origin-pull-<zone ID>`; a Lake no set manages leaves it unset. |
 | `status.phase` | `Ready` (every setting on), `Progressing` (a setting waits on a check), `Failed` (the zone cannot be read or changed; the message names the missing permission). |
 | `status.originEncryption` | The zone's observed mode: `off`, `flexible`, `full` or `strict`. Lake Ingresses redirect HTTP only at `full` or `strict`. |
-| `status.authenticatedOriginPulls`, `status.originClientCAPEM` | Whether the edge presents a client certificate that `originClientCAPEM` verifies, and that bundle: Cloudflare's global origin-pull CA and the operator's CA for the zone until the zone presents its own certificate, then the operator's CA alone. Lake Ingresses require the certificate once this is on. False while the zone may present a certificate of another CA. |
-| `status.zoneOriginPulls` | Whether the edge presents the zone's own client certificate, signed by the operator's CA (zone-level authenticated origin pulls). |
+| `status.authenticatedOriginPulls`, `status.originClientCAPEM` | Whether the edge presents a client certificate that `originClientCAPEM` verifies, and that bundle: Cloudflare's global origin-pull CA and the zone's CA until the zone presents its own certificate, then the zone's CA alone. Lake Ingresses require the certificate once this is on. False while the zone may present a certificate of another CA. |
+| `status.zoneOriginPulls` | Whether the edge presents the zone's own client certificate, signed by the zone's CA (zone-level authenticated origin pulls). |
 | `status.alwaysUseHTTPS` | Whether the edge redirects plain HTTP. |
 | `status.zone` | The zone's name (`lake.live`), read with Zone > Zone > Read. The owning Lake's `Issuer` solves DNS-01 for this zone and every name under it, and HTTP-01 for any other name; empty keeps DNS-01 for every name ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)). A refused read keeps the last name. |
 | `status.proxiedHosts`, `status.hosts[]` | How many proxied hosts the zone has, and up to 50 that fail a check: `{name, origin, edge}` with the reason for each leg. |
@@ -1099,14 +1100,17 @@ changes nothing in the zone.
 Created and owned by an `EdgeZonePolicy` whose provider is `cloudflare`, with the same name; a person
 never writes one. The only kind that changes a Cloudflare zone's settings (`ssl`,
 `ssl_automatic_mode`, `tls_client_auth`, `always_use_https`) and its zone-level origin-pull
-certificates (`origin_tls_client_auth`). It keeps the zone's CA and client certificate in the Secret
-`orama-edge-origin-pull-<zone ID>` in the operator's namespace, one per zone per cluster. Short name
-`cfzp`.
+certificates (`origin_tls_client_auth`). It reads the zone's CA and client certificate from the
+Secret `spec.originPullSecretRef` names (a copy the managing cluster distributed; never written
+here), or, without one, from the Secret `orama-edge-origin-pull-<zone ID>` in the operator's
+namespace, which it creates once. On the managing cluster that Secret is the one the `LakeSet`s
+copy, so every cluster serving a zone uses one CA. Short name `cfzp`.
 
 | Field | Meaning |
 |---|---|
 | `spec.zoneID` | The Cloudflare zone. |
 | `spec.apiTokenSecretRef` | The provider's token Secret and key. |
+| `spec.originPullSecretRef` | The `EdgeZonePolicy`'s, copied. |
 | `status` | The same status as `EdgeZonePolicy`, which copies it. |
 
 ## `EdgeHostPolicy` (separate CRD, namespaced) — per-host Full (strict) and HTTPS redirect
@@ -1972,7 +1976,7 @@ Short names `lset` and `ocv1set`. One shape for both; how it fits:
 | Field | Meaning |
 |---|---|
 | `spec.template` | The instance's spec (a `Lake`'s, an `OramaCloudV1`'s), the default for every member. Validated by each member's cluster when applied. A `LakeSet` template does not set `namespace`; an `OramaCloudV1Set` template does not set `region.name`. |
-| `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. A production credential is never copied into a member whose cluster is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). |
+| `spec.secrets[]` | `name` and `namespace` of a Secret on this cluster, copied into every member's namespace before its instance; `as` renames it there. A production credential is never copied into a member whose cluster is not `production` ([below](#production-credentials-never-reach-a-nonprod-member)). A `LakeSet` also copies one Secret on its own: each member whose `dnsSecretRef` names a Secret the set copies gets its zone's origin-pull Secret `orama-edge-origin-pull-<zone ID>` (CA certificate and client certificate, never the CA key), which the set creates once in the operator's namespace on this cluster and renews; it is labelled with the purpose of the first member that needed it and refused for a member of another purpose ([operator#633](https://github.com/oramasearch/orama-operator/issues/633), [`lake/origin-tls.md`](lake/origin-tls.md#zone-level-authenticated-origin-pulls-the-operators-own-certificate)). A Secret listed under that name is replaced by it. |
 | `spec.clusters[]` | The members, 1 to 64. Independent: none waits for another. `clusterRef` (a `KubernetesCluster`), `name` (the instance's name there), optional `namespace` (default `lake-<name>` or `v1-<name>`), optional `spec` (merged over the template; lists replace), optional `secrets` (replace the set's of the same name for this member). The cap of 64 holds for both kinds because they share this shape: the `OramaCloudV1Set` rule that each migration names one member loops over the members, and the API server refuses a CEL rule over an unbounded list. |
 | `spec.deletionPolicy` | `Retain` (default): removing a member or deleting the set leaves the instance running. `Delete`: the instance is deleted from its cluster. |
 | `spec.migrations[]` | `OramaCloudV1Set` only, at most 256, keyed by `name`: the Prod 1 teams copied into the members ([`cloud-v1-migration.md`](cloud-v1-migration.md#declared-in-the-set-oramacloudv1set)). `name` is the `OramaCloudV1Migration`'s name (DNS label, at most 63). `member` names exactly one `clusters[].name` (CEL: *every migrations[].member must name exactly one clusters[].name*) and cannot change once applied. `secrets` are copied into the member's namespace before it, like a member's, refused when the stack gets a Secret of that name from the set or the member, and deleted once the migration is gone. `spec` is the `OramaCloudV1Migration`'s spec without `targetRef`, which is the member; it is validated by the member's cluster when applied. Removing an entry deletes the migration there; removing its member or deleting the set waits for its migrations to be gone. |

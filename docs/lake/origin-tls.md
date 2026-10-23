@@ -139,7 +139,7 @@ on only when it is safe, in this order:
 | 1 | `ssl` = `full` (from `off` or `flexible`) | Every proxied host's origin completes a TLS handshake |
 | 2 | `ssl` = `strict` | Every proxied host's origin presents a certificate valid for that host |
 | 3 | `tls_client_auth` = `on` (authenticated origin pulls, Cloudflare's shared certificate) | The mode is `full` or `strict` |
-| 3b | Zone-level authenticated origin pulls: the zone's own certificate uploaded (`POST /zones/{zone}/origin_tls_client_auth`) and turned on (`PUT .../origin_tls_client_auth/settings` `{"enabled": true}`) | The mode is `full` or `strict`, and every proxied origin that asks for a client certificate accepts the operator's CA ([below](#zone-level-authenticated-origin-pulls-the-operators-own-certificate)) |
+| 3b | Zone-level authenticated origin pulls: the zone's own certificate uploaded (`POST /zones/{zone}/origin_tls_client_auth`) and turned on (`PUT .../origin_tls_client_auth/settings` `{"enabled": true}`) | The mode is `full` or `strict`, and every proxied origin that asks for a client certificate accepts the zone's CA, made once by the managing cluster and copied by the set to every cluster serving the zone ([below](#zone-level-authenticated-origin-pulls-the-operators-own-certificate)) |
 | 4 | An Advanced Certificate ordered for each proxied host more than one level below the apex (lake#798) | The host has no valid edge certificate and no live certificate pack in the zone covers it |
 | 5 | `always_use_https` = `on` | Every proxied host has a valid edge certificate |
 
@@ -204,7 +204,7 @@ its apps' and its environments'):
 |---|---|---|
 | Not observed yet, no policy, `off` or `flexible` | `"false"`: under Flexible, Cloudflare reaches the origin over HTTP and a redirect would loop | Not required |
 | `full` or `strict` | `"true"`, unless a host of the Ingress is in the policy's `status.hosts` without an edge certificate (itself or its wildcard), then `"false"`: a visitor sent to HTTPS could not follow | Not required |
-| `full` or `strict`, authenticated origin pulls on | `"true"` | **Required**: `auth-tls-secret` names a Secret `<ingress>-edge-client-ca` (`ca.crt` = the policy's `status.originClientCAPEM`: Cloudflare's origin-pull CA and the operator's CA for the zone until the zone presents its own certificate, then the operator's CA alone), `auth-tls-verify-client: "on"`, `auth-tls-verify-depth: "1"` |
+| `full` or `strict`, authenticated origin pulls on | `"true"` | **Required**: `auth-tls-secret` names a Secret `<ingress>-edge-client-ca` (`ca.crt` = the policy's `status.originClientCAPEM`: Cloudflare's origin-pull CA and the zone's CA until the zone presents its own certificate, then the zone's CA alone), `auth-tls-verify-client: "on"`, `auth-tls-verify-depth: "1"` |
 
 `"false"` is written rather than left out because ingress-nginx redirects every host that has a
 certificate by default.
@@ -241,43 +241,73 @@ certificate; with the redirect on it serves only redirects.
 ## Zone-level authenticated origin pulls: the operator's own certificate
 
 [operator#633](https://github.com/oramasearch/orama-operator/issues/633). Code:
-`internal/controller/cloudflarezonepolicy_originpull.go`.
+`internal/controller/cloudflarezonepolicy_originpull.go` (the zone policy) and
+`internal/controller/managedset_origin_pull.go` (the LakeSet's copy).
 
-- **The CA and the leaf.** One Secret per zone per cluster, `orama-edge-origin-pull-<zone ID>` in the
-  operator's namespace (`ca.crt`, `ca.key`, `tls.crt`, `tls.key`), shared by every policy naming the
-  zone, so they all upload the same leaf. The CA (RSA 2048, valid 10 years) is created once and never
-  replaced by the operator; a Secret whose CA cannot be read fails the step rather than making a new
-  CA, which would break every origin that trusts the old one. The client leaf (RSA 2048, `clientAuth`,
-  valid one year) is replaced 45 days before it expires (Cloudflare's own alerts start at 30).
+- **One CA per zone, made by the managing cluster** (Steve's option (a), 2026-10-23). Cloudflare
+  presents one client certificate per zone, and a zone may be served by several clusters
+  (`lake.live` by `orama-production-cluster-02` and `-03`; `oramadev.net` by the managing cluster's
+  `Lake/prod` and `orama-nonprod-cluster-01`). So every cluster serving a zone must present and
+  trust the same CA. The managing cluster's operator keeps it: the Secret
+  `orama-edge-origin-pull-<zone ID>` in its namespace (`ca.crt`, `ca.key`, `tls.crt`, `tls.key`).
+- **How it reaches every cluster serving the zone.** A `LakeSet` reads each member's zone from the
+  `zoneID` of the member's `dnsSecretRef` (a Secret the set copies), creates the zone's Secret once if
+  it is missing, renews its client certificate when due, and copies the CA certificate and the client
+  certificate and key (**never `ca.key`**) into the member's namespace, under the same name and
+  labelled `orama.cloud/edge-origin-pull: distributed`, together with the Secrets the set names and
+  before the Lake. The set does this on its own, not through its `secrets:` list: the CA must exist
+  before anything could name it, its name depends on the zone, it must reach exactly the members
+  serving the zone, and nobody creates or copies it by hand. The first set to create a zone's CA
+  labels it with its member's purpose (`orama.cloud/purpose`), so a production zone's CA is never
+  copied into a nonprod member. Every set pass (at most five minutes apart) keeps the copies in
+  step.
+- **Precedence on a cluster.** A Lake that a set manages (it carries `orama.cloud/managed-by-set`)
+  writes `spec.originPullSecretRef` on its `EdgeZonePolicy`, naming the copied Secret. A zone policy
+  with `originPullSecretRef` uses **that Secret only**: it never creates a CA or a client certificate
+  for the zone, and never writes the Secret. While the Secret is missing (or holds no valid client
+  certificate) the `ZoneOriginPulls` condition says it waits for the managing cluster
+  (`WaitingForDistributedCA`) and the zone stays on global pulls; while its CA cannot be read the
+  policy fails. A zone policy without `originPullSecretRef` (a Lake no set manages, such as the
+  managing cluster's `Lake/prod`) uses the operator's own Secret in its namespace, creating it once.
+  On the managing cluster that is the very Secret the sets copy, so `Lake/prod` and the
+  `lake-nonprod` members present and trust the same `oramadev.net` CA.
+- **The CA and the leaf.** The CA (RSA 2048, valid 10 years, a subject unique to it) is created once
+  and never replaced; a Secret whose CA cannot be read fails rather than making a new CA, which would
+  break every origin that trusts the old one. The client leaf (RSA 2048, `clientAuth`, valid one year)
+  is replaced 45 days before it expires (Cloudflare's own alerts start at 30), by the managing
+  cluster only. Every policy for the zone shares it, so they all upload the same leaf.
 - **Upload and switch.** The leaf and its key are uploaded (`POST /zones/{zone}/origin_tls_client_auth`)
   and zone-level pulls turned on (`PUT .../settings` `{"enabled": true}`). Zone-level certificates take
-  precedence over the global one, and of several the most recently deployed is presented. Once ours
-  is `active`, older leaves of our CA are deleted. A certificate of any other CA is never touched.
-- **What the origins trust.** `status.originClientCAPEM` is Cloudflare's global CA and ours together
-  until the zone presents our leaf, then ours alone, which is what shuts out other Cloudflare zones.
-  `status.zoneOriginPulls` says the zone presents our leaf. While a new leaf of our own CA deploys,
-  the bundle stays ours alone (both leaves verify).
-- **The switch is gated by a probe.** Once the zone presents our leaf, an origin that requires a
-  client certificate and does not trust our CA refuses Cloudflare. A zone may be served by several
-  clusters, each with its own CA, and by origins the operator does not run. So the operator reads,
-  for every proxied record, the origin's TLS CertificateRequest (the CAs it accepts). It uploads a
-  leaf that would change what the zone presents, and turns zone-level pulls on, only when every origin
-  that asks for a client certificate lists our CA and every origin answered. Otherwise the
-  `ZoneOriginPulls` condition names up to five origins it waits for. Renewing a leaf of the CA the
-  zone already presents needs no gate.
+  precedence over the global one, and of several the most recently deployed is presented. The newest
+  live leaf of the zone's CA is the zone's current one, whoever uploaded it: a cluster uploads its
+  leaf only when it is newer, and once the current one is `active` deletes only older leaves of the CA
+  (and second copies of the current one). So a cluster whose copy of a renewed leaf has not arrived
+  yet never uploads the old one again or deletes the new one. A certificate of any other CA is never
+  touched.
+- **What the origins trust.** `status.originClientCAPEM` is Cloudflare's global CA and the zone's CA
+  together until the zone presents a leaf of the zone's CA, then the zone's CA alone, which is what
+  shuts out other Cloudflare zones. `status.zoneOriginPulls` says the zone presents it. While a new
+  leaf deploys, the bundle stays the zone's CA alone (both leaves verify).
+- **The switch is gated by a probe.** Once the zone presents the leaf, an origin that requires a
+  client certificate and does not trust the zone's CA refuses Cloudflare, and a zone may have origins
+  the operator does not run. So the operator reads, for every proxied record, the origin's TLS
+  CertificateRequest (the CAs it accepts, by subject). It uploads a leaf that would change what the
+  zone presents, and turns zone-level pulls on, only when every origin that asks for a client
+  certificate lists the zone's CA and every origin answered. Otherwise the `ZoneOriginPulls` condition
+  names up to five origins it waits for. With the CA distributed, every cluster's origins accept the
+  same CA, so the probes of every cluster serving the zone pass. Renewing a leaf of the CA the zone
+  already presents needs no gate.
 - **Never an outage from the other side.** If the zone may present a certificate of another CA (one
-  uploaded by another cluster or by hand), the policy sets `authenticatedOriginPulls` false, so its
-  Lakes stop requiring a client certificate rather than refuse the edge, and says so in the condition.
-- **A refused read keeps the last bundle**, so a Cloudflare outage never sends the origins back to
-  Cloudflare's global CA while the zone presents ours.
-- **Known gaps.** A zone served by **several clusters** (`lake.live` on `orama-production-cluster-02`
-  and `-03`; `oramadev.net` on the managing cluster and `orama-nonprod-cluster-01`) has one CA per
-  cluster, so each cluster's probe finds the other's origins not trusting its CA and the zone stays
-  on global pulls, safely, until one CA is shared by every cluster serving the zone. How that CA is
-  distributed is open ([operator#633](https://github.com/oramasearch/orama-operator/issues/633)). The
-  CA itself is not rotated before its ten years run out. If zone-level pulls are turned off by hand
-  after the switch, origins refuse the edge until the next check (at most ten minutes) turns them back
-  on.
+  uploaded by hand, or by a cluster that made its own CA before it was given the zone's), the policy
+  sets `authenticatedOriginPulls` false, so its Lakes stop requiring a client certificate rather than
+  refuse the edge, and says so in the condition.
+- **A refused read keeps the last bundle**, so a Cloudflare outage, or a missing or unreadable Secret,
+  never sends the origins back to Cloudflare's global CA while the zone presents its own.
+- **Known gaps.** The CA is not rotated before its ten years run out. If zone-level pulls are turned
+  off by hand after the switch, origins refuse the edge until the next check (at most ten minutes)
+  turns them back on. A Lake that a set manages but whose `dnsSecretRef` Secret the set does not copy
+  gets no CA, and its policy waits (`WaitingForDistributedCA`): the set can only read the zone from a
+  Secret it copies.
 
 ## Rolling it out
 
@@ -289,8 +319,10 @@ What a release containing this does on a cluster, in order (no step is done by h
    with `ssl-redirect: "false"`. cert-manager issues the certificates through DNS-01 (a minute or
    two each); the app and environment controllers copy them next to their Ingresses.
 3. The zone policy probes. Once every proxied origin presents a valid certificate it sets Full
-   (strict); from Full it turns on authenticated origin pulls, and creates the zone's origin-pull CA.
-   Zone-level pulls follow once every origin that asks for a client certificate accepts that CA. A zone with a proxied host the
+   (strict); from Full it turns on authenticated origin pulls. The zone's origin-pull CA is already
+   there: the managing cluster's set created it and copied it before the Lake (a Lake no set manages
+   uses the operator's own Secret, created now). Zone-level pulls follow once every origin that asks
+   for a client certificate accepts that CA. A zone with a proxied host the
    operator does not serve (or whose certificate is not valid) stays where it is and lists the host.
 4. The Lakes see the zone's state and turn on the redirect and the client-certificate requirement.
 5. Always Use HTTPS waits until every proxied host has an edge certificate. App hosts two levels

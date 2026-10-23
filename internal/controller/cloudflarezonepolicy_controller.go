@@ -196,7 +196,8 @@ type CloudflareZonePolicyReconciler struct {
 	// Prober checks hosts; nil uses TLS handshakes.
 	Prober edgeProber
 	// OperatorNamespace holds each zone's origin-pull CA and client certificate Secret
-	// (orama-edge-origin-pull-<zone>), shared by every policy for the zone on this cluster. Empty
+	// (orama-edge-origin-pull-<zone>) for the policies that name no distributed one
+	// (spec.originPullSecretRef); on the managing cluster it is the Secret the LakeSets copy. Empty
 	// uses the policy's namespace.
 	OperatorNamespace string
 	// Now is the clock for certificate lifetimes; nil uses time.Now.
@@ -497,7 +498,7 @@ func (r *CloudflareZonePolicyReconciler) observe(ctx context.Context, policy *or
 		"authenticated origin pulls wait until origin encryption is Full or Full (strict)"))
 
 	// 3b: zone-level authenticated origin pulls with the operator's own certificate (operator#633).
-	zoneLevel := r.zoneOriginPulls(ctx, policy.Namespace, token, zone, mode, checks)
+	zoneLevel := r.zoneOriginPulls(ctx, policy, previous.OriginClientCAPEM, token, mode, checks)
 	if zoneLevel.changeError != "" {
 		changeErrors = append(changeErrors, zoneLevel.changeError)
 	}
