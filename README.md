@@ -51,7 +51,9 @@ are all named `orama-operator`.
 
 ## Status
 
-The current release is **v0.7.3** (2026-10-20), a patch releasing the committed cluster files
+The current release is **v0.8.0** (2026-10-22), the security release from the multi-tenant audit and
+the pre-launch review, with lake v0.4.0's schema ([`docs/releases/v0.8.0.md`](docs/releases/v0.8.0.md)).
+Before it, **v0.7.3** (2026-10-20), a patch releasing the committed cluster files
 (every Lake on lake v0.3.1; [`docs/releases/v0.7.3.md`](docs/releases/v0.7.3.md)). **v0.7.2** moved Lake's
 schema through `0090_billing_contacts` ([`docs/releases/v0.7.2.md`](docs/releases/v0.7.2.md)). Before them, **v0.7.1**, a patch:
 [`docs/releases/v0.7.1.md`](docs/releases/v0.7.1.md) says what is new since v0.7.0: Prod 1 team
