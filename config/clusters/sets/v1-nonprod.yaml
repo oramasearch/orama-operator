@@ -206,6 +206,8 @@ spec:
         # R2 upload signing (dashboard#186); recorded in orama-cloud-v1-bridge#12.
         dashboard: oramasearch/dashboard:v1-dev-56f355da@sha256:975d13df7fdfe9a7a4fbb2b7817294007604540c1bebc74a517d6acf20b87f5e
         oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-caca2a59
+        # CPU HPES with all six pinned model snapshots cached and verified offline (#883).
+        hpes: oramasearch/embeddings-server-py:cpu-746d61320636@sha256:326fc9bb13773989677e1d9b9ee7a07eabfeb4caec514b89fc822467783afe90
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
       tag: v1-sandbox

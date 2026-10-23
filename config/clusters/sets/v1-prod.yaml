@@ -130,8 +130,6 @@
 #       build inputs, image selection and cutover proof remain prerequisites (orama-bridge#188).
 #     - analytics-processor: qualify a production digest with the 0.0.0.0:8080 listener patch (#421);
 #       an older v1-sandbox build record alone does not prove that patch is present.
-#     - HPES: the CPU image oramasearch/embeddings-server-py:cpu-<sha> (embeddings-server-py#9), pinned by
-#       digest in images.overrides.hpes; the operator runs the component (hpes.go, #574).
 #   Credentials the operator does not generate yet, all of which only have to agree inside the stack:
 #     the one ClickHouse password (analytics, analytics processor, dashboard, workers), TYPESENSE_API_KEY
 #     (search and index-builder),
@@ -404,6 +402,8 @@ spec:
       # images.overrides, so both get it from here.
       overrides:
         oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-9d8ed373
+        # CPU HPES with all six pinned model snapshots cached and verified offline (#883).
+        hpes: oramasearch/embeddings-server-py:cpu-746d61320636@sha256:326fc9bb13773989677e1d9b9ee7a07eabfeb4caec514b89fc822467783afe90
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
     region:
