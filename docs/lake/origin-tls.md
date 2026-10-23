@@ -137,7 +137,8 @@ on only when it is safe, in this order:
 | 1 | `ssl` = `full` (from `off` or `flexible`) | Every proxied host's origin completes a TLS handshake |
 | 2 | `ssl` = `strict` | Every proxied host's origin presents a certificate valid for that host |
 | 3 | `tls_client_auth` = `on` (authenticated origin pulls, Cloudflare's shared certificate) | The mode is `full` or `strict` |
-| 4 | `always_use_https` = `on` | Every proxied host has a valid edge certificate |
+| 4 | An Advanced Certificate ordered for each proxied host more than one level below the apex (lake#798) | The host has no valid edge certificate and no live certificate pack in the zone covers it |
+| 5 | `always_use_https` = `on` | Every proxied host has a valid edge certificate |
 
 - **The checks are probes, not bookkeeping.** For each record the operator dials the record's
   target on 443 with the record's name as SNI and verifies the certificate against the public roots
@@ -148,12 +149,26 @@ on only when it is safe, in this order:
 - **Nothing is turned off.** A host that later fails is listed in `status.hosts` and in the
   conditions; the zone is not downgraded. Deleting a policy changes nothing in Cloudflare. Several
   policies may name one zone (one per Lake, on several clusters); they ask for the same settings.
+- **Edge certificates for app hosts (lake#798).** Universal SSL covers the apex and one level below
+  it (`oramadev.net`, `*.oramadev.net`), so a Lake's apps wildcard (`*.lake-testing.oramadev.net`,
+  `*.eu.lake.live`) has no edge certificate and the edge refuses the handshake (alert 40). For each
+  proxied host two or more levels below the apex whose edge check fails, the policy reads the zone's
+  certificate packs (`status=all`) and, when no live pack lists the host (or, for a plain name, the
+  wildcard one level above it), orders one: `type: advanced`, hosts *apex, the host, and for a
+  wildcard its base name*, TXT validation (Cloudflare adds the records itself on a zone it serves),
+  Let's Encrypt, 90 days, renewed by Cloudflare. A pending pack is not ordered again; a deleted,
+  expired, failed or timed-out one is, and a pack ordered earlier in the same pass counts as live:
+  hosts are taken in sorted order, so the apps wildcard's pack covers the app hosts under it and one
+  reconcile orders one pack for them, not one per app. The operator never deletes a pack. The zone must have
+  **Advanced Certificate Manager** (a paid Cloudflare subscription per zone); without it, or without
+  the permission below, the `EdgeCertificateOrders` condition says so and the other steps go on. A
+  zone whose hosts all have edge certificates makes no certificate API calls.
 - **Automatic SSL/TLS.** A zone in Cloudflare's automatic mode (`ssl_automatic_mode` = `auto`) is
   switched to `custom` before the mode is set, so the mode the operator sets holds.
 - **Status.** `kubectl get edgezp -A` shows `Origin` (the mode), `AOP`, `HTTPS` and `Phase`
   (`Ready`, `Progressing` while a step waits on a check, `Failed` when the zone cannot be read or
   changed). Conditions: `Credentials`, `OriginCertificates`, `EdgeCertificates`, `OriginTLSStrict`,
-  `AuthenticatedOriginPulls`, `AlwaysUseHTTPS`. `status.hosts` lists up to 50 failing hosts with the
+  `AuthenticatedOriginPulls`, `EdgeCertificateOrders`, `AlwaysUseHTTPS`. `status.hosts` lists up to 50 failing hosts with the
   reason for each leg. A refused read keeps the last observed settings, so a Cloudflare outage does
   not make the Lakes drop their redirect or client-certificate check.
 
@@ -166,6 +181,7 @@ On the zone, the API token in `dnsSecretRef` needs:
 | Zone > DNS > Edit | DNS records (already required) and DNS-01 challenges; includes DNS Read, which lists the proxied records |
 | **Zone > Zone Settings > Edit** | Reading and setting `ssl`, `ssl_automatic_mode`, `tls_client_auth`, `always_use_https` |
 | Zone > Zone > Read | Reading the zone's name, so names outside it are issued through HTTP-01 ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)); cert-manager's DNS-01 solver already needs it |
+| **Zone > SSL and Certificates > Edit** | Listing certificate packs and ordering Advanced Certificates for hosts Universal SSL does not cover (step 4). Without it the `EdgeCertificateOrders` condition names it and the rest of the policy is unaffected |
 
 A token without Zone Settings is reported by name: the policy goes `Failed` with the message
 *"the API token may not read the zone's settings: add Zone > Zone Settings > Read (Edit includes it)
@@ -230,8 +246,10 @@ What a release containing this does on a cluster, in order (no step is done by h
 4. The Lakes see the zone's state and turn on the redirect and the client-certificate requirement.
 5. Always Use HTTPS waits until every proxied host has an edge certificate. App hosts two levels
    below the zone apex (`<app>.eu.lake.live`, `<app>.lake-dev.oramadev.net`) are not covered by
-   Universal SSL, so in those zones this step waits until an edge certificate covers them (an
-   Advanced Certificate for `*.eu.lake.live` and `*.us.lake.live`, ordered in Cloudflare) or the apps
-   wildcard moves one level below the apex. Meanwhile nginx redirects every Lake host the edge has
+   Universal SSL, so the zone policy orders an Advanced Certificate for the apps wildcard, which
+   covers them (step 4 of the policy, lake#798), and this step waits until Cloudflare has validated and deployed them. That
+   needs Advanced Certificate Manager on the zone and Zone > SSL and Certificates > Edit on the
+   token; until both are in place the `EdgeCertificateOrders` condition says which is missing.
+   Meanwhile nginx redirects every Lake host the edge has
    a certificate for, and leaves the Ingresses of uncovered hosts (those apps, the apps wildcard) on
    HTTP and HTTPS as they were.

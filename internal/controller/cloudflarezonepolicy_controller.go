@@ -443,6 +443,14 @@ func (r *CloudflareZonePolicyReconciler) observe(ctx context.Context, policy *or
 		"the edge presents its client certificate to origins",
 		"authenticated origin pulls wait until origin encryption is Full or Full (strict)"))
 
+	// Edge certificates for hosts Universal SSL does not cover (cloudflare_edge_certificates.go).
+	if allEdges {
+		conditions = append(conditions, metav1.Condition{Type: edgeConditionEdgeCertificateOrders, Status: metav1.ConditionTrue,
+			Reason: "NothingToOrder", Message: "every proxied host has a valid edge certificate"})
+	} else {
+		conditions = append(conditions, r.orderEdgeCertificates(ctx, token, zone, zoneName, zoneNameErr, checks))
+	}
+
 	// 4: always use HTTPS, once every proxied host has an edge certificate.
 	if https != "on" && allEdges {
 		if err := r.setSetting(ctx, token, zone, "always_use_https", "on"); err != nil {

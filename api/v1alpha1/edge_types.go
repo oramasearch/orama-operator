@@ -39,10 +39,12 @@ type CloudflareEdgeProviderSpec struct {
 
 	// APITokenSecretRef names the API token in this namespace. What it must be allowed depends on
 	// the kinds that use the provider. An EdgeZonePolicy needs, on its zone: Zone > Zone Settings >
-	// Edit, Zone > DNS > Read (DNS > Edit includes it) and Zone > Zone > Read (the zone's name). An EdgeHostPolicy needs, on each host's
-	// zone: Zone > Zone > Read, Zone > Config Rules > Edit (API permission group "Config Settings
-	// Write", for originTLS) and Zone > Single Redirect > Edit ("Dynamic URL Redirects Write", for
-	// redirectToHTTPS). The operator never writes or logs it.
+	// Edit, Zone > DNS > Read (DNS > Edit includes it), Zone > Zone > Read (the zone's name), and
+	// Zone > SSL and Certificates > Edit to order edge certificates for hosts more than one level
+	// below the apex. An EdgeHostPolicy needs, on each host's zone: Zone > Zone > Read, Zone > Config
+	// Rules > Edit (API permission group "Config Settings Write", for originTLS) and Zone > Single
+	// Redirect > Edit ("Dynamic URL Redirects Write", for redirectToHTTPS). The operator never writes
+	// or logs it.
 	APITokenSecretRef EdgeProviderSecretKeyRef `json:"apiTokenSecretRef"`
 }
 
@@ -110,7 +112,12 @@ type EdgeProviderList struct {
 //  3. Authenticated origin pulls: the edge presents a client certificate to every origin, which
 //     an origin may then require (status.originClientCAPEM is the CA to verify it with). Set once
 //     the mode is Full or Full (strict).
-//  4. Always use HTTPS: the edge redirects plain HTTP. Set only when every proxied host has a
+//  4. Edge certificates: a proxied host more than one level below the zone apex (an app host
+//     such as <app>.lake-testing.oramadev.net) is not covered by the provider's free certificate.
+//     For each such host without a valid edge certificate, and not covered by an existing one, the
+//     operator orders one (Cloudflare: an Advanced Certificate, which needs Advanced Certificate
+//     Manager on the zone). Certificates are never deleted.
+//  5. Always use HTTPS: the edge redirects plain HTTP. Set only when every proxied host has a
 //     valid edge certificate.
 //
 // Nothing is ever turned back: a host that later fails a check is reported, not downgraded. Several
@@ -187,7 +194,7 @@ type EdgeZonePolicyStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions: Credentials, OriginCertificates, EdgeCertificates, OriginTLSStrict,
-	// AuthenticatedOriginPulls, AlwaysUseHTTPS, ZoneName.
+	// AuthenticatedOriginPulls, EdgeCertificateOrders, AlwaysUseHTTPS, ZoneName.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -228,8 +235,8 @@ type CloudflareZonePolicySpec struct {
 	// +kubebuilder:validation:MinLength=1
 	ZoneID string `json:"zoneID"`
 
-	// APITokenSecretRef is the provider's token: Zone > Zone Settings > Edit, Zone > DNS > Read and
-	// Zone > Zone > Read on the zone.
+	// APITokenSecretRef is the provider's token: Zone > Zone Settings > Edit, Zone > DNS > Read,
+	// Zone > Zone > Read and Zone > SSL and Certificates > Edit on the zone.
 	APITokenSecretRef EdgeProviderSecretKeyRef `json:"apiTokenSecretRef"`
 }
 

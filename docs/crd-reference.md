@@ -1000,14 +1000,16 @@ one, `lake-<name>-edge`.
 |---|---|
 | `spec.type` | `cloudflare` (the only type). |
 | `spec.cloudflare.accountId` | Optional Cloudflare account ID; zone policies do not need it. |
-| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of the token in this namespace. For an `EdgeZonePolicy`: Zone > Zone Settings > Edit, Zone > DNS > Read and Zone > Zone > Read on the zone. For an `EdgeHostPolicy`, on each host's zone: Zone > Zone > Read, **Zone > Config Rules > Edit** (API permission group `Config Settings Write`, for `originTLS`) and **Zone > Single Redirect > Edit** (`Dynamic URL Redirects Write`, for `redirectToHTTPS`). Never written or logged. |
+| `spec.cloudflare.apiTokenSecretRef` | `{name, key}` of the token in this namespace. For an `EdgeZonePolicy`: Zone > Zone Settings > Edit, Zone > DNS > Read, Zone > Zone > Read and Zone > SSL and Certificates > Edit on the zone. For an `EdgeHostPolicy`, on each host's zone: Zone > Zone > Read, **Zone > Config Rules > Edit** (API permission group `Config Settings Write`, for `originTLS`) and **Zone > Single Redirect > Edit** (`Dynamic URL Redirects Write`, for `redirectToHTTPS`). Never written or logged. |
 | `status.ready`, `status.message` | Whether the Secret and key exist. Whether the token is allowed what a kind needs is reported by that kind. |
 
 ## `EdgeZonePolicy` (separate CRD, namespaced) — secure a DNS zone's edge
 
 The provider-neutral request "secure this zone's edge" (operator#578). It has no settings and no off
-switch: it always means origin encryption Full, then Full (strict), authenticated origin pulls, and
-Always Use HTTPS, each turned on only when its check passes, and never turned off. Short name
+switch: it always means origin encryption Full, then Full (strict), authenticated origin pulls, an
+edge certificate for every proxied host more than one level below the apex (Cloudflare: an Advanced
+Certificate, lake#798), and Always Use HTTPS, each done only when its check passes, and never
+undone. Short name
 `edgezp`; `kubectl get edgezp -A` shows `Origin`, `AOP`, `HTTPS`, `Phase`. A Lake with a
 `dnsSecretRef` owns one, `lake-<name>-edge`. The full contract, the checks and the order are in
 [`lake/origin-tls.md`](lake/origin-tls.md).
@@ -1022,7 +1024,7 @@ Always Use HTTPS, each turned on only when its check passes, and never turned of
 | `status.alwaysUseHTTPS` | Whether the edge redirects plain HTTP. |
 | `status.zone` | The zone's name (`lake.live`), read with Zone > Zone > Read. The owning Lake's `Issuer` solves DNS-01 for this zone and every name under it, and HTTP-01 for any other name; empty keeps DNS-01 for every name ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)). A refused read keeps the last name. |
 | `status.proxiedHosts`, `status.hosts[]` | How many proxied hosts the zone has, and up to 50 that fail a check: `{name, origin, edge}` with the reason for each leg. |
-| `status.conditions` | `Credentials`, `OriginCertificates`, `EdgeCertificates`, `OriginTLSStrict`, `AuthenticatedOriginPulls`, `AlwaysUseHTTPS`, `ZoneName` (False names the missing Zone > Zone > Read; it does not change the phase). |
+| `status.conditions` | `Credentials`, `OriginCertificates`, `EdgeCertificates`, `OriginTLSStrict`, `AuthenticatedOriginPulls`, `EdgeCertificateOrders` (the edge certificates ordered, pending, or why an order is refused), `AlwaysUseHTTPS`, `ZoneName` (False names the missing Zone > Zone > Read; it does not change the phase). |
 
 Several policies may name one zone (one per Lake); they ask for the same settings. Deleting a policy
 changes nothing in the zone.
@@ -1565,7 +1567,7 @@ tears the Ingress and the record down and leaves the workloads. Sample:
 | `spec.tls.secretName` | Optional hand-supplied `kubernetes.io/tls` Secret in `spec.namespace` for `host` and `apexHost`. Empty (the normal case) uses the certificates the operator issues: every Lake Ingress serves HTTPS either way. Without it, the Lake's `Issuer` issues every host: DNS-01 in the `dnsSecretRef` zone, HTTP-01 for any other host and for a Lake with no `dnsSecretRef` ([operator#632](https://github.com/oramasearch/orama-operator/issues/632)). See [`lake/origin-tls.md`](lake/origin-tls.md). |
 | `spec.host` | Domain the lake is exposed at (e.g. `hello.lake.live`) when `ingressEnabled` is `true`. |
 | `spec.ingressClassName` | `nginx` (default) or `zetta-tunnel`: which ingress serves the Lake's Ingress and its environments'. DNS follows, because it is written from the Ingress's address. The per-cluster cutover sets it in the cluster's set member ([`infrastructure/ingress.md`](infrastructure/ingress.md)). |
-| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. It is also origin TLS's credential: the Lake's Let's Encrypt `Issuer` `lake-<name>-letsencrypt` (DNS-01, key `token`, for names in the zone; other names and a Lake without `dnsSecretRef` use HTTP-01), and its zone policy, an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for `zoneID` ([below](#edgezonepolicy-separate-crd-namespaced--secure-a-dns-zones-edge)). The token needs Zone > DNS > Edit, **Zone > Zone Settings > Edit** and Zone > Zone > Read. |
+| `spec.dnsSecretRef.name` | With `ingressEnabled` + `host`, creates a **proxied Cloudflare DNS record** (host → ingress LB) as an owned `CloudflareDNSRecord`, once the ingress controller has assigned an address (the owned Ingress's status change re-queues the Lake). The Secret (keys `token`/`zoneID`) must live in `spec.namespace` and hold the zone of `host` — a `lake.live` host needs a `lake.live`-zone Secret, not the `oramadev.net` one the Zetta clusters use. It is also origin TLS's credential: the Lake's Let's Encrypt `Issuer` `lake-<name>-letsencrypt` (DNS-01, key `token`, for names in the zone; other names and a Lake without `dnsSecretRef` use HTTP-01), and its zone policy, an owned `EdgeProvider` and `EdgeZonePolicy` `lake-<name>-edge` for `zoneID` ([below](#edgezonepolicy-separate-crd-namespaced--secure-a-dns-zones-edge)). The token needs Zone > DNS > Edit, **Zone > Zone Settings > Edit**, Zone > Zone > Read and **Zone > SSL and Certificates > Edit** (edge certificates for app hosts, lake#798). |
 | `spec.region` | `{name, label}`: where the Lake runs, for its region picker (decision 64). Rendered as `LAKE_REGION` and `LAKE_REGION_LABEL`. In a LakeSet, `name` comes from the member's cluster ([`lake/README.md#regions`](lake/README.md#regions)). |
 | `spec.regions` | The deployment's regions as the picker offers them, `[{name, label, host, latitude, longitude}]`, rendered as `LAKE_REGIONS` (JSON). A LakeSet computes it from its members. |
 | `spec.apexHost` | A second host the Lake answers (the region picker, e.g. `lake.live`). With `ingressEnabled` + `host`, adds an Ingress rule (and TLS host) and, with `dnsSecretRef`, an owned proxied `<lake>-apex-dns` record; rendered as `LAKE_APEX_HOST`. Removing it removes both. |

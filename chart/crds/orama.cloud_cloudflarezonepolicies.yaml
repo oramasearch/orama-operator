@@ -62,8 +62,8 @@ spec:
             properties:
               apiTokenSecretRef:
                 description: |-
-                  APITokenSecretRef is the provider's token: Zone > Zone Settings > Edit, Zone > DNS > Read and
-                  Zone > Zone > Read on the zone.
+                  APITokenSecretRef is the provider's token: Zone > Zone Settings > Edit, Zone > DNS > Read,
+                  Zone > Zone > Read and Zone > SSL and Certificates > Edit on the zone.
                 properties:
                   key:
                     description: Key is the key in the Secret's data.
@@ -101,7 +101,7 @@ spec:
               conditions:
                 description: |-
                   Conditions: Credentials, OriginCertificates, EdgeCertificates, OriginTLSStrict,
-                  AuthenticatedOriginPulls, AlwaysUseHTTPS, ZoneName.
+                  AuthenticatedOriginPulls, EdgeCertificateOrders, AlwaysUseHTTPS, ZoneName.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
