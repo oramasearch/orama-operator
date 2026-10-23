@@ -210,6 +210,9 @@ operator ingress or access to other apps.
 | `allow-ingress-nginx` | ingress-nginx reaches only Lake's application port for its own Ingress and LakeApp auth subrequests. |
 | `allow-lake-clients-to-controldb`, `allow-lake-ingress-to-zetta`, `allow-lake-ingress-to-agents`, `allow-agent-ingress-to-lake` | Destination-side ingress matching the Lake, schema and library-agent egress rules above. Both isolated ends need a rule. |
 | `allow-build-ingress-to-lake` | Only this Lake's builder pods in its labelled build namespaces reach the Lake application port for source, registry and build events. |
+| `allow-methodology-ingress-to-lake` | Only this Lake's methodology stage and collect pods (a run's, or a served model's stage), in its own `lake-<lake>-methodology-runs` namespace, reach the Lake application port to page data in and report results. The destination half of that namespace's `methodology-transfer` egress; never a sandbox or serve pod ([methodology runs](../lake/methodology-runs.md), lake#802). |
+| `allow-lake-to-methodology-serve` | Lake reaches only its served models' serve pods in that namespace on 8080 for predictions: the source half of `methodology-serve-ingress`. |
+| `allow-e2e-ingress-to-lake` | Only `LakeE2ETest` runner pods (label `orama.cloud/lake-e2e`) in the Lake's own namespace reach the Lake application port, for the suite's REST, MCP and liquid steps ([#589](https://github.com/oramasearch/orama-operator/issues/589)). The runner is not one of the Lake's pods, so its own egress (the public host, Clerk) is not sandboxed. |
 | `allow-lake-to-workspace-postgres`, `allow-lake-to-workspace-kafka`, `allow-lake-to-workspace-clickhouse`, `allow-lake-to-workspace-tidb`, `allow-lake-to-workspace-cassandra`, `allow-lake-to-workspace-valkey` | Lake reaches vendor-labelled pods only in its workspace namespaces on 5432, 9092, 8123/9000, 4000, 9042 and 6379 respectively. |
 | `allow-lake-to-apps` | Lake egress to each of its declared LakeApp backend namespaces, exact app pod labels and configured container ports. App changes and deletion requeue Lake to update or remove these rules. |
 
@@ -221,7 +224,9 @@ SQLite, DuckDB and Polars wrappers already use 8080, covered by `allow-lake-to-w
 Zetta uses 4800. Catalog egress uses only the ports emitted in the credentials.
 
 BuildKit runs inside each build Job. Source fetches, registry pushes and events flow from the
-builder to Lake (`buildEnv` and `buildEgressRules`); Lake does not connect to a BuildKit daemon.
+builder to Lake (`buildEnv` and `buildEgressRules`); Lake does not connect to a BuildKit daemon. Build namespaces are not
+sandboxes, but they get the same `deny-cloud-metadata` CiliumNetworkPolicy, selecting every pod
+(`reconcileBuildMetadataDeny`, [#761](https://github.com/oramasearch/orama-operator/issues/761)).
 The operator reads build logs via the Kubernetes API, not via Lake pod egress. App-proxy egress
 is **inferred** from the declared LakeApp backend Service and port; the generated public app URL
 is also reachable through Lake's existing public HTTPS allowance.
@@ -250,20 +255,24 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 |---|---|
 | `allow-dns-egress` | Stack workloads reach CoreDNS over UDP/TCP 53. |
 | `allow-engine-egress`, `allow-broker-ingress`, `allow-embeddings-ingress` | Writer/readers reach their RabbitMQ replication stream on 5552 and the engine-owned embeddings gRPC service on 50051, which preserves writes, replication and vector searches; broker also accepts workers/HARVEST AMQP 5672; embeddings also accepts DISCO. |
-| `allow-dashboard-egress` | Dashboard reaches control DB 5432, cache 6379, ClickHouse 8123, Typesense 8108, writer 8080, readers 80/8080 and Keycloak 8080. |
+| `allow-dashboard-egress` | Dashboard reaches control DB 5432, cache 6379, the redis-http shim 80, ClickHouse 8123, Typesense 8108, writer 8080, readers 80/8080 and Keycloak 8080. |
+| `allow-redis-http-egress`, `allow-redis-http-ingress` | The serverless-redis-http shim reaches only the cache on 6379 (and `allow-cache-ingress` admits it), and admits only the dashboard on 80 ([#562](https://github.com/oramasearch/orama-operator/issues/562)). |
 | `allow-workers-egress` | Bundled workers reach broker 5672, cache 6379 and OramaCore writer/readers. |
 | `allow-analytics-processor-egress` | Analytics processor reaches ClickHouse 8123, writer 8080, every reader 8080 (it pulls their search events, #419 and #421) and control DB 5432. |
 | `allow-analytics-import-egress`, `allow-analytics-processor-ingress` | The analytics import CronJob (#421) calls the analytics processor on 8080, and the processor admits only it there. |
 | `allow-analytics-retention-egress` | The analytics retention Job (#421) reaches ClickHouse's native port 9000 for `clickhouse-client`; `allow-analytics-ingress` admits it on 9000 (#616). |
-| `allow-index-builder-egress` | Index builder reaches dashboard 3000, cache 6379, control DB 5432, DISCO 8080/50051, Typesense 8108, decrypter 8080 and HARVEST 8080. |
+| `allow-index-builder-egress` | Index builder reaches dashboard 3000, cache 6379, control DB 5432, HPES 8787, DISCO 8080/50051, Typesense 8108, decrypter 8080 and HARVEST 8080. |
+| `allow-hpes-ingress` | HPES admits only index-builder, on 8787; it has no egress allowance beyond DNS and no public internet ([#574](https://github.com/oramasearch/orama-operator/issues/574)). |
 | `allow-harvest-egress` | HARVEST reaches Mongo 27017, broker 5672, cache 6379 and Selenium 4444. |
 | `allow-disco-egress`, `allow-pgadmin-egress`, `allow-search-workers-egress` | DISCO reaches embeddings; pgAdmin reaches control DB; hosted-search workers reach Typesense, writer/readers and ClickHouse. |
 | `allow-controldb-ingress`, `allow-postgres-schema-egress`, `allow-controldb-cluster-row-egress`, `allow-controldb-internal` | Selected clients, every control DB `PostgresSchema` migration Job and the cluster-row Job (its pod's `orama.cloud/controldb-client=cluster-row`, [#648](https://github.com/oramasearch/orama-operator/issues/648)) reach control DB 5432; CNPG members use 5432/8000 internally. |
 | `allow-migration-egress`, `allow-controldb-migration-ingress`, `allow-writer-migration-ingress`, `allow-reader-migration-ingress` | On every stack: an `OramaCloudV1Migration` Job's pod (component `migration`) reaches control DB 5432 as the `migration` role, the writer on 8080 and the readers on 80 with Envoy or 8080 without, and each admits it ([#653](https://github.com/oramasearch/orama-operator/issues/653)). DNS is `allow-dns-egress`. |
+| `allow-e2e-egress`, `allow-writer-e2e-ingress`, `allow-reader-e2e-ingress`, `allow-dashboard-e2e-ingress`, `allow-workers-e2e-ingress` | On every stack: an `OramaCloudV1E2ETest` runner's pod (component `e2e`) reaches the writer on 8080, the readers on 80 with Envoy or 8080 without, the dashboard on 3000, and the workers bundle and the four hosted-search workers on 8080, and each admits it ([#61](https://github.com/oramasearch/orama-operator/issues/61), [#63](https://github.com/oramasearch/orama-operator/issues/63)). Nothing outside the namespace. DNS is `allow-dns-egress`. A stack runs a suite only when a test resource is created for it; production creates none. |
 | `allow-migration-prod1-egress` | Only while an `OramaCloudV1Migration` in the namespace targets the stack: migration pods reach public addresses on TCP 443 and 5432, for Prod 1's database host on 5432 and its engine origins and `ssm.<region>.amazonaws.com` on 443, which the comment names (the union over the stack's migrations). Enforced by port and public range, not by name: Cilium FQDN policy needs AKS ACNS, which is off; enforcement by name is a follow-up. Private and cluster ranges stay excluded. See [`cloud-v1-migration.md`](../cloud-v1-migration.md#what-the-stack-provides). |
 | `allow-cache-ingress`, `allow-analytics-ingress`, `allow-search-ingress` | Each store admits only its listed client component selectors on 6379, 8123 or 8108. |
 | `allow-writer-ingress`, `allow-reader-ingress` | OramaCore admits only the dashboard, workers, analytics processor and named hosted-search clients on its service ports. |
 | `allow-dashboard-internal-ingress`, `allow-disco-ingress`, `allow-openai-decrypter-ingress`, `allow-harvest-master-ingress` | Index builder reaches each orchestration API on its declared port. |
+| `allow-import-consumer-egress`, `allow-dashboard-import-consumer-ingress` | The import consumer ([#446](https://github.com/oramasearch/orama-operator/issues/446)) reaches the dashboard on 3000 for get-source and the status callbacks, and the dashboard admits it; nothing else in the stack. |
 | `allow-writer-jwks-egress`, `allow-dashboard-jwks-ingress` | Only while `engine.writer.jwt` is set and its JWKS URL's host is this stack's dashboard Service (`<cr>-dashboard`, alone or qualified with the namespace, `.svc` and the cluster domain): the writer reaches dashboard 3000 for `/api/.well-known/jwks.json`. Readers get neither rule. An external JWKS URL renders neither and goes out through `allow-engine-public-internet`. |
 | `allow-harvest-mongo-ingress`, `allow-selenium-ingress`, `allow-keycloak-ingress` | HARVEST reaches its Mongo and browser; dashboard reaches Keycloak. |
 | `allow-cnpg-operator-ingress`, `allow-cnpg-apiserver-egress` | CloudNativePG manages control DB through 8000/5432 and its selected pods/jobs reach the API. |
@@ -273,6 +282,7 @@ and grants nothing. Operator-labelled and unlabelled pods in `orama-system` matc
 | `allow-engine-public-internet` | Writer/readers reach public IPv4 and IPv6 addresses on any TCP port for customer JavaScript hook URLs. Private, link-local, metadata, carrier-grade NAT, API-server, node-address and pod-CIDR destinations are excluded after DNS resolution. |
 | `allow-dashboard-public-https`, `allow-workers-public-https`, `allow-index-builder-public-https`, `allow-harvest-public-https`, `allow-embeddings-public-https`, `allow-search-workers-public-https` | Selected application components reach public HTTPS for their configured providers and downloads. |
 | `allow-selenium-public-internet` | Selenium reaches public TCP 80/443 for customer-requested crawls. |
+| `allow-import-consumer-public-https` | The import consumer reaches public TCP 443 for the stack's R2 uploads bucket and the engine's public writer host, which get-source names as `writer_url` ([#446](https://github.com/oramasearch/orama-operator/issues/446)). |
 | `allow-controldb-primary-replication` | A read-region CNPG cluster reaches its configured primary on public TCP 5432. |
 
 Workers' public APIs, embeddings and hosted-search model/provider downloads, dashboard vendor

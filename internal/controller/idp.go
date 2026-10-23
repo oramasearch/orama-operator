@@ -28,7 +28,7 @@ func (r *OramaCloudV1Reconciler) reconcileIdP(ctx context.Context, oc *oramav1al
 	// shared ConfigMap and KC_BOOTSTRAP_ADMIN_PASSWORD from the shared Secret (envFrom).
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "keycloak",
-		image:     "quay.io/keycloak/keycloak:26.0",
+		image:     storeImage(oc, "keycloak", "quay.io/keycloak/keycloak:26.0@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858"),
 		port:      8080,
 		args:      []string{"start-dev"},
 		// JVM — Keycloak's image derives its heap from the container limit (MaxRAMPercentage), so this
@@ -44,6 +44,9 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 		return nil
 	}
 	name := oc.Name + "-demo-seed"
+	if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, oc, name, labelsFor(oc, "demo-seed")); err != nil {
+		return err
+	}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: name}, &batchv1.Job{}); err == nil {
 		return nil // already created
 	} else if !apierrors.IsNotFound(err) {
@@ -61,7 +64,7 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 					RestartPolicy:    corev1.RestartPolicyOnFailure,
 					Containers: []corev1.Container{{
 						Name:  "seed",
-						Image: "curlimages/curl:8.10.1",
+						Image: storeImage(oc, "demo-seed", pinnedCurlImage),
 						// Placeholder: real seed creates a demo project + index + docs via
 						// the dashboard/OramaCore API once the engine is Ready.
 						Command:         []string{"sh", "-c", "echo 'demo-seed placeholder: create a demo project+index+docs via the API'"},
@@ -72,6 +75,8 @@ func (r *OramaCloudV1Reconciler) reconcileDemoSeed(ctx context.Context, oc *oram
 			},
 		},
 	}
+	boundV1PodStorage(&job.Spec.Template.Spec)
+	cloudV1PodIdentity(&job.Spec.Template.Spec, name)
 	if err := controllerutil.SetControllerReference(oc, job, r.Scheme); err != nil {
 		return err
 	}

@@ -12,14 +12,18 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -37,6 +41,9 @@ func clusterRowStack(mut func(*oramav1alpha1.OramaCloudV1)) *oramav1alpha1.Orama
 		}
 	})
 }
+
+// testClusterRowID is a c1 row id as the cluster-row Job reports it.
+const testClusterRowID = "0f6b8a4e-3c1d-4e2a-9b7f-5d2c1a0e9f88"
 
 // clusterRowHarness is a reconciler over a fake client holding oc, its master key Secret and its
 // control DB PostgresSchemas, every one at its current version in the given phase, plus objs.
@@ -252,8 +259,10 @@ func TestControlDBClusterRowRetriesAFailedJob(t *testing.T) {
 		t.Fatalf("unfinished Job from an older template not replaced: %v", err)
 	}
 
-	// A succeeded Job is the record and is never replaced, even from an older template.
+	// A succeeded Job that recorded its row id is the record and is never replaced, even from an
+	// older template (TestClusterRowIDReachesTheDashboard covers one that recorded none).
 	stale.Status.Succeeded = 1
+	stale.Annotations[clusterRowIDKey] = testClusterRowID
 	r, cl = clusterRowHarness(t, oc, testMasterKey, "Applied", stale)
 	if err := r.reconcileControlDBClusterRow(ctx, oc); err != nil {
 		t.Fatal(err)
@@ -288,7 +297,7 @@ func TestPostgresClientImageOverride(t *testing.T) {
 		image string
 		pull  []corev1.LocalObjectReference
 	}{
-		"default": {image: "postgres:16-alpine"},
+		"default": {image: pinnedPostgres16Image},
 		"pinned": {
 			mut: func(o *oramav1alpha1.OramaCloudV1) {
 				o.Spec.Images.Overrides = map[string]string{"postgres-client": pinned}
@@ -363,23 +372,28 @@ func psqlQuery(t *testing.T, uri, sql string) string {
 }
 
 // runClusterRowScript runs the Job's script locally with the Job's env, the Secret-sourced values
-// supplied directly, and fails the test if the output carries the master key.
-func runClusterRowScript(t *testing.T, job *batchv1.Job, uri, masterKey string) (string, error) {
+// supplied directly, and fails the test if the output carries the master key. The termination
+// message goes to a temporary file instead of the kubelet's path; its content is the second result.
+func runClusterRowScript(t *testing.T, job *batchv1.Job, uri, masterKey string) (string, string, error) {
 	t.Helper()
 	c := job.Spec.Template.Spec.Containers[0]
+	termination := filepath.Join(t.TempDir(), "termination-log")
 	env := []string{"PATH=" + os.Getenv("PATH"), "DATABASE_URL=" + uri, "MASTER_API_KEY=" + masterKey}
 	for _, e := range c.Env {
 		if e.ValueFrom == nil {
 			env = append(env, e.Name+"="+e.Value)
 		}
 	}
-	cmd := exec.Command(c.Command[0], c.Command[1:]...)
+	args := slices.Clone(c.Command[1:])
+	args[len(args)-1] = strings.ReplaceAll(args[len(args)-1], clusterRowTerminationPath, termination)
+	cmd := exec.Command(c.Command[0], args...)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if strings.Contains(string(out), masterKey) {
 		t.Fatalf("script output carries the master key:\n%s", out)
 	}
-	return string(out), err
+	msg, _ := os.ReadFile(termination) // absent when the script failed before writing it
+	return string(out), string(msg), err
 }
 
 // TestControlDBClusterRowAgainstPostgres runs the Job's script against a real control DB with the
@@ -395,15 +409,19 @@ func TestControlDBClusterRowAgainstPostgres(t *testing.T) {
 
 	// A run that fails (here the table does not exist yet, as after a restart mid-run) exits non-zero
 	// and leaves nothing behind; the replacement Job's run then succeeds.
-	if out, err := runClusterRowScript(t, job, uri, key); err == nil {
+	if out, _, err := runClusterRowScript(t, job, uri, key); err == nil {
 		t.Fatalf("run without the schema succeeded:\n%s", out)
 	}
 	if out, err := exec.Command("psql", uri, "-X", "-q", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-c", dashboardSchemaSQL).CombinedOutput(); err != nil {
 		t.Fatalf("apply dashboard schema: %v\n%s", err, out)
 	}
-	out, err := runClusterRowScript(t, job, uri, key)
+	out, rowID, err := runClusterRowScript(t, job, uri, key)
 	if err != nil || !strings.Contains(out, "inserted the c1 oramacore_clusters row (writer https://writer.orama.ing)") {
 		t.Fatalf("retry on an empty table: %v\n%s", err, out)
+	}
+	// The termination message is the inserted row's id, which the dashboard is given (#572).
+	if want := psqlQuery(t, uri, "select id from oramacore_clusters"); rowID != want || !clusterRowIDPattern.MatchString(rowID) {
+		t.Fatalf("termination message %q, want the row id %s", rowID, want)
 	}
 	want := `v1|c1|https://writer.orama.ing|https://reader.orama.ing|` + key + `|3|1|["us-east"]|["us-east"]`
 	if got := psqlQuery(t, uri, row); got != want {
@@ -411,9 +429,12 @@ func TestControlDBClusterRowAgainstPostgres(t *testing.T) {
 	}
 
 	// A second reconcile's run changes nothing, whatever key it carries.
-	out, err = runClusterRowScript(t, job, uri, "another-key")
+	out, again, err := runClusterRowScript(t, job, uri, "another-key")
 	if err != nil || !strings.Contains(out, "already has a row; left unchanged") || psqlQuery(t, uri, row) != want {
 		t.Fatalf("second run changed the table: %v\n%s", err, out)
+	}
+	if again != rowID {
+		t.Fatalf("second run reported %q, want the row it found, %s", again, rowID)
 	}
 
 	// Any existing row, soft-deleted included, means no insert and no change.
@@ -422,10 +443,156 @@ func TestControlDBClusterRowAgainstPostgres(t *testing.T) {
 		cluster_writer_count, cluster_reader_regions, cluster_writer_regions, master_api_key, cluster_prefix, deleted_at)
 		values ('other', 'https://writer.example', 'https://reader.example', 3, 1, '[]', '[]', 'other-key', 'c1', now())`)
 	before := psqlQuery(t, uri, "select row_to_json(c)::text from oramacore_clusters c")
-	if _, err := runClusterRowScript(t, job, uri, key); err != nil {
+	_, none, err := runClusterRowScript(t, job, uri, key)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if none != clusterRowNone {
+		t.Fatalf("with only a soft-deleted c1 row the script reported %q, want %s", none, clusterRowNone)
 	}
 	if after := psqlQuery(t, uri, "select row_to_json(c)::text from oramacore_clusters c"); after != before {
 		t.Fatalf("existing row changed:\nbefore %s\n after %s", before, after)
+	}
+}
+
+// clusterRowPod is a pod of job that ended with the given phase and termination message.
+func clusterRowPod(job *batchv1.Job, name string, phase corev1.PodPhase, message string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: job.Namespace, Labels: map[string]string{"job-name": job.Name},
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: job.Name, UID: job.UID}}},
+		Status: corev1.PodStatus{Phase: phase, ContainerStatuses: []corev1.ContainerStatus{{Name: "cluster-row",
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Message: message}}}}},
+	}
+}
+
+// TestClusterRowIDReachesTheDashboard checks the dashboard's derived values (#572): the Job's
+// reported c1 row id is recorded on the succeeded Job and given to the dashboard as
+// ORAMACORE_PLACEMENT_CLUSTER_ID, NEXT_PUBLIC_APP_URL follows the dashboard's own host, and
+// REDIS_CACHE_URL names the shim (#562). A succeeded Job that reported no id is run again; one that
+// found no live c1 row gives the dashboard no placement, so it uses the newest row.
+func TestClusterRowIDReachesTheDashboard(t *testing.T) {
+	ctx := context.Background()
+	oc := clusterRowStack(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.Components.Cache = oramav1alpha1.DataStoreSpec{Enabled: true, Mode: "in-cluster"}
+		o.Spec.Components.Dashboard = oramav1alpha1.DashboardSpec{ToggleWithHost: oramav1alpha1.ToggleWithHost{Enabled: true, Host: "app-dev.oramadev.net",
+			ExtraHosts: []string{"app.orama.com"}}}
+		// A value left in a copied env Secret is ignored: the operator's explicit entries win.
+		o.Spec.Components.Dashboard.EnvFrom = []corev1.EnvFromSource{secretEnvFrom("v1-dashboard-env")}
+		o.Spec.Cloudflare.APITokenSecretRef = &corev1.LocalObjectReference{Name: "cloudflare-api-token"} // origin TLS for the host
+	})
+	succeeded := func(uid string) *batchv1.Job {
+		job := controlDBClusterRowJob(oc)
+		job.UID = types.UID(uid)
+		job.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(oc, oramav1alpha1.GroupVersion.WithKind("OramaCloudV1"))}
+		job.Status.Succeeded = 1
+		return job
+	}
+	stale := secretOf("v1-dashboard-env", map[string]string{dashboardAppURLEnv: "https://stale.example", dashboardPlacementClusterEnv: "stale-id"})
+	cf := secretOf("cloudflare-api-token", map[string]string{"token": "cf-token", "zoneID": "zone", "accountID": "account"})
+	dashEnv := func(t *testing.T, cl client.Client) map[string]string {
+		t.Helper()
+		dep := &appsv1.Deployment{}
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: "v1-dashboard"}, dep); err != nil {
+			t.Fatal(err)
+		}
+		env := map[string]string{}
+		for _, e := range containerIn(t, dep.Spec.Template.Spec, "dashboard").Env {
+			if e.ValueFrom == nil {
+				env[e.Name] = e.Value
+			}
+		}
+		return env
+	}
+
+	// The Job's pod reported the row id; a pod of another Job with the same name is not read.
+	job := succeeded("job-uid")
+	other := clusterRowPod(job, "older-run", corev1.PodSucceeded, "11111111-2222-4333-8444-555555555555")
+	other.OwnerReferences[0].UID = "another-job"
+	r, cl := clusterRowHarness(t, oc, testMasterKey, "Applied", job, stale, cf, other,
+		clusterRowPod(job, "run", corev1.PodSucceeded, testClusterRowID+"\n"))
+	if err := r.reconcileControlDBClusterRow(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	got, err := getClusterRowJob(t, cl, oc)
+	if err != nil || got.Annotations[clusterRowIDKey] != testClusterRowID {
+		t.Fatalf("recorded row id = %q (%v), want %s", got.Annotations[clusterRowIDKey], err, testClusterRowID)
+	}
+	if err := r.reconcileDashboard(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	env := dashEnv(t, cl)
+	for name, want := range map[string]string{
+		dashboardAppURLEnv:           "https://app-dev.oramadev.net",
+		dashboardPlacementClusterEnv: testClusterRowID,
+		"REDIS_CACHE_URL":            "http://v1-redis-http",
+	} {
+		if env[name] != want {
+			t.Errorf("dashboard %s = %q, want %q", name, env[name], want)
+		}
+	}
+
+	// A new dashboard host is a new origin.
+	oc.Spec.Components.Dashboard.Host = "app.orama.ing"
+	if err := r.reconcileDashboard(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	if got := dashEnv(t, cl)[dashboardAppURLEnv]; got != "https://app.orama.ing" {
+		t.Errorf("after a host change NEXT_PUBLIC_APP_URL = %q, want https://app.orama.ing", got)
+	}
+	oc.Spec.Components.Dashboard.Host = "app-dev.oramadev.net"
+
+	// A recorded Job is never run again.
+	if err := r.reconcileControlDBClusterRow(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := getClusterRowJob(t, cl, oc); err != nil {
+		t.Fatalf("a recorded Job was replaced: %v", err)
+	}
+
+	// A succeeded Job from before #572 (no pod reported an id) is run again.
+	r, cl = clusterRowHarness(t, oc, testMasterKey, "Applied", succeeded("old-uid"), stale, cf)
+	if err := r.reconcileControlDBClusterRow(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := getClusterRowJob(t, cl, oc); !apierrors.IsNotFound(err) {
+		t.Fatalf("a succeeded Job without a row id was kept: %v", err)
+	}
+	if err := r.reconcileDashboard(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := dashEnv(t, cl)[dashboardPlacementClusterEnv]; ok {
+		t.Errorf("dashboard placement %q before the row id is known", v)
+	}
+	if err := r.reconcileControlDBClusterRow(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := getClusterRowJob(t, cl, oc); err != nil {
+		t.Fatalf("the Job was not created again: %v", err)
+	}
+
+	// A control DB without a live c1 row: recorded as none, and the dashboard gets no placement.
+	job = succeeded("none-uid")
+	r, cl = clusterRowHarness(t, oc, testMasterKey, "Applied", job, stale, cf, clusterRowPod(job, "run", corev1.PodSucceeded, clusterRowNone))
+	if err := r.reconcileControlDBClusterRow(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := getClusterRowJob(t, cl, oc); got.Annotations[clusterRowIDKey] != clusterRowNone {
+		t.Fatalf("recorded %q, want %s", got.Annotations[clusterRowIDKey], clusterRowNone)
+	}
+	if err := r.reconcileDashboard(ctx, oc); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := dashEnv(t, cl)[dashboardPlacementClusterEnv]; ok {
+		t.Errorf("dashboard placement %q without a c1 row", v)
+	}
+
+	// Without a host the operator derives no origin.
+	noHost := oc.DeepCopy()
+	noHost.Spec.Components.Dashboard.Host = ""
+	if err := r.reconcileDashboard(ctx, noHost); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := dashEnv(t, cl)[dashboardAppURLEnv]; ok {
+		t.Errorf("NEXT_PUBLIC_APP_URL = %q without a dashboard host", v)
 	}
 }

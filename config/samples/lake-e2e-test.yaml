@@ -1,7 +1,11 @@
-# The testing -> staging release gate: run lake's end-to-end suite (oramasearch/lake-e2e,
-# orama-operator#537) against the `testing` member of LakeSet lake-nonprod. Create it on the cluster
-# that runs that member (orama-nonprod-cluster-01), where the member's Lake is the cluster-scoped
-# Lake `testing` labelled orama.cloud/managed-by-set=LakeSet.lake-nonprod.
+# A LakeE2ETest as a cluster holds it: lake's end-to-end suite (oramasearch/lake-e2e,
+# orama-operator#537) against the `testing` member of LakeSet lake-nonprod, on the cluster that runs
+# that member (orama-nonprod-cluster-01), where the member's Lake is the cluster-scoped Lake
+# `testing` labelled orama.cloud/managed-by-set=LakeSet.lake-nonprod.
+#
+# The testing -> staging gate itself is not created from this file: it is the `testing-gate` entry
+# of `spec.e2eTests` in config/clusters/sets/lake-nonprod.yaml, which the managing cluster's operator
+# applies here with spec.member filled in (orama-operator#589, docs/lake/README.md#service-e2e).
 #
 # The controller waits for the Lake, its Postgres and its schema, then runs Job gate-e2e-<generation>
 # in the Lake's namespace with:
@@ -27,6 +31,7 @@ spec:
   runID: "1"
   # For a Lake that signs people in with Clerk (orama-operator#541), give the runner the Clerk
   # instance's secret key so it can mint a one-time sign-in ticket for its test person:
+  # (a LakeSet member gets that key as Secret clerk-secret-key, key secretKey, in its namespace):
   # env:
   # - name: LAKE_E2E_CLERK_SECRET_KEY
-  #   valueFrom: {secretKeyRef: {name: lake-testing-clerk, key: secret_key}}
+  #   valueFrom: {secretKeyRef: {name: clerk-secret-key, key: secretKey}}

@@ -72,7 +72,11 @@ further yet: Lake's row names no consumer.
 Each gateway's credentials Secret (`<name>-credentials`, or `spec.credentialsSecretName`) holds
 `tls.crt`, `tls.key`, `ca.crt`, `peer-name` (the other end's identity) and, once known, `remote`
 (the other end's address). **Only a `PeerLink` writes it.** Without it the end stays `Pending`
-("waiting for credentials Secret …, written by a PeerLink on the managing cluster") and no gateway runs.
+("waiting for credentials Secret …, written by a PeerLink on the managing cluster"). Missing, deleting
+or incomplete Secrets, invalid certificates/keys and empty peer identities withdraw any existing
+gateway, import Services, projection and allowances before waiting for replacement credentials.
+Credential checks run before sandbox and export resolution, so missing prerequisites cannot hide
+revocation. A credential read error also triggers withdrawal and is retried.
 
 A `PeerLink` on the managing cluster:
 
@@ -85,13 +89,29 @@ A `PeerLink` on the managing cluster:
    and address. A `PeerConnection` with no `spec.remote` uses that address.
 
 Deleting the `PeerLink` deletes both Secrets. A Secret of the same name that the `PeerLink` did not
-write is never overwritten.
+write is never overwritten. Each end watches Secret changes and withdraws its gateway when its
+credentials disappear, even while its `PeerConnection` remains `desired: present`.
 
 ## Revoking a peer
 
 `desired: absent` (or deleting the `PeerConnection`): the import Services and every allowance are
 withdrawn first, then the projection, the gateway and its load balancer, as zetta-tunnel's contract
-orders it; then `Deleted`. Removing the gateway closes every session. At the other end, its gateway
+orders it; then `Deleted`. Gateway deletion uses foreground garbage collection: the operator waits
+for the old Deployment and its dependent ReplicaSets and pods to disappear before completing
+withdrawal or starting a replacement. While termination is in progress, credential withdrawal
+reports `Pending` with a message that the old gateway pods are still terminating. Cleanup failures
+are retried, and a failed Service or policy cleanup still attempts gateway deletion.
+
+Changing the credential Secret name, replacing the Secret, or changing its certificate, private
+key, trust root or expected peer identity follows the same withdrawal path. Rotation interrupts
+existing sessions and waits for termination before creating a gateway with fresh TLS contexts;
+it does not overlap old and new gateways through a rolling update. Rotation keeps the public
+Service so the pair retains its addresses. The first reconciliation after
+upgrading from the earlier fingerprint format also replaces each existing gateway once. Changes
+to `remote` still flow through the peer document. This contract applies to operator-managed
+gateways; hot reloading credentials in a standalone zetta-tunnel process is outside this controller.
+
+Removing the gateway closes every session. At the other end, its gateway
 can no longer reach this one, so its imports fail too; revoke both rows (or delete the `PeerLink` as
 well) to remove both ends.
 

@@ -26,4 +26,4 @@ spec:
     key: schema.sql
   version: "sha256:deadbeef1234"         # recorded in .status.appliedVersion (operator uses a content hash)
   guardTable: crawler_configs            # existence of this table => already applied (skip)
-  image: postgres:16-alpine              # ships psql
+  image: postgres:16-alpine@sha256:deb28ee471183cb0c303113dac9b2433c51eeeeb678def7af9a9ec5820367815              # ships psql

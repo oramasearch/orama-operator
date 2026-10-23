@@ -31,7 +31,7 @@ func checkMethodologyRunsPgx(t *testing.T, ctx context.Context, tx pgx.Tx, store
 	}
 	run := runs[0]
 	if run.ID != runID || run.Mode != methodologyModeTrain || run.CPUMillis != 1500 || run.MemoryBytes != 2<<30 ||
-		run.TimeoutSeconds != 600 || !run.Network || run.Slug != "mr-f00000000001" || run.Status != nil ||
+		run.TimeoutSeconds != 600 || !run.Network || run.WorkspaceNamespace != testWorkspaceName || run.Slug != "mr-f00000000001" || run.Status != nil ||
 		run.Build == nil || run.Build.Phase != BuildPhaseSucceeded || run.Build.Target != testBuildTarget || run.Build.Digest == "" {
 		t.Fatalf("run = %+v (build %+v)", run, run.Build)
 	}

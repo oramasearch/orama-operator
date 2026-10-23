@@ -109,6 +109,8 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	broker := oramaCloudComponentSelector(oc, "broker")
 	controlDB := oramaCloudComponentSelector(oc, "controldb")
 	cache := oramaCloudComponentSelector(oc, "cache")
+	redisHTTP := oramaCloudComponentSelector(oc, redisHTTPComponent)
+	hpes := oramaCloudComponentSelector(oc, hpesComponent)
 	analytics := oramaCloudComponentSelector(oc, "analytics")
 	search := oramaCloudComponentSelector(oc, "search")
 	dashboard := oramaCloudComponentSelector(oc, "dashboard")
@@ -122,6 +124,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	pgadmin := oramaCloudComponentSelector(oc, "pgadmin")
 	keycloak := oramaCloudComponentSelector(oc, "keycloak")
 	analyticsProcessor := oramaCloudComponentSelector(oc, "analytics-processor")
+	importConsumer := oramaCloudComponentSelector(oc, importConsumerComponent)
 	// #421's Jobs: the import CronJob calls the processor; the retention Job sets ClickHouse's TTL over
 	// the native protocol (#616).
 	analyticsImport := oramaCloudComponentSelector(oc, analyticsImportComponent)
@@ -136,6 +139,8 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 	openAIDecrypter := oramaCloudComponentSelector(oc, "openai-decrypter")
 	// OramaCloudV1Migration Jobs (operator#653).
 	migration := oramaCloudComponentSelector(oc, migrationComponent)
+	// OramaCloudV1E2ETest runner pods (operator#61, #63).
+	e2eRunner := oramaCloudComponentSelector(oc, e2eComponent)
 	// Every control DB schema's migration Job, not only the first: each PostgresSchema labels its pods
 	// with its own name (operator#625).
 	schemaNames := make([]string, 0, len(controlDBSchemaSuffixes))
@@ -193,12 +198,13 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			),
 		),
 		sandboxAllowance(
-			"The dashboard uses control Postgres, cache, analytics, search, OramaCore and Keycloak.",
+			"The dashboard uses control Postgres, cache, its REST shim, analytics, search, OramaCore and Keycloak.",
 			oramaCloudEgressPolicy(
 				"allow-dashboard-egress",
 				dashboard,
 				egressTo(controlDB, 5432),
 				egressTo(cache, 6379),
+				egressTo(redisHTTP, redisHTTPPort),
 				egressTo(analytics, 8123),
 				egressTo(search, 8108),
 				egressTo(writer, 8080),
@@ -241,13 +247,14 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			oramaCloudEgressPolicy("allow-analytics-retention-egress", analyticsRetention, egressTo(analytics, 9000)),
 		),
 		sandboxAllowance(
-			"Index builder uses dashboard, cache, control Postgres, DISCO, search, decrypter and HARVEST APIs.",
+			"Index builder uses dashboard, cache, control Postgres, HPES, DISCO, search, decrypter and HARVEST APIs.",
 			oramaCloudEgressPolicy(
 				"allow-index-builder-egress",
 				indexBuilder,
 				egressTo(dashboard, 3000),
 				egressTo(cache, 6379),
 				egressTo(controlDB, 5432),
+				egressTo(hpes, hpesPort),
 				egressTo(disco, 8080, 50051),
 				egressTo(search, 8108),
 				egressTo(openAIDecrypter, 8080),
@@ -304,12 +311,20 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			oramaCloudEgressPolicy("allow-controldb-cluster-row-egress", clusterRowJob, egressTo(cnpgPods, 5432)),
 		),
 		sandboxAllowance(
-			"Cache accepts Redis clients from dashboard, index builder, workers and HARVEST.",
+			"Cache accepts Redis clients from dashboard, index builder, workers, HARVEST and the REST shim.",
 			oramaCloudIngressPolicy(
 				"allow-cache-ingress",
 				cache,
-				ingressFrom(oramaCloudComponentSelector(oc, "dashboard", "index-builder", "workers", "harvest-master"), 6379),
+				ingressFrom(oramaCloudComponentSelector(oc, "dashboard", "index-builder", "workers", "harvest-master", redisHTTPComponent), 6379),
 			),
+		),
+		sandboxAllowance(
+			"The serverless-redis-http shim connects to the cache (#562).",
+			oramaCloudEgressPolicy("allow-redis-http-egress", redisHTTP, egressTo(cache, 6379)),
+		),
+		sandboxAllowance(
+			"The serverless-redis-http shim accepts the dashboard's Upstash REST calls, and no one else's (#562).",
+			oramaCloudIngressPolicy("allow-redis-http-ingress", redisHTTP, ingressFrom(dashboard, redisHTTPPort)),
 		),
 		sandboxAllowance(
 			"ClickHouse accepts analytics writes and reads from dashboard, analytics processor, DISCO and hosted-search workers.",
@@ -350,8 +365,20 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			oramaCloudIngressPolicy("allow-dashboard-internal-ingress", dashboard, ingressFrom(indexBuilder, 3000)),
 		),
 		sandboxAllowance(
+			"The import consumer calls the dashboard's private get-source and status routes (operator#446).",
+			oramaCloudEgressPolicy("allow-import-consumer-egress", importConsumer, egressTo(dashboard, 3000)),
+		),
+		sandboxAllowance(
+			"Dashboard accepts the import consumer's private API calls (operator#446).",
+			oramaCloudIngressPolicy("allow-dashboard-import-consumer-ingress", dashboard, ingressFrom(importConsumer, 3000)),
+		),
+		sandboxAllowance(
 			"DISCO accepts HTTP and embeddings requests from index builder.",
 			oramaCloudIngressPolicy("allow-disco-ingress", disco, ingressFrom(indexBuilder, 8080, 50051)),
+		),
+		sandboxAllowance(
+			"HPES accepts index-builder's embedding requests, and no one else's; it sends nothing but DNS (#574).",
+			oramaCloudIngressPolicy("allow-hpes-ingress", hpes, ingressFrom(indexBuilder, hpesPort)),
 		),
 		sandboxAllowance(
 			"OpenAI decrypter accepts index-builder requests.",
@@ -394,6 +421,34 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 		sandboxAllowance(
 			"OramaCore readers accept OramaCloudV1Migration Jobs' verification reads (operator#653).",
 			oramaCloudIngressPolicy("allow-reader-migration-ingress", readerPods, ingressFrom(migration, readerPodPort(oc))),
+		),
+		sandboxAllowance(
+			"OramaCloudV1E2ETest runner pods call the writer, the readers, the dashboard and the edge workers they test (operator#61, #63); DNS is allow-dns-egress.",
+			oramaCloudEgressPolicy(
+				"allow-e2e-egress",
+				e2eRunner,
+				egressTo(writer, oramacorePort),
+				egressTo(readerPods, readerPodPort(oc)),
+				egressTo(dashboard, 3000),
+				egressTo(workers, 8080),
+				egressTo(searchWorkers, 8080),
+			),
+		),
+		sandboxAllowance(
+			"OramaCore writer accepts the e2e suite's admin and write calls (operator#61, #63).",
+			oramaCloudIngressPolicy("allow-writer-e2e-ingress", writer, ingressFrom(e2eRunner, oramacorePort)),
+		),
+		sandboxAllowance(
+			"OramaCore readers accept the e2e suite's searches (operator#61, #63).",
+			oramaCloudIngressPolicy("allow-reader-e2e-ingress", readerPods, ingressFrom(e2eRunner, readerPodPort(oc))),
+		),
+		sandboxAllowance(
+			"Dashboard accepts the e2e suite's JWKS, write-token, RBAC and CSRF checks (operator#63).",
+			oramaCloudIngressPolicy("allow-dashboard-e2e-ingress", dashboard, ingressFrom(e2eRunner, 3000)),
+		),
+		sandboxAllowance(
+			"The workers bundle and the hosted-search workers accept the e2e suite's auth checks (operator#61).",
+			oramaCloudIngressPolicy("allow-workers-e2e-ingress", oramaCloudComponentSelector(oc, append([]string{"workers"}, searchWorkerNames...)...), ingressFrom(e2eRunner, 8080)),
 		),
 		sandboxAllowance(
 			"CloudNativePG instances replicate and exchange health traffic within this stack.",
@@ -503,6 +558,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			embeddings,
 			searchWorkers,
 			cnpgPods,
+			importConsumer,
 		)...)
 		if len(prod1Hosts) > 0 {
 			allowances = append(allowances, migrationProd1Allowance(publicPeers, migration, prod1Hosts))
@@ -518,6 +574,7 @@ func (r *OramaCloudV1Reconciler) reconcileNetworkSandbox(
 			"allow-embeddings-public-https",
 			"allow-search-workers-public-https",
 			"allow-controldb-primary-replication",
+			"allow-import-consumer-public-https",
 		}
 		if len(prod1Hosts) > 0 {
 			publicPolicyNames = append(publicPolicyNames, migrationProd1PolicyName)
@@ -616,6 +673,7 @@ func oramaCloudPublicInternetAllowances(
 	embeddings metav1.LabelSelector,
 	searchWorkers metav1.LabelSelector,
 	cnpgPods metav1.LabelSelector,
+	importConsumer metav1.LabelSelector,
 ) []oramav1alpha1.NetworkSandboxPolicy {
 	return []oramav1alpha1.NetworkSandboxPolicy{
 		sandboxAllowance(
@@ -653,6 +711,10 @@ func oramaCloudPublicInternetAllowances(
 		sandboxAllowance(
 			"A read-region CloudNativePG replica reaches its configured primary Postgres endpoint on the public network; this path is inferred from spec.peers.postgresEndpoint.",
 			oramaCloudEgressPolicy("allow-controldb-primary-replication", cnpgPods, publicEgressRule(publicPeers, 5432)),
+		),
+		sandboxAllowance(
+			"The import consumer reads the stack's R2 uploads bucket and writes the engine's public writer host over public HTTPS (operator#446).",
+			oramaCloudEgressPolicy("allow-import-consumer-public-https", importConsumer, publicEgressRule(publicPeers, 443)),
 		),
 	}
 }

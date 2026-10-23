@@ -75,7 +75,9 @@ spec:
                     description: |-
                       APITokenSecretRef references the Secret holding the Cloudflare **control-plane** API
                       credentials as three keys: `token` (the account API token), `zoneID`, and `accountID`.
-                      This token provisions DNS, Load Balancing, Workers KV, and R2 buckets.
+                      This token provisions DNS, Load Balancing, Workers KV, and R2 buckets. index-builder reads
+                      its CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from `token` and `accountID` here, so it
+                      writes to the KV namespaces this token created; a missing key fails the ingestion step.
                     properties:
                       name:
                         default: ""
@@ -1134,6 +1136,28 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      stripeSecretKeySecretRef:
+                        description: |-
+                          StripeSecretKeySecretRef takes the dashboard's STRIPE_SECRET_KEY from a key of a Secret in the
+                          CR's namespace (operator#802): a Stripe restricted key holding only the permissions the dashboard
+                          uses (docs/components.md lists them), never the account's full secret key. The operator reads it
+                          and never creates or changes it; a missing Secret, key or value fails the dashboard step. While it
+                          is set, STRIPE_SECRET_KEY in env or in an envFrom source fails the reconcile, so no second key
+                          sits beside it. A production instance (one its set labels orama.cloud/purpose=production)
+                          requires it, with a live-mode restricted key (rk_live_).
+                        properties:
+                          key:
+                            description: Key of the Secret that holds the value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
                     required:
                     - enabled
                     type: object
@@ -1584,6 +1608,89 @@ spec:
                     required:
                     - enabled
                     type: object
+                  importConsumer:
+                    description: |-
+                      ImportConsumer lists the stack's R2 uploads bucket and imports files and crawl exports
+                      through this stack's dashboard. It requires the dashboard and Cloudflare enabled.
+                    properties:
+                      concurrency:
+                        default: 2
+                        description: |-
+                          Concurrency is how many objects one replica imports at once, each in its own process, as the
+                          Fargate path ran one task per object.
+                        format: int32
+                        maximum: 16
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        description: Enabled runs the consumer against this stack's
+                          own uploads bucket. Off by default.
+                        type: boolean
+                      image:
+                        description: Image is the consumer's full image reference
+                          with src/bucket-worker.ts. No default.
+                        type: string
+                      resources:
+                        description: |-
+                          Resources overrides the consumer's pod resources. Each import process's heap is sized from the
+                          memory limit and Concurrency.
+                        properties:
+                          claims:
+                            description: |-
+                              Claims lists the names of resources, defined in spec.resourceClaims,
+                              that are used by this container.
+
+                              This is an alpha field and requires enabling the
+                              DynamicResourceAllocation feature gate.
+
+                              This field is immutable. It can only be set for containers.
+                            items:
+                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                              properties:
+                                name:
+                                  description: |-
+                                    Name must match the name of one entry in pod.spec.resourceClaims of
+                                    the Pod where this field is used. It makes that resource available
+                                    inside a container.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Limits describes the maximum amount of compute resources allowed.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Requests describes the minimum amount of compute resources required.
+                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                        type: object
+                    type: object
+                    x-kubernetes-validations:
+                    - message: importConsumer.image is required when the import consumer
+                        is enabled
+                      rule: '!has(self.enabled) || !self.enabled || (has(self.image)
+                        && size(self.image) > 0)'
                   ingestion:
                     description: IngestionSpec configures the ingest path (index-builder
                       as a plain Deployment + HARVEST).
@@ -1596,6 +1703,62 @@ spec:
                         description: Harvest enables the crawler (Deployment + Mongo
                           + Selenium grid).
                         type: boolean
+                      hpesResources:
+                        description: |-
+                          HPESResources overrides the resources of HPES (embeddings-server-py), the embeddings server
+                          index-builder calls, which runs whenever ingestion runs (#574). When unset the operator requests
+                          7Gi and 2 CPUs with a 10Gi memory limit, sized for the six models it loads, on CPU.
+                        properties:
+                          claims:
+                            description: |-
+                              Claims lists the names of resources, defined in spec.resourceClaims,
+                              that are used by this container.
+
+                              This is an alpha field and requires enabling the
+                              DynamicResourceAllocation feature gate.
+
+                              This field is immutable. It can only be set for containers.
+                            items:
+                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                              properties:
+                                name:
+                                  description: |-
+                                    Name must match the name of one entry in pod.spec.resourceClaims of
+                                    the Pod where this field is used. It makes that resource available
+                                    inside a container.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Limits describes the maximum amount of compute resources allowed.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Requests describes the minimum amount of compute resources required.
+                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                        type: object
                       resources:
                         description: |-
                           Resources overrides the index-builder pod resources. When unset the operator applies
@@ -2082,9 +2245,47 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      sentryDSNSecretRef:
+                        description: |-
+                          SentryDSNSecretRef takes the workers' SENTRY_DSN from a key of a Secret in the CR's namespace
+                          instead of <cr>-workers-secret. The operator reads it and never creates or changes it; a
+                          missing Secret or key fails the workers step and Ready names it. The workers' OPENAI_API_KEY,
+                          GROQ_API_KEY and ANTHROPIC_API_KEY come from the same providers' spec.llm.providers[].apiKeySecretRef
+                          as the engine's.
+                        properties:
+                          key:
+                            description: Key of the Secret that holds the value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
                     required:
                     - enabled
                     type: object
+                type: object
+              credentialRotation:
+                description: |-
+                  CredentialRotation rotates the generated broker and Redis passwords (#594). Raising a
+                  generation above the one the credential Secret records makes the operator write a new
+                  password there; the broker re-imports its admin user on boot and every consumer rolls on the
+                  changed Secret, as for any credential change (#411). Lowering it never rotates back.
+                properties:
+                  broker:
+                    description: Broker rotates <cr>-broker-admin's password.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  cache:
+                    description: Cache rotates <cr>-cache-auth's password.
+                    format: int64
+                    minimum: 0
+                    type: integer
                 type: object
               demoSeed:
                 description: |-
@@ -2200,6 +2401,11 @@ spec:
                   registry:
                     default: oramasearch
                     type: string
+                  requireDigests:
+                    description: |-
+                      RequireDigests rejects rendered workload images without a SHA-256 digest. Disabled by default
+                      during the production rollout; ImagesPinned reports mutable selections without blocking.
+                    type: boolean
                   tag:
                     default: latest
                     type: string
@@ -2374,6 +2580,16 @@ spec:
             required:
             - region
             type: object
+            x-kubernetes-validations:
+            - message: importConsumer requires cloudflare.enabled
+              rule: '!has(self.components) || !has(self.components.importConsumer)
+                || !has(self.components.importConsumer.enabled) || !self.components.importConsumer.enabled
+                || (has(self.cloudflare) && has(self.cloudflare.enabled) && self.cloudflare.enabled)'
+            - message: importConsumer requires the dashboard enabled
+              rule: '!has(self.components) || !has(self.components.importConsumer)
+                || !has(self.components.importConsumer.enabled) || !self.components.importConsumer.enabled
+                || (has(self.components.dashboard) && has(self.components.dashboard.enabled)
+                && self.components.dashboard.enabled)'
           status:
             description: OramaCloudV1Status is the observed state.
             properties:

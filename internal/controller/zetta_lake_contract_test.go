@@ -130,7 +130,7 @@ func TestLakeSeesTheOperatorsDeploymentEnvAndDomainRows(t *testing.T) {
 	objects := []client.Object{
 		lake,
 		&oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{Name: "lake-prod-zetta", Namespace: "lake"}},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeAdminSecret("prod"), Namespace: "lake"}, Data: map[string][]byte{"token": []byte("environment-token")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lakeDeploySecret("prod"), Namespace: "lake"}, Data: map[string][]byte{"token": []byte("environment-token")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "lake-prod-zetta-zetta-admin", Namespace: "lake"}, Data: map[string][]byte{"token": []byte("test-token")}},
 	}
 	kubeClient := fake.NewClientBuilder().
@@ -160,7 +160,7 @@ func TestLakeSeesTheOperatorsDeploymentEnvAndDomainRows(t *testing.T) {
 	for column, want := range map[string]string{
 		"lake": testLakeHost, "repository": lakeContractRepository, "environment": "production",
 		"kind": "named", "change": "blake3:" + strings.Repeat("1", 64), "image": testEnvironmentImage,
-		"deployment_id": record.ID, "requested_by": "lake-admin-token/prod", "phase": deploymentPhaseRequested,
+		"deployment_id": record.ID, "requested_by": "lake-deploy-token/prod", "phase": deploymentPhaseRequested,
 	} {
 		if desired[column] != want {
 			t.Errorf("desired row %s = %v, want %q", column, desired[column], want)
@@ -263,7 +263,7 @@ func TestLakeSeesTheOperatorsDeploymentEnvAndDomainRows(t *testing.T) {
 	deploymentRows, envRows, domainRows := lakeReadsAll(t, zetta)
 	current := lakeLatestByKey(t, deploymentRows, byDeploymentID)[record.ID]
 	if current["phase"] != oramav1alpha1.LakeEnvironmentPhaseReady || current["namespace"] != workloadNamespace ||
-		current["requested_by"] != "lake-admin-token/prod" || current["change"] != desired["change"] ||
+		current["requested_by"] != "lake-deploy-token/prod" || current["change"] != desired["change"] ||
 		current["updated_at"].(string) <= desired["updated_at"].(string) || !lakeTimePattern.MatchString(current["updated_at"].(string)) {
 		t.Errorf("lake shows deployment %+v", current)
 	}
@@ -331,7 +331,7 @@ func TestLakeDomainsTheOperatorRefuses(t *testing.T) {
 		row("a", testLakeHost),
 		row("a", "Not_A_Host"),
 		row("b", "docs.example.com"),
-	})
+	}, lakeDomainGuard{})
 	if got := plan.active[platformEnvironmentKey("r", "a")]; len(got) != 1 || got[0].Host != "shop.example.com" {
 		t.Errorf("environment a domains = %+v", got)
 	}
@@ -339,7 +339,7 @@ func TestLakeDomainsTheOperatorRefuses(t *testing.T) {
 		t.Errorf("environment b domains = %+v", got)
 	}
 	for key, want := range map[string]string{
-		"r\nb\nshop.example.com": "another environment",
+		"r\nb\nshop.example.com": "claimed by another environment",
 		"r\na\n" + testLakeHost:  "the Lake's own host",
 		"r\na\nNot_A_Host":       "not a lowercase DNS name",
 	} {

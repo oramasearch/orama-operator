@@ -131,7 +131,7 @@ func TestReaderRenderFillsAnalyticsKey(t *testing.T) {
 	h := newEngineHarness(t)
 	h.reconcile(engineOC(withSideImages))
 	env := map[string]string{"ANALYTICS_API_KEY": "test-analytics-key", "MASTER_API_KEY": "test-master-key",
-		"BROKER_USERNAME": "orama", "BROKER_PASSWORD": "broker-pass"}
+		"BROKER_PASSWORD": "broker-pass"}
 	for _, p := range llmProviders(engineOC(withSideImages)) {
 		env[llmKeyEnv(p.Name)] = "llm-key"
 	}

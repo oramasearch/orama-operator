@@ -560,9 +560,10 @@ func TestServicesZettaCreateAndReadyGating(t *testing.T) {
 	}
 	if cluster.Spec.Replicas != 2 || cluster.Spec.Storage.Size != "20Gi" || cluster.Spec.Image != "oramasearch/zetta:service" ||
 		cluster.Spec.IngressEnabled || cluster.Spec.ProvisionOperatorSchema == nil || *cluster.Spec.ProvisionOperatorSchema ||
-		cluster.Spec.PullSecretName != "oramasearch-dockerhub" || len(cluster.Spec.Env) != 2 ||
+		cluster.Spec.PullSecretName != "oramasearch-dockerhub" || len(cluster.Spec.Env) != 3 ||
 		cluster.Spec.Env[0].Name != "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES" || cluster.Spec.Env[0].Value != "134217728" ||
-		cluster.Spec.Env[1].Name != "MALLOC_ARENA_MAX" || cluster.Spec.Env[1].Value != "2" {
+		cluster.Spec.Env[1].Name != "MALLOC_ARENA_MAX" || cluster.Spec.Env[1].Value != "2" ||
+		cluster.Spec.Env[2].Name != "ZETTA_EGRESS_ALLOW" || cluster.Spec.Env[2].Value != "" {
 		t.Fatalf("unexpected zetta service spec: %+v", cluster.Spec)
 	}
 	endpoint := "http://prod-svc-111111111111-zetta.lake.svc.cluster.local:4800"
@@ -638,9 +639,6 @@ func TestWorkspaceDataPlaneRowsStayInTheirWorkspaceNamespace(t *testing.T) {
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 			Name: lake.Spec.PullSecretName, Namespace: testWorkspaceName,
 		}},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-			Name: lake.Spec.Agents.OpenAISecretName, Namespace: testWorkspaceName,
-		}},
 	}
 	for _, object := range objects {
 		if err := h.client.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
@@ -649,6 +647,10 @@ func TestWorkspaceDataPlaneRowsStayInTheirWorkspaceNamespace(t *testing.T) {
 		if object.GetLabels()[workspaceLabel] != testWorkspaceID {
 			t.Errorf("workspace object %T lacks workspace identity", object)
 		}
+	}
+	// Orama's provider key is never copied into a workspace namespace (orama-operator#779).
+	if err := h.client.Get(ctx, client.ObjectKey{Namespace: testWorkspaceName, Name: lake.Spec.Agents.OpenAISecretName}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Errorf("the provider key Secret was copied into the workspace namespace: %v", err)
 	}
 	wrongNamespace := []client.Object{
 		&oramav1alpha1.OramaZettaCluster{ObjectMeta: metav1.ObjectMeta{

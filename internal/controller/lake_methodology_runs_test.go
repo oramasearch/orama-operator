@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -103,7 +104,7 @@ func methodologyTestLake() *oramav1alpha1.Lake {
 }
 
 func testMethodologyRun() LakeMethodologyRun {
-	return LakeMethodologyRun{ID: testRunID, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID,
+	return LakeMethodologyRun{ID: testRunID, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID, WorkspaceNamespace: testWorkspaceName,
 		MethodologyID: "W-0123abcd", Mode: methodologyModeTrain, BuildID: testBuildID,
 		RuntimeImage: testRuntimeImg, CPUMillis: 2000, MemoryBytes: 4 << 30, TimeoutSeconds: 900,
 		Slug: testRunSlug, Desired: serviceDesiredPresent, Generation: 1,
@@ -572,6 +573,77 @@ func TestAStageOrCollectFailureFailsTheRun(t *testing.T) {
 	h2.poll()
 	if status := store2.runStatus(t); status.Phase != MethodologyPhaseFailed || !strings.HasPrefix(status.Message, "could not report the result to Lake") {
 		t.Fatalf("collect failure: %+v", status)
+	}
+}
+
+// failedPod leaves a failed pod of Job `job` that said `message` (its termination message, or its
+// log's tail under TerminationMessageFallbackToLogsOnError).
+func (h *serviceHarness) failedPod(job, message, reason string) {
+	h.t.Helper()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: job + "-x", Namespace: testRunNS, Labels: map[string]string{"job-name": job}},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: "methodology", State: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{ExitCode: 4, Message: message, Reason: reason}}}}},
+	}
+	if err := h.client.Create(context.Background(), pod); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := h.client.Status().Update(context.Background(), pod); err != nil {
+		_ = h.client.Update(context.Background(), pod)
+	}
+}
+
+// lake#802: a failed stage or collect says what its pod said, not only that the Job gave up; the
+// pod is read before the run's objects, and so the pod, are removed.
+func TestAStageOrCollectFailureCarriesThePodsOwnWords(t *testing.T) {
+	backoff := batchv1.JobCondition{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded",
+		Message: "Job has reached the specified backoff limit"}
+	staged := func() (*serviceHarness, *fakeServiceStore) {
+		h, store := newMethodologyHarness(t, false)
+		store.setBuild(LakeMethodologyRunBuild{Phase: BuildPhaseSucceeded, Digest: testBuildDigest, Target: "lake-prod.lake.svc/acme/m:b"})
+		h.poll()
+		return h, store
+	}
+
+	h, store := staged()
+	h.failedPod(methodologyStageJob(testRunSlug), "stage failed: methodology_run_input could not reach Lake:\n  timed out\n", "Error")
+	h.finishJob(methodologyStageJob(testRunSlug), false, backoff)
+	h.poll()
+	status := store.runStatus(t)
+	if status.Phase != MethodologyPhaseFailed ||
+		status.Message != "could not bring the data in: stage failed: methodology_run_input could not reach Lake: timed out" {
+		t.Fatalf("stage failure: %+v", status)
+	}
+
+	// A pod that wrote nothing still says how it ended.
+	h2, store2 := newMethodologyHarness(t, false)
+	advanceToSandbox(t, h2, store2)
+	h2.finishJob(methodologySandboxJob(testRunSlug), true)
+	h2.poll()
+	h2.failedPod(methodologyCollectJob(testRunSlug), "", "OOMKilled")
+	h2.finishJob(methodologyCollectJob(testRunSlug), false, backoff)
+	h2.poll()
+	if status := store2.runStatus(t); status.Message != "could not report the result to Lake: OOMKilled" {
+		t.Fatalf("collect failure: %+v", status)
+	}
+
+	// A long one keeps its end, cut to valid UTF-8.
+	h3, store3 := staged()
+	h3.failedPod(methodologyStageJob(testRunSlug), strings.Repeat("é", methodologyPodMessageLimit)+" the end", "Error")
+	h3.finishJob(methodologyStageJob(testRunSlug), false, backoff)
+	h3.poll()
+	message := store3.runStatus(t).Message
+	if !strings.HasSuffix(message, " the end") || len(message) > len("could not bring the data in: …")+methodologyPodMessageLimit ||
+		!utf8.ValidString(message) {
+		t.Fatalf("a long message keeps its valid end only: %d bytes", len(message))
+	}
+
+	// No pod left: the Job's own words.
+	h4, store4 := staged()
+	h4.finishJob(methodologyStageJob(testRunSlug), false, backoff)
+	h4.poll()
+	if status := store4.runStatus(t); status.Message != "could not bring the data in: Job has reached the specified backoff limit" {
+		t.Fatalf("no pod: %+v", status)
 	}
 }
 

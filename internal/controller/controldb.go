@@ -158,6 +158,9 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 	if err := r.ensureMigrationRoleSecret(ctx, oc); err != nil {
 		return err
 	}
+	if err := r.ensureDashboardRoleSecret(ctx, oc); err != nil {
+		return err
+	}
 
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
@@ -169,7 +172,15 @@ func (r *OramaCloudV1Reconciler) reconcileControlDB(ctx context.Context, oc *ora
 		spec := map[string]interface{}{
 			"instances": int64(profileInstances(oc)),
 			"storage":   controlDBStorage(db.Storage),
-			"managed":   map[string]interface{}{"roles": []interface{}{migrationManagedRole(oc, len(migrations) > 0)}},
+			"resources": map[string]interface{}{
+				"requests": map[string]interface{}{string(corev1.ResourceEphemeralStorage): v1EphemeralRequest},
+				"limits":   map[string]interface{}{string(corev1.ResourceEphemeralStorage): v1EphemeralLimit},
+			},
+			"managed": map[string]interface{}{"roles": []interface{}{
+				migrationManagedRole(oc, len(migrations) > 0), dashboardManagedRole(oc)}},
+		}
+		if image := oc.Spec.Images.Overrides["controldb"]; image != "" {
+			spec["imageName"] = image
 		}
 		// The storage pass owns changes to existing storage; ordinary spec rendering
 		// must retain the class, grown size, and any other CNPG storage keys.
@@ -269,9 +280,8 @@ func (r *OramaCloudV1Reconciler) ensureMigrationRoleSecret(ctx context.Context, 
 // DB's PostgresSchema Job and the cluster-row Job run. Unset, both run defaultPostgresClientImage.
 const postgresClientImageKey = "postgres-client"
 
-// defaultPostgresClientImage is the public upstream image both Jobs ran before the key existed, kept
-// as the default so an unpinned stack does not change. Production pins a private digest in its set.
-const defaultPostgresClientImage = "postgres:16-alpine"
+// defaultPostgresClientImage pins the upstream psql helper. Production may override its mirror.
+const defaultPostgresClientImage = pinnedPostgres16Image
 
 // postgresClientImage resolves the control DB's psql image like the data stores (storeImage): the
 // postgres-client override wins, else the upstream default.
@@ -295,6 +305,7 @@ var controlDBSchemaSuffixes = []string{
 	"-controldb-schema-0008",
 	"-controldb-reference-data",
 	"-controldb-migration-grants",
+	dashboardGrantsSchemaSuffix,
 }
 
 // controlDBSchemas lists the control DB's schemas in apply order. Each is created only after every
@@ -323,8 +334,12 @@ func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error)
 	}
 	// The migration role's grants come last, after every table exists, and again whenever a schema
 	// that creates tables changes (operator#653).
-	return append(schemas, controlDBSchema{suffix: controlDBSchemaSuffixes[3], key: "migration-grants.sql",
-		guard: "crawler_configs", everyVersion: true, sql: migrationGrantsSQL(schemas)}), nil
+	// Then the dashboard role's grants (operator#99), on the same terms.
+	return append(schemas,
+		controlDBSchema{suffix: controlDBSchemaSuffixes[3], key: "migration-grants.sql",
+			guard: "crawler_configs", everyVersion: true, sql: migrationGrantsSQL(schemas)},
+		controlDBSchema{suffix: controlDBSchemaSuffixes[4], key: "dashboard-grants.sql",
+			guard: "crawler_configs", everyVersion: true, sql: dashboardGrantsSQL(schemas)}), nil
 }
 
 // migrationGrantsSQL gives the migration role what the migration tool needs and nothing more
@@ -334,12 +349,7 @@ func controlDBSchemas(oc *oramav1alpha1.OramaCloudV1) ([]controlDBSchema, error)
 // schema version changes this one's version and its tables are granted too.
 func migrationGrantsSQL(before []controlDBSchema) string {
 	var b strings.Builder
-	b.WriteString("-- The migration role's grants (operator#653), applied after:\n")
-	for _, s := range before {
-		if !s.everyVersion {
-			fmt.Fprintf(&b, "--   %s %s\n", strings.TrimPrefix(s.suffix, "-"), schemaVersion(s.sql))
-		}
-	}
+	b.WriteString(grantsHeader("The migration role's grants (operator#653)", before))
 	role := migrationRole
 	fmt.Fprintf(&b, "GRANT USAGE ON SCHEMA public TO %s;\n", role)
 	fmt.Fprintf(&b, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %s;\n", role)

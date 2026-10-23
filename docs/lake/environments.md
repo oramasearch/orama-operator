@@ -66,7 +66,7 @@ only documents them: on a Zetta where the table exists the statement answers "al
 | `lake` | The Lake's public host | Same |
 | `repository`, `environment`, `kind`, `change`, `image` | The deployment | Copied from the desired row |
 | `deployment_id` | The action ID (`deployment-<hash>`) | Same |
-| `requested_by` | `lake-admin-token/<lake>`: the contract authenticates the Lake's admin token, not a person | Copied |
+| `requested_by` | `lake-deploy-token/<lake>`: the contract authenticates the Lake's deployment token, not a person | Copied |
 | `requested_at` | When it was requested | Copied |
 | `phase` | `Pending` | `Progressing`, `Ready`, `Degraded` or `TornDown` |
 | `namespace` | Empty | The workload Namespace `lake-<lake>-env-<hash>` (lake's log page queries Loki by it) |
@@ -99,11 +99,30 @@ deleted, requested_by, updated_at, ordering_token` (`create_domain`, `delete_dom
 the newest row per `(repository, environment, host)`:
 
 - **Applied.** A live request becomes an entry of the `LakeEnvironment`'s `spec.domains` (`host`, `tls`
-  `acme` or `provided`) when the host is a lowercase DNS name, is not the Lake's own host, and is not a
-  domain of another environment of the same Lake (the first in `(repository, environment, host)` order
-  keeps it). The environment serves it from its Ingress (one rule per host) and, when the Lake has
+  `acme` or `provided`) when the host is a lowercase DNS name, is not a platform host, is not served by
+  anything else on the cluster, and is this environment's by the first-claim rule (all below). The
+  environment serves it from its Ingress (one rule per host) and, when the Lake has
   `spec.dnsSecretRef`, keeps one proxied `CloudflareDNSRecord` for it, owned by the environment and
   labelled with it.
+- **The first claim keeps a host** ([#776](https://github.com/oramasearch/orama-operator/issues/776)).
+  When environments of the Lake claim one host, the earliest live claim gets it: by the claim's
+  creation time (lake's row order of its first row since its last tombstone; a later row of the same
+  claim, such as a `tls` change or the operator's own answer, does not make it younger), then by the
+  claim's id `(repository, environment, host)`. Every other claim is answered `failed` with
+  "already claimed by another environment". A later claim never takes a host already served, whatever
+  its repository id; a claim withdrawn and made again is a new claim, behind every claim still live.
+- **Platform hosts are refused** (#776), whatever lake accepted. For every Lake on the cluster, a domain
+  may not equal or be beneath its `spec.host`, its `LAKE_PUBLIC_HOST`, its `spec.apexHost`, its apps
+  wildcard, its preview wildcard, or, when it has a `dnsSecretRef`, the zone of each of its hosts (the
+  host's registrable domain: `lake.live` for `eu.lake.live`, `oramadev.net` for `lake-dev.oramadev.net`),
+  because that zone is where the operator writes records with the Lake's token. A domain equal to a
+  `LakeApp`'s host, to another environment's named host, or to a domain of another Lake's environment is
+  refused too. A Lake on its own corporate zone therefore cannot route tenant domains in that zone: name
+  them under the apps wildcard instead.
+- **Verification.** lake does not record domain ownership yet
+  ([lake#949](https://github.com/oramasearch/lake/issues/949)): a domain row has no verified state, so the
+  operator cannot wait for one. Until lake has it, the first-claim rule and the refusals above are the
+  operator's whole check. When lake records verification, an unverified claim is refused here too.
 - **Removed.** A tombstone takes it out of `spec.domains`; the environment deletes its Ingress rule and
   its DNS record. Deleting the environment deletes them all.
 - **Answered.** The operator appends a row with lake's columns and its own `status` and `message`

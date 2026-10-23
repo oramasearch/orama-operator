@@ -13,8 +13,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -269,7 +272,7 @@ func TestLakeSourceMintsSealedValue(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		calls++
 		mint := decodeMintRequest(t, request)
-		if mint.Attestation.Token != "projected-token" || mint.Source.Lake == nil || mint.Source.Lake.Mount != "production" {
+		if mint.Source.Lake == nil || mint.Source.Lake.Mount != "production" {
 			t.Errorf("mint request = %+v", mint)
 		}
 		if request.Header.Get("Authorization") != "Bearer lake-admin-token" {
@@ -284,10 +287,9 @@ func TestLakeSourceMintsSealedValue(t *testing.T) {
 		WithStatusSubresource(lake, resource).
 		Build()
 	reconciler := &LakeSealedSecretReconciler{
-		Client:              client,
-		Scheme:              scheme,
-		LakeURL:             server.URL,
-		ServiceAccountToken: "projected-token",
+		Client:  client,
+		Scheme:  scheme,
+		LakeURL: server.URL,
 	}
 	reconcileSealedSecret(t, client, scheme, resource.Name, reconciler)
 	produced := &corev1.Secret{}
@@ -335,10 +337,9 @@ func TestDynamicSourceRenewsBeforeTTL(t *testing.T) {
 		WithStatusSubresource(lake, resource).
 		Build()
 	reconciler := &LakeSealedSecretReconciler{
-		Client:              client,
-		Scheme:              scheme,
-		LakeURL:             server.URL,
-		ServiceAccountToken: "projected-token",
+		Client:  client,
+		Scheme:  scheme,
+		LakeURL: server.URL,
 		Now: func() time.Time {
 			return current
 		},
@@ -658,7 +659,7 @@ func TestLakeSourceFollowsTheSecretsCurrentVersion(t *testing.T) {
 		WithStatusSubresource(lake, resource).
 		Build()
 	reconciler := &LakeSealedSecretReconciler{
-		Client: kube, Scheme: scheme, LakeURL: server.URL, ServiceAccountToken: "projected-token",
+		Client: kube, Scheme: scheme, LakeURL: server.URL,
 		LakeSourceRefresh: 5 * time.Minute,
 		Now:               func() time.Time { return current },
 	}
@@ -723,11 +724,86 @@ func TestLakeSourceNeedsTheLakesAdminSecret(t *testing.T) {
 		WithObjects(lake, resource, keySecret).
 		WithStatusSubresource(lake, resource).
 		Build()
-	reconciler := &LakeSealedSecretReconciler{Client: kube, Scheme: scheme, LakeURL: server.URL, ServiceAccountToken: "projected-token"}
+	reconciler := &LakeSealedSecretReconciler{Client: kube, Scheme: scheme, LakeURL: server.URL}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: clientKey(resource.Name, resource.Namespace)}); err == nil {
 		t.Fatal("minted without the Lake's admin Secret")
 	}
 	if calls != 0 {
 		t.Fatalf("lake was called %d times without a credential", calls)
+	}
+}
+
+// TestMintRequestNeverCarriesTheOperatorsKubernetesBearer is LSR-042 (orama-operator#791): the
+// operator's own service-account token authorizes cluster-wide Secret and workload access, so it
+// must never reach Lake, in the body or a header. Lake authenticates the mint with its own admin
+// bearer, which the operator minted for it, and nothing else.
+func TestMintRequestNeverCarriesTheOperatorsKubernetesBearer(t *testing.T) {
+	const operatorBearer = "dummy-operator-kubernetes-bearer"
+	scheme := newSealedSecretScheme(t)
+	lake, resource, keySecret := remoteSealedSecretObjects(t, "lake")
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		raw, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), operatorBearer) {
+			t.Errorf("mint body carries the operator's Kubernetes bearer: %s", raw)
+		}
+		for name, values := range request.Header {
+			for _, value := range values {
+				if strings.Contains(value, operatorBearer) {
+					t.Errorf("mint header %s carries the operator's Kubernetes bearer", name)
+				}
+			}
+		}
+		fields := map[string]json.RawMessage{}
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if _, found := fields["attestation"]; found {
+			t.Errorf("mint body still has an attestation: %s", fields["attestation"])
+		}
+		if request.Header.Get("Authorization") != "Bearer lake-admin-token" {
+			t.Errorf("mint was not authenticated with the Lake's admin bearer: %q", request.Header.Get("Authorization"))
+		}
+		mint := lakeMintRequest{}
+		if err := json.Unmarshal(raw, &mint); err != nil {
+			t.Fatal(err)
+		}
+		record := referenceSealForMintRequest(t, mint, []byte("lake-value"), byte(calls))
+		_ = json.NewEncoder(writer).Encode(lakeMintResponse{OK: true, Value: lakeMintValue{Data: map[string]string{"token": record}}})
+	}))
+	defer server.Close()
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(lake, resource, keySecret, lakeAdminTokenSecret()).
+		WithStatusSubresource(lake, resource).
+		Build()
+	reconciler := &LakeSealedSecretReconciler{Client: kube, Scheme: scheme, LakeURL: server.URL}
+	reconcileSealedSecret(t, kube, scheme, resource.Name, reconciler)
+	if calls != 1 {
+		t.Fatalf("lake was called %d times", calls)
+	}
+	produced := &corev1.Secret{}
+	if err := kube.Get(context.Background(), clientKey("database", "app"), produced); err != nil {
+		t.Fatal(err)
+	}
+	if string(produced.Data["token"]) != "lake-value" {
+		t.Fatalf("produced data = %q", produced.Data["token"])
+	}
+}
+
+// TestSealedSecretReconcilerReadsNoServiceAccountToken keeps LSR-042 fixed at the source: the
+// sealed-secret reconciler has no reason to read the pod's Kubernetes token, so it must not name it.
+func TestSealedSecretReconcilerReadsNoServiceAccountToken(t *testing.T) {
+	source, err := os.ReadFile("lakesealedsecret_controller.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"/var/run/secrets/kubernetes.io/serviceaccount", "rest.InClusterConfig", "BearerToken"} {
+		if strings.Contains(string(source), forbidden) {
+			t.Errorf("lakesealedsecret_controller.go names %q; the mint must not carry the operator's Kubernetes credential", forbidden)
+		}
 	}
 }

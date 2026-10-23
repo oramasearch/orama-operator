@@ -1,0 +1,32 @@
+{{- if or (eq (int .Values.controlPlane.service.port) 8080) (eq (int .Values.controlPlane.service.port) 8081) }}
+{{- fail "controlPlane.service.port must differ from metrics (8080) and health (8081) ports" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "operator.fullname" . }}-control-plane
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "operator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              orama.cloud/deployment-clients: "true"
+          podSelector:
+            matchLabels:
+              orama.cloud/deployment-client: "true"
+      ports:
+        - protocol: TCP
+          port: {{ .Values.controlPlane.service.port }}
+    # Preserve the manager's metrics and health endpoints independently of deployment access.
+    - ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081

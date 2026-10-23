@@ -244,11 +244,13 @@ only after every cluster is cut over.
 |---|---|---|
 | A Lake member stays `Progressing` with "PersistentVolumeClaim … is not bound" | A Lake's store defaults to `ReadWriteMany`, which a disk-backed storage class cannot provide | State `store.accessModes: [ReadWriteOnce]` in the template. A claim's access mode cannot be changed, so the claim that never bound has to be replaced, and the operator does not do that yet: **ask Steve before deleting it**, on any cluster |
 | `OramaOperator` is `Pending`: "the cluster lacks CRDs this operator version needs" | CloudNativePG is not on the cluster yet | Apply its `ClusterHelmRelease`; the operator installs by itself afterwards |
+| `OramaOperator` is `Degraded`, reason `ProductionCredential`: "… is a production credential and is never copied to a nonprod cluster" | Its `imagePullSecretRef` names a Secret production uses (a production set lists it, a production `OramaOperator` names it, or it is labelled `orama.cloud/purpose` for another purpose); nothing was copied to the cluster (orama-operator#832) | Name the cluster's own Secret in `config/clusters/<cluster>/operator.yaml`, copied under the old name with `imagePullSecretAs`, and apply the file. Creating that Secret on the managing cluster is Steve's |
 | `OramaOperator` is `Degraded`: the chart cannot be pulled | The chart for that version was not published | `go run ./hack/pushchart -version <tag>` from the commit the image was built from |
 | A set member is `Pending`: "does not have the Lake kind" | The cluster's operator is not installed or not `Ready` | Fix the `OramaOperator` first |
 | A `ClusterHelmRelease` is `Degraded` with "pre-upgrade hooks failed … timed out", and its Helm revision climbs | A chart's hook (the ClickHouse operator's CRD-install Job) outlasted Helm's timeout while the new cluster was still pulling images. Fixed 2026-10-12: hooks get ten minutes, where they had 30 seconds | Nothing, on a current operator. It recovers once the hook's image is on the node; check `helm history` on the cluster shows a final `deployed` |
 | A Kafka service stays `Provisioning`; its message ends "is forbidden: violates PodSecurity" | Strimzi on that cluster is not running in restricted mode, so the workspace namespace refuses the broker pod | The cluster's Strimzi `ClusterHelmRelease` must set `extraEnvs: STRIMZI_POD_SECURITY_PROVIDER_CLASS=restricted`; the Kafka starts on Strimzi's next pass |
 | A cluster sits in `Creating` for many minutes with no error | Normal: a node takes about ten minutes to join | Read `kubectl get aks`'s `Operation` column; an error would be in `Message` |
+| The operator is `OOMKilled` seconds after starting, then runs well under its limit | Before operator#677: its cache held every Helm release Secret, and the Go runtime did not know the container's limit while start-up Helm reads filled the heap | Nothing, on an operator with operator#677: it sets its Go limit from the container's and leaves Helm release Secrets out of its cache. Never raise the limit for one cluster; see [`../operations/memory.md`](../operations/memory.md) |
 | The API server refuses a CRD: a validation rule does not compile | gofmt rewrote two single quotes in a `// +kubebuilder` marker into a typographic quote | Write `size(x) > 0` instead of comparing with an empty string |
 
 ## Rules that are not negotiable
@@ -256,6 +258,10 @@ only after every cluster is cut over.
 - **No differences between clusters' operators**: same chart, image, CRDs, controllers and RBAC
   everywhere ([`CLAUDE.md`](../../CLAUDE.md) rule 11).
 - **A set never combines nonprod and production.**
+- **Nonprod never gets a production credential.** A Secret a production set lists, one labelled
+  `orama.cloud/purpose: production`, or a migration's Prod 1 source credential is never copied into a
+  nonprod member; the operator refuses it
+  ([the rule](../crd-reference.md#production-credentials-never-reach-a-nonprod-member)).
 - **Per-instance keys are never copied** between clusters; only the Secrets a set lists travel.
 - **Nothing is changed by hand on any cluster without Steve's explicit consent** (the section at
   the top of this page). Change the operator, or change a resource file and apply it.

@@ -139,7 +139,11 @@ Every workspace namespace receives all of the following:
 - The `default` ServiceAccount with `automountServiceAccountToken: false`. Zetta, agent, app and
   operator-owned service pods also set `automountServiceAccountToken: false` on their pod specs.
   The operator creates no Role or RoleBinding in the namespace and binds no ClusterRole to it.
-- One `ResourceQuota` and `LimitRange` selected by the workspace's declarative plan.
+- One `ResourceQuota` and `LimitRange` selected by the workspace's declarative plan. The workspace's
+  methodology runs and served models count against them too: their pods run in the Lake's
+  methodology-runs namespace, and each holds its room here with a never-scheduled reservation pod
+  `<slug>-quota` while it runs ([`methodology-runs.md`](methodology-runs.md#counted-against-the-workspaces-quota),
+  orama-operator#799).
 - An owned `NetworkSandbox` that renders default-deny for both ingress and egress, followed only by
   the explicit policies below. The stage-1 ownership migration preserves former policy specs;
   stage 2 retires only `allow-workspace-internal` after initial Connections are Ready.
@@ -228,9 +232,14 @@ whose kind is not in use selects no pod.
 
 Strimzi needs no ingress policy from us: it writes its own `<cluster>-network-policy-kafka`, which
 already admits pods labelled `strimzi.io/kind=cluster-operator` from any namespace on the control
-plane (9090), replication (9091) and agent (8443) ports. That policy also opens the client listener
-(9092) to every source, because the Kafka builder sets no `networkPolicyPeers` on it; SCRAM
-authentication still applies, but the port is reachable from other namespaces.
+plane (9090), replication (9091) and agent (8443) ports. It writes the client listener's (9092)
+rule from the listener's `networkPolicyPeers`, and with none it admits every source, undoing
+default-deny. The Kafka builder therefore names one peer, the owning Lake's pods; the workspace's
+own pods reach the listener through the policies above, as for every other kind
+([operator#770](https://github.com/oramasearch/orama-operator/issues/770);
+`TestWorkspaceKafkaListenerAdmitsOnlyItsWorkspaceAndLake` checks every policy, Strimzi's
+included). The listener is also TLS with SCRAM-SHA-512 and an ACL-scoped user; see
+[services](services.md#kafkas-listener-tls-peers-and-acls-operator770).
 
 The operator namespaces and labels are constants in
 `internal/controller/lake_workspace_datastore_policies.go`, matching `helmfile.yaml` and the

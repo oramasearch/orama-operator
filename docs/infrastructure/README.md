@@ -133,11 +133,11 @@ What the install requires, and who makes it true:
 | Requirement ([`install.md`](../install.md)) | Met by |
 |---|---|
 | CloudNativePG before the operator. The manager watches CNPG kinds and a missing CRD is fatal by design ([`crd-rollout.md`](../operations/crd-rollout.md)) | A `ClusterHelmRelease` for CloudNativePG. The operator's chart lists the CRDs it needs in its `orama.cloud/required-crds` annotation, and `OramaOperator` **does not install** onto a cluster that lacks one: it stays `Pending` and names them. |
-| The namespace, then the pull secret in it, before the release | `OramaOperator` creates the namespace and copies `spec.imagePullSecretRef` from the management cluster, on every reconcile, so a rotated secret reaches the leaf. |
+| The namespace, then the pull secret in it, before the release | `OramaOperator` creates the namespace and copies `spec.imagePullSecretRef` from the management cluster (named `spec.imagePullSecretAs` on the leaf, when set), on every reconcile, so a rotated secret reaches the leaf. A Secret production uses is never copied to a cluster that is not `production` ([`crd-reference.md`](../crd-reference.md#production-credentials-never-reach-a-nonprod-member), orama-operator#832). |
 | A chart whose CRDs and RBAC match the image | The chart is published with every image to the private repository `oramasearch/orama-operator-chart` (`hack/pushchart`), and `OramaOperator` pulls the one for `spec.version`. A release `v0.1.0` has the chart `0.1.0`; a build `dev-83242f9` has `0.0.0-dev-83242f9`. |
 | CRDs applied on every upgrade (Helm applies `crds/` only on first install) | Both kinds server-side apply the chart's CRDs before every install and upgrade. |
 | A default StorageClass and the volume snapshot CRDs | AKS provides both. |
-| ingress-nginx, cert-manager and the service operators | A `ClusterHelmRelease` each, when the leaf needs them. cert-manager before K8ssandra is `dependsOn`. |
+| ingress-nginx, cert-manager and the service operators | A `ClusterHelmRelease` each. cert-manager is required on every cluster for the manager's deployment HTTPS; the chart's required-CRD annotation gates leaf installation, and helmfile's `needs` orders management installation. cert-manager before K8ssandra is `dependsOn`. |
 
 The chart, its CRDs and its values are the same for every cluster; `OramaOperator` sets only the
 image and its pull secret.
@@ -202,6 +202,7 @@ A general rule for every kind in this work, and for the operator from here on.
 | `DnsRecord` | `CloudflareDnsRecord` | Another DNS provider |
 | `ServiceMesh` | `IstioServiceMesh` | Another mesh |
 | `EdgeZonePolicy` | `CloudflareZonePolicy` | Another CDN or edge provider |
+| `EdgeHostPolicy` | `CloudflareHostPolicy` | Another CDN or edge provider |
 | `PaymentWebhookEndpoint` | `StripeWebhookEndpoint` | Another payment provider |
 | `PaymentCatalog` | `StripeCatalog` | Another payment provider |
 
@@ -218,6 +219,7 @@ provider."*
 | `KubernetesCluster` | a `KubernetesClusterProvider` (of type AKS) | `AksCluster` |
 | `ServiceMesh` | a mesh provider (of type Istio) | `IstioServiceMesh` |
 | `EdgeZonePolicy` | an `EdgeProvider` (of type cloudflare) | `CloudflareZonePolicy` ([`../lake/origin-tls.md`](../lake/origin-tls.md)) |
+| `EdgeHostPolicy` | an `EdgeProvider` (of type cloudflare) | `CloudflareHostPolicy` ([`../crd-reference.md`](../crd-reference.md#edgehostpolicy-separate-crd-namespaced--per-host-full-strict-and-https-redirect)) |
 | `PaymentWebhookEndpoint` | a `PaymentProvider` (of type stripe) | `StripeWebhookEndpoint` ([`payments.md`](payments.md)) |
 | `PaymentCatalog` | a `PaymentProvider` (of type stripe) | `StripeCatalog` ([`payments.md`](payments.md#catalogs)) |
 
@@ -389,6 +391,31 @@ class as an image pull secret.
   credentials Secret holds only `tenantID` and `clientID`.
 - **Service principal:** the same Secret with a `clientSecret` as well.
 
+## Every cluster enforces network policy with Cilium (operator#699)
+
+Workspace isolation on the network is policy: the operator's `NetworkSandbox` renders
+`CiliumNetworkPolicy` objects, and the workspace, app, build and environment controllers render
+Kubernetes `NetworkPolicy`. Those isolate nothing on a dataplane that does not enforce them, so:
+
+- **The `aks` provider's `network.dataplane` and `network.policy` accept only `cilium`** (CRD enum,
+  default `cilium`), on `KubernetesClusterProvider` and `AksCluster`. `azureManagedClusterBody` refuses
+  anything else for a resource stored before the enum, before any request reaches Azure.
+- **A Lake cannot run where Cilium policy is missing.** Its `NetworkSandbox` needs the
+  `ciliumnetworkpolicies.cilium.io` kind (`networksandbox_controller.go`), so the Lake's reconcile fails
+  with the reason instead of running unisolated.
+
+| Cluster | Installed by | Policy engine | How it is known |
+|---|---|---|---|
+| `orama-production-cluster-01` (managing) | `helmfile` | Cilium | Read 2026-10-20: the `cilium` DaemonSet runs, the CRD is installed, 190 NetworkPolicies and 7 CiliumNetworkPolicies exist |
+| `orama-nonprod-cluster-01` | the managing cluster's operator | Cilium | `config/clusters/orama-nonprod-cluster-01/cluster.yaml` sets no `network`, so the provider default `cilium` applies |
+| `orama-production-cluster-02` | the managing cluster's operator | Cilium | as above |
+| `orama-production-cluster-03` | the managing cluster's operator | Cilium | as above |
+
+**Still owed (needs Steve's consent):** a live isolation probe on `lake-testing`, as part of the e2e
+suite (#537): a pod in one workspace namespace must fail to reach another workspace's Zetta, lake's
+control Postgres, the lake Zetta (the bus) and the Kubernetes API. The leaves' live dataplane has not
+been read from this host.
+
 ## The clusters today, and the path from here
 
 As of 2026-10-12. The resources themselves are in
@@ -477,7 +504,12 @@ What a set does for each member, in order:
    `OramaOperator` is installed). Otherwise the member is `Pending` and says which is missing.
 2. **Creates the member's namespace and writes its Secrets** into it, before the instance: an
    instance whose pull secret or credentials are absent starts failing.
-3. **Applies the instance**, labelled `orama.cloud/managed-by-set: <Kind>.<set>`.
+3. **Applies the instance**, labelled `orama.cloud/managed-by-set: <Kind>.<set>` and
+   `orama.cloud/purpose: <the cluster's purpose tag>` (`nonprod` or `production`). The set writes
+   both on every pass, so the purpose is the set's to decide, never a field of the instance's own. An
+   instance's reconciler reads it: a production `OramaCloudV1`'s dashboard is not rendered without its
+   production authentication settings
+   ([`components.md`](../components.md#a-production-dashboard-needs-its-production-authentication-settings-794)).
 4. **Reports what the cluster says**: the version running, and the instance's own reasons when it is
    not `Ready` (for a Lake, every condition that is not met, such as a store that cannot be
    provisioned). What the cluster's API server refuses (a field the kind does not accept) is on the

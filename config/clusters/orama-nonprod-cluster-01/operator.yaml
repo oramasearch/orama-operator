@@ -5,9 +5,13 @@ metadata:
 spec:
   chartRepository: registry-1.docker.io/oramasearch/orama-operator-chart
   clusterRef: orama-nonprod-cluster-01
+  # Nonprod's own Docker Hub token, never production's (orama-operator#832). Copied to the cluster
+  # as oramasearch-dockerhub, the name its operator already pulls with, so the copy of production's
+  # token there is overwritten in place.
   imagePullSecretRef:
-    name: oramasearch-dockerhub
+    name: oramasearch-dockerhub-nonprod
     namespace: orama-system
+  imagePullSecretAs: oramasearch-dockerhub
   imageRepository: oramasearch/orama-operator
   namespace: orama-system
-  version: v0.7.2
+  version: v0.7.3

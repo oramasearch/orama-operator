@@ -60,21 +60,28 @@ never the main stack loop.
 in-cluster (removing it — which runs the finalizer — where it doesn't). It declares:
 
 - **vhost** `/`.
-- **users** `oramacore-writer` / `oramacore-reader` — least-privilege per-service accounts
-  (principle #4), untagged, passwords **generated once** into `<cr>-broker-users` (create-if-absent,
-  `randHex`).
-- **permissions** scoped to the exact stream `^oramacore-operations$` — the writer gets
-  configure+write+read, the reader configure+read (each may declare the stream on connect, so both get
-  `configure`; only the writer gets `write`).
-- **stream** `oramacore-operations` — the writer→reader replication stream, declared as
-  `x-queue-type=stream`.
+- **users** `oramacore-writer` / `oramacore-reader` / `harvest` — least-privilege per-service
+  accounts (principle #4), untagged, passwords **generated once** (create-if-absent, `randHex`): the
+  engine's into `<cr>-broker-users`, harvest's into `<cr>-broker-harvest`
+  ([#824](https://github.com/oramasearch/orama-operator/issues/824)).
+- **permissions** — the writer configure+write+read on `^oramacore-operations$`; the reader
+  configure+read on it and configure+write on `^oramacore-reader-local$`, never write on the
+  replication stream ([#795](https://github.com/oramasearch/orama-operator/issues/795)); harvest
+  configure+write+read on HARVEST's per-crawl queues `^[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-queue$` and
+  write on `amq.default`, nothing on either stream
+  ([#796](https://github.com/oramasearch/orama-operator/issues/796)). The full table is in
+  [components.md](components.md#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo).
+- **streams** `oramacore-operations` — the writer→reader replication stream — and
+  `oramacore-reader-local`, where the writer the combined image starts in each reader produces and
+  which nothing consumes; both declared as `x-queue-type=stream` with OramaCore's own arguments.
 
 Admin creds come from `<cr>-broker-admin` (keys `username`/`password`), generated once with a random
 password where the broker runs locally ([#307](https://github.com/oramasearch/orama-operator/issues/307)).
 The same Secret is rendered into the broker's `rabbitmq.conf` and its boot definitions
 (`credentials.json`, the admin user, `/` and its permissions), which RabbitMQ imports on every start,
-so a changed password reaches a broker whose data volume holds the old one when the broker rolls. The
-broker, writer, readers and harvest-master carry the Secret's data hash and roll on a change. All
+so a changed password reaches a broker whose data volume holds the old one when the broker rolls. Only
+the broker reads it and carries its data hash; the writer and readers carry `<cr>-broker-users`' hash
+and harvest-master `<cr>-broker-harvest`'s instead. All
 broker Secrets are **create-if-absent**, so generated or supplied material survives reconciles; see
 [components.md](components.md#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo).
 
@@ -88,11 +95,16 @@ broker Secrets are **create-if-absent**, so generated or supplied material survi
    growth (principle #8) requires matching OramaCore's exact create args, confirmed on a live cluster —
    tracked as a follow-up, not set blind. The CRD fully supports `maxAge`/`maxLengthBytes` for streams
    the operator owns end-to-end.
-2. **Engine still uses the shared admin user (for now).** The per-service users are declared so
-   least-privilege is *ready to adopt*, but the engine's writer/reader still authenticate as the shared
-   admin user — switching the engine config to `oramacore-writer`/`oramacore-reader` (generated password
-   secrets, render-config substitution) is the fast-follow, kept separate so the replication e2e can be
-   validated against the credential switch on a real cluster.
+2. **Every client signs in as its per-service user**
+   ([#99](https://github.com/oramasearch/orama-operator/issues/99),
+   [#824](https://github.com/oramasearch/orama-operator/issues/824)). The writer uses
+   `oramacore-writer` and every reader pod, of either image, `oramacore-reader`: a combined reader's
+   own writer produces to `oramacore-reader-local`, not the replication stream. render-config fills
+   `__BROKER_PASSWORD__` from the user's key of `<cr>-broker-users`. harvest-master signs in as
+   `harvest`. The engine and harvest-master are written only once this topology reports `Ready` for
+   its generation with every user applied, so a fresh stack never starts them before the users exist.
+   The HARVEST workers are not run by the operator yet; when their spawning is ported to Jobs they
+   take the same `harvest` user.
 
 ## `PostgresSchema` — the control-DB schema
 

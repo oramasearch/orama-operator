@@ -3,6 +3,9 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.8.0](v0.8.0.md) — 2026-10-22. The security release from the multi-tenant audit and the
+  pre-launch review (78 pull requests), lake v0.4.0's schema, backups, edge host policies and
+  certificates, and the Cloud v1 stack's own users and keys. Read its *Before it rolls*.
 - [v0.7.3](v0.7.3.md) — 2026-10-20. A patch releasing the committed cluster files: every Lake on
   lake v0.3.1, the leaves on the operator, and the Cloud v1 pilot's migration declared (not
   applied). No code or CRD change. 43 resource kinds.

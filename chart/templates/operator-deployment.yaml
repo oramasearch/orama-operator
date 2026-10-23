@@ -29,6 +29,8 @@ spec:
           args:
             - --leader-elect
             - --control-plane-bind-address=:{{ .Values.controlPlane.service.port }}
+            - --control-plane-cert-file=/var/run/orama/control-plane/tls.crt
+            - --control-plane-key-file=/var/run/orama/control-plane/tls.key
             {{- with .Values.lakeServices.sqliteImage }}
             - --lake-sqlite-image={{ . }}
             {{- end }}
@@ -49,8 +51,23 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # The container's memory limit in bytes; the operator gives the Go runtime a soft
+            # limit below it (cmd/memory.go, operator#677).
+            - name: OPERATOR_MEMORY_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: manager
+                  resource: limits.memory
           resources: {{- toYaml .Values.operator.resources | nindent 12 }}
+          volumeMounts:
+            - name: control-plane-tls
+              mountPath: /var/run/orama/control-plane
+              readOnly: true
           securityContext:
             runAsNonRoot: true
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: control-plane-tls
+          secret:
+            secretName: {{ include "operator.fullname" . }}-control-plane-tls

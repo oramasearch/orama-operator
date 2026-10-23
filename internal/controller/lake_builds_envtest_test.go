@@ -26,6 +26,7 @@ func TestLakeBuildEnvtestRowToJobToStatus(t *testing.T) {
 	environment := &envtest.Environment{
 		BinaryAssetsDirectory: assets,
 		CRDDirectoryPaths:     []string{"../../config/crd/bases"},
+		CRDs:                  networkSandboxCiliumTestCRDs(),
 		ErrorIfCRDPathMissing: true,
 	}
 	config, err := environment.Start()
@@ -79,6 +80,7 @@ func TestLakeBuildEnvtestRowToJobToStatus(t *testing.T) {
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: buildTokenSecretName(build.ID)}},
 		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: buildJobName(build.ID)}},
+		metadataDenyForTest(namespace),
 	} {
 		if err := kube.Get(context.Background(), client.ObjectKeyFromObject(object), object); err != nil {
 			t.Fatalf("created %T: %v", object, err)

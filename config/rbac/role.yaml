@@ -62,6 +62,8 @@ rules:
   resources:
   - pods
   verbs:
+  - create
+  - delete
   - get
   - list
   - patch
@@ -100,6 +102,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - batch
@@ -268,8 +278,11 @@ rules:
   - orama.cloud
   resources:
   - aksclusters
+  - backups
+  - backupschedules
   - clerkapplications
   - cloudflarednsrecords
+  - cloudflarehostpolicies
   - cloudflarekvnamespaces
   - cloudflareloadbalancers
   - cloudflarer2buckets
@@ -277,6 +290,7 @@ rules:
   - cloudflarezonepolicies
   - clusterhelmreleases
   - connections
+  - edgehostpolicies
   - edgeproviders
   - edgezonepolicies
   - egressrules
@@ -320,8 +334,10 @@ rules:
   - orama.cloud
   resources:
   - aksclusters/finalizers
+  - backups/finalizers
   - clerkapplications/finalizers
   - cloudflarednsrecords/finalizers
+  - cloudflarehostpolicies/finalizers
   - cloudflarekvnamespaces/finalizers
   - cloudflareloadbalancers/finalizers
   - cloudflarer2buckets/finalizers
@@ -352,8 +368,11 @@ rules:
   - orama.cloud
   resources:
   - aksclusters/status
+  - backups/status
+  - backupschedules/status
   - clerkapplications/status
   - cloudflarednsrecords/status
+  - cloudflarehostpolicies/status
   - cloudflarekvnamespaces/status
   - cloudflareloadbalancers/status
   - cloudflarer2buckets/status
@@ -361,6 +380,7 @@ rules:
   - cloudflarezonepolicies/status
   - clusterhelmreleases/status
   - connections/status
+  - edgehostpolicies/status
   - edgeproviders/status
   - edgezonepolicies/status
   - egressrules/status

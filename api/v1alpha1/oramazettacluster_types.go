@@ -299,6 +299,8 @@ type KarpenterCapacity struct {
 	// The in-cluster operator cannot mint these. When the controller identity is absent the reconciler
 	// reports `KarpenterInstalled=False, Reason=CloudIdentityMissing` and does NOT deploy the controller
 	// (which would otherwise crash-loop). See docs/karpenter-cloud-iam-prerequisite.md.
+	// Only a CR in the operator's own namespace may install; a CR elsewhere, or one whose values
+	// differ from an older installing CR, is refused and applies nothing (operator#280).
 	// +kubebuilder:default=false
 	// +optional
 	Install bool `json:"install,omitempty"`

@@ -49,6 +49,18 @@ on every node indefinitely.
    `ZETTA_CLUSTER_TOKEN` on boot and maps it to its `--join-token` (its `src/main.cpp` provisioning env),
    so all nodes derive the same CA and form **one** cluster.
 
+3. **Mount it as a file too** ([zetta#770](https://github.com/oramasearch/zetta/issues/770)). The same
+   Secret key is a read-only Secret volume `cluster-token`, mounted at `/run/secrets/zetta-cluster`
+   (file `token`, mode `0440`: root and the pod's `fsGroup` 10001, the zetta user, no one else), and
+   `ZETTA_CLUSTER_TOKEN_FILE=/run/secrets/zetta-cluster/token` points the engine at it. An environment
+   variable is readable through `/proc/<pid>/environ` and is inherited by every child process the node
+   starts; a file is not. A Zetta image that includes zetta#770 reads the file first, refuses to start if
+   the file and `ZETTA_CLUSTER_TOKEN` disagree, and removes `ZETTA_CLUSTER_TOKEN` from its environment
+   once read. `ZETTA_CLUSTER_TOKEN` stays set for images that predate zetta#770, which ignore the file
+   variable and would otherwise mint their own token and split the cluster. Dropping it, once every image
+   in use reads the file, is [operator#721](https://github.com/oramasearch/orama-operator/issues/721).
+   Both names are operator-owned: `spec.env` cannot set either.
+
 ### Why env var, not a `--join-token` flag
 
 The token is passed **only as an environment variable**, not appended to the `zetta` command line — even

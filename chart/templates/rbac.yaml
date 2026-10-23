@@ -41,6 +41,8 @@ rules:
       - cloudflareloadbalancers
       - rabbitmqtopologies
       - postgresschemas
+      - backupschedules
+      - backups
       - clerkapplications
       - lakes
       - lakee2etests
@@ -59,6 +61,8 @@ rules:
       - edgeproviders
       - edgezonepolicies
       - cloudflarezonepolicies
+      - edgehostpolicies
+      - cloudflarehostpolicies
       - paymentproviders
       - paymentwebhookendpoints
       - stripewebhookendpoints
@@ -106,6 +110,9 @@ rules:
       - cloudflarednsrecords/finalizers
       - cloudflarekvnamespaces/finalizers
       - cloudflarer2buckets/finalizers
+      - backupschedules/status
+      - backups/status
+      - backups/finalizers
       - cloudflareloadbalancers/finalizers
       - postgresschemas/finalizers
       - clerkapplications/status
@@ -133,6 +140,9 @@ rules:
       - edgeproviders/status
       - edgezonepolicies/status
       - cloudflarezonepolicies/status
+      - edgehostpolicies/status
+      - cloudflarehostpolicies/status
+      - cloudflarehostpolicies/finalizers
       - paymentproviders/status
       - paymentwebhookendpoints/status
       - stripewebhookendpoints/status
@@ -143,6 +153,10 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
     verbs: ["*"]
+  # Verify the platform ingress controller's pod ownership before reading billing counters.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["services", "configmaps", "secrets", "persistentvolumeclaims", "serviceaccounts", "resourcequotas", "limitranges"]
     verbs: ["*"]
@@ -153,9 +167,11 @@ rules:
   # the final pushed digest and size into their respective status records.
   # Patch lake pods' orama.cloud/services-secret-version annotation so kubelet refreshes the
   # mounted services Secret at once (lake#197). Listed uncached: no pod informer.
+  # Create and delete a methodology run's or served model's quota reservation, a pod that is never
+  # scheduled, in its workspace's namespace (orama-operator#799).
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "patch"]
+    verbs: ["get", "list", "watch", "patch", "create", "delete"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]

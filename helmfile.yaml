@@ -46,7 +46,7 @@
 #                            the chart and are applied by the presync hook below.
 #   - K8ssandra            — Cassandra (Apache Cassandra images only). Needs cert-manager.
 #   - valkey-io            — Valkey. PREVIEW: upstream says "not ready for production".
-#   - cert-manager         — only because K8ssandra's webhooks need it.
+#   - cert-manager         — required for the operator's deployment HTTPS and K8ssandra webhooks.
 # The release namespaces below (and cnpg-system) are the peers of the workspace NetworkPolicies in
 # internal/controller/lake_workspace_datastore_policies.go (operator#268); move one, change both.
 
@@ -70,7 +70,9 @@ repositories:
 
 releases:
   # ---- platform operators (building blocks the v1 operator reconciles against) ----
-  - name: cloudnative-pg
+  # The release is named cnpg, as on the managing cluster and in every leaf's ClusterHelmRelease
+  # (releaseName: cnpg). Under another name, a sync would install a second CloudNativePG (operator#753).
+  - name: cnpg
     namespace: cnpg-system
     chart: cnpg/cloudnative-pg
     version: 0.29.0   # operator 1.30.0; the same pin every leaf's ClusterHelmRelease has
@@ -102,6 +104,39 @@ releases:
       # pod runs, so the Azure probe passes (and it preserves the client source IP). (operator#38)
       - name: controller.service.externalTrafficPolicy
         value: Local
+    # The client address (operator#719, lake#838): nginx takes it from Cloudflare's CF-Connecting-IP
+    # only when the connection comes from Cloudflare's published ranges
+    # (https://www.cloudflare.com/ips/, read 2026-10-21), and from the TCP peer otherwise, so a
+    # sender that reaches the ingress directly cannot choose its own address. nginx then sets
+    # X-Real-IP, which lake's order sheet counts.
+    values:
+      - controller:
+          # LSR-268: reduce exposure while controller replacement remains blocked (#573).
+          admissionWebhooks:
+            enabled: false
+          allowSnippetAnnotations: false
+          # LSR-208: only tenant app locations discard control-plane credentials. Lake's API,
+          # console and wildcard handlers retain them; no per-Ingress snippets are enabled.
+          proxySetHeaders:
+            Authorization: $orama_app_authorization
+            Cookie: $orama_app_cookie
+          config:
+            http-snippet: |
+              map $ingress_name $orama_tenant_app {
+                default 0;
+                "~^app(-[0-9a-f]{12})?$" 1;
+              }
+              map $orama_tenant_app $orama_app_authorization {
+                default $http_authorization;
+                1 "";
+              }
+              map "$orama_tenant_app:$http_cookie" $orama_app_cookie {
+                default $http_cookie;
+                "~*^1:([[:space:]]*|.*[;,][[:space:]]*)(__Host-|__Secure-)?lake_session[[:space:]]*=" "";
+              }
+            enable-real-ip: "true"
+            forwarded-for-header: CF-Connecting-IP
+            proxy-real-ip-cidr: "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22,2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32"
 
   # ---- service operators (lake managed services, decision 47) ----
   - name: cert-manager
@@ -206,5 +241,7 @@ releases:
     namespace: orama-system
     createNamespace: true
     chart: ./chart
+    needs:
+      - cert-manager/cert-manager
     labels:
       app: orama-operator

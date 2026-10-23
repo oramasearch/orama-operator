@@ -172,18 +172,32 @@ func llmKeySecretEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 // per key placeholder the side's template holds (renderEnvs), reading each value from its quoted
 // environment variable. The script never holds a key value, and nothing in it evaluates or logs one.
 func renderConfigScript(oc *oramav1alpha1.OramaCloudV1, side engineSide) string {
-	return renderEscFunc + "sed" + renderSubstitutions(renderEnvs(oc, side)) + " /tmpl/" + side.configKey + " > /etc/oramacore/config.yaml"
+	return renderEscFunc + localWriterKeyScript(side) + "sed" + renderSubstitutions(renderEnvs(oc, side)) + " /tmpl/" + side.configKey + " > /etc/oramacore/config.yaml"
+}
+
+// localWriterKeyScript generates the combined reader config's local writer key (#795): 24 random
+// bytes as 48 hex characters, new at every pod start, held only in that pod's rendered config. Other
+// sides get nothing.
+func localWriterKeyScript(side engineSide) string {
+	if !side.generatesLocalWriterKey() {
+		return ""
+	}
+	return localWriterKeyEnv + "=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n'); "
 }
 
 // renderEnvs is the variables an engine side's render-config fills: the master key where the
-// side's template holds writer_side.master_api_key, the broker admin user and password, the
+// side's template holds writer_side.master_api_key, the generated local writer key in its place on
+// the combined reader config, the password of the side's broker user, the
 // analytics key where it holds reader_side.analytics, and each provider's key.
 func renderEnvs(oc *oramav1alpha1.OramaCloudV1, side engineSide) []string {
 	var envs []string
 	if side.readsMasterAPIKey() {
 		envs = append(envs, masterAPIKeyEnvName)
 	}
-	envs = append(envs, brokerUserEnv, brokerPasswordEnv)
+	if side.generatesLocalWriterKey() {
+		envs = append(envs, localWriterKeyEnv)
+	}
+	envs = append(envs, brokerPasswordEnv)
 	if side.readsAnalyticsKey() {
 		envs = append(envs, analyticsKeyEnvName)
 	}
@@ -304,7 +318,7 @@ func secretDataHash(secrets ...*corev1.Secret) string {
 
 // requestsForSecret maps a Secret event to the OramaCloudV1 resources in its namespace that read
 // it: an enabled engine's LLM key Secrets (<cr>-engine-secret, or an apiKeySecretRef), the Secret
-// spec.masterAPIKeySecretRef names, <cr>-broker-admin, <cr>-cache-auth and <cr>-analytics-api-key,
+// spec.masterAPIKeySecretRef names, <cr>-broker-admin, <cr>-broker-users, <cr>-broker-harvest, <cr>-cache-auth and <cr>-analytics-api-key,
 // and the control DB's <cr>-controldb-app while analytics-processor runs. Supplied and copied
 // Secrets carry no owner reference, so Owns alone would miss them; a Secret several CRs share
 // enqueues each of them.
@@ -325,16 +339,25 @@ func (r *OramaCloudV1Reconciler) requestsForSecret(ctx context.Context, object c
 
 // secretsReadBy is the Secrets a CR's workloads read that requestsForSecret maps back to it.
 func secretsReadBy(oc *oramav1alpha1.OramaCloudV1) []string {
-	names := []string{brokerAdminSecretName(oc), cacheAuthSecretName(oc), analyticsKeySecretName(oc)}
+	names := []string{brokerAdminSecretName(oc), brokerUsersSecretName(oc), cacheAuthSecretName(oc), redisHTTPSecretName(oc), hpesSecretName(oc), analyticsKeySecretName(oc), brokerHarvestSecretName(oc),
+		harvestSignSecretName(oc), harvestNotificationSecretName(oc)}
 	if oc.Spec.Components.AnalyticsProcessor.Enabled {
 		names = append(names, controlDBAppSecret(oc))
 	}
+	if oc.Spec.Components.Dashboard.Enabled {
+		names = append(names, dashboardDBSecrets(oc)...)
+	}
 	if name, _ := masterAPIKeyRef(oc); name != "" {
 		names = append(names, name)
+	}
+	if oc.Spec.Cloudflare.Enabled && (oc.Spec.Components.Dashboard.Enabled || oc.Spec.Components.ImportConsumer.Enabled) {
+		names = append(names, oc.Name+"-uploads-r2")
 	}
 	if oc.Spec.Components.Engine.Enabled {
 		names = append(names, componentSecretName(oc, "engine"))
 		names = append(names, llmCustomSecretNames(oc)...)
 	}
+	// The workers' and index-builder's third-party key Secrets (#571).
+	names = append(names, keyRefSecretsReadBy(oc)...)
 	return names
 }

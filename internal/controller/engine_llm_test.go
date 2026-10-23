@@ -333,14 +333,19 @@ func TestLLMCustomKeySecretWiring(t *testing.T) {
 		{Name: "ANTHROPIC_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: "llm-keys"}, Key: "ANTHROPIC_API_KEY"}}},
 	}
-	// The credentials come first: the master key (both sides run the combined config) and the
-	// broker admin user and password.
-	want = append([]corev1.EnvVar{secretKeyEnv("MASTER_API_KEY", testMasterSecret, "MASTER_API_KEY"),
-		secretKeyEnv("BROKER_USERNAME", "v1-broker-admin", "username"), secretKeyEnv("BROKER_PASSWORD", "v1-broker-admin", "password")}, want...)
+	// The credentials come first: on the writer the master key and oramacore-writer's password; on
+	// the combined readers an empty MASTER_API_KEY, masking the engine Secret's, and
+	// oramacore-reader's password (#99, #795).
+	wants := map[string][]corev1.EnvVar{
+		"writer": append([]corev1.EnvVar{secretKeyEnv("MASTER_API_KEY", testMasterSecret, "MASTER_API_KEY"),
+			secretKeyEnv("BROKER_PASSWORD", "v1-broker-users", "writer-password")}, want...),
+		"reader": append([]corev1.EnvVar{{Name: "MASTER_API_KEY"},
+			secretKeyEnv("BROKER_PASSWORD", "v1-broker-users", "reader-password")}, want...),
+	}
 	cm := h.engineConfig()
 	for side, spec := range h.podTemplates() {
 		init := renderInit(t, spec.Spec)
-		if !reflect.DeepEqual(init.Env, want) {
+		if want := wants[side]; !reflect.DeepEqual(init.Env, want) {
 			t.Errorf("%s render-config env = %+v, want %+v", side, init.Env, want)
 		}
 		if !reflect.DeepEqual(init.EnvFrom, envFromFor(oc, "engine")) {

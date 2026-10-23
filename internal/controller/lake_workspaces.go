@@ -1324,7 +1324,11 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 		// with the claims the storage reconcile grows (operator#259).
 		cluster.Spec.Storage = workspaceZettaStorage(lake, row, cluster.Spec.Storage, creating)
 		cluster.Spec.Resources = serviceZettaResources(lake)
-		cluster.Spec.Env = serviceZettaEnv(lake)
+		egressAllow, egressErr := workspaceZettaEgressAllow(ctx, r.Client, namespace, row.ZettaServiceID, cluster.Spec.Env)
+		if egressErr != nil {
+			logf.FromContext(ctx).Error(egressErr, "workspace Zetta egress allowlist kept or denied", "workspace", row.ID)
+		}
+		cluster.Spec.Env = serviceZettaEnv(lake, egressAllow)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.Host = ""
 		cluster.Spec.DNSSecretRef = nil

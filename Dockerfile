@@ -20,7 +20,7 @@ COPY internal/ internal/
 # docs/control-plane is a Go package (the embedded deployment contract from #142).
 COPY docs/control-plane/ docs/control-plane/
 # Static build (no CGO) so the binary runs on distroless/static. -a rebuilds all packages.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o manager ./cmd
 # The mesh's node projector (docs/infrastructure/mesh.md) ships in the same image: the operator's
 # node-local half, run by the mesh DaemonSet beside zetta-tunnel's agent.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o mesh-projector ./cmd/mesh-projector

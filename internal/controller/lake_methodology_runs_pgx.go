@@ -19,7 +19,8 @@ import (
 // listMethodologyRunsSQL reads every run that still needs the operator: present ones, and absent
 // ones not yet reported Stopped, Succeeded or Failed at their generation or whose credential
 // digest is still set. Each comes with its image build's state.
-const listMethodologyRunsSQL = `SELECT m.id::text, m.customer_id::text, m.workspace_id::text, m.methodology_id, m.mode,
+const listMethodologyRunsSQL = `SELECT m.id::text, m.customer_id::text, m.workspace_id::text, COALESCE(w.namespace, ''),
+       m.methodology_id, m.mode,
        COALESCE(m.build_id::text, ''), m.image, m.runtime_image, m.cpu_millis, m.memory_bytes, m.gpus,
        m.gpu_class, m.timeout_seconds, m.network, m.slug, m.desired, m.generation,
        b.id IS NOT NULL, COALESCE(b.desired, ''), COALESCE(b.phase, ''), COALESCE(b.digest, ''),
@@ -27,6 +28,7 @@ const listMethodologyRunsSQL = `SELECT m.id::text, m.customer_id::text, m.worksp
        ms.run_id IS NOT NULL, COALESCE(ms.phase, ''), COALESCE(ms.message, ''), ms.exit_code,
        COALESCE(ms.credential_sha256, ''), COALESCE(ms.observed_generation, 0), ms.started_at, ms.finished_at
   FROM methodology_runs m
+  LEFT JOIN workspaces w ON w.id = m.workspace_id
   LEFT JOIN builds b ON b.id = m.build_id
   LEFT JOIN methodology_run_status ms ON ms.run_id = m.id
  WHERE m.desired = 'present'
@@ -83,7 +85,7 @@ func (s *pgxServiceStore) ListMethodologyRuns(ctx context.Context) ([]LakeMethod
 		var build LakeMethodologyRunBuild
 		var status LakeMethodologyRunStatus
 		var hasBuild, hasStatus bool
-		if err := rows.Scan(&run.ID, &run.CustomerID, &run.WorkspaceID, &run.MethodologyID, &run.Mode,
+		if err := rows.Scan(&run.ID, &run.CustomerID, &run.WorkspaceID, &run.WorkspaceNamespace, &run.MethodologyID, &run.Mode,
 			&run.BuildID, &run.Image, &run.RuntimeImage, &run.CPUMillis, &run.MemoryBytes, &run.GPUs,
 			&run.GPUClass, &run.TimeoutSeconds, &run.Network, &run.Slug, &run.Desired, &run.Generation,
 			&hasBuild, &build.Desired, &build.Phase, &build.Digest, &build.Target, &build.Message,

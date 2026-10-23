@@ -25,8 +25,8 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 | [`provider.yaml`](provider.yaml) | `KubernetesClusterProvider/azure-orama`: the Azure subscription and defaults every cluster is created with. |
 | `<cluster>/cluster.yaml` | The `KubernetesCluster`: region, version, node pools, `purpose` tag, deletion policy. |
 | `<cluster>/platform.yaml` | One `ClusterHelmRelease` per chart the cluster runs, in install order. |
-| `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs. |
-| `sets/lake-<purpose>.yaml` | A `LakeSet`: the Lake instances of that purpose. |
+| `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs, and the pull Secret copied to it. A nonprod cluster names its own (`orama-system/oramasearch-dockerhub-nonprod`, copied as `oramasearch-dockerhub`); a Secret production uses is refused for it (orama-operator#832). |
+| `sets/lake-<purpose>.yaml` | A `LakeSet`: the Lake instances of that purpose, and the end-to-end runs against them (`spec.e2eTests`). |
 | `sets/v1-<purpose>.yaml` | An `OramaCloudV1Set`: the Orama Cloud v1 instances of that purpose, and the Prod 1 teams being copied into them. |
 
 | Cluster | Region | Purpose | Deletion policy |
@@ -56,7 +56,17 @@ engine master key (production carries Prod 1's) receives it this way and names i
 `<cr>-master-api-key` (#615), which is right for a fresh stack such as `v1-dev`. Changing a
 copied Secret's source, or its data on the managing cluster, rolls the member's consumers of it.
 
-An `OramaCloudV1Set` copies `cloudflare-api-token` to each member's namespace the same way;
+**Nonprod and production never share a Secret** (orama-operator#787, #789). A nonprod set lists its
+own Secrets, copied under the names its stack mounts with `as`; the operator refuses to copy into a
+nonprod member a Secret any production set lists, one labelled `orama.cloud/purpose: production`, or
+a migration's Prod 1 source credential. The same holds for each `<cluster>/operator.yaml` pull Secret
+(orama-operator#832): a nonprod cluster names its own, and the operator refuses to copy to it a
+Secret production uses. `TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes` fails on a set
+or operator file that shares one
+([the rule](../../docs/crd-reference.md#production-credentials-never-reach-a-nonprod-member)).
+
+An `OramaCloudV1Set` copies a Cloudflare token to each member's namespace as `cloudflare-api-token`
+the same way (`v1-prod` the production token, `v1-nonprod` its own `cloudflare-api-token-oramadev`);
 besides DNS, it is the DNS-01 credential of every stack's Let's Encrypt `Issuer`,
 so a v1 member with a host fails to reconcile without it
 ([origin TLS](../../docs/components.md#origin-tls-ingress_tlsgo-457)). Every host in a v1 set,
@@ -110,6 +120,31 @@ Steve's consent, and a set copies a member's Secret into its namespace. None exi
 | `stripe-staging` | `lake` | the `staging` sandbox |
 | `stripe-live` | `lake` | live mode, for `lake-prod` |
 | `stripe-v1-dev` | `orama-system` | the `dev` sandbox, for `v1-dev` |
+
+### Moving a member to `spec.billing`
+
+Every `lake-nonprod` and `lake-prod` member bills today through a `spec.env` entry,
+`LAKE_BILLING: "on"`. A Lake's `spec.billing` ([`docs/lake/payments.md`](../../docs/lake/payments.md#billing-specbilling),
+[operator#662](https://github.com/oramasearch/orama-operator/issues/662)) is the typed switch that
+replaces it, and `spec.payments` requires `billing: {enabled: true}`. While a member has no
+`spec.billing` its `spec.env` entry still passes through, so nothing changes until its file moves.
+Each member moves with its own Stripe roll ([#641](https://github.com/oramasearch/orama-operator/issues/641),
+[#643](https://github.com/oramasearch/orama-operator/issues/643)), one member per pull request,
+applied with Steve's consent:
+
+```yaml
+# a member's spec, before
+env:
+- name: LAKE_BILLING
+  value: "on"
+# after: the env entry is removed
+billing: {enabled: true}
+```
+
+Once `spec.billing` is set, a leftover `spec.env` `LAKE_BILLING` is ignored and the operator logs that
+it is, so remove it in the same change. An on-prem or enterprise Lake leaves `spec.billing` unset.
+`Lake/prod` on the managing cluster bills with the manual provider and keeps its `spec.env` entry
+until it is retired (#536).
 
 Both v1 sets run the combined OramaCore engine from the private
 `oramasearch/oramacore-cloud-v1`, set by tag in each template's `images.overrides.oramacore`: v1.2.39
@@ -179,6 +214,19 @@ true` while the import is enabled, or a writing step is `Blocked`. Watch progres
   Delete` a member's stack is deleted only once its migrations are gone, and a set being deleted
   keeps its finalizer until all of them are, under either policy. A migration stuck in `Blocked`
   holds that deletion, with its message on the set.
+
+## Running the Lake end-to-end gate from a set file
+
+A `LakeE2ETest` runs on the cluster of the Lake it tests, but these files are applied to the managing
+cluster. So the testing -> staging gate is an entry under `spec.e2eTests` of
+[`sets/lake-nonprod.yaml`](sets/lake-nonprod.yaml), and the managing operator applies it as a
+`LakeE2ETest` on the member's cluster with `spec.member` filled in
+([operator#589](https://github.com/oramasearch/orama-operator/issues/589),
+[`docs/lake/README.md#service-e2e`](../../docs/lake/README.md#service-e2e)). The image is named by
+digest. Applying the file starts a run, and changing `runID` to the next release starts the next;
+both are a set change, applied with Steve's consent and committed with it. The result is in the
+set's `E2E` column and `status.e2eTests`. The entry is in the file, commented out, until
+`oramasearch/lake-e2e` has an image and the managing cluster runs an operator that knows the field.
 
 To check that the files match the cluster:
 

@@ -8,11 +8,13 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/oramasearch/orama-operator/internal/imagepolicy"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -37,7 +39,7 @@ type LakeRestoreRehearsalReconciler struct {
 
 const (
 	lakeRehearsalRequeue       = 10 * time.Second
-	lakeRehearsalVerifyImage   = "postgres:18-alpine"
+	lakeRehearsalVerifyImage   = pinnedPostgres18Image
 	cnpgHealthyPhase           = "Cluster in healthy state"
 	postgresLifecycleGapNote   = "one or more lifecycle procedures have not been tested"
 	postgresSingleInstanceNote = "failover is unavailable for a single-instance cluster"
@@ -97,6 +99,9 @@ func validateRehearsal(rehearsal *oramav1alpha1.LakeRestoreRehearsal, lake *oram
 	}
 	if rehearsal.Spec.Operation == "upgrade" && rehearsal.Spec.TargetImage == "" {
 		return "spec.targetImage is required for an upgrade rehearsal"
+	}
+	if rehearsal.Spec.Operation == "upgrade" && !imagepolicy.Pinned(rehearsal.Spec.TargetImage) {
+		return "spec.targetImage must use an immutable SHA-256 digest"
 	}
 	if rehearsal.Spec.Operation == "failover" {
 		instances := int32(1)
@@ -163,7 +168,13 @@ func (r *LakeRestoreRehearsalReconciler) reconcileScratchRehearsal(
 	if waiting {
 		return ctrl.Result{RequeueAfter: lakeRehearsalRequeue}, nil
 	}
+	if !imagepolicy.Pinned(sourceImage) {
+		return r.finishRehearsal(ctx, rehearsal, false, "source Postgres image must use an immutable SHA-256 digest before restoring credentials into a scratch cluster")
+	}
 	if err := r.ensureScratchResources(ctx, rehearsal, lake, backupConfig, backup, sourceImage); err != nil {
+		if errors.Is(err, errMutableScratchImage) {
+			return r.finishRehearsal(ctx, rehearsal, false, err.Error())
+		}
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{RequeueAfter: lakeRehearsalRequeue}, nil
 		}
@@ -308,7 +319,7 @@ func (r *LakeRestoreRehearsalReconciler) ensureScratchResources(
 	if err := r.copyRehearsalSecret(ctx, rehearsal, lakeNamespace(lake), backupConfig.SecretName, "object-store"); err != nil {
 		return err
 	}
-	if err := r.copyRehearsalSecret(ctx, rehearsal, lakeNamespace(lake), lakeControlDB(lake.Name)+"-app", "source-db"); err != nil {
+	if err := r.copyRehearsalSecret(ctx, rehearsal, lakeNamespace(lake), lakeRehearsalSecretName(lake), "source-db"); err != nil {
 		return err
 	}
 	return r.ensureScratchCluster(ctx, rehearsal, lake, backupConfig, backup, sourceImage)
@@ -364,6 +375,8 @@ func (r *LakeRestoreRehearsalReconciler) copyRehearsalSecret(
 	return err
 }
 
+var errMutableScratchImage = errors.New("existing scratch Postgres image lacks an immutable SHA-256 digest; create a new rehearsal after pinning the source")
+
 func (r *LakeRestoreRehearsalReconciler) ensureScratchCluster(
 	ctx context.Context,
 	rehearsal *oramav1alpha1.LakeRestoreRehearsal,
@@ -374,6 +387,21 @@ func (r *LakeRestoreRehearsalReconciler) ensureScratchCluster(
 ) error {
 	cluster := newScratchCluster(rehearsal)
 	if err := r.Get(ctx, client.ObjectKeyFromObject(cluster), cluster); err == nil {
+		if !metav1.IsControlledBy(cluster, rehearsal) {
+			return fmt.Errorf("scratch Cluster is not controlled by this rehearsal")
+		}
+		image, _, _ := unstructured.NestedString(cluster.Object, "spec", "imageName")
+		if !imagepolicy.Pinned(image) {
+			return errMutableScratchImage
+		}
+		desired := []interface{}{lakeRehearsalRole("source-db")}
+		roles, _, _ := unstructured.NestedSlice(cluster.Object, "spec", "managed", "roles")
+		if !apiequality.Semantic.DeepEqual(roles, desired) {
+			if err := unstructured.SetNestedSlice(cluster.Object, desired, "spec", "managed", "roles"); err != nil {
+				return err
+			}
+			return r.Update(ctx, cluster)
+		}
 		return nil
 	} else if !apierrors.IsNotFound(err) {
 		return err
@@ -392,6 +420,7 @@ func (r *LakeRestoreRehearsalReconciler) ensureScratchCluster(
 	cluster.Object["spec"] = map[string]interface{}{
 		"instances": instances,
 		"imageName": sourceImage,
+		"managed":   map[string]interface{}{"roles": []interface{}{lakeRehearsalRole("source-db")}},
 		"storage":   storage,
 		"bootstrap": map[string]interface{}{
 			"recovery": map[string]interface{}{
@@ -478,6 +507,19 @@ func (r *LakeRestoreRehearsalReconciler) ensureScratchVerificationJob(
 		Namespace: rehearsal.Status.ScratchNamespace,
 	}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(job), job); err == nil {
+		if !metav1.IsControlledBy(job, rehearsal) {
+			return nil, fmt.Errorf("verification Job %s is not controlled by this rehearsal", job.Name)
+		}
+		if !job.DeletionTimestamp.IsZero() {
+			return nil, nil
+		}
+		// A verifier from before the credential/image policy changed may still retry. Replace it
+		// in foreground before another read-only verifier can run.
+		if !rehearsalVerifierCurrent(job, "source-db") {
+			policy := metav1.DeletePropagationForeground
+			err := r.Delete(ctx, job, &client.DeleteOptions{PropagationPolicy: &policy, Preconditions: &metav1.Preconditions{UID: &job.UID, ResourceVersion: &job.ResourceVersion}})
+			return nil, client.IgnoreNotFound(err)
+		}
 		return job, nil
 	} else if !apierrors.IsNotFound(err) {
 		return nil, err
@@ -596,6 +638,19 @@ func (r *LakeRestoreRehearsalReconciler) ensureFailoverVerificationJob(
 		Namespace: lakeNamespace(lake),
 	}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(job), job); err == nil {
+		if !metav1.IsControlledBy(job, rehearsal) {
+			return nil, fmt.Errorf("verification Job %s is not controlled by this rehearsal", job.Name)
+		}
+		if !job.DeletionTimestamp.IsZero() {
+			return nil, nil
+		}
+		// A verifier from before the credential/image policy changed may still retry. Replace it
+		// in foreground before another read-only verifier can run.
+		if !rehearsalVerifierCurrent(job, lakeRehearsalSecretName(lake)) {
+			policy := metav1.DeletePropagationForeground
+			err := r.Delete(ctx, job, &client.DeleteOptions{PropagationPolicy: &policy, Preconditions: &metav1.Preconditions{UID: &job.UID, ResourceVersion: &job.ResourceVersion}})
+			return nil, client.IgnoreNotFound(err)
+		}
 		return job, nil
 	} else if !apierrors.IsNotFound(err) {
 		return nil, err
@@ -604,7 +659,7 @@ func (r *LakeRestoreRehearsalReconciler) ensureFailoverVerificationJob(
 	job.Spec = verificationJobSpec(
 		lakeControlDB(lake.Name)+"-rw",
 		"",
-		lakeControlDB(lake.Name)+"-app",
+		lakeRehearsalSecretName(lake),
 		false,
 	)
 	if err := controllerutil.SetControllerReference(rehearsal, job, r.Scheme); err != nil {
@@ -618,6 +673,9 @@ func (r *LakeRestoreRehearsalReconciler) finishFromJob(
 	rehearsal *oramav1alpha1.LakeRestoreRehearsal,
 	job *batchv1.Job,
 ) (ctrl.Result, error) {
+	if job == nil {
+		return ctrl.Result{RequeueAfter: lakeRehearsalRequeue}, nil
+	}
 	if job.Status.Failed > 0 {
 		return r.finishRehearsal(ctx, rehearsal, false, "verification Job failed")
 	}
@@ -783,14 +841,15 @@ func cnpgClusterFailure(cluster *unstructured.Unstructured) string {
 func verificationJobSpec(sourceHost string, restoredHost string, secretName string, compare bool) batchv1.JobSpec {
 	backoff := int32(0)
 	deadline := int64(600)
-	script := postgresConnectionVerificationScript
+	script := rehearsalDatabaseWaitScript + "\nwait_rehearsal_database \"$SOURCE_HOST\"\n" + postgresConnectionVerificationScript
 	if compare {
-		script = postgresRestoreVerificationScript
+		script = rehearsalDatabaseWaitScript + "\nwait_rehearsal_database \"$SOURCE_HOST\"\nwait_rehearsal_database \"$RESTORED_HOST\"\n" + postgresRestoreVerificationScript
 	}
 	env := []corev1.EnvVar{
 		{Name: "SOURCE_HOST", Value: sourceHost},
 		{Name: "PGUSER", ValueFrom: rehearsalSecretKey(secretName, "username")},
 		{Name: "PGPASSWORD", ValueFrom: rehearsalSecretKey(secretName, "password")},
+		{Name: "PGOPTIONS", Value: "-c default_transaction_read_only=on"},
 		{Name: "QUERY", Value: postgresVerificationQuery},
 		{Name: "MIGRATIONS_QUERY", Value: postgresMissingMigrationsQuery},
 	}
@@ -812,6 +871,38 @@ func verificationJobSpec(sourceHost string, restoredHost string, secretName stri
 			},
 		},
 	}
+}
+
+// Reuse a verifier only when it uses the pinned helper and the exact read-only credential.
+func rehearsalVerifierCurrent(job *batchv1.Job, secret string) bool {
+	if len(job.Spec.Template.Spec.Containers) != 1 || len(job.Spec.Template.Spec.InitContainers) != 0 {
+		return false
+	}
+	container := job.Spec.Template.Spec.Containers[0]
+	if container.Image != lakeRehearsalVerifyImage {
+		return false
+	}
+	readonly, user, password := false, false, false
+	for _, env := range container.Env {
+		switch env.Name {
+		case "PGOPTIONS":
+			readonly = env.Value == "-c default_transaction_read_only=on"
+		case "PGUSER", "PGPASSWORD":
+			if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
+				return false
+			}
+			ref := env.ValueFrom.SecretKeyRef
+			if ref.Name != secret {
+				return false
+			}
+			if env.Name == "PGUSER" {
+				user = ref.Key == "username"
+			} else {
+				password = ref.Key == "password"
+			}
+		}
+	}
+	return readonly && user && password
 }
 
 func rehearsalSecretKey(name string, key string) *corev1.EnvVarSource {
@@ -906,6 +997,9 @@ UNION ALL SELECT 'clerk_webhooks_guard=' || count(*) FROM clerk_webhooks_guard
 UNION ALL SELECT 'repository_liquid_ids_guard=' || count(*) FROM repository_liquid_ids_guard
 UNION ALL SELECT 'cloud_orders_guard=' || count(*) FROM cloud_orders_guard
 UNION ALL SELECT 'billing_contacts_guard=' || count(*) FROM billing_contacts_guard
+UNION ALL SELECT 'account_deletion_guard=' || count(*) FROM account_deletion_guard
+UNION ALL SELECT 'saml_sign_in_guard=' || count(*) FROM saml_sign_in_guard
+UNION ALL SELECT 'root_recovery_participants_guard=' || count(*) FROM root_recovery_participants_guard
 `
 
 // postgresMissingMigrationsQuery returns, space-separated, every migration the vendored lake schema
@@ -931,6 +1025,21 @@ func missingMigrationsQuery(versions []string) string {
 	return "SELECT coalesce(string_agg(v, ' ' ORDER BY v), '') FROM (VALUES " + strings.Join(values, ", ") +
 		") AS expected(v) WHERE NOT EXISTS (SELECT 1 FROM schema_migrations m WHERE m.version = expected.v)"
 }
+
+// CNPG can report ready instances before applying managed-role changes. Wait only with the
+// read-only credential; an unavailable role never causes fallback to the owner.
+const rehearsalDatabaseWaitScript = `
+wait_rehearsal_database() {
+  tries=0
+  while [ "$tries" -lt 30 ]; do
+    if PGCONNECT_TIMEOUT=3 psql --host="$1" --dbname=lake --command 'SELECT 1' >/dev/null 2>&1; then return 0; fi
+    tries=$((tries + 1))
+    sleep 2
+  done
+  echo 'read-only rehearsal login is unavailable'
+  return 1
+}
+`
 
 const postgresRestoreVerificationScript = `
 psql --host="$SOURCE_HOST" --dbname=lake --tuples-only --no-align --command "$QUERY" > /tmp/source

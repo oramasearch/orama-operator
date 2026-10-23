@@ -75,7 +75,7 @@ func (f *fakeServiceStore) deploymentStatus(t *testing.T) LakeMethodologyDeploym
 // --- fixtures ------------------------------------------------------------------------------------
 
 func testMethodologyDeployment() LakeMethodologyDeployment {
-	return LakeMethodologyDeployment{ID: testDeploymentID, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID,
+	return LakeMethodologyDeployment{ID: testDeploymentID, CustomerID: testServiceCustomer, WorkspaceID: testWorkspaceID, WorkspaceNamespace: testWorkspaceName,
 		MethodologyID: "W-0123abcd", ModelID: "model-1", BuildID: testBuildID, RuntimeImage: testRuntimeImg,
 		CPUMillis: 1000, MemoryBytes: 2 << 30, Slug: testDeploymentSlug, Desired: serviceDesiredPresent, Generation: 1,
 		Build: &LakeMethodologyRunBuild{Desired: buildDesiredQueued, Phase: BuildPhaseSucceeded, Digest: testBuildDigest,

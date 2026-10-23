@@ -76,8 +76,11 @@ const (
 	methodologyTransferPolicy  = "methodology-transfer"
 	methodologySandboxInternet = "methodology-sandbox-internet"
 
-	methodologyCLI              = "/opt/orama/bin/methodology"
-	methodologyWorkPath         = "/work"
+	methodologyCLI      = "/opt/orama/bin/methodology"
+	methodologyWorkPath = "/work"
+	// methodologySafeWorkingDir is where a pod that holds the run credential starts: its own
+	// emptyDir, never the work volume the sandbox can write.
+	methodologySafeWorkingDir   = "/tmp"
 	methodologyCredentialDir    = "/var/run/orama"
 	methodologyCredentialFile   = "credential"
 	methodologyPullUser         = "methodology-run"
@@ -101,23 +104,26 @@ var (
 
 // LakeMethodologyRun is one methodology_runs row joined to its image build and its status row.
 type LakeMethodologyRun struct {
-	ID             string
-	CustomerID     string
-	WorkspaceID    string
-	MethodologyID  string
-	Mode           string
-	BuildID        string
-	Image          string
-	RuntimeImage   string
-	CPUMillis      int32
-	MemoryBytes    int64
-	GPUs           int32
-	GPUClass       string
-	TimeoutSeconds int32
-	Network        bool
-	Slug           string
-	Desired        string
-	Generation     int64
+	ID          string
+	CustomerID  string
+	WorkspaceID string
+	// WorkspaceNamespace is the workspace's own namespace (workspaces.namespace), where the run's
+	// quota reservation goes (orama-operator#799); empty when the workspace has none.
+	WorkspaceNamespace string
+	MethodologyID      string
+	Mode               string
+	BuildID            string
+	Image              string
+	RuntimeImage       string
+	CPUMillis          int32
+	MemoryBytes        int64
+	GPUs               int32
+	GPUClass           string
+	TimeoutSeconds     int32
+	Network            bool
+	Slug               string
+	Desired            string
+	Generation         int64
 	// Build is the joined builds row; nil when the run names no build or the row is gone.
 	Build  *LakeMethodologyRunBuild
 	Status *LakeMethodologyRunStatus
@@ -289,6 +295,10 @@ func (r *LakeReconciler) reconcileMethodologyNamespace(ctx context.Context, lake
 			return "", fmt.Errorf("reconcile NetworkPolicy %s/%s: %w", name, wanted.Name, err)
 		}
 	}
+	// The ceiling on every workspace's methodologies together (orama-operator#799).
+	if err := r.reconcileMethodologyCeiling(ctx, lake, name, labels); err != nil {
+		return "", err
+	}
 	return name, nil
 }
 
@@ -307,15 +317,24 @@ func methodologyDNSRule(lake *oramav1alpha1.Lake) networkingv1.NetworkPolicyEgre
 	return buildEgressRules(lake)[0]
 }
 
+// methodologyTransferPods selects a Lake's stage and collect pods, a run's or a served model's: the
+// only pods in the methodology-runs namespace that hold a credential and talk to lake.
+func methodologyTransferPods(lake *oramav1alpha1.Lake) *metav1.LabelSelector {
+	return &metav1.LabelSelector{
+		MatchLabels: map[string]string{methodologyRunLakeLabel: lake.Name},
+		MatchExpressions: []metav1.LabelSelectorRequirement{{Key: methodologyRunRoleLabel,
+			Operator: metav1.LabelSelectorOpIn, Values: []string{methodologyRoleStage, methodologyRoleCollect}}},
+	}
+}
+
+// methodologyTransferNetworkPolicy is the stage and collect pods' egress. Lake's pods are isolated
+// by the Lake's NetworkSandbox, so the destination half is its allow-methodology-ingress-to-lake
+// (lake#802): both ends need a rule.
 func methodologyTransferNetworkPolicy(lake *oramav1alpha1.Lake, namespace string) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: methodologyTransferPolicy, Namespace: namespace},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
-				MatchLabels: map[string]string{methodologyRunLakeLabel: lake.Name},
-				MatchExpressions: []metav1.LabelSelectorRequirement{{Key: methodologyRunRoleLabel,
-					Operator: metav1.LabelSelectorOpIn, Values: []string{methodologyRoleStage, methodologyRoleCollect}}},
-			},
+			PodSelector: *methodologyTransferPods(lake),
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 			// DNS and lake's own pods, nothing else: buildEgressRules' first two rules.
 			Egress: buildEgressRules(lake)[:2],
@@ -401,6 +420,17 @@ func methodologyPod(image string, command []string, env []corev1.EnvVar, resourc
 	if pullSecret != "" {
 		pullSecrets = []corev1.LocalObjectReference{{Name: pullSecret}}
 	}
+	workingDir := ""
+	if credentialSecret != "" {
+		// A pod that holds the credential (stage, collect, model stage) must never import code the
+		// sandbox wrote. The runtime starts with `python3 -m`, which puts the working directory
+		// first on the module path, and the image's working directory is /work, the volume the
+		// sandbox writes: a planted /work/orama_methodology or /work/json.py would run with the
+		// credential and the transfer pod's network (orama-operator#714). Start in this pod's own
+		// /tmp and tell Python not to add the working directory at all.
+		workingDir = methodologySafeWorkingDir
+		env = append(append([]corev1.EnvVar(nil), env...), corev1.EnvVar{Name: "PYTHONSAFEPATH", Value: "1"})
+	}
 	return corev1.PodSpec{
 		RestartPolicy:                corev1.RestartPolicyNever,
 		ImagePullSecrets:             pullSecrets,
@@ -420,6 +450,7 @@ func methodologyPod(image string, command []string, env []corev1.EnvVar, resourc
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			Command:         command,
 			Env:             env,
+			WorkingDir:      workingDir,
 			Resources:       resources,
 			VolumeMounts:    mounts,
 			SecurityContext: &corev1.SecurityContext{
@@ -718,6 +749,53 @@ func jobFailureMessage(job *batchv1.Job) string {
 	return ""
 }
 
+// methodologyPodMessageLimit bounds what a failed pod's own words add to a status message.
+const methodologyPodMessageLimit = 1024
+
+// methodologyJobFailure is why a stage or collect Job failed, in the pod's own words when it left
+// any (lake#802), else the Job's own condition ("Job has reached the specified backoff limit"). It
+// is read before the run's objects are removed, since the pod goes with them.
+func (r *LakeReconciler) methodologyJobFailure(ctx context.Context, job *batchv1.Job) string {
+	if words := failedPodWords(ctx, r.reader(), job.Namespace, job.Name); words != "" {
+		return words
+	}
+	return jobFailureMessage(job)
+}
+
+// failedPodWords is what a Job's failed pod said (lake#802): its container's termination message,
+// which is the tail of its log when it wrote none (TerminationMessageFallbackToLogsOnError), such
+// as "stage failed: methodology_run_input could not reach Lake: timed out"; else how it ended
+// (OOMKilled, exited with N). Whitespace is collapsed and at most methodologyPodMessageLimit bytes
+// of its end are kept. Empty when no pod of the Job failed or none can be read.
+func failedPodWords(ctx context.Context, reader client.Reader, namespace, jobName string) string {
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{"job-name": jobName}); err != nil {
+		return ""
+	}
+	for i := range pods.Items {
+		for _, container := range pods.Items[i].Status.ContainerStatuses {
+			terminated := container.State.Terminated
+			if terminated == nil || terminated.ExitCode == 0 {
+				continue
+			}
+			words := strings.TrimSpace(terminated.Message)
+			if words == "" {
+				words = terminated.Reason // OOMKilled, Error, ...
+				if words == "" || words == "Error" {
+					words = fmt.Sprintf("exited with %d", terminated.ExitCode)
+				}
+			}
+			words = strings.Join(strings.Fields(words), " ")
+			if len(words) > methodologyPodMessageLimit {
+				// The end says why; cut at a byte boundary and drop a split character.
+				words = "…" + strings.ToValidUTF8(words[len(words)-methodologyPodMessageLimit:], "")
+			}
+			return words
+		}
+	}
+	return ""
+}
+
 func jobDeadlineExceeded(job *batchv1.Job) bool {
 	for _, condition := range job.Status.Conditions {
 		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue && condition.Reason == "DeadlineExceeded" {
@@ -886,6 +964,7 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 		status.Phase, status.Message = MethodologyPhaseQueued, placement.Wait
 		return status, true, nil
 	}
+	underWay := started
 	if admitted, why := queue.admit(run); !admitted {
 		// A stage Job that already exists (a status write lost after it was created) is under way.
 		existing := &batchv1.Job{}
@@ -894,11 +973,33 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 		case err == nil && existing.Labels[methodologyRunIDLabel] == run.ID:
 			queue.active[run.WorkspaceID]++
 			queue.waiting[run.WorkspaceID]--
+			underWay = true
 		case err == nil || apierrors.IsNotFound(err):
 			status.Phase, status.Message = MethodologyPhaseQueued, why
 			return status, true, nil
 		default:
 			return status, true, err
+		}
+	}
+
+	// Its resources count against its workspace's quota (orama-operator#799): a run that has not
+	// started waits until its reservation is admitted. A run already under way keeps going; its
+	// reservation is made as soon as there is room.
+	reservation, err := r.reserveMethodologyQuota(ctx, lake, methodologyReservation{
+		Namespace: run.WorkspaceNamespace, Slug: run.Slug, IDLabel: methodologyRunIDLabel, ID: run.ID,
+		Labels: methodologyLabels(lake, run, ""), Resources: methodologyRunReservation(run), What: "run",
+	})
+	if err != nil {
+		return status, true, err
+	}
+	if !underWay {
+		switch {
+		case reservation.Fail != "":
+			return fail(reservation.Fail)
+		case reservation.Wait != "":
+			queue.active[run.WorkspaceID]--
+			status.Phase, status.Message = MethodologyPhaseQueued, reservation.Wait
+			return status, true, nil
 		}
 	}
 
@@ -929,7 +1030,7 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 	switch {
 	case stage.Status.Failed > 0:
 		message := "could not bring the data in"
-		if detail := jobFailureMessage(stage); detail != "" {
+		if detail := r.methodologyJobFailure(ctx, stage); detail != "" {
 			message += ": " + detail
 		}
 		return fail(message)
@@ -1015,7 +1116,7 @@ func (r *LakeReconciler) reconcileMethodologyRun(ctx context.Context, lake *oram
 	switch {
 	case collect.Status.Failed > 0:
 		message := "could not report the result to Lake"
-		if detail := jobFailureMessage(collect); detail != "" {
+		if detail := r.methodologyJobFailure(ctx, collect); detail != "" {
 			message += ": " + detail
 		}
 		if codeMessage != "" {
@@ -1062,7 +1163,7 @@ func (r *LakeReconciler) removeMethodologyRun(ctx context.Context, lake *oramav1
 			return err
 		}
 	}
-	return nil
+	return r.releaseMethodologyQuota(ctx, lake, run.WorkspaceNamespace, run.Slug, methodologyRunIDLabel, run.ID)
 }
 
 // stopMethodologyRun ends an absent run: whichever pod is running stops, its objects go, and a
@@ -1170,6 +1271,14 @@ func (r *LakeReconciler) reconcileLakeMethodologyRuns(ctx context.Context, lake 
 		}
 		copied := status
 		run.Status = &copied
+	}
+	read := make(map[string]bool, len(runs))
+	for i := range runs {
+		read[runs[i].ID] = true
+	}
+	if err := r.sweepMethodologyReservations(ctx, lake, methodologyRunIDLabel, read); err != nil {
+		log.Error(err, "methodology run quota reservations sweep deferred")
+		changing = true
 	}
 	return changing
 }

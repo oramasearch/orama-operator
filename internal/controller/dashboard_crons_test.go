@@ -140,14 +140,17 @@ func TestDashboardCronsRenderProd1Schedules(t *testing.T) {
 			t.Fatalf("%s: %d containers", name, len(pod.Containers))
 		}
 		c := pod.Containers[0]
-		if c.Image != "curlimages/curl:8.10.1" || len(c.Command) != 3 || c.Command[0] != "/bin/sh" || c.Command[2] != dashboardCronScript(w[1]) {
+		if c.Image != pinnedCurlImage || len(c.Command) != 3 || c.Command[0] != "/bin/sh" || c.Command[2] != dashboardCronScript(w[1]) {
 			t.Errorf("%s: image %q command %q", name, c.Image, c.Command)
 		}
 		wantEnv := []corev1.EnvVar{secretKeyEnv("CRON_SECRET", "dash-env", "CRON_SECRET")}
 		if !reflect.DeepEqual(c.Env, wantEnv) || len(c.EnvFrom) != 0 {
 			t.Errorf("%s: env %+v envFrom %+v", name, c.Env, c.EnvFrom)
 		}
-		if !reflect.DeepEqual(c.Resources, *resourceReqs("32Mi", "10m", "64Mi")) {
+		wantResources := *resourceReqs("32Mi", "10m", "64Mi")
+		wantResources.Requests[corev1.ResourceEphemeralStorage] = resource.MustParse("100Mi")
+		wantResources.Limits[corev1.ResourceEphemeralStorage] = resource.MustParse("1Gi")
+		if !reflect.DeepEqual(c.Resources, wantResources) {
 			t.Errorf("%s: resources %+v", name, c.Resources)
 		}
 		sc := c.SecurityContext

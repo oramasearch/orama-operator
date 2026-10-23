@@ -31,9 +31,15 @@ type fakeCloudflareZone struct {
 	mu       sync.Mutex
 	settings map[string]string
 	records  []cfDNSRecord
-	// deny maps "METHOD setting" (or "GET dns_records") to a 403.
+	// name is the zone's name, answered at GET /zones/zone-1; empty answers 404.
+	name string
+	// deny maps "METHOD setting" (or "GET dns_records", "GET zone", "GET certificate_packs",
+	// "POST order", "POST order subscription") to a refusal.
 	deny    map[string]bool
 	patches []string
+	// packs are the zone's certificate packs; orders records every order's hosts.
+	packs  []cfCertificatePack
+	orders [][]string
 }
 
 func (z *fakeCloudflareZone) handler(t *testing.T) http.Handler {
@@ -46,6 +52,42 @@ func (z *fakeCloudflareZone) handler(t *testing.T) http.Handler {
 		}
 		path := strings.TrimPrefix(r.URL.Path, "/zones/zone-1/")
 		switch {
+		case r.URL.Path == "/zones/zone-1" && r.Method == http.MethodGet:
+			if z.deny["GET zone"] {
+				http.Error(w, `{"success":false}`, http.StatusForbidden)
+				return
+			}
+			if z.name == "" {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"id": "zone-1", "name": z.name}})
+		case path == "ssl/certificate_packs" && r.Method == http.MethodGet:
+			if z.deny["GET certificate_packs"] {
+				http.Error(w, `{"success":false}`, http.StatusForbidden)
+				return
+			}
+			if r.URL.Query().Get("status") != "all" {
+				t.Errorf("certificate packs listed without status=all")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": z.packs, "result_info": map[string]int{"page": 1, "total_pages": 1}})
+		case path == "ssl/certificate_packs/order" && r.Method == http.MethodPost:
+			if z.deny["POST order"] {
+				http.Error(w, `{"success":false}`, http.StatusForbidden)
+				return
+			}
+			if z.deny["POST order subscription"] {
+				http.Error(w, `{"success":false,"errors":[{"code":1450,"message":"no subscription"}]}`, http.StatusBadRequest)
+				return
+			}
+			var order cfCertificatePackOrder
+			_ = json.NewDecoder(r.Body).Decode(&order)
+			if order.Type != "advanced" || order.ValidationMethod != "txt" || order.ValidityDays != edgeCertificateValidityDays || order.CertificateAuthority == "" {
+				t.Errorf("order = %+v", order)
+			}
+			z.orders = append(z.orders, order.Hosts)
+			z.packs = append(z.packs, cfCertificatePack{ID: fmt.Sprintf("pack-%d", len(z.packs)), Type: "advanced", Hosts: order.Hosts, Status: "initializing"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": z.packs[len(z.packs)-1]})
 		case path == "dns_records" && r.Method == http.MethodGet:
 			if z.deny["GET dns_records"] {
 				http.Error(w, `{"success":false}`, http.StatusForbidden)
@@ -320,5 +362,189 @@ func TestEdgeProbeNames(t *testing.T) {
 	}
 	if fmt.Sprint(edgeOriginEncrypted("flexible"), edgeOriginEncrypted("full"), edgeOriginEncrypted("strict"), edgeOriginEncrypted("")) != "false true true false" {
 		t.Error("only full and strict reach the origin over TLS")
+	}
+}
+
+// The zone's name is reported for the Lakes' per-host choice of ACME solver (operator#632). A
+// token that may not read it is named, the zone's settings are still applied, and a name read
+// before is kept, so the Lakes never fall back from what they had.
+func TestZonePolicyReportsTheZoneName(t *testing.T) {
+	zone := &fakeCloudflareZone{
+		settings: map[string]string{"ssl": "strict", "tls_client_auth": "on", "always_use_https": "on"},
+		records:  zoneRecords(),
+		name:     "Lake.Live",
+	}
+	_, _, reconcile := newZonePolicyFixture(t, zone, fakeEdgeProber{})
+	policy := reconcile()
+	if policy.Status.Zone != "lake.live" || conditionStatus(policy, edgeConditionZoneName) != "True" || policy.Status.Phase != edgePhaseReady {
+		t.Fatalf("status = %+v", policy.Status)
+	}
+
+	zone.mu.Lock()
+	zone.deny = map[string]bool{"GET zone": true}
+	zone.mu.Unlock()
+	policy = reconcile()
+	if policy.Status.Zone != "lake.live" {
+		t.Errorf("a refused read forgot the zone's name: %+v", policy.Status)
+	}
+	if policy.Status.Phase != edgePhaseReady {
+		t.Errorf("a refused name read changed the phase: %s %q", policy.Status.Phase, policy.Status.Message)
+	}
+	for _, c := range policy.Status.Conditions {
+		if c.Type == edgeConditionZoneName && (c.Status != metav1.ConditionFalse || !strings.Contains(c.Message, cfPermissionZoneRead)) {
+			t.Errorf("ZoneName condition = %+v, want False naming %q", c, cfPermissionZoneRead)
+		}
+	}
+
+	// Never read: no name, and the settings are still applied.
+	fresh := &fakeCloudflareZone{
+		settings: map[string]string{"ssl": "full", "tls_client_auth": "off", "always_use_https": "off"},
+		records:  zoneRecords(),
+		deny:     map[string]bool{"GET zone": true},
+	}
+	_, _, reconcileFresh := newZonePolicyFixture(t, fresh, fakeEdgeProber{})
+	policy = reconcileFresh()
+	if policy.Status.Zone != "" || fresh.settings["ssl"] != "strict" || conditionStatus(policy, edgeConditionZoneName) != "False" {
+		t.Errorf("status = %+v settings = %v", policy.Status, fresh.settings)
+	}
+}
+
+// lake#798: an apps wildcard two levels below the apex (*.eu.lake.live) has no Universal SSL
+// certificate, so the policy orders an Advanced Certificate covering it, once: a pending pack is
+// not ordered again, a host one level below the apex is never ordered, and a zone whose hosts all
+// have edge certificates makes no certificate calls.
+func TestZonePolicyOrdersEdgeCertificatesForDeepHosts(t *testing.T) {
+	zone := &fakeCloudflareZone{
+		settings: map[string]string{"ssl": "full", "tls_client_auth": "on", "always_use_https": "off"},
+		records: append(zoneRecords(),
+			cfDNSRecord{Type: "A", Name: "us.lake.live", Content: "20.0.0.1", Proxied: true},
+			cfDNSRecord{Type: "A", Name: "app.us.lake.live", Content: "20.0.0.1", Proxied: true}),
+		name:  "lake.live",
+		packs: []cfCertificatePack{{ID: "universal", Type: "universal", Hosts: []string{"lake.live", "*.lake.live"}, Status: "active"}},
+	}
+	prober := fakeEdgeProber{edgeInvalid: map[string]bool{
+		"orama-edge-probe.eu.lake.live": true, "app.us.lake.live": true, "us.lake.live": true,
+	}}
+	_, r, reconcile := newZonePolicyFixture(t, zone, prober)
+	policy := reconcile()
+	want := "[[lake.live *.eu.lake.live eu.lake.live] [lake.live app.us.lake.live]]"
+	if got := fmt.Sprint(zone.orders); got != want {
+		t.Fatalf("orders = %s, want %s", got, want)
+	}
+	if conditionStatus(policy, edgeConditionEdgeCertificateOrders) != "False" || zone.settings["always_use_https"] != "off" {
+		t.Errorf("status = %+v, settings = %v", policy.Status, zone.settings)
+	}
+	if !strings.Contains(policy.Status.Message, "edge certificate ordered for *.eu.lake.live, app.us.lake.live") {
+		t.Errorf("message = %q", policy.Status.Message)
+	}
+
+	// The packs are pending: nothing is ordered again.
+	policy = reconcile()
+	if len(zone.orders) != 2 || !strings.Contains(policy.Status.Message, "is ordered and not yet serving") {
+		t.Errorf("orders = %v, message = %q", zone.orders, policy.Status.Message)
+	}
+
+	// A pack that failed validation no longer counts: the host is ordered again.
+	zone.mu.Lock()
+	zone.packs[1].Status = "validation_timed_out"
+	zone.mu.Unlock()
+	reconcile()
+	if len(zone.orders) != 3 || fmt.Sprint(zone.orders[2]) != "[lake.live *.eu.lake.live eu.lake.live]" {
+		t.Errorf("orders = %v", zone.orders)
+	}
+
+	// Once the edge serves every host, Always Use HTTPS follows and no certificate API is called.
+	zone.mu.Lock()
+	zone.deny = map[string]bool{"GET certificate_packs": true, "POST order": true}
+	zone.mu.Unlock()
+	r.Prober = fakeEdgeProber{}
+	policy = reconcile()
+	if zone.settings["always_use_https"] != "on" || conditionStatus(policy, edgeConditionEdgeCertificateOrders) != "True" {
+		t.Errorf("status = %+v, settings = %v", policy.Status, zone.settings)
+	}
+}
+
+// A Lake's app hosts have their own proxied records under its apps wildcard, and "*.x" sorts before
+// them. The wildcard's pack, ordered first in the pass, covers them, so one reconcile places exactly
+// one order instead of one per app host.
+func TestZonePolicyWildcardOrderCoversItsAppHosts(t *testing.T) {
+	zone := &fakeCloudflareZone{
+		settings: map[string]string{"ssl": "strict", "tls_client_auth": "on", "always_use_https": "off"},
+		records: append(zoneRecords(),
+			cfDNSRecord{Type: "A", Name: "alpha.eu.lake.live", Content: "74.158.44.177", Proxied: true},
+			cfDNSRecord{Type: "A", Name: "beta.eu.lake.live", Content: "74.158.44.177", Proxied: true},
+			cfDNSRecord{Type: "A", Name: "gamma.eu.lake.live", Content: "74.158.44.177", Proxied: true}),
+		name:  "lake.live",
+		packs: []cfCertificatePack{{ID: "universal", Type: "universal", Hosts: []string{"lake.live", "*.lake.live"}, Status: "active"}},
+	}
+	prober := fakeEdgeProber{edgeInvalid: map[string]bool{
+		"orama-edge-probe.eu.lake.live": true, "alpha.eu.lake.live": true, "beta.eu.lake.live": true, "gamma.eu.lake.live": true,
+	}}
+	_, _, reconcile := newZonePolicyFixture(t, zone, prober)
+	policy := reconcile()
+	if got, want := fmt.Sprint(zone.orders), "[[lake.live *.eu.lake.live eu.lake.live]]"; got != want {
+		t.Fatalf("orders = %s, want %s", got, want)
+	}
+	if !strings.Contains(policy.Status.Message, "edge certificate ordered for *.eu.lake.live;") {
+		t.Errorf("message = %q", policy.Status.Message)
+	}
+	// The next pass finds the pending pack covering every host and orders nothing.
+	reconcile()
+	if len(zone.orders) != 1 {
+		t.Errorf("orders = %v", zone.orders)
+	}
+}
+
+// A token that may not order certificates, or a zone without Advanced Certificate Manager, is
+// reported on the condition; the zone's other settings still advance.
+func TestZonePolicyReportsARefusedCertificateOrder(t *testing.T) {
+	for _, tc := range []struct{ deny, want string }{
+		{"GET certificate_packs", cfPermissionCertificatesEdit},
+		{"POST order", cfPermissionCertificatesEdit},
+		{"POST order subscription", "Advanced Certificate Manager"},
+	} {
+		t.Run(tc.deny, func(t *testing.T) {
+			zone := &fakeCloudflareZone{
+				settings: map[string]string{"ssl": "flexible", "tls_client_auth": "off", "always_use_https": "off"},
+				records:  zoneRecords(),
+				name:     "lake.live",
+				deny:     map[string]bool{tc.deny: true},
+			}
+			_, _, reconcile := newZonePolicyFixture(t, zone, fakeEdgeProber{edgeInvalid: map[string]bool{"orama-edge-probe.eu.lake.live": true}})
+			policy := reconcile()
+			if conditionStatus(policy, edgeConditionEdgeCertificateOrders) != "False" || !strings.Contains(policy.Status.Message, tc.want) {
+				t.Errorf("message = %q, want %q named", policy.Status.Message, tc.want)
+			}
+			if policy.Status.Phase != edgePhaseProgressing || zone.settings["ssl"] != "strict" || zone.settings["tls_client_auth"] != "on" {
+				t.Errorf("status = %s, settings = %v", policy.Status.Phase, zone.settings)
+			}
+		})
+	}
+}
+
+func TestEdgeCertificateHelpers(t *testing.T) {
+	for name, want := range map[string]int{"lake.live": 0, "eu.lake.live": 1, "*.lake.live": 1, "*.eu.lake.live": 2, "a.b.lake.live": 2, "example.com": -1, "notlake.live": -1} {
+		if got := edgeHostDepth(name, "lake.live"); got != want {
+			t.Errorf("edgeHostDepth(%q) = %d, want %d", name, got, want)
+		}
+	}
+	for _, tc := range []struct {
+		pack, name string
+		want       bool
+	}{
+		{"*.eu.lake.live", "*.eu.lake.live", true},
+		{"*.eu.lake.live", "app.eu.lake.live", true},
+		{"*.lake.live", "*.eu.lake.live", false},
+		{"*.lake.live", "app.eu.lake.live", false},
+		{"eu.lake.live", "*.eu.lake.live", false},
+	} {
+		if got := edgeCertificateCovers(tc.pack, tc.name); got != tc.want {
+			t.Errorf("edgeCertificateCovers(%q, %q) = %v", tc.pack, tc.name, got)
+		}
+	}
+	for status, want := range map[string]bool{"active": true, "pending_validation": true, "initializing": true, "deleted": false, "expired": false, "validation_timed_out": false, "issuance_timed_out": false} {
+		if got := edgeCertificatePackLive(status); got != want {
+			t.Errorf("edgeCertificatePackLive(%q) = %v", status, got)
+		}
 	}
 }

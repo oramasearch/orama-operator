@@ -115,6 +115,51 @@ off drops the allowance in that same pass and deletes the rule.
 A workspace with internetEgress on already reaches every public address on 443 directly, so name
 rules on 443 add nothing there; they matter for workspaces without it and for other ports.
 
+## A Lake Zetta's own allowlist (defense in depth)
+
+A Zetta node denies every outbound connection except what `ZETTA_EGRESS_ALLOW` lists (zetta
+[#75](https://github.com/oramasearch/zetta/issues/75), zetta's `docs/governance/egress-policy.md`).
+The operator renders that variable for every Zetta a Lake owns from what its namespace's
+`NetworkSandbox` allows it ([#724](https://github.com/oramasearch/orama-operator/issues/724)), so
+the engine refuses the destinations the network policy refuses: two independent layers, one
+declaration. The sandbox stays the source of truth. The list is read from the allowances the sandbox
+carries, never kept as a second list, so a rule or Connection that is `Pending` or `Failed` adds
+nothing (`internal/controller/lake_zetta_egress.go`).
+
+| What the sandbox carries | Entries for a Zetta whose Lake service id is `S` |
+|---|---|
+| A name rule with no source or source `service S` | `<dnsName>:<port>` per port |
+| A CIDR rule with no source or source `service S` | `<cidr>:<port>` per port (IPv6 bracketed), with link-local cut out (169.254.0.0/16, the cloud metadata address included, and fe80::/10) |
+| `internet-https` (the workspace's `internetEgress`) | `*:443` |
+| A Connection from `service S` | `<service>.<namespace>.svc.cluster.local:<port>` for each target Service port whose pod port the Connection opens (every Service port when it declares none; a named target port is left out when it declares some) |
+| `allow-workspace-internal` (before every initial Connection is enforced) | `*.<namespace>.svc.cluster.local` |
+
+A rule for another source adds nothing. Cluster DNS, the Lake API and the other nodes of the Zetta's
+own cluster are not listed: a Zetta never dials them through its HTTP client, and peer links are not
+egress. The Lake's own data-plane Zetta (`spec.zetta`) gets an empty list (loopback only), because
+the Lake namespace allows its pods nothing outside but DNS and their own cluster;
+`TestTheLakeDataPlaneZettaIsAllowedNothingOutside` fails when that changes.
+
+**Where the engine is wider than the policy.** Its syntax has no exceptions. `*:443` also admits
+in-cluster names on 443, and a CIDR entry keeps the pod, node and API server addresses the policy
+cuts out. Those addresses change as nodes come and go, and every change to the variable rolls the
+StatefulSet, so the policy alone keeps excluding them.
+
+**Name rules go through the gateway, the engine does not know it.** The policy lets a name rule's
+source reach only the egress gateway. The engine dials the destination name directly and has no
+gateway client, so the entry states the destination the rule allows. It takes effect when the engine
+routes named destinations through the gateway
+([zetta#1331](https://github.com/oramasearch/zetta/issues/1331)).
+
+**Changes roll the Zetta.** The variable is in the pod template, so adding or removing a rule or
+Connection for a Zetta restarts its pods on the next workspace or services poll (up to 60 seconds
+after the sandbox changes). A file the engine re-reads would avoid that and needs an engine change
+([zetta#1332](https://github.com/oramasearch/zetta/issues/1332)). The list is sorted and
+de-duplicated, so an unchanged sandbox never rolls anything. When the namespace cannot be read, the
+running value is kept; a list longer than 64 KiB (beyond what one environment string can safely hold)
+becomes deny and is logged. A spec that names `ZETTA_EGRESS_ALLOW` (`spec.zetta.env`,
+`spec.services.zettaEnv`) keeps its own value.
+
 ## Status
 
 `network_egress_rule_status` receives only real transitions with the Lake generation:

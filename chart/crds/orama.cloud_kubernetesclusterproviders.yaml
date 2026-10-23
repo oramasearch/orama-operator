@@ -67,6 +67,11 @@ spec:
                     properties:
                       dataplane:
                         default: cilium
+                        description: |-
+                          Dataplane is always cilium (operator#699): workspace isolation is CiliumNetworkPolicy and
+                          NetworkPolicy, which only isolate anything on a dataplane that enforces them.
+                        enum:
+                        - cilium
                         type: string
                       dnsServiceIP:
                         default: 10.0.0.10
@@ -82,6 +87,10 @@ spec:
                         type: string
                       policy:
                         default: cilium
+                        description: Policy is always cilium (operator#699), the engine
+                          that enforces the operator's policies.
+                        enum:
+                        - cilium
                         type: string
                       serviceCIDR:
                         default: 10.0.0.0/16

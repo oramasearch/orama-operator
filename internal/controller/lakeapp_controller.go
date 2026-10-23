@@ -252,6 +252,8 @@ func lakeAppManagedName(app *oramav1alpha1.LakeApp, legacyName, suffix string) s
 	return name
 }
 
+// lakeAppWorkloadObjectName also identifies tenant app locations to ingress-nginx's credential
+// filter in helmfile.yaml and every platform.yaml. Keep its app/app-<12 hex> names in sync there.
 func lakeAppWorkloadObjectName(app *oramav1alpha1.LakeApp) string {
 	return lakeAppManagedName(app, lakeAppWorkloadName, "")
 }
@@ -331,8 +333,12 @@ func (r *LakeAppReconciler) reconcileLakeAppNamespace(ctx context.Context, app *
 		if err := r.reader().Get(ctx, client.ObjectKey{Name: name}, &existing); err != nil {
 			return fmt.Errorf("read workspace namespace %q: %w", name, err)
 		}
-		if existing.Labels[workspaceLabel] != app.Spec.Sync.WorkspaceID {
-			return fmt.Errorf("namespace %q is not owned by workspace %s", name, app.Spec.Sync.WorkspaceID)
+		// The namespace must be the workspace's own, labelled by the workspaces reconciler with the
+		// workspace and its customer, and never the Lake namespace: the operator decides this from
+		// the cluster, not from the row's workspace_namespace (#713).
+		if name == app.Namespace || existing.Labels[workspaceLabel] != app.Spec.Sync.WorkspaceID ||
+			existing.Labels[workspaceCustomerLabel] != app.Spec.Sync.CustomerID {
+			return fmt.Errorf("namespace %q is not owned by workspace %s of customer %s", name, app.Spec.Sync.WorkspaceID, app.Spec.Sync.CustomerID)
 		}
 		return nil
 	}
@@ -541,11 +547,15 @@ func lakeAppEgressRules(
 	return rules
 }
 
+// lakeAppLakeEgressRule lets the app call its Lake's API, on the Lake container port only: a tenant's
+// app has no business with any other port of the Lake pod (operator#711).
 func lakeAppLakeEgressRule(lake *oramav1alpha1.Lake, namespace string) networkingv1.NetworkPolicyEgressRule {
-	return lakeAppTargetEgressRule(namespace, map[string]string{
+	rule := lakeAppTargetEgressRule(namespace, map[string]string{
 		"app.kubernetes.io/name":     "lake",
 		"app.kubernetes.io/instance": lake.Name,
 	})
+	rule.Ports = tcpPorts(int32(lakeContainerPort(lake)))
+	return rule
 }
 
 func lakeAppTargetEgressRule(namespace string, podLabels map[string]string) networkingv1.NetworkPolicyEgressRule {
@@ -1200,6 +1210,16 @@ func lakeAppResources(app *oramav1alpha1.LakeApp) corev1.ResourceRequirements {
 	}
 }
 
+// lakeAppAuth is the app's auth mode with the CRD default applied. It is lake only when the Ingress
+// puts Lake's forward auth in front of the app, and public for anything else, so the pod is never
+// told it is protected when it is not.
+func lakeAppAuth(app *oramav1alpha1.LakeApp) string {
+	if app.Spec.Auth == "" || app.Spec.Auth == oramav1alpha1.LakeAppAuthLake {
+		return oramav1alpha1.LakeAppAuthLake
+	}
+	return oramav1alpha1.LakeAppAuthPublic
+}
+
 func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, secrets lakeAppSecrets) []corev1.EnvVar {
 	lakeURL := lakeInternalURL(lake, app.Namespace)
 	if app.Spec.Sync != nil {
@@ -1208,6 +1228,9 @@ func lakeAppManagedEnv(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp, sec
 	env := []corev1.EnvVar{
 		{Name: "LAKE_URL", Value: lakeURL},
 		{Name: "APP_PORT", Value: fmt.Sprint(app.Spec.Port)},
+		// app-runtime trusts X-Orama-User only when this says lake: only then does the Ingress
+		// replace the client's copy with Lake's forward-auth answer (app-runtime#11).
+		{Name: "APP_AUTH", Value: lakeAppAuth(app)},
 	}
 	mode := app.Spec.Mode
 	if mode == "" {
@@ -1446,11 +1469,9 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 
 	// Origin TLS (operator#578): the host's certificate, issued in the Lake namespace and copied
 	// here, and the zone's redirect and client-certificate settings.
-	// A Lake without a DNS credential cannot issue certificates (docs/lake/origin-tls.md).
-	var tlsHosts []string
-	if lakeHasDNSCredential(lake) {
-		tlsHosts = []string{host}
-	}
+	// The Lake's Issuer solves DNS-01 in its credential's zone and HTTP-01 for any other host
+	// (operator#632, docs/lake/origin-tls.md).
+	tlsHosts := lakeIssuableHosts(lake, []string{host}, "")
 	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, app, tlsOwner, tlsHosts)
 	if err != nil {
 		return fmt.Errorf("app certificate: %w", err)
@@ -1483,21 +1504,7 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 	ingress := &networkingv1.Ingress{ObjectMeta: lakeAppObjectMeta(app, workloadName, namespace)}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, ingress, func() error {
 		ingress.Labels = lakeAppLabels(app)
-		ingress.Annotations = map[string]string{lakeAppOwnerAnnotation: lakeAppOwner(app)}
-		auth := app.Spec.Auth
-		if auth == "" {
-			auth = oramav1alpha1.LakeAppAuthLake
-		}
-		if auth == oramav1alpha1.LakeAppAuthLake {
-			ingress.Annotations["nginx.ingress.kubernetes.io/auth-url"] = lakeAppAuthURL(lake, app)
-			ingress.Annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = "X-Orama-User,X-Orama-Space"
-			// Lake answers the auth call with the app-scoped session cookie, and a browser without
-			// one is sent to Lake's sign-in handoff (lake#407).
-			ingress.Annotations["nginx.ingress.kubernetes.io/auth-always-set-cookie"] = "true"
-			if signin := lakeAppAuthSignin(lake, app); signin != "" {
-				ingress.Annotations["nginx.ingress.kubernetes.io/auth-signin"] = signin
-			}
-		}
+		ingress.Annotations = lakeAppIngressAnnotations(lake, app)
 		ingress.Spec.IngressClassName = &ingressClass
 		ingress.Spec.Rules = []networkingv1.IngressRule{{
 			Host: host,
@@ -1538,6 +1545,30 @@ func (r *LakeAppReconciler) reconcileLakeAppIngress(ctx context.Context, lake *o
 		return fmt.Errorf("reconcile app DNS: %w", err)
 	}
 	return nil
+}
+
+// lakeAppIngressAnnotations is the app Ingress's own annotations, before the edge's. A Lake-protected
+// app names X-Orama-User and X-Orama-Space as auth response headers: ingress-nginx then sets both
+// from Lake's answer and replaces whatever the client sent under those names, so a browser cannot
+// forge the signed-in member (operator#711).
+func lakeAppIngressAnnotations(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) map[string]string {
+	annotations := map[string]string{lakeAppOwnerAnnotation: lakeAppOwner(app)}
+	auth := app.Spec.Auth
+	if auth == "" {
+		auth = oramav1alpha1.LakeAppAuthLake
+	}
+	if auth != oramav1alpha1.LakeAppAuthLake {
+		return annotations
+	}
+	annotations["nginx.ingress.kubernetes.io/auth-url"] = lakeAppAuthURL(lake, app)
+	annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = "X-Orama-User,X-Orama-Space"
+	// Lake answers the auth call with the app-scoped session cookie, and a browser without one is
+	// sent to Lake's sign-in handoff (lake#407).
+	annotations["nginx.ingress.kubernetes.io/auth-always-set-cookie"] = "true"
+	if signin := lakeAppAuthSignin(lake, app); signin != "" {
+		annotations["nginx.ingress.kubernetes.io/auth-signin"] = signin
+	}
+	return annotations
 }
 
 func lakeAppAuthURL(lake *oramav1alpha1.Lake, app *oramav1alpha1.LakeApp) string {

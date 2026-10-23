@@ -44,7 +44,7 @@ const (
 	// dashboardCronsImage is the curl image when spec.images.overrides["dashboard-crons"] is unset: a
 	// full reference, not resolved against the stack's registry and tag. It runs as curl_user, which
 	// is uid 100, gid 101 in this image; the numbers are set explicitly so runAsNonRoot can check them.
-	dashboardCronsImage = "curlimages/curl:8.10.1"
+	dashboardCronsImage = pinnedCurlImage
 	curlUID, curlGID    = 100, 101
 	// The canary image runs as root by default; the pod runs it as this conventional non-root user.
 	canaryUID = 65532
@@ -69,19 +69,26 @@ var e2eCanaryScript string
 var errCronsNeedDashboard = errors.New("dashboard.crons requires the dashboard enabled; set dashboard.crons.enabled to false as well")
 
 // dashboardCronSecret returns the Secret key the dashboard's own CRON_SECRET comes from, so the
-// CronJobs send the bearer the dashboard checks. dashboard.env wins when it names CRON_SECRET and
-// must then be a secretKeyRef; otherwise the last dashboard.envFrom source holding CRON_SECRET after
-// its prefix wins and must be a Secret. Any other winner (a literal, a ConfigMap, a fieldRef) is an
-// error even if an earlier Secret also holds the key. The operator's own sources carry no
-// CRON_SECRET. sources are dashboardEnvSources' result; an absent optional source has nil Data.
+// CronJobs send the bearer the dashboard checks (dashboardEnvSecretKey).
 func dashboardCronSecret(oc *oramav1alpha1.OramaCloudV1, sources []dashboardEnvSource) (*corev1.SecretKeySelector, error) {
-	const name = "CRON_SECRET"
+	return dashboardEnvSecretKey(oc, sources, "CRON_SECRET", "dashboard.crons", "the CronJobs")
+}
+
+// dashboardEnvSecretKey returns the Secret key the dashboard's own variable name comes from, so a
+// workload that calls the dashboard (reader, e.g. "the CronJobs") sends the value the dashboard
+// checks, with no second reference to keep in step. dashboard.env wins when it names the variable
+// and must then be a secretKeyRef; otherwise the last dashboard.envFrom source holding it after its
+// prefix wins and must be a Secret. Any other winner (a literal, a ConfigMap, a fieldRef) is an
+// error even if an earlier Secret also holds the key. field names the setting in errors. The
+// operator's own sources carry none of these variables. sources are dashboardEnvSources' result; an
+// absent optional source has nil Data.
+func dashboardEnvSecretKey(oc *oramav1alpha1.OramaCloudV1, sources []dashboardEnvSource, name, field, reader string) (*corev1.SecretKeySelector, error) {
 	for _, e := range overrideEnv(nil, oc.Spec.Components.Dashboard.Env) {
 		if e.Name != name {
 			continue
 		}
 		if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
-			return nil, fmt.Errorf("dashboard.crons: dashboard.env sets %s, but not from a Secret key; the CronJobs read it from the same Secret as the dashboard, so use a secretKeyRef", name)
+			return nil, fmt.Errorf("%s: dashboard.env sets %s, but not from a Secret key; %s read it from the same Secret as the dashboard, so use a secretKeyRef", field, name, reader)
 		}
 		ref := e.ValueFrom.SecretKeyRef
 		return &corev1.SecretKeySelector{LocalObjectReference: ref.LocalObjectReference, Key: ref.Key}, nil
@@ -96,11 +103,11 @@ func dashboardCronSecret(oc *oramav1alpha1.OramaCloudV1, sources []dashboardEnvS
 			continue
 		}
 		if src.Kind != "Secret" {
-			return nil, fmt.Errorf("dashboard.crons: the dashboard takes %s from %s %s (dashboard.envFrom[%d]); it must come from a Secret", name, src.Kind, src.Name, i)
+			return nil, fmt.Errorf("%s: the dashboard takes %s from %s %s (dashboard.envFrom[%d]); it must come from a Secret", field, name, src.Kind, src.Name, i)
 		}
 		return &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: src.Name}, Key: key}, nil
 	}
-	return nil, fmt.Errorf("dashboard.crons needs %s: give the dashboard a dashboard.envFrom Secret holding it, or a dashboard.env secretKeyRef", name)
+	return nil, fmt.Errorf("%s needs %s: give the dashboard a dashboard.envFrom Secret holding it, or a dashboard.env secretKeyRef", field, name)
 }
 
 // requireSecretKeys fails unless the Secret exists in oc's namespace and each key is present and
@@ -287,6 +294,11 @@ func (r *OramaCloudV1Reconciler) upsertCronJob(ctx context.Context, oc *oramav1a
 		spec.AutomountServiceAccountToken = boolPtr(false)
 		spec.ImagePullSecrets = imagePullSecrets(oc)
 		pod(spec)
+		boundV1PodStorage(spec)
+		cloudV1PodIdentity(spec, name)
+		if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, oc, name, lbls); err != nil {
+			return err
+		}
 		return controllerutil.SetControllerReference(oc, cj, r.Scheme)
 	})
 	return err

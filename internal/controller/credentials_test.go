@@ -313,14 +313,19 @@ func TestCredentialSecretCreateRace(t *testing.T) {
 
 // The broker renders rabbitmq.conf and its boot definitions from <cr>-broker-admin into a private
 // emptyDir, mounts them read-only beside the unchanged enabled_plugins, and the engine and
-// harvest-master take the same Secret. Redis and its clients share <cr>-cache-auth.
+// nothing else reads that Secret: the engine signs in as its own users and harvest-master as harvest.
+// Redis and its clients share <cr>-cache-auth.
 func TestBrokerAndCacheCredentialWiring(t *testing.T) {
 	h := newEngineHarness(t, stackOC(nil), engineSecret())
 	h.mustRun()
-	broker, cache := h.secret("v1-broker-admin"), h.secret("v1-cache-auth")
-	secrets := map[string]*corev1.Secret{broker.Name: broker, cache.Name: cache, testMasterSecret: h.secret(testMasterSecret)}
+	broker, cache, harvest := h.secret("v1-broker-admin"), h.secret("v1-cache-auth"), h.secret("v1-broker-harvest")
+	secrets := map[string]*corev1.Secret{broker.Name: broker, cache.Name: cache, harvest.Name: harvest, testMasterSecret: h.secret(testMasterSecret)}
 	tmpls := h.templates()
 	brokerAdminEnv := []corev1.EnvVar{secretKeyEnv("BROKER_USERNAME", "v1-broker-admin", "username"), secretKeyEnv("BROKER_PASSWORD", "v1-broker-admin", "password")}
+	// The writer signs in as oramacore-writer and the readers as oramacore-reader (#99, #795;
+	// broker_users_test.go).
+	engineBrokerEnv := map[string]corev1.EnvVar{"writer": secretKeyEnv("BROKER_PASSWORD", "v1-broker-users", "writer-password"),
+		"reader": secretKeyEnv("BROKER_PASSWORD", "v1-broker-users", "reader-password")}
 
 	// Broker: templates in the ConfigMap, rendered at pod start.
 	cm := &corev1.ConfigMap{}
@@ -392,13 +397,11 @@ func TestBrokerAndCacheCredentialWiring(t *testing.T) {
 		t.Errorf("rendered boot definitions are not the admin user, / and its permissions")
 	}
 
-	// Engine: the broker credentials as render-config env on both sides.
+	// Engine: its broker user's password as render-config env on both sides.
 	for _, side := range []string{"writer", "reader"} {
 		init := containerIn(t, tmpls[side].Spec, "render-config")
-		for _, want := range brokerAdminEnv {
-			if !slices.ContainsFunc(init.Env, func(e corev1.EnvVar) bool { return reflect.DeepEqual(e, want) }) {
-				t.Errorf("%s render-config lacks %s from v1-broker-admin", side, want.Name)
-			}
+		if want := engineBrokerEnv[side]; !slices.ContainsFunc(init.Env, func(e corev1.EnvVar) bool { return reflect.DeepEqual(e, want) }) {
+			t.Errorf("%s render-config lacks %s from v1-broker-users", side, want.Name)
 		}
 	}
 
@@ -411,7 +414,7 @@ func TestBrokerAndCacheCredentialWiring(t *testing.T) {
 	}
 	redisURL := "redis://:" + string(cache.Data["password"]) + "@v1-cache:6379"
 	hm := expandEnv(t, containerIn(t, tmpls["harvest-master"].Spec, "harvest-master").Env, secrets)
-	if hm["AMQP_HOST"] != "amqp://orama:"+string(broker.Data["password"])+"@v1-broker:5672" || hm["REDIS_HOST"] != redisURL {
+	if hm["AMQP_HOST"] != "amqp://harvest:"+string(harvest.Data["password"])+"@v1-broker:5672" || hm["REDIS_HOST"] != redisURL {
 		t.Error("harvest-master's AMQP_HOST or REDIS_HOST does not expand to the generated credentials")
 	}
 	if ib := expandEnv(t, containerIn(t, tmpls["index-builder"].Spec, "index-builder").Env, secrets); ib["REDIS_URL"] != redisURL {
@@ -438,9 +441,6 @@ func TestMasterAPIKeyConsumersUseTheReference(t *testing.T) {
 			tmpls := h.templates()
 			consumers := map[string]string{"writer": "render-config",
 				"index-builder": "index-builder", "workers": "workers", "dashboard": "dashboard"}
-			if mode == "combined" {
-				consumers["reader"] = "render-config"
-			}
 			for comp, ctr := range consumers {
 				c := containerIn(t, tmpls[comp].Spec, ctr)
 				i := slices.IndexFunc(c.Env, func(e corev1.EnvVar) bool { return e.Name == "MASTER_API_KEY" })
@@ -451,12 +451,12 @@ func TestMasterAPIKeyConsumersUseTheReference(t *testing.T) {
 					t.Errorf("%s carries no credentials hash", comp)
 				}
 			}
-			if mode == "side-only" {
-				init := containerIn(t, tmpls["reader"].Spec, "render-config")
-				if slices.ContainsFunc(init.Env, func(e corev1.EnvVar) bool { return e.Name == "MASTER_API_KEY" }) ||
-					strings.Contains(init.Command[2], "MASTER_API_KEY") {
-					t.Error("the reader-only render-config reads the master key")
-				}
+			// No reader's render-config reads the master key, in either mode (#795): it masks the
+			// variable with an empty value instead.
+			init := containerIn(t, tmpls["reader"].Spec, "render-config")
+			if !slices.ContainsFunc(init.Env, func(e corev1.EnvVar) bool { return e.Name == "MASTER_API_KEY" && e.Value == "" && e.ValueFrom == nil }) ||
+				strings.Contains(init.Command[2], "MASTER_API_KEY") {
+				t.Error("the reader render-config reads the master key")
 			}
 			for _, comp := range []string{"engine", "analytics-processor", "index-builder", "dashboard", "workers"} {
 				if _, ok := componentSecretData(comp)["MASTER_API_KEY"]; ok {
@@ -692,10 +692,8 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			})
 			h := newEngineHarness(t, oc, engineSecret(), secretOf("unrelated", map[string]string{"X": "1"}))
 			h.mustRun()
+			// No reader reads the master key, in either mode (#795).
 			masterReaders := []string{"dashboard", "index-builder", "workers", "writer"}
-			if mode == "combined" {
-				masterReaders = append(masterReaders, "reader")
-			}
 			before := h.templates()
 			for _, a := range []string{configHashKey, llmSecretHashKey, credentialsHashKey} {
 				if before["writer"].Annotations[a] == "" || before["reader"].Annotations[a] == "" {
@@ -735,7 +733,7 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			steady("an unchanged reconcile")
 			h.setSecret("unrelated", "X", "2")
 			steady("an unrelated Secret change")
-			for _, name := range []string{"v1-cache-auth", "v1-broker-admin", "v1-analytics-api-key", testMasterSecret} {
+			for _, name := range []string{"v1-cache-auth", "v1-redis-http", "v1-broker-admin", "v1-broker-users", "v1-broker-harvest", "v1-harvest-sign", "v1-harvest-notification", "v1-analytics-api-key", testMasterSecret} {
 				sec := h.secret(name)
 				sec.Labels = map[string]string{"touched": "yes"}
 				data := map[string][]byte{}
@@ -754,9 +752,25 @@ func TestCredentialChangeRollsOnlyItsConsumers(t *testing.T) {
 			steady("metadata edits and rewritten data")
 
 			h.setSecret("v1-cache-auth", "password", "rotatedcache0123")
-			rolled("a cache password change", []string{"cache", "harvest-master", "index-builder"})
+			rolled("a cache password change", []string{"cache", "harvest-master", "index-builder", "redis-http"})
+			// The shim requires the token and the dashboard sends it (#562).
+			h.setSecret("v1-redis-http", "token", "rotatedredishttp0123")
+			rolled("a redis-http token change", []string{"dashboard", "redis-http"})
+			// The engine and harvest-master sign in as their own users (#99, #824), so the admin
+			// password rolls only the broker, an engine user's password only the engine, and the
+			// harvest password only harvest-master.
 			h.setSecret("v1-broker-admin", "password", "rotatedbroker0123")
-			rolled("a broker password change", []string{"broker", "harvest-master", "reader", "writer"})
+			rolled("a broker password change", []string{"broker"})
+			h.setSecret("v1-broker-users", "reader-password", "rotatedreader0123")
+			rolled("a broker user password change", []string{"reader", "writer"})
+			h.setSecret("v1-broker-harvest", "password", "rotatedharvest0123")
+			rolled("a harvest password change", []string{"harvest-master"})
+			// HARVEST's control key is index-builder's and harvest-master's; its notification key is
+			// harvest-master's alone.
+			h.setSecret("v1-harvest-sign", harvestSignKey, "rotatedharvestsign0123")
+			rolled("a HARVEST control key change", []string{"harvest-master", "index-builder"})
+			h.setSecret("v1-harvest-notification", harvestNotificationKey, "rotatedharvestnotification0123")
+			rolled("a HARVEST notification key change", []string{"harvest-master"})
 			h.setSecret(testMasterSecret, "MASTER_API_KEY", "rotated-master-0123")
 			rolled("a master key change", masterReaders)
 			// Only the reader-only config reads the analytics key; the writer never does.
@@ -828,6 +842,7 @@ func TestRequestsForSecretCredentials(t *testing.T) {
 	check("orama-system", "other", "orama-system/c")
 	check("orama-system", "a-broker-admin", "orama-system/a")
 	check("orama-system", "c-cache-auth", "orama-system/c")
+	check("orama-system", "d-redis-http", "orama-system/d")
 	check("orama-system", "a-analytics-api-key", "orama-system/a")
 	check("orama-system", "unrelated")
 	check("elsewhere", "shared", "elsewhere/a")
@@ -984,7 +999,7 @@ func TestExistingAnalyticsKeyIsKept(t *testing.T) {
 		t.Fatal("the existing analytics key was changed")
 	}
 	tmpls := h.templates()
-	if want := secretDataHash(h.secret("v1-broker-admin"), got); tmpls["reader"].Annotations[credentialsHashKey] != want {
+	if want := secretDataHash(h.secret("v1-broker-users"), got); tmpls["reader"].Annotations[credentialsHashKey] != want {
 		t.Error("the readers do not carry the existing key's hash")
 	}
 	if want := secretDataHash(got, h.secret("v1-analytics-processor-secret")); tmpls["analytics-processor"].Annotations[credentialsHashKey] != want {
@@ -1028,7 +1043,7 @@ func TestAnalyticsKeyCreateRace(t *testing.T) {
 	s := ocv1TestScheme(t)
 	oc := stackOC(withSideImages)
 	winner := secretOf("v1-analytics-api-key", map[string]string{"ANALYTICS_API_KEY": strings.Repeat("cd", 24)})
-	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(oc, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": testMasterKey})).
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(oc, secretOf(testMasterSecret, map[string]string{"MASTER_API_KEY": testMasterKey}), readyBrokerTopology("v1")).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				if sec, ok := obj.(*corev1.Secret); ok && sec.Name == winner.Name {
@@ -1059,7 +1074,7 @@ func TestAnalyticsKeyCreateRace(t *testing.T) {
 		t.Fatal("the operator overwrote the Secret that won the race")
 	}
 	broker, component := &corev1.Secret{}, &corev1.Secret{}
-	for name, sec := range map[string]*corev1.Secret{"v1-broker-admin": broker, "v1-analytics-processor-secret": component} {
+	for name, sec := range map[string]*corev1.Secret{"v1-broker-users": broker, "v1-analytics-processor-secret": component} {
 		if err := cl.Get(ctx, types.NamespacedName{Namespace: "orama-system", Name: name}, sec); err != nil {
 			t.Fatal(err)
 		}
@@ -1106,5 +1121,48 @@ func TestAnalyticsKeyReadAndCreateErrors(t *testing.T) {
 				t.Fatalf("bootstrap = %v, want the %s error naming the Secret", err, name)
 			}
 		})
+	}
+}
+
+// #594: raising a credential's rotation generation writes a new password into its generated Secret,
+// records the generation, and rolls the store and every client that reads it; the same generation
+// changes nothing again, a lower one never rotates back, and the other credential is untouched.
+func TestCredentialRotationReplacesAGeneratedPasswordAndRollsItsReaders(t *testing.T) {
+	h := newEngineHarness(t, stackOC(nil), engineSecret())
+	h.mustRun()
+	broker, cache := h.secret("v1-broker-admin"), h.secret("v1-cache-auth")
+	brokerHash := h.templates()["broker"].Annotations[credentialsHashKey]
+
+	h.updateCR(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.CredentialRotation = &oramav1alpha1.CredentialRotation{Broker: 1}
+	})
+	h.mustRun()
+	rotated := h.secret("v1-broker-admin")
+	if string(rotated.Data["password"]) == string(broker.Data["password"]) || !hex48.Match(rotated.Data["password"]) {
+		t.Fatal("rotation did not write a new generated password")
+	}
+	if string(rotated.Data["username"]) != "orama" || rotated.Annotations[credentialRotationAnnotation] != "1" {
+		t.Fatalf("rotated Secret: username %q, generation %q", rotated.Data["username"], rotated.Annotations[credentialRotationAnnotation])
+	}
+	if h.templates()["broker"].Annotations[credentialsHashKey] == brokerHash {
+		t.Error("the broker did not roll onto the new password")
+	}
+	if got := h.secret("v1-cache-auth"); string(got.Data["password"]) != string(cache.Data["password"]) {
+		t.Error("rotating the broker changed the cache password")
+	}
+
+	h.mustRun()
+	if got := h.secret("v1-broker-admin"); got.ResourceVersion != rotated.ResourceVersion {
+		t.Error("the same generation rotated again")
+	}
+	h.updateCR(func(o *oramav1alpha1.OramaCloudV1) {
+		o.Spec.CredentialRotation = &oramav1alpha1.CredentialRotation{Broker: 0, Cache: 1}
+	})
+	h.mustRun()
+	if got := h.secret("v1-broker-admin"); string(got.Data["password"]) != string(rotated.Data["password"]) {
+		t.Error("a lower broker generation rotated back")
+	}
+	if got := h.secret("v1-cache-auth"); string(got.Data["password"]) == string(cache.Data["password"]) || got.Annotations[credentialRotationAnnotation] != "1" {
+		t.Error("the cache rotation did not write a new password")
 	}
 }

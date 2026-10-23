@@ -65,6 +65,7 @@ func TestControlDBSchemasAgainstPostgres(t *testing.T) {
 		p.verifyReferenceRows()
 		p.verifyTeamCreation()
 		p.verifyMigrationGrants()
+		p.verifyDashboardGrants()
 		// Reconcile again, then run 0008's Job once more: the guard skips it and nothing changes.
 		p.reconcileStack()
 		if out := p.runSchemaScript("-controldb-schema-0008"); !strings.Contains(out, "schema already applied (team_migrations present)") {
@@ -175,6 +176,14 @@ func newControlDBProof(t *testing.T, admin string) *controlDBProof {
 		runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "CREATE ROLE "+migrationRole+" NOLOGIN")
 		t.Cleanup(func() {
 			runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "DROP ROLE "+migrationRole)
+		})
+	}
+	// The dashboard's role (#99) likewise, with LOGIN, since the proof signs in as it.
+	if runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c",
+		"SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '"+dashboardRole+"')") == "t" {
+		runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "CREATE ROLE "+dashboardRole+" LOGIN")
+		t.Cleanup(func() {
+			runSchemaCommand(t, "psql", admin, "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", "DROP ROLE "+dashboardRole)
 		})
 	}
 	name := fmt.Sprintf("controldb_%d", time.Now().UnixNano())
@@ -457,4 +466,100 @@ ROLLBACK;`)
 		p.t.Fatalf("team creation returned %q", got)
 	}
 	p.t.Log("a new team was created with the default plan 0d735744-e58e-4438-b618-97523e407cdc")
+}
+
+// sqlAs runs a script signed in as role (the proof's server must let it sign in without a password,
+// as a local trust rule does), in one transaction, and returns its output and error.
+func (p *controlDBProof) sqlAs(role, script string) (string, error) {
+	p.t.Helper()
+	u, err := url.Parse(p.uri)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	u.User = url.User(role)
+	path := filepath.Join(p.t.TempDir(), "as.sql")
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		p.t.Fatal(err)
+	}
+	out, err := exec.CommandContext(p.ctx, "psql", u.String(), "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-f", path).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// verifyDashboardGrants signs in as the dashboard role (#99) and checks that it can do what the
+// dashboard does and is refused everything else: it reads every public table; creates a user, a
+// team, a project and an index, renames the index, and hard-deletes both, which runs the delete
+// triggers (capture_project_data_before_delete creates a temporary table, capture_deleted_index
+// writes deleted_indexes); it reads but never writes the operator-owned rows; and it can run no DDL,
+// no TRUNCATE, and reach no other schema.
+func (p *controlDBProof) verifyDashboardGrants() {
+	p.t.Helper()
+	tables := strings.Split(p.sql("SELECT string_agg(tablename, ' ' ORDER BY tablename) FROM pg_tables WHERE schemaname = 'public'"), " ")
+	var reads strings.Builder
+	for _, table := range tables {
+		fmt.Fprintf(&reads, "SELECT count(*) >= 0 FROM %q;\n", table)
+	}
+	if out, err := p.sqlAs(dashboardRole, reads.String()); err != nil {
+		p.t.Fatalf("the dashboard cannot read every public table: %v\n%s", err, out)
+	}
+
+	cluster := p.sql(`INSERT INTO oramacore_clusters (name, writer_url, reader_url, cluster_reader_replica_count, cluster_writer_count,
+		cluster_reader_regions, cluster_writer_regions, master_api_key, cluster_prefix)
+		VALUES ('dashboard-proof', 'https://writer.invalid', 'https://reader.invalid', 1, 1, '[]', '[]', 'proof', 'p9') RETURNING id`)
+	flow := `INSERT INTO users (id, first_name, email, firebase_id)
+VALUES ('77777777-7777-4777-8777-777777777777', 'Dashboard proof', 'dashboard-proof@example.invalid', 'dashboard-proof-99');
+INSERT INTO teams (id, name, created_by) VALUES ('88888888-8888-4888-8888-888888888888', 'Dashboard proof', '77777777-7777-4777-8777-777777777777');
+INSERT INTO projects (id, name, read_api_key, write_api_key, oramacore_cluster_id, created_by)
+VALUES ('99999999-9999-4999-8999-999999999999', 'Dashboard proof', 'read', 'write', '` + cluster + `', '77777777-7777-4777-8777-777777777777');
+INSERT INTO indexes (id, project_id, name, description, data_source_id, created_by)
+VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '99999999-9999-4999-8999-999999999999', 'proof', 'proof', 'proof', '77777777-7777-4777-8777-777777777777');
+UPDATE indexes SET name = 'renamed' WHERE id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+DELETE FROM projects WHERE id = '99999999-9999-4999-8999-999999999999';
+DELETE FROM indexes WHERE id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+SELECT 'deleted ' || count(*) FROM deleted_indexes WHERE id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+DELETE FROM teams WHERE id = '88888888-8888-4888-8888-888888888888';
+DELETE FROM users WHERE id = '77777777-7777-4777-8777-777777777777';
+SELECT 'flow ok';
+`
+	if out, err := p.sqlAs(dashboardRole, flow); err != nil || !strings.HasSuffix(out, "flow ok") || !strings.Contains(out, "deleted 1") {
+		p.t.Fatalf("the dashboard's own writes failed: %v\n%s", err, out)
+	}
+	p.sql("DELETE FROM deleted_indexes WHERE id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'")
+
+	p.sql("CREATE SCHEMA analytics; CREATE TABLE analytics.runs (id uuid PRIMARY KEY)")
+	refused := map[string]string{
+		"create a table":            "CREATE TABLE dashboard_proof (id int)",
+		"create a function":         "CREATE FUNCTION dashboard_proof() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+		"create a schema":           "CREATE SCHEMA dashboard_proof",
+		"alter a table":             "ALTER TABLE teams ADD COLUMN dashboard_proof int",
+		"drop a table":              "DROP TABLE uploaded_files",
+		"truncate a table":          "TRUNCATE teams CASCADE",
+		"add a plan":                "INSERT INTO subscription_plans SELECT * FROM subscription_plans",
+		"change a plan":             "UPDATE subscription_plans SET id = id",
+		"delete an add-on price":    "DELETE FROM stripe_addon_prices",
+		"change an LLM":             "UPDATE llms SET id = id",
+		"add a cluster row":         "INSERT INTO oramacore_clusters SELECT * FROM oramacore_clusters",
+		"delete the cluster row":    "DELETE FROM oramacore_clusters",
+		"read another schema":       "SELECT count(*) FROM analytics.runs",
+		"become the migration role": "SET ROLE migration",
+	}
+	for what, stmt := range refused {
+		out, err := p.sqlAs(dashboardRole, stmt)
+		if err == nil {
+			p.t.Errorf("the dashboard may %s (%s)", what, stmt)
+			continue
+		}
+		if !strings.Contains(out, "permission denied") && !strings.Contains(out, "must be owner") {
+			p.t.Errorf("%s failed for another reason than a refused privilege: %s", what, out)
+		}
+	}
+	// Granting itself more is a no-op with a warning, not an error: check what it holds afterwards.
+	if _, err := p.sqlAs(dashboardRole, "GRANT TRUNCATE ON teams TO dashboard"); err != nil {
+		p.t.Fatal(err)
+	}
+	if got := p.sql(`SELECT NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public' AND c.relkind = 'r' AND (has_table_privilege('dashboard', c.oid, 'TRUNCATE')
+			OR has_table_privilege('dashboard', c.oid, 'SELECT WITH GRANT OPTION')))`); got != "t" {
+		p.t.Error("the dashboard holds TRUNCATE or a grant option on a public table")
+	}
+	p.sql("DROP SCHEMA analytics CASCADE; DELETE FROM oramacore_clusters WHERE id = '" + cluster + "'")
 }

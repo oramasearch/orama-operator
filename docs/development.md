@@ -23,6 +23,39 @@ CLAUDE.md            # working rules (incl. docs discipline)
 Makefile             # standard kubebuilder targets (manifests/build/docker/helm)
 ```
 
+## Release image check
+
+Run the image gate on the fully rendered workload YAML before publishing a release:
+
+```sh
+go run ./cmd/check-image-digests < rendered-workloads.yaml
+```
+
+The command exits nonzero for mutable or malformed image references in Deployments, StatefulSets,
+DaemonSets, Jobs, CronJobs, Pods, PostgresSchemas and CNPG Clusters, including init containers,
+sidecars, ephemeral containers and HARVEST's `WORKER_IMAGE`. It reads multi-document YAML/JSON and
+Kubernetes Lists, rejects empty or unrendered input, checks only executable specs, and prints field paths rather than credential
+values. A digest must be a valid repository reference ending in a SHA-256 digest.
+
+Run this against reconciled workload output; set-file `images.overrides` alone cannot prove that
+all defaults and newly added containers are pinned. A passing gate establishes immutable content
+selection. Digest approval and registry provenance remain part of release review. Refresh helper
+pins by reading the tag's multi-platform manifest digest from its registry and reviewing the change
+with the rendered-workload test. Current fixed upstream pins were read on 2026-10-22.
+
+Live Cloud v1 starts in warning mode (`images.requireDigests` absent or false). After reviewing
+and configuring all component/helper digests, including `images.overrides.controldb`, set
+`images.requireDigests: true` on the instance or set member specification to enforce the same gate
+on operator writes. Production set values leave enforcement off until those images are available;
+`ImagesPinned=False` and the `ImagesNotPinned` Warning event identify the remaining workloads.
+The operator installation and controllers are identical on every cluster.
+
+The focused proof is `go test ./internal/imagepolicy ./cmd/check-image-digests ./internal/controller
+-run 'TestPinned|TestMutableImages|TestReleaseCheck|TestCredentialHelpers|TestRehearsal|TestCloudV1Image|TestImageEnforcement'`.
+`TestRehearsalReadOnlyRoleAgainstPostgres` also checks real database privileges when
+`REHEARSAL_TEST_POSTGRES_URI` points to a disposable local PostgreSQL server; it creates and removes
+its own database and role. No cluster access is needed.
+
 ## Codegen (after editing `api/v1alpha1/*.go`)
 
 ```sh
@@ -99,7 +132,11 @@ back and then recover, a partial 0008 without its guard, and per-stack Stripe pr
 the committed Prod 1 reference rows and a team insert with defaults, rolled back, and the `migration`
 role's grants (operator#653): rows and sequences of every `public` table, a table created later
 included, and no DDL. Roles belong to the server, so the proof creates `migration` (`NOLOGIN`) when
-the server lacks it, as CNPG would, and drops it at the end only if it created it.
+the server lacks it, as CNPG would, and drops it at the end only if it created it. It does the same
+for the `dashboard` role (`LOGIN`, operator#99) and signs in as it to check its grants: every public
+table readable, the dashboard's writes and delete triggers working, and DDL, `TRUNCATE`, writes to
+the operator-owned rows and other schemas refused. That sign-in has no password, so the server must
+trust local connections (Homebrew's default `pg_hba.conf` does).
 
 The control DB's cluster-row script (`TestControlDBClusterRowAgainstPostgres`, operator#443) runs
 against local Postgres with `CONTROLDB_TEST_POSTGRES=1` (connection
@@ -222,8 +259,14 @@ The standard loop: run the manager **out-of-cluster** against your current kube-
 using your kubeconfig creds (no in-cluster deploy needed to iterate):
 
 ```sh
-make run           # = go run ./cmd/main.go
+go run ./cmd --control-plane-bind-address=""
 ```
+
+This disables the deployment listener for the local reconciler loop. To exercise that listener,
+provide a TLS certificate and key with `--control-plane-cert-file` and `--control-plane-key-file`;
+the server has no plaintext mode. The chart projects cert-manager's serving Secret at
+`/var/run/orama/control-plane` on every cluster. The deployment credential, TLS renewal, and chart
+NetworkPolicy tests run without a cluster; see [control-plane/README.md](control-plane/README.md).
 
 **Run only ONE manager at a time.** The metrics server binds `:8080` and the deployment control plane
 binds `:8090`; a second manager (or a stale/wedged one left running) fails with

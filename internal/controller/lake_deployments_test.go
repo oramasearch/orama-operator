@@ -178,11 +178,11 @@ func TestTheLakeZettaIsTheOneOperatorSchemaZettaInItsNamespace(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var admin corev1.Secret
-	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: lakeAdminSecret("hello")}, &admin); err != nil {
+	var deploy corev1.Secret
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "lake", Name: lakeDeploySecret("hello")}, &deploy); err != nil {
 		t.Fatal(err)
 	}
-	target, failure := (&DeploymentControlPlane{Client: c}).authenticate(ctx, "Bearer "+string(admin.Data["token"]))
+	target, failure := (&DeploymentControlPlane{Client: c}).authenticate(ctx, "Bearer "+string(deploy.Data["token"]))
 	if failure != nil {
 		t.Fatalf("the deployment control plane found no target: %+v", failure)
 	}

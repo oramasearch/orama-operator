@@ -33,13 +33,21 @@
 #                                                        (Juan, 2026-10-17; the bridge's secrets.md is corrected).
 #   v1-prod-llm-keys        OPENAI_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY, ANTHROPIC_API_KEY
 #                                                        engine, through llm.providers[].apiKeySecretRef
-#                                                        (engine_llm.go llmKeySecretEnv); third-party keys.
+#                                                        (engine_llm.go llmKeySecretEnv); the workers read
+#                                                        OPENAI_, GROQ_ and ANTHROPIC_API_KEY from the same
+#                                                        references (#571); third-party keys.
 #   v1-prod-dashboard-env   PRIVATE_API_KEY (= Prod 1: the import consumer sends it),
 #                           STRIPE_WEBHOOK_SECRET (= Prod 1: the app.orama.com Stripe endpoint signs with it),
 #                           STRIPE_SECRET_KEY, RESEND_API_KEY, SLACK_TOKEN, the Clerk server key
 #                                                        dashboard, through components.dashboard.envFrom (#311).
 #                                                        It never holds DATABASE_URL, POSTGRES_PASSWORD, JWT_*,
 #                                                        or MASTER_API_KEY: the operator owns them and refuses them.
+#                                                        Every member of this set is production (its clusters'
+#                                                        purpose tag), so its dashboard is not rendered unless
+#                                                        CRON_SECRET and STRIPE_WEBHOOK_SECRET come from a Secret
+#                                                        like this one, crons on or off (#794), and its Stripe key
+#                                                        comes from components.dashboard.stripeSecretKeySecretRef
+#                                                        (#802, under Blocked below).
 # v1-us: nothing copied. Its master key is generated (#615) until the US migration names Prod 1's.
 #
 #   Not copied: AIRBYTE_WEBHOOK_SECRET and every AIRBYTE_* (Airbyte removed, bridge decisions 2026-10-16
@@ -50,11 +58,18 @@
 # Generated (never copied, never shared between members):
 #   v1-eu-jwt               JWT_PRIVATE_KEY, JWT_PUBLIC_KEY   dashboard signs write tokens  (config.go ensureJWTSecrets)
 #   v1-eu-jwt-pub           JWT_PUBLIC_KEY                     engine verifies               (config.go ensureJWTSecrets)
-#   v1-eu-broker-admin      username, password                 broker, engine, harvest-master (credentials.go ensureCredentialSecrets)
-#   v1-eu-broker-users      writer-password, reader-password   RabbitMQTopology users         (datastore.go ensureBrokerSecrets)
+#   v1-eu-broker-admin      username, password                 broker only (#796)           (credentials.go ensureCredentialSecrets)
+#   v1-eu-broker-users      writer-password, reader-password   RabbitMQTopology users; the writer and readers
+#                                                              sign in as them (#99)        (datastore.go ensureBrokerSecrets)
+#   v1-eu-broker-harvest    password                           RabbitMQTopology user harvest; harvest-master
+#                                                              signs in as it (#824)        (datastore.go ensureBrokerSecrets)
 #   v1-eu-cache-auth        password                           Redis, harvest-master, index-builder (credentials.go)
-#   v1-eu-controldb-app     uri, password                      CNPG: dashboard DATABASE_URL/POSTGRES_PASSWORD,
-#                                                              index-builder, analytics processor, PostgresSchema
+#   v1-eu-hpes (#574)       token                              HPES API_KEY, index-builder ORAMA_EMBEDDINGS_BEARER
+#                                                              (credentials.go)
+#   v1-eu-controldb-app     uri, password                      CNPG owner: index-builder, analytics processor,
+#                                                              PostgresSchema, cluster-row Job, pgAdmin
+#   v1-eu-controldb-dashboard username, password, uri          the dashboard role: dashboard DATABASE_URL/
+#                                                              POSTGRES_PASSWORD (#99, controldb_roles.go)
 #   v1-eu-analytics-api-key (#386)                             readers' reader_side.analytics and the analytics
 #                                                              processor only (credentials.go)
 #
@@ -65,9 +80,16 @@
 #   POSTGRES_*, CLICKHOUSE_HOST/PORT, REDIS_*, RABBITMQ_*, TYPESENSE_HOST/PORT, ORAMACORE_*_URL
 #                                  <- v1-eu-config ConfigMap (config.go reconcileBootstrap)
 #   index-builder service URLs and Cloudflare KV namespace IDs <- ingestion.go indexBuilderEnv, owned KV CRs
+#   index-builder CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID <- cloudflare-api-token `token`, `accountID`
+#                                  through cloudflare.apiTokenSecretRef (#571)
+#   dashboard NEXT_PUBLIC_APP_URL  <- https://<components.dashboard.host> (#572; the image must be built
+#                                  without it)
+#   dashboard ORAMACORE_PLACEMENT_CLUSTER_ID <- the `c1` row's id the cluster-row Job records (#572)
+#   dashboard REDIS_CACHE_URL      <- http://v1-eu-redis-http, the serverless-redis-http shim (#562)
+#   index-builder ORAMA_EMBEDDINGS_URL <- http://v1-eu-hpes:8787/v1/embeddings_b64, the stack's HPES (#574)
 #
-# Blocked (#570 generated credentials, #571 per-key third-party Secrets,
-# #572 derived dashboard values, #573 the stack's own ingress-nginx, #574 HPES, #575 no tunnel ingress,
+# Blocked (#570 generated credentials, #747 the remaining third-party keys,
+# #573 the stack's own ingress-nginx, #574 HPES, #575 no tunnel ingress,
 # #562 the Redis HTTP shim): required values this file cannot carry yet. Each needs its prerequisite first; none is
 # worked around here, and no internal password is copied to bypass a missing generator.
 #   Images: not pinned by digest, not mirrored privately, and not moved to exact version tags (Steve,
@@ -75,23 +97,31 @@
 #     on the operator's default tags. Still to build before an apply:
 #     - oramacore-writer, oramacore-reader: the v1.2.39 side-only images (#308, orama-cloud-v1-bridge#5),
 #       and the reader with oramacore#340/#341. Without both overrides the engine runs the combined
-#       image, which the template sets to oramasearch/oramacore-cloud-v1 with #340/#341 (#597).
+#       image, which the template sets to oramasearch/oramacore-cloud-v1 with #340/#341 (#597). Its
+#       readers still never hold the writer's master key: they render combined-reader.yaml (#795).
 #     - dashboard: the Clerk build (orama-bridge#180, #187).
 #     - analytics-processor: the build with the 0.0.0.0:8080 listener patch (#421).
-#     - HPES: the component and its image (decisions 2026-10-16 #3, 2026-10-17 #5; #574).
+#     - HPES: the CPU image oramasearch/embeddings-server-py:cpu-<sha> (embeddings-server-py#9), pinned by
+#       digest in images.overrides.hpes; the operator runs the component (hpes.go, #574).
 #   Credentials the operator does not generate yet, all of which only have to agree inside the stack:
 #     the one ClickHouse password (analytics, analytics processor, dashboard, workers), TYPESENSE_API_KEY
 #     (search and index-builder), HARVEST_SIGN (index-builder, harvest-master, harvest workers),
 #     CRON_SECRET (dashboard and its CronJobs), DECRYPTER_API_SECRET_BASE64 (index-builder's x-api-key to
 #     openai-decrypter, index-manager apps/index-builder/src/embeddings/openai.ts; openai-decrypter gets
-#     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder), ORAMA_EMBEDDINGS_BEARER (HPES),
+#     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder),
 #     REDIS_CACHE_TOKEN (the serverless-redis-http shim, decisions #12a, not built), QSTASH_TOKEN (workers).
-#   Third-party keys in mixed component Secrets: the workers' LLM keys and SENTRY_DSN, index-builder's
-#     ABLY_API_KEY, APIFY_TOKEN, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, harvest-master's GITHUB_PAT
-#     and GHCR_TOKEN sit in v1-eu-<component>-secret beside internal keys, so they cannot be copied
-#     without copying internal ones; they need a per-key Secret reference like llm.providers.
-#   Derived values the operator does not derive yet: NEXT_PUBLIC_APP_URL (from the dashboard host, and
-#     inlined at build time), ORAMACORE_PLACEMENT_CLUSTER_ID (the `c1` row, #447), REDIS_CACHE_URL (the shim).
+#   The dashboard's Stripe key (#802, LSR-140): an operator with #802 refuses a production dashboard
+#     whose STRIPE_SECRET_KEY is not a live restricted key (rk_live_) from
+#     components.dashboard.stripeSecretKeySecretRef. Lake bills in the same Stripe account, so the
+#     dashboard must not hold the account's full key. Steve or Juan creates the restricted key in Stripe
+#     with the permissions in docs/components.md ("The dashboard's Stripe key"), and a Secret for it in
+#     orama-system (consent). Then, in one change: add it to v1-eu's `secrets`, set
+#     components.dashboard.stripeSecretKeySecretRef to its name and key, and take STRIPE_SECRET_KEY out
+#     of v1-prod-dashboard-env (a second key beside the reference is refused).
+#   Third-party keys: the workers' SENTRY_DSN now takes a reference (components.workers.sentryDSNSecretRef,
+#     #571), but its source Secret does not exist yet; creating it in orama-system is Steve's consent.
+#     index-builder's ABLY_API_KEY and APIFY_TOKEN and harvest-master's GITHUB_PAT and GHCR_TOKEN still
+#     sit in v1-eu-<component>-secret beside internal keys; they wait on the decisions in #747.
 #   Outside services not settled by the bridge epic: AWS S3 for uploads (AWS_ACCESS_KEY_VALUE,
 #     AWS_SECRET_ACCESS_KEY_VALUE, S3_BUCKET*), Ably, Apify, QStash.
 #   Configuration values to read from Prod 1 and add to dashboard.env: S3_BUCKET, S3_BUCKET_REGION,
@@ -236,6 +266,9 @@ spec:
         pgAdmin:
           enabled: false
   # US keeps the sandbox stack it runs today and never runs the dashboard crons.
+  # Its dashboard has no dashboard env, so an operator with #794 refuses to render it (Ready=False
+  # naming CRON_SECRET, STRIPE_WEBHOOK_SECRET and STRIPE_SECRET_KEY) and leaves its last template
+  # running. Disabling it here, or giving it production values, is Steve's decision (#794).
   - clusterRef: orama-production-cluster-03
     name: v1-us
     namespace: v1-us
@@ -321,6 +354,9 @@ spec:
       enabled: true
       manageDNS: true
     images:
+      # LSR-214: warn on tag-only selections without blocking this live set. Enable after all
+      # application/helper overrides, including controldb, have reviewed digests; see docs/development.md.
+      requireDigests: false
       # Both members' combined OramaCore engine: v1.2.39 plus oramacore#340 and #341, which serve
       # GET /health/ready, the readers' readiness probe since #506 (#597). Built from
       # oramacore 9d8ed373 into the private oramasearch/oramacore-cloud-v1. Neither member sets

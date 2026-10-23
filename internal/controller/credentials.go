@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
 )
@@ -77,8 +79,20 @@ func credentialKeys(oc *oramav1alpha1.OramaCloudV1, secret string) []string {
 	switch secret {
 	case brokerAdminSecretName(oc):
 		return []string{"username", "password"}
+	case brokerUsersSecretName(oc):
+		return []string{brokerUserPasswordKey(brokerWriterUser), brokerUserPasswordKey(brokerReaderUser)}
+	case brokerHarvestSecretName(oc):
+		return []string{"password"}
 	case cacheAuthSecretName(oc):
 		return []string{"password"}
+	case redisHTTPSecretName(oc):
+		return []string{redisHTTPTokenKey}
+	case hpesSecretName(oc):
+		return []string{hpesTokenKey}
+	case harvestSignSecretName(oc):
+		return []string{harvestSignKey}
+	case harvestNotificationSecretName(oc):
+		return []string{harvestNotificationKey}
 	case analyticsKeySecretName(oc):
 		return []string{analyticsKeyEnvName}
 	case generatedMasterAPIKeySecretName(oc):
@@ -117,11 +131,21 @@ func masterAPIKeyEnv(oc *oramav1alpha1.OramaCloudV1) corev1.EnvVar {
 	return secretKeyEnv(masterAPIKeyEnvName, name, key)
 }
 
-// brokerCredentialEnv carries the broker admin user and password from <cr>-broker-admin.
+// brokerCredentialEnv carries the broker admin user and password from <cr>-broker-admin. Only the
+// broker itself takes them (#796): every client signs in as its own user.
 func brokerCredentialEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		secretKeyEnv(brokerUserEnv, brokerAdminSecretName(oc), "username"),
 		secretKeyEnv(brokerPasswordEnv, brokerAdminSecretName(oc), "password"),
+	}
+}
+
+// harvestBrokerEnv carries harvest-master's broker user, harvest, and its password from
+// <cr>-broker-harvest (#824), under the names amqpURL references.
+func harvestBrokerEnv(oc *oramav1alpha1.OramaCloudV1) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: brokerUserEnv, Value: brokerHarvestUser},
+		secretKeyEnv(brokerPasswordEnv, brokerHarvestSecretName(oc), "password"),
 	}
 }
 
@@ -136,7 +160,7 @@ func redisPasswordEnvVar(oc *oramav1alpha1.OramaCloudV1) corev1.EnvVar {
 }
 
 // amqpURL is the broker's AMQP URL. The credentials are $(VAR) references the kubelet expands from
-// the brokerCredentialEnv entries, which must come before it, so the pod spec holds no value.
+// the harvestBrokerEnv entries, which must come before it, so the pod spec holds no password.
 func amqpURL(oc *oramav1alpha1.OramaCloudV1) string {
 	return "amqp://$(" + brokerUserEnv + "):$(" + brokerPasswordEnv + ")@" + oc.Name + "-broker:5672"
 }
@@ -157,37 +181,72 @@ func secretKeyEnv(name, secret, key string) corev1.EnvVar {
 // random 48-character hex ANALYTICS_API_KEY, on every stack, and <cr>-master-api-key, a random
 // 48-character hex MASTER_API_KEY, on a stack that names no master key Secret and has a consumer of
 // it (#615). The generated master key is never replaced: the c1 cluster row keeps the key it was
-// inserted with (#447). An existing Secret, generated or
+// inserted with (#447). Where the cache runs it also creates <cr>-redis-http, the 64-character hex
+// token (32 random bytes) the serverless-redis-http shim requires and the dashboard sends (#562).
+// Where ingestion runs it creates <cr>-hpes, the 64-character hex bearer HPES requires and
+// index-builder sends (#574), and HARVEST's two keys, each 64 hex characters: <cr>-harvest-sign,
+// the control key index-builder sends and harvest-master checks, and <cr>-harvest-notification,
+// harvest-master's own notification signing key.
+// An existing Secret, generated or
 // supplied, is never changed. Each one is then read back, so a Secret that won a create race is the
 // one checked: a missing, empty or unsupported value fails the reconcile, naming the Secret and key.
 // Elsewhere a broker or cache client's Secret must come through the set's secrets list.
 func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	c := oc.Spec.Components
+	rotation := oramav1alpha1.CredentialRotation{}
+	if oc.Spec.CredentialRotation != nil {
+		rotation = *oc.Spec.CredentialRotation
+	}
 	for _, s := range []struct {
 		local  bool
 		name   string
 		values func(pass string) map[string][]byte
+		// nbytes is the random bytes behind the hex value; 0 means 24 (48 characters).
+		nbytes int
+		// rotate is the generation the CR asks this credential to be at (#594); 0 for the
+		// credentials that never rotate.
+		rotate int64
 	}{
-		{storeLocal(oc, c.Broker), brokerAdminSecretName(oc), func(p string) map[string][]byte {
+		{local: storeLocal(oc, c.Broker), name: brokerAdminSecretName(oc), values: func(p string) map[string][]byte {
 			return map[string][]byte{"username": []byte(brokerAdminUser), "password": []byte(p)}
-		}},
-		{storeLocal(oc, c.Cache), cacheAuthSecretName(oc), func(p string) map[string][]byte {
+		}, rotate: rotation.Broker},
+		{local: storeLocal(oc, c.Cache), name: cacheAuthSecretName(oc), rotate: rotation.Cache, values: func(p string) map[string][]byte {
 			return map[string][]byte{"password": []byte(p)}
+		}},
+		// The shim runs wherever the cache does (redisHTTPRuns), so its token follows the cache.
+		{local: redisHTTPRuns(oc), name: redisHTTPSecretName(oc), nbytes: 32, values: func(t string) map[string][]byte {
+			return map[string][]byte{redisHTTPTokenKey: []byte(t)}
+		}},
+		// HPES runs wherever ingestion does (hpesRuns), so its bearer follows ingestion (#574).
+		{local: hpesRuns(oc), name: hpesSecretName(oc), nbytes: 32, values: func(t string) map[string][]byte {
+			return map[string][]byte{hpesTokenKey: []byte(t)}
+		}},
+		// HARVEST's keys follow ingestion too: index-builder reads the control key even where
+		// harvest is off, and both keep their values while harvest-master is away.
+		{local: c.Ingestion.Enabled, name: harvestSignSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
+			return map[string][]byte{harvestSignKey: []byte(k)}
+		}},
+		{local: c.Ingestion.Enabled, name: harvestNotificationSecretName(oc), nbytes: 32, values: func(k string) map[string][]byte {
+			return map[string][]byte{harvestNotificationKey: []byte(k)}
 		}},
 		// The readers and analytics-processor are its only consumers, but it does not follow either:
 		// re-enabling the processor or ClickHouse finds the same key.
-		{true, analyticsKeySecretName(oc), func(k string) map[string][]byte {
+		{local: true, name: analyticsKeySecretName(oc), values: func(k string) map[string][]byte {
 			return map[string][]byte{analyticsKeyEnvName: []byte(k)}
 		}},
 		// Only when the CR names no master key Secret; a named one is supplied, never created.
-		{masterAPIKeyGenerated(oc), generatedMasterAPIKeySecretName(oc), func(k string) map[string][]byte {
+		{local: masterAPIKeyGenerated(oc), name: generatedMasterAPIKeySecretName(oc), values: func(k string) map[string][]byte {
 			return map[string][]byte{masterAPIKeyEnvName: []byte(k)}
 		}},
 	} {
 		if !s.local {
 			continue
 		}
-		pass, err := randHex(24)
+		nbytes := s.nbytes
+		if nbytes == 0 {
+			nbytes = 24
+		}
+		pass, err := randHex(nbytes)
 		if err != nil {
 			return fmt.Errorf("generate %s: %w", s.name, err)
 		}
@@ -202,12 +261,57 @@ func (r *OramaCloudV1Reconciler) ensureCredentialSecrets(ctx context.Context, oc
 		if err := r.secretReader().Get(ctx, types.NamespacedName{Namespace: oc.Namespace, Name: s.name}, stored); err != nil {
 			return fmt.Errorf("read credential Secret %s/%s: %w", oc.Namespace, s.name, err)
 		}
+		if err := r.rotateCredential(ctx, oc, stored, s.rotate, s.values); err != nil {
+			return err
+		}
 		for _, key := range credentialKeys(oc, s.name) {
 			if err := checkCredentialValue(stored, key); err != nil {
 				return err
 			}
 		}
 	}
+	return nil
+}
+
+// credentialRotationAnnotation records, on a generated credential Secret, the rotation generation
+// its current password was written for (#594).
+const credentialRotationAnnotation = "orama.cloud/credential-rotation"
+
+// rotateCredential writes a new password into a generated credential Secret when the CR asks for a
+// rotation generation above the one the Secret records (#594), and records the new generation. The
+// password stays the same otherwise; a lower generation never rotates back. Only a Secret the
+// operator generated (labelled as this stack's credential) is rotated; a supplied one is left alone.
+func (r *OramaCloudV1Reconciler) rotateCredential(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, stored *corev1.Secret, want int64, values func(string) map[string][]byte) error {
+	if want <= 0 {
+		return nil
+	}
+	have := int64(0)
+	if recorded, ok := stored.Annotations[credentialRotationAnnotation]; ok {
+		parsed, err := strconv.ParseInt(recorded, 10, 64)
+		if err != nil {
+			return fmt.Errorf("credential Secret %s/%s: annotation %s is %q, not a number", stored.Namespace, stored.Name, credentialRotationAnnotation, recorded)
+		}
+		have = parsed
+	}
+	if want <= have {
+		return nil
+	}
+	if stored.Labels[componentLabel] != credentialsComponent || stored.Labels["app.kubernetes.io/instance"] != oc.Name {
+		return fmt.Errorf("credential Secret %s/%s was not generated by the operator; rotate it where it is supplied", stored.Namespace, stored.Name)
+	}
+	pass, err := randHex(24)
+	if err != nil {
+		return fmt.Errorf("rotate %s: %w", stored.Name, err)
+	}
+	if stored.Annotations == nil {
+		stored.Annotations = map[string]string{}
+	}
+	stored.Data = values(pass)
+	stored.Annotations[credentialRotationAnnotation] = strconv.FormatInt(want, 10)
+	if err := r.Update(ctx, stored); err != nil {
+		return fmt.Errorf("rotate credential Secret %s/%s: %w", stored.Namespace, stored.Name, err)
+	}
+	logf.FromContext(ctx).Info("rotated a generated credential", "secret", stored.Name, "generation", want)
 	return nil
 }
 

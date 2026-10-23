@@ -114,9 +114,18 @@ The namespace has default-deny ingress and egress. A second NetworkPolicy permit
 - cluster DNS on TCP/UDP 53;
 - Lake pods in `spec.namespace` on their container port (`spec.port`, default 4900; NetworkPolicy
   ports match pod ports, not the Service port 80) for source, registry, and event REST;
-- public TCP 80/443 for package indexes, excluding private, loopback, link-local, and metadata
-  address ranges. Kubernetes NetworkPolicy cannot select public endpoints by DNS name, so the
+- public TCP 80/443 for package indexes, excluding private, loopback, link-local, metadata
+  and reserved ranges and Azure's host-service address `168.63.129.16`. Kubernetes NetworkPolicy cannot select public endpoints by DNS name, so the
   public rule is the narrow portable expression of package-index access.
+
+Every build namespace also gets the mandatory `deny-cloud-metadata` CiliumNetworkPolicy that every
+`NetworkSandbox` carries ([#761](https://github.com/oramasearch/orama-operator/issues/761)): it
+selects every pod and denies `169.254.169.254/32`, `168.63.129.16/32` and `fd00:ec2::254/128` on
+every port, ahead of any allowance. On AKS-managed Cilium the `ipBlock` exclusions alone did not
+stop a pod reaching the metadata service ([network-sandbox.md](../infrastructure/network-sandbox.md#mandatory-cloud-metadata-deny)).
+The policy is controlled by the Lake; one of that name controlled by anything else is refused and
+the build waits. The security review of this path, with the open findings, is
+[`../security/deep-search-712-tenant-builds.md`](../security/deep-search-712-tenant-builds.md).
 
 The builder uses size-limited `emptyDir` volumes for source/workspace, BuildKit state, temporary
 files, and Docker configuration. It has `backoffLimit: 0`, a one-hour

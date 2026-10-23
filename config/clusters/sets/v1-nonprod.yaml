@@ -33,11 +33,20 @@ spec:
   deletionPolicy: Retain
   # Prod 1 teams copied into the members (operator#654; config/clusters/README.md, "Copying a Prod 1
   # team into a member"). Each entry becomes an OramaCloudV1Migration named `name` in its member's
-  # namespace, with targetRef set to the member. Each step change is applied only with Steve's
-  # consent. The four Secrets below must exist in orama-system on the managing cluster first.
+  # namespace, with targetRef set to the member. A change to this file alone is merged and applied by Juan's side
+  # (orama-bridge decisions 20 October, 3). The four Secrets below must exist in orama-system on the managing cluster first.
   migrations:
   # The #149 pilot (orama-bridge#206): one team, one project, 330 documents, copied into v1-dev,
   # verified, then removed by deleting this entry (removeOnDelete runs the tool's remove-target).
+  # Copied again by orama-bridge#222 on a new run volume: the first copy's reader storage broke
+  # (orama-bridge#219) and it was removed on 2026-10-21. runID and the receipt are unchanged.
+  #
+  # REFUSED by the operator since orama-operator#787 (LSR-038): the three v1-nonprod-prod1-* Secrets
+  # are named by spec.source, so they are Prod 1's credentials, which are production, and a Prod 1
+  # credential is never copied into a nonprod member. The set reports this migration Blocked and does
+  # not update it; what was already copied into v1-dev stays until this entry is removed. A nonprod
+  # rehearsal runs against a source standing in for Prod 1 whose Secrets carry
+  # orama.cloud/purpose=nonprod.
   - name: team-4e01bc49
     member: v1-dev
     secrets:                                # copied into v1-dev first, deleted once the migration is gone
@@ -53,9 +62,10 @@ spec:
       teamID: 4e01bc49-b388-43c2-8986-2395a0b8fe52
       projectIDs: [a0d16f69-1a49-4659-8a60-008886765691]
       runID: pilot-1
-      step: plan                            # then seed, seed with apply: true, catchUp, verify
+      step: catchUp                         # the new copy (#222): seed Succeeded 2026-10-21; the last copy step
+      apply: true                           # writes v1-dev
       evidenceSecretRef: {name: team-4e01bc49-evidence, key: isolation.json}
-      image: docker.io/oramasearch/cloud-v1-migration@sha256:5195b606e7eb48521b21d187b9ea62882d82b4757bb8edfa2908744c4a95f5ae  # dev-e066a1c0
+      image: docker.io/oramasearch/cloud-v1-migration@sha256:bbecb1d209ce107c45af404298973195acecee62c81db418cfab0cfa3268be97  # dev-28c5192c
       pullSecretName: oramasearch-dockerhub
       removeOnDelete: true
       # Fixed once applied. The revisions are the labels the run binds to and the isolation receipt
@@ -74,15 +84,25 @@ spec:
           document: OramaMigrationReadIndexInfo
           dataDir: /opt/oramacore/.data/writer
           credentialsSecretRef: {name: v1-nonprod-prod1-settings-ssm}
+  # Nonprod's own Secrets: none of these is one a production set copies (orama-operator#789). The
+  # operator refuses to copy a production set's Secret into a nonprod member, and
+  # TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes fails on one. Each is copied under the name the
+  # stack already mounts, so the copy of the production Secret in v1-dev is overwritten in place.
   secrets:
-  - name: oramasearch-dockerhub
+  - name: oramasearch-dockerhub-nonprod       # a Docker Hub pull token for nonprod only
     namespace: orama-system
-  - name: cloudflare-api-token
+    as: oramasearch-dockerhub
+  - name: cloudflare-api-token-oramadev       # token, zoneID, accountID: a token limited to oramadev.net
     namespace: orama-system
+    as: cloudflare-api-token
   - name: v1-nonprod-llm-keys
     namespace: orama-system
   - name: v1-nonprod-dashboard-env
     namespace: orama-system
+  # Lake's development Clerk instance (keys publishableKey, secretKey). The dashboard is its satellite
+  # on app-dev.oramadev.net (orama-bridge#228; decisions of 21 October, 4 and 6).
+  - name: clerk-lake-dev
+    namespace: lake
   template:
     cloudflare:
       apiTokenSecretRef:
@@ -121,6 +141,21 @@ spec:
         envFrom:
         - secretRef:
             name: v1-nonprod-dashboard-env
+        # Clerk sign-in as a satellite of Lake's development instance. The NEXT_PUBLIC_* values are also
+        # compiled into the image (orama-cloud-v1-bridge build/images/dashboard/public.env.v1-dev); the
+        # server reads them at runtime, so the two must match. The dashboard refuses to start on Lake's
+        # keys unless app-dev.oramadev.net is registered as the instance's satellite.
+        env:
+        - name: CLERK_SECRET_KEY
+          valueFrom: {secretKeyRef: {name: clerk-lake-dev, key: secretKey}}
+        - name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+          valueFrom: {secretKeyRef: {name: clerk-lake-dev, key: publishableKey}}
+        - {name: NEXT_PUBLIC_CLERK_IS_SATELLITE, value: "true"}
+        - {name: NEXT_PUBLIC_CLERK_DOMAIN, value: app-dev.oramadev.net}
+        - {name: NEXT_PUBLIC_CLERK_SIGN_IN_URL, value: https://above-seahorse-7535.accounts.dev/sign-in}
+        - {name: NEXT_PUBLIC_CLERK_SIGN_UP_URL, value: https://above-seahorse-7535.accounts.dev/sign-up}
+        - {name: NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL, value: https://app-dev.oramadev.net/auth/complete}
+        - {name: NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL, value: https://app-dev.oramadev.net/auth/complete}
         # Prod 1's three dashboard crons, created suspended; CRON_SECRET comes from the envFrom Secret.
         # Unsuspending is a committed change here, never an edit of the CronJobs.
         crons:
@@ -156,23 +191,32 @@ spec:
         enabled: true
         replicas: 1
     demoSeed: false
+    # The operator's idp.provider: clerk is not wired into the dashboard; the dashboard's env above is
+    # what it reads.
     idp:
       provider: none
     images:
       # The combined OramaCore engine: v1.2.39 plus oramacore#340 and #341, which serve
-      # GET /health/ready, the readers' readiness probe since #506 (#597). Built from
-      # oramacore 9d8ed373 into the private oramasearch/oramacore-cloud-v1.
+      # GET /health/ready, the readers' readiness probe since #506 (#597), and oramacore#343,
+      # which keeps a collection recreated before the readers' next commit (orama-bridge#220).
+      # Built from oramacore caca2a59 into the private oramasearch/oramacore-cloud-v1.
+      # v1-prod.yaml still runs 9d8ed373.
       overrides:
-        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-9d8ed373
+        # The Clerk dashboard from dashboard dev 56f355da: the Cloud v1 security fixes (dashboard#187) and
+        # R2 upload signing (dashboard#186); recorded in orama-cloud-v1-bridge#12.
+        dashboard: oramasearch/dashboard:v1-dev-56f355da@sha256:975d13df7fdfe9a7a4fbb2b7817294007604540c1bebc74a517d6acf20b87f5e
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-caca2a59
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
       tag: v1-sandbox
-    # Prod 1's providers, models and selector, as in v1-prod. Keys come from v1-nonprod-llm-keys.
+    # Prod 1's providers, models and selector, as in v1-prod, except the default. Keys come from
+    # v1-nonprod-llm-keys, where only OPENAI_API_KEY is real: the others are placeholders, so the
+    # default is openai, not Prod 1's groq (orama-bridge#221).
     llm:
       automaticEmbeddingsSelector:
         model: gpt-5.2
         provider: openai
-      default: groq
+      default: openai
       providers:
       - apiKeySecretRef:
           name: v1-nonprod-llm-keys

@@ -75,16 +75,20 @@ func TestBrokerTopologyStreamRetentionMatchesOramaCore(t *testing.T) {
 	if err := cl.Get(context.Background(), types.NamespacedName{Name: "v1-broker", Namespace: "orama-system"}, topo); err != nil {
 		t.Fatalf("get RabbitMQTopology: %v", err)
 	}
-	if len(topo.Spec.Streams) != 1 {
-		t.Fatalf("streams=%d, want 1", len(topo.Spec.Streams))
+	// oramacore-operations, and oramacore-reader-local, which the combined image's readers declare
+	// with the same Create (#795).
+	if len(topo.Spec.Streams) != 2 || topo.Spec.Streams[0].Name != brokerOperationsStream || topo.Spec.Streams[1].Name != brokerReaderLocalStream {
+		t.Fatalf("streams=%+v, want %s and %s", topo.Spec.Streams, brokerOperationsStream, brokerReaderLocalStream)
 	}
-	if got := topo.Spec.Streams[0].MaxLengthBytes; got != brokerOperationsStreamMaxBytes {
-		t.Errorf("stream MaxLengthBytes=%d, want %d (must match OramaCore, else RabbitMQ 400s the redeclare and the reader can't auth)",
-			got, brokerOperationsStreamMaxBytes)
-	}
-	if got := topo.Spec.Streams[0].LeaderLocator; got != brokerOperationsStreamLeaderLocator {
-		t.Errorf("stream LeaderLocator=%q, want %q (OramaCore's second stream arg — a mismatch 400s the redeclare too)",
-			got, brokerOperationsStreamLeaderLocator)
+	for _, s := range topo.Spec.Streams {
+		if got := s.MaxLengthBytes; got != brokerOperationsStreamMaxBytes {
+			t.Errorf("stream %s MaxLengthBytes=%d, want %d (must match OramaCore, else RabbitMQ 400s the redeclare and the reader can't auth)",
+				s.Name, got, brokerOperationsStreamMaxBytes)
+		}
+		if got := s.LeaderLocator; got != brokerOperationsStreamLeaderLocator {
+			t.Errorf("stream %s LeaderLocator=%q, want %q (OramaCore's second stream arg — a mismatch 400s the redeclare too)",
+				s.Name, got, brokerOperationsStreamLeaderLocator)
+		}
 	}
 }
 
@@ -105,6 +109,13 @@ func TestDashboardNeverMigratesControlDB(t *testing.T) {
 					cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 					r := &OramaCloudV1Reconciler{Client: cl, Scheme: scheme}
 					key := client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-dashboard"}
+					// With a control DB the dashboard signs in as its role once that role's grants
+					// applied (#99): they have here.
+					dbSecret := "v1-dev-controldb-app"
+					if enabled {
+						appliedDashboardGrants(t, cl, oc)
+						dbSecret = "v1-dev-controldb-dashboard"
+					}
 					if upgrade {
 						old := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
 						old.Spec.Template.Spec.InitContainers = []corev1.Container{{Name: "db-migrate", Image: "dashboard:old"}}
@@ -123,15 +134,15 @@ func TestDashboardNeverMigratesControlDB(t *testing.T) {
 						t.Fatal("dashboard still has init containers")
 					}
 					env := dep.Spec.Template.Spec.Containers[0].Env
-					assertControlDBSecretEnv(t, env, "DATABASE_URL", "uri")
-					assertControlDBSecretEnv(t, env, "POSTGRES_PASSWORD", "password")
+					assertControlDBSecretEnv(t, env, dbSecret, "DATABASE_URL", "uri")
+					assertControlDBSecretEnv(t, env, dbSecret, "POSTGRES_PASSWORD", "password")
 				})
 			}
 		}
 	}
 }
 
-func assertControlDBSecretEnv(t *testing.T, env []corev1.EnvVar, name, key string) {
+func assertControlDBSecretEnv(t *testing.T, env []corev1.EnvVar, secret, name, key string) {
 	t.Helper()
 	for _, v := range env {
 		if v.Name != name {
@@ -141,7 +152,7 @@ func assertControlDBSecretEnv(t *testing.T, env []corev1.EnvVar, name, key strin
 			t.Fatalf("%s must come from a Secret", name)
 		}
 		ref := v.ValueFrom.SecretKeyRef
-		if ref.Name != "v1-dev-controldb-app" || ref.Key != key {
+		if ref.Name != secret || ref.Key != key {
 			t.Fatalf("%s references %s/%s", name, ref.Name, ref.Key)
 		}
 		return
@@ -274,12 +285,12 @@ func TestAnalyticsProcessorRendersControlDBURIAndEscapesSecrets(t *testing.T) {
 		t.Fatal("expected render init container")
 	}
 	render := dep.Spec.Template.Spec.InitContainers[0]
-	assertControlDBSecretEnv(t, render.Env, "PG_URI", "uri")
+	assertControlDBSecretEnv(t, render.Env, "v1-dev-controldb-app", "PG_URI", "uri")
 	if len(render.Env) != 3 || render.Env[0].Name != analyticsKeyEnvName || render.Env[1].Name != "CLICKHOUSE_PASSWORD" {
 		t.Fatal("render must take only the analytics key, the ClickHouse password and PG_URI, each by secretKeyRef")
 	}
 	// The independent index-builder client uses the same helper and Secret.
-	assertControlDBSecretEnv(t, r.indexBuilderEnv(ctx, oc), "DATABASE_URL", "uri")
+	assertControlDBSecretEnv(t, r.indexBuilderEnv(ctx, oc), "v1-dev-controldb-app", "DATABASE_URL", "uri")
 	var cm corev1.ConfigMap
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: oc.Namespace, Name: oc.Name + "-analytics-processor-config"}, &cm); err != nil {
 		t.Fatal(err)
@@ -367,7 +378,7 @@ func TestAnalyticsProcessorRendersControlDBURIAndEscapesSecrets(t *testing.T) {
 // hardened securityContext (#18) and exits the container. The operator must run envoy directly (its
 // own Command) so the entrypoint's chown never runs.
 func TestEnvoySidecarBypassesEntrypointChown(t *testing.T) {
-	c := envoySidecar()
+	c := envoySidecar(&oramav1alpha1.OramaCloudV1{})
 	if len(c.Command) == 0 || c.Command[0] != "envoy" {
 		t.Errorf("envoy sidecar Command=%v, want it to exec `envoy` directly (bypass /docker-entrypoint.sh, whose chown fails as non-root)", c.Command)
 	}

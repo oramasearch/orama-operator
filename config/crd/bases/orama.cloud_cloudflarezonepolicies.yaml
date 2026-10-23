@@ -62,8 +62,8 @@ spec:
             properties:
               apiTokenSecretRef:
                 description: |-
-                  APITokenSecretRef is the provider's token: Zone > Zone Settings > Edit and Zone > DNS > Read
-                  on the zone.
+                  APITokenSecretRef is the provider's token: Zone > Zone Settings > Edit, Zone > DNS > Read,
+                  Zone > Zone > Read and Zone > SSL and Certificates > Edit on the zone.
                 properties:
                   key:
                     description: Key is the key in the Secret's data.
@@ -101,7 +101,7 @@ spec:
               conditions:
                 description: |-
                   Conditions: Credentials, OriginCertificates, EdgeCertificates, OriginTLSStrict,
-                  AuthenticatedOriginPulls, AlwaysUseHTTPS.
+                  AuthenticatedOriginPulls, EdgeCertificateOrders, AlwaysUseHTTPS, ZoneName.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -208,6 +208,12 @@ spec:
                 description: ProxiedHosts is how many proxied hosts the zone has.
                 format: int32
                 type: integer
+              zone:
+                description: |-
+                  Zone is the zone's name (its apex domain, such as lake.live) as the provider reports it. A
+                  Lake's Issuer solves DNS-01 for this zone and every name under it, and HTTP-01 for any other
+                  name; until the zone is known it solves DNS-01 for every name (operator#632).
+                type: string
             type: object
         required:
         - spec

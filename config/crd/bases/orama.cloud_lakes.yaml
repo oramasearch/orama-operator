@@ -119,7 +119,9 @@ spec:
                   openaiSecretName:
                     description: |-
                       OpenAISecretName names a Secret in spec.namespace holding OPENAI_API_KEY, the general Orama
-                      key every agent uses. People provide it; the operator never creates or reads its value.
+                      key. Only the library agents in spec.namespace get it; it is never copied into a workspace
+                      namespace or given to a launch or schedule pod (orama-operator#779). People provide it; the
+                      operator never creates or reads its value.
                     type: string
                   runtimeImage:
                     description: |-
@@ -164,6 +166,22 @@ spec:
                 items:
                   type: string
                 type: array
+              billing:
+                description: |-
+                  Billing turns Lake's billing on: the operator gives the Lake LAKE_BILLING=on (lake
+                  docs/api/billing.md). Off, the default, a Lake bills nothing and takes no payments: it
+                  registers no billing capabilities, builds no payment provider, and answers its Stripe webhook
+                  404. An on-prem or enterprise install leaves it unset. spec.payments needs it enabled; it can
+                  be enabled without spec.payments, for a Lake that bills through the manual provider. Set, it
+                  replaces a LAKE_BILLING entry in spec.env; unset, spec.env keeps whatever it says.
+                properties:
+                  enabled:
+                    description: Enabled gives the Lake LAKE_BILLING=on. False gives
+                      it no LAKE_BILLING, so billing is off.
+                    type: boolean
+                required:
+                - enabled
+                type: object
               builds:
                 description: |-
                   Builds runs one isolated rootless BuildKit Job for each queued row in lake's builds table.
@@ -483,6 +501,20 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                  namespaceQuota:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      NamespaceQuota is the hard limit of the ResourceQuota on the Lake's shared methodology-runs
+                      namespace: a ceiling on every workspace's runs and served models together, beside each
+                      workspace's own quota, which they count against (orama-operator#799). Empty uses the
+                      operator's default (requests.cpu 64, requests.memory and limits.memory 256Gi,
+                      requests.nvidia.com/gpu 8, pods 500, persistentvolumeclaims 200).
+                    type: object
                   runtimeImage:
                     description: |-
                       RuntimeImage is the private oramasearch/methodology-runtime image. Lake builds each
@@ -620,6 +652,12 @@ spec:
                       Enabled provisions the CNPG Cluster. Default true. Setting it false tears the cluster
                       down (disable is not "leave running"), which deletes its data.
                     type: boolean
+                  image:
+                    description: |-
+                      Image selects the CNPG-compatible Postgres image. Empty keeps CNPG's default. Restore and
+                      upgrade rehearsals require the running source image to be pinned by SHA-256 digest.
+                    pattern: ^.+@sha256:[a-f0-9]{64}$
+                    type: string
                   instances:
                     default: 1
                     description: Instances is the CNPG instance count (1 = single
@@ -705,8 +743,12 @@ spec:
                 type: array
               replicas:
                 default: 1
-                description: Replicas of the lake Deployment.
+                description: |-
+                  Replicas of the lake Deployment: 1, or 0 to stop it. More is refused (operator#698): lake runs
+                  one process per store root (lake docs/deployment/store-volume.md), so a second replica would
+                  report Ready while it waits for the root forever and fail every request routed to it.
                 format: int32
+                maximum: 1
                 minimum: 0
                 type: integer
               resources:
@@ -839,8 +881,9 @@ spec:
                     description: |-
                       ZettaEnv is copied to every managed Zetta service's and workspace Zetta's OramaZettaCluster
                       spec.env, followed by the operator's default Zetta env for every name it does not set
-                      (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864, MALLOC_ARENA_MAX=2). Operator-managed Zetta
-                      environment names remain reserved and are reported by each child cluster when ignored.
+                      (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864, MALLOC_ARENA_MAX=2, and ZETTA_EGRESS_ALLOW rendered
+                      from what the Zetta's workspace NetworkSandbox allows it). Operator-managed Zetta environment
+                      names remain reserved and are reported by each child cluster when ignored.
                     items:
                       description: EnvVar represents an environment variable present
                         in a Container.
@@ -990,10 +1033,10 @@ spec:
                 type: object
               store:
                 description: |-
-                  Store configures the persistent root shared by all lake replicas. When ExistingClaim is
-                  empty, the operator creates lake-<name>-store once from Size, StorageClassName, and
-                  AccessModes. Later spec changes never replace or delete that claim. ReadWriteOnce requires
-                  Replicas=1; multiple replicas need storage that supports ReadWriteMany.
+                  Store configures the lake process's persistent root. When ExistingClaim is empty, the
+                  operator creates lake-<name>-store once from Size, StorageClassName, and AccessModes. Later
+                  spec changes never replace or delete that claim. One lake process owns the root at a time, so
+                  a Lake runs one replica whatever the access mode (operator#698).
                 properties:
                   accessModes:
                     default:
@@ -1404,8 +1447,9 @@ spec:
                     description: |-
                       Env is copied to the owned OramaZettaCluster spec.env, followed by the operator's default Zetta
                       env for every name it does not set (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864,
-                      MALLOC_ARENA_MAX=2). Operator-managed Zetta environment names remain reserved and are reported
-                      by the child cluster when ignored.
+                      MALLOC_ARENA_MAX=2, and an empty ZETTA_EGRESS_ALLOW, which denies all egress as the Lake
+                      namespace's NetworkSandbox does). Operator-managed Zetta environment names remain reserved and
+                      are reported by the child cluster when ignored.
                     items:
                       description: EnvVar represents an environment variable present
                         in a Container.
@@ -1563,6 +1607,9 @@ spec:
             - message: 'spec.payments needs spec.host: the payment webhook endpoint
                 is https://<host>/billing/stripe/webhook'
               rule: '!has(self.payments) || (has(self.host) && size(self.host) > 0)'
+            - message: 'spec.payments needs spec.billing.enabled: a Lake with billing
+                off takes no payments'
+              rule: '!has(self.payments) || (has(self.billing) && self.billing.enabled)'
           status:
             description: status defines the observed state of Lake
             properties:

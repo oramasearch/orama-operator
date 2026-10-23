@@ -196,9 +196,9 @@ type OramaCloudV1MigrationStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions: Seeded (an applied seed succeeded under this resource; set once, never cleared) and
-	// TargetWritten (an applied seed or catch-up started, so deletion with removeOnDelete removes the
-	// team; set once, never cleared).
+	// Conditions: Seeded (an applied seed succeeded under this resource), TargetWritten (an applied
+	// seed or catch-up started, so deletion with removeOnDelete removes the team) and Removed (the
+	// removal on deletion succeeded, so it never runs again). Each is set once and never cleared.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

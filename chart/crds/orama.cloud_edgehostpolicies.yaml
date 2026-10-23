@@ -1,0 +1,128 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: edgehostpolicies.orama.cloud
+spec:
+  group: orama.cloud
+  names:
+    kind: EdgeHostPolicy
+    listKind: EdgeHostPolicyList
+    plural: edgehostpolicies
+    shortNames:
+    - edgehp
+    singular: edgehostpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.originTLS
+      name: OriginTLS
+      type: string
+    - jsonPath: .spec.redirectToHTTPS
+      name: Redirect
+      type: boolean
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          EdgeHostPolicy applies per-host origin TLS and an HTTPS redirect through its provider (see
+          EdgeHostPolicySpec).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              EdgeHostPolicySpec asks for per-host edge settings on a list of hosts. It changes only the hosts
+              it names: zone-wide settings are never touched (the same zones carry hosts the operator does not
+              run).
+
+              Order with certificates: Full (strict) on a host whose origin certificate is not yet valid takes
+              that host down. This kind does not check certificates. Whatever creates an EdgeHostPolicy adds a
+              host only once that host's origin certificate is ready.
+            properties:
+              hosts:
+                description: Hosts are exact host names (no wildcards), each in a
+                  zone the provider's token can read.
+                items:
+                  maxLength: 253
+                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
+                  type: string
+                maxItems: 100
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              originTLS:
+                description: |-
+                  OriginTLS "strict" requires a valid, trusted certificate at the origin for these hosts
+                  (Cloudflare: origin encryption Full (strict)). Empty leaves the zone's mode in force.
+                enum:
+                - strict
+                type: string
+              providerRef:
+                description: ProviderRef names an EdgeProvider in this namespace.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              redirectToHTTPS:
+                description: RedirectToHTTPS answers plain-HTTP requests for these
+                  hosts with a 301 to HTTPS.
+                type: boolean
+            required:
+            - hosts
+            - providerRef
+            type: object
+          status:
+            description: EdgeHostPolicyStatus reports whether the provider applied
+              the settings.
+            properties:
+              message:
+                description: Message explains a policy that is not ready.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation the status describes.
+                format: int64
+                type: integer
+              ready:
+                description: Ready is true when every requested setting is in force
+                  for every host.
+                type: boolean
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

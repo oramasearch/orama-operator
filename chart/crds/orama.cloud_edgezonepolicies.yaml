@@ -68,7 +68,12 @@ spec:
                3. Authenticated origin pulls: the edge presents a client certificate to every origin, which
                   an origin may then require (status.originClientCAPEM is the CA to verify it with). Set once
                   the mode is Full or Full (strict).
-               4. Always use HTTPS: the edge redirects plain HTTP. Set only when every proxied host has a
+               4. Edge certificates: a proxied host more than one level below the zone apex (an app host
+                  such as <app>.lake-testing.oramadev.net) is not covered by the provider's free certificate.
+                  For each such host without a valid edge certificate, and not covered by an existing one, the
+                  operator orders one (Cloudflare: an Advanced Certificate, which needs Advanced Certificate
+                  Manager on the zone). Certificates are never deleted.
+               5. Always use HTTPS: the edge redirects plain HTTP. Set only when every proxied host has a
                   valid edge certificate.
 
               Nothing is ever turned back: a host that later fails a check is reported, not downgraded. Several
@@ -114,7 +119,7 @@ spec:
               conditions:
                 description: |-
                   Conditions: Credentials, OriginCertificates, EdgeCertificates, OriginTLSStrict,
-                  AuthenticatedOriginPulls, AlwaysUseHTTPS.
+                  AuthenticatedOriginPulls, EdgeCertificateOrders, AlwaysUseHTTPS, ZoneName.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -221,6 +226,12 @@ spec:
                 description: ProxiedHosts is how many proxied hosts the zone has.
                 format: int32
                 type: integer
+              zone:
+                description: |-
+                  Zone is the zone's name (its apex domain, such as lake.live) as the provider reports it. A
+                  Lake's Issuer solves DNS-01 for this zone and every name under it, and HTTP-01 for any other
+                  name; until the zone is known it solves DNS-01 for every name (operator#632).
+                type: string
             type: object
         required:
         - spec

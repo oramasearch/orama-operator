@@ -14,11 +14,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	oramav1alpha1 "github.com/oramasearch/orama-operator/api/v1alpha1"
+	"github.com/oramasearch/orama-operator/internal/backup"
 	"github.com/oramasearch/orama-operator/internal/controller"
 )
 
@@ -34,12 +34,20 @@ func init() {
 }
 
 func main() {
+	// `/manager backup ...` is the same binary run by a Backup's Job (operator#453): one image, one
+	// version, and a backup always runs the code of the operator that scheduled it.
+	if len(os.Args) > 1 && os.Args[1] == "backup" {
+		os.Exit(backup.Main(os.Args[2:], os.Getenv, "/dev/termination-log", os.Stderr))
+	}
 	var metricsAddr, probeAddr, controlPlaneAddr, lakeSQLiteImage, lakeDuckDBImage, lakePolarsImage string
 	var zettaTunnelImage, cloudflaredImage string
+	var controlPlaneCertFile, controlPlaneKeyFile string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.StringVar(&controlPlaneAddr, "control-plane-bind-address", ":8090", "deployment control-plane endpoint")
+	flag.StringVar(&controlPlaneCertFile, "control-plane-cert-file", "/var/run/orama/control-plane/tls.crt", "deployment control-plane TLS certificate")
+	flag.StringVar(&controlPlaneKeyFile, "control-plane-key-file", "/var/run/orama/control-plane/tls.key", "deployment control-plane TLS private key")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "enable leader election")
 	flag.StringVar(&lakeSQLiteImage, "lake-sqlite-image", controller.DefaultLakeSQLiteImage,
 		"the lake-sqlite image for a Lake's sqlite services when its spec.services.sqliteImage is empty")
@@ -64,11 +72,16 @@ func main() {
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       leaderElectionID,
 	}
-	// WATCH_NAMESPACE scopes the manager's cache to one namespace — lets an operator run against a
-	// SHARED cluster (e.g. a locally-run controller reconciling only a demo namespace) without touching
-	// CRs in other namespaces. Empty = watch all namespaces (the in-cluster default).
-	if ns := os.Getenv("WATCH_NAMESPACE"); ns != "" {
-		mgrOpts.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{ns: {}}}
+	// The cache leaves out Helm's release Secrets and every managedFields (memory.go, operator#677).
+	// WATCH_NAMESPACE scopes it to one namespace — lets an operator run against a SHARED cluster
+	// (e.g. a locally-run controller reconciling only a demo namespace) without touching CRs in
+	// other namespaces. Empty = watch all namespaces (the in-cluster default).
+	mgrOpts.Cache = managerCacheOptions(os.Getenv("WATCH_NAMESPACE"))
+	// The Go runtime's soft memory limit, from the container's (memory.go, principle 8).
+	if limit, err := applyGoMemoryLimit(); err != nil {
+		setupLog.Error(err, "the Go memory limit is not set")
+	} else if limit > 0 {
+		setupLog.Info("Go memory limit set from the container's", "bytes", limit)
 	}
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOpts)
 	if err != nil {
@@ -170,6 +183,8 @@ func main() {
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		APIReader: mgr.GetAPIReader(), // uncached reader for the elastic-capacity node count (operator#69)
+		// Only a CR in the operator's namespace may own the Karpenter install (operator#280).
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "OramaZettaCluster")
 		os.Exit(1)
@@ -193,6 +208,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EdgeZonePolicy")
+		os.Exit(1)
+	}
+	if err = (&controller.EdgeHostPolicyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "EdgeHostPolicy")
 		os.Exit(1)
 	}
 	if err = (&controller.PaymentProviderReconciler{
@@ -238,6 +260,13 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareZonePolicy")
 		os.Exit(1)
 	}
+	if err = (&controller.CloudflareHostPolicyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "CloudflareHostPolicy")
+		os.Exit(1)
+	}
 	if err = (&controller.CloudflareDNSRecordReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -258,6 +287,22 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CloudflareR2Bucket")
+		os.Exit(1)
+	}
+	if err = (&controller.BackupScheduleReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "BackupSchedule")
+		os.Exit(1)
+	}
+	if err = (&controller.BackupReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		APIReader:         mgr.GetAPIReader(),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Backup")
 		os.Exit(1)
 	}
 	if err = (&controller.CloudflareLoadBalancerReconciler{
@@ -481,6 +526,8 @@ func main() {
 			Client:      mgr.GetClient(),
 			APIReader:   mgr.GetAPIReader(),
 			BindAddress: controlPlaneAddr,
+			CertFile:    controlPlaneCertFile,
+			KeyFile:     controlPlaneKeyFile,
 			Log:         ctrl.Log.WithName("deployment-control-plane"),
 		}); err != nil {
 			setupLog.Error(err, "unable to create deployment control plane")

@@ -692,11 +692,13 @@ func (r *LakeEnvironmentReconciler) reconcileEnvironmentIngress(ctx context.Cont
 
 	// Origin TLS (operator#578): every host's certificate, issued in the Lake namespace and copied
 	// here, and the zone's redirect and client-certificate settings.
-	// A Lake without a DNS credential cannot issue certificates (docs/lake/origin-tls.md).
-	var tlsHosts []string
-	if lakeHasDNSCredential(lake) {
-		tlsHosts = hosts
+	// The Lake's Issuer solves DNS-01 in its credential's zone and HTTP-01 for any other host
+	// (operator#632, docs/lake/origin-tls.md). A preview host no wildcard covers is not issued.
+	previewHost := ""
+	if environment.Spec.Kind == oramav1alpha1.LakeEnvironmentKindPreview {
+		previewHost = host
 	}
+	tlsHosts := lakeIssuableHosts(lake, hosts, previewHost)
 	sources, err := reconcileLakeHostCertificates(ctx, r.Client, r.Scheme, lake, environment, environmentTLSOwner(environment), tlsHosts)
 	if err != nil {
 		return nil, fmt.Errorf("environment certificates: %w", err)

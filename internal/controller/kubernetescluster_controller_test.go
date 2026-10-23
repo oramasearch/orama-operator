@@ -1008,3 +1008,31 @@ func TestAzureErrorTextIncludesNestedDetailsAndIsBounded(t *testing.T) {
 		t.Fatal("no error renders as empty text")
 	}
 }
+
+// operator#699: workspace isolation is network policy, so every AKS cluster the operator creates
+// enforces it with Cilium. A stored spec asking for another dataplane or no policy engine is refused
+// before anything reaches Azure; an empty value means the default, cilium.
+func TestAksClustersAlwaysEnforceNetworkPolicyWithCilium(t *testing.T) {
+	cluster := testAksCluster(oramav1alpha1.ClusterDeletionRetain)
+	body, err := azureManagedClusterBody(cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.Properties.NetworkProfile.NetworkDataplane != "cilium" || body.Properties.NetworkProfile.NetworkPolicy != "cilium" {
+		t.Fatalf("network profile = %+v, want cilium dataplane and policy", body.Properties.NetworkProfile)
+	}
+	cluster.Spec.Network.Dataplane, cluster.Spec.Network.Policy = "", ""
+	if body, err = azureManagedClusterBody(cluster); err != nil || body.Properties.NetworkProfile.NetworkPolicy != "cilium" {
+		t.Fatalf("an empty policy = %+v (%v), want the cilium default", body.Properties.NetworkProfile, err)
+	}
+	for _, refused := range []oramav1alpha1.AksNetworkSettings{
+		{Plugin: "azure", Dataplane: "azure", Policy: "cilium"},
+		{Plugin: "azure", Dataplane: "cilium", Policy: "none"},
+		{Plugin: "azure", Dataplane: "cilium", Policy: "azure"},
+	} {
+		cluster.Spec.Network = refused
+		if _, err := azureManagedClusterBody(cluster); err == nil || !strings.Contains(err.Error(), "operator#699") {
+			t.Errorf("network %+v: error = %v, want a refusal naming operator#699", refused, err)
+		}
+	}
+}

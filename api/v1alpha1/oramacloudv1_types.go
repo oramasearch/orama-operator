@@ -11,8 +11,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// CredentialRotation is one generation per generated store credential (#594).
+type CredentialRotation struct {
+	// Broker rotates <cr>-broker-admin's password.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Broker int64 `json:"broker,omitempty"`
+	// Cache rotates <cr>-cache-auth's password.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Cache int64 `json:"cache,omitempty"`
+}
+
 // OramaCloudV1Spec describes one regional deployment of the entire Orama Cloud v1
 // stack. One CR per cluster; region role selects the write path vs read tier.
+// +kubebuilder:validation:XValidation:rule="!has(self.components) || !has(self.components.importConsumer) || !has(self.components.importConsumer.enabled) || !self.components.importConsumer.enabled || (has(self.cloudflare) && has(self.cloudflare.enabled) && self.cloudflare.enabled)",message="importConsumer requires cloudflare.enabled"
+// +kubebuilder:validation:XValidation:rule="!has(self.components) || !has(self.components.importConsumer) || !has(self.components.importConsumer.enabled) || !self.components.importConsumer.enabled || (has(self.components.dashboard) && has(self.components.dashboard.enabled) && self.components.dashboard.enabled)",message="importConsumer requires the dashboard enabled"
 type OramaCloudV1Spec struct {
 	// Region selects this cluster's role in the multi-region topology.
 	Region RegionSpec `json:"region"`
@@ -25,6 +39,13 @@ type OramaCloudV1Spec struct {
 	// +kubebuilder:validation:Enum=light;medium;heavy
 	// +kubebuilder:default=light
 	Profile string `json:"profile,omitempty"`
+
+	// CredentialRotation rotates the generated broker and Redis passwords (#594). Raising a
+	// generation above the one the credential Secret records makes the operator write a new
+	// password there; the broker re-imports its admin user on boot and every consumer rolls on the
+	// changed Secret, as for any credential change (#411). Lowering it never rotates back.
+	// +optional
+	CredentialRotation *CredentialRotation `json:"credentialRotation,omitempty"`
 
 	// IDP selects the identity provider for the dashboard / customer auth.
 	// +kubebuilder:default={provider: none}
@@ -118,6 +139,11 @@ type IDPSpec struct {
 
 // ImagesSpec sets default and per-component images.
 type ImagesSpec struct {
+	// RequireDigests rejects rendered workload images without a SHA-256 digest. Disabled by default
+	// during the production rollout; ImagesPinned reports mutable selections without blocking.
+	// +optional
+	RequireDigests bool `json:"requireDigests,omitempty"`
+
 	// +kubebuilder:default="oramasearch"
 	Registry string `json:"registry,omitempty"`
 	// +kubebuilder:default="latest"
@@ -201,7 +227,9 @@ type CloudflareSpec struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// APITokenSecretRef references the Secret holding the Cloudflare **control-plane** API
 	// credentials as three keys: `token` (the account API token), `zoneID`, and `accountID`.
-	// This token provisions DNS, Load Balancing, Workers KV, and R2 buckets.
+	// This token provisions DNS, Load Balancing, Workers KV, and R2 buckets. index-builder reads
+	// its CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from `token` and `accountID` here, so it
+	// writes to the KV namespaces this token created; a missing key fails the ingestion step.
 	// +optional
 	APITokenSecretRef *corev1.LocalObjectReference `json:"apiTokenSecretRef,omitempty"`
 	// R2SecretRef references a SEPARATE Secret holding the Cloudflare **R2 (S3-compatible)
@@ -256,6 +284,33 @@ type ComponentsSpec struct {
 	// kept for API compatibility; setting it has no effect.
 	OramasearchApp ToggleWithHost `json:"oramasearchApp,omitempty"`
 	SearchWorkers  Toggle         `json:"searchWorkers,omitempty"` // index-manager hosted-search serving workers
+	// ImportConsumer lists the stack's R2 uploads bucket and imports files and crawl exports
+	// through this stack's dashboard. It requires the dashboard and Cloudflare enabled.
+	// +optional
+	ImportConsumer ImportConsumerSpec `json:"importConsumer,omitempty"`
+}
+
+// ImportConsumerSpec configures the single-replica <cr>-import-consumer Deployment. The bucket
+// worker lists <cr>-uploads and runs the per-object import against this stack's dashboard.
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || !self.enabled || (has(self.image) && size(self.image) > 0)",message="importConsumer.image is required when the import consumer is enabled"
+type ImportConsumerSpec struct {
+	// Enabled runs the consumer against this stack's own uploads bucket. Off by default.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Image is the consumer's full image reference with src/bucket-worker.ts. No default.
+	// +optional
+	Image string `json:"image,omitempty"`
+	// Concurrency is how many objects one replica imports at once, each in its own process, as the
+	// Fargate path ran one task per object.
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=16
+	// +optional
+	Concurrency int32 `json:"concurrency,omitempty"`
+	// Resources overrides the consumer's pod resources. Each import process's heap is sized from the
+	// memory limit and Concurrency.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // EngineSpec configures the OramaCore engine.
@@ -386,6 +441,11 @@ type IngestionSpec struct {
 	// Selenium keep their own defaults.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// HPESResources overrides the resources of HPES (embeddings-server-py), the embeddings server
+	// index-builder calls, which runs whenever ingestion runs (#574). When unset the operator requests
+	// 7Gi and 2 CPUs with a 10Gi memory limit, sized for the six models it loads, on CPU.
+	// +optional
+	HPESResources *corev1.ResourceRequirements `json:"hpesResources,omitempty"`
 }
 
 // WorkersSpec configures the ported Cloudflare Workers, bundled into ONE image and
@@ -403,6 +463,24 @@ type WorkersSpec struct {
 	// sensible per-component default (workload hardening, #18).
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// SentryDSNSecretRef takes the workers' SENTRY_DSN from a key of a Secret in the CR's namespace
+	// instead of <cr>-workers-secret. The operator reads it and never creates or changes it; a
+	// missing Secret or key fails the workers step and Ready names it. The workers' OPENAI_API_KEY,
+	// GROQ_API_KEY and ANTHROPIC_API_KEY come from the same providers' spec.llm.providers[].apiKeySecretRef
+	// as the engine's.
+	// +optional
+	SentryDSNSecretRef *SecretKeyRef `json:"sentryDSNSecretRef,omitempty"`
+}
+
+// SecretKeyRef is one key of a Secret in the OramaCloudV1's namespace: a third-party key the
+// operator reads and never creates or changes.
+type SecretKeyRef struct {
+	// Name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// Key of the Secret that holds the value.
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
 }
 
 // ControlDBSpec is the control-plane Postgres: a DataStoreSpec plus this stack's values for the
@@ -574,6 +652,15 @@ type DashboardSpec struct {
 	// the e2e canary (operator#17). Off unless enabled; requires the dashboard enabled.
 	// +optional
 	Crons DashboardCronsSpec `json:"crons,omitempty"`
+	// StripeSecretKeySecretRef takes the dashboard's STRIPE_SECRET_KEY from a key of a Secret in the
+	// CR's namespace (operator#802): a Stripe restricted key holding only the permissions the dashboard
+	// uses (docs/components.md lists them), never the account's full secret key. The operator reads it
+	// and never creates or changes it; a missing Secret, key or value fails the dashboard step. While it
+	// is set, STRIPE_SECRET_KEY in env or in an envFrom source fails the reconcile, so no second key
+	// sits beside it. A production instance (one its set labels orama.cloud/purpose=production)
+	// requires it, with a live-mode restricted key (rk_live_).
+	// +optional
+	StripeSecretKeySecretRef *SecretKeyRef `json:"stripeSecretKeySecretRef,omitempty"`
 }
 
 // DashboardCronsSpec turns on the dashboard's three scheduled calls, with Prod 1's fixed schedules:

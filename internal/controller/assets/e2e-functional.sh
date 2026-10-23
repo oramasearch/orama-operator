@@ -12,8 +12,13 @@
 # not a test to soften. See the operator CLAUDE.md "e2e is the forcing function".
 #
 # Inputs:
-#   $CONFIG_PATH   JSON: {cluster:{writerURL,readURL}, collectionID, indexID, apiKey}
+#   $CONFIG_PATH   JSON: {cluster:{writerURL,readURL}, collectionID, indexID, apiKey,
+#                         dashboardURL, writerJWT, workers:[{name,url}]}
 #   $MASTER_API_KEY  engine master key (admin ops: create/drop collections, keys)
+#   $DASHBOARD_FIXTURE_*  optional dashboard fixture for the write-token checks (control-plane.sh)
+#
+# Files beside it: lib.sh (HTTP + assertion helpers) and control-plane.sh (the dashboard and
+# edge-worker sections, 21-24).
 #
 # Requires: sh, curl, jq (installed by the Job's runner before exec).
 set -u
@@ -32,61 +37,12 @@ SKIP=0
 RESP=""
 CODE=""
 
-# --- HTTP + assertion helpers -------------------------------------------------
-
-# req METHOD URL KEY [JSON_BODY] -> sets $CODE (http status) and $RESP (body)
-req() {
-  _m=$1; _u=$2; _k=$3; _b=${4:-}
-  if [ -n "$_b" ]; then
-    RESP=$(curl -sS -m 45 -w '\n%{http_code}' -X "$_m" "$_u" \
-      -H "Authorization: Bearer $_k" -H 'Content-Type: application/json' -d "$_b" 2>/dev/null)
-  else
-    RESP=$(curl -sS -m 45 -w '\n%{http_code}' -X "$_m" "$_u" \
-      -H "Authorization: Bearer $_k" 2>/dev/null)
-  fi
-  CODE=$(printf '%s' "$RESP" | tail -n1)
-  RESP=$(printf '%s' "$RESP" | sed '$d')
-}
-
-pass()    { PASS=$((PASS + 1)); printf '  PASS  %s\n' "$1"; }
-fail()    { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$1"; [ -n "${2:-}" ] && printf '          -> %s\n' "$2"; }
-skip()    { SKIP=$((SKIP + 1)); printf '  SKIP  %s\n' "$1"; [ -n "${2:-}" ] && printf '          -> %s\n' "$2"; }
-section() { printf '\n========== %s ==========\n' "$1"; }
-
-# assert_code EXPECTED DESC
-assert_code() {
-  if [ "$CODE" = "$1" ]; then pass "$2 (HTTP $CODE)"
-  else fail "$2" "expected HTTP $1, got $CODE: $(printf '%s' "$RESP" | head -c 400)"; fi
-}
-
-# assert_ok DESC  (any 2xx)
-assert_ok() {
-  case "$CODE" in 2*) pass "$1 (HTTP $CODE)";; *) fail "$1" "got HTTP $CODE: $(printf '%s' "$RESP" | head -c 400)";; esac
-}
-
-# assert_jq FILTER DESC  — filter result must be non-empty, not "null", not "false"
-assert_jq() {
-  _v=$(printf '%s' "$RESP" | jq -r "$1" 2>/dev/null)
-  if [ -n "$_v" ] && [ "$_v" != "false" ] && [ "$_v" != "null" ]; then pass "$2 ($1 => $_v)"
-  else fail "$2" "jq '$1' => '${_v}' on: $(printf '%s' "$RESP" | head -c 400)"; fi
-}
-
-# assert_jq_eq FILTER EXPECTED DESC
-assert_jq_eq() {
-  _v=$(printf '%s' "$RESP" | jq -r "$1" 2>/dev/null)
-  if [ "$_v" = "$2" ]; then pass "$3 ($1 == $2)"
-  else fail "$3" "jq '$1' => '${_v}', expected '$2' on: $(printf '%s' "$RESP" | head -c 400)"; fi
-}
-
-# wait_until 'shell test' timeout_s  — polls every 2s until the command succeeds
-wait_until() {
-  _t=$2; _n=0
-  while [ "$_n" -lt "$_t" ]; do
-    if eval "$1" >/dev/null 2>&1; then return 0; fi
-    _n=$((_n + 2)); sleep 2
-  done
-  return 1
-}
+# --- HTTP + assertion helpers (lib.sh) and the control-plane checks (control-plane.sh) ------------
+E2E_DIR="${E2E_DIR:-$(dirname "$0")}"
+# shellcheck source=e2e-lib.sh
+. "$E2E_DIR/lib.sh"
+# shellcheck source=e2e-control-plane.sh
+. "$E2E_DIR/control-plane.sh"
 
 # coll_gone — true once the base collection no longer resolves on the writer (for clean-slate setup)
 coll_gone() {
@@ -130,6 +86,9 @@ section "1. LIVENESS — engine up on writer + reader"
 req GET "$WRITER/health" "$RWKEY";  assert_ok "writer /health"
 req GET "$READER/health" "$RWKEY";  assert_ok "reader /health"
 req GET "$WRITER/" "$RWKEY";        assert_ok "writer / root banner"
+# Mint the write token section 24 checks once it has expired, so the sections between count toward
+# its ten minutes (control-plane.sh).
+cp_prepare
 
 # =============================================================================
 section "2. AUTH — keys enforced (negative paths)"
@@ -410,6 +369,13 @@ case "$CODE" in 2*) pass "create throwaway collection e2e-lifecycle";; 409|400) 
 adminm POST "/v1/collections/create" '{"id":"e2e-lifecycle","read_api_key":"lk","write_api_key":"lk"}'
 case "$CODE" in 2*) fail "duplicate collection should error" "got $CODE";; *) pass "duplicate collection rejected (HTTP $CODE)";; esac
 adminm POST "/v1/collections/delete" '{"collection_id_to_delete":"e2e-lifecycle"}'; assert_ok "delete throwaway collection"
+
+# 21-24: the control plane around the engine (control-plane.sh) — the dashboard, write tokens, the
+# edge workers, and last the expired write token, which may wait for its expiry.
+cp_dashboard
+cp_write_tokens
+cp_workers
+cp_expiry
 
 # --- summary ------------------------------------------------------------------
 section "SUMMARY"

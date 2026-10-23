@@ -189,7 +189,7 @@ type lakeBackupConfig struct {
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;patch;create;delete
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 // +kubebuilder:rbac:groups="",resources=nodes/proxy,verbs=get
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -228,10 +228,7 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if image == "" {
 		return ctrl.Result{}, fmt.Errorf("lake %q: spec.image is required", lake.Name)
 	}
-	replicas := int32(1)
-	if lake.Spec.Replicas != nil {
-		replicas = *lake.Spec.Replicas
-	}
+	replicas, replicasRefused := lakeReplicas(&lake)
 	port := int32(lakeDefaultPort)
 	if lake.Spec.Port != nil {
 		port = *lake.Spec.Port
@@ -270,6 +267,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeAdminToken(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile admin token: %w", err)
 	}
+	if err := r.reconcileLakeDeployToken(ctx, &lake, ns, labels); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile deployment token: %w", err)
+	}
 	if err := r.reconcileLakeInstanceKek(ctx, &lake, ns, labels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile instance KEK: %w", err)
 	}
@@ -288,6 +288,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	clerk, err := r.reconcileLakeClerk(ctx, &lake, ns, labels)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile Clerk: %w", err)
+	}
+	if lakeSpecEnvBillingIgnored(&lake) {
+		log.Info("spec.env names LAKE_BILLING but spec.billing decides it; the spec.env entry is ignored, remove it",
+			"billing", lake.Spec.Billing.Enabled)
 	}
 	// Payments (spec.payments, lake_payments.go): before the Deployment, which reads its keys.
 	payments, err := r.reconcileLakePayments(ctx, &lake, ns, labels)
@@ -351,6 +355,10 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.reconcileLakeLibraryAgents(ctx, &lake, ns, labels); err != nil {
 		log.Error(err, "library agents deferred")
 	}
+	// Orama's provider key never stays in a workspace namespace (orama-operator#779).
+	if err := r.removeWorkspaceProviderKeyCopies(ctx, &lake); err != nil {
+		log.Error(err, "removing provider key copies from workspace namespaces deferred")
+	}
 
 	// Ingress + DNS (opt-in, same contract as OramaZettaCluster).
 	if err := r.reconcileLakeIngress(ctx, &lake, ns, name, labels); err != nil {
@@ -387,6 +395,9 @@ func (r *LakeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 	if backup.Enabled && !backup.Valid {
 		readiness = append(readiness, lakeComponentReadiness{"Degraded", backupCondition.Reason, backupCondition.Message})
+	}
+	if replicasRefused != "" {
+		readiness = append(readiness, lakeComponentReadiness{"Degraded", "ReplicasRefused", replicasRefused})
 	}
 	phase, readyCondition := lakeAggregateReadiness(&lake, readiness)
 	dataServices, dataServicesSummary := lakeDataServiceStatus(&lake)
@@ -787,6 +798,20 @@ func lakeDrainPreStop() *corev1.Lifecycle {
 			Sleep: &corev1.SleepAction{Seconds: lakePreStopDrainSeconds},
 		},
 	}
+}
+
+// lakeReplicas is the Deployment's replica count: spec.replicas, default 1, never more than 1
+// (operator#698). Lake runs one process per store root; a second one reports Ready while it waits
+// for the root, takes half the traffic and fails it. A CR stored before the CRD's maximum gets one
+// replica and the reason it was refused, for a Degraded Ready condition.
+func lakeReplicas(lake *oramav1alpha1.Lake) (int32, string) {
+	if lake.Spec.Replicas == nil {
+		return 1, ""
+	}
+	if requested := *lake.Spec.Replicas; requested > 1 {
+		return 1, fmt.Sprintf("spec.replicas is %d; lake runs one process per store root (operator#698), so the Deployment keeps one replica", requested)
+	}
+	return *lake.Spec.Replicas, ""
 }
 
 // lakeRollout chooses how a pod-template change replaces lake pods.
@@ -1272,6 +1297,11 @@ func lakeEnv(lake *oramav1alpha1.Lake, sealing lakeSealingMaterial) []corev1.Env
 			reserved[name] = struct{}{}
 		}
 	}
+	// With spec.billing the operator gives LAKE_BILLING (lake_billing.go); spec.env cannot.
+	if billing, owned := lakeBillingEnv(lake); owned {
+		env = append(env, billing...)
+		reserved[lakeBillingEnvName] = struct{}{}
+	}
 	// With spec.payments the operator gives the Stripe variables (lakePaymentsEnv); spec.env cannot.
 	if lake.Spec.Payments != nil {
 		for _, name := range lakePaymentsEnvNames {
@@ -1377,6 +1407,9 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 		}
 		return deleteIfExists(ctx, r.Client, cluster)
 	}
+	if err := r.ensureLakeRehearsalSecret(ctx, lake, ns, lbls); err != nil {
+		return err
+	}
 	instances := int64(1)
 	if lake.Spec.Postgres.Instances != nil {
 		instances = int64(*lake.Spec.Postgres.Instances)
@@ -1393,10 +1426,14 @@ func (r *LakeReconciler) reconcileLakeControlDB(ctx context.Context, lake *orama
 		}
 		spec := map[string]interface{}{
 			"instances": instances,
+			"managed":   map[string]interface{}{"roles": []interface{}{lakeRehearsalRole(lakeRehearsalSecretName(lake))}},
 			"storage":   storage,
 			"bootstrap": map[string]interface{}{
 				"initdb": map[string]interface{}{"database": lakeControlDBName, "owner": lakeControlDBName},
 			},
+		}
+		if lake.Spec.Postgres.Image != "" {
+			spec["imageName"] = lake.Spec.Postgres.Image
 		}
 		if backup.Enabled && backup.Valid {
 			spec["backup"] = map[string]interface{}{
@@ -1611,7 +1648,7 @@ func (r *LakeReconciler) reconcileLakeControlDBSchema(ctx context.Context, lake 
 			// exists iff the whole (idempotent) file applied, and a new migration = a new guard, so
 			// the next Job re-runs the file and adds only what is missing.
 			GuardTable: lakeSchemaGuardTable,
-			Image:      "postgres:18-alpine",
+			Image:      pinnedPostgres18Image,
 		}
 		return controllerutil.SetControllerReference(lake, ps, r.Scheme)
 	})
@@ -1660,17 +1697,19 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 		return &oramav1alpha1.CloudflareDNSRecord{ObjectMeta: metav1.ObjectMeta{Name: svcName + "-apex-dns", Namespace: ns}}
 	}
 	apex := lakeApexHost(lake)
-	// Origin TLS (operator#578): the Issuer and the zone policy exist whenever the Lake has a DNS
-	// credential, because its apps and environments use them even without the Lake's own Ingress.
-	if err := reconcileLakeOriginIssuer(ctx, r.Client, r.Scheme, lake, lbls); err != nil {
-		return fmt.Errorf("origin TLS issuer: %w", err)
-	}
+	// Origin TLS (operator#578, #632): the Issuer always exists, because the Lake's apps and
+	// environments use it even without the Lake's own Ingress; the zone policy exists whenever the
+	// Lake has a DNS credential. The Issuer reads the zone's name from the policy, to solve DNS-01
+	// for names in the zone and HTTP-01 for the rest.
 	if err := reconcileLakeEdgePolicy(ctx, r.Client, r.Scheme, lake, lbls); err != nil {
 		return fmt.Errorf("edge zone policy: %w", err)
 	}
 	edge, err := readLakeEdge(ctx, r.Client, lake)
 	if err != nil {
 		return err
+	}
+	if err := reconcileLakeOriginIssuer(ctx, r.Client, r.Scheme, lake, lbls, edge.dnsZone); err != nil {
+		return fmt.Errorf("origin TLS issuer: %w", err)
 	}
 	caSecret := svcName + "-edge-client-ca"
 	if !lake.Spec.IngressEnabled || lake.Spec.Host == "" {
@@ -1695,12 +1734,11 @@ func (r *LakeReconciler) reconcileLakeIngress(ctx context.Context, lake *oramav1
 	if apex != "" {
 		hosts = append(hosts, apex)
 	}
-	// No HTTP-only fallback: without a hand-supplied certificate the Lake needs its DNS credential.
+	// No HTTP-only Ingress: without a hand-supplied certificate every host is issued by the Lake's
+	// Issuer, through DNS-01 in the credential's zone and HTTP-01 otherwise.
 	issuer := ""
 	if lake.Spec.TLS.SecretName == "" {
-		if issuer, err = lakeOriginIssuer(lake); err != nil {
-			return err
-		}
+		issuer = lakeOriginIssuerName(lake)
 	}
 	caRef, err := reconcileEdgeClientCA(ctx, r.Client, ns, caSecret, edge, func(secret *corev1.Secret) error {
 		secret.Labels = lbls

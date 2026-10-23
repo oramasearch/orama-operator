@@ -46,6 +46,7 @@ func paymentsTestLake(name string) *oramav1alpha1.Lake {
 				{Name: "LAKE_STRIPE_SECRET_KEY", Value: "sk_test_handmade"},
 				{Name: "LAKE_STRIPE_WEBHOOK_SECRET", Value: "whsec_handmade"},
 			},
+			Billing:  &oramav1alpha1.LakeBillingSpec{Enabled: true},
 			Payments: &oramav1alpha1.LakePaymentsSpec{Mode: "test", SecretRef: corev1.LocalObjectReference{Name: testLakePaymentsSecret}},
 		},
 	}
@@ -385,6 +386,7 @@ func TestLakePaymentsWithoutTheSecretWaitAndTheLakeStaysReady(t *testing.T) {
 	f.reconcile()
 	f.expectState("Ready", "LakeReady")
 
+	f.lake.Spec.Billing = &oramav1alpha1.LakeBillingSpec{Enabled: true}
 	f.lake.Spec.Payments = &oramav1alpha1.LakePaymentsSpec{Mode: "test", SecretRef: corev1.LocalObjectReference{Name: "stripe-testing"}}
 	if err := f.client.Update(f.ctx, f.lake); err != nil {
 		t.Fatal(err)

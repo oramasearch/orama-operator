@@ -317,7 +317,7 @@ func TestDashboardEnvInvalidFailsReconcile(t *testing.T) {
 
 func dashboardOwnedNames() []string {
 	var names []string
-	for n := range dashboardOwnedEnv {
+	for n := range dashboardOwnedEnv { // the owned names on a CR without stripeSecretKeySecretRef
 		names = append(names, n)
 	}
 	sort.Strings(names)

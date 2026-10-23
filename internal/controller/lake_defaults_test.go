@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -83,7 +84,7 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 	for name, want := range map[string]string{
 		"LAKE_APPS_RUNTIME_IMAGE":        "oramasearch/app-runtime:976e6a8",
 		"LAKE_METHODOLOGY_RUNTIME_IMAGE": "oramasearch/methodology-runtime:ac58062",
-		"LAKE_MCP_RUNNER_IMAGE":          "oramasearch/lake-mcp-runner:d98451a",
+		"LAKE_MCP_RUNNER_IMAGE":          "oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892",
 		"LAKE_APPS_WILDCARD":             "lake-dev.oramadev.net",
 		"LAKE_AGENT_MODEL":               "gpt-5.5",
 		"LAKE_SERVICE_DIR":               lakeServicesMountPath,
@@ -108,8 +109,8 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 	for _, image := range [][2]string{
 		{lakeAgentRuntimeImage(lake), "oramasearch/agent-runtime:v0.1.0"},
 		{lakeBuilderImage(lake), "oramasearch/lake-builder:31a48d9"},
-		{serviceZettaImage(lake), "oramasearch/zetta:main-4015ef76"},
-		{lakeDataPlaneZettaImage(lake), "oramasearch/zetta:main-4015ef76"},
+		{serviceZettaImage(lake), "oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a"},
+		{lakeDataPlaneZettaImage(lake), "oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a"},
 		{lakeAppsRuntimeImage(lake), "oramasearch/app-runtime:976e6a8"},
 		{lakeMethodologyRuntimeImage(lake), "oramasearch/methodology-runtime:ac58062"},
 	} {
@@ -120,10 +121,12 @@ func TestALakeWithNoFeatureFieldsRunsEveryFeatureOnTheDefaultImages(t *testing.T
 	wantZettaEnv := []corev1.EnvVar{
 		{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"},
 		{Name: "MALLOC_ARENA_MAX", Value: "2"},
+		{Name: "ZETTA_EGRESS_ALLOW", Value: "api.example.com:443"},
 	}
-	if got := serviceZettaEnv(lake); !reflect.DeepEqual(got, wantZettaEnv) {
+	if got := serviceZettaEnv(lake, "api.example.com:443"); !reflect.DeepEqual(got, wantZettaEnv) {
 		t.Errorf("service and workspace Zetta env = %v", got)
 	}
+	wantZettaEnv[2].Value = ""
 	if got := lakeDataPlaneZettaEnv(lake); !reflect.DeepEqual(got, wantZettaEnv) {
 		t.Errorf("data-plane Zetta env = %v", got)
 	}
@@ -185,19 +188,59 @@ func TestASpecImageOverridesItsDefault(t *testing.T) {
 	if got := lakeDataPlaneZettaEnv(lake); !reflect.DeepEqual(got, []corev1.EnvVar{
 		{Name: "MALLOC_ARENA_MAX", Value: "4"},
 		{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"},
+		{Name: "ZETTA_EGRESS_ALLOW", Value: ""},
 	}) {
 		t.Fatalf("a spec Zetta variable did not override its default: %v", got)
 	}
 }
 
-// Lake/prod states every image and both Zetta variables; the defaults change nothing it runs.
+// Lake/prod states every image and both memory variables; the defaults change none of them and add
+// only ZETTA_EGRESS_ALLOW, the engine's own egress allowlist (zetta#75, operator#724).
 func TestLakeProdIsUnchangedByTheDefaults(t *testing.T) {
 	lake := bareLake()
 	zettaEnv := []corev1.EnvVar{{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"}, {Name: "MALLOC_ARENA_MAX", Value: "2"}}
 	lake.Spec.Zetta.Env = zettaEnv
 	lake.Spec.Services.ZettaEnv = zettaEnv
-	if !reflect.DeepEqual(lakeDataPlaneZettaEnv(lake), zettaEnv) || !reflect.DeepEqual(serviceZettaEnv(lake), zettaEnv) {
-		t.Fatal("stated Zetta env gained a variable")
+	want := append(append([]corev1.EnvVar(nil), zettaEnv...), corev1.EnvVar{Name: "ZETTA_EGRESS_ALLOW", Value: ""})
+	if !reflect.DeepEqual(lakeDataPlaneZettaEnv(lake), want) || !reflect.DeepEqual(serviceZettaEnv(lake, ""), want) {
+		t.Fatalf("stated Zetta env gained more than ZETTA_EGRESS_ALLOW: %v", lakeDataPlaneZettaEnv(lake))
+	}
+}
+
+// Every Zetta a Lake owns carries its own egress allowlist (zetta#75, operator#724): the data plane
+// denies everything (its namespace allows it nothing outside), a service or workspace Zetta gets
+// the list rendered from its namespace, and a spec that names the variable keeps its own.
+func TestLakeZettasCarryTheirEgressAllowlist(t *testing.T) {
+	lake := bareLake()
+	for name, check := range map[string]struct {
+		env  []corev1.EnvVar
+		want string
+	}{
+		"data plane":         {lakeDataPlaneZettaEnv(lake), ""},
+		"service, workspace": {serviceZettaEnv(lake, "*:443"), "*:443"},
+	} {
+		if got := findEnv(check.env, "ZETTA_EGRESS_ALLOW"); got == nil || got.Value != check.want {
+			t.Errorf("%s Zetta ZETTA_EGRESS_ALLOW = %+v, want %q", name, got, check.want)
+		}
+	}
+	for _, variable := range serviceZettaEnv(lake, "") {
+		if variable.Value == "*" {
+			t.Fatalf("a Lake Zetta still turns its egress control off: %+v", variable)
+		}
+	}
+	lake.Spec.Services.ZettaEnv = []corev1.EnvVar{{Name: "ZETTA_EGRESS_ALLOW", Value: "*.snowflakecomputing.com:443"}}
+	env := serviceZettaEnv(lake, "*:443")
+	count := 0
+	for _, variable := range env {
+		if variable.Name == "ZETTA_EGRESS_ALLOW" {
+			count++
+			if variable.Value != "*.snowflakecomputing.com:443" {
+				t.Errorf("a stated allowlist was replaced: %q", variable.Value)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("ZETTA_EGRESS_ALLOW appears %d times", count)
 	}
 }
 
@@ -339,4 +382,23 @@ func wantLakeOperatorEnv(postgres, deployments bool) []string {
 	}
 	return append(names, "LAKE_AGENT_ENDPOINTS", "LAKE_INTERNAL_URL", "LAKE_AGENT_MODEL",
 		"LAKE_AGENT_SERVICE_TOKEN", "LAKE_AGENT_BUS_DIR")
+}
+
+// The MCP runner image becomes an image App's image: lake creates every stdio MCP connection as
+// an App with mode image on it. lake refuses a stdio connection when it is not pinned by digest
+// (lake#783), and the operator fails such an App in lakeAppRowSource and the LakeApp CRD pattern,
+// so a tagged default means no stdio MCP server can start (operator#744).
+func TestTheDefaultMCPRunnerImageIsPinnedByDigestSoItsAppsCanRun(t *testing.T) {
+	runner, fromSpec := lakeMCPRunnerEnv(bareLake())
+	if fromSpec {
+		t.Fatal("a bare Lake's runner image came from its spec")
+	}
+	row := &LakeAppRow{Mode: oramav1alpha1.LakeAppModeImage, Image: runner.Value}
+	if err := lakeAppRowSource(row, &oramav1alpha1.LakeAppSpec{}); err != nil {
+		t.Errorf("an App on the default runner image %q fails: %v", runner.Value, err)
+	}
+	// The LakeApp CRD's spec.image pattern (api/v1alpha1/lakeapp_types.go).
+	if !regexp.MustCompile(`^.+@sha256:[a-fA-F0-9]{64}$`).MatchString(runner.Value) {
+		t.Errorf("the default runner image %q does not match the LakeApp image pattern", runner.Value)
+	}
 }

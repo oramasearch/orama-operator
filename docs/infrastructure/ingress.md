@@ -19,7 +19,7 @@ The operator, not a separate chart, renders the gateway, because what the gatewa
 generated from the Ingresses the operator writes, and a separate chart would need its own private
 chart repository and a pull secret in its namespace that the platform layer cannot provide for a
 third-party chart. ingress-nginx stays a platform chart in `helmfile.yaml` and every
-`config/clusters/*/platform.yaml`, unchanged, until the cutover below is finished on every cluster;
+`config/clusters/*/platform.yaml` until the cutover below is finished on every cluster;
 then it is removed from all of them in one pull request (`cmd/platform_sync_test.go`).
 
 What the operator renders, on every cluster, in the namespace `zetta-tunnel-ingress` (restricted
@@ -38,6 +38,57 @@ Every backend that admitted ingress-nginx now admits the gateway beside it: the 
 (`allow-ingress-nginx`), Orama Cloud v1's dashboard and docs, and Lake environments. Lake apps do not
 (below).
 
+## Interim ingress-nginx hardening (LSR-268)
+
+Both installation paths explicitly set `controller.admissionWebhooks.enabled: false` and
+`controller.allowSnippetAnnotations: false` on the
+[pinned ingress-nginx chart](https://github.com/kubernetes/ingress-nginx/tree/helm-chart-4.15.1/charts/ingress-nginx/templates). The chart omits
+the admission webhook listener, Service, validation registration and certificate Jobs; Ingress
+annotations cannot inject nginx configuration snippets. Operator-managed `controller.config.http-snippet`
+maps still strip Lake credentials from app requests as described below. Kubernetes admission no
+longer validates Ingresses through nginx's webhook.
+
+This reduces exposure while the retirement finding
+[operator#820](https://github.com/oramasearch/orama-operator/issues/820) remains open. The gateway
+still lacks apps' authentication subrequests and byte metering, origin client-certificate
+verification, and Cloud v1's protected-route behavior. Removing nginx before those paths have a
+replacement would interrupt service or bypass their controls. The controller-replacement decision
+also needs to reconcile [operator#573](https://github.com/oramasearch/orama-operator/issues/573),
+which currently requires a dedicated ingress-nginx for each Cloud v1 stack. No cutover or live
+rollout is established by these configuration changes.
+
+`TestIngressDisablesAdmissionWebhooksAndSnippetAnnotations` checks the explicit settings in
+`helmfile.yaml` and every leaf's `platform.yaml`; the platform sync test checks the paths agree.
+Run `go test ./cmd -run 'TestIngress|TestHelmfileAndEveryLeafInstallTheSamePlatform' -count=1 -timeout=10m`.
+Retirement still requires the cutover checks below and removal of nginx from every installation
+path together.
+
+## The client address ingress-nginx passes on (operator#719)
+
+ingress-nginx takes a request's client address from Cloudflare's `CF-Connecting-IP` **only** when
+the connection comes from Cloudflare's published ranges (`proxy-real-ip-cidr`, from
+https://www.cloudflare.com/ips/, read 2026-10-21; `enable-real-ip`,
+`forwarded-for-header: CF-Connecting-IP`), and from the TCP peer otherwise. `use-forwarded-headers`
+is deliberately not set: it would also pass on a sender's own `X-Forwarded-Host`, `-Proto` and `-Port`
+from any connection, so an app building links from them could be pointed elsewhere. It then sets `X-Real-IP`
+and `X-Forwarded-For` from that address. A sender that reaches the ingress without passing
+Cloudflare therefore cannot choose its own address. Lake's order sheet counts `X-Real-IP`
+(lake#838). The values are in `helmfile.yaml` and every `config/clusters/*/platform.yaml`;
+`TestIngressTrustsCloudflaresClientAddressOnlyFromCloudflare` checks both. When Cloudflare publishes
+new ranges, update the list in all of them in one pull request.
+
+## Tenant app credential filtering
+
+While apps remain on ingress-nginx, `helmfile.yaml` and every `config/clusters/*/platform.yaml`
+set the same `controller.proxySetHeaders` and `controller.config.http-snippet`. The chart creates
+the custom proxy-header ConfigMap. The maps select the operator's reserved app Ingress names
+(`app` and `app-<12 hex>`), clear `Authorization`, and drop a Cookie header containing a Lake
+control-session cookie. All other locations retain their incoming credentials, including Lake's
+API/console and wildcard handlers. The auth subrequest to Lake retains the original cookies.
+No per-Ingress snippets or dynamic host lists are needed. The compatibility and naming contract is
+in [Lake apps](../lake/apps.md#ingress-and-authentication) (LSR-208). Any future app gateway must enforce the
+same credential filtering before it can serve apps.
+
 ## What it serves
 
 Every Ingress the operator writes (an `orama.cloud` resource controls it), **whatever its class**:
@@ -55,6 +106,7 @@ It refuses, and reports, rather than serve something differently:
 | Lake app Ingresses | An app's authentication is nginx's `auth-url` subrequest to Lake, and app transfer is metered from nginx's per-Ingress byte counters (`lake_app_transfer.go`). The gateway does neither. Apps stay on ingress-nginx (`spec.apps.ingressClass` stays `nginx`) until zetta-tunnel can, so ingress-nginx cannot be removed before then. |
 | `auth-url`, `auth-signin`, rewrites, snippets, a non-HTTP backend protocol | Not implemented by the gateway; serving without them would change behaviour. |
 | Every host of an Ingress with `denylist-source-range`, on every Ingress that serves it | The gateway cannot refuse a source. Orama Cloud v1's `/metrics` deny companions ([#410](https://github.com/oramasearch/orama-operator/pull/410)) cover its public writer and reader hosts, and the main Ingress's Prefix `/` would forward `/metrics` too, so those hosts stay on ingress-nginx. An interim guard until [#575](https://github.com/oramasearch/orama-operator/issues/575) keeps the gateway from serving Cloud v1 at all; for the engine hosts, whose sandbox rules admit ingress-nginx only (bridge decision 19 of 2026-10-17), it is a second safeguard. |
+| Every host of an Ingress that requires a client certificate (`auth-tls-secret`, or `auth-tls-verify-client` other than `off`), on every Ingress that names it, of any class and owner | ingress-nginx refuses a caller without the edge's client certificate on that whole host; the Lake controller sets it when the zone has authenticated origin pulls ([`lake/origin-tls.md`](../lake/origin-tls.md)). The gateway verifies no client certificate, so serving the host would let anyone who finds its address skip the edge, its WAF and rate limits, and set the edge's attribution headers (`CF-Connecting-IP`) itself ([#798](https://github.com/oramasearch/orama-operator/issues/798), LSR-136). Such a host stays on ingress-nginx until zetta-tunnel verifies the same CA. |
 | Wildcard hosts, a host already served with another certificate, a path already routed, a missing backend Service or port | The projection would be invalid or ambiguous. |
 
 ## How a host moves: the Ingress class
@@ -94,8 +146,9 @@ done by hand ([operations](operations.md)).
 3. **Move the cluster's hosts**: in `config/clusters/sets/*.yaml`, set the member for that cluster to
    `ingressClassName: zetta-tunnel` (Lake, Zetta) or `components.ingressClassName: zetta-tunnel`
    (Cloud v1), and apply. The Ingress gets the gateway's address and its DNS record follows. The
-   Cloudflare zone must use SSL mode **Full (strict)** for these hosts: the gateway has no plain HTTP
-   listener. Rollback is the same change back to `nginx`.
+   edge must use **Full (strict)** for these hosts, declared per host by an `EdgeHostPolicy`
+   (`originTLS: strict`) or zone-wide by a Lake's `EdgeZonePolicy`, never set by hand: the gateway has
+   no plain HTTP listener. Rollback is the same change back to `nginx`.
 4. **Confirm**: `kubectl get ingress -A` shows the gateway's address for every moved Ingress, the
    report's `skipped` is empty, and every public host answers through the gateway with its
    certificate.
@@ -122,6 +175,10 @@ the gateway Deployment, its copied pull secret and the IngressClass; the gateway
 the served backends; that only a served `zetta-tunnel` Ingress gets the address, and only after the
 gateway is available; and that losing a certificate takes the address away.
 `TestIngressGatewayIsScaledToZeroWithNothingToServe` covers an empty cluster.
+`TestIngressGatewayNeverServesAHostThatRequiresOriginClientCertificates` checks that a Lake host with
+the edge's client-certificate requirement, cut over or not, `on` or `optional`, and a second Ingress
+naming the same host without the annotations are all refused and reported, that none of their keys
+or backends reach the gateway, and that the host is served again once the requirement is off.
 
 Live acceptance per cluster (the cutover steps above): every public host answers through the gateway
 with its certificate, and nothing reaches ingress-nginx.

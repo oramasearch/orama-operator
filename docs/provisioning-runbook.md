@@ -154,13 +154,14 @@ The operator generates these and points components at in-cluster service DNS. Ov
 for a prod-grade deployment.
 
 - **Generated secrets:** the RSA **JWT keypair** (dashboard signs, engine verifies), the broker
-  admin password (`<cr>-broker-admin`), the Redis password (`<cr>-cache-auth`) and the analytics key
-  the readers and analytics-processor share (`<cr>-analytics-api-key`), generated once with random
-  values and read by every client by reference
+  admin password (`<cr>-broker-admin`), the Redis password (`<cr>-cache-auth`), the analytics key
+  the readers and analytics-processor share (`<cr>-analytics-api-key`), HARVEST's control key
+  (`<cr>-harvest-sign`: index-builder's `HARVEST_SIGN`, harvest-master's `HARVEST_SIGNATURE`) and
+  harvest-master's notification signing key (`<cr>-harvest-notification`), generated once with
+  random values and read by every client by reference
   ([components.md](components.md#credentials--broker-and-redis-passwords-and-the-master-key-credentialsgo)).
-  `DISCO_SECRET`, `HARVEST_SIGN` (job signing, shared master↔worker↔index-builder),
-  `DECRYPTER_API_SECRET_BASE64` and the ClickHouse/Typesense passwords are still seeded `dev-*`
-  placeholders.
+  `DISCO_SECRET`, `DECRYPTER_API_SECRET_BASE64` and the ClickHouse/Typesense passwords are still
+  seeded `dev-*` placeholders.
 - **Generated unless supplied:** `MASTER_API_KEY`. With no `spec.masterAPIKeySecretRef` the operator
   generates `<cr>-master-api-key` once (#615), which suits a fresh stack. A stack carrying copied data
   names a supplied Secret instead (production: Prod 1's key), since the key must equal the control
@@ -207,7 +208,7 @@ Per component: its external deps and the tier. `[CF]` operator-provisions on Clo
 | **dashboard** | `[EXT]` Firebase, Stripe, Resend, Slack · `[GEN]` Postgres/ClickHouse/Redis, JWT |
 | **oramasearch-app** | `[EXT]` Firebase · `[GEN]` DB/JWT |
 | **index-builder** | `[CF]` KV namespaces, CF token/account · `[EXT]` Apify, Ably, MASTER_API_KEY · `[GEN]` Typesense, embeddings-bearer, decrypter, HARVEST_MASTER_ENDPOINT+SIGN, DISCO_SECRET_KEY, Redis |
-| **harvest** (master+worker) | `[EXT]` AWS S3, Ably · `[GEN]` HARVEST_SIGN, Mongo(in-cluster), RabbitMQ |
+| **harvest** (master+worker) | `[EXT]` AWS S3, Ably · `[GEN]` HARVEST_SIGNATURE (= index-builder's HARVEST_SIGN), NOTIFICATION_SIGNATURE, Mongo(in-cluster), RabbitMQ · no Podman API yet ([#12](https://github.com/oramasearch/orama-operator/issues/12)) |
 | **disco** | `[GEN]` DISCO_SECRET, ClickHouse |
 | **analytics-processor** | `[GEN]` analytics key (`<cr>-analytics-api-key`), ClickHouse |
 | **search** (Typesense) | `[GEN]` Typesense key |

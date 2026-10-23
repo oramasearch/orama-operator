@@ -47,19 +47,21 @@ old read cannot acknowledge a newer row or recreate a removed row. Unchanged obs
 nothing; `updated_at` changes on status transitions.
 
 `env_json` is a string-to-string JSON object. `secret_env_refs` is a JSON object whose keys are
-environment variable names and whose string values select Secrets in the Lake namespace. A value
-is `<secret-name>` to use the environment name as the Secret key, or `<secret-name>/<key>` to select
-a different key:
+environment variable names and whose values are **lake secret references only**
+([below](#lake-secret-references-lake625)). `{}`, SQL `NULL`, JSON `null`, and an empty decoded value
+request no secret environment variables. Environment names must pass Kubernetes `IsEnvVarName`.
+Invalid input makes the row `Failed` with a stable validation message and creates no invalid
+`LakeApp` update.
 
-```json
-{"API_KEY":"svc-creds/token","DB_URL":"db-secret"}
-```
-
-This renders `API_KEY` from key `token` in `svc-creds` and `DB_URL` from key `DB_URL` in
-`db-secret`. `{}`, SQL `NULL`, JSON `null`, and an empty decoded value request no secret
-environment variables. Environment names must pass Kubernetes `IsEnvVarName`, Secret names must
-be DNS-1123 subdomains, and keys must be valid Kubernetes Secret keys. Invalid input makes the row
-`Failed` with a stable validation message and creates no invalid `LakeApp` update.
+**Kubernetes Secret names are refused** (operator#492). A value that names a Secret
+(`<secret-name>` or `<secret-name>/<key>`), and the former JSON array of Secret names, make the row
+`Failed` with a message naming operator#492, and nothing reaches the app. The LakeApp reads its
+Secrets from the Lake instance namespace, so a row that named one directly could have delivered any
+Secret there into a tenant's app: the instance key `lake-prod-instance-kek`, the control database
+credentials, the payment keys. Lake's API never wrote either form (it accepts only `lake-secret://`
+references in the app's own workspace), so only a row written some other way could hold one. A
+`LakeApp` written by hand from a committed file may still use `spec.secretEnv[].secretKeyRef` and
+`spec.secretRefs`; only rows synchronized from Lake are restricted.
 
 ### Lake secret references (lake#625)
 
@@ -86,10 +88,8 @@ secrets](sealed-secrets.md#rotation-of-a-lake-source)), so a new version changes
 template's credential digest and the pods roll. Removing the reference deletes the
 `LakeSealedSecret`, its produced Secret and the copy.
 
-For one compatibility release, the operator also accepts the former JSON array of Secret names.
-Those whole Secrets retain their `envFrom` behavior through `spec.secretRefs`; new writers must use
-the object contract. Lake must authorize these references and detect secret env values before
-writing them; plaintext credentials belong in Secrets, never these JSON columns. `bindings_json` is:
+Lake must authorize these references and detect secret env values before writing them; plaintext
+credentials belong in lake's secret store, never these JSON columns. `bindings_json` is:
 
 ```json
 {"zetta":{"scopes":["read"]},"services":["22222222-2222-4222-8222-222222222222"]}
@@ -108,6 +108,23 @@ changes. They carry the Lake owner reference and `orama.cloud/lake` / `orama.clo
 An occupied name belonging to a different owner or customer fails without adoption. The row's
 `name` is a DNS label. An empty row host becomes `<name>.<wildcard>`; a supplied host must be one
 label beneath that suffix. Lake is responsible for reserving unique app hosts.
+
+The operator also refuses, on its own and whatever lake accepted
+([#713](https://github.com/oramasearch/orama-operator/issues/713)), and marks the row `Failed`:
+
+- a host that is the Lake's own `spec.host`, its `LAKE_PUBLIC_HOST`, or its preview wildcard's base;
+- a host whose label is one of lake's built-in reserved names (`lake`, `www`, `api`, `app`, `apps`,
+  `admin`, `mcp`, `docs`, `status`, `mail`, `smtp`, `auth`, `login`, `sso`, `id`, `cdn`, `static`,
+  `assets`, `grafana`, `prometheus`, `argocd`, `registry`, `git`, `dev`, `staging`, `prod`, `test`)
+  or starts with `lake-` or `orama`. Lake checks these against the app's name only
+  ([lake#947](https://github.com/oramasearch/lake/issues/947)); a name in `LAKE_APPS_RESERVED_NAMES`
+  is lake's to refuse;
+- more than 100 replicas (lake's `app_replicas_check`);
+- a Zetta binding whose scopes are anything but `["read"]`.
+
+A synchronized app is placed only in a namespace labelled `orama.cloud/workspace=<row workspace>` and
+`orama.cloud/customer=<row customer>` by the workspaces reconciler, never in the Lake namespace;
+otherwise the LakeApp is `Degraded` with `NamespaceConflict`.
 
 ### Store mounts (lake#666)
 
@@ -292,7 +309,7 @@ controller and, in a separate rule, only the owning Lake pod in its exact namesp
 labelled pod and declared port. The Lake rule pairs with its sandbox's exact-backend egress for
 proxying; port changes update both ends. Neither rule adds general operator access or selects
 another app. The policy carries a component justification annotation. Synchronized apps can reach the Lake
-Service for source, workspace reads and event publication; their scoped Zetta bearer is validated
+pod, on its API (container) port only (operator#711), for source, workspace reads and event publication; their scoped Zetta bearer is validated
 by Lake, not sent directly to Zetta. Before the workspace activates declared connections, each
 service binding keeps its compatibility rule selecting that service ID. Afterwards those binding
 rules are removed and paired `Connection` allowances are the only app-to-workload paths; see
@@ -315,6 +332,12 @@ Runtime mode sets both the original app-runtime source variables and the expande
 `LAKE_URL`, `APP_SOURCE=<repository>@<revision>`, `APP_REPOSITORY`, `APP_REVISION`, `APP_PATH`,
 optional `APP_ENTRYPOINT`, `APP_FRAMEWORK`, `APP_TOKEN`, and `APP_PORT`. Standalone apps default
 service filenames to the ID and obtain `EVENTS_URL` and `EVENTS_TOKEN` from their source Secret.
+
+Every app, in either mode, also gets `APP_AUTH`: `lake` when the Ingress puts Lake's forward auth in
+front of it (below), and `public` otherwise (any `spec.auth` other than empty or `lake` is reported
+as `public`). It is a managed name, so neither the app's `env` nor its `secretEnv` can set it, and an
+explicit `env` entry wins over `envFrom`. app-runtime reads Lake's identity headers only when it is
+`lake` ([app-runtime#11](https://github.com/oramasearch/app-runtime/issues/11)).
 
 ## Ingress and authentication
 
@@ -340,6 +363,44 @@ the auth call reaches the browser. When the Lake has public ingress (`ingressEna
 `auth-signin` sends a browser without that cookie to
 `https://<lake host>/apps/authorize?app=<app id>&rd=https://$host$escaped_request_uri`. The return URL
 is always https because TLS ends at the edge proxy. The handoff and cookie are specified in lake#407.
+
+**Control-plane credentials (LSR-208).** The shared ingress-nginx platform configuration clears
+`Authorization` before proxying to every tenant app, including public apps, runtime and image apps,
+and custom hosts. It drops the entire `Cookie` header if it contains `lake_session`,
+`__Host-lake_session` or `__Secure-lake_session` (case-insensitive, including repeated cookie
+headers). Otherwise it preserves application cookies, including `lake_app_session`. This fails
+closed for mixed cookie headers: the app also loses its own cookies on that request. Clients must
+use an app-scoped session; an app cannot use the incoming `Authorization` header for its own auth.
+Lake's auth subrequest still receives the original cookies so it can verify app access and return
+the app session cookie.
+
+The maps select nginx's operator-generated `$ingress_name`, never a client header or host:
+standalone apps use `app`, synchronized apps `app-<12 hex>`. These names are reserved for tenant
+apps. Lake's shared API/console Ingress uses `lake-<name>`, its wildcard handlers add
+`-apps-wildcard` or `-preview-wildcard`, environments use `environment`, Cloud v1 adds component
+suffixes (`-dashboard`, `-docs`, `-writer`, `-reader` and `-metrics`), and Zetta adds `-zetta` or
+`-zetta-landing`. None can match the app pattern, even when its CR is named `app`. Those locations
+preserve `Authorization` and cookies. The wildcard handlers proxy to Lake itself; a concrete app
+Ingress takes precedence when the app is deployed. Keep this naming contract and the platform maps
+in sync when adding an Ingress producer. Both `helmfile.yaml` and every cluster's `platform.yaml`
+carry the same maps and header ConfigMap values. Per-Ingress snippet annotations remain disabled.
+
+This operator change covers ingress credential forwarding. Lake's `/apps/authorize` must separately
+require a browser session, and its scripted scenario probes must separately obtain only an
+app-scoped session for app requests; those changes belong to the Lake repository.
+
+**Identity headers.** With `auth: lake` the Ingress names `X-Orama-User,X-Orama-Space` as
+`auth-response-headers`. ingress-nginx then sends the app each of those headers set from Lake's
+answer to the auth call, and a copy the client sent never reaches the app: it is replaced, or dropped
+when Lake's answer has none (an empty `proxy_set_header` value sends no header). The app's access
+policy admits only ingress-nginx and its Lake, so nothing reaches the pod around the Ingress. No other
+header is replaced, so `X-Orama-User-Id`, `X-Auth-Request-*` and the like arrive as the client wrote
+them. With `auth: public` there is no auth call and **every** identity header, `X-Orama-User`
+included, is the client's: an app must not treat any of them as identity, and app-runtime returns no
+signed-in user there (`APP_AUTH=public`). The Ingress does not strip them on a public app because
+that would need an nginx snippet; app-runtime removes them instead before app code sees the request.
+Lake apps stay on ingress-nginx and are not served by the zetta-tunnel gateway
+(`ingressRefusal`), which makes no auth subrequest.
 
 The bytes an app's Ingress carries are metered: the operator reads ingress-nginx's per-Ingress byte
 counters and reports them by app and hour in `app_transfer` ([app-transfer.md](app-transfer.md),
@@ -403,6 +464,11 @@ The regression files are `lake_apps_test.go` (row lifecycle, rollback, isolation
 writes), `lake_apps_pgx_test.go` (SQL and concurrent row changes), `lake_apps_dns_test.go`
 (wildcard ownership and ingress class), `lake_apps_notify_test.go` (listener and polling gates),
 and `lakeapp_tokens_test.go` (credential ownership, unbinding, DNS finalization and event HTTP).
+`lakeapp_isolation_test.go` pins the isolation rules a tenant's app runs under: restricted pod
+security and no Kubernetes token, egress only to cluster DNS, the Lake's API port and the app's own
+workspace, ingress only from ingress-nginx and the owning Lake, no workspace Kubernetes API or
+operator allowance selecting an app, and Lake-protected identity headers set from Lake's answer.
+The security review behind them is [`../security/deep-search-711-tenant-app.md`](../security/deep-search-711-tenant-app.md).
 The Services/Stores shared-Secret regression additionally verifies ID aliases and their withdrawal.
 
 The field-by-field reference is in [`../crd-reference.md`](../crd-reference.md#lakeapp-separate-crd-namespaced--one-deployed-app).

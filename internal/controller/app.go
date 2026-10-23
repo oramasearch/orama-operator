@@ -77,10 +77,12 @@ func drainPreStop() *corev1.Lifecycle {
 
 // appDef describes a stateless app run as a Deployment (+ Service, + optional Ingress).
 type appDef struct {
-	component   string
-	image       string
-	port        int32
-	replicas    int32
+	component string
+	image     string
+	port      int32
+	replicas  int32
+	// recreate stops the previous pod before replacing a worker whose claims are process-local.
+	recreate    bool
 	env         []corev1.EnvVar
 	args        []string
 	ingressHost string
@@ -174,6 +176,9 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
 		dep.Labels = lbls
 		dep.Spec.Replicas = int32Ptr(replicas)
+		if def.recreate {
+			dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+		}
 		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: lbls}
 		podSpec := corev1.PodSpec{
 			ImagePullSecrets:              imagePullSecrets(oc),
@@ -212,6 +217,11 @@ func (r *OramaCloudV1Reconciler) reconcileApp(ctx context.Context, oc *oramav1al
 		dep.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: lbls, Annotations: annotations},
 			Spec:       podSpec,
+		}
+		boundV1PodStorage(&dep.Spec.Template.Spec)
+		cloudV1PodIdentity(&dep.Spec.Template.Spec, name)
+		if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, oc, name, lbls); err != nil {
+			return err
 		}
 		return controllerutil.SetControllerReference(oc, dep, r.Scheme)
 	}); err != nil {
@@ -350,6 +360,13 @@ func validateIngressHosts(oc *oramav1alpha1.OramaCloudV1) error {
 
 // ---- workers + dashboard reconcilers ----
 
+// The dashboard variables the operator derives (#572). NEXT_PUBLIC_APP_URL takes effect at runtime
+// only in an image built without it: next build inlines a NEXT_PUBLIC_* value set at build time.
+const (
+	dashboardAppURLEnv           = "NEXT_PUBLIC_APP_URL"
+	dashboardPlacementClusterEnv = "ORAMACORE_PLACEMENT_CLUSTER_ID"
+)
+
 func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) error {
 	w := oc.Spec.Components.Workers
 	if !w.Enabled {
@@ -363,10 +380,17 @@ func (r *OramaCloudV1Reconciler) reconcileWorkers(ctx context.Context, oc *orama
 	if img == "" {
 		img = componentImage(oc, "workers", "orama-workers") // one bundled image for all CF workers
 	}
+	// Third-party keys from their own Secrets (#571): the LLM providers' apiKeySecretRefs and
+	// sentryDSNSecretRef. Checked before the Deployment is touched; each wins over the workers
+	// Secret's envFrom, and a changed one rolls the workers.
+	refs := componentKeyRefs(oc, "workers")
+	if err := r.checkKeyRefs(ctx, oc, refs); err != nil {
+		return err
+	}
 	return r.reconcileApp(ctx, oc, appDef{
 		component: "workers", image: img, port: 8080, replicas: w.Replicas,
-		env:               []corev1.EnvVar{masterAPIKeyEnv(oc)},
-		credentialSecrets: []string{masterKey},
+		env:               append([]corev1.EnvVar{masterAPIKeyEnv(oc)}, keyRefEnv(refs)...),
+		credentialSecrets: append([]string{masterKey}, keyRefSecrets(refs)...),
 		resources:         resourcesOr(w.Resources, resourceReqs("128Mi", "50m", "512Mi")),
 	})
 }
@@ -405,7 +429,53 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 	if err != nil {
 		return err
 	}
+	// The restricted Stripe key (#802) is read before the Deployment is touched, like the user's env.
+	stripeRefs := componentKeyRefs(oc, "dashboard")
+	if err := r.checkKeyRefs(ctx, oc, stripeRefs); err != nil {
+		return err
+	}
+	// A production instance's dashboard is not written without its production authentication
+	// settings and its restricted live Stripe key (dashboard_production.go, #794, #802).
+	if err := r.checkDashboardProductionAuth(ctx, oc, sources); err != nil {
+		return err
+	}
+	// The dashboard signs in to the control DB as its own role (#99): until that role's grants
+	// apply, the Deployment is left as it is.
+	if ready, err := r.dashboardRoleReady(ctx, oc); err != nil || !ready {
+		return err
+	}
 	img := componentImage(oc, "dashboard", "dashboard")
+	// The master key (#307), the dashboard role's control-DB credentials (#99),
+	// and, where the cache runs, the serverless-redis-http shim's URL and token for its Upstash
+	// client (#562), then the derived values below; then the user's dashboard.env (#311), which may
+	// replace any but the owned ones.
+	env := append([]corev1.EnvVar{masterAPIKeyEnv(oc)}, dashboardDBEnv(oc)...)
+	credentialSecrets := append([]string{masterKey}, dashboardDBSecrets(oc)...)
+	// The restricted Stripe key from its own Secret (#802): an explicit entry, which dashboard.env
+	// cannot replace (validateDashboardEnv refuses STRIPE_SECRET_KEY while the reference is set).
+	env = append(env, keyRefEnv(stripeRefs)...)
+	credentialSecrets = append(credentialSecrets, keyRefSecrets(stripeRefs)...)
+	if redisHTTPRuns(oc) {
+		env = append(env, redisCacheEnv(oc)...)
+		credentialSecrets = append(credentialSecrets, redisHTTPSecretName(oc))
+	}
+	if oc.Spec.Cloudflare.Enabled {
+		env = append(env, dashboardUploadsBucketEnv(oc)...)
+		credentialSecrets = append(credentialSecrets, oc.Name+"-uploads-r2")
+	}
+	// Derived values (#572): the public origin from the stack's own host (never an extra host), and
+	// the c1 row the cluster-row Job recorded, so new projects go to it. Both are explicit entries, so
+	// a value left in a dashboard.envFrom source is ignored; dashboard.env may still replace them.
+	if d.Host != "" {
+		env = append(env, corev1.EnvVar{Name: dashboardAppURLEnv, Value: "https://" + d.Host})
+	}
+	rowID, err := r.clusterRowID(ctx, oc)
+	if err != nil {
+		return err
+	}
+	if rowID != "" {
+		env = append(env, corev1.EnvVar{Name: dashboardPlacementClusterEnv, Value: rowID})
+	}
 	// The dashboard never migrates the control DB: the operator's PostgresSchema owns the
 	// schema (operator#40). A second Drizzle migrate collides with those objects (Postgres 42710).
 	if err := r.reconcileApp(ctx, oc, appDef{
@@ -414,10 +484,8 @@ func (r *OramaCloudV1Reconciler) reconcileDashboard(ctx context.Context, oc *ora
 		port:              3000,
 		ingressHost:       d.Host,
 		ingressExtraHosts: d.ExtraHosts,
-		// The master key (#307), the CNPG-generated credentials for the dashboard's control-DB client,
-		// then the user's dashboard.env (#311).
-		env:               overrideEnv([]corev1.EnvVar{masterAPIKeyEnv(oc), pgPasswordEnv(oc, "POSTGRES_PASSWORD"), pgURIEnv(oc, "DATABASE_URL")}, d.Env),
-		credentialSecrets: []string{masterKey},
+		env:               overrideEnv(env, d.Env),
+		credentialSecrets: credentialSecrets,
 		extraEnvFrom:      d.EnvFrom,
 		envHash:           envHash,
 		// Next.js SSR — a roomier default than the light apps. Override via spec.components.dashboard.resources.

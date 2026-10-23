@@ -31,7 +31,8 @@ and connection details are in the [deployment control-plane guide](../control-pl
 Namespaced `LakeApp` resources run customer apps from a pinned Lake repository revision or a
 digest-pinned image. Synchronized apps share their restricted workspace namespace with
 collision-free resource names; standalone CRs retain a private namespace. Apps have
-private-by-default ingress, scoped data bindings, and live rollout events. The CR contract and resource lifecycle are in
+private-by-default ingress, scoped data bindings, and live rollout events. Each app pod is told
+its auth mode in `APP_AUTH`, so app-runtime trusts Lake's identity headers only behind forward auth. The CR contract and resource lifecycle are in
 [`apps.md`](apps.md). On every Lake, a dedicated controller follows lake's `apps`
 table using the Services DSN, `lake_apps` notifications and a 60-second fallback list. It registers
 generated source, Zetta, event and registry-pull token hashes, merges the pull token with the Lake's
@@ -94,10 +95,16 @@ Lake owns a `PaymentProvider`, its own Stripe webhook endpoint at
 and `LAKE_STRIPE_WEBHOOK_SECRET` once all of them are ready and its key has been checked. Until then
 it takes payments through its manual provider. See [`payments.md`](payments.md) (operator#639).
 
+Whether a Lake bills at all is `spec.billing` (`enabled: true` gives `LAKE_BILLING=on`; operator#662).
+`spec.payments` requires it. On-prem and enterprise installs leave it unset and bill nothing; a Lake
+can bill with no `spec.payments`, through the manual provider. See
+[`payments.md`](payments.md#billing-specbilling).
+
 ## Origin TLS
 
 Every Lake Ingress (the Lake's own, its app and preview wildcards, its apps and its environments)
-serves HTTPS with a Let's Encrypt certificate issued through the Lake's `dnsSecretRef`, and the
+serves HTTPS with a Let's Encrypt certificate: DNS-01 through the Lake's `dnsSecretRef` for names in
+its zone, HTTP-01 for any other name and for a Lake without one (operator#632), and the
 Lake's Cloudflare zone is secured by an `EdgeZonePolicy` the Lake owns: Full (strict), authenticated
 origin pulls and Always Use HTTPS, each only once probes show it is safe. The token needs Zone > Zone
 Settings > Edit besides DNS Edit. See [`origin-tls.md`](origin-tls.md) (operator#578).
@@ -122,21 +129,29 @@ Lake's Zetta (`spec.zetta.enabled`, default `true`; otherwise reason `ZettaDisab
 host (`spec.host` or `LAKE_PUBLIC_HOST` in `spec.env`; otherwise reason `NoPublicHost`), see
 [environments](environments.md#every-lakes-control-plane-is-its-own-zetta). `ingressEnabled` stays: it
 decides whether the Lake is exposed outside the cluster, not which features it runs.
+`spec.billing` is not a feature switch either: it says whether this install charges anyone (on-prem
+leaves it off), and every Lake runs the same features whatever its value
+([payments](payments.md#billing-specbilling)).
 
 ### Default images
 
 `internal/controller/lake_defaults.go`, pinned to what the managing cluster's `Lake/prod` ran on
-2026-10-17:
+2026-10-17, apart from Zetta, which is the v0.3.0 release (`main-d7551c75`) pinned by digest
+([operator#588](https://github.com/oramasearch/orama-operator/issues/588)). The `lake-nonprod` and
+`lake-prod` sets still name `oramasearch/zetta:main-4015ef76` (v0.2.0) in `spec.zetta.image`, so
+the new default reaches a member only when its set file moves too, environment by environment.
+v0.3.0 refuses to start a node that cannot create the network record collections, so the first
+start on `lake-dev` is the check:
 
 | What | Spec field that overrides it | Default |
 |---|---|---|
-| Zetta: the Lake's data plane | `spec.zetta.image` | `oramasearch/zetta:main-4015ef76` |
-| Zetta: every workspace and managed Zetta service | `spec.services.zettaImage`, then `spec.workspaces.image` | `oramasearch/zetta:main-4015ef76` |
+| Zetta: the Lake's data plane | `spec.zetta.image` | `oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a` |
+| Zetta: every workspace and managed Zetta service | `spec.services.zettaImage`, then `spec.workspaces.image` | `oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a` |
 | Runtime-mode apps (`LAKE_APPS_RUNTIME_IMAGE`) | `spec.apps.runtimeImage` | `oramasearch/app-runtime:976e6a8` |
 | Image builds | `spec.builds.builderImage` | `oramasearch/lake-builder:31a48d9` |
 | Methodologies (`LAKE_METHODOLOGY_RUNTIME_IMAGE`) | `spec.methodologies.runtimeImage` | `oramasearch/methodology-runtime:ac58062` |
 | User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:v0.1.0` |
-| MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a` |
+| MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892` |
 | `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:v0.1.0` |
 | `agent-project` | `spec.agents.library[key]` | `oramasearch/agent-project:v0.1.0` |
 | `agent-autosuggest` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest:v0.1.0` |
@@ -147,9 +162,23 @@ decides whether the Lake is exposed outside the cluster, not which features it r
 | `agent-application` | `spec.agents.library[key]` | `oramasearch/agent-application:v0.1.0` |
 | `agent-experiments` | `spec.agents.library[key]` | `oramasearch/agent-experiments:v0.1.0` |
 
-Every Zetta a Lake owns also gets `ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864` and
-`MALLOC_ARENA_MAX=2` unless its env (`spec.zetta.env`, `spec.services.zettaEnv`) names the
-variable. The agent model defaults to `gpt-5.5` (`spec.agents.model`). An app without its own host
+The MCP runner image is pinned by digest because lake runs every stdio MCP connection as an image
+App on it: lake refuses a stdio connection when `LAKE_MCP_RUNNER_IMAGE` is not
+`name@sha256:<64 hex>` ([lake#783](https://github.com/oramasearch/lake/issues/783)), and the
+operator fails an image App that is not pinned (`lakeAppRowSource`, the `LakeApp` CRD pattern)
+([#744](https://github.com/oramasearch/orama-operator/issues/744)). A value set in `spec.env` must
+be pinned the same way. The other tagged defaults are not checked for a digest by lake or the
+operator: they are build bases, build Jobs and agent pods, not image Apps.
+
+Every Zetta a Lake owns also gets `ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864`,
+`MALLOC_ARENA_MAX=2` and `ZETTA_EGRESS_ALLOW` unless its env (`spec.zetta.env`,
+`spec.services.zettaEnv`) names the variable. The engine denies outbound connections by default
+([zetta#75](https://github.com/oramasearch/zetta/issues/75), zetta's
+`docs/governance/egress-policy.md`), and the operator mirrors what the namespace's default-deny
+NetworkSandbox allows each Zetta into its allowlist: the EgressRules and Connections it carries for
+that Zetta and the workspace's `internetEgress` (`*:443`); the data-plane Zetta gets an empty list
+([#724](https://github.com/oramasearch/orama-operator/issues/724),
+[egress rules](../infrastructure/egress-rules.md#a-lake-zettas-own-allowlist-defense-in-depth)). The agent model defaults to `gpt-5.5` (`spec.agents.model`). An app without its own host
 is `<app>.<spec.apps.wildcard>`, and an empty wildcard uses the Lake's `spec.host`
 (`myapp.lake-dev.oramadev.net`); HTTPS on those two-level names needs a certificate per zone
 ([#515](https://github.com/oramasearch/orama-operator/issues/515)).
@@ -242,7 +271,9 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
    Lake's public host ([the row contract](environments.md#the-row-contract-lakes-format-the-operator-conforms)).
    Each CR owns its profiled workload Namespace through a verified finalizer. Referenced
    `LakeSealedSecret` resources must be current and Ready; their produced Secrets are copied into the
-   isolated Namespace before the workload starts. See
+   isolated Namespace before the workload starts. A custom domain belongs to the first claim, never
+   to a platform host or a host something else serves, and no certificate is shared across owners
+   ([#776](https://github.com/oramasearch/orama-operator/issues/776)). See
    [`environments.md`](environments.md). Liquid creates, lists, rolls back, and reads these deployments
    through the operator's authenticated [deployment control plane](../control-plane/README.md).
 14. **Data-service lifecycle evidence** — `status.dataServices` reports Postgres and Zetta backup,
@@ -292,7 +323,10 @@ step 10 to finish applying the desired schema (`internal/controller/lake_control
     `methodology_runs` row waits for its image build, then runs a stage, a sandbox and a collect pod
     in `lake-<name>-methodology-runs`: the sandbox carries no credential, no token and no network
     unless granted. A workspace runs at most `spec.methodologies.maxConcurrentRunsPerWorkspace`
-    (default 2) at once and the rest wait `Queued`, oldest first; a GPU run's stage pod, and so its
+    (default 2) at once and the rest wait `Queued`, oldest first; each run and served model counts
+    against its workspace's ResourceQuota and LimitRange through a never-scheduled reservation pod
+    in the workspace's namespace, and waits `Queued` while there is no room (orama-operator#799);
+    a GPU run's stage pod, and so its
     work volume, goes in a zone where its GPU class has nodes, or it waits `Queued` (orama-operator#293).
     Phases and the sandbox's start and finish go to `methodology_run_status`. A trained model a
     person publishes (`methodology_deployments`, lake#690) is staged by a Job with its own
@@ -401,19 +435,48 @@ capability in `/v1/openapi.json` or a page no step covers; the inventory is the 
 `docs/inventory.md`. Every step reports pass, fail or skip with a reason. It changes data only in
 the Lake it runs against, as its own test people, and deletes what it made where Lake allows.
 
-Create the test on the member's cluster (`orama-nonprod-cluster-01` for `lake-nonprod`), from
-[`../../config/samples/lake-e2e-test.yaml`](../../config/samples/lake-e2e-test.yaml) with the image
-tag filled in, and read the result:
+**The gate is declared in the set** ([#589](https://github.com/oramasearch/orama-operator/issues/589)).
+Every file in [`config/clusters/`](../../config/clusters/README.md) is applied to the managing
+cluster, but a `LakeE2ETest` runs on the cluster of the Lake it tests. So the `testing-gate` entry
+lives in `config/clusters/sets/lake-nonprod.yaml` under `spec.e2eTests`, and the managing cluster's
+operator applies it as a `LakeE2ETest` on `orama-nonprod-cluster-01` with `spec.member` filled in:
+
+```yaml
+spec:
+  e2eTests:
+  - name: testing-gate
+    member: testing
+    spec:
+      image: oramasearch/lake-e2e@sha256:<digest>   # by digest
+      runID: v0.4.0                                 # the release being gated
+      env:
+      - name: LAKE_E2E_CLERK_SECRET_KEY             # testing signs people in with Clerk
+        valueFrom: {secretKeyRef: {name: clerk-secret-key, key: secretKey}}
+```
+
+`clerk-secret-key` is already in `lake-testing`: the member's `secrets` copy `clerk-lake-testing` there
+under that name. The pull secret is the Lake's, `oramasearch-dockerhub`. Applying the set file starts
+a run; to run it again for the next release, change `runID`, apply the set file and commit it. Read
+the result from the managing cluster, and the reasons on the member's cluster:
 
 ```sh
-kubectl get lakee2e testing-gate                       # Phase, Pass, Fail, Skip
+kubectl --context orama-production-cluster-01 get lset lake-nonprod     # E2E column: testing-gate Failed 311/22/3
+kubectl --context orama-production-cluster-01 get lset lake-nonprod -o jsonpath='{.status.e2eTests}'
+# on orama-nonprod-cluster-01 (its kubeconfig is Secret orama-system/orama-nonprod-cluster-01-kubeconfig):
 kubectl get lakee2e testing-gate -o jsonpath='{.status.failed}'
 kubectl logs -n lake-testing job/testing-gate-e2e-<generation>
 ```
 
-To run it again (the next release), change `spec.runID` and apply the file again; nothing is
-deleted. The run's Job is `<name>-e2e-<generation>`; the previous run's Job is removed once the new
-run finishes. The fields are in [`../crd-reference.md`](../crd-reference.md#lakee2etest-separate-crd-cluster-scoped).
+The runner calls the Lake's in-cluster Service. The Lake's network sandbox lets it in with
+`allow-e2e-ingress-to-lake` ([`../infrastructure/network-sandbox.md`](../infrastructure/network-sandbox.md));
+the runner's own egress, to the public host and Clerk, is not sandboxed.
+
+A `LakeE2ETest` created directly on a cluster (from
+[`../../config/samples/lake-e2e-test.yaml`](../../config/samples/lake-e2e-test.yaml)) still works,
+for a cluster no set manages. The run's Job is `<name>-e2e-<generation>`; the previous run's Job is
+removed once the new run finishes. The fields are in
+[`../crd-reference.md`](../crd-reference.md#lakee2etest-separate-crd-cluster-scoped) and, for the
+set's entry, [`../crd-reference.md`](../crd-reference.md#lakeset-and-oramacloudv1set-separate-crds-cluster-scoped--instances-on-managed-clusters).
 
 ## Deploying the operator with Lake support
 
@@ -442,10 +505,18 @@ Use immutable tags (the `v1-sandbox` + `IfNotPresent` stale-cache failure is doc
 
 ### Store volume
 
-The default store creates `lake-<name>-store` at `100Gi` with `ReadWriteMany`, because every
-Deployment replica mounts the same libliquid customer root. The storage class must actually
-support RWX. `ReadWriteOnce` is valid only with `spec.replicas: 1`; otherwise pods scheduled on
-different nodes cannot mount the shared claim. To use a pre-provisioned claim in the Lake
+The default store creates `lake-<name>-store` at `100Gi` with `ReadWriteMany`. The storage class
+must actually support RWX.
+
+**A Lake runs one replica** (operator#698). Lake is not stateless: one lake process owns the store
+root at a time, behind an exclusive `flock` (lake `docs/deployment/store-volume.md`). A second
+replica would never get the root, yet report Ready while it waited (by design, so a surge rollout can
+finish), take half the traffic and fail it with `503 store_unavailable` after 90 s; on a network
+filesystem without working `flock` two processes would corrupt a customer store (lake#467).
+`spec.replicas` therefore accepts only 0 or 1 (the CRD's maximum). A Lake stored with more, from
+before the maximum, runs one replica and its `Ready` condition is `Degraded` with reason
+`ReplicasRefused`. The access mode only decides the rollout: surge on RWX, `Recreate` on RWO
+unless `spec.rollout.overlapOnSharedStore`. To use a pre-provisioned claim in the Lake
 namespace, set `spec.store.existingClaim`; the operator mounts it without adopting, changing, or
 deleting it.
 
@@ -495,7 +566,7 @@ spec:
   image: oramasearch/lake:<tag>
   pullSecretName: oramasearch-dockerhub
   args: ["--listen", "0.0.0.0:4900", "--node", "prod"]
-  replicas: 3
+  replicas: 1
   resources:
     requests: { cpu: 250m, memory: 512Mi }
     limits: { memory: 2Gi }
@@ -616,10 +687,10 @@ done
 Before the change the first name takes about 18 ms and the trailing-dot name 2–7 ms; after it
 both take the trailing-dot time.
 
-When `spec.replicas` is greater than one, the operator creates `PodDisruptionBudget lake-<name>`
-with `maxUnavailable: 1`. It also defaults `spec.topologySpreadConstraints` to a soft
-`kubernetes.io/hostname` spread. Supply the field to replace that list; an explicit empty list
-disables the default. At one replica the operator removes the PDB and renders no default spread.
+A Lake runs one replica (above), so the operator renders no `PodDisruptionBudget` and no default
+topology spread; `spec.topologySpreadConstraints`, when set, is copied as given. (The code that
+creates a PDB and a soft `kubernetes.io/hostname` spread above one replica stays for when lake can
+share its store root.)
 
 The nginx Ingress always sets `proxy-body-size: 64m` and disables request and response buffering
 for Lake's bounded streaming transfers. Set `spec.tls.secretName` to a `kubernetes.io/tls` Secret

@@ -175,7 +175,7 @@ func TestAnalyticsImportCronJobIsHardened(t *testing.T) {
 		t.Fatalf("pod spec = %+v", pod)
 	}
 	c := pod.Containers[0]
-	if c.Name != "import" || c.Image != "curlimages/curl:8.10.1" || c.ImagePullPolicy != corev1.PullIfNotPresent ||
+	if c.Name != "import" || c.Image != pinnedCurlImage || c.ImagePullPolicy != corev1.PullIfNotPresent ||
 		!reflect.DeepEqual(c.Command, []string{"sh", "-c", analyticsImportScript(stored)}) || len(c.Args) != 0 {
 		t.Errorf("import container = %+v", c)
 	}

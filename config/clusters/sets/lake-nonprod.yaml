@@ -83,15 +83,37 @@ spec:
     secrets:
     - {name: clerk-lake-testing, namespace: lake, as: clerk-secret-key}
   deletionPolicy: Retain
+  # The testing -> staging gate of a substantial lake release (orama-operator#589,
+  # docs/lake/README.md#service-e2e). Not active yet: oramasearch/lake-e2e has no image in Docker
+  # Hub, and the managing cluster's operator must know spec.e2eTests before this file carries it.
+  # When both are true, uncomment, put in the pushed image's digest, set runID to the release being
+  # gated, apply this file to the managing cluster with Steve's consent, and commit it.
+  # e2eTests:
+  # - name: testing-gate
+  #   member: testing
+  #   spec:
+  #     image: oramasearch/lake-e2e@sha256:<digest>
+  #     runID: "<release>"
+  #     env:
+  #     - name: LAKE_E2E_CLERK_SECRET_KEY
+  #       valueFrom: {secretKeyRef: {name: clerk-secret-key, key: secretKey}}
+  # Nonprod's own Secrets: none of these is one lake-prod copies (orama-operator#789). The operator
+  # refuses to copy a production set's Secret into a nonprod member, and
+  # TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes fails on one. Each is copied under the name the
+  # Lakes already mount, so the copies of the production Secrets in the lake-* namespaces are
+  # overwritten in place.
   secrets:
-  - name: oramasearch-dockerhub
+  - name: oramasearch-dockerhub-nonprod   # a Docker Hub pull token for nonprod only
     namespace: lake
-  - name: cloudflare-api-token
+    as: oramasearch-dockerhub
+  - name: cloudflare-api-token            # already nonprod's own: oramadev.net only
     namespace: lake
-  - name: lake-prod-openai
+  - name: lake-nonprod-openai             # OPENAI_API_KEY
     namespace: lake
-  - name: lake-prod-stripe
+    as: lake-prod-openai
+  - name: lake-nonprod-stripe             # secret_key, webhook_secret: Stripe test mode
     namespace: lake
+    as: lake-prod-stripe
   template:
     dnsSecretRef:
       name: cloudflare-api-token
@@ -102,6 +124,11 @@ spec:
       instances: 1
       storageSize: 10Gi
     pullSecretName: oramasearch-dockerhub
+    # Workspace and managed-service Zettas stay on the image the data-plane Zetta runs until a
+    # Zetta release is rolled on purpose: without this they would follow the operator's default
+    # (orama-operator#588) the moment a new operator rolls.
+    services:
+      zettaImage: oramasearch/zetta:main-4015ef76
     store:
       accessModes:
       - ReadWriteOnce

@@ -103,6 +103,13 @@ func (r *OramaCloudV1Reconciler) reconcileBootstrap(ctx context.Context, oc *ora
 	if err := r.ensureCredentialSecrets(ctx, oc); err != nil {
 		return err
 	}
+	// The engine's broker users' passwords (#99), before the engine step hashes them, so a fresh
+	// stack's writer and readers are written once, not again when the broker step creates them.
+	if storeLocal(oc, oc.Spec.Components.Broker) {
+		if err := r.ensureBrokerSecrets(ctx, oc); err != nil {
+			return fmt.Errorf("broker users Secret: %w", err)
+		}
+	}
 	return r.ensureJWTSecrets(ctx, oc)
 }
 
@@ -228,21 +235,21 @@ func componentSecretData(component string) map[string]string {
 	case "pgadmin": // pgAdmin4 web login (PGADMIN_DEFAULT_EMAIL is non-secret, set in the Deployment env)
 		return map[string]string{"PGADMIN_DEFAULT_PASSWORD": "dev-pgadmin-password"}
 	case "index-builder": // writes Typesense, embeds via HPES, Ably progress, CF KV, decrypter, DISCO
+		// ORAMA_EMBEDDINGS_BEARER is not seeded: it comes from the generated <cr>-hpes (#574), and
+		// HARVEST_SIGN from the generated <cr>-harvest-sign it shares with harvest-master.
 		// index-builder's EnvSchema (src/utils.ts) requires 27 vars at boot; the secret
 		// carries the credential-shaped ones (envFrom exposes each key as its env var). The
-		// external ones (Apify/Ably/CF/Sentry) are dummies until real tokens are provisioned
-		// (see the provisioning runbook + operator#28/#29). Non-secret URLs/constants are set
-		// as plain env in reconcileIngestion.
+		// external ones (Apify/Ably) are dummies until real tokens are provisioned (operator#747);
+		// the Cloudflare pair is taken from spec.cloudflare.apiTokenSecretRef when it is set and is
+		// then not seeded (#571). Non-secret URLs/constants are set as plain env in reconcileIngestion.
 		return map[string]string{
 			"TYPESENSE_API_KEY":           "dev-typesense-api-key",
-			"ORAMA_EMBEDDINGS_BEARER":     "dev-hpes-bearer",
 			"ABLY_API_KEY":                "sandbox.dummy:sandboxdummyablysecret000000",
 			"API_SECRET":                  "dev-index-builder-api-secret",
 			"DEPLOYMENT_API_API_KEY":      "dev-deployment-api-key",
 			"DECRYPTER_API_SECRET_BASE64": "ZGV2LWRlY3J5cHRlci1zZWNyZXQ=", // base64("dev-decrypter-secret")
 			"APIFY_TOKEN":                 "dev-apify-token",
 			"DISCO_SECRET_KEY":            "dev-disco-secret",
-			"HARVEST_SIGN":                "dev-harvest-signature",
 			"CLOUDFLARE_API_TOKEN":        "dev-cloudflare-token",
 			"CLOUDFLARE_ACCOUNT_ID":       "dev-cloudflare-account",
 		}
@@ -253,11 +260,12 @@ func componentSecretData(component string) map[string]string {
 			"ABLY_API_KEY":          "sandbox.dummy:sandboxdummyablysecret000000",
 			"HARVEST_SIGN":          "dev-harvest-signature",
 		}
-	case "harvest-master": // crawler master (job API): job-signing + worker-image pull creds
+	case "harvest-master": // crawler master (job API): worker-image pull creds
+		// HARVEST_SIGNATURE and NOTIFICATION_SIGNATURE are not seeded: they come from the generated
+		// <cr>-harvest-sign and <cr>-harvest-notification.
 		return map[string]string{
-			"HARVEST_SIGN": "dev-harvest-signature",
-			"GITHUB_PAT":   "dev-github-pat",
-			"GHCR_TOKEN":   "dev-ghcr-token",
+			"GITHUB_PAT": "dev-github-pat",
+			"GHCR_TOKEN": "dev-ghcr-token",
 		}
 	case "dashboard": // app.orama.com control plane — the widest secret surface
 		return map[string]string{
@@ -288,11 +296,23 @@ func componentSecretData(component string) map[string]string {
 }
 
 // ensureComponentSecret creates a component's scoped secret (create-if-absent, dummy
-// values) if the component needs one. Returns whether the component has a secret.
+// values) if the component needs one. Returns whether the component has a secret. A key the
+// component takes from its own Secret reference (componentKeyRefs, #571) is not seeded: the
+// explicit secretKeyRef wins over envFrom, and a dev-* value beside it would only mislead.
 func (r *OramaCloudV1Reconciler) ensureComponentSecret(ctx context.Context, oc *oramav1alpha1.OramaCloudV1, component string) (bool, error) {
 	data := componentSecretData(component)
 	if data == nil {
 		return false, nil
+	}
+	for _, ref := range componentKeyRefs(oc, component) {
+		delete(data, ref.env)
+	}
+	// A production dashboard takes these from the user's own Secrets only (dashboard_production.go,
+	// #794): no placeholder is seeded for them.
+	if component == "dashboard" && !dashboardSeedsAuthPlaceholders(oc) {
+		for _, name := range dashboardProductionUnseeded() {
+			delete(data, name)
+		}
 	}
 	name := componentSecretName(oc, component)
 	existing := &corev1.Secret{}

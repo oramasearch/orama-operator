@@ -335,7 +335,8 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 	if row.Desired != "running" && row.Desired != "stopped" {
 		return spec, errors.New("desired must be running, stopped or deleted")
 	}
-	if row.Port < 1 || row.Port > 65535 || row.Replicas < 0 {
+	// Lake's app_replicas_check allows 1 to 100; the operator holds the same ceiling itself (#713).
+	if row.Port < 1 || row.Port > 65535 || row.Replicas < 0 || row.Replicas > lakeAppMaxReplicas {
 		return spec, errors.New("app port or replicas is invalid")
 	}
 	if row.Desired == "stopped" {
@@ -362,6 +363,9 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 	if wildcard == "" || len(validation.IsDNS1123Subdomain(spec.Host)) != 0 || !strings.HasSuffix(spec.Host, "."+wildcard) || strings.Contains(strings.TrimSuffix(spec.Host, "."+wildcard), ".") {
 		return spec, errors.New("app host must be one label beneath the Lake apps wildcard")
 	}
+	if err := lakeAppHostNotPlatform(lake, spec.Host, wildcard); err != nil {
+		return spec, err
+	}
 	bindings, err := lakeAppRowBindings(row, services)
 	if err != nil {
 		return spec, err
@@ -378,6 +382,35 @@ func lakeAppRowSpec(lake *oramav1alpha1.Lake, row *LakeAppRow, services []LakeSe
 // lakeAppRowStores is the stores the app mounts, from store_mounts: a volume of the app's
 // workspace as its claim, a bucket as its connection and the Lake-namespace Secret its credential
 // was delivered to.
+// lakeAppMaxReplicas is lake's app_replicas_check ceiling (db/schema.sql, apps table).
+const lakeAppMaxReplicas = 100
+
+// lakeAppReservedLabels is lake's built-in reserved app names (reserved_name in
+// src/api/web_app_capabilities.cpp), plus the prefixes "lake-" and "orama" it also reserves. Lake
+// checks them against an app's name only, so an explicit host such as app.<wildcard> or
+// login.<wildcard> passed its intake (#713); the operator refuses them as the host's label.
+var lakeAppReservedLabels = map[string]bool{
+	"lake": true, "www": true, "api": true, "app": true, "apps": true, "admin": true, "mcp": true,
+	"docs": true, "status": true, "mail": true, "smtp": true, "auth": true, "login": true, "sso": true,
+	"id": true, "cdn": true, "static": true, "assets": true, "grafana": true, "prometheus": true,
+	"argocd": true, "registry": true, "git": true, "dev": true, "staging": true, "prod": true, "test": true,
+}
+
+// lakeAppHostNotPlatform refuses an app host that is a platform host: the Lake's own host or public
+// host, the preview wildcard's base, or a reserved label beneath the apps wildcard. A tenant's app
+// must never be routed, or certified, for a name Lake or the platform serves (#713).
+func lakeAppHostNotPlatform(lake *oramav1alpha1.Lake, host, wildcard string) error {
+	preview := strings.TrimPrefix(lake.Spec.PreviewWildcard, "*.")
+	if host == lake.Spec.Host || host == lakePublicHost(lake) || (preview != "" && host == preview) {
+		return errors.New("app host is a host of the Lake itself")
+	}
+	label := strings.TrimSuffix(host, "."+wildcard)
+	if lakeAppReservedLabels[label] || strings.HasPrefix(label, "lake-") || strings.HasPrefix(label, "orama") {
+		return fmt.Errorf("app host label %q is reserved for the platform", label)
+	}
+	return nil
+}
+
 func lakeAppRowStores(lake *oramav1alpha1.Lake, row *LakeAppRow, storeRows lakeAppStoreRows) []oramav1alpha1.LakeAppStoreMount {
 	resolved := withoutReservedPaths(
 		resolveStoreMounts(lake, storeRows.stores, storeRows.mounts, StoreMountKindApp, row.ID, row.CustomerID, row.WorkspaceID),
@@ -434,8 +467,10 @@ func lakeAppRowBindings(row *LakeAppRow, services []LakeService) (*oramav1alpha1
 	}
 	bindings := &oramav1alpha1.LakeAppBindings{ServiceNames: map[string]string{}}
 	if desired.Zetta != nil {
-		if len(desired.Zetta.Scopes) == 0 {
-			return nil, errors.New("zetta binding requires read scopes")
+		// Lake's normalized_bindings stores exactly [read]; the operator refuses anything else
+		// itself rather than mint a wider Zetta credential from a row (#713).
+		if scopes := sortedUnique(desired.Zetta.Scopes); len(scopes) != 1 || scopes[0] != "read" {
+			return nil, errors.New("zetta binding scopes must be [read]")
 		}
 		bindings.Zetta = &oramav1alpha1.LakeAppZettaBinding{CustomerID: row.CustomerID, Scopes: sortedUnique(desired.Zetta.Scopes)}
 	}
@@ -478,20 +513,26 @@ func lakeAppRowEnvironment(row *LakeAppRow, spec *oramav1alpha1.LakeAppSpec) err
 	return lakeAppRowSecretEnvironment(row.SecretEnvRefs, spec)
 }
 
+// lakeAppRowSecretEnvironment reads an app row's secret_env_refs: an object of environment names to
+// lake-secret:// references, each naming one field of one secret in a lake secret mount (lake#625).
+// A plain Kubernetes Secret name, and the legacy array of Secret names, are refused (operator#492):
+// the LakeApp reads its Secrets from the Lake instance namespace, so a row naming one directly could
+// deliver any Secret there (the instance key, the control database credentials) into an app. Lake's
+// API never writes either form; only a row written some other way could hold one.
 func lakeAppRowSecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "null" {
 		return nil
 	}
 	if strings.HasPrefix(raw, "[") {
-		return lakeAppRowLegacySecretEnvironment(raw, spec)
+		return errors.New("secret_env_refs is a legacy array of Secret names, which is refused (operator#492): name each secret as lake-secret://<mount id>/<name>#<field>")
 	}
 	if !strings.HasPrefix(raw, "{") {
-		return errors.New("secret_env_refs must be an object of environment names to Secret references or a legacy array of Secret names")
+		return errors.New("secret_env_refs must be an object of environment names to lake-secret:// references")
 	}
 	secretEnvironment := map[string]string{}
 	if err := json.Unmarshal([]byte(raw), &secretEnvironment); err != nil {
-		return errors.New("secret_env_refs must be an object of environment names to Secret references or a legacy array of Secret names")
+		return errors.New("secret_env_refs must be an object of environment names to lake-secret:// references")
 	}
 	names := make([]string, 0, len(secretEnvironment))
 	for name := range secretEnvironment {
@@ -502,32 +543,22 @@ func lakeAppRowSecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) er
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if reference, ok, err := parseLakeSecretReference(secretEnvironment[name]); ok || err != nil {
-			if err != nil {
-				return fmt.Errorf("secret_env_refs reference for %q: %w", name, err)
-			}
-			// The lake secret is the source of truth (lake#625): the LakeApp controller owns a
-			// LakeSealedSecret that produces this Secret in the Lake namespace, then copies the field.
-			spec.SecretEnv = append(spec.SecretEnv, oramav1alpha1.LakeAppSecretEnvironmentVariable{
-				Name: name,
-				SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{
-					Name: lakeAppLakeSecretName(spec.Sync, reference),
-					Key:  reference.Field,
-				},
-				LakeSecret: &reference,
-			})
-			continue
+		reference, ok, err := parseLakeSecretReference(secretEnvironment[name])
+		if !ok {
+			return fmt.Errorf("secret_env_refs reference for %q names a Kubernetes Secret, which is refused (operator#492): use lake-secret://<mount id>/<name>#<field>", name)
 		}
-		secretName, key, err := lakeAppSecretReference(name, secretEnvironment[name])
 		if err != nil {
-			return err
+			return fmt.Errorf("secret_env_refs reference for %q: %w", name, err)
 		}
+		// The lake secret is the source of truth (lake#625): the LakeApp controller owns a
+		// LakeSealedSecret that produces this Secret in the Lake namespace, then copies the field.
 		spec.SecretEnv = append(spec.SecretEnv, oramav1alpha1.LakeAppSecretEnvironmentVariable{
 			Name: name,
 			SecretKeyRef: oramav1alpha1.LakeAppSecretKeyReference{
-				Name: secretName,
-				Key:  key,
+				Name: lakeAppLakeSecretName(spec.Sync, reference),
+				Key:  reference.Field,
 			},
+			LakeSecret: &reference,
 		})
 	}
 	return nil
@@ -571,38 +602,6 @@ func lakeAppLakeSecretName(sync *oramav1alpha1.LakeAppSync, reference oramav1alp
 	}
 	secret := fmt.Sprintf("%x", sha256.Sum256([]byte(reference.Mount+"\x00"+reference.Name)))[:12]
 	return "app-" + hexID[:12] + "-lake-" + secret
-}
-
-func lakeAppRowLegacySecretEnvironment(raw string, spec *oramav1alpha1.LakeAppSpec) error {
-	if err := json.Unmarshal([]byte(raw), &spec.SecretRefs); err != nil {
-		return errors.New("secret_env_refs must be an object of environment names to Secret references or a legacy array of Secret names")
-	}
-	spec.SecretRefs = sortedUnique(spec.SecretRefs)
-	for _, name := range spec.SecretRefs {
-		if len(validation.IsDNS1123Subdomain(name)) != 0 {
-			return fmt.Errorf("secret_env_refs legacy Secret name %q is invalid", name)
-		}
-	}
-	return nil
-}
-
-func lakeAppSecretReference(environmentName, reference string) (string, string, error) {
-	parts := strings.Split(reference, "/")
-	if len(parts) > 2 || parts[0] == "" {
-		return "", "", fmt.Errorf("secret_env_refs reference for %q must be <secret-name> or <secret-name>/<key>", environmentName)
-	}
-	secretName := parts[0]
-	key := environmentName
-	if len(parts) == 2 {
-		key = parts[1]
-	}
-	if len(validation.IsDNS1123Subdomain(secretName)) != 0 {
-		return "", "", fmt.Errorf("secret_env_refs Secret name for %q is invalid", environmentName)
-	}
-	if len(validation.IsConfigMapKey(key)) != 0 {
-		return "", "", fmt.Errorf("secret_env_refs Secret key for %q is invalid", environmentName)
-	}
-	return secretName, key, nil
 }
 
 func sortedUnique(values []string) []string {

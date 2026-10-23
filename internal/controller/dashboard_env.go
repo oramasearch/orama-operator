@@ -52,18 +52,33 @@ var dashboardOwnedEnv = map[string]string{
 	"MASTER_API_KEY":    "spec.masterAPIKeySecretRef",
 }
 
+// dashboardStripeKeyOwner is what controls STRIPE_SECRET_KEY while stripeSecretKeySecretRef is set.
+const dashboardStripeKeyOwner = "spec.components.dashboard.stripeSecretKeySecretRef, the dashboard's restricted Stripe key"
+
+// dashboardOwned is dashboardOwnedEnv for oc: while stripeSecretKeySecretRef is set (#802),
+// STRIPE_SECRET_KEY is the operator's too, so no second Stripe key sits beside the restricted one.
+func dashboardOwned(oc *oramav1alpha1.OramaCloudV1) map[string]string {
+	if oc.Spec.Components.Dashboard.StripeSecretKeySecretRef == nil {
+		return dashboardOwnedEnv
+	}
+	owned := maps.Clone(dashboardOwnedEnv)
+	owned["STRIPE_SECRET_KEY"] = dashboardStripeKeyOwner
+	return owned
+}
+
 // refusedEnvError is the refusal for an operator-owned variable supplied through field.
-func refusedEnvError(field, name string) error {
-	return fmt.Errorf("%s sets %s, which the operator owns (it comes from %s); remove it", field, name, dashboardOwnedEnv[name])
+func refusedEnvError(owned map[string]string, field, name string) error {
+	return fmt.Errorf("%s sets %s, which the operator owns (it comes from %s); remove it", field, name, owned[name])
 }
 
 // validateDashboardEnv checks dashboard.env and the shape of dashboard.envFrom without reading the
 // cluster. Every entry is checked, including one a later entry shadows.
 func validateDashboardEnv(oc *oramav1alpha1.OramaCloudV1) error {
 	d := oc.Spec.Components.Dashboard
+	ownedEnv := dashboardOwned(oc)
 	for i, e := range d.Env {
-		if _, owned := dashboardOwnedEnv[e.Name]; owned {
-			return refusedEnvError(fmt.Sprintf("dashboard.env[%d]", i), e.Name)
+		if _, owned := ownedEnv[e.Name]; owned {
+			return refusedEnvError(ownedEnv, fmt.Sprintf("dashboard.env[%d]", i), e.Name)
 		}
 		if kind, name, key, _, ok := envKeyRef(e); ok && (name == "" || key == "") {
 			return fmt.Errorf("dashboard.env[%d] (%s): the %s key reference needs a name and a key", i, e.Name, kind)
@@ -144,6 +159,7 @@ func (r *OramaCloudV1Reconciler) readEnvObject(ctx context.Context, namespace, k
 // optional, or a source carrying an operator-owned variable after its prefix, is an error naming it.
 func (r *OramaCloudV1Reconciler) dashboardEnvSources(ctx context.Context, oc *oramav1alpha1.OramaCloudV1) ([]dashboardEnvSource, error) {
 	var out []dashboardEnvSource
+	ownedEnv := dashboardOwned(oc)
 	for i, src := range oc.Spec.Components.Dashboard.EnvFrom {
 		kind, name, optional := envFromRef(src)
 		data, found, err := r.readEnvObject(ctx, oc.Namespace, kind, name)
@@ -154,8 +170,8 @@ func (r *OramaCloudV1Reconciler) dashboardEnvSources(ctx context.Context, oc *or
 			return nil, fmt.Errorf("dashboard.envFrom[%d]: %s %s/%s does not exist", i, kind, oc.Namespace, name)
 		}
 		for _, k := range slices.Sorted(maps.Keys(data)) {
-			if _, owned := dashboardOwnedEnv[src.Prefix+k]; owned {
-				return nil, refusedEnvError(fmt.Sprintf("dashboard.envFrom[%d] (%s %s)", i, kind, name), src.Prefix+k)
+			if _, owned := ownedEnv[src.Prefix+k]; owned {
+				return nil, refusedEnvError(ownedEnv, fmt.Sprintf("dashboard.envFrom[%d] (%s %s)", i, kind, name), src.Prefix+k)
 			}
 		}
 		out = append(out, dashboardEnvSource{Kind: kind, Name: name, Prefix: src.Prefix, Data: data})

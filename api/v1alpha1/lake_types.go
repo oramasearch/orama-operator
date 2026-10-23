@@ -16,6 +16,7 @@ import (
 
 // LakeSpec defines the desired state of Lake.
 // +kubebuilder:validation:XValidation:rule="!has(self.payments) || (has(self.host) && size(self.host) > 0)",message="spec.payments needs spec.host: the payment webhook endpoint is https://<host>/billing/stripe/webhook"
+// +kubebuilder:validation:XValidation:rule="!has(self.payments) || (has(self.billing) && self.billing.enabled)",message="spec.payments needs spec.billing.enabled: a Lake with billing off takes no payments"
 type LakeSpec struct {
 	// Namespace the lake workloads are deployed into. Created if missing.
 	// +kubebuilder:default=lake-dev
@@ -26,9 +27,12 @@ type LakeSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
-	// Replicas of the lake Deployment.
+	// Replicas of the lake Deployment: 1, or 0 to stop it. More is refused (operator#698): lake runs
+	// one process per store root (lake docs/deployment/store-volume.md), so a second replica would
+	// report Ready while it waits for the root forever and fail every request routed to it.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
@@ -63,10 +67,10 @@ type LakeSpec struct {
 	// +optional
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 
-	// Store configures the persistent root shared by all lake replicas. When ExistingClaim is
-	// empty, the operator creates lake-<name>-store once from Size, StorageClassName, and
-	// AccessModes. Later spec changes never replace or delete that claim. ReadWriteOnce requires
-	// Replicas=1; multiple replicas need storage that supports ReadWriteMany.
+	// Store configures the lake process's persistent root. When ExistingClaim is empty, the
+	// operator creates lake-<name>-store once from Size, StorageClassName, and AccessModes. Later
+	// spec changes never replace or delete that claim. One lake process owns the root at a time, so
+	// a Lake runs one replica whatever the access mode (operator#698).
 	// +optional
 	Store LakeStoreSpec `json:"store,omitempty"`
 
@@ -205,6 +209,15 @@ type LakeSpec struct {
 	// +optional
 	Payments *LakePaymentsSpec `json:"payments,omitempty"`
 
+	// Billing turns Lake's billing on: the operator gives the Lake LAKE_BILLING=on (lake
+	// docs/api/billing.md). Off, the default, a Lake bills nothing and takes no payments: it
+	// registers no billing capabilities, builds no payment provider, and answers its Stripe webhook
+	// 404. An on-prem or enterprise install leaves it unset. spec.payments needs it enabled; it can
+	// be enabled without spec.payments, for a Lake that bills through the manual provider. Set, it
+	// replaces a LAKE_BILLING entry in spec.env; unset, spec.env keeps whatever it says.
+	// +optional
+	Billing *LakeBillingSpec `json:"billing,omitempty"`
+
 	// DeploySync configures how frequently this operator materializes desired deployment rows from
 	// its Zetta orama_control database into LakeEnvironment resources.
 	// +optional
@@ -240,6 +253,12 @@ type LakeClerkSpec struct {
 	// publishableKey, which then replaces the one derived from the instance's Frontend API host.
 	// A LakeSet copies it to every member with spec.secrets.
 	SecretKeySecretRef corev1.LocalObjectReference `json:"secretKeySecretRef"`
+}
+
+// LakeBillingSpec is whether a Lake bills.
+type LakeBillingSpec struct {
+	// Enabled gives the Lake LAKE_BILLING=on. False gives it no LAKE_BILLING, so billing is off.
+	Enabled bool `json:"enabled"`
 }
 
 // LakePaymentsSpec is the payment account a Lake bills through.
@@ -377,6 +396,14 @@ type LakeMethodologiesSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxConcurrentRunsPerWorkspace int32 `json:"maxConcurrentRunsPerWorkspace,omitempty"`
+
+	// NamespaceQuota is the hard limit of the ResourceQuota on the Lake's shared methodology-runs
+	// namespace: a ceiling on every workspace's runs and served models together, beside each
+	// workspace's own quota, which they count against (orama-operator#799). Empty uses the
+	// operator's default (requests.cpu 64, requests.memory and limits.memory 256Gi,
+	// requests.nvidia.com/gpu 8, pods 500, persistentvolumeclaims 200).
+	// +optional
+	NamespaceQuota corev1.ResourceList `json:"namespaceQuota,omitempty"`
 }
 
 // LakeBuildConcurrencySpec sets independent build concurrency limits.
@@ -414,8 +441,9 @@ type LakeServicesSpec struct {
 
 	// ZettaEnv is copied to every managed Zetta service's and workspace Zetta's OramaZettaCluster
 	// spec.env, followed by the operator's default Zetta env for every name it does not set
-	// (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864, MALLOC_ARENA_MAX=2). Operator-managed Zetta
-	// environment names remain reserved and are reported by each child cluster when ignored.
+	// (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864, MALLOC_ARENA_MAX=2, and ZETTA_EGRESS_ALLOW rendered
+	// from what the Zetta's workspace NetworkSandbox allows it). Operator-managed Zetta environment
+	// names remain reserved and are reported by each child cluster when ignored.
 	// +optional
 	ZettaEnv []corev1.EnvVar `json:"zettaEnv,omitempty"`
 
@@ -587,7 +615,9 @@ type LakeAgentsSpec struct {
 	// +optional
 	Library []LakeLibraryAgent `json:"library,omitempty"`
 	// OpenAISecretName names a Secret in spec.namespace holding OPENAI_API_KEY, the general Orama
-	// key every agent uses. People provide it; the operator never creates or reads its value.
+	// key. Only the library agents in spec.namespace get it; it is never copied into a workspace
+	// namespace or given to a launch or schedule pod (orama-operator#779). People provide it; the
+	// operator never creates or reads its value.
 	// +optional
 	OpenAISecretName string `json:"openaiSecretName,omitempty"`
 	// Model is the frontier model agents default to.
@@ -620,6 +650,12 @@ type LakeSealingSpec struct {
 
 // LakePostgresSpec describes the control-plane Postgres for a Lake.
 type LakePostgresSpec struct {
+	// Image selects the CNPG-compatible Postgres image. Empty keeps CNPG's default. Restore and
+	// upgrade rehearsals require the running source image to be pinned by SHA-256 digest.
+	// +kubebuilder:validation:Pattern=`^.+@sha256:[a-f0-9]{64}$`
+	// +optional
+	Image string `json:"image,omitempty"`
+
 	// Enabled provisions the CNPG Cluster. Default true. Setting it false tears the cluster
 	// down (disable is not "leave running"), which deletes its data.
 	// +kubebuilder:default=true
@@ -671,8 +707,9 @@ type LakeZettaSpec struct {
 
 	// Env is copied to the owned OramaZettaCluster spec.env, followed by the operator's default Zetta
 	// env for every name it does not set (ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864,
-	// MALLOC_ARENA_MAX=2). Operator-managed Zetta environment names remain reserved and are reported
-	// by the child cluster when ignored.
+	// MALLOC_ARENA_MAX=2, and an empty ZETTA_EGRESS_ALLOW, which denies all egress as the Lake
+	// namespace's NetworkSandbox does). Operator-managed Zetta environment names remain reserved and
+	// are reported by the child cluster when ignored.
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 

@@ -4,8 +4,8 @@ Licensed under the Apache License, Version 2.0.
 */
 
 // mesh-projector is the operator's node-local half of zetta-tunnel's mesh. It runs beside the
-// node agent in the mesh DaemonSet, reads this node's template from the mounted template shards
-// (written by the operator), finds each enrolled pod's network namespace under the host's /proc,
+// node agent in this node's mesh DaemonSet, reads this node's template from this node's own mounted
+// Secret (written by the operator; no other node's is mounted), finds each enrolled pod's network namespace under the host's /proc,
 // and publishes the agent's projection into the directory the agent reads. It has no credential
 // and makes no API call.
 package main
@@ -26,7 +26,7 @@ import (
 
 func main() {
 	node := flag.String("node", os.Getenv("NODE_NAME"), "this node's name")
-	templates := flag.String("templates", "/etc/zetta-mesh-templates", "the mounted template shards, one directory per shard")
+	templates := flag.String("templates", "/etc/zetta-mesh-templates", "where this node's template Secret is mounted, in the directory <templates>/<shard of the node name>")
 	proc := flag.String("proc", "/host/proc", "the host's /proc")
 	output := flag.String("output", "/run/zetta-mesh", "the directory the node agent reads")
 	interval := flag.Duration("interval", time.Second, "how often the template and /proc are read")

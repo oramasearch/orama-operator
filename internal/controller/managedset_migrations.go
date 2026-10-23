@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -311,7 +312,17 @@ func (m *setMigrations) applyOne(ctx context.Context, r *managedSetReconciler, m
 	}
 	req := memberRequest{Kind: migrationKind, CRD: migrationCRD, Name: migration.Name, Namespace: namespace,
 		ObjectNamespace: namespace, Owner: r.owner(m.set), Spec: spec}
-	if req.Secrets, err = r.copySecrets(ctx, migration.Secrets); err != nil {
+	scope, err := r.scopeFor(ctx, resolved, prod1SourceCredentials(spec))
+	if err != nil {
+		m.fail(entry, err)
+		return
+	}
+	if req.Secrets, err = r.copySecrets(ctx, scope, migration.Secrets); err != nil {
+		var refused *setError
+		if errors.As(err, &refused) {
+			m.refuse(entry, refused.message)
+			return
+		}
 		m.fail(entry, err)
 		return
 	}

@@ -39,6 +39,11 @@ const (
 	managedBySetLabel = "orama.cloud/managed-by-set"
 	// The tag on a KubernetesCluster that says what the cluster is for.
 	clusterPurposeTag = "purpose"
+	// The label a set puts on each instance it creates: its cluster's purpose tag (nonprod,
+	// production). The set writes it on every pass, so it is the set's to decide: an instance's own
+	// reconciler reads it (a production Cloud v1 dashboard needs its production authentication
+	// settings, operator#794), and an edit by hand is put back on the next pass.
+	instancePurposeLabel = "orama.cloud/purpose"
 )
 
 // managedSet is what LakeSet and OramaCloudV1Set have in common.
@@ -199,8 +204,10 @@ type memberRequest struct {
 	// ObjectNamespace is the instance's metadata.namespace; empty for a cluster-scoped kind.
 	ObjectNamespace string
 	Owner           string // the managedBySetLabel value
-	Spec            map[string]any
-	Secrets         []*corev1.Secret // already named as they are to be on the member's cluster
+	// Purpose is the member's cluster's purpose tag, written as the instancePurposeLabel.
+	Purpose string
+	Spec    map[string]any
+	Secrets []*corev1.Secret // already named as they are to be on the member's cluster
 }
 
 // memberState is what the cluster has.
@@ -212,7 +219,8 @@ type memberState struct {
 	Object *unstructured.Unstructured
 }
 
-// leafMemberApplier applies, reads and deletes one instance, or one OramaCloudV1Set migration, on a
+// leafMemberApplier applies, reads and deletes one instance, one OramaCloudV1Set migration, or one
+// LakeSet e2e test, on a
 // cluster reached by a kubeconfig. The set controllers hold one as an injected dependency; tests
 // give a fake.
 type leafMemberApplier interface {
@@ -224,6 +232,12 @@ type leafMemberApplier interface {
 	// DeleteMigration deletes one, and once it is gone the Secrets named in req.Secrets. While its
 	// finalizer keeps it, the state's Object is the migration; nil means it is gone.
 	DeleteMigration(ctx context.Context, kubeconfig []byte, req memberRequest) (memberState, error)
+	// ApplyE2ETest applies a LakeSet's LakeE2ETest (cluster-scoped, no Secrets) as ApplyMember
+	// applies an instance.
+	ApplyE2ETest(ctx context.Context, kubeconfig []byte, req memberRequest) (memberState, error)
+	// DeleteE2ETest deletes one this set applied; its Job goes with it. One that is gone, or not
+	// this set's, is left alone.
+	DeleteE2ETest(ctx context.Context, kubeconfig []byte, req memberRequest) error
 }
 
 type clientMemberApplier struct{}
@@ -283,13 +297,22 @@ func applyMemberWith(ctx context.Context, c client.Client, req memberRequest) (m
 		}
 	}
 	desired := memberObject(req)
-	desired.SetLabels(map[string]string{managedBySetLabel: req.Owner})
+	desired.SetLabels(memberLabels(req))
 	desired.Object["spec"] = req.Spec
 	if err := c.Patch(ctx, desired, client.Apply, client.FieldOwner(leafFieldOwner), client.ForceOwnership); err != nil {
 		// What the cluster has is left as it was, and returned with the refusal.
 		return memberState{Object: existing}, fmt.Errorf("the cluster refused %s %s: %w", req.Kind.Kind, req.Name, err)
 	}
 	return memberState{Object: desired}, nil
+}
+
+// memberLabels is the labels a set writes on an instance: whose it is, and what its cluster is for.
+func memberLabels(req memberRequest) map[string]string {
+	labels := map[string]string{managedBySetLabel: req.Owner}
+	if req.Purpose != "" {
+		labels[instancePurposeLabel] = req.Purpose
+	}
+	return labels
 }
 
 // DeleteMember deletes an instance this set created. One that is gone, or that is not this
@@ -330,6 +353,11 @@ type managedSetReconciler struct {
 	applier leafMemberApplier
 	// migrations copies Prod 1 teams into an OramaCloudV1Set's members; nil for a LakeSet.
 	migrations *setMigrations
+	// e2eTests runs lake's end-to-end suite against a LakeSet's members; nil for an
+	// OramaCloudV1Set.
+	e2eTests *setE2ETests
+	// productionSources is what every production set copies, read once per pass (managedset_secret_scope.go).
+	productionSources map[string]string
 }
 
 // resolvedMember is a member with everything worked out from the set and its cluster.
@@ -409,8 +437,12 @@ func dedupe(sorted []string) []string {
 
 // secretsFor reads the Secrets a member gets: the set's, with the member's own replacing any of
 // the same name on the member's cluster.
-func (r *managedSetReconciler) secretsFor(ctx context.Context, spec *oramav1alpha1.ManagedSetSpec, member oramav1alpha1.SetMember) ([]*corev1.Secret, error) {
-	return r.copySecrets(ctx, spec.Secrets, member.Secrets)
+func (r *managedSetReconciler) secretsFor(ctx context.Context, spec *oramav1alpha1.ManagedSetSpec, resolved resolvedMember) ([]*corev1.Secret, error) {
+	scope, err := r.scopeFor(ctx, resolved, nil)
+	if err != nil {
+		return nil, err
+	}
+	return r.copySecrets(ctx, scope, spec.Secrets, resolved.member.Secrets)
 }
 
 // secretTarget is a SetSecret's name on the member's cluster.
@@ -418,7 +450,9 @@ func secretTarget(s oramav1alpha1.SetSecret) string { return firstNonEmpty(s.As,
 
 // copySecrets reads the named Secrets on this cluster, each named as it is to be on the member's
 // cluster. One in a later list replaces one of the same name there in an earlier list.
-func (r *managedSetReconciler) copySecrets(ctx context.Context, lists ...[]oramav1alpha1.SetSecret) ([]*corev1.Secret, error) {
+// Every one is checked against scope first: a Secret that may not reach the member's cluster is
+// refused, and nothing is copied.
+func (r *managedSetReconciler) copySecrets(ctx context.Context, scope secretScope, lists ...[]oramav1alpha1.SetSecret) ([]*corev1.Secret, error) {
 	chosen := map[string]oramav1alpha1.SetSecret{}
 	var order []string
 	for _, list := range lists {
@@ -437,6 +471,9 @@ func (r *managedSetReconciler) copySecrets(ctx context.Context, lists ...[]orama
 			if apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("Secret %s/%s does not exist on this cluster", ref.Namespace, ref.Name)
 			}
+			return nil, err
+		}
+		if err := scope.refuse(ref, name, source); err != nil {
 			return nil, err
 		}
 		copied := &corev1.Secret{Type: source.Type, Data: source.Data}
@@ -458,6 +495,9 @@ func (r *managedSetReconciler) request(set managedSet, resolved resolvedMember) 
 	}
 	if r.kind.namespaced {
 		req.ObjectNamespace = resolved.namespace
+	}
+	if resolved.cluster != nil {
+		req.Purpose = resolved.cluster.Spec.Tags[clusterPurposeTag]
 	}
 	return req
 }
@@ -501,6 +541,9 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 	var migrationsAt map[string]bool
 	if r.migrations != nil {
 		migrationsAt = r.migrations.removeUndeclared(ctx, r)
+	}
+	if r.e2eTests != nil {
+		r.e2eTests.removeUndeclared(ctx, r)
 	}
 	// Members that were in the set and no longer are.
 	held, err := r.release(ctx, set, members, observed, migrationsAt)
@@ -566,6 +609,20 @@ func (r *managedSetReconciler) reconcile(ctx context.Context, set managedSet) (c
 			firstErr = r.migrations.err
 		}
 	}
+	if r.e2eTests != nil {
+		// After the members, since a run needs its Lake. Like migrations, they do not change the
+		// set's phase; what the set could not do with one is added to its message, and returned.
+		r.e2eTests.apply(ctx, r, members, statuses)
+		if problems := r.e2eTests.problems; len(problems) > 0 {
+			message = strings.TrimPrefix(message+"; "+strings.Join(problems, "; "), "; ")
+		}
+		if r.e2eTests.busy {
+			requeue = leafOperatorPollInterval
+		}
+		if firstErr == nil {
+			firstErr = r.e2eTests.err
+		}
+	}
 	setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), phase, reason, message)
 	if err := r.writeStatus(ctx, set, observed); err != nil {
 		return settle(ctrl.Result{}, err)
@@ -600,7 +657,7 @@ func (r *managedSetReconciler) applyMember(ctx context.Context, set managedSet, 
 	}
 	req := r.request(set, resolved)
 	req.Spec = merged
-	if req.Secrets, err = r.secretsFor(ctx, set.SetSpec(), resolved.member); err != nil {
+	if req.Secrets, err = r.secretsFor(ctx, set.SetSpec(), resolved); err != nil {
 		return fail(err)
 	}
 	state, err := r.applier.ApplyMember(ctx, kubeconfig, req)
@@ -702,6 +759,20 @@ func (r *managedSetReconciler) finalize(ctx context.Context, set managedSet, obs
 			return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.migrations.err)
 		}
 	}
+	// E2E runs go before the members too: a run left behind would wait for a Lake that is gone.
+	if r.e2eTests != nil {
+		if waiting := r.e2eTests.removeAll(ctx, r); waiting != "" || r.e2eTests.err != nil {
+			reason, message := "RemovingE2ETests", "waiting for its e2e tests to be removed: "+waiting
+			if r.e2eTests.err != nil {
+				reason, message = "DeleteFailed", r.e2eTests.err.Error()
+			}
+			setClusterStatus(&status.Phase, &status.Message, &status.Conditions, set.GetGeneration(), clusterPhaseDeleting, reason, message)
+			if statusErr := r.writeStatus(ctx, set, observed); statusErr != nil {
+				return settle(ctrl.Result{}, statusErr)
+			}
+			return settle(ctrl.Result{RequeueAfter: leafOperatorPollInterval}, r.e2eTests.err)
+		}
+	}
 	if set.SetSpec().DeletionPolicy == oramav1alpha1.SetDeletionDelete {
 		for _, member := range observed.MemberStatuses {
 			if err := r.deleteMember(ctx, set, member); err != nil {
@@ -727,13 +798,17 @@ func (r *managedSetReconciler) writeStatus(ctx context.Context, set managedSet, 
 	if r.migrations != nil {
 		r.migrations.restore(base)
 	}
+	if r.e2eTests != nil {
+		r.e2eTests.restore(base)
+	}
 	if reflect.DeepEqual(base, set) {
 		return nil
 	}
 	return r.Status().Patch(ctx, set, client.MergeFrom(base))
 }
 
-// LakeSetReconciler installs Lake instances onto managed clusters (operator#391).
+// LakeSetReconciler installs Lake instances onto managed clusters (operator#391), and runs lake's
+// end-to-end suite against them (operator#589).
 type LakeSetReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -767,7 +842,8 @@ func (r *LakeSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, req.NamespacedName, &set); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	return (&managedSetReconciler{Client: r.Client, kind: lakeSetKind, applier: applierOr(r.Applier)}).reconcile(ctx, &set)
+	return (&managedSetReconciler{Client: r.Client, kind: lakeSetKind, applier: applierOr(r.Applier),
+		e2eTests: &setE2ETests{set: &set, observed: set.Status.DeepCopy()}}).reconcile(ctx, &set)
 }
 
 func (r *OramaCloudV1SetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

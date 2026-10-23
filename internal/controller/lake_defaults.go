@@ -18,12 +18,13 @@ import (
 // table of the images a Lake runs when its spec leaves one empty, so a LakeSet member states only
 // what differs per environment (host, args, env, secrets). A spec image still overrides its default.
 //
-// The defaults are pinned to what the managing cluster's Lake/prod ran on 2026-10-17. Moving a
-// version is a change to this table, rolled through the pipeline dev, testing, staging, prod.
+// The defaults are pinned to what the managing cluster's Lake/prod ran on 2026-10-17, apart from
+// Zetta, which is the v0.3.0 release pinned by digest (operator#588). Moving a version is a change
+// to this table, rolled through the pipeline dev, testing, staging, prod.
 const (
 	// lakeDefaultZettaImage is the Zetta of the Lake's own data plane, of every workspace and of
 	// every managed Zetta service.
-	lakeDefaultZettaImage = "oramasearch/zetta:main-4015ef76"
+	lakeDefaultZettaImage = "oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a"
 	// lakeDefaultAppsRuntimeImage runs runtime-mode apps (spec.apps.runtimeImage).
 	lakeDefaultAppsRuntimeImage = "oramasearch/app-runtime:976e6a8"
 	// lakeDefaultBuilderImage runs every image build (spec.builds.builderImage).
@@ -34,8 +35,11 @@ const (
 	// lakeDefaultAgentRuntimeImage runs every user-created agent (spec.agents.runtimeImage).
 	lakeDefaultAgentRuntimeImage = "oramasearch/agent-runtime:v0.1.0"
 	// lakeDefaultMCPRunnerImage is LAKE_MCP_RUNNER_IMAGE, the image lake runs MCP servers on.
-	// spec.env may still set the variable, which wins.
-	lakeDefaultMCPRunnerImage = "oramasearch/lake-mcp-runner:d98451a"
+	// spec.env may still set the variable, which wins. Lake runs a stdio MCP connection as an image
+	// App on it, so it is pinned by digest: lake refuses a stdio connection otherwise, and
+	// lakeAppRowSource and the LakeApp CRD fail an image App that is not (operator#744). The digest
+	// is the one the d98451a tag names in Docker Hub.
+	lakeDefaultMCPRunnerImage = "oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892"
 )
 
 // lakeMCPRunnerImageEnv is the variable lake reads the MCP runner image from.
@@ -58,6 +62,9 @@ var lakeDefaultLibrary = []oramav1alpha1.LakeLibraryAgent{
 // lakeDefaultZettaEnv is added to every Zetta a Lake owns (its data plane, its workspaces and its
 // managed Zetta services) unless the spec's env for that Zetta names the variable: glibc returns
 // freed memory above 64 MiB and keeps two arenas, so a Zetta stays inside its memory limit.
+//
+// ZETTA_EGRESS_ALLOW follows them (zetta#75, operator#724): rendered for each Zetta from what its
+// namespace's NetworkSandbox allows it (lake_zetta_egress.go), unless the spec's env names it.
 var lakeDefaultZettaEnv = []corev1.EnvVar{
 	{Name: "ZETTA_MALLOC_TRIM_THRESHOLD_BYTES", Value: "67108864"},
 	{Name: "MALLOC_ARENA_MAX", Value: "2"},
@@ -92,14 +99,18 @@ func withLakeDefaultZettaEnv(spec []corev1.EnvVar) []corev1.EnvVar {
 	return env
 }
 
-// lakeDataPlaneZettaEnv is the env of the Lake's own data-plane Zetta.
+// lakeDataPlaneZettaEnv is the env of the Lake's own data-plane Zetta. Its egress allowlist is
+// empty (loopback only): the Lake namespace's NetworkSandbox lets its pods reach cluster DNS and
+// the other nodes of the same cluster and nothing else (reconcileLakeNetworkSandbox), and neither
+// goes through the engine's HTTP client.
 func lakeDataPlaneZettaEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
-	return withLakeDefaultZettaEnv(lake.Spec.Zetta.Env)
+	return withZettaEgressAllow(withLakeDefaultZettaEnv(lake.Spec.Zetta.Env), zettaEgressDeny)
 }
 
-// serviceZettaEnv is the env of every managed Zetta service and every workspace Zetta.
-func serviceZettaEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
-	return withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv)
+// serviceZettaEnv is the env of every managed Zetta service and every workspace Zetta, with the
+// egress allowlist rendered from its workspace namespace (workspaceZettaEgressAllow).
+func serviceZettaEnv(lake *oramav1alpha1.Lake, egressAllow string) []corev1.EnvVar {
+	return withZettaEgressAllow(withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv), egressAllow)
 }
 
 // lakeAppsRuntimeImage is the image runtime-mode apps run.

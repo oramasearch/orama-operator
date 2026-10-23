@@ -236,7 +236,8 @@ func (h *migrationHarness) finish(name string, code int32, message string) {
 		h.t.Fatal(err)
 	}
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name + "-pod", Namespace: h.key.Namespace, Labels: map[string]string{batchv1.JobNameLabel: name}},
+		ObjectMeta: metav1.ObjectMeta{Name: name + "-pod", Namespace: h.key.Namespace,
+			Labels: map[string]string{batchv1.JobNameLabel: name, migrationLabel: h.key.Name}},
 		Status: corev1.PodStatus{
 			InitContainerStatuses: []corev1.ContainerStatus{{Name: migrationWaitContainer,
 				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}}},
@@ -246,6 +247,26 @@ func (h *migrationHarness) finish(name string, code int32, message string) {
 	}
 	if err := h.kube.Create(ctx, pod); err != nil {
 		h.t.Fatal(err)
+	}
+}
+
+// collectPods deletes the pods whose Job is gone, as the garbage collector would after a
+// background deletion.
+func (h *migrationHarness) collectPods() {
+	h.t.Helper()
+	ctx := context.Background()
+	var pods corev1.PodList
+	if err := h.kube.List(ctx, &pods, client.InNamespace(h.key.Namespace)); err != nil {
+		h.t.Fatal(err)
+	}
+	for i := range pods.Items {
+		err := h.kube.Get(ctx, client.ObjectKey{Namespace: h.key.Namespace, Name: pods.Items[i].Labels[batchv1.JobNameLabel]}, &batchv1.Job{})
+		if apierrors.IsNotFound(err) {
+			err = h.kube.Delete(ctx, &pods.Items[i])
+		}
+		if err != nil {
+			h.t.Fatal(err)
+		}
 	}
 }
 
@@ -391,7 +412,7 @@ func TestMigrationJobRendersTheToolContract(t *testing.T) {
 
 	// The wait signs in as the migration role through PG* variables, its password a secretKeyRef.
 	wait := pod.InitContainers[0]
-	if wait.Name != migrationWaitContainer || wait.Image != "postgres:16-alpine" || strings.Contains(strings.Join(wait.Command, " "), "postgresql://") {
+	if wait.Name != migrationWaitContainer || wait.Image != pinnedPostgres16Image || strings.Contains(strings.Join(wait.Command, " "), "postgresql://") {
 		t.Fatalf("wait container = %+v", wait)
 	}
 	if !reflect.DeepEqual(envNames(wait.Env), []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGCONNECT_TIMEOUT"}) ||
@@ -739,24 +760,30 @@ func TestMigrationStatusIsWrittenOnlyOnATransition(t *testing.T) {
 	}
 }
 
-// Deleting with removeOnDelete runs remove-target, then deletes the run volume, then lets go. The
-// tool's refusal (exit 3: the team was switched) keeps the resource.
+// Deleting with removeOnDelete runs remove-target, then deletes the finished Jobs and waits for
+// their pods, which keep the run volume, then deletes the run volume, then lets go. The tool's
+// refusal (exit 3: the team was switched) keeps the resource.
 func TestMigrationDeletionRemovesTheTeamThenTheRunVolume(t *testing.T) {
 	ctx := context.Background()
+	// start runs a failed seed and a seed that succeeded, then deletes the migration.
 	start := func(t *testing.T) *migrationHarness {
 		h := newMigrationHarness(t, migrationTestResource(nil), migrationStack(t, nil)...)
 		h.reconcile()
-		h.finish("team-4e01bc49-seed-0", 0, `{"phase": "seeded"}`)
+		h.finish("team-4e01bc49-seed-0", 1, `{}`)
+		h.reconcile()
+		h.update(func(m *oramav1alpha1.OramaCloudV1Migration) { m.Spec.Attempt = 1 })
+		h.reconcile()
+		h.finish("team-4e01bc49-seed-1", 0, `{"phase": "seeded"}`)
 		h.reconcile()
 		if err := h.kube.Delete(ctx, h.migration()); err != nil {
 			t.Fatal(err)
 		}
 		h.reconcile()
 		m := h.migration()
-		if m.Status.Phase != oramav1alpha1.MigrationPhaseRemoving || m.Status.JobName != "team-4e01bc49-remove-0" {
+		if m.Status.Phase != oramav1alpha1.MigrationPhaseRemoving || m.Status.JobName != "team-4e01bc49-remove-1" {
 			t.Fatalf("status = %s %s", m.Status.Phase, m.Status.JobName)
 		}
-		if args := h.job("team-4e01bc49-remove-0").Spec.Template.Spec.Containers[0].Args; !reflect.DeepEqual(args, []string{"remove-target", "--apply"}) {
+		if args := h.job("team-4e01bc49-remove-1").Spec.Template.Spec.Containers[0].Args; !reflect.DeepEqual(args, []string{"remove-target", "--apply"}) {
 			t.Fatalf("removal args %v", args)
 		}
 		return h
@@ -771,7 +798,27 @@ func TestMigrationDeletionRemovesTheTeamThenTheRunVolume(t *testing.T) {
 
 	t.Run("removed", func(t *testing.T) {
 		h := start(t)
-		h.finish("team-4e01bc49-remove-0", 0, `{"phase": "removed"}`)
+		h.finish("team-4e01bc49-remove-1", 0, `{"phase": "removed"}`)
+		h.reconcile()
+		m := h.migration()
+		if !meta.IsStatusConditionTrue(m.Status.Conditions, migrationRemovedCondition) {
+			t.Fatalf("Removed not recorded: %+v", m.Status.Conditions)
+		}
+		if jobs := h.jobs(); len(jobs) != 0 {
+			t.Fatalf("finished Jobs kept, their pods would hold the run volume: %v", jobs)
+		}
+		// The removal's Job is gone and the phase is Removing: the removal must not run again.
+		h.reconcile()
+		if jobs := h.jobs(); len(jobs) != 0 {
+			t.Fatalf("the removal ran again once its Job was gone: %v", jobs)
+		}
+		if !runVolume(h) {
+			t.Fatal("run volume deleted while the finished Jobs' pods still mount it")
+		}
+		if m := h.migration(); m.Status.Phase != oramav1alpha1.MigrationPhaseRemoving || !strings.Contains(m.Status.Message, "finished Jobs") {
+			t.Fatalf("status while the pods go = %s %q", m.Status.Phase, m.Status.Message)
+		}
+		h.collectPods()
 		h.reconcile()
 		if runVolume(h) {
 			t.Fatal("run volume kept after the removal")
@@ -783,15 +830,18 @@ func TestMigrationDeletionRemovesTheTeamThenTheRunVolume(t *testing.T) {
 	})
 	t.Run("switched", func(t *testing.T) {
 		h := start(t)
-		h.finish("team-4e01bc49-remove-0", 3, `{"phase": "switched", "target_write_active": true}`)
+		h.finish("team-4e01bc49-remove-1", 3, `{"phase": "switched", "target_write_active": true}`)
 		h.reconcile()
 		h.reconcile()
 		m := h.migration()
 		if m.Status.Phase != oramav1alpha1.MigrationPhaseBlocked || !controllerContainsFinalizer(m) {
 			t.Fatalf("a refused removal let go: %s, finalizers %v", m.Status.Phase, m.Finalizers)
 		}
-		if !runVolume(h) {
-			t.Fatal("run volume deleted after a refused removal")
+		if meta.IsStatusConditionTrue(m.Status.Conditions, migrationRemovedCondition) {
+			t.Fatal("a refused removal recorded Removed")
+		}
+		if !runVolume(h) || len(h.jobs()) != 3 {
+			t.Fatalf("a refused removal deleted the run volume or Jobs: %v", h.jobs())
 		}
 	})
 	t.Run("nothing written", func(t *testing.T) {
@@ -805,9 +855,11 @@ func TestMigrationDeletionRemovesTheTeamThenTheRunVolume(t *testing.T) {
 			t.Fatal(err)
 		}
 		h.reconcile()
+		h.collectPods()
 		h.reconcile()
-		if jobs := h.jobs(); !reflect.DeepEqual(jobs, []string{"team-4e01bc49-plan-0"}) {
-			t.Fatalf("a plan-only migration ran %v on deletion", jobs)
+		h.reconcile()
+		if jobs := h.jobs(); len(jobs) != 0 {
+			t.Fatalf("a plan-only migration left or ran %v on deletion", jobs)
 		}
 		if err := h.kube.Get(ctx, h.key, &oramav1alpha1.OramaCloudV1Migration{}); !apierrors.IsNotFound(err) {
 			t.Fatalf("migration kept: %v", err)

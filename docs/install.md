@@ -95,11 +95,12 @@ failure diagnosis.
 
 Install the platform controllers first, omitting a selector for any release already provided
 by the cluster. CloudNativePG must be available to the manager's CNPG watches even when this
-sample does not enable a control DB. ingress-nginx supplies external access for the larger
+sample does not enable a control DB. cert-manager is required on every cluster to provision the
+manager's deployment HTTPS certificate. ingress-nginx supplies external access for the larger
 samples; the minimal engine sample below does not expose an Ingress.
 
 ```sh
-helmfile -l name=cloudnative-pg -l name=ingress-nginx sync --wait --concurrency 1
+helmfile -l name=cnpg -l name=ingress-nginx -l name=cert-manager sync --wait --concurrency 1
 ```
 
 ### Service operators (lake managed services)
@@ -111,7 +112,7 @@ All are pinned and cluster-scoped:
 
 | Release | Chart | Version | Namespace | Runs |
 |---|---|---|---|---|
-| `cert-manager` | `jetstack/cert-manager` | v1.21.2 | `cert-manager` | K8ssandra's webhook certificates; origin TLS for each Cloud v1 stack's Ingresses, from the namespaced Let's Encrypt `Issuer` the operator renders per stack (#457). Nothing else is installed for it. |
+| `cert-manager` | `jetstack/cert-manager` | v1.21.2 | `cert-manager` | Required for every manager's private deployment HTTPS certificate; K8ssandra's webhook certificates; origin TLS for Cloud v1 and Lake Ingresses. |
 | `strimzi` | `strimzi/strimzi-kafka-operator` | 1.2.0 | `strimzi-system` | Kafka (`STRIMZI_POD_SECURITY_PROVIDER_CLASS=restricted`, so its pods are admitted to a workspace namespace) |
 | `clickhouse-operator` | `altinity/altinity-clickhouse-operator` | 0.27.4 | `clickhouse-system` | ClickHouse (`watch.namespaces.include: [".*"]`: empty means its own namespace only) |
 | `tidb-operator` | `pingcap/tidb-operator` | v1.6.6 | `tidb-admin` | TiDB (CRDs from the release's `crd.yaml`, applied server-side by a presync hook) |
@@ -129,12 +130,12 @@ helmfile -l tier=service-operators sync --wait --concurrency 1
 kubectl get deploy -A | grep -E 'strimzi|clickhouse|tidb|k8ssandra|cass-operator|valkey|cert-manager'
 ```
 
-`needs:` installs cert-manager before K8ssandra; rendering K8ssandra alone (`helmfile template`)
+`needs:` installs cert-manager before the manager and K8ssandra; rendering K8ssandra alone (`helmfile template`)
 fails with "cass-operator webhooks require cert-manager" until cert-manager exists, which is
 expected. Upgrading one of them is a version bump here, checked against its release notes for CRD
 changes (Valkey 0.6.0 broke its TLS field), then the same `sync`.
 
-The selectors include **only** CloudNativePG and ingress-nginx. The manager is installed next.
+The prerequisite selectors include CloudNativePG, ingress-nginx, and cert-manager. The manager is installed next.
 Every platform chart is pinned in `helmfile.yaml`, to the same version each leaf's
 `ClusterHelmRelease` has; `cmd/platform_sync_test.go` fails on an unpinned release. See [components.md](components.md) for the component mapping.
 

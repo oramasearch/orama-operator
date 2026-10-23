@@ -93,7 +93,7 @@ const (
 	analyticsImportSchedule  = "*/5 * * * *"
 	analyticsImportTimeZone  = "Etc/UTC"
 	analyticsImportComponent = "analytics-import"
-	analyticsImportImage     = "curlimages/curl:8.10.1"
+	analyticsImportImage     = pinnedCurlImage
 )
 
 // analyticsImportScript is what each import Job runs: POST /import, then POST /aggregate2, the
@@ -380,6 +380,9 @@ func (r *OramaCloudV1Reconciler) reconcileAnalyticsRetention(ctx context.Context
 		return r.teardownByComponent(ctx, oc, "analytics-retention")
 	}
 	script := analyticsRetentionScript(oc)
+	if err := ensureCloudV1ServiceAccount(ctx, r.Client, r.Scheme, oc, analyticsRetentionName(oc), labelsFor(oc, "analytics-retention")); err != nil {
+		return err
+	}
 	sum := sha256.Sum256([]byte(script))
 	hash := hex.EncodeToString(sum[:])
 	job := &batchv1.Job{}
@@ -422,7 +425,7 @@ func analyticsRetentionJob(oc *oramav1alpha1.OramaCloudV1, script, hash string) 
 		Resources:       *resourceReqs("128Mi", "10m", "256Mi"),
 		SecurityContext: hardenedSecurityContext(),
 	}
-	return &batchv1.Job{
+	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: analyticsRetentionName(oc), Namespace: oc.Namespace, Labels: lbls,
 			Annotations: map[string]string{analyticsRetentionHashKey: hash}},
 		Spec: batchv1.JobSpec{
@@ -434,12 +437,16 @@ func analyticsRetentionJob(oc *oramav1alpha1.OramaCloudV1, script, hash string) 
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
 					AutomountServiceAccountToken: boolPtr(false),
+					EnableServiceLinks:           boolPtr(false),
+					ServiceAccountName:           analyticsRetentionName(oc),
 					ImagePullSecrets:             imagePullSecrets(oc),
 					Containers:                   []corev1.Container{c},
 				},
 			},
 		},
 	}
+	boundV1PodStorage(&job.Spec.Template.Spec)
+	return job
 }
 
 // reconcileOramasearchApp deploys the legacy api.askorama.ai app (#7).

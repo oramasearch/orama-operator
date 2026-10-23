@@ -217,12 +217,15 @@ func atomicWrite(dir, name string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
-// Shards is how many Secrets carry the node templates. A node's template is in shard Shard(node),
-// as key <node>.json, with the files it names beside it. The DaemonSet mounts every shard, so the
-// node projector needs no credential and no API access.
+// Shards is how many directories a node's template could be read from. Each node's template is in
+// that node's own Secret, as key <node>.json with the files it names beside it, and the node's agent
+// mounts only that Secret, at <templates>/<Shard(node)> (orama-operator#788). Before #788 the
+// operator wrote every node's template into one of Shards shared Secrets and every agent mounted all
+// of them, which delivered every node's workload private keys to every node. The node projector
+// needs no credential and no API access.
 const Shards = 16
 
-// ShardSecret is the name of shard i's Secret.
+// ShardSecret is the name of shard i's Secret before #788; the operator deletes these.
 func ShardSecret(i int) string { return "mesh-templates-" + strconv.Itoa(i) }
 
 // Shard is the shard a node's template is in: FNV-1a of the node name.

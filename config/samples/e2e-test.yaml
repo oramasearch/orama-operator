@@ -15,5 +15,10 @@ metadata:
   namespace: orama-system
 spec:
   targetRef: v1                          # the OramaCloudV1 to test (same namespace)
-  # image: alpine:3.20                   # optional runner-base override (default); must provide sh + a package manager
+  # image: <reviewed-base>@sha256:<64-hex-digest> # optional override; must provide sh + a package manager
   pullSecretName: oramasearch-dockerhub  # authenticates image pulls (also avoids Docker Hub anon rate limits)
+  # Optional: a dashboard project of the target the suite may write to, for the write-token, plan-cap,
+  # expiry and role checks (sections 22 and 24). Keys: collectionID, indexID, apiKey (its private API
+  # key); optional readerSessionCookie (a read-only member's _orama_session). Omitted, those skip.
+  # dashboardFixtureSecretRef:
+  #   name: v1-e2e-dashboard-fixture

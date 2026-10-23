@@ -618,3 +618,48 @@ func TestWorkspaceIsolationVerifierCoversBoundary(t *testing.T) {
 		}
 	}
 }
+
+// The workspace Zetta's own egress allowlist follows what its NetworkSandbox renders
+// (operator#724): turning internetEgress on adds *:443 once the rule is in the sandbox, and turning
+// it off takes it away again.
+func TestLakeWorkspaceZettaEgressFollowsTheSandbox(t *testing.T) {
+	ctx := context.Background()
+	lake := testWorkspaceLake()
+	lake.Spec.Workspaces.Overrides = map[string]oramav1alpha1.LakeWorkspaceOverrideSpec{
+		testWorkspaceID: {InternetEgress: true},
+	}
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+		Spec:       corev1.NodeSpec{PodCIDR: "10.244.0.0/24", PodCIDRs: []string{"10.244.0.0/24"}},
+	}
+	reconciler, kube := newWorkspaceHarness(t, lake, node)
+	store := &fakeWorkspacesStore{rows: []LakeWorkspaceRow{testWorkspaceRow("running")}}
+	allow := func() string {
+		t.Helper()
+		var cluster oramav1alpha1.OramaZettaCluster
+		key := client.ObjectKey{Namespace: testWorkspaceName, Name: workspaceZettaClusterName(lake, testWorkspaceID)}
+		if err := kube.Get(ctx, key, &cluster); err != nil {
+			t.Fatal(err)
+		}
+		variable := findEnv(cluster.Spec.Env, zettaEgressAllowEnv)
+		if variable == nil {
+			t.Fatalf("workspace Zetta has no %s: %+v", zettaEgressAllowEnv, cluster.Spec.Env)
+		}
+		if variable.Value == "*" {
+			t.Fatal("the workspace Zetta turns its egress control off")
+		}
+		return variable.Value
+	}
+	reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows)
+	renderWorkspaceEgressRules(t, kube, testWorkspaceName)
+	reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows)
+	internal := "*." + testWorkspaceName + ".svc.cluster.local"
+	if got := allow(); got != internal+",*:443" {
+		t.Fatalf("with internetEgress the allowlist is %q", got)
+	}
+	lake.Spec.Workspaces.Overrides = nil
+	reconciler.syncLakeWorkspaces(ctx, lake, store, store.rows)
+	if got := allow(); got != internal {
+		t.Fatalf("without internetEgress the allowlist is %q", got)
+	}
+}
