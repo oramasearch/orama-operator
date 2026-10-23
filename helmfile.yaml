@@ -111,6 +111,10 @@ releases:
     # X-Real-IP, which lake's order sheet counts.
     values:
       - controller:
+          # LSR-268: reduce exposure while controller replacement remains blocked (#573).
+          admissionWebhooks:
+            enabled: false
+          allowSnippetAnnotations: false
           # LSR-208: only tenant app locations discard control-plane credentials. Lake's API,
           # console and wildcard handlers retain them; no per-Ingress snippets are enabled.
           proxySetHeaders:

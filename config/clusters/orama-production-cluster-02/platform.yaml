@@ -27,6 +27,10 @@ spec:
   releaseName: ingress-nginx
   values:
     controller:
+      # LSR-268: same hardening as the management cluster while replacement is blocked (#573).
+      admissionWebhooks:
+        enabled: false
+      allowSnippetAnnotations: false
       # operator#719: the client address from CF-Connecting-IP only for Cloudflare's ranges
       # (helmfile.yaml has the reasons; both paths install the same values).
       # LSR-208: identical app-only credential filtering on every installation path.
