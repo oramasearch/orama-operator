@@ -364,6 +364,31 @@ the auth call reaches the browser. When the Lake has public ingress (`ingressEna
 `https://<lake host>/apps/authorize?app=<app id>&rd=https://$host$escaped_request_uri`. The return URL
 is always https because TLS ends at the edge proxy. The handoff and cookie are specified in lake#407.
 
+**Control-plane credentials (LSR-208).** The shared ingress-nginx platform configuration clears
+`Authorization` before proxying to every tenant app, including public apps, runtime and image apps,
+and custom hosts. It drops the entire `Cookie` header if it contains `lake_session`,
+`__Host-lake_session` or `__Secure-lake_session` (case-insensitive, including repeated cookie
+headers). Otherwise it preserves application cookies, including `lake_app_session`. This fails
+closed for mixed cookie headers: the app also loses its own cookies on that request. Clients must
+use an app-scoped session; an app cannot use the incoming `Authorization` header for its own auth.
+Lake's auth subrequest still receives the original cookies so it can verify app access and return
+the app session cookie.
+
+The maps select nginx's operator-generated `$ingress_name`, never a client header or host:
+standalone apps use `app`, synchronized apps `app-<12 hex>`. These names are reserved for tenant
+apps. Lake's shared API/console Ingress uses `lake-<name>`, its wildcard handlers add
+`-apps-wildcard` or `-preview-wildcard`, environments use `environment`, Cloud v1 adds component
+suffixes (`-dashboard`, `-docs`, `-writer`, `-reader` and `-metrics`), and Zetta adds `-zetta` or
+`-zetta-landing`. None can match the app pattern, even when its CR is named `app`. Those locations
+preserve `Authorization` and cookies. The wildcard handlers proxy to Lake itself; a concrete app
+Ingress takes precedence when the app is deployed. Keep this naming contract and the platform maps
+in sync when adding an Ingress producer. Both `helmfile.yaml` and every cluster's `platform.yaml`
+carry the same maps and header ConfigMap values. Per-Ingress snippet annotations remain disabled.
+
+This operator change covers ingress credential forwarding. Lake's `/apps/authorize` must separately
+require a browser session, and its scripted scenario probes must separately obtain only an
+app-scoped session for app requests; those changes belong to the Lake repository.
+
 **Identity headers.** With `auth: lake` the Ingress names `X-Orama-User,X-Orama-Space` as
 `auth-response-headers`. ingress-nginx then sends the app each of those headers set from Lake's
 answer to the auth call, and a copy the client sent never reaches the app: it is replaced, or dropped
