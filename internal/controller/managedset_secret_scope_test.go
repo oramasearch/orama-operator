@@ -339,3 +339,124 @@ func describePurposes(purposes map[string][]string) string {
 	sort.Strings(parts)
 	return "(" + strings.Join(parts, "; ") + ")"
 }
+
+// lakeSets is lake-prod on a production cluster and lake-nonprod on the nonprod cluster, each
+// copying the named Secrets from the lake namespace, with the Stripe and OpenAI Secrets the Lakes
+// read (orama-operator#790, LSR-041).
+func lakeSets(prodSecrets, nonprodSecrets []string) []client.Object {
+	refs := func(names []string) []oramav1alpha1.SetSecret {
+		var out []oramav1alpha1.SetSecret
+		for _, name := range names {
+			out = append(out, oramav1alpha1.SetSecret{Name: name, Namespace: "lake"})
+		}
+		return out
+	}
+	set := func(name, cluster, member string, secrets []string) *oramav1alpha1.LakeSet {
+		return &oramav1alpha1.LakeSet{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: oramav1alpha1.LakeSetSpec{ManagedSetSpec: oramav1alpha1.ManagedSetSpec{
+				Template:       *rawJSON(`{"image":"oramasearch/lake:v0.3.1"}`),
+				Secrets:        refs(secrets),
+				Clusters:       []oramav1alpha1.SetMember{{ClusterRef: cluster, Name: member, Spec: rawJSON(`{"host":"` + member + `.lake.example"}`)}},
+				DeletionPolicy: oramav1alpha1.SetDeletionRetain,
+			}},
+		}
+	}
+	objects := append(managedCluster("orama-nonprod-cluster-01", "westus2", "nonprod"),
+		managedCluster("orama-production-cluster-02", "swedencentral", "production")...)
+	objects = append(objects, setSecret("lake-prod-stripe", "sk_live"), setSecret("lake-prod-openai", "sk-prod"),
+		setSecret("lake-nonprod-stripe", "sk_test"), setSecret("clerk-lake-prod", "clerk-prod"))
+	if prodSecrets != nil {
+		objects = append(objects, set("lake-prod", "orama-production-cluster-02", "shared", prodSecrets))
+	}
+	if nonprodSecrets != nil {
+		objects = append(objects, set("lake-nonprod", "orama-nonprod-cluster-01", "dev", nonprodSecrets))
+	}
+	return objects
+}
+
+// LSR-041 (#790): lake-nonprod copied lake-prod's Stripe and OpenAI Secrets into dev, testing and
+// staging. A Secret labelled production is never copied into a nonprod Lake, even when no
+// production set lists it.
+func TestALakeSetNeverCopiesASecretLabelledProductionIntoANonprodMember(t *testing.T) {
+	objects := lakeSets(nil, []string{"lake-prod-stripe"})
+	for _, object := range objects {
+		if object.GetName() == "lake-prod-stripe" {
+			object.SetLabels(map[string]string{secretPurposeLabel: productionPurpose})
+		}
+	}
+	c := setTestClient(t, objects...)
+	members := &fakeMembers{ready: map[string]bool{"dev": true}}
+	_, err := reconcileLakeSet(t, c, members, "lake-nonprod")
+	want := "Secret lake/lake-prod-stripe is labelled orama.cloud/purpose=production and the member's cluster is nonprod: it is never copied there"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("want the production Secret refused, got %v", err)
+	}
+	if len(members.applied) != 0 {
+		t.Fatalf("the nonprod Lake was applied with %v", secretNames(members.applied[0].Secrets))
+	}
+	if got := getLakeSet(t, c, "lake-nonprod"); got.Status.Phase != clusterPhaseDegraded || !strings.Contains(got.Status.MemberStatuses[0].Message, want) {
+		t.Fatalf("status: %+v", got.Status)
+	}
+}
+
+// An ordered LakeSet starts from its source set's template and secrets (orderLakeSet). One built
+// from lake-prod onto a nonprod cluster, as a dedicated cluster made like a nonprod template would
+// be, gets none of lake-prod's Secrets.
+func TestAnOrderedLakeSetOnANonprodClusterGetsNoProductionSecret(t *testing.T) {
+	objects := lakeSets([]string{"lake-prod-stripe", "lake-prod-openai"}, nil)
+	var prod *oramav1alpha1.LakeSet
+	for _, object := range objects {
+		if set, ok := object.(*oramav1alpha1.LakeSet); ok && set.Name == "lake-prod" {
+			prod = set
+		}
+	}
+	source := &oramav1alpha1.LakeOrderSource{ObjectMeta: metav1.ObjectMeta{Name: "lake-live"},
+		Spec: oramav1alpha1.LakeOrderSourceSpec{LakeSetRef: "lake-prod", HostDomain: "lake.live"}}
+	const name = "order-0123456789ab"
+	ordered, err := orderLakeSet(orderPass{source: source, set: prod, member: map[string]any{}},
+		CloudOrder{ID: "0123456789ab"}, name, "orama-nonprod-cluster-01", name+".lake.live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := setTestClient(t, append(objects, source, ordered)...)
+	members := &fakeMembers{ready: map[string]bool{name: true}}
+	_, err = reconcileLakeSet(t, c, members, name)
+	want := "Secret lake/lake-prod-stripe is copied into production members by LakeSet lake-prod, so it is a production credential and is never copied into a nonprod member"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("want lake-prod's Secrets refused for the ordered nonprod Lake, got %v", err)
+	}
+	if len(members.applied) != 0 {
+		t.Fatalf("the ordered Lake was applied with %v", secretNames(members.applied[0].Secrets))
+	}
+}
+
+// A LakeOrderSource's memberSecrets are copied into every Lake ordered from a production set, so
+// they are production credentials before the first order exists. A nonprod set naming one is
+// refused; one on a nonprod set's order source is not production.
+func TestAProductionOrderSourcesMemberSecretIsNeverCopiedIntoANonprodMember(t *testing.T) {
+	for name, tc := range map[string]struct {
+		lakeSetRef, want string
+	}{
+		"source on lake-prod":    {"lake-prod", "Secret lake/clerk-lake-prod is copied into production members by LakeOrderSource lake-live, so it is a production credential and is never copied into a nonprod member"},
+		"source on lake-nonprod": {"lake-nonprod", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			source := &oramav1alpha1.LakeOrderSource{ObjectMeta: metav1.ObjectMeta{Name: "lake-live"},
+				Spec: oramav1alpha1.LakeOrderSourceSpec{LakeSetRef: tc.lakeSetRef, HostDomain: "lake.live",
+					MemberSecrets: []oramav1alpha1.SetSecret{{Name: "clerk-lake-prod", Namespace: "lake", As: "clerk-secret-key"}}}}
+			c := setTestClient(t, append(lakeSets([]string{"lake-prod-stripe"}, []string{"clerk-lake-prod"}), source)...)
+			members := &fakeMembers{ready: map[string]bool{"dev": true}}
+			_, err := reconcileLakeSet(t, c, members, "lake-nonprod")
+			if tc.want == "" {
+				if err != nil || len(members.applied) != 1 {
+					t.Fatalf("want it copied: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) || len(members.applied) != 0 {
+				t.Fatalf("want %q, got %v (applied %d)", tc.want, err, len(members.applied))
+			}
+		})
+	}
+}

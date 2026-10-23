@@ -141,7 +141,9 @@ func operatorSecretScope(ctx context.Context, r client.Reader, clusterName strin
 // copies it, worded to follow the Secret's name: a production set's set, member or migration
 // Secret, and a production OramaOperator's pull Secret. A set is production when one of its
 // members' clusters is tagged production; a set whose clusters cannot be read is taken at its last
-// reported purpose. An OramaOperator is production when its cluster is tagged production.
+// reported purpose. An OramaOperator is production when its cluster is tagged production. A
+// LakeOrderSource's memberSecrets are copied into every Lake ordered from its set, so they are
+// production when that set is, before the first order is made (orama-operator#790, LSR-041).
 func productionSecretSources(ctx context.Context, r client.Reader) (map[string]string, error) {
 	sources := map[string]string{}
 	purposes := map[string]string{}
@@ -173,17 +175,17 @@ func productionSecretSources(ctx context.Context, r client.Reader) (map[string]s
 			}
 		}
 	}
-	addSet := func(by string, spec *oramav1alpha1.ManagedSetSpec, reported string, extra ...[]oramav1alpha1.SetSecret) error {
+	addSet := func(by string, spec *oramav1alpha1.ManagedSetSpec, reported string, extra ...[]oramav1alpha1.SetSecret) (bool, error) {
 		production, err := isProduction(spec, reported)
 		if err != nil || !production {
-			return err
+			return false, err
 		}
 		add(by, spec.Secrets)
 		for _, member := range spec.Clusters {
 			add(by, member.Secrets)
 		}
 		add(by, extra...)
-		return nil
+		return true, nil
 	}
 
 	var lakeSets oramav1alpha1.LakeSetList
@@ -197,10 +199,24 @@ func productionSecretSources(ctx context.Context, r client.Reader) (map[string]s
 	// In name order, so the set named in a refusal is always the same one.
 	sort.Slice(lakeSets.Items, func(i, j int) bool { return lakeSets.Items[i].Name < lakeSets.Items[j].Name })
 	sort.Slice(v1Sets.Items, func(i, j int) bool { return v1Sets.Items[i].Name < v1Sets.Items[j].Name })
+	var orderSources oramav1alpha1.LakeOrderSourceList
+	if err := r.List(ctx, &orderSources); err != nil {
+		return nil, fmt.Errorf("list LakeOrderSources to find production Secrets: %w", err)
+	}
+	sort.Slice(orderSources.Items, func(i, j int) bool { return orderSources.Items[i].Name < orderSources.Items[j].Name })
+	productionLakeSets := map[string]bool{}
 	for index := range lakeSets.Items {
 		set := &lakeSets.Items[index]
-		if err := addSet("LakeSet "+set.Name, &set.Spec.ManagedSetSpec, set.Status.Purpose); err != nil {
+		production, err := addSet("LakeSet "+set.Name, &set.Spec.ManagedSetSpec, set.Status.Purpose)
+		if err != nil {
 			return nil, err
+		}
+		productionLakeSets[set.Name] = production
+	}
+	for index := range orderSources.Items {
+		source := &orderSources.Items[index]
+		if productionLakeSets[source.Spec.LakeSetRef] {
+			add("LakeOrderSource "+source.Name, source.Spec.MemberSecrets)
 		}
 	}
 	for index := range v1Sets.Items {
@@ -209,7 +225,7 @@ func productionSecretSources(ctx context.Context, r client.Reader) (map[string]s
 		for _, migration := range set.Spec.Migrations {
 			migrationSecrets = append(migrationSecrets, migration.Secrets)
 		}
-		if err := addSet("OramaCloudV1Set "+set.Name, &set.Spec.ManagedSetSpec, set.Status.Purpose, migrationSecrets...); err != nil {
+		if _, err := addSet("OramaCloudV1Set "+set.Name, &set.Spec.ManagedSetSpec, set.Status.Purpose, migrationSecrets...); err != nil {
 			return nil, err
 		}
 	}
