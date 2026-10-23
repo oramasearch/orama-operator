@@ -43,9 +43,18 @@ Lake, which every Lake with its control Postgres runs):
 1. List the Lake's `LakeApp`s with a `spec.sync` (the apps sync's). Each app's Ingress is
    `lakeAppWorkloadObjectName(app)` in `lakeAppNamespace(app)`, as `reconcileLakeAppIngress` creates
    it; the map gives the app id (`spec.sync.id`) and its workspace (`spec.sync.workspaceId`).
-2. List the ingress-nginx controller pods in every namespace (`app.kubernetes.io/name=ingress-nginx`,
-   `app.kubernetes.io/component=controller`) and read `http://<pod IP>:10254/metrics` from each
-   running one (5-second timeout, 32 MiB limit). No new RBAC: pods get/list is already granted.
+   Only apps controlled by this Lake qualify. Their target namespace must carry this Lake's
+   `orama.cloud/lake` label, `app.kubernetes.io/managed-by=orama-operator`, and workspace and customer
+   labels matching the app's sync record. Missing or foreign namespaces contribute no counters.
+   Namespaces are fetched by name through the uncached reader, once per namespace per pass.
+2. List the labelled ingress-nginx controller pods **only in `ingress-nginx`**, the namespace both
+   platform installation paths use. Before reading a running pod's
+   `http://<pod IP>:10254/metrics` (5-second timeout, 32 MiB limit), verify its controller owner:
+   either a ReplicaSet controlled by Deployment `ingress-nginx-controller`, or DaemonSet
+   `ingress-nginx-controller` directly. Each reference must be an `apps/v1` controller reference
+   whose UID matches the existing object in that namespace. Labels alone never authorize a scrape.
+   The operator has read-only ReplicaSet RBAC for this check on every cluster; an ownership API
+   error aborts the pass before any usage is written, and missing or mismatched owners are skipped.
 3. For each app Ingress on each controller pod, take the increase since the last pass. The counters
    belong to the controller pod and start from zero when it restarts, so the operator keeps the last
    value per pod and Ingress in memory:
@@ -77,6 +86,10 @@ baseline.
   baseline, each pass's increase into the app's hour, a counter restart, an unreadable controller
   counted on the next pass, a failed write retried without double counting, retention; a controller
   pod that started after the operator counted whole, and a schema before `0081` skipped.
+  It also verifies that labelled pods outside the platform namespace, ownerless pods, unrelated
+  controllers, stale UIDs and malformed owner chains are never scraped; both Deployment and
+  DaemonSet pods still meter; foreign workspace/app ownership is ignored; ownership API failures
+  write nothing. Two successive scrapes exercise attempted inflation of a known app's counter.
 - `LAKE_SERVICES_TEST_POSTGRES=1 go test ./internal/controller/ -run TestServicesPgxStoreAgainstPostgres`:
   the SQL against the vendored schema (`checkAppTransferPgx`: passes add up, old rows pruned, the
   missing-table error).
