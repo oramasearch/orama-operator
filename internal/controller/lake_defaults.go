@@ -35,8 +35,11 @@ const (
 	// lakeDefaultAgentRuntimeImage runs every user-created agent (spec.agents.runtimeImage).
 	lakeDefaultAgentRuntimeImage = "oramasearch/agent-runtime:v0.1.0"
 	// lakeDefaultMCPRunnerImage is LAKE_MCP_RUNNER_IMAGE, the image lake runs MCP servers on.
-	// spec.env may still set the variable, which wins.
-	lakeDefaultMCPRunnerImage = "oramasearch/lake-mcp-runner:d98451a"
+	// spec.env may still set the variable, which wins. Lake runs a stdio MCP connection as an image
+	// App on it, so it is pinned by digest: lake refuses a stdio connection otherwise, and
+	// lakeAppRowSource and the LakeApp CRD fail an image App that is not (operator#744). The digest
+	// is the one the d98451a tag names in Docker Hub.
+	lakeDefaultMCPRunnerImage = "oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892"
 )
 
 // lakeMCPRunnerImageEnv is the variable lake reads the MCP runner image from.

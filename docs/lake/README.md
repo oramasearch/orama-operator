@@ -151,7 +151,7 @@ start on `lake-dev` is the check:
 | Image builds | `spec.builds.builderImage` | `oramasearch/lake-builder:31a48d9` |
 | Methodologies (`LAKE_METHODOLOGY_RUNTIME_IMAGE`) | `spec.methodologies.runtimeImage` | `oramasearch/methodology-runtime:ac58062` |
 | User-created agents | `spec.agents.runtimeImage` | `oramasearch/agent-runtime:v0.1.0` |
-| MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a` |
+| MCP servers (`LAKE_MCP_RUNNER_IMAGE`) | `LAKE_MCP_RUNNER_IMAGE` in `spec.env` | `oramasearch/lake-mcp-runner:d98451a@sha256:b5439ce37f45d1a853ad5cd2b35dca7b6e571075816a41e287b2a42693d77892` |
 | `agent-ask-orama` | `spec.agents.library[key]` | `oramasearch/agent-ask-orama:v0.1.0` |
 | `agent-project` | `spec.agents.library[key]` | `oramasearch/agent-project:v0.1.0` |
 | `agent-autosuggest` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest:v0.1.0` |
@@ -161,6 +161,14 @@ start on `lake-dev` is the check:
 | `agent-autosuggest-corpus` | `spec.agents.library[key]` | `oramasearch/agent-autosuggest-corpus:v0.1.0` |
 | `agent-application` | `spec.agents.library[key]` | `oramasearch/agent-application:v0.1.0` |
 | `agent-experiments` | `spec.agents.library[key]` | `oramasearch/agent-experiments:v0.1.0` |
+
+The MCP runner image is pinned by digest because lake runs every stdio MCP connection as an image
+App on it: lake refuses a stdio connection when `LAKE_MCP_RUNNER_IMAGE` is not
+`name@sha256:<64 hex>` ([lake#783](https://github.com/oramasearch/lake/issues/783)), and the
+operator fails an image App that is not pinned (`lakeAppRowSource`, the `LakeApp` CRD pattern)
+([#744](https://github.com/oramasearch/orama-operator/issues/744)). A value set in `spec.env` must
+be pinned the same way. The other tagged defaults are not checked for a digest by lake or the
+operator: they are build bases, build Jobs and agent pods, not image Apps.
 
 Every Zetta a Lake owns also gets `ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864`,
 `MALLOC_ARENA_MAX=2` and `ZETTA_EGRESS_ALLOW` unless its env (`spec.zetta.env`,
