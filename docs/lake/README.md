@@ -1,5 +1,11 @@
 # The `Lake` CR
 
+Nonprod source preparation, 2026-10-23 ([operator#884](https://github.com/oramasearch/orama-operator/issues/884)):
+OpenAI remains the provider. Juan chose the existing Prod1 OpenAI key for the separate
+`lake-nonprod-openai` source; the Azure preparation was cancelled. This key remains shared with
+Prod1 and must be retained or replaced before revocation. The member-specific test payments set
+still needs reviewed apply and live acceptance; no provider code or release change is required.
+
 What the operator does for a `Lake`, how it is deployed, and how to run it. Field reference:
 [`../crd-reference.md`](../crd-reference.md) (`Lake` section). lake's own docs (server, schema,
 deployment state): https://github.com/oramasearch/lake/tree/main/docs.

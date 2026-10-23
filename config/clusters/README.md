@@ -86,6 +86,25 @@ example the dashboard's environment Secret, which the set's template references 
 Secret (`components.dashboard.crons.e2eCanary.secretRef`) arrives the same way. Creating or
 changing a source Secret is a write on the managing cluster and needs Steve's consent.
 
+`lake-nonprod` uses `billing.enabled: true` and `payments.mode: test`, with each member copying
+its own sandbox Secret as `lake-prod-stripe`: `lake/stripe-dev`, `lake/stripe-testing` and
+`lake/stripe-staging`. Each source has exactly `accountID`, `operatorKey` and `appKey`; both keys
+must belong to that member's sandbox. Keeping the existing target name replaces the retained
+production-source data in place when the set is applied. The operator creates a separate
+`https://lake-<member>.oramadev.net/billing/stripe/webhook` endpoint and keeps its signing Secret
+in that member's namespace. Stripe generates a unique signing secret per endpoint, so one shared
+legacy `webhook_secret` cannot verify deliveries to all three hosts
+([operator#884](https://github.com/oramasearch/orama-operator/issues/884),
+[Stripe signature verification](https://docs.stripe.com/webhooks#verify-webhook-signatures-with-official-libraries)).
+The common sources remain `lake/oramasearch-dockerhub-nonprod` (a nonprod-only, read-only pull
+token) and `lake/lake-nonprod-openai`. On 2026-10-23 Juan explicitly chose to reuse the existing
+Prod1 OpenAI key in that separate source ([#884 decision](https://github.com/oramasearch/orama-operator/issues/884#issuecomment-6374737150));
+Azure was cancelled. This is shared credential ownership, not key isolation. Preserve this
+consumer before Prod1 key revocation, and review its usage limits together with the shared budget.
+Create and verify every source credential before applying the set file; the references alone do
+not establish credential isolation. See [Lake payments](../../docs/lake/payments.md) for key
+permissions, generated signing Secrets and the `PaymentsReady` condition.
+
 The dashboard crons and the e2e canary are created suspended. Their `suspend` fields change only in
 a set file, committed and applied to the managing cluster; production unsuspends them at cutover
 step 5, after Prod 1's crons are off and `app.orama.com` points at Prod 2 (see
@@ -111,7 +130,8 @@ A Lake's `spec.payments` ([`docs/lake/payments.md`](../../docs/lake/payments.md)
 Secret with keys `accountID`, `operatorKey` and `appKey`, one per Stripe environment
 ([orama-bridge#201](https://github.com/oramasearch/orama-bridge/issues/201)). Restricted keys can only
 be made in the Stripe Dashboard, so a person creates these Secrets on the managing cluster, with
-Steve's consent, and a set copies a member's Secret into its namespace. None exists yet.
+Steve's consent, and a set copies a member's Secret into its namespace. Verify source existence
+and key provenance before applying a set that names it.
 
 | Secret | Namespace | Stripe environment |
 |---|---|---|
@@ -123,13 +143,15 @@ Steve's consent, and a set copies a member's Secret into its namespace. None exi
 
 ### Moving a member to `spec.billing`
 
-Every `lake-nonprod` and `lake-prod` member bills today through a `spec.env` entry,
-`LAKE_BILLING: "on"`. A Lake's `spec.billing` ([`docs/lake/payments.md`](../../docs/lake/payments.md#billing-specbilling),
+The `lake-nonprod` set declares `billing.enabled: true`; its migration is pending a reviewed
+apply after all source credentials exist ([#884](https://github.com/oramasearch/orama-operator/issues/884)).
+`lake-prod` members still bill through a `spec.env` entry, `LAKE_BILLING: "on"`. A Lake's
+`spec.billing` ([`docs/lake/payments.md`](../../docs/lake/payments.md#billing-specbilling),
 [operator#662](https://github.com/oramasearch/orama-operator/issues/662)) is the typed switch that
 replaces it, and `spec.payments` requires `billing: {enabled: true}`. While a member has no
 `spec.billing` its `spec.env` entry still passes through, so nothing changes until its file moves.
-Each member moves with its own Stripe roll ([#641](https://github.com/oramasearch/orama-operator/issues/641),
-[#643](https://github.com/oramasearch/orama-operator/issues/643)), one member per pull request,
+Each production member moves with its own Stripe roll
+([#643](https://github.com/oramasearch/orama-operator/issues/643)), one member per pull request,
 applied with Steve's consent:
 
 ```yaml

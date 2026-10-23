@@ -19,17 +19,12 @@ spec:
         value: lake-dev.oramadev.net
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
-      - name: LAKE_BILLING
-        value: "on"
-      - name: LAKE_STRIPE_SECRET_KEY
-        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
-      - name: LAKE_STRIPE_WEBHOOK_SECRET
-        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-dev.oramadev.net
       clerk:
         secretKeySecretRef: {name: clerk-secret-key}
     secrets:
     - {name: clerk-lake-dev, namespace: lake, as: clerk-secret-key}
+    - {name: stripe-dev, namespace: lake, as: lake-prod-stripe}
   - clusterRef: orama-nonprod-cluster-01
     name: staging
     spec:
@@ -45,17 +40,12 @@ spec:
         value: lake-staging.oramadev.net
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
-      - name: LAKE_BILLING
-        value: "on"
-      - name: LAKE_STRIPE_SECRET_KEY
-        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
-      - name: LAKE_STRIPE_WEBHOOK_SECRET
-        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-staging.oramadev.net
       clerk:
         secretKeySecretRef: {name: clerk-secret-key}
     secrets:
     - {name: clerk-lake-staging, namespace: lake, as: clerk-secret-key}
+    - {name: stripe-staging, namespace: lake, as: lake-prod-stripe}
   - clusterRef: orama-nonprod-cluster-01
     name: testing
     spec:
@@ -71,17 +61,12 @@ spec:
         value: lake-testing.oramadev.net
       - name: LAKE_OPENAI_API_KEY
         valueFrom: {secretKeyRef: {name: lake-prod-openai, key: OPENAI_API_KEY}}
-      - name: LAKE_BILLING
-        value: "on"
-      - name: LAKE_STRIPE_SECRET_KEY
-        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: secret_key}}
-      - name: LAKE_STRIPE_WEBHOOK_SECRET
-        valueFrom: {secretKeyRef: {name: lake-prod-stripe, key: webhook_secret}}
       host: lake-testing.oramadev.net
       clerk:
         secretKeySecretRef: {name: clerk-secret-key}
     secrets:
     - {name: clerk-lake-testing, namespace: lake, as: clerk-secret-key}
+    - {name: stripe-testing, namespace: lake, as: lake-prod-stripe}
   deletionPolicy: Retain
   # The testing -> staging gate of a substantial lake release (orama-operator#589,
   # docs/lake/README.md#service-e2e). Not active yet: oramasearch/lake-e2e has no image in Docker
@@ -99,22 +84,27 @@ spec:
   #       valueFrom: {secretKeyRef: {name: clerk-secret-key, key: secretKey}}
   # Nonprod's own Secrets: none of these is one lake-prod copies (orama-operator#789). The operator
   # refuses to copy a production set's Secret into a nonprod member, and
-  # TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes fails on one. Each is copied under the name the
-  # Lakes already mount, so the copies of the production Secrets in the lake-* namespaces are
-  # overwritten in place.
+  # TestCommittedSetsAndOperatorsNeverShareASecretAcrossPurposes fails on one. The pull and OpenAI
+  # Secrets keep the names the Lakes already mount, replacing their production copies in place.
+  # Stripe is member-specific above: each sandbox supplies its own
+  # accountID, operatorKey and appKey, replacing the old Stripe Secret under the same target name.
+  # spec.payments owns each endpoint and signing Secret (#884).
   secrets:
   - name: oramasearch-dockerhub-nonprod   # a Docker Hub pull token for nonprod only
     namespace: lake
     as: oramasearch-dockerhub
   - name: cloudflare-api-token            # already nonprod's own: oramadev.net only
     namespace: lake
-  - name: lake-nonprod-openai             # OPENAI_API_KEY
+  # Juan chose the existing Prod1 OpenAI key for this separate source (#884); key reuse is intentional.
+  - name: lake-nonprod-openai             # OPENAI_API_KEY; keep the OpenAI provider
     namespace: lake
     as: lake-prod-openai
-  - name: lake-nonprod-stripe             # secret_key, webhook_secret: Stripe test mode
-    namespace: lake
-    as: lake-prod-stripe
   template:
+    billing:
+      enabled: true
+    payments:
+      mode: test
+      secretRef: {name: lake-prod-stripe}
     dnsSecretRef:
       name: cloudflare-api-token
     image: oramasearch/lake:v0.4.0
