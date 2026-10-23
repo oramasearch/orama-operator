@@ -15,7 +15,8 @@ real cluster has been created with them yet. The first step is one non-productio
 > deployed is in [`config/clusters/`](../../config/clusters/README.md). The `orama-clusters` Claude
 > skill in the umbrella bridge is the short form.
 > The [production v1 dashboard procedure](operations.md#preparing-the-production-v1-dashboard)
-> separates source credential preparation from the approved production set apply.
+> separates source credential preparation from the approved production set apply, records the
+> deferred Anthropic exception, and distinguishes placeholders from operator-provided values.
 >
 > **Secure networking** (sandboxes, connections, tunnels, peering; #437) is designed in
 > [`secure-networking.md`](secure-networking.md); what is built is in

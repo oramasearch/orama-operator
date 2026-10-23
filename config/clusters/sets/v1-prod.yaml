@@ -42,10 +42,11 @@
 #                                                        references (#571); third-party keys.
 #                                                        OpenAI preserved; Google carried from Prod 1;
 #                                                        Groq has a dedicated Prod 2 key (#885, 2026-10-23).
-#                                                        Anthropic remains a placeholder (Blocked below).
-#   v1-prod-dashboard-env   PRIVATE_API_KEY (= Prod 1: the import consumer sends it),
+#                                                        Juan deferred Anthropic: its existing placeholder
+#                                                        is retained (accepted exception below).
+#   v1-prod-dashboard-env   PRIVATE_API_KEY (dashboard machine routes; target-local callers must agree),
 #                           STRIPE_WEBHOOK_SECRET (= Prod 1: the app.orama.com Stripe endpoint signs with it),
-#                           CRON_SECRET, RESEND_API_KEY, SLACK_TOKEN, the Clerk server key
+#                           CRON_SECRET, RESEND_API_KEY, SLACK_TOKEN, planned Clerk configuration
 #                                                        dashboard, through components.dashboard.envFrom (#311).
 #                                                        It never holds DATABASE_URL, POSTGRES_PASSWORD, JWT_*,
 #                                                        or MASTER_API_KEY: the operator owns them and refuses them.
@@ -59,6 +60,8 @@
 #                                                        CRON_SECRET is generated for Prod 2; the real
 #                                                        webhook signing value is carried from Vercel
 #                                                        production (#885, 2026-10-23).
+#                                                        PRIVATE_API_KEY is a dedicated generated Prod 2
+#                                                        value in this source; target-local callers share it.
 #   v1-prod-dashboard-stripe STRIPE_SECRET_KEY             dashboard.stripeSecretKeySecretRef only;
 #                                                        a restricted live key with docs/components.md's
 #                                                        exact permissions, created/validated 2026-10-23 (#885).
@@ -86,6 +89,9 @@
 #                                                              POSTGRES_PASSWORD (#99, controldb_roles.go)
 #   v1-eu-analytics-api-key (#386)                             readers' reader_side.analytics and the analytics
 #                                                              processor only (credentials.go)
+#   v1-eu-redis-http       token                              Redis HTTP shim and dashboard (credentials.go)
+#   v1-eu-harvest-sign     HARVEST_SIGN                       index-builder and harvest-master (credentials.go)
+#   v1-eu-harvest-notification NOTIFICATION_SIGNATURE          harvest-master (credentials.go)
 #
 # Derived:
 #   JWT_ISSUER                     <- spec.jwtIssuer (config.go jwtIssuer)
@@ -101,46 +107,64 @@
 #   dashboard ORAMACORE_PLACEMENT_CLUSTER_ID <- the `c1` row's id the cluster-row Job records (#572)
 #   dashboard REDIS_CACHE_URL      <- http://v1-eu-redis-http, the serverless-redis-http shim (#562)
 #   index-builder ORAMA_EMBEDDINGS_URL <- http://v1-eu-hpes:8787/v1/embeddings_b64, the stack's HPES (#574)
+#   dashboard uploads endpoint/bucket/region/access keys <- v1-eu-uploads-r2, reconciled through the
+#                                  owned CloudflareR2Bucket; verify provisioning before using uploads.
+#
+# Accepted exception (#885, Juan, 2026-10-23): retain the existing three-byte ANTHROPIC_API_KEY.
+#   It is non-working; the rejected 108-byte Prod 1 candidate is not installed. The original
+#   all-four-real-keys acceptance is unmet. Google and dedicated Groq passed read-only model listing;
+#   the existing OpenAI value and default Groq selection are unchanged. This grants no set apply.
 #
 # Blocked (#570 generated credentials, #747 the remaining third-party keys,
 # #573 the stack's own ingress-nginx, #574 HPES, #575 no tunnel ingress,
 # #562 the Redis HTTP shim): required values this file cannot carry yet. Each needs its prerequisite first; none is
 # worked around here, and no internal password is copied to bypass a missing generator.
-#   Images: not pinned by digest, not mirrored privately, and not moved to exact version tags (Steve,
-#     2026-10-17). Our own images run by their release tags (main-<sha> or vX.Y.Z); upstream images run
-#     on the operator's default tags. Still to build before an apply:
+#   Images: production digest selections and qualification remain incomplete (Steve, 2026-10-17).
+#     Existing build records do not prove every production workload is qualified. Our own images
+#     need reviewed release tags (main-<sha> or vX.Y.Z) and digests. Verify before an apply:
 #     - oramacore-writer, oramacore-reader: the v1.2.39 side-only images (#308, orama-cloud-v1-bridge#5),
 #       and the reader with oramacore#340/#341. Without both overrides the engine runs the combined
 #       image, which the template sets to oramasearch/oramacore-cloud-v1 with #340/#341 (#597). Its
 #       readers still never hold the writer's master key: they render combined-reader.yaml (#795).
-#     - dashboard: the Clerk build (orama-bridge#180, #187).
-#     - analytics-processor: the build with the 0.0.0.0:8080 listener patch (#421).
+#     - dashboard: Clerk images have run on v1-dev (orama-bridge#187); production Clerk configuration,
+#       build inputs, image selection and cutover proof remain prerequisites (orama-bridge#188).
+#     - analytics-processor: qualify a production digest with the 0.0.0.0:8080 listener patch (#421);
+#       an older v1-sandbox build record alone does not prove that patch is present.
 #     - HPES: the CPU image oramasearch/embeddings-server-py:cpu-<sha> (embeddings-server-py#9), pinned by
 #       digest in images.overrides.hpes; the operator runs the component (hpes.go, #574).
 #   Credentials the operator does not generate yet, all of which only have to agree inside the stack:
 #     the one ClickHouse password (analytics, analytics processor, dashboard, workers), TYPESENSE_API_KEY
-#     (search and index-builder), HARVEST_SIGN (index-builder, harvest-master, harvest workers),
+#     (search and index-builder),
 #     DECRYPTER_API_SECRET_BASE64 (index-builder's x-api-key to
 #     openai-decrypter, index-manager apps/index-builder/src/embeddings/openai.ts; openai-decrypter gets
-#     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder),
-#     REDIS_CACHE_TOKEN (the serverless-redis-http shim, decisions #12a, not built), QSTASH_TOKEN (workers).
+#     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder).
+#     Read-only EU inspection (2026-10-23) confirms those component Secret fields still match the
+#     operator's dev seeds; current workloads consume them through envFrom or explicit references.
+#     Decrypter receiver authentication and the dashboard deployment-API key contract still need
+#     qualification; DEPLOYMENT_API_API_KEY is not wired to the dedicated dashboard PRIVATE_API_KEY.
+#     HARVEST's worker still seeds a dummy HARVEST_SIGN; verify the eventual
+#     crawler-job wiring separately. The index-builder/master pair and Redis HTTP token are generated.
 #   The dashboard's Stripe key (#802, LSR-140, #885): the v1-eu-only reference below is prepared,
 #     and orama-system/v1-prod-dashboard-stripe now holds the validated restricted live key with
 #     exactly docs/components.md's permissions ("The dashboard's Stripe key"). Lake bills in the same
 #     account; its full key was not reused. With the later production-file apply, remove STRIPE_SECRET_KEY
 #     from v1-prod-dashboard-env: a second key beside the reference is refused. Do not remove it early.
-#   LLM provider keys (#885): v1-prod-llm-keys still needs a valid Anthropic key. Prod 1's stored
-#     Anthropic key fails authentication; its target value remains a three-byte placeholder. Google
-#     and the dedicated Groq key pass read-only model listing; the existing real OpenAI key is preserved.
 #   Third-party keys: the workers' SENTRY_DSN now takes a reference (components.workers.sentryDSNSecretRef,
-#     #571), but its source Secret does not exist yet; creating it in orama-system is Steve's consent.
+#     #571), but this file sets no reference or member source copy. Select and validate the intended
+#     source before wiring both; no absence of a credential elsewhere is implied.
 #     index-builder's ABLY_API_KEY and APIFY_TOKEN and harvest-master's GITHUB_PAT and GHCR_TOKEN still
 #     sit in v1-eu-<component>-secret beside internal keys; they wait on the decisions in #747.
-#   Outside services not settled by the bridge epic: AWS S3 for uploads (AWS_ACCESS_KEY_VALUE,
-#     AWS_SECRET_ACCESS_KEY_VALUE, S3_BUCKET*), Ably, Apify, QStash.
-#   Configuration values to read from Prod 1 and add to dashboard.env: S3_BUCKET, S3_BUCKET_REGION,
-#     S3_BUCKET_PREFIX, SLACK_CHANNEL_NEW_USERS, SLACK_CHANNEL_STRIPE, DATA_SOURCE_REQUEST_URL; and
-#     controlDB.stripePrices with live-mode Stripe price IDs (#378).
+#   Outside-service decisions still required: Ably and Apify (#747), QStash (workers' QSTASH_TOKEN).
+#     Uploads use the stack's owned R2 bucket; copied Prod 1 AWS credentials do not verify readiness.
+#   Dashboard source preparation: RESEND_API_KEY, SLACK_TOKEN, Slack channels,
+#     S3_BUCKET_PREFIX and DATA_SOURCE_REQUEST_URL remain three-byte placeholders (read 2026-10-23).
+#     Scoped Vercel production candidates are staged privately where available, not installed.
+#     PRIVATE_API_KEY is prepared in this source (64 hex characters); the target import consumer
+#     reads the same dashboard source. Shared email/Slack inputs require isolation review.
+#     Clerk keys are absent from this source Secret; production instance/satellite configuration and
+#     controlDB.stripePrices with live-mode Stripe price IDs (#378) still need preparation.
+#     REDIS_CACHE_URL/TOKEN and NEXT_PUBLIC_APP_URL in envFrom are overridden by operator env entries;
+#     uploads endpoint/bucket/region/access keys likewise use the owned R2 Secret once provisioned.
 apiVersion: orama.cloud/v1alpha1
 kind: OramaCloudV1Set
 metadata:
