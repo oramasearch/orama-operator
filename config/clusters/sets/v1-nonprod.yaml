@@ -196,18 +196,25 @@ spec:
     idp:
       provider: none
     images:
-      # The combined OramaCore engine: v1.2.39 plus oramacore#340 and #341, which serve
-      # GET /health/ready, the readers' readiness probe since #506 (#597), and oramacore#343,
-      # which keeps a collection recreated before the readers' next commit (orama-bridge#220).
-      # Built from oramacore caca2a59 into the private oramasearch/oramacore-cloud-v1.
-      # v1-prod.yaml still runs 9d8ed373.
+      # The newest build of each Cloud v1 component, with the 22 October security fixes: the images
+      # production will run (orama-bridge decisions 2026-10-23, 3). Components not listed run the
+      # v1-sandbox tag, because nothing newer exists for them.
       overrides:
         # The Clerk dashboard from dashboard dev 56f355da: the Cloud v1 security fixes (dashboard#187) and
         # R2 upload signing (dashboard#186); recorded in orama-cloud-v1-bridge#12.
         dashboard: oramasearch/dashboard:v1-dev-56f355da@sha256:975d13df7fdfe9a7a4fbb2b7817294007604540c1bebc74a517d6acf20b87f5e
-        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-ready-caca2a59
+        # The combined OramaCore engine from oramacore-private develop 91a1b086: caca2a59 (v1.2.39 with
+        # oramacore#340, #341 and #343) plus the security fixes LSR-063, -064, -149 to -155, -234 and -235.
+        oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-91a1b086@sha256:c55d42b1dbf1d057ca14001bf3fedf883ab06573386fd87c8e4557d7e5aed05a
         # CPU HPES with all six pinned model snapshots cached and verified offline (#883).
         hpes: oramasearch/embeddings-server-py:cpu-746d61320636@sha256:326fc9bb13773989677e1d9b9ee7a07eabfeb4caec514b89fc822467783afe90
+        # Services from each repository's dev tip with the security fixes, recorded in
+        # orama-cloud-v1-bridge#15.
+        index-builder: oramasearch/index-builder:v1-dev-c59f563a@sha256:4d13b9cdd5c36291406fc215542fde582b6b5660fc01b3fc5e99672284268d9e
+        disco: oramasearch/disco:v1-dev-b9c6050b@sha256:cc856f56122cdacc0fbafe688a1e41643466cadcdd3b1b83b1a732c549d360c5
+        analytics-processor: oramasearch/analytics-processor:v1-dev-a9dc4f7b@sha256:004ce89d5a863046ed5cee4d8d58bc687c817075b999151dd83ff19276efe9e1
+        harvest-master: oramasearch/harvest-master:v1-dev-5773f2da@sha256:7eea9df90883848f80499bf72afc446cec96a8de19e01012de630f2218ed3182
+        harvest: oramasearch/harvest:v1-dev-5773f2da@sha256:9941126f9b945674d2450f47e6d132f6a1124fd63ba25c7bf3dde10cb6747769
       pullSecretName: oramasearch-dockerhub
       registry: oramasearch
       tag: v1-sandbox
