@@ -228,7 +228,17 @@ func serviceZettaEndpoint(lake, slug, namespace string) string {
 }
 
 func servicePostgresHost(lake, slug, namespace string) string {
-	return fmt.Sprintf("%s-rw.%s.svc.cluster.local", serviceResourceName(lake, slug), namespace)
+	return cnpgReadWriteHost(serviceResourceName(lake, slug), namespace)
+}
+
+// cnpgReadWriteHost is the read-write Service CloudNativePG creates for the Cluster name.
+func cnpgReadWriteHost(name, namespace string) string {
+	return fmt.Sprintf("%s-rw.%s.svc.cluster.local", name, namespace)
+}
+
+// cnpgReadWriteAuthority is cnpgReadWriteHost on the Postgres port.
+func cnpgReadWriteAuthority(name, namespace string) string {
+	return fmt.Sprintf("%s:%d", cnpgReadWriteHost(name, namespace), servicePostgresPort)
 }
 
 func servicePostgresEndpoint(lake, slug, namespace string) string {
@@ -881,7 +891,11 @@ func (r *LakeReconciler) reconcileZettaService(ctx context.Context, lake *oramav
 		if egressErr != nil {
 			logf.FromContext(ctx).Error(egressErr, "Zetta egress allowlist kept or denied", "service", svc.ID)
 		}
-		cluster.Spec.Env = serviceZettaEnv(lake, egressAllow)
+		connectorAllow, connectorErr := workspaceZettaConnectorAllow(ctx, r.Client, lake, namespace, cluster.Spec.Env)
+		if connectorErr != nil {
+			logf.FromContext(ctx).Error(connectorErr, "Zetta connector destinations kept or emptied", "service", svc.ID)
+		}
+		cluster.Spec.Env = serviceZettaEnv(lake, egressAllow, connectorAllow)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.ProvisionOperatorSchema = &operatorSchema
 		return controllerutil.SetControllerReference(lake, cluster, r.Scheme)
