@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,7 +91,8 @@ func peerGatewaySelector(peer *oramav1alpha1.PeerConnection) map[string]string {
 // reach the exported targets.
 type PeerConnectionReconciler struct {
 	client.Client
-	// APIReader lists a target's pods uncached, to resolve a named target port. Nil cannot.
+	// APIReader reads credentials and gateway termination uncached, and resolves named target ports.
+	// Nil falls back to Client for trust checks, but cannot resolve named target ports.
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	// Image is the zetta-tunnel image; empty means DefaultZettaTunnelImage.
@@ -158,6 +160,9 @@ func (r *PeerConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			})
 		case errors.As(err, &invalid):
 			return ctrl.Result{}, r.setStatus(ctx, &peer, oramav1alpha1.PeerConnectionStatus{Phase: oramav1alpha1.PeerPhaseFailed, Message: err.Error()})
+		}
+		if observed.Phase != "" {
+			err = errors.Join(err, r.setStatus(ctx, &peer, observed))
 		}
 		return ctrl.Result{}, err
 	}
@@ -258,12 +263,19 @@ type peerCredentials struct {
 func (r *PeerConnectionReconciler) credentials(ctx context.Context, peer *oramav1alpha1.PeerConnection) (peerCredentials, error) {
 	name := peerCredentialsSecret(peer)
 	var secret corev1.Secret
-	if err := r.Get(ctx, client.ObjectKey{Namespace: peer.Namespace, Name: name}, &secret); err != nil {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: peer.Namespace, Name: name}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return peerCredentials{}, connectionPendingError{message: fmt.Sprintf(
 				"waiting for credentials Secret %s, written by a PeerLink on the managing cluster", name)}
 		}
 		return peerCredentials{}, err
+	}
+	if !secret.DeletionTimestamp.IsZero() {
+		return peerCredentials{}, connectionPendingError{message: "credentials Secret " + name + " is being deleted"}
 	}
 	for _, key := range []string{corev1.TLSCertKey, corev1.TLSPrivateKeyKey, "ca.crt", "peer-name"} {
 		if len(secret.Data[key]) == 0 {
@@ -277,11 +289,21 @@ func (r *PeerConnectionReconciler) credentials(ctx context.Context, peer *oramav
 	if _, err := pemCertificates(secret.Data["ca.crt"]); err != nil {
 		return peerCredentials{}, zettaTunnelInvalid{message: fmt.Sprintf("credentials Secret %s ca.crt: %v", name, err)}
 	}
+	if _, err := tls.X509KeyPair(secret.Data[corev1.TLSCertKey], secret.Data[corev1.TLSPrivateKeyKey]); err != nil {
+		return peerCredentials{}, zettaTunnelInvalid{message: "credentials Secret " + name + " must hold a matching certificate and private key"}
+	}
+	if strings.TrimSpace(string(secret.Data["peer-name"])) == "" {
+		return peerCredentials{}, zettaTunnelInvalid{message: "credentials Secret " + name + " has an empty peer-name"}
+	}
+	// JSON base64-encodes each byte slice, preserving field boundaries even when PEM
+	// readers accept padding containing the hash helper's NUL delimiter.
+	fingerprint, _ := json.Marshal([][]byte{[]byte(name), []byte(secret.UID), secret.Data[corev1.TLSCertKey],
+		secret.Data[corev1.TLSPrivateKeyKey], secret.Data["ca.crt"], secret.Data["peer-name"]})
 	return peerCredentials{
 		Identity: certs[0].DNSNames[0],
 		PeerName: strings.TrimSpace(string(secret.Data["peer-name"])),
 		Remote:   strings.TrimSpace(string(secret.Data["remote"])),
-		Hash:     sha256Hex(secret.Data[corev1.TLSCertKey], secret.Data["ca.crt"], secret.Data["peer-name"]),
+		Hash:     sha256Hex(fingerprint),
 	}, nil
 }
 
@@ -464,11 +486,34 @@ func (r *PeerConnectionReconciler) sandbox(ctx context.Context, peer *oramav1alp
 }
 
 func (r *PeerConnectionReconciler) reconcilePresent(ctx context.Context, peer *oramav1alpha1.PeerConnection) (oramav1alpha1.PeerConnectionStatus, error) {
-	sandbox, err := r.sandbox(ctx, peer)
+	// Check trust before any other prerequisite: a missing sandbox or export must never
+	// hide withdrawn credentials and leave an existing gateway authorized.
+	credentials, err := r.credentials(ctx, peer)
 	if err != nil {
+		if teardownErr := r.teardown(ctx, peer); teardownErr != nil {
+			return oramav1alpha1.PeerConnectionStatus{Phase: oramav1alpha1.PeerPhaseFailed, Message: "cannot withdraw peer trust: " + teardownErr.Error()}, teardownErr
+		}
+		return oramav1alpha1.PeerConnectionStatus{Phase: oramav1alpha1.PeerPhaseFailed, Message: err.Error()}, err
+	}
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	var current appsv1.Deployment
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: peer.Namespace, Name: peerGatewayName(peer)}, &current); err == nil {
+		if !metav1.IsControlledBy(&current, peer) {
+			return oramav1alpha1.PeerConnectionStatus{}, zettaTunnelInvalid{message: "gateway Deployment is not this peer's"}
+		}
+		if !current.DeletionTimestamp.IsZero() || current.Spec.Template.Annotations["orama.cloud/peer-credentials"] != credentials.Hash {
+			if err := r.withdraw(ctx, peer, true); err != nil {
+				return oramav1alpha1.PeerConnectionStatus{Phase: oramav1alpha1.PeerPhaseFailed, Message: "cannot withdraw peer trust: " + err.Error()}, err
+			}
+			return oramav1alpha1.PeerConnectionStatus{}, connectionPendingError{message: "old gateway removed; waiting to start with current credentials"}
+		}
+	} else if !apierrors.IsNotFound(err) {
 		return oramav1alpha1.PeerConnectionStatus{}, err
 	}
-	credentials, err := r.credentials(ctx, peer)
+	sandbox, err := r.sandbox(ctx, peer)
 	if err != nil {
 		return oramav1alpha1.PeerConnectionStatus{}, err
 	}
@@ -546,7 +591,11 @@ func (r *PeerConnectionReconciler) reconcilePresent(ctx context.Context, peer *o
 // currentGatewayAddress is the gateway Service's public address, if it has one.
 func (r *PeerConnectionReconciler) currentGatewayAddress(ctx context.Context, peer *oramav1alpha1.PeerConnection) string {
 	var service corev1.Service
-	if err := r.Get(ctx, client.ObjectKey{Namespace: peer.Namespace, Name: peerGatewayName(peer)}, &service); err != nil || !metav1.IsControlledBy(&service, peer) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: peer.Namespace, Name: peerGatewayName(peer)}, &service); err != nil || !metav1.IsControlledBy(&service, peer) || !service.DeletionTimestamp.IsZero() {
 		return ""
 	}
 	return peerGatewayAddress(&service)
@@ -675,7 +724,7 @@ func setPrefixedSandboxAllowances(
 	prefix string,
 	allowances []oramav1alpha1.NetworkSandboxPolicy,
 ) error {
-	kept := make([]oramav1alpha1.NetworkSandboxPolicy, 0, len(sandbox.Spec.Policies)+len(allowances))
+	var kept []oramav1alpha1.NetworkSandboxPolicy
 	for _, policy := range sandbox.Spec.Policies {
 		if !strings.HasPrefix(policy.Name, prefix) {
 			kept = append(kept, policy)
@@ -748,8 +797,8 @@ func (r *PeerConnectionReconciler) reconcileGateway(
 		deployment.Spec.Replicas = int32Ptr(peerReplicas)
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: peerGatewaySelector(peer)}
 		deployment.Spec.Template.Labels = labels
-		// A credential change restarts the gateway; a document change reaches it through the
-		// mounted file, which it re-reads every two seconds.
+		// Trust changes remove the old Deployment before this one is created. A document
+		// change reaches the gateway through the mounted file, re-read every two seconds.
 		deployment.Spec.Template.Annotations = map[string]string{"orama.cloud/peer-credentials": credentials.Hash}
 		deployment.Spec.Template.Spec = corev1.PodSpec{
 			AutomountServiceAccountToken:  boolPtr(false),
@@ -869,34 +918,71 @@ func (r *PeerConnectionReconciler) deleteImportServices(ctx context.Context, pee
 // teardown withdraws the import Services and every policy first, then removes the projection and
 // the gateway, as zetta-tunnel's peer contract orders it.
 func (r *PeerConnectionReconciler) teardown(ctx context.Context, peer *oramav1alpha1.PeerConnection) error {
+	return r.withdraw(ctx, peer, false)
+}
+
+// withdraw keeps the public Service during rotation so the pair retains its addresses.
+func (r *PeerConnectionReconciler) withdraw(ctx context.Context, peer *oramav1alpha1.PeerConnection, keepAddress bool) error {
+	// Keep withdrawing the gateway even if another cleanup operation fails.
+	var cleanupErrors []error
 	if err := r.deleteImportServices(ctx, peer, nil); err != nil {
-		return err
+		cleanupErrors = append(cleanupErrors, err)
 	}
 	var sandbox oramav1alpha1.NetworkSandbox
 	if err := r.Get(ctx, client.ObjectKey{Namespace: peer.Namespace, Name: networkSandboxName}, &sandbox); err == nil {
 		if err := setPrefixedSandboxAllowances(ctx, r.Client, r.Scheme, &sandbox, peerAllowancePrefix(peer), nil); err != nil {
-			return err
+			cleanupErrors = append(cleanupErrors, err)
 		}
 	} else if !apierrors.IsNotFound(err) {
-		return err
+		cleanupErrors = append(cleanupErrors, err)
 	}
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	gatewayTerminating := false
 	for _, object := range []client.Object{
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: peerGatewayName(peer), Namespace: peer.Namespace}},
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: peerGatewayName(peer), Namespace: peer.Namespace}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: peerGatewayName(peer), Namespace: peer.Namespace}},
 	} {
-		if err := r.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
+		if _, service := object.(*corev1.Service); service && keepAddress {
+			continue
+		}
+		if err := reader.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+			if !apierrors.IsNotFound(err) {
+				cleanupErrors = append(cleanupErrors, err)
 			}
-			return err
+			continue
 		}
 		if !metav1.IsControlledBy(object, peer) {
 			continue
 		}
-		if err := r.Delete(ctx, object, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
-			return err
+		propagation := metav1.DeletePropagationBackground
+		if _, gateway := object.(*appsv1.Deployment); gateway {
+			// Foreground GC keeps the Deployment until its ReplicaSets and pods are gone.
+			// Never allow a replacement (even if credentials return) while old TLS lives.
+			propagation = metav1.DeletePropagationForeground
 		}
+		if object.GetDeletionTimestamp().IsZero() {
+			uid := object.GetUID()
+			if err := r.Delete(ctx, object, client.PropagationPolicy(propagation), client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
+				cleanupErrors = append(cleanupErrors, err)
+			}
+		}
+		if propagation == metav1.DeletePropagationForeground {
+			if err := reader.Get(ctx, client.ObjectKeyFromObject(object), object); err == nil {
+				gatewayTerminating = true
+			} else if !apierrors.IsNotFound(err) {
+				cleanupErrors = append(cleanupErrors, err)
+			}
+		}
+	}
+	if err := errors.Join(cleanupErrors...); err != nil {
+		return err
+	}
+	if gatewayTerminating {
+		return connectionPendingError{message: "withdrawing peer trust; waiting for old gateway pods to terminate"}
 	}
 	return nil
 }
