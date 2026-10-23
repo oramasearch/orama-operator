@@ -150,9 +150,13 @@
 #   Third-party keys: the workers' SENTRY_DSN now takes a reference (components.workers.sentryDSNSecretRef,
 #     #571), but this file sets no reference or member source copy. Select and validate the intended
 #     source before wiring both; no absence of a credential elsewhere is implied.
-#     index-builder's ABLY_API_KEY and APIFY_TOKEN and harvest-master's GITHUB_PAT and GHCR_TOKEN still
-#     sit in v1-eu-<component>-secret beside internal keys; they wait on the decisions in #747.
-#   Outside-service decisions still required: Ably and Apify (#747), QStash (workers' QSTASH_TOKEN).
+#     Ably stays external (#747): ingestion.ablyKeySecretRef optionally supplies index-builder's
+#     ABLY_API_KEY. Juan's latest decision (2026-10-23) leaves Ably on its current placeholder,
+#     accepting deferred provider functionality. Production leaves this field unset; no new source
+#     or member copy is declared. Future use requires a validated source and new operator/CRDs.
+#     HARVEST's separate Ably seed remains until its worker launcher is implemented (#12).
+#     APIFY_TOKEN and harvest-master's GITHUB_PAT/GHCR_TOKEN still wait on decisions in #747.
+#   Outside-service decisions still required: Apify (#747), QStash (workers' QSTASH_TOKEN).
 #     Uploads use the stack's owned R2 bucket; copied Prod 1 AWS credentials do not verify readiness.
 #   Dashboard source preparation: RESEND_API_KEY, SLACK_TOKEN, Slack channels,
 #     S3_BUCKET_PREFIX and DATA_SOURCE_REQUEST_URL remain three-byte placeholders (read 2026-10-23).

@@ -1157,6 +1157,15 @@ host is set)**.
     `accountID` of `spec.cloudflare.apiTokenSecretRef`, the token that already creates the KV
     namespaces it writes. No new field and no new copied Secret. Its `SENTRY_DSN` stays `""`
     (Sentry off there).
+  - **index-builder progress**: `ABLY_API_KEY` from `components.ingestion.ablyKeySecretRef`
+    (`{name, key}`, #747). It participates in the same validation, Secret watch and credentials
+    hash. Only index-builder consumes this reference. The current operator has no HARVEST worker
+    Job renderer (#12), and HARVEST's master still launches through a Docker-compatible pool when
+    one is configured. That port remains separate: the worker's sandbox Ably seed is unchanged,
+    and neither the master nor dashboard receives an unused key. The pinned nonprod dashboard
+    has no legacy Ably token handler. Juan chose to keep the current placeholder on 2026-10-23;
+    both committed sets leave the optional reference unset and defer provider functionality.
+    See [the Ably decision](provisioning-runbook.md#ably-deployment-progress-747).
 
   Each reference is an explicit `secretKeyRef` env entry, which wins over the component Secret's
   `envFrom`, and its Secret is in the workload's `orama.cloud/credentials-hash`, so a changed value
@@ -1164,10 +1173,10 @@ host is set)**.
   changes a referenced Secret. A missing Secret, key or empty value fails the component's step before
   its Deployment is written, and `Ready` names the variable, the field, the Secret and the key. A key
   with a reference is no longer seeded into a new component Secret; one an older Secret still holds
-  is shadowed by the explicit entry. Without a reference nothing changes. `ABLY_API_KEY`,
-  `APIFY_TOKEN`, `GITHUB_PAT` and `GHCR_TOKEN` have no reference yet: Ably and Apify wait for an
-  outside-service decision for Cloud v1, and harvest-master may not need the GitHub tokens at all
-  ([#747](https://github.com/oramasearch/orama-operator/issues/747)).
+  is shadowed by the explicit entry. Without a reference nothing changes. `APIFY_TOKEN`,
+  `GITHUB_PAT` and `GHCR_TOKEN` have no reference yet: Apify waits for an outside-service decision,
+  and harvest-master may not need the GitHub tokens at all. The builder's optional Ably capability
+  leaves [#747](https://github.com/oramasearch/orama-operator/issues/747)'s runtime work deferred.
 - **dashboard** — a Deployment + Service + an **Ingress** on `dashboard.host` and
   `dashboard.extraHosts`. It reads
   `JWT_ISSUER` from the shared ConfigMap through `envFrom`, which a running process does not

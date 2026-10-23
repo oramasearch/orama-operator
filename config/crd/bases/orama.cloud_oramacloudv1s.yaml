@@ -1695,6 +1695,25 @@ spec:
                     description: IngestionSpec configures the ingest path (index-builder
                       as a plain Deployment + HARVEST).
                     properties:
+                      ablyKeySecretRef:
+                        description: |-
+                          AblyKeySecretRef supplies index-builder's ABLY_API_KEY for deployment progress.
+                          The Secret must exist in this CR's namespace with a nonempty value; it is never written
+                          by the operator. Unset preserves the historical sandbox component-Secret defaults.
+                          HARVEST worker spawning is not implemented (#12); its separate seed is unchanged.
+                        properties:
+                          key:
+                            description: Key of the Secret that holds the value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
                       enabled:
                         default: true
                         type: boolean

@@ -29,8 +29,8 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 	// nothing eagerly (Redis/PG/DISCO/Ably are per-build), so present-and-valid env → healthy.
 	// It needs the master key, so it waits for spec.masterAPIKeySecretRef (masterAPIKeySecret).
 	if masterKey, ok := masterAPIKeySecret(oc); ok {
-		// CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from spec.cloudflare.apiTokenSecretRef
-		// (#571), checked before the Deployment is touched.
+		// Referenced Cloudflare credentials (#571) and Ably key (#747) are checked before the
+		// Deployment is touched. HARVEST's future worker launcher remains separate (#12).
 		refs := componentKeyRefs(oc, "index-builder")
 		if err := r.checkKeyRefs(ctx, oc, refs); err != nil {
 			return err
