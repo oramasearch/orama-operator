@@ -61,7 +61,7 @@
 #                                                        production (#885, 2026-10-23).
 #   v1-prod-dashboard-stripe STRIPE_SECRET_KEY             dashboard.stripeSecretKeySecretRef only;
 #                                                        a restricted live key with docs/components.md's
-#                                                        exact permissions, pending creation (#885).
+#                                                        exact permissions, created/validated 2026-10-23 (#885).
 # v1-us: nothing copied. Its master key is generated (#615) until the US migration names Prod 1's.
 #
 #   Not copied: AIRBYTE_WEBHOOK_SECRET and every AIRBYTE_* (Airbyte removed, bridge decisions 2026-10-16
@@ -125,9 +125,9 @@
 #     no Secret), API_SECRET and DEPLOYMENT_API_API_KEY (index-builder),
 #     REDIS_CACHE_TOKEN (the serverless-redis-http shim, decisions #12a, not built), QSTASH_TOKEN (workers).
 #   The dashboard's Stripe key (#802, LSR-140, #885): the v1-eu-only reference below is prepared,
-#     but orama-system/v1-prod-dashboard-stripe still needs a restricted live key (rk_live_) with
+#     and orama-system/v1-prod-dashboard-stripe now holds the validated restricted live key with
 #     exactly docs/components.md's permissions ("The dashboard's Stripe key"). Lake bills in the same
-#     account; never use its full key. With the later production-file apply, remove STRIPE_SECRET_KEY
+#     account; its full key was not reused. With the later production-file apply, remove STRIPE_SECRET_KEY
 #     from v1-prod-dashboard-env: a second key beside the reference is refused. Do not remove it early.
 #   LLM provider keys (#885): v1-prod-llm-keys still needs a valid Anthropic key. Prod 1's stored
 #     Anthropic key fails authentication; its target value remains a three-byte placeholder. Google
