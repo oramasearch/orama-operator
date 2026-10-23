@@ -184,7 +184,12 @@ Every Zetta a Lake owns also gets `ZETTA_MALLOC_TRIM_THRESHOLD_BYTES=67108864`,
 NetworkSandbox allows each Zetta into its allowlist: the EgressRules and Connections it carries for
 that Zetta and the workspace's `internetEgress` (`*:443`); the data-plane Zetta gets an empty list
 ([#724](https://github.com/oramasearch/orama-operator/issues/724),
-[egress rules](../infrastructure/egress-rules.md#a-lake-zettas-own-allowlist-defense-in-depth)). The agent model defaults to `gpt-5.5` (`spec.agents.model`). An app without its own host
+[egress rules](../infrastructure/egress-rules.md#a-lake-zettas-own-allowlist-defense-in-depth)).
+Every managed Zetta service and workspace Zetta also gets `ZETTA_CONNECTOR_ALLOW_DESTINATIONS`: the
+exact `host:port` of each postgres, tidb, sqlite, duckdb and polars service in its workspace
+namespace, empty when there are none, and never taken from the spec
+([#882](https://github.com/oramasearch/orama-operator/issues/882),
+[connector destinations](../infrastructure/egress-rules.md#a-workspace-zettas-approved-connector-destinations)). The agent model defaults to `gpt-5.5` (`spec.agents.model`). An app without its own host
 is `<app>.<spec.apps.wildcard>`, and an empty wildcard uses the Lake's `spec.host`
 (`myapp.lake-dev.oramadev.net`); HTTPS on those two-level names needs a certificate per zone
 ([#515](https://github.com/oramasearch/orama-operator/issues/515)).

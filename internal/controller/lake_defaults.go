@@ -108,9 +108,12 @@ func lakeDataPlaneZettaEnv(lake *oramav1alpha1.Lake) []corev1.EnvVar {
 }
 
 // serviceZettaEnv is the env of every managed Zetta service and every workspace Zetta, with the
-// egress allowlist rendered from its workspace namespace (workspaceZettaEgressAllow).
-func serviceZettaEnv(lake *oramav1alpha1.Lake, egressAllow string) []corev1.EnvVar {
-	return withZettaEgressAllow(withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv), egressAllow)
+// egress allowlist rendered from its workspace namespace (workspaceZettaEgressAllow) and, last, the
+// connector destinations approved from the Lake services in that namespace
+// (workspaceZettaConnectorAllow, lake_zetta_connector_destinations.go), which the spec cannot set.
+func serviceZettaEnv(lake *oramav1alpha1.Lake, egressAllow, connectorAllow string) []corev1.EnvVar {
+	return withZettaConnectorAllow(
+		withZettaEgressAllow(withLakeDefaultZettaEnv(lake.Spec.Services.ZettaEnv), egressAllow), connectorAllow)
 }
 
 // lakeAppsRuntimeImage is the image runtime-mode apps run.

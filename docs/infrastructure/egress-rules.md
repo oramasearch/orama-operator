@@ -160,6 +160,53 @@ running value is kept; a list longer than 64 KiB (beyond what one environment st
 becomes deny and is logged. A spec that names `ZETTA_EGRESS_ALLOW` (`spec.zetta.env`,
 `spec.services.zettaEnv`) keeps its own value.
 
+## A workspace Zetta's approved connector destinations
+
+Separately from egress, a Zetta dials a **private or loopback connector source** (a Postgres, a
+MySQL-protocol TiDB, or one of lake's SQLite, DuckDB and Polars services) only when
+`ZETTA_CONNECTOR_ALLOW_DESTINATIONS` names it as an exact `host:port`, comma-separated. Metadata and
+link-local addresses are refused whatever it says (zetta
+[#1469](https://github.com/oramasearch/zetta/pull/1469), LSR-241,
+[zetta#1414](https://github.com/oramasearch/zetta/issues/1414)). Without the variable, a workspace's
+in-cluster sources stop working once a Zetta image with that change rolls.
+
+The operator renders it on every managed Zetta service and every workspace Zetta
+([#882](https://github.com/oramasearch/orama-operator/issues/882),
+`internal/controller/lake_zetta_connector_destinations.go`). It is in the `OramaZettaCluster`'s
+`spec.env`, so every pod of the cluster carries it, including each node that takes part in a
+distributed fetch. The entries come only from the Lake services the operator reconciles in that
+Zetta's workspace namespace:
+
+| Lake service in the namespace | Entry |
+|---|---|
+| `postgres` (CloudNativePG `Cluster` `<name>`) | `<name>-rw.<namespace>.svc.cluster.local:5432` |
+| `tidb` (TiDB Operator `TidbCluster` `<name>`) | `<name>-tidb.<namespace>.svc.cluster.local:4000` |
+| `sqlite`, `duckdb`, `polars` (`StatefulSet` `<name>`) | `<name>.<namespace>.svc.cluster.local:8080` |
+
+Each entry is the authority of the endpoint lake hands the workspace in that service's credential,
+so the connector dials exactly what is approved. An object counts only when the Lake controls it,
+it carries the Lake's `orama.cloud/lake` and `orama.cloud/service-kind` labels, and it is not being
+deleted. A kind whose upstream operator is not installed has no entries. There are no wildcards and
+no address ranges, and a namespace never lists another namespace's services.
+
+- **No sources, empty value.** A namespace with none of these services gets the variable with an
+  empty value. That approves no private destination, the same as the engine's default, and keeps the
+  variable visible in the spec, as `ZETTA_EGRESS_ALLOW` is.
+- **The operator's alone.** A `ZETTA_CONNECTOR_ALLOW_DESTINATIONS` stated in
+  `spec.services.zettaEnv` is dropped. There is no flag, chart value or per-cluster setting, so every
+  cluster renders the same value from the same resources.
+- **It follows the services.** A service added or removed changes the value on the next workspace
+  or services poll (up to 60 seconds), which rolls the Zetta's pods. The list is sorted and
+  de-duplicated, so unchanged services never roll anything. When the namespace cannot be read, the
+  running value is kept.
+- **The network policy still applies.** Approval lets the engine dial; the namespace's
+  `NetworkSandbox` still decides whether the pod can reach the service.
+- The Lake's own data-plane Zetta (`spec.zetta`) is no workspace Zetta and gets no value.
+
+Tests: `TestWorkspaceZettaApprovesExactlyItsOwnServices`, `TestAWorkspaceWithNoSourcesApprovesNothing`,
+`TestWorkspaceZettaConnectorDestinationsFollowItsServices` and
+`TestConnectorDestinationsKeepTheCurrentValueWhenUnreadable`.
+
 ## Status
 
 `network_egress_rule_status` receives only real transitions with the Lake generation:

@@ -1328,7 +1328,11 @@ func (r *LakeWorkspacesReconciler) reconcileWorkspaceZetta(
 		if egressErr != nil {
 			logf.FromContext(ctx).Error(egressErr, "workspace Zetta egress allowlist kept or denied", "workspace", row.ID)
 		}
-		cluster.Spec.Env = serviceZettaEnv(lake, egressAllow)
+		connectorAllow, connectorErr := workspaceZettaConnectorAllow(ctx, r.Client, lake, namespace, cluster.Spec.Env)
+		if connectorErr != nil {
+			logf.FromContext(ctx).Error(connectorErr, "workspace Zetta connector destinations kept or emptied", "workspace", row.ID)
+		}
+		cluster.Spec.Env = serviceZettaEnv(lake, egressAllow, connectorAllow)
 		cluster.Spec.IngressEnabled = false
 		cluster.Spec.Host = ""
 		cluster.Spec.DNSSecretRef = nil
