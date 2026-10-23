@@ -97,7 +97,10 @@ legacy `webhook_secret` cannot verify deliveries to all three hosts
 ([operator#884](https://github.com/oramasearch/orama-operator/issues/884),
 [Stripe signature verification](https://docs.stripe.com/webhooks#verify-webhook-signatures-with-official-libraries)).
 The common sources remain `lake/oramasearch-dockerhub-nonprod` (a nonprod-only, read-only pull
-token) and `lake/lake-nonprod-openai` (a separate nonprod project key with a spend limit).
+token) and `lake/lake-nonprod-openai`. On 2026-10-23 Juan explicitly chose to reuse the existing
+Prod1 OpenAI key in that separate source ([#884 decision](https://github.com/oramasearch/orama-operator/issues/884#issuecomment-6374737150));
+Azure was cancelled. This is shared credential ownership, not key isolation. Preserve this
+consumer before Prod1 key revocation, and review its usage limits together with the shared budget.
 Create and verify every source credential before applying the set file; the references alone do
 not establish credential isolation. See [Lake payments](../../docs/lake/payments.md) for key
 permissions, generated signing Secrets and the `PaymentsReady` condition.

@@ -95,7 +95,8 @@ spec:
     as: oramasearch-dockerhub
   - name: cloudflare-api-token            # already nonprod's own: oramadev.net only
     namespace: lake
-  - name: lake-nonprod-openai             # OPENAI_API_KEY
+  # Juan chose the existing Prod1 OpenAI key for this separate source (#884); key reuse is intentional.
+  - name: lake-nonprod-openai             # OPENAI_API_KEY; keep the OpenAI provider
     namespace: lake
     as: lake-prod-openai
   template:
