@@ -18,12 +18,13 @@ import (
 // table of the images a Lake runs when its spec leaves one empty, so a LakeSet member states only
 // what differs per environment (host, args, env, secrets). A spec image still overrides its default.
 //
-// The defaults are pinned to what the managing cluster's Lake/prod ran on 2026-10-17. Moving a
-// version is a change to this table, rolled through the pipeline dev, testing, staging, prod.
+// The defaults are pinned to what the managing cluster's Lake/prod ran on 2026-10-17, apart from
+// Zetta, which is the v0.3.0 release pinned by digest (operator#588). Moving a version is a change
+// to this table, rolled through the pipeline dev, testing, staging, prod.
 const (
 	// lakeDefaultZettaImage is the Zetta of the Lake's own data plane, of every workspace and of
 	// every managed Zetta service.
-	lakeDefaultZettaImage = "oramasearch/zetta:main-4015ef76"
+	lakeDefaultZettaImage = "oramasearch/zetta:v0.3.0@sha256:0dad6a7fba1842a1406a3430394fd98a06d3241d9989a69470f6ad921a54328a"
 	// lakeDefaultAppsRuntimeImage runs runtime-mode apps (spec.apps.runtimeImage).
 	lakeDefaultAppsRuntimeImage = "oramasearch/app-runtime:976e6a8"
 	// lakeDefaultBuilderImage runs every image build (spec.builds.builderImage).
