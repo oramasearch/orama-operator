@@ -2,7 +2,7 @@
 
 This runbook starts with a fresh Linux machine, installs the `liquid` branch of
 [`oramasearch/k0s`](https://github.com/oramasearch/k0s/tree/liquid), installs CloudNativePG and the
-orama-operator chart, and applies one `Lake`. The matching distribution guide is
+cert-manager and the orama-operator chart, and applies one `Lake`. The matching distribution guide is
 `docs/liquid/lake-on-k0s.md` in that branch; its `hack/lake-on-k0s/install.sh` automates the
 connected procedure below.
 
@@ -78,7 +78,7 @@ Skip the Secrets only when all referenced images are public or already present i
 containerd content store. For an authenticated internal mirror, create the same Secret names with
 that mirror's server and credentials.
 
-## 3. Install CloudNativePG and the operator chart
+## 3. Install CloudNativePG, cert-manager, and the operator chart
 
 The liquid distribution proof pins the CloudNativePG chart to `0.29.0`, whose operator is `1.30.0`.
 Write a protected admin kubeconfig so Helm talks to k0s, then install the dependency and operator:
@@ -93,6 +93,15 @@ helm upgrade --install cloudnative-pg cnpg/cloudnative-pg \
   --namespace cnpg-system \
   --create-namespace \
   --version 0.29.0 \
+  --wait \
+  --timeout 15m
+helm repo add jetstack https://charts.jetstack.io
+helm repo update jetstack
+helm upgrade --install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --version v1.21.2 \
+  --set crds.enabled=true \
   --wait \
   --timeout 15m
 helm upgrade --install orama-operator /absolute/path/to/orama-operator/chart \

@@ -59,6 +59,7 @@ spec:
 apiVersion: orama.cloud/v1alpha1
 kind: ClusterHelmRelease
 metadata:
+  # Required by every operator's deployment HTTPS listener and by K8ssandra webhooks.
   name: nonprod-cert-manager
 spec:
   chart:
