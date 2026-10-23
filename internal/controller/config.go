@@ -239,9 +239,9 @@ func componentSecretData(component string) map[string]string {
 		// HARVEST_SIGN from the generated <cr>-harvest-sign it shares with harvest-master.
 		// index-builder's EnvSchema (src/utils.ts) requires 27 vars at boot; the secret
 		// carries the credential-shaped ones (envFrom exposes each key as its env var). The
-		// external ones (Apify/Ably) are dummies until real tokens are provisioned (operator#747);
-		// the Cloudflare pair is taken from spec.cloudflare.apiTokenSecretRef when it is set and is
-		// then not seeded (#571). Non-secret URLs/constants are set as plain env in reconcileIngestion.
+		// external ones (Apify/Ably) are dummies unless referenced/provisioned (operator#747).
+		// The Ably key and Cloudflare pair are not seeded when their references are set
+		// (componentKeyRefs). Non-secret URLs/constants are set as plain env in reconcileIngestion.
 		return map[string]string{
 			"TYPESENSE_API_KEY":           "dev-typesense-api-key",
 			"ABLY_API_KEY":                "sandbox.dummy:sandboxdummyablysecret000000",

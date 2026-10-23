@@ -436,6 +436,12 @@ type IngestionSpec struct {
 	// Harvest enables the crawler (Deployment + Mongo + Selenium grid).
 	// +kubebuilder:default=true
 	Harvest bool `json:"harvest,omitempty"`
+	// AblyKeySecretRef supplies index-builder's ABLY_API_KEY for deployment progress.
+	// The Secret must exist in this CR's namespace with a nonempty value; it is never written
+	// by the operator. Unset preserves the historical sandbox component-Secret defaults.
+	// HARVEST worker spawning is not implemented (#12); its separate seed is unchanged.
+	// +optional
+	AblyKeySecretRef *SecretKeyRef `json:"ablyKeySecretRef,omitempty"`
 	// Resources overrides the index-builder pod resources. When unset the operator applies
 	// a sensible per-component default (workload hardening, #18). HARVEST's master/Mongo/
 	// Selenium keep their own defaults.

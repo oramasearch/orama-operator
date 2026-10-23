@@ -196,6 +196,68 @@ kubectl --context orama-production-cluster-01 get lset <name> \
   -o jsonpath='{range .status.memberStatuses[*]}{.name} {.namespace} {.phase} {.version} | {.message}{"\n"}{end}'
 ```
 
+## Preparing the production v1 dashboard
+
+[#885](https://github.com/oramasearch/orama-operator/issues/885) keeps the live sandbox-shaped
+`v1-prod` set unchanged until the production file is ready. Its members remain `Ready=False` at
+the production dashboard authentication gate and their existing dashboards keep serving. A source
+Secret update alone does not fix that: the live set does not copy the production dashboard or LLM
+Secrets. The prepared [`v1-prod.yaml`](../../config/clusters/sets/v1-prod.yaml) gives only `v1-eu`
+the restricted Stripe reference and disables `v1-us`'s dashboard. Applying it needs Steve's approval
+after every blocker in its header is resolved.
+
+Source checkpoint, 2026-10-23: the restricted Stripe source exists and matches protected staging;
+cron/webhook authentication, Google, dedicated Groq and a dedicated Prod 2 `PRIVATE_API_KEY` are
+prepared. The 64-character hex private key was generated locally, stored in the migration registry
+and source Secret, and read back equal to staging; every other source value was preserved.
+Juan explicitly deferred
+Anthropic and chose to retain its existing three-byte non-working value. Preserve it unchanged:
+the original all-four-real-provider-keys acceptance is unmet, and the rejected Prod 1 candidate
+must not replace it. This exception does not approve the production set apply.
+
+Other dashboard inputs still require preparation: the source retains placeholders for
+Resend, Slack, `S3_BUCKET_PREFIX` and `DATA_SOURCE_REQUEST_URL`, and has no Clerk
+keys. Validate scoped source candidates and record their ownership before updating the source.
+Check the rendered references before treating an old `envFrom` value as a missing input: the
+operator supplies the Redis HTTP URL/token and dashboard origin, and reconciles an uploads R2
+bucket with its own endpoint, bucket, region and access keys. Verify that bucket's readiness;
+copying Prod 1 AWS credentials does not establish it. Image qualification, Clerk cutover and
+the header's other prerequisites remain independent gates.
+
+`PRIVATE_API_KEY` authenticates the dashboard's machine routes, including import metadata/status
+and file-upload URL requests. The target import consumer reads the dashboard's same source key
+and calls its in-cluster Service. Its prepared key is dedicated to Prod 2; the current live sandbox
+set does not consume that source. Resend invitations send real
+email and Slack signup/payment notifications post to their configured channels. Suspended dashboard
+crons and analytics import do not suspend those request-driven effects, so review notification
+isolation before installing carried credentials. Source inspection alone does not qualify delivery.
+
+Prepare the inputs in this order, using values from secure files rather than command arguments:
+
+1. Create `orama-system/v1-prod-dashboard-stripe` on the managing cluster with key
+   `STRIPE_SECRET_KEY`, a live restricted key with exactly the permissions in
+   [the dashboard's Stripe key](../components.md#the-dashboards-stripe-key-a-restricted-key-of-its-own-802).
+   Check the permission metadata in Stripe; the operator checks only the `rk_live_` prefix.
+2. Preserve the prepared OpenAI, Google and Groq values in `orama-system/v1-prod-llm-keys`, and
+   retain Anthropic unchanged under Juan's deferred exception. Check lengths only in output;
+   the original requirement that all four exceed 20 bytes remains unmet. Record
+   any carried Prod 1 credential as a shared dependency before Prod 1 retirement revokes it.
+3. With the later production apply, remove `STRIPE_SECRET_KEY` from `v1-prod-dashboard-env`.
+   Leave it in place until then; the restricted-key reference refuses a second key in `envFrom`.
+   Verify that `CRON_SECRET` and `STRIPE_WEBHOOK_SECRET` contain real values too: the latter must
+   match the existing `app.orama.com` Stripe endpoint. Merely finding these key names is insufficient.
+4. Apply the merged production set file, with Steve's consent, only after its remaining blockers
+   are resolved. Keep EU dashboard crons and the analytics import suspended through the migration.
+
+After applying, read the set and both members' conditions and confirm none reports a dashboard
+error. On EU, inspect the dashboard Deployment's references: `envFrom` names
+`v1-prod-dashboard-env` (with real `CRON_SECRET` and `STRIPE_WEBHOOK_SECRET`) and the explicit
+`STRIPE_SECRET_KEY` reference names `v1-prod-dashboard-stripe`. On US, confirm the dashboard
+Deployment, Service and scheduled jobs are absent and downstream components still reconcile.
+Check Secret lengths or equality within the checking process, never by printing their contents.
+Record each credential change and the eventual apply in the production change and compliance records,
+with approver, timestamp and sanitized evidence.
+
 ## Paid orders: `LakeOrderSource`
 
 A private warehouse or a dedicated cluster bought on lake.live is provisioned by the management

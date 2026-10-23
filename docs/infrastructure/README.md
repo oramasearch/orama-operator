@@ -14,11 +14,16 @@ real cluster has been created with them yet. The first step is one non-productio
 > the operator, add or change an instance in a set, and what has gone wrong before. What is
 > deployed is in [`config/clusters/`](../../config/clusters/README.md). The `orama-clusters` Claude
 > skill in the umbrella bridge is the short form.
+> The [production v1 dashboard procedure](operations.md#preparing-the-production-v1-dashboard)
+> separates source credential preparation from the approved production set apply, records the
+> deferred Anthropic exception, and distinguishes placeholders from operator-provided values.
 >
 > **Secure networking** (sandboxes, connections, tunnels, peering; #437) is designed in
 > [`secure-networking.md`](secure-networking.md); what is built is in
 > [`network-sandbox.md`](network-sandbox.md), [`connections.md`](connections.md) and
-> [`egress-rules.md`](egress-rules.md).
+> [`egress-rules.md`](egress-rules.md). `egress-rules.md` also carries each Lake Zetta's own
+> `ZETTA_EGRESS_ALLOW` and each workspace Zetta's `ZETTA_CONNECTOR_ALLOW_DESTINATIONS`, the exact
+> endpoints of its namespace's own data services (#882).
 
 ## The model
 

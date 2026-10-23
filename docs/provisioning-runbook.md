@@ -106,7 +106,7 @@ on the managing cluster is a cluster write and needs Steve's consent.
 | **Google (Gemini)** | engine | `GOOGLE_API_KEY` | aistudio.google.com → API keys |
 | **HuggingFace** | engine (model pulls) | `HF_TOKEN` | huggingface.co → settings → tokens |
 | **Apify** | index-builder (crawler) | `APIFY_TOKEN` | console.apify.com → integrations |
-| **Ably** | harvest, index-builder (live progress) | `ABLY_API_KEY` | ably.com → app → API keys |
+| **Ably** | index-builder (deployment progress); HARVEST worker wiring remains #12 | `ABLY_API_KEY` | `components.ingestion.ablyKeySecretRef`; [decision and limits](#ably-deployment-progress-747) |
 | **AWS S3** | harvest (crawl exports) | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | IAM user w/ a scoped bucket policy |
 | **Firebase** | dashboard, oramasearch-app (auth) | `FIREBASE_SERVICE_ACCOUNT` (+ the app's `NEXT_PUBLIC_FIREBASE_*` at build) | Firebase console → service accounts. **Temporary** — see the auth-provider decision ([operator#19](https://github.com/oramasearch/orama-operator/issues/19)). |
 | **Stripe** | dashboard (billing) | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | dashboard.stripe.com → API keys / webhooks |
@@ -141,6 +141,40 @@ The master key arrives the same way, through `spec.masterAPIKeySecretRef`
 ([crd-reference.md](crd-reference.md#specmasterapikeysecretref)). The operator watches every Secret
 a member reads and rolls its consumers when a value changes; nothing is restarted, patched or
 exec'd by hand.
+
+### Ably deployment progress (#747)
+
+Juan's latest decision on 2026-10-23 is to leave Ably on its current placeholder and accept
+that provider functionality is deferred. This supersedes the earlier plan to reuse Prod 1's Ably
+keys. Both committed set files leave `components.ingestion.ablyKeySecretRef` unset; no new Ably
+source Secret, source mirror or member reference is declared, and no credential is staged or
+installed. There is no pending account-restoration action or request for user input.
+
+The operator supports a future `components.ingestion.ablyKeySecretRef: {name, key}` for
+index-builder's deployment progress. It supplies a required explicit `ABLY_API_KEY` environment
+entry that wins over an older component Secret's `envFrom`; new component Secrets omit the Ably
+seed when referenced. The operator validates a nonempty value before writing the builder, watches
+the Secret and hashes its data to roll the builder on rotation. It never writes the source Secret.
+Unset preserves the historical sandbox seed.
+
+Future activation needs a usable source credential, a declared set Secret
+mirror and ingestion reference, and the operator with the new CRDs deployed through
+[the CRD rollout runbook](operations/crd-rollout.md). The coordinator's earlier validation of the
+recovered Prod 1 key returned HTTP 403 / Ably code 40300, `Account disabled`; that candidate is not
+usable. If shared Prod 1 credentials are reconsidered, a separate Kubernetes Secret name would
+provide no isolation of the Ably account, channels, permissions, quota or billing. No credential-copy
+guard is relaxed by this optional capability.
+
+This covers the builder only. At the current operator base, HARVEST worker spawning is still
+unimplemented (#12); there is no dynamically rendered worker Job to wire or validate. HARVEST's
+source master forwards worker environment through its Docker-compatible launcher, but the operator
+configures no pool. Its separate worker Ably seed remains unchanged until that real consumer is
+implemented. The pinned nonprod dashboard source (`56f355da`) has no legacy Ably token handler, so
+the change adds no unused dashboard or master key and keeps dashboard `envFrom` unchanged.
+
+The reference does not prove live Ably access or a complete index build. Builder/dashboard callback
+compatibility, internal authentication and an owned fixture still gate #883's build, persistence
+and readback proof. Apify and harvest-master's GitHub-token decisions remain open under #747.
 
 > **QStash / Upstash:** the operator points `QSTASH_URL` at the **in-cluster RabbitMQ**
 > (`v1-broker:5672`) as a shim, so no Upstash account is needed for the sandbox. Supply a
@@ -249,6 +283,6 @@ make specific *paths* function (tracked as issues):
    ([operator#23](https://github.com/oramasearch/orama-operator/issues/23)).
 5. **Real external functionality** — crawling needs a real Apify token (or the HARVEST
    consolidation, [operator#29](https://github.com/oramasearch/orama-operator/issues/29));
-   live progress needs a real Ably key (or an in-cluster replacement,
-   [operator#28](https://github.com/oramasearch/orama-operator/issues/28)); auth needs
+   live progress keeps its placeholder by decision and remains deferred
+   ([current decision and remaining blockers](#ably-deployment-progress-747)); auth needs
    the Firebase replacement ([operator#19](https://github.com/oramasearch/orama-operator/issues/19)).

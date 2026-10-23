@@ -87,7 +87,7 @@ func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T)
 		withStripeRef(d)
 	}
 	cases := map[string]tc{
-		// The committed v1-us member: a public dashboard with no dashboard env at all, so the
+		// The pre-cutover live v1-us member: a public dashboard with no dashboard env at all, so the
 		// operator's seeded placeholders and no CRON_SECRET.
 		"no dashboard env (the v1-us member)": {
 			want: []string{
@@ -190,6 +190,45 @@ func TestProductionDashboardIsNotRenderedWithSandboxAuthentication(t *testing.T)
 				}
 			})
 		}
+	}
+}
+
+// Disabling the dashboard on a production member must clean up its previous sandbox dashboard and
+// crons without needing production auth, and still reconcile the components that follow it (#885).
+func TestProductionDashboardDisableRemovesCronsAndReconcilesDocs(t *testing.T) {
+	oc := cronOC(nil)
+	oc.Spec.Components.Docs.Enabled = true
+	h := newEngineHarness(t, oc, dashEnvSecret())
+	h.mustRun()
+	if h.dashboard() == nil || len(h.cronJobs()) != 3 {
+		t.Fatal("initial dashboard and crons were not rendered")
+	}
+	var docs appsv1.Deployment
+	if !h.get("v1-docs", &docs) {
+		t.Fatal("initial docs Deployment was not rendered")
+	}
+	if err := h.cl.Delete(context.Background(), dashEnvSecret()); err != nil {
+		t.Fatal(err)
+	}
+	h.updateCR(func(o *oramav1alpha1.OramaCloudV1) {
+		labelProduction(o)
+		o.Spec.Components.Dashboard.Enabled = false
+		o.Spec.Components.Dashboard.Crons.Enabled = false
+		o.Spec.Images.Overrides = map[string]string{"docs": "example.com/docs:updated"}
+	})
+	h.mustRun()
+	if h.dashboard() != nil || len(h.cronJobs()) != 0 {
+		t.Fatal("disabled dashboard or its crons survived")
+	}
+	if h.get("v1-dashboard", &corev1.Service{}) || h.get("v1-dashboard-secret", &corev1.Secret{}) {
+		t.Fatal("disabled dashboard Service or Secret survived")
+	}
+	var updated appsv1.Deployment
+	if !h.get("v1-docs", &updated) || updated.Spec.Template.Spec.Containers[0].Image != "example.com/docs:updated" {
+		t.Fatal("docs did not reconcile after disabling the production dashboard")
+	}
+	if cond := meta.FindStatusCondition(h.stored().Status.Conditions, "Ready"); cond != nil && strings.HasPrefix(cond.Message, "dashboard:") {
+		t.Fatalf("disabled dashboard still blocks reconciliation: %+v", cond)
 	}
 }
 
