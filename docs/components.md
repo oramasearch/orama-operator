@@ -1573,6 +1573,15 @@ removes the invoice, refund and webhook-endpoint authority the finding names; se
 fully needs a separate Stripe account for each (the finding's fallback). Creating the key, and any
 account split, are done in Stripe by Steve or Juan, outside this repository.
 
+The prepared production set copies `v1-prod-dashboard-stripe` only to `v1-eu`, and references its
+`STRIPE_SECRET_KEY` key. Source-key creation and the later set apply are separate operations: remove
+the legacy `STRIPE_SECRET_KEY` entry from `v1-prod-dashboard-env` only with the approved apply.
+The US member has no production dashboard role and disables its dashboard (#885). A disabled
+dashboard removes its labelled dashboard resources and owned scheduled jobs (including canary state),
+skips production authentication checks, and permits the following reconciliation steps to run.
+Its crons must also be disabled; enabling crons without a dashboard is refused at admission and
+reported during reconciliation if admission was bypassed. Other components retain their resources.
+
 ### The dashboard's scheduled jobs
 
 `spec.components.dashboard.crons` ([operator#17](https://github.com/oramasearch/orama-operator/issues/17),
