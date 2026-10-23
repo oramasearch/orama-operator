@@ -3,6 +3,10 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.9.0](v0.9.0.md) — 2026-10-23. The operator side of zetta v0.5.0 (approved connector
+  destinations on every workspace Zetta), nonprod Stripe payments per environment, Cloud v1 production
+  dashboard credentials, the qualified HPES image and an optional Ably reference. 9 pull requests.
+  **Roll it before zetta v0.5.0.**
 - [v0.8.0](v0.8.0.md) — 2026-10-22. The security release from the multi-tenant audit and the
   pre-launch review (78 pull requests), lake v0.4.0's schema, backups, edge host policies and
   certificates, and the Cloud v1 stack's own users and keys. Read its *Before it rolls*.
