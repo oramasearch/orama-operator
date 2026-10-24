@@ -86,7 +86,7 @@ spec:
     # lake.live hosts: the token scoped to the lake.live zone only (decision 64).
     dnsSecretRef:
       name: cloudflare-api-token-lake-live
-    image: oramasearch/lake:v0.5.1
+    image: oramasearch/lake:v0.5.2
     ingressEnabled: true
     postgres:
       enabled: true

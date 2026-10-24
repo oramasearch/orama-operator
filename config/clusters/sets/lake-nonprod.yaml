@@ -107,7 +107,7 @@ spec:
       secretRef: {name: lake-prod-stripe}
     dnsSecretRef:
       name: cloudflare-api-token
-    image: oramasearch/lake:v0.5.1
+    image: oramasearch/lake:v0.5.2
     ingressEnabled: true
     postgres:
       enabled: true
