@@ -88,8 +88,8 @@ primary's enabled writer, the readers of an enabled engine (in a primary or read
 enabled analytics/cache/broker/search stores selected by their
 existing in-cluster mode and placement checks. External stores, disabled components, a read
 region's absent writer, and central stores skipped in a read region contribute no mismatch.
-ControlDB is always in-cluster (decision 61) and follows its enabled policy. HARVEST Mongo keeps the
-shared helper's `10Gi`/default-class output and has no new storage setting.
+ControlDB is always in-cluster (decision 61) and follows its enabled policy. HARVEST's Mongo takes
+`ingestion.harvestMongoStorage`, and is managed while ingestion and HARVEST are enabled.
 
 Writer, reader and store `storage.size` default to `10Gi`
 ([engine](#engine-internalcontrollerenginego)); every reader's claim `data-<cr>-reader-<n>` grows
@@ -140,6 +140,20 @@ and its CSI driver must support the disk/filesystem operation. See
 [Kubernetes expansion](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims)
 and [CNPG expansion](https://cloudnative-pg.io/docs/1.27/storage/#volume-expansion).
 A grown size stays in the set file that set it: a smaller value afterwards is a refused shrink.
+
+### Storage rebuild (`internal/controller/oramacloudv1_storage_rebuild.go`)
+
+A class change can't happen in place: claims and claim templates keep their class, and claims outlive
+their StatefulSet, so a stack re-created in its namespace takes the old claims back
+([#915](https://github.com/oramasearch/orama-operator/issues/915)). `spec.storageRebuild` runs first in
+the reconcile, before any component. It records the stack's data claims by name and UID in status, then
+deletes the data StatefulSets, the control DB's CNPG Cluster, its PostgresSchemas, the stack's own Jobs and
+the recorded claims, and holds every component until they are gone. Then it marks the rebuild `Completed`,
+and the ordinary component steps create everything again on the current storage settings: new claims from
+new templates, a fresh `initdb`, the schemas, the reference rows and the `c1` row. Nothing is inferred
+from a class mismatch: the request is explicit, bound to the instance's UID, runs once per `id`, and is
+refused while a migration exists in the namespace. Field reference and status:
+[crd-reference.md](crd-reference.md#storage-rebuild-specstoragerebuild).
 
 ## Cloudflare DNS ownership
 

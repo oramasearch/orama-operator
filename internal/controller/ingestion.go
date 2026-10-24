@@ -75,6 +75,7 @@ func (r *OramaCloudV1Reconciler) reconcileIngestion(ctx context.Context, oc *ora
 		image:     "mongo:7@sha256:c53852c00c23ca9f23fc39690350ffa9a80e3642fe8f96879726d8da0abe80a7",
 		ports:     []corev1.ContainerPort{{Name: "mongo", ContainerPort: 27017}},
 		dataPath:  "/data/db",
+		storage:   ing.HarvestMongoStorage,
 		resources: resourceReqs("256Mi", "50m", "1Gi"),
 	}); err != nil {
 		return err

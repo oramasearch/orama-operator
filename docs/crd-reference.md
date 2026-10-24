@@ -29,6 +29,7 @@ pointing at the primary); the full sample list is in
 | `components.ingestion.ablyKeySecretRef` | `{name, key}` | unset | Index-builder's `ABLY_API_KEY` for deployment progress, from a Secret in the CR's namespace. An explicit required `secretKeyRef` wins over component `envFrom`; no new dummy is seeded. The Secret is read, never written; missing Secret, key or empty value fails ingestion before changing the builder. Its watch and credentials hash roll the builder on rotation. Unset keeps historical sandbox defaults. HARVEST's separate seed is unchanged while its worker launcher is missing (#12); this field does not activate crawling. [Decision and limits](provisioning-runbook.md#ably-deployment-progress-747). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
+| `storageRebuild` | `{id, instanceUID, dataLoss}` | unset | Discards every local data volume of the stack once and builds it again on the volumes its storage settings describe now: the only way to change a volume's class. Deletes the stack's data ([below](#storage-rebuild-specstoragerebuild)). |
 
 ## `spec.llm`
 
@@ -600,8 +601,8 @@ it changes.
 
 ### Component storage
 
-The shared `VolumeSpec` is available at `spec.components.engine.writer.storage`, `spec.components.engine.reader.storage` and at
-`spec.components.{analytics,cache,broker,search,controlDB}.storage`.
+The shared `VolumeSpec` is available at `spec.components.engine.writer.storage`, `spec.components.engine.reader.storage`,
+`spec.components.{analytics,cache,broker,search,controlDB}.storage` and `spec.components.ingestion.harvestMongoStorage` (HARVEST's Mongo).
 
 | Field | Type | Default | Behavior |
 |---|---|---|---|
@@ -612,8 +613,8 @@ For example, `engine.writer.storage: {size: 50Gi, storageClassName: managed-csi}
 `cache.storage: {size: 20Gi}` set independent sizes. These are examples, not production sizing.
 For an `OramaCloudV1Set`, put the component settings under `spec.template.components`.
 `reader.storage` applies to every reader's claim, `data-<cr>-reader-<n>`; it defaults to `10Gi`, and production's
-size is explained in [components.md](components.md#engine-internalcontrollerenginego). HARVEST Mongo retains its existing
-`10Gi`/default-class behavior and gains no storage API.
+size is explained in [components.md](components.md#engine-internalcontrollerenginego). `ingestion.harvestMongoStorage` works like
+every other store's `storage`, and is managed while ingestion and HARVEST are enabled.
 
 New StatefulSets receive a `data` claim template at the resolved size/class. Existing templates
 remain intact because Kubernetes makes them immutable. The operator grows each matching claim's
@@ -621,7 +622,8 @@ storage request itself, including retained claims and claims created later from 
 The template's old size does not cause a storage mismatch. For controlDB it grows the CNPG
 Cluster's configured size; CNPG owns expansion of its PVCs. Other CNPG storage keys remain intact.
 
-Existing volumes cannot shrink or change class. Removing `storage` after growth requests the
+Existing volumes cannot shrink or change class in place; [`storageRebuild`](#storage-rebuild-specstoragerebuild) moves a stack
+whose data may be lost to a new class. Removing `storage` after growth requests the
 `10Gi` default and can therefore report an unsupported shrink. Restore the grown request to clear
 that rejection. A larger reported capacity alone is not a shrink: provisioners can round capacity
 above the request. A claim with a class mismatch receives no size update, even if growth was also
@@ -638,6 +640,47 @@ The condition observes the current generation and recovers after accepted settin
 retries. A rejected setting may coexist with `Ready=True`. The operator polls every 20 seconds
 while locally managed storage exists, even with Ready workloads, and writes status only on change.
 See [component reconciliation](components.md#component-storage) for scope and expansion ownership.
+
+### Storage rebuild (`spec.storageRebuild`)
+
+A claim's class and a StatefulSet's claim template never change, and a StatefulSet's claims outlive it, so a
+stack created on one class stays on it ([#915](https://github.com/oramasearch/orama-operator/issues/915)).
+`storageRebuild` discards the stack's local data volumes once, and the normal reconcile then creates them
+again from the current storage settings. **It deletes the stack's data.**
+
+| Field | Type | Behavior |
+|---|---|---|
+| `id` | DNS label | Names the rebuild. It runs once: an `id` that already completed does nothing, and a new `id` runs again. |
+| `instanceUID` | string | Must equal the instance's `metadata.uid`, so a request left in a spec never runs on an instance created again later. Read it with `kubectl get ocv1 <name> -o jsonpath='{.metadata.uid}'`. |
+| `dataLoss` | `DiscardAll` | The only value: the request states that the data goes. |
+
+It is refused, with `status.conditions[StorageRebuild]` `False / Refused` and nothing deleted, when
+`instanceUID` does not match or any `OramaCloudV1Migration` exists in the namespace (a migration copies
+customer data). Otherwise the operator, before reconciling any component:
+
+1. records the claims it will delete in `status.storageRebuild.claims` (name and UID): every
+   `data-<cr>-<component>-<ordinal>` of the writer, readers, analytics, broker, cache, search and HARVEST's
+   Mongo, retained ordinals included, and every claim labelled `cnpg.io/cluster: <cr>-controldb`. A claim
+   another controller owns stops the rebuild with an error. Nothing is deleted unless the record is written;
+2. deletes, in the foreground, those StatefulSets, the control DB's CNPG `Cluster`, its `PostgresSchema`s and
+   the Jobs the stack owns (the `c1` row's, analytics retention's), then each recorded claim with its recorded
+   UID as a precondition. Until all are gone the phase is `Progressing`, `Ready` is `False / StorageRebuilding`
+   and no component is reconciled;
+3. marks the rebuild `Completed` and reconciles as usual, which creates the StatefulSets on new claims from the
+   current templates, a new control DB, its schemas, reference rows and `c1` row.
+
+Configuration, generated credentials, Services, Ingresses, certificates, DNS records, KV namespaces and R2
+buckets stay. Deployments keep running and reconnect when their stores return; they serve errors meanwhile.
+A restarted operator resumes from the record. Removing `storageRebuild` from the spec does not stop a
+rebuild that has started.
+
+| `status.storageRebuild` | Meaning |
+|---|---|
+| `id`, `phase: Deleting`, `claims` | The rebuild in progress and what it deletes. |
+| `phase: Completed` | The rebuild with this `id` finished; the same `id` never runs again. |
+
+The leaf cluster must run an operator whose CRD has the field before a set carries it: an older CRD prunes the
+unknown field, and the request does nothing.
 
 ### `status.conditions[ClusterRowReady]`
 

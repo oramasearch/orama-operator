@@ -54,6 +54,41 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	t.Run("storage rebuild and HARVEST Mongo storage admission", func(t *testing.T) {
+		rebuild := func(id, uid, dataLoss string) map[string]interface{} {
+			return map[string]interface{}{"id": id, "instanceUID": uid, "dataLoss": dataLoss}
+		}
+		for i, tc := range []struct {
+			field string
+			value map[string]interface{}
+			valid bool
+		}{
+			{"storageRebuild", rebuild("premium-2026-10-24", "a-uid", "DiscardAll"), true},
+			{"storageRebuild", rebuild("premium", "a-uid", "Keep"), false},
+			{"storageRebuild", rebuild("Premium_Volumes", "a-uid", "DiscardAll"), false},
+			{"storageRebuild", rebuild("premium", "", "DiscardAll"), false},
+			{"storageRebuild", map[string]interface{}{"id": "premium", "instanceUID": "a-uid"}, false},
+			{"harvestMongoStorage", map[string]interface{}{"size": "20Gi", "storageClassName": "managed-csi-premium"}, true},
+			{"harvestMongoStorage", map[string]interface{}{"size": "0"}, false},
+		} {
+			obj := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": "orama.cloud/v1alpha1", "kind": "OramaCloudV1", "metadata": map[string]interface{}{"name": fmt.Sprintf("rebuild-%d", i), "namespace": ns.Name}, "spec": map[string]interface{}{"region": map[string]interface{}{"name": "test", "role": "primary"}}}}
+			path := []string{"spec", tc.field}
+			if tc.field == "harvestMongoStorage" {
+				path = []string{"spec", "components", "ingestion", "harvestMongoStorage"}
+			}
+			if err := unstructured.SetNestedMap(obj.Object, tc.value, path...); err != nil {
+				t.Fatal(err)
+			}
+			err := kube.Create(ctx, obj)
+			if tc.valid && err != nil {
+				t.Fatalf("%s %v rejected: %v", tc.field, tc.value, err)
+			}
+			if !tc.valid && !apierrors.IsInvalid(err) {
+				t.Fatalf("%s %v: err = %v, want Invalid", tc.field, tc.value, err)
+			}
+		}
+	})
+
 	t.Run("quantity and class admission on every component", func(t *testing.T) {
 		for i, path := range [][]string{{"engine", "writer"}, {"analytics"}, {"broker"}, {"cache"}, {"search"}, {"controlDB"}} {
 			for j, tc := range []struct {

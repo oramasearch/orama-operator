@@ -1722,6 +1722,31 @@ spec:
                         description: Harvest enables the crawler (Deployment + Mongo
                           + Selenium grid).
                         type: boolean
+                      harvestMongoStorage:
+                        description: |-
+                          HarvestMongoStorage configures the data volume of HARVEST's Mongo (default 10Gi and the
+                          cluster default class), like every other data store's storage.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              Size is a positive Kubernetes quantity, compared numerically. Omission resolves to the
+                              component's default (10Gi) even without API defaulting. Shrinking
+                              existing storage is unsupported.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                            x-kubernetes-validations:
+                            - message: size must be a positive Kubernetes quantity
+                              rule: isQuantity(string(self)) && quantity(string(self)).isGreaterThan(quantity('0'))
+                          storageClassName:
+                            description: |-
+                              StorageClassName selects a class at creation. Omission uses the cluster default
+                              for new volumes and retains the existing class. Existing classes cannot change.
+                            minLength: 1
+                            type: string
+                        type: object
                       hpesResources:
                         description: |-
                           HPESResources overrides the resources of HPES (embeddings-server-py), the embeddings server
@@ -2596,6 +2621,37 @@ spec:
                 - name
                 - role
                 type: object
+              storageRebuild:
+                description: |-
+                  StorageRebuild discards every local data volume of this stack once, then builds the stack
+                  again on the volumes its storage settings describe now. It is how a stack moves to a storage
+                  class it was not created with, which no claim and no StatefulSet template can change in place
+                  (operator#915). It deletes the stack's data: write it only for a stack whose data may be lost.
+                properties:
+                  dataLoss:
+                    description: 'DataLoss must be DiscardAll: the request says in
+                      its own words that the data goes.'
+                    enum:
+                    - DiscardAll
+                    type: string
+                  id:
+                    description: |-
+                      ID names this rebuild. A rebuild with an ID that already completed does nothing; a new ID
+                      runs a new rebuild.
+                    pattern: ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
+                    type: string
+                  instanceUID:
+                    description: |-
+                      InstanceUID must equal this OramaCloudV1's metadata.uid. It binds the request to the
+                      instance it was written for, so an instance created again later never runs a rebuild left
+                      in its spec.
+                    minLength: 1
+                    type: string
+                required:
+                - dataLoss
+                - id
+                - instanceUID
+                type: object
             required:
             - region
             type: object
@@ -2714,6 +2770,46 @@ spec:
                   Phase: Progressing (coming up) | Ready (all components ready) | Degraded (was ready, a
                   component regressed) | Pending.
                 type: string
+              storageRebuild:
+                description: StorageRebuild is the storage rebuild in progress, or
+                  the last one that completed.
+                properties:
+                  claims:
+                    description: |-
+                      Claims are the data claims the rebuild deletes, recorded before anything is deleted. Each is
+                      deleted only while it still has the recorded UID, so a new claim with the same name is never
+                      touched.
+                    items:
+                      description: RebuildClaim is one data claim a storage rebuild
+                        deletes.
+                      properties:
+                        name:
+                          type: string
+                        uid:
+                          type: string
+                      required:
+                      - name
+                      - uid
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  id:
+                    description: ID is the rebuild's spec.storageRebuild.id.
+                    type: string
+                  phase:
+                    description: |-
+                      Phase is Deleting while the old StatefulSets, control DB and claims go, and Completed once
+                      they are gone and the normal reconcile builds the stack again.
+                    enum:
+                    - Deleting
+                    - Completed
+                    type: string
+                required:
+                - id
+                - phase
+                type: object
             type: object
         type: object
     served: true

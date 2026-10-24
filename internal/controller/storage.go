@@ -106,6 +106,10 @@ func (r *OramaCloudV1Reconciler) reconcileStorage(ctx context.Context, oc *orama
 		managed = true
 		r.reconcileStatefulStorage(ctx, oc, store.name, store.spec.Storage, defaultVolumeSize, result)
 	}
+	if ing := oc.Spec.Components.Ingestion; ing.Enabled && ing.Harvest {
+		managed = true
+		r.reconcileStatefulStorage(ctx, oc, "harvest-mongo", ing.HarvestMongoStorage, defaultVolumeSize, result)
+	}
 	db := oc.Spec.Components.ControlDB
 	if db.Enabled && db.Mode != "external" {
 		managed = true
