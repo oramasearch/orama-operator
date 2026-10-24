@@ -182,7 +182,7 @@ The leaf's operator must already have the field.
         storageRebuild:
           id: premium-volumes                 # a new id for each rebuild
           instanceUID: <the member's uid>     # kubectl --context <leaf> -n <ns> get ocv1 <name> -o jsonpath='{.metadata.uid}'
-          dataLoss: DiscardAll
+          deletesAllData: true                # required: applying this erases every data volume of the member
 ```
 
 Watch `status.storageRebuild` and `status.conditions[StorageRebuild]` on the member until `Completed`, then

@@ -122,9 +122,12 @@ type StorageRebuildSpec struct {
 	// in its spec.
 	// +kubebuilder:validation:MinLength=1
 	InstanceUID string `json:"instanceUID"`
-	// DataLoss must be DiscardAll: the request says in its own words that the data goes.
-	// +kubebuilder:validation:Enum=DiscardAll
-	DataLoss string `json:"dataLoss"`
+	// DeletesAllData must be true. It changes nothing in what the rebuild does; it makes the request
+	// say, in the file a reviewer approves, that applying it erases every data volume of this stack:
+	// the writer's and readers' indexes, the control DB (teams, projects, users, keys), analytics,
+	// the broker, the cache, search and HARVEST's Mongo.
+	// +kubebuilder:validation:XValidation:rule="self == true",message="deletesAllData must be true: a storage rebuild erases every data volume of the stack"
+	DeletesAllData bool `json:"deletesAllData"`
 }
 
 // StorageRebuildStatus is the rebuild in progress, or the last one that completed.

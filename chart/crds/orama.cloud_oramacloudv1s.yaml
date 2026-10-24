@@ -2628,12 +2628,17 @@ spec:
                   class it was not created with, which no claim and no StatefulSet template can change in place
                   (operator#915). It deletes the stack's data: write it only for a stack whose data may be lost.
                 properties:
-                  dataLoss:
-                    description: 'DataLoss must be DiscardAll: the request says in
-                      its own words that the data goes.'
-                    enum:
-                    - DiscardAll
-                    type: string
+                  deletesAllData:
+                    description: |-
+                      DeletesAllData must be true. It changes nothing in what the rebuild does; it makes the request
+                      say, in the file a reviewer approves, that applying it erases every data volume of this stack:
+                      the writer's and readers' indexes, the control DB (teams, projects, users, keys), analytics,
+                      the broker, the cache, search and HARVEST's Mongo.
+                    type: boolean
+                    x-kubernetes-validations:
+                    - message: 'deletesAllData must be true: a storage rebuild erases
+                        every data volume of the stack'
+                      rule: self == true
                   id:
                     description: |-
                       ID names this rebuild. A rebuild with an ID that already completed does nothing; a new ID
@@ -2648,7 +2653,7 @@ spec:
                     minLength: 1
                     type: string
                 required:
-                - dataLoss
+                - deletesAllData
                 - id
                 - instanceUID
                 type: object

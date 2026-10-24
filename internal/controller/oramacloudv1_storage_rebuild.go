@@ -125,8 +125,8 @@ func (r *OramaCloudV1Reconciler) storageRebuildRefusal(ctx context.Context, oc *
 	if req.InstanceUID != string(oc.UID) {
 		return fmt.Sprintf("instanceUID %s is not this OramaCloudV1's uid %s", req.InstanceUID, oc.UID), nil
 	}
-	if req.DataLoss != "DiscardAll" {
-		return "dataLoss must be DiscardAll", nil
+	if !req.DeletesAllData {
+		return "deletesAllData must be true: a storage rebuild erases every data volume of the stack", nil
 	}
 	var migrations oramav1alpha1.OramaCloudV1MigrationList
 	if err := r.List(ctx, &migrations, client.InNamespace(oc.Namespace)); err != nil {

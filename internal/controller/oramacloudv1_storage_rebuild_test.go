@@ -33,7 +33,7 @@ import (
 func rebuildStack(t *testing.T, mut func(*oramav1alpha1.OramaCloudV1)) (*OramaCloudV1Reconciler, *oramav1alpha1.OramaCloudV1, *rebuildWrites) {
 	t.Helper()
 	oc := newOCV1(func(o *oramav1alpha1.OramaCloudV1) {
-		o.Spec.StorageRebuild = &oramav1alpha1.StorageRebuildSpec{ID: "premium", InstanceUID: "uid-v1", DataLoss: "DiscardAll"}
+		o.Spec.StorageRebuild = &oramav1alpha1.StorageRebuildSpec{ID: "premium", InstanceUID: "uid-v1", DeletesAllData: true}
 	})
 	if mut != nil {
 		mut(oc)

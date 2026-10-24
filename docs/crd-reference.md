@@ -29,7 +29,7 @@ pointing at the primary); the full sample list is in
 | `components.ingestion.ablyKeySecretRef` | `{name, key}` | unset | Index-builder's `ABLY_API_KEY` for deployment progress, from a Secret in the CR's namespace. An explicit required `secretKeyRef` wins over component `envFrom`; no new dummy is seeded. The Secret is read, never written; missing Secret, key or empty value fails ingestion before changing the builder. Its watch and credentials hash roll the builder on rotation. Unset keeps historical sandbox defaults. HARVEST's separate seed is unchanged while its worker launcher is missing (#12); this field does not activate crawling. [Decision and limits](provisioning-runbook.md#ably-deployment-progress-747). |
 | `peers[]` | list | — | Other regions (read tiers → primary `writerEndpoint`/`postgresEndpoint`); no mesh. |
 | `demoSeed` | bool | false | Seed a demo project+index so a fresh install answers queries. |
-| `storageRebuild` | `{id, instanceUID, dataLoss}` | unset | Discards every local data volume of the stack once and builds it again on the volumes its storage settings describe now: the only way to change a volume's class. Deletes the stack's data ([below](#storage-rebuild-specstoragerebuild)). |
+| `storageRebuild` | `{id, instanceUID, deletesAllData}` | unset | Discards every local data volume of the stack once and builds it again on the volumes its storage settings describe now: the only way to change a volume's class. Deletes the stack's data ([below](#storage-rebuild-specstoragerebuild)). |
 
 ## `spec.llm`
 
@@ -652,7 +652,7 @@ again from the current storage settings. **It deletes the stack's data.**
 |---|---|---|
 | `id` | DNS label | Names the rebuild. It runs once: every completed `id` is kept in `status.storageRebuild.completedIDs`, so an `id` that completed does nothing, even after a later rebuild, and a new `id` runs again. |
 | `instanceUID` | string | Must equal the instance's `metadata.uid`, so a request left in a spec never runs on an instance created again later. Read it with `kubectl get ocv1 <name> -o jsonpath='{.metadata.uid}'`. |
-| `dataLoss` | `DiscardAll` | The only value: the request states that the data goes. |
+| `deletesAllData` | bool, must be `true` | A confirmation, not a setting: it makes the request say, in the file a reviewer approves, that applying it erases every data volume of the stack (the engine's indexes, the control DB's teams, projects, users and keys, analytics, broker, cache, search, HARVEST's Mongo). `false` or missing is rejected by the API server. |
 
 It is refused, with `status.conditions[StorageRebuild]` `False / Refused` and nothing deleted, when
 `instanceUID` does not match or any `OramaCloudV1Migration` exists in the namespace (a migration copies

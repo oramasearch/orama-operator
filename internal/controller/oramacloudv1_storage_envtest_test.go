@@ -55,18 +55,18 @@ func TestOCV1StorageAgainstAPIServer(t *testing.T) {
 	}
 
 	t.Run("storage rebuild and HARVEST Mongo storage admission", func(t *testing.T) {
-		rebuild := func(id, uid, dataLoss string) map[string]interface{} {
-			return map[string]interface{}{"id": id, "instanceUID": uid, "dataLoss": dataLoss}
+		rebuild := func(id, uid string, deletesAllData bool) map[string]interface{} {
+			return map[string]interface{}{"id": id, "instanceUID": uid, "deletesAllData": deletesAllData}
 		}
 		for i, tc := range []struct {
 			field string
 			value map[string]interface{}
 			valid bool
 		}{
-			{"storageRebuild", rebuild("premium-2026-10-24", "a-uid", "DiscardAll"), true},
-			{"storageRebuild", rebuild("premium", "a-uid", "Keep"), false},
-			{"storageRebuild", rebuild("Premium_Volumes", "a-uid", "DiscardAll"), false},
-			{"storageRebuild", rebuild("premium", "", "DiscardAll"), false},
+			{"storageRebuild", rebuild("premium-2026-10-24", "a-uid", true), true},
+			{"storageRebuild", rebuild("premium", "a-uid", false), false},
+			{"storageRebuild", rebuild("Premium_Volumes", "a-uid", true), false},
+			{"storageRebuild", rebuild("premium", "", true), false},
 			{"storageRebuild", map[string]interface{}{"id": "premium", "instanceUID": "a-uid"}, false},
 			{"harvestMongoStorage", map[string]interface{}{"size": "20Gi", "storageClassName": "managed-csi-premium"}, true},
 			{"harvestMongoStorage", map[string]interface{}{"size": "0"}, false},
