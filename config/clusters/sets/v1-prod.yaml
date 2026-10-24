@@ -226,9 +226,10 @@ spec:
           dashboard: oramasearch/dashboard:v1-prod-0aa9652a-cv1@sha256:cb1ec96b7a3dea6384aea111c3437904dce3fde724219c24c4303def426a814d
       # Every volume uses managed-csi-premium (Azure Premium SSD), a built-in AKS class; the cluster
       # default is Standard SSD. v1-eu was created as a sandbox on 10Gi Standard SSD volumes, which
-      # cannot change class in place, so each volume approves its replacement (approveDataDeletion,
-      # orama-operator#920): the operator erases the sandbox's volumes and creates premium ones.
-      # Set approveDataDeletion to false before any customer data is copied into v1-eu.
+      # cannot change class in place, so each volume approved its replacement once (approveDataDeletion,
+      # orama-operator#920): on 2026-10-24 the operator erased the sandbox's volumes and created premium
+      # ones. Every volume is now approveDataDeletion: false, before any customer data is copied into
+      # v1-eu: a storage change the volume can't take in place is refused, never done by erasing it.
       components:
         engine:
           enabled: true
@@ -243,7 +244,7 @@ spec:
             storage:
               size: 512Gi
               storageClassName: managed-csi-premium
-              approveDataDeletion: true
+              approveDataDeletion: false
             # jwksURL unset: the writer reads the dashboard's keys in-cluster. Prod 2 has one cluster
             # row, the operator's `c1`, whose writer_url the dashboard mints the audience from
             # (decisions 2026-10-16 #9).
@@ -258,7 +259,7 @@ spec:
             storage:
               size: 512Gi
               storageClassName: managed-csi-premium
-              approveDataDeletion: true
+              approveDataDeletion: false
         dashboard:
           enabled: true
           host: app.orama.ing
@@ -292,7 +293,7 @@ spec:
           storage:
             size: 10Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
           # Prod 1's live-mode Stripe prices, read from its subscription_plans and stripe_addon_prices
           # on 2026-10-24 (read-only); every ID is one of the operator's reference rows. Plans not listed
           # (base, base+, enterprise, open source) have no Stripe price on Prod 1 either.
@@ -334,7 +335,7 @@ spec:
           storage:
             size: 200Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
         analyticsProcessor:
           enabled: true
           # The cutover sets suspend: false in this file.
@@ -351,7 +352,7 @@ spec:
           storage:
             size: 10Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
         broker:
           enabled: true
           mode: in-cluster
@@ -360,7 +361,7 @@ spec:
           storage:
             size: 20Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
         search:
           enabled: true
           mode: in-cluster
@@ -370,14 +371,14 @@ spec:
           storage:
             size: 10Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
         ingestion:
           enabled: true
           harvest: true
           harvestMongoStorage:
             size: 10Gi
             storageClassName: managed-csi-premium
-            approveDataDeletion: true
+            approveDataDeletion: false
         workers:
           enabled: true
           replicas: 2
