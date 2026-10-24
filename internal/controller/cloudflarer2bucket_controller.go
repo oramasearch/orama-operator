@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -84,6 +85,11 @@ func (r *CloudflareR2BucketReconciler) Reconcile(ctx context.Context, req ctrl.R
 						return ctrl.Result{}, err
 					}
 				}
+				if b.Status.CustomDomain != "" {
+					if err := r.detachCustomDomain(ctx, token, accountID, b.Spec.Name, b.Status.CustomDomain); err != nil {
+						return ctrl.Result{}, err
+					}
+				}
 				if b.Status.Created && b.Spec.DeletionPolicy == oramav1alpha1.BucketDeletionDelete {
 					if err := cfDeleteR2Bucket(ctx, r.apiBase(), token, accountID, b.Spec.Name); err != nil {
 						return ctrl.Result{}, err
@@ -115,6 +121,9 @@ func (r *CloudflareR2BucketReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err == nil {
 		err = r.reconcileCredentials(ctx, &b, &desired, token, accountID)
 	}
+	if err == nil {
+		err = r.reconcileCustomDomain(ctx, &b, &desired, token, accountID)
+	}
 	if err != nil {
 		// Written only when it changes, so a standing failure produces no writes. The error is
 		// returned, so it is logged and retried until its cause is fixed. For R2 the usual cause is
@@ -130,8 +139,15 @@ func (r *CloudflareR2BucketReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return settle(ctrl.Result{}, errors.Join(err, statusErr))
 		}
 	}
+	if err == nil && b.Spec.CustomDomain != nil && desired.CustomDomainStatus != r2CustomDomainActive {
+		// Cloudflare verifies the host and issues its certificate on its own; look again until both
+		// are active.
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
 	return ctrl.Result{}, err
 }
+
+const r2CustomDomainActive = "ownership=active ssl=active"
 
 type cfR2CORSRule struct {
 	Allowed struct {
@@ -337,6 +353,79 @@ func (r *CloudflareR2BucketReconciler) reconcileCredentials(ctx context.Context,
 	}
 	status.CredentialsSecret = name
 	return nil
+}
+
+// cfR2CustomDomain is one custom domain as the R2 API reports it.
+type cfR2CustomDomain struct {
+	Domain  string `json:"domain"`
+	Enabled bool   `json:"enabled"`
+	MinTLS  string `json:"minTLS"`
+	ZoneID  string `json:"zoneId"`
+	Status  struct {
+		Ownership string `json:"ownership"`
+		SSL       string `json:"ssl"`
+	} `json:"status"`
+}
+
+// reconcileCustomDomain attaches spec.customDomain to the bucket, keeps it enabled at the asked
+// minimum TLS version, and detaches a domain the operator attached once the spec drops or changes
+// it. https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/custom/
+func (r *CloudflareR2BucketReconciler) reconcileCustomDomain(ctx context.Context, b *oramav1alpha1.CloudflareR2Bucket, status *oramav1alpha1.CloudflareR2BucketStatus, token, accountID string) error {
+	want := b.Spec.CustomDomain
+	if status.CustomDomain != "" && (want == nil || want.Domain != status.CustomDomain) {
+		if err := r.detachCustomDomain(ctx, token, accountID, b.Spec.Name, status.CustomDomain); err != nil {
+			return err
+		}
+		status.CustomDomain, status.CustomDomainStatus = "", ""
+	}
+	if want == nil {
+		return nil
+	}
+	minTLS := want.MinTLS
+	if minTLS == "" {
+		minTLS = "1.2"
+	}
+	base := fmt.Sprintf("%s/accounts/%s/r2/buckets/%s/domains/custom", r.apiBase(), accountID, b.Spec.Name)
+	var current struct {
+		Result cfR2CustomDomain `json:"result"`
+	}
+	err := cfDo(ctx, token, http.MethodGet, base+"/"+want.Domain, nil, &current)
+	var apiErr *cfAPIError
+	switch {
+	case errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound:
+		body := map[string]any{"domain": want.Domain, "zoneId": want.ZoneID, "enabled": true, "minTLS": minTLS}
+		if err := cfDo(ctx, token, http.MethodPost, base, body, nil); err != nil {
+			return err
+		}
+		current.Result = cfR2CustomDomain{Domain: want.Domain, Enabled: true, MinTLS: minTLS}
+		current.Result.Status.Ownership, current.Result.Status.SSL = "pending", "pending"
+	case err != nil:
+		return err
+	case !current.Result.Enabled || current.Result.MinTLS != minTLS:
+		if err := cfDo(ctx, token, http.MethodPut, base+"/"+want.Domain, map[string]any{"enabled": true, "minTLS": minTLS}, nil); err != nil {
+			return err
+		}
+	}
+	status.CustomDomain = want.Domain
+	status.CustomDomainStatus = fmt.Sprintf("ownership=%s ssl=%s", orUnknown(current.Result.Status.Ownership), orUnknown(current.Result.Status.SSL))
+	return nil
+}
+
+func orUnknown(value string) string {
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
+// detachCustomDomain removes a custom domain from the bucket; one already gone is fine.
+func (r *CloudflareR2BucketReconciler) detachCustomDomain(ctx context.Context, token, accountID, bucket, domain string) error {
+	err := cfDo(ctx, token, http.MethodDelete, fmt.Sprintf("%s/accounts/%s/r2/buckets/%s/domains/custom/%s", r.apiBase(), accountID, bucket, domain), nil, nil)
+	var apiErr *cfAPIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return err
 }
 
 func (r *CloudflareR2BucketReconciler) mintBucketToken(ctx context.Context, token, accountID, bucket string) (string, string, error) {

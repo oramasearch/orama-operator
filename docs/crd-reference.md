@@ -973,6 +973,8 @@ The operator cannot adopt that existing record.
 | `spec.expireAfterDays` | Optional integer, minimum 1. Owns lifecycle rule `orama-expire`, deleting objects after this many days; other lifecycle rules are preserved. Omission leaves lifecycle alone. |
 | `status.created`, `status.ready`, `status.message` | Bucket exists; everything reconciled; otherwise Cloudflare's refusal (written only on change). |
 | `status.credentialsTokenID`, `status.credentialsSecret` | The bucket token's id (also the S3 access key id, not a secret) and the Secret holding the credentials. |
+| `spec.customDomain` | Optional `{domain, zoneID, minTLS?}`. Serves the bucket's objects **publicly** on `domain` through Cloudflare (an R2 custom domain; Cloudflare creates the DNS record and certificate). `zoneID` is the zone the host is in (not a secret); `minTLS` is `1.2` (default) or `1.3`. Kept enabled at that TLS version; removing it, or changing the domain, detaches the old host. Set it only on a bucket that holds public content, such as a [status page](infrastructure/status-pages.md). The account token must be allowed to attach custom domains in that zone. |
+| `status.customDomain`, `status.customDomainStatus` | The attached host and Cloudflare's verdict, `ownership=<state> ssl=<state>`; the resource is looked at again every minute until both are `active`. |
 
 A Cloudflare-enabled stack with the dashboard enabled owns `<cr>-uploads`, with credentials in
 `<cr>-uploads-r2`, PUT CORS for the dashboard host and extra hosts, seven-day expiry, and deletion
@@ -982,6 +984,36 @@ provisioning succeeds; when the Secret appears its credential hash rolls the das
 
 On deletion the finalizer revokes the bucket token whatever the policy, and deletes the bucket only
 with `Delete`.
+
+## `StatusPage` (separate CRD, namespaced) — external checks, alerts and a public status page
+
+Checks public endpoints from the operator that holds the resource, alerts when a component changes
+state, and writes a static page to a bucket. Runbook and the lake.live page:
+[`infrastructure/status-pages.md`](infrastructure/status-pages.md).
+
+| Field | Meaning |
+|---|---|
+| `spec.title` | The page heading and the alerts' prefix. |
+| `spec.intervalSeconds` | How often every check runs. Default 60, minimum 30. |
+| `spec.timeoutSeconds` | Per-check timeout, 1–25. Default 10. |
+| `spec.failureThreshold` | Consecutive failed runs that make a check failing, 1–10. Default 3. One pass clears it. |
+| `spec.components[]` | `{name, title, group?, checks[]}`, in page order; `group` is a heading (`Europe`). A component is `Operational` when every check that ran passes, `Outage` when every one is failing, `Degraded` in between, `Unknown` when none could run. |
+| `spec.components[].checks[]` | `{name, url, method? (GET\|POST), headers?, body?, secretRef?, bearerTokenKey?, expect}`. `$(KEY)` in `url`, header values and `body` is replaced from the same-namespace Secret `secretRef`; `bearerTokenKey` sends that key as `Authorization: Bearer`. A missing Secret or key leaves the check **not checked** (`uncheckedChecks`), never failing. |
+| `…checks[].expect` | Every field set must hold: `status` (default 200), `bodyContains[]`, `json[]` of `{path, equals?}` (dotted path, numbers index arrays; `equals` compares a string as written and anything else as its JSON; unset requires a non-null value), `minCertificateDays` (fails when the server's certificate expires sooner). |
+| `spec.publish` | Optional `{bucketSecretRef, publicURL?}`. `bucketSecretRef` is a Secret with S3 credentials (`accessKeyId`, `secretAccessKey`, `endpoint`, `bucket`, `region`), as a `CloudflareR2Bucket`'s `spec.credentials` writes. `index.html` is written when it changes, `status.json` on every run. |
+| `spec.alerts.webhook.secretRef` | A Secret with key `url`. Each change of state is POSTed as JSON with `text` and `content` (Slack, Discord, Google Chat and Mattermost read it as is), `component`, `from`, `to`, `at`. |
+| `spec.alerts.email.secretRef` | A Secret with `host`, `port` (465 implicit TLS; anything else requires STARTTLS), `username`, `password`, `from`, `to` (comma-separated). |
+| `status.phase`, `status.operational` | The worst component state; `n/total` components operational. |
+| `status.components[]` | `{name, state, since, failingChecks, uncheckedChecks, message, history}`. `message` says why a check fails or did not run, with the check's URL as written (Secret values never appear). `history` is the worst state of each of the last 90 UTC days. |
+| `status.conditions` | `ChecksConfigured` (False lists the checks whose Secret or key is missing), `Published` (False carries the bucket's refusal), `AlertsDelivered` (False: `NoChannel`, or `DeliveryFailed` with the reason; undelivered alerts are retried every run). |
+
+The status subresource is written only when a component changes state, a new day starts in its
+history, or a condition changes: a steady page writes nothing. Failure counts are kept in memory and
+seeded from `status.components[].failingChecks` after a restart, so a failing check stays failing and
+its recovery is a real one. `status.json` is public and carries only titles, states, `since`, the
+history and its `generated` time, never a URL or a failure message. The page marks itself
+**Unknown** when `generated` is older than three intervals plus a minute, so a stopped prober never
+leaves a stale Operational page.
 
 ## `BackupSchedule` (separate CRD, namespaced) — backups of one datastore on a schedule
 

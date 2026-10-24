@@ -107,6 +107,20 @@ func (s *S3) Put(ctx context.Context, key string, body []byte) error {
 	return err
 }
 
+// PutWithHeaders writes one object with the given Content-Type and Cache-Control, which the store
+// keeps and serves back to readers of a public bucket. Both headers are signed.
+func (s *S3) PutWithHeaders(ctx context.Context, key string, body []byte, contentType, cacheControl string) error {
+	headers := map[string]string{}
+	if contentType != "" {
+		headers["content-type"] = contentType
+	}
+	if cacheControl != "" {
+		headers["cache-control"] = cacheControl
+	}
+	_, err := s.doWithHeaders(ctx, http.MethodPut, key, nil, body, headers)
+	return err
+}
+
 // Delete deletes one object. A missing object is not an error (S3 answers 204 either way).
 func (s *S3) Delete(ctx context.Context, key string) error {
 	_, err := s.do(ctx, http.MethodDelete, key, nil, nil)
@@ -142,6 +156,11 @@ func (e *S3Error) Error() string {
 }
 
 func (s *S3) do(ctx context.Context, method, key string, query url.Values, body []byte) ([]byte, error) {
+	return s.doWithHeaders(ctx, method, key, query, body, nil)
+}
+
+// doWithHeaders sends one request; extra holds lower-case header names, which are signed.
+func (s *S3) doWithHeaders(ctx context.Context, method, key string, query url.Values, body []byte, extra map[string]string) ([]byte, error) {
 	path := "/" + s.Bucket.Name
 	if key != "" {
 		path += "/" + strings.TrimLeft(key, "/")
@@ -161,7 +180,10 @@ func (s *S3) do(ctx context.Context, method, key string, query url.Values, body 
 	if body != nil {
 		req.ContentLength = int64(len(body))
 	}
-	s.sign(req, body)
+	for name, value := range extra {
+		req.Header.Set(name, value)
+	}
+	s.signHeaders(req, body, extra)
 	client := s.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: 60 * time.Second}
@@ -180,6 +202,11 @@ func (s *S3) do(ctx context.Context, method, key string, query url.Values, body 
 
 // sign adds AWS Signature Version 4 headers.
 func (s *S3) sign(req *http.Request, body []byte) {
+	s.signHeaders(req, body, nil)
+}
+
+// signHeaders signs host, the x-amz headers and every header in extra (lower-case names).
+func (s *S3) signHeaders(req *http.Request, body []byte, extra map[string]string) {
 	now := time.Now
 	if s.Now != nil {
 		now = s.Now
@@ -193,6 +220,9 @@ func (s *S3) sign(req *http.Request, body []byte) {
 	host := req.URL.Host
 
 	headers := map[string]string{"host": host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate}
+	for name, value := range extra {
+		headers[strings.ToLower(name)] = strings.TrimSpace(value)
+	}
 	names := make([]string, 0, len(headers))
 	for name := range headers {
 		names = append(names, name)

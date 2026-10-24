@@ -27,6 +27,7 @@ versions, namespaces and values: **a change to a `platform.yaml` is not finished
 | `<cluster>/platform.yaml` | One `ClusterHelmRelease` per chart the cluster runs, in install order. |
 | `<cluster>/operator.yaml` | The `OramaOperator`: the operator version the cluster runs, and the pull Secret copied to it. A nonprod cluster names its own (`orama-system/oramasearch-dockerhub-nonprod`, copied as `oramasearch-dockerhub`); a Secret production uses is refused for it (orama-operator#832). |
 | `sets/lake-<purpose>.yaml` | A `LakeSet`: the Lake instances of that purpose, and the end-to-end runs against them (`spec.e2eTests`). |
+| `status/lake-live.yaml` | lake.live's status page, applied to the managing cluster: a `CloudflareR2Bucket` served on `status.lake.live` and the `StatusPage` whose checks of every lake.live host feed it and alert Steve. Its Secrets are listed at the top of the file. See [`docs/infrastructure/status-pages.md`](../../docs/infrastructure/status-pages.md). |
 | `sets/v1-<purpose>.yaml` | An `OramaCloudV1Set`: the Orama Cloud v1 instances of that purpose, and the Prod 1 teams being copied into them. |
 
 | Cluster | Region | Purpose | Deletion policy |
