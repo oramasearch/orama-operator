@@ -193,9 +193,10 @@ spec:
       # production will run (orama-bridge decisions 2026-10-23, 3). Components not listed run the
       # v1-sandbox tag, because nothing newer exists for them.
       overrides:
-        # The Clerk dashboard from dashboard dev 56f355da: the Cloud v1 security fixes (dashboard#187) and
-        # R2 upload signing (dashboard#186); standalone Clerk build recorded in orama-cloud-v1-bridge#19.
-        dashboard: oramasearch/dashboard:v1-dev-56f355da-cv1@sha256:f4454f12c77732e0330ceafcf02711dc8875d710710b09f6a212a7364b06d261
+        # The Clerk dashboard from dashboard dev 0aa9652a: the Cloud v1 security fixes (dashboard#187),
+        # R2 upload signing (dashboard#186) and the new-device sign-in code (dashboard#190); built with
+        # orama-cloud-v1-bridge build/images/dashboard/public.env.v1-dev, recorded in orama-cloud-v1-bridge#20.
+        dashboard: oramasearch/dashboard:v1-dev-0aa9652a-cv1@sha256:5eb915d6da1271e3b1141399b83b786b4af0e3f666682c6acff919751210179d
         # The combined OramaCore engine from oramacore-private develop 91a1b086: caca2a59 (v1.2.39 with
         # oramacore#340, #341 and #343) plus the security fixes LSR-063, -064, -149 to -155, -234 and -235.
         oramacore: oramasearch/oramacore-cloud-v1:v1.2.39-dev-91a1b086@sha256:c55d42b1dbf1d057ca14001bf3fedf883ab06573386fd87c8e4557d7e5aed05a
