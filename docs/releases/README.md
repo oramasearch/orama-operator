@@ -3,6 +3,8 @@
 One page per tagged release, newest first. A page states what the release includes, what it
 does not, what is knowingly still broken, and how it was verified.
 
+- [v0.9.3](v0.9.3.md) — 2026-10-24. A patch: Cloud v1 storage can approve replacing a volume it cannot
+  change in place (`approveDataDeletion`), for `v1-eu`'s premium production storage (#922).
 - [v0.9.2](v0.9.2.md) — 2026-10-24. A patch: the lake Deployment gets its own `ZETTA_EGRESS_ALLOW`, so lake
   reaches its Zettas again with lake#1100 (lake#1097). **Roll it before that lake build.**
 - [v0.9.1](v0.9.1.md) — 2026-10-24. A patch for lake v0.5.0: its schema through `0098`, the Clerk
