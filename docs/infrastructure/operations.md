@@ -182,7 +182,10 @@ The leaf's operator must already have the field.
         components:
           engine:
             writer:
-              storage: {size: 512Gi, storageClassName: managed-csi-premium, approveDataDeletion: true}
+              storage:
+                size: 512Gi
+                storageClassName: managed-csi-premium
+                approveDataDeletion: true
 ```
 
 Watch `status.conditions[StorageApplied]` on the member: `ReplacingStorage` while the old volumes go, then

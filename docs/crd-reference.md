@@ -652,7 +652,10 @@ does that, and the volume's data is lost:
 ```yaml
 engine:
   writer:
-    storage: {size: 512Gi, storageClassName: managed-csi-premium, approveDataDeletion: true}
+    storage:
+      size: 512Gi
+      storageClassName: managed-csi-premium
+      approveDataDeletion: true
 ```
 
 - **A StatefulSet's volume** (writer, readers, analytics, broker, cache, search, HARVEST's Mongo): the claims
