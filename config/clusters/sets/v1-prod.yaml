@@ -384,9 +384,7 @@ spec:
           - llama-3.3-70b-versatile
           name: groq
       profile: light
-  # Delete only while v1-eu's sandbox instance is removed: a member taken out of the set is deleted
-  # from its cluster. The next commit sets Retain again.
-  deletionPolicy: Delete
+  deletionPolicy: Retain
   secrets:
   - name: oramasearch-dockerhub
     namespace: orama-system
