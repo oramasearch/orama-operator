@@ -278,3 +278,19 @@ func TestTheLakeDataPlaneZettaIsAllowedNothingOutside(t *testing.T) {
 		t.Fatalf("data-plane ZETTA_EGRESS_ALLOW = %+v, want deny", got)
 	}
 }
+
+// lake#1097: lake installs ZETTA_EGRESS_ALLOW as the policy of zetta's client, which refuses all
+// but loopback without it. The operator gives the lake Deployment one in-cluster allowlist, and a
+// spec.env value cannot replace it.
+func TestTheLakeDeploymentGetsItsOwnZettaEgressAllowlist(t *testing.T) {
+	lake := billingTestLake(nil, corev1.EnvVar{Name: zettaEgressAllowEnv, Value: "*"})
+	var values []string
+	for _, variable := range lakeEnv(lake, lakeSealingMaterial{}) {
+		if variable.Name == zettaEgressAllowEnv {
+			values = append(values, variable.Value)
+		}
+	}
+	if len(values) != 1 || values[0] != "*.svc.cluster.local" {
+		t.Fatalf("ZETTA_EGRESS_ALLOW = %q, want exactly the operator's \"*.svc.cluster.local\"", values)
+	}
+}
